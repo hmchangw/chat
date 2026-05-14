@@ -4,7 +4,6 @@ import { useThreadEvents } from '../context/ThreadEventsContext'
 import RoomMessageArea from '../components/RoomMessageArea'
 import RoomMessageInput from '../components/RoomMessageInput'
 import ManageMembersDialog from '../components/ManageMembersDialog'
-import LeaveRoomButton from '../components/LeaveRoomButton'
 import InRoomSearch from '../components/InRoomSearch'
 import RoomMembersBadge from '../components/RoomMembersBadge'
 import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
@@ -89,8 +88,6 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     })
   }
 
-  const isChannel = selectedRoom?.type === 'channel'
-
   return (
     <main className="chat-page">
       {selectedRoom && (
@@ -98,13 +95,13 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
           <span className="chat-room-name">
             {roomPrefix(selectedRoom.type)}{roomDisplayName(selectedRoom)}
           </span>
+          {/* Spacer pushes the members badge to the right edge. */}
+          <div className="chat-room-header-spacer" />
           <RoomMembersBadge
             room={selectedRoom}
             onOpen={() => setShowMembers(true)}
             refreshKey={membersRefreshKey}
           />
-          <div className="chat-room-header-spacer" />
-          {isChannel && <LeaveRoomButton room={selectedRoom} />}
         </header>
       )}
       <div className="chat-page-body">

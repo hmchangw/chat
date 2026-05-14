@@ -278,7 +278,9 @@ body {
   animation: flash-jump 2s ease-out;
 }
 
-/* Message Input */
+/* Message Input — legacy class kept for any holdovers, but the active component
+   is .message-input-form (see below). The old .message-input rules apply only
+   to literal `<form className="message-input">` elements (none in the new tree). */
 .message-input {
   display: flex;
   padding: 0.75rem 1rem;
@@ -1200,15 +1202,24 @@ body {
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  color: var(--text-muted);
+  color: var(--text-primary);
   opacity: 0;
-  transition: opacity 80ms ease;
+  border-radius: 4px;
+  transition: opacity 80ms ease, background 80ms ease;
 }
 
-.message:hover .message-action-kebab,
+/* Reveal kebab whenever the row is hovered or focused. The legacy
+   selector targeted `.message` which is the old row class — replaced
+   with `.message-row` (and its focus-within state for keyboard nav). */
+.message-row:hover .message-action-kebab,
+.message-row:focus-within .message-action-kebab,
 .message-action-kebab:focus-visible,
 .message-action-menu:focus-within .message-action-kebab {
   opacity: 1;
+}
+
+.message-action-kebab:hover {
+  background: var(--bg-hover);
 }
 
 .message-action-popover {
@@ -1284,18 +1295,22 @@ body {
 }
 .message-row:hover,
 .message-row:focus-within {
-  background: var(--bg-hover, rgba(0,0,0,0.03));
+  background: var(--bg-hover);
 }
 .message-row .message-actions {
   position: absolute;
+  /* Sit flush with the new kebab (which is also absolute, right: 6px).
+     Pull the action toolbar left of the kebab with extra room so the
+     two groups don't visually collide. */
   top: 4px;
-  right: 8px;
+  right: 36px;
   display: none;
   gap: 4px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 2px 4px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 .message-row:hover .message-actions,
 .message-row:focus-within .message-actions {
@@ -1306,10 +1321,12 @@ body {
   background: transparent;
   border: 0;
   cursor: pointer;
+  color: var(--text-primary);
   font-size: 0.95em;
+  border-radius: 4px;
 }
 .message-action:hover {
-  background: var(--bg-hover, rgba(0,0,0,0.06));
+  background: var(--bg-hover);
 }
 .quoted-block {
   border-left: 3px solid var(--border-subtle, #ccc);
@@ -1416,10 +1433,91 @@ body {
   gap: 4px;
   margin-top: 4px;
   padding: 2px 8px;
-  background: var(--bg-elevated, rgba(0,0,0,0.04));
-  border: 1px solid var(--border-subtle, #e5e7eb);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   font-size: 0.85em;
   cursor: pointer;
 }
-.message-reply-badge:hover { background: var(--bg-hover, rgba(0,0,0,0.07)); }
+.message-reply-badge:hover { background: var(--bg-hover); }
+
+/* ---------------------------------------------------------------
+   Message Input Form (the new component; the legacy .message-input
+   styles above remain for holdovers but the active tree uses this).
+--------------------------------------------------------------- */
+.message-input-form {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 1rem;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.message-input-form .quoted-block-chip {
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.message-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.message-input-form input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.message-input-form input[type='text']:focus {
+  outline: none;
+  background: var(--bg-selected);
+  border-color: var(--accent-soft);
+}
+
+.message-input-form input[type='text']::placeholder {
+  color: var(--text-muted);
+}
+
+.message-input-form input[type='text']:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.message-input-form button[type='submit'] {
+  padding: 0 1rem;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.message-input-form button[type='submit']:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.message-input-form button[type='submit']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------
+   Jump-to-message flash now targets .message-row (renamed in Ch.3).
+   The legacy .message.flash-jump rule above is dead code; this is
+   what the new MessageList effect adds to the focused row.
+--------------------------------------------------------------- */
+.message-row.flash-jump {
+  animation: flash-jump 2s ease-out;
+}

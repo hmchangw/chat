@@ -48,9 +48,6 @@ vi.mock('../components/ManageMembersDialog', () => ({
     </div>
   ),
 }))
-vi.mock('../components/LeaveRoomButton', () => ({
-  default: ({ room }) => <button type="button">Leave {room?.name}</button>,
-}))
 // RoomMembersBadge depends on NatsContext + the member.list RPC; mock it
 // down to a deterministic "Members ({count})" button so we can assert on
 // the open affordance and verify ChatPage forwards the room/refreshKey props.
@@ -86,14 +83,16 @@ describe('ChatPage (middle column)', () => {
     expect(screen.getByText('input:r1')).toBeInTheDocument()
   })
 
-  it('renders room-header with room name, RoomMembersBadge, and Leave for channels', () => {
+  it('renders room-header with room name and RoomMembersBadge (no Leave button)', () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
     expect(screen.getByText(/# general/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^members \(7\)$/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /leave/i })).toBeInTheDocument()
+    // Leave is intentionally NOT rendered in the header — Members is the only
+    // affordance on the right edge.
+    expect(screen.queryByRole('button', { name: /leave/i })).not.toBeInTheDocument()
   })
 
-  it('renders RoomMembersBadge but hides Leave for DMs', () => {
+  it('renders RoomMembersBadge for DMs and never shows Leave', () => {
     render(<ChatPage selectedRoom={dm} onSelectRoom={() => {}} />)
     expect(screen.queryByRole('button', { name: /leave/i })).not.toBeInTheDocument()
   })
