@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { searchMessages } from '../../../../lib/subjects'
+import './style.css'
 
 // Submit-on-Enter (no search-as-you-type). The header's global search bar
 // is the spotlight typeahead surface; this in-room panel is for deliberate

@@ -1,4 +1,5 @@
 import MessageActionMenu from './MessageActionMenu/MessageActionMenu'
+import './style.css'
 
 export default function MessageActions({
   message, room, context, isOwn,

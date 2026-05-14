@@ -1,5 +1,6 @@
 import { useRoomSummaries } from '../../../../context/RoomEventsContext'
 import { roomPrefix, roomDisplayName } from '../../../../lib/roomFormat'
+import './style.css'
 
 function mentionBadge(summary) {
   if (summary.mentionAll) return <span className="room-badge-mention-all">!</span>

@@ -3,6 +3,7 @@ import { useNats } from '../../../../context/NatsContext'
 import { searchRooms } from '../../../../lib/subjects'
 import { useDebouncedSearch } from '../../../../lib/useDebouncedSearch'
 import { roomFromSearchHit, searchRoomPrefix } from '../../../../lib/roomFormat'
+import './style.css'
 
 export default function SearchBar({ onSelectRoom, onEnterSearch }) {
   const { user, request } = useNats()

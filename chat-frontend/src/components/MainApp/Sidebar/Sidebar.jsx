@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import RoomList from './RoomList/RoomList'
 import CreateRoomDialog from './CreateRoomDialog/CreateRoomDialog'
+import './style.css'
 
 export default function Sidebar({ selectedRoomId, onSelectRoom }) {
   const [showCreateRoom, setShowCreateRoom] = useState(false)

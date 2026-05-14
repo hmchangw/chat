@@ -6,6 +6,7 @@ import { msgEdit, msgDelete } from '../../../../lib/subjects'
 import MessageList from '../../../shared/MessageList/MessageList'
 import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'
 import TextInputDialog from '../../../shared/TextInputDialog/TextInputDialog'
+import './style.css'
 
 export default function ThreadMessageArea({ onReply }) {
   const { activeParent, messages, hasLoadedHistory, historyLoading, historyError,

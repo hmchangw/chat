@@ -1,3 +1,4 @@
+import './style.css'
 function senderLabel(snapshot) {
   return snapshot.senderName || snapshot.sender?.engName || snapshot.sender?.account || 'Unknown'
 }

@@ -3,6 +3,7 @@ import { useNats } from '../../../../../context/NatsContext'
 import { memberList, memberRemove, memberRoleUpdate, orgMembers } from '../../../../../lib/subjects'
 import { ROLE_OWNER, ROLE_MEMBER } from '../../../../../lib/constants'
 import { formatAsyncJobError } from '../../../../../lib/asyncJob'
+import './style.css'
 
 export default function MemberRoster({ room }) {
   const { user, request, requestWithAsyncResult } = useNats()

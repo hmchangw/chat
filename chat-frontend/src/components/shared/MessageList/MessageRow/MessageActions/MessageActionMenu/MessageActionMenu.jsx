@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../../../context/NatsContext'
 import { readReceipt } from '../../../../../../lib/subjects'
+import './style.css'
 
 function formatReaderName(r) {
   const eng = r.engName || r.account || ''

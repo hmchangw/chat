@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { memberList } from '../../../../lib/subjects'
+import './style.css'
 
 // Clickable "N members" widget that lives at the top of the chat-main pane
 // for channel rooms. Replaces the standalone "Members" button that used to

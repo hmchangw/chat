@@ -1,4 +1,5 @@
 import { useTheme } from '../../../../context/ThemeContext'
+import './style.css'
 
 function Icon({ name, children }) {
   return (

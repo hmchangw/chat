@@ -7,6 +7,7 @@ import ManageMembersDialog from './ManageMembersDialog/ManageMembersDialog'
 import InRoomSearch from './InRoomSearch/InRoomSearch'
 import RoomMembersBadge from './RoomMembersBadge/RoomMembersBadge'
 import { roomPrefix, roomDisplayName } from '../../../lib/roomFormat'
+import './style.css'
 
 export default function ChatPage({ selectedRoom, onSelectRoom }) {
   const { jumpToMessage } = useRoomSummaries()

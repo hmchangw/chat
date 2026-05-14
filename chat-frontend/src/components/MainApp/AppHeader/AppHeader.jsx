@@ -1,6 +1,7 @@
 import { useNats } from '../../../context/NatsContext'
 import SearchBar from './SearchBar/SearchBar'
 import ThemeToggle from './ThemeToggle/ThemeToggle'
+import './style.css'
 
 export default function AppHeader({ onSelectRoom, onEnterSearch }) {
   const { user, disconnect } = useNats()

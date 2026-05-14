@@ -1,4 +1,5 @@
 import QuotedBlock from '../QuotedBlock/QuotedBlock'
+import './style.css'
 
 export default function MessageInputForm({
   value,

@@ -6,6 +6,7 @@ import Sidebar from './Sidebar/Sidebar'
 import ChatPage from './ChatPage/ChatPage'
 import SearchResultsPane from './SearchResultsPane/SearchResultsPane'
 import ThreadRightBar from './ThreadRightBar/ThreadRightBar'
+import './style.css'
 
 export default function MainApp() {
   const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import AddMembersForm from './AddMembersForm/AddMembersForm'
 import MemberRoster from './MemberRoster/MemberRoster'
+import './style.css'
 
 const TABS = [
   { id: 'roster', label: 'Members' },

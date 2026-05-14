@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import MessageRow from './MessageRow/MessageRow'
+import './style.css'
 
 export default function MessageList({
   messages,

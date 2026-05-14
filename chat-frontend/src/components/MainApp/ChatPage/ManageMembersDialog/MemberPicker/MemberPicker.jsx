@@ -2,6 +2,7 @@ import { useState, useCallback, forwardRef, useImperativeHandle, useRef } from '
 import { useNats } from '../../../../../context/NatsContext'
 import { useDebouncedSearch } from '../../../../../lib/useDebouncedSearch'
 import { searchRooms } from '../../../../../lib/subjects'
+import './style.css'
 
 // Split a typed string into individual entries on commas, trim each segment,
 // drop empties. The free-text contract for users/orgs/channels: typing
