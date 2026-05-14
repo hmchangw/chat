@@ -59,3 +59,22 @@ describe('ThreadRightBar', () => {
     expect(screen.queryByTestId('t-staged')).not.toBeInTheDocument()
   })
 })
+
+describe('ThreadRightBar — Esc to close', () => {
+  beforeEach(() => closeThread.mockClear())
+
+  it('Esc on the panel closes the thread', () => {
+    const { container } = render(<ThreadRightBar />)
+    fireEvent.keyDown(container.querySelector('.thread-rightbar'), { key: 'Escape' })
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('Esc does NOT close when target is an inner input (let inputs handle their own Esc)', () => {
+    const { container } = render(<ThreadRightBar />)
+    const input = document.createElement('input')
+    container.querySelector('.thread-rightbar').appendChild(input)
+    closeThread.mockClear()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(closeThread).not.toHaveBeenCalled()
+  })
+})

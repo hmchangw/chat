@@ -17,8 +17,16 @@ export default function ThreadRightBar() {
     })
   }
 
+  const handleKeyDown = (e) => {
+    if (e.key !== 'Escape') return
+    // Let inputs / textareas keep their own Esc semantics (edit cancel, etc).
+    const tag = (e.target.tagName || '').toLowerCase()
+    if (tag === 'input' || tag === 'textarea') return
+    closeThread()
+  }
+
   return (
-    <aside className="thread-rightbar">
+    <aside className="thread-rightbar" onKeyDown={handleKeyDown}>
       <header className="thread-header">
         <span className="thread-header-title">Thread</span>
         <button
