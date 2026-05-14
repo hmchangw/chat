@@ -1,4 +1,6 @@
-export const MAX_CACHED = 200
+import { appendBounded, mergeById, MAX_CACHED } from './messageBuffer'
+
+export { MAX_CACHED }
 
 export const BUFFER_MODE = {
   LIVE: 'live',
@@ -54,15 +56,6 @@ function emptyRoomState() {
     pendingLiveMessages: [],
     focusMessageId: null,
   }
-}
-
-function appendBounded(messages, msg) {
-  if (messages.some((m) => m.id === msg.id)) return messages
-  const next = [...messages, msg]
-  if (next.length > MAX_CACHED) {
-    return next.slice(next.length - MAX_CACHED)
-  }
-  return next
 }
 
 export function roomEventsReducer(state, action) {
@@ -199,19 +192,14 @@ export function roomEventsReducer(state, action) {
     }
     case 'HISTORY_LOADED': {
       const prev = state.roomState[action.roomId] ?? emptyRoomState()
-      const existingIds = new Set(prev.messages.map((m) => m.id))
-      const merged = [
-        ...action.messages.filter((m) => !existingIds.has(m.id)),
-        ...prev.messages,
-      ]
-      const bounded = merged.length > MAX_CACHED ? merged.slice(merged.length - MAX_CACHED) : merged
+      const merged = mergeById(prev.messages, action.messages)
       return {
         ...state,
         roomState: {
           ...state.roomState,
           [action.roomId]: {
             ...prev,
-            messages: bounded,
+            messages: merged,
             hasLoadedHistory: true,
             historyError: null,
           },
