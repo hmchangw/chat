@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import MessageActionMenu from '../MessageActionMenu'
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
@@ -22,13 +23,33 @@ export default function MessageRow({
   message,
   room,
   context,
+  isOwn,
+  editing,
+  onEditSubmit,
+  onEditCancel,
   onThread,
   onReply,
+  onEdit,
+  onDelete,
   onJumpToMessage,
 }) {
+  const [draft, setDraft] = useState(messageContent(message))
+
+  useEffect(() => {
+    setDraft(messageContent(message))
+  }, [message, editing])
+
+  if (message.deleted) {
+    return (
+      <div className="message-row message-row-deleted" data-message-id={message.id} tabIndex={0}>
+        <div className="message-content message-content-deleted">[message deleted]</div>
+      </div>
+    )
+  }
+
   return (
     <div
-      className="message-row"
+      className={`message-row${editing ? ' message-row-editing' : ''}`}
       data-message-id={message.id}
       tabIndex={0}
     >
@@ -42,15 +63,41 @@ export default function MessageRow({
       <div className="message-header">
         <span className="message-sender">{senderName(message)}</span>
         <span className="message-time">{formatTime(message.createdAt)}</span>
+        {message.editedAt && <span className="message-edited"> (edited)</span>}
       </div>
-      <div className="message-content">{messageContent(message)}</div>
-      <MessageActions
-        message={message}
-        context={context}
-        onThread={onThread}
-        onReply={onReply}
-      />
-      <MessageActionMenu message={message} room={room} />
+      {editing ? (
+        <input
+          type="text"
+          className="message-edit-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              if (draft.trim()) onEditSubmit?.(message, draft.trim())
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              onEditCancel?.()
+            }
+          }}
+          autoFocus
+        />
+      ) : (
+        <div className="message-content">{messageContent(message)}</div>
+      )}
+      {!editing && (
+        <MessageActions
+          message={message}
+          context={context}
+          isOwn={isOwn}
+          onThread={onThread}
+          onReply={onReply}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      )}
+      {/* Read-receipt kebab — separate from MessageActions; rendered in non-edit state. */}
+      {!editing && <MessageActionMenu message={message} room={room} />}
     </div>
   )
 }

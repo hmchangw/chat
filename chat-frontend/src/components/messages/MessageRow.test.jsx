@@ -77,3 +77,80 @@ describe('MessageRow', () => {
     expect(onReply).toHaveBeenCalledWith(msg)
   })
 })
+
+describe('MessageRow — inline edit mode', () => {
+  it('renders an input prefilled with current content when editing=true', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, content: 'original' }}
+        room={room}
+        context="main"
+        editing
+        onEditSubmit={() => {}}
+        onEditCancel={() => {}}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByDisplayValue('original')).toBeInTheDocument()
+  })
+
+  it('Enter calls onEditSubmit with (message, trimmed-content); Esc calls onEditCancel', () => {
+    const onEditSubmit = vi.fn()
+    const onEditCancel = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, content: 'orig' }}
+        room={room}
+        context="main"
+        editing
+        onEditSubmit={onEditSubmit}
+        onEditCancel={onEditCancel}
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    const input = screen.getByDisplayValue('orig')
+    fireEvent.change(input, { target: { value: '  edited  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEditSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), 'edited')
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onEditCancel).toHaveBeenCalled()
+  })
+
+  it('renders "(edited)" marker when message.editedAt is set', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, editedAt: '2026-05-13T11:00:00Z' }}
+        room={room}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByText(/\(edited\)/i)).toBeInTheDocument()
+  })
+
+  it('omits "(edited)" marker when editedAt is unset', () => {
+    render(
+      <MessageRow
+        message={msg}
+        room={room}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.queryByText(/\(edited\)/i)).not.toBeInTheDocument()
+  })
+
+  it('renders "[message deleted]" placeholder when message.deleted is true', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, deleted: true }}
+        room={room}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByText(/message deleted/i)).toBeInTheDocument()
+    expect(screen.queryByText('hello world')).not.toBeInTheDocument()
+  })
+})
