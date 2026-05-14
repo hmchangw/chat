@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -113,78 +111,11 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
 
-	if len(hits) == 0 {
-		return &model.SearchMessagesResponse{
-			Messages: []model.SearchMessage{},
-			Total:    total,
-		}, nil
-	}
-
-	// --- Mongo enrichment ---
-	// Collect distinct userIDs and roomIDs from the ES hits.
-	userIDSet := make(map[string]struct{}, len(hits))
-	roomIDSet := make(map[string]struct{}, len(hits))
-	for i := range hits {
-		if hits[i].UserID != "" {
-			userIDSet[hits[i].UserID] = struct{}{}
-		}
-		if hits[i].RoomID != "" {
-			roomIDSet[hits[i].RoomID] = struct{}{}
-		}
-	}
-	userIDs := setToSlice(userIDSet)
-	roomIDs := setToSlice(roomIDSet)
-
-	// User and room batch lookups are independent — fire them in parallel
-	// to halve the enrichment-step latency. errgroup propagates the first
-	// error and cancels the sibling.
-	var (
-		users []model.User
-		rooms []model.Room
-	)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		var err error
-		users, err = h.mongo.FindUsersByIDs(gctx, userIDs)
-		return err
-	})
-	g.Go(func() error {
-		var err error
-		rooms, err = h.mongo.FindRoomsByIDs(gctx, roomIDs)
-		return err
-	})
-	if err := g.Wait(); err != nil {
-		slog.Error("message enrichment failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("search enrichment unavailable")
-	}
-
-	// Build lookup maps for O(1) enrichment per hit.
-	userMap := make(map[string]*model.User, len(users))
-	for i := range users {
-		userMap[users[i].ID] = &users[i]
-	}
-	roomMap := make(map[string]*model.Room, len(rooms))
-	for i := range rooms {
-		roomMap[rooms[i].ID] = &rooms[i]
-	}
-
-	// Zip hits with enrichment.
 	messages := make([]model.SearchMessage, 0, len(hits))
 	for i := range hits {
-		messages = append(messages, toSearchMessage(&hits[i], userMap[hits[i].UserID], roomMap[hits[i].RoomID]))
+		messages = append(messages, toSearchMessage(&hits[i]))
 	}
-
 	return &model.SearchMessagesResponse{Messages: messages, Total: total}, nil
-}
-
-// setToSlice converts a set (map[string]struct{}) to a string slice.
-// Used to deduplicate IDs before batch Mongo fetches.
-func setToSlice(m map[string]struct{}) []string {
-	s := make([]string, 0, len(m))
-	for k := range m {
-		s = append(s, k)
-	}
-	return s
 }
 
 func (h *handler) searchSubscriptions(c *natsrouter.Context, req model.SearchSubscriptionsRequest) (resp *model.SearchSubscriptionsResponse, err error) {

@@ -51,16 +51,6 @@ type MongoStore interface {
 		account string,
 		roomIDs []string,
 	) ([]model.SearchSubscription, error)
-
-	// FindUsersByIDs fetches user documents from the `users` collection
-	// whose `_id` is in `ids`. Missing IDs are silently absent from the
-	// result — callers must tolerate a shorter slice.
-	FindUsersByIDs(ctx context.Context, ids []string) ([]model.User, error)
-
-	// FindRoomsByIDs fetches room documents from the `rooms` collection
-	// whose `_id` is in `ids`. Missing IDs are silently absent from the
-	// result.
-	FindRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 }
 
 // SearchUsersClient is the outbound HTTP interface for user search.

@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestParseMessagesResponse_HappyPath(t *testing.T) {
@@ -60,7 +58,7 @@ func TestParseMessagesResponse_Malformed(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestToSearchMessage_WithEnrichment(t *testing.T) {
+func TestToSearchMessage_ProjectsESFields(t *testing.T) {
 	hit := messageSearchHit{
 		MessageID:   "m1",
 		RoomID:      "r1",
@@ -70,38 +68,18 @@ func TestToSearchMessage_WithEnrichment(t *testing.T) {
 		Content:     "hello",
 		CreatedAt:   time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 	}
-	user := &model.User{ID: "u1", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"}
-	room := &model.Room{ID: "r1", Name: "general"}
 
-	got := toSearchMessage(&hit, user, room)
+	got := toSearchMessage(&hit)
 
 	assert.Equal(t, "m1", got.MessageID)
 	assert.Equal(t, "r1", got.RoomID)
-	assert.Equal(t, "general", got.RoomName)
 	assert.Equal(t, "alice", got.UserAccount)
-	assert.Equal(t, "Alice Wang", got.UserEngName)
-	assert.Equal(t, "愛麗絲", got.UserChineseName)
 	assert.Equal(t, "hello", got.Content)
 	assert.Equal(t, "site-a", got.SiteID)
+	// UserID is intentionally NOT exposed in the wire type.
 }
 
-func TestToSearchMessage_NilEnrichment(t *testing.T) {
-	hit := messageSearchHit{
-		MessageID:   "m1",
-		RoomID:      "r1",
-		UserAccount: "alice",
-		Content:     "hello",
-	}
-	// nil user and room — enrichment fields remain zero-value, no panic
-	got := toSearchMessage(&hit, nil, nil)
-
-	assert.Equal(t, "m1", got.MessageID)
-	assert.Equal(t, "alice", got.UserAccount)
-	assert.Empty(t, got.RoomName, "nil room → RoomName stays empty")
-	assert.Empty(t, got.UserEngName, "nil user → UserEngName stays empty")
-}
-
-func TestToSearchMessage_ThreadParentCopied(t *testing.T) {
+func TestToSearchMessage_ThreadParentBothFieldsCopied(t *testing.T) {
 	tp := time.Date(2026, 4, 2, 11, 0, 0, 0, time.UTC)
 	hit := messageSearchHit{
 		MessageID:             "m1",
@@ -110,8 +88,10 @@ func TestToSearchMessage_ThreadParentCopied(t *testing.T) {
 		ThreadParentID:        "p1",
 		ThreadParentCreatedAt: &tp,
 	}
-	got := toSearchMessage(&hit, nil, nil)
+	got := toSearchMessage(&hit)
 	assert.Equal(t, "p1", got.ThreadParentMessageID)
+	require.NotNil(t, got.ThreadParentMessageCreatedAt)
+	assert.True(t, got.ThreadParentMessageCreatedAt.Equal(tp))
 }
 
 func TestParseSubscriptionRoomIDs_HappyPath(t *testing.T) {

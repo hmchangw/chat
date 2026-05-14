@@ -58,28 +58,21 @@ func parseMessagesResponse(raw json.RawMessage) ([]messageSearchHit, int64, erro
 	return out, rr.Hits.Total.Value, nil
 }
 
-// toSearchMessage zips an internal messageSearchHit with optional Mongo-
-// enriched user and room documents into the public model.SearchMessage
-// projection. Nil user/room pointers are safe — enriched fields are left
-// at their zero value.
-func toSearchMessage(hit *messageSearchHit, user *model.User, room *model.Room) model.SearchMessage {
-	msg := model.SearchMessage{
-		MessageID:             hit.MessageID,
-		RoomID:                hit.RoomID,
-		SiteID:                hit.SiteID,
-		UserAccount:           hit.UserAccount,
-		Content:               hit.Content,
-		CreatedAt:             hit.CreatedAt,
-		ThreadParentMessageID: hit.ThreadParentID,
+// toSearchMessage projects an internal messageSearchHit into the public
+// model.SearchMessage wire type. Display enrichment (user name, room name)
+// is the client's responsibility — resolve via user-service lookups (or
+// cache locally) using the UserAccount and RoomID returned here.
+func toSearchMessage(hit *messageSearchHit) model.SearchMessage {
+	return model.SearchMessage{
+		MessageID:                    hit.MessageID,
+		RoomID:                       hit.RoomID,
+		SiteID:                       hit.SiteID,
+		UserAccount:                  hit.UserAccount,
+		Content:                      hit.Content,
+		CreatedAt:                    hit.CreatedAt,
+		ThreadParentMessageID:        hit.ThreadParentID,
+		ThreadParentMessageCreatedAt: hit.ThreadParentCreatedAt,
 	}
-	if user != nil {
-		msg.UserEngName = user.EngName
-		msg.UserChineseName = user.ChineseName
-	}
-	if room != nil {
-		msg.RoomName = room.Name
-	}
-	return msg
 }
 
 // parseSubscriptionRoomIDs extracts the ordered list of room IDs from a

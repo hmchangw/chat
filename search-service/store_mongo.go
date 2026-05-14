@@ -14,16 +14,12 @@ import (
 type mongoStore struct {
 	apps          *mongo.Collection
 	subscriptions *mongo.Collection
-	users         *mongo.Collection
-	rooms         *mongo.Collection
 }
 
 func newMongoStore(db *mongo.Database) *mongoStore {
 	return &mongoStore{
 		apps:          db.Collection("apps"),
 		subscriptions: db.Collection("subscriptions"),
-		users:         db.Collection("users"),
-		rooms:         db.Collection("rooms"),
 	}
 }
 
@@ -94,49 +90,4 @@ func (s *mongoStore) HydrateSubscriptions(
 		}
 	}
 	return ordered, nil
-}
-
-// FindUsersByIDs returns the user documents whose `_id` is in `ids`.
-// Order is NOT preserved — Mongo's `$in` returns documents in natural
-// collection order, not in the order of the input IDs. Callers that
-// need order-preserving lookup should build a `map[string]model.User`
-// from the result (as `searchMessages` does for O(1) per-hit enrichment).
-// Contrast with `HydrateSubscriptions`, which DOES reorder its results
-// to preserve ES relevance ranking.
-func (s *mongoStore) FindUsersByIDs(ctx context.Context, ids []string) ([]model.User, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	filter := bson.M{"_id": bson.M{"$in": ids}}
-	cur, err := s.users.Find(ctx, filter)
-	if err != nil {
-		return nil, fmt.Errorf("find users by ids: %w", err)
-	}
-	defer cur.Close(ctx)
-
-	results := make([]model.User, 0)
-	if err := cur.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode users: %w", err)
-	}
-	return results, nil
-}
-
-// FindRoomsByIDs returns the room documents whose `_id` is in `ids`.
-// Order is NOT preserved — see `FindUsersByIDs` for rationale.
-func (s *mongoStore) FindRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	filter := bson.M{"_id": bson.M{"$in": ids}}
-	cur, err := s.rooms.Find(ctx, filter)
-	if err != nil {
-		return nil, fmt.Errorf("find rooms by ids: %w", err)
-	}
-	defer cur.Close(ctx)
-
-	results := make([]model.Room, 0)
-	if err := cur.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode rooms: %w", err)
-	}
-	return results, nil
 }

@@ -232,14 +232,6 @@ type fakeMongo struct {
 	hydrateSubscriptionsCalls   []hydrateSubsCall
 	hydrateSubscriptionsResults []model.SearchSubscription
 	hydrateSubscriptionsErr     error
-
-	findUsersByIDsCalls   [][]string
-	findUsersByIDsResults []model.User
-	findUsersByIDsErr     error
-
-	findRoomsByIDsCalls   [][]string
-	findRoomsByIDsResults []model.Room
-	findRoomsByIDsErr     error
 }
 
 type searchAppsCall struct {
@@ -282,22 +274,6 @@ func (f *fakeMongo) HydrateSubscriptions(
 		return nil, f.hydrateSubscriptionsErr
 	}
 	return f.hydrateSubscriptionsResults, nil
-}
-
-func (f *fakeMongo) FindUsersByIDs(_ context.Context, ids []string) ([]model.User, error) {
-	f.findUsersByIDsCalls = append(f.findUsersByIDsCalls, ids)
-	if f.findUsersByIDsErr != nil {
-		return nil, f.findUsersByIDsErr
-	}
-	return f.findUsersByIDsResults, nil
-}
-
-func (f *fakeMongo) FindRoomsByIDs(_ context.Context, ids []string) ([]model.Room, error) {
-	f.findRoomsByIDsCalls = append(f.findRoomsByIDsCalls, ids)
-	if f.findRoomsByIDsErr != nil {
-		return nil, f.findRoomsByIDsErr
-	}
-	return f.findRoomsByIDsResults, nil
 }
 
 func TestHandler_SearchSubscriptions_HappyPath(t *testing.T) {
@@ -693,10 +669,10 @@ func TestHandler_SearchUsers_AccountExtractedForLogging(t *testing.T) {
 	assert.Len(t, *got, 1)
 }
 
-func TestHandler_SearchMessages_MongoEnrichmentHappyPath(t *testing.T) {
-	// ES returns a hit with userId=u1, roomId=r1.
-	// Mongo hydrate returns the matching user and room.
-	// Response SearchMessage should carry enriched fields.
+func TestHandler_SearchMessages_HitProjection(t *testing.T) {
+	// ES returns a hit; verify it projects into SearchMessage with the
+	// ES-sourced fields populated. No Mongo enrichment — display fields
+	// (user/room name) are resolved by the client via user-service lookups.
 	store := &fakeStore{
 		searchBody: json.RawMessage(`{"hits":{"total":{"value":1},"hits":[{"_source":{` +
 			`"messageId":"m1","roomId":"r1","siteId":"site-a","userId":"u1",` +
@@ -705,11 +681,7 @@ func TestHandler_SearchMessages_MongoEnrichmentHappyPath(t *testing.T) {
 	cache := newFakeCache()
 	cache.store["alice"] = map[string]int64{}
 
-	mongo := &fakeMongo{
-		findUsersByIDsResults: []model.User{{ID: "u1", Account: "alice", EngName: "Alice Wang"}},
-		findRoomsByIDsResults: []model.Room{{ID: "r1", Name: "general"}},
-	}
-	h := newTestHandler(store, mongo, nil, cache)
+	h := newTestHandler(store, nil, nil, cache)
 
 	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
 	require.NoError(t, err)
@@ -719,69 +691,22 @@ func TestHandler_SearchMessages_MongoEnrichmentHappyPath(t *testing.T) {
 	msg := resp.Messages[0]
 	assert.Equal(t, "m1", msg.MessageID)
 	assert.Equal(t, "r1", msg.RoomID)
-	assert.Equal(t, "general", msg.RoomName)
+	assert.Equal(t, "site-a", msg.SiteID)
 	assert.Equal(t, "alice", msg.UserAccount)
-	assert.Equal(t, "Alice Wang", msg.UserEngName)
-
-	require.Len(t, mongo.findUsersByIDsCalls, 1)
-	assert.Contains(t, mongo.findUsersByIDsCalls[0], "u1")
-	require.Len(t, mongo.findRoomsByIDsCalls, 1)
-	assert.Contains(t, mongo.findRoomsByIDsCalls[0], "r1")
+	assert.Equal(t, "hello", msg.Content)
 }
 
-func TestHandler_SearchMessages_MongoEnrichmentUserError(t *testing.T) {
-	store := &fakeStore{
-		searchBody: json.RawMessage(`{"hits":{"total":{"value":1},"hits":[{"_source":{` +
-			`"messageId":"m1","roomId":"r1","siteId":"site-a","userId":"u1",` +
-			`"userAccount":"alice","content":"hello","createdAt":"2026-04-01T12:00:00Z"}}]}}`),
-	}
-	cache := newFakeCache()
-	cache.store["alice"] = map[string]int64{}
-
-	mongo := &fakeMongo{findUsersByIDsErr: errors.New("mongo down")}
-	h := newTestHandler(store, mongo, nil, cache)
-
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
-	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
-	assert.NotContains(t, rerr.Message, "mongo down", "raw error must not leak to client")
-}
-
-func TestHandler_SearchMessages_MongoEnrichmentRoomError(t *testing.T) {
-	store := &fakeStore{
-		searchBody: json.RawMessage(`{"hits":{"total":{"value":1},"hits":[{"_source":{` +
-			`"messageId":"m1","roomId":"r1","siteId":"site-a","userId":"u1",` +
-			`"userAccount":"alice","content":"hello","createdAt":"2026-04-01T12:00:00Z"}}]}}`),
-	}
-	cache := newFakeCache()
-	cache.store["alice"] = map[string]int64{}
-
-	mongo := &fakeMongo{findRoomsByIDsErr: errors.New("rooms collection down")}
-	h := newTestHandler(store, mongo, nil, cache)
-
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
-	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
-}
-
-func TestHandler_SearchMessages_NoHitsSkipsMongo(t *testing.T) {
-	// When ES returns zero hits, FindUsersByIDs and FindRoomsByIDs
-	// must NOT be called (no IDs to hydrate).
+func TestHandler_SearchMessages_NoHitsReturnsEmpty(t *testing.T) {
 	store := &fakeStore{}
 	cache := newFakeCache()
 	cache.store["alice"] = map[string]int64{}
-	mongo := &fakeMongo{}
-	h := newTestHandler(store, mongo, nil, cache)
+	h := newTestHandler(store, nil, nil, cache)
 
 	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "nope"})
 	require.NoError(t, err)
+	assert.NotNil(t, resp.Messages, "empty slice, not nil — to marshal as [] not null")
 	assert.Empty(t, resp.Messages)
-	assert.Len(t, mongo.findUsersByIDsCalls, 0, "no hits → no Mongo calls")
-	assert.Len(t, mongo.findRoomsByIDsCalls, 0)
+	assert.EqualValues(t, 0, resp.Total)
 }
 
 func TestHandler_SearchMessages_WithRoomIDsBuildsScopedQuery(t *testing.T) {
@@ -814,27 +739,4 @@ func TestHandler_SearchMessages_WithRoomIDsBuildsScopedQuery(t *testing.T) {
 	shoulds := roomAccess["should"].([]any)
 	// rx is restricted → 2 clauses (A+B); r1 is unrestricted + terms-lookup AND → 1 clause
 	assert.Greater(t, len(shoulds), 1, "scoped query must have more than 1 should clause")
-}
-
-func TestHandler_SearchMessages_DeduplicatesUserAndRoomIDs(t *testing.T) {
-	// Two hits from the same room/user — Mongo must be called with
-	// deduplicated IDs, not duplicates.
-	store := &fakeStore{
-		searchBody: json.RawMessage(`{"hits":{"total":{"value":2},"hits":[` +
-			`{"_source":{"messageId":"m1","roomId":"r1","siteId":"site-a","userId":"u1","userAccount":"alice","content":"hello","createdAt":"2026-04-01T12:00:00Z"}},` +
-			`{"_source":{"messageId":"m2","roomId":"r1","siteId":"site-a","userId":"u1","userAccount":"alice","content":"world","createdAt":"2026-04-01T13:00:00Z"}}` +
-			`]}}`),
-	}
-	cache := newFakeCache()
-	cache.store["alice"] = map[string]int64{}
-	mongo := &fakeMongo{}
-	h := newTestHandler(store, mongo, nil, cache)
-
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
-	require.NoError(t, err)
-
-	require.Len(t, mongo.findUsersByIDsCalls, 1)
-	assert.Len(t, mongo.findUsersByIDsCalls[0], 1, "two hits for same userId must deduplicate to one ID")
-	require.Len(t, mongo.findRoomsByIDsCalls, 1)
-	assert.Len(t, mongo.findRoomsByIDsCalls[0], 1, "two hits for same roomId must deduplicate to one ID")
 }

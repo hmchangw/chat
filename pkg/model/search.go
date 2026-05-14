@@ -31,16 +31,14 @@ type SearchMessagesResponse struct {
 // Populate all fields present in the legacy HTTP handler's response
 // struct — add or extend this list if the legacy shape has more fields.
 type SearchMessage struct {
-	MessageID             string    `json:"messageId"`
-	RoomID                string    `json:"roomId"`
-	RoomName              string    `json:"roomName,omitempty"`
-	SiteID                string    `json:"siteId"`
-	UserAccount           string    `json:"userAccount"`
-	UserEngName           string    `json:"userEngName,omitempty"`
-	UserChineseName       string    `json:"userChineseName,omitempty"`
-	Content               string    `json:"content"`
-	CreatedAt             time.Time `json:"createdAt"`
-	ThreadParentMessageID string    `json:"threadParentMessageId,omitempty"`
+	MessageID                    string     `json:"messageId"`
+	RoomID                       string     `json:"roomId"`
+	SiteID                       string     `json:"siteId"`
+	UserAccount                  string     `json:"userAccount"`
+	Content                      string     `json:"content"`
+	CreatedAt                    time.Time  `json:"createdAt"`
+	ThreadParentMessageID        string     `json:"threadParentMessageId,omitempty"`
+	ThreadParentMessageCreatedAt *time.Time `json:"threadParentMessageCreatedAt,omitempty"`
 }
 
 // SearchSubscriptionsRequest is the NATS payload for

@@ -152,36 +152,6 @@ func (m *MockMongoStore) EXPECT() *MockMongoStoreMockRecorder {
 	return m.recorder
 }
 
-// FindRoomsByIDs mocks base method.
-func (m *MockMongoStore) FindRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindRoomsByIDs", ctx, ids)
-	ret0, _ := ret[0].([]model.Room)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindRoomsByIDs indicates an expected call of FindRoomsByIDs.
-func (mr *MockMongoStoreMockRecorder) FindRoomsByIDs(ctx, ids any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindRoomsByIDs", reflect.TypeOf((*MockMongoStore)(nil).FindRoomsByIDs), ctx, ids)
-}
-
-// FindUsersByIDs mocks base method.
-func (m *MockMongoStore) FindUsersByIDs(ctx context.Context, ids []string) ([]model.User, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindUsersByIDs", ctx, ids)
-	ret0, _ := ret[0].([]model.User)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindUsersByIDs indicates an expected call of FindUsersByIDs.
-func (mr *MockMongoStoreMockRecorder) FindUsersByIDs(ctx, ids any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindUsersByIDs", reflect.TypeOf((*MockMongoStore)(nil).FindUsersByIDs), ctx, ids)
-}
-
 // HydrateSubscriptions mocks base method.
 func (m *MockMongoStore) HydrateSubscriptions(ctx context.Context, account string, roomIDs []string) ([]model.SearchSubscription, error) {
 	m.ctrl.T.Helper()

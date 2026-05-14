@@ -123,12 +123,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	userRoomIndex := testUserRoomIndex
 	store := newESStore(localEngine, userRoomIndex)
 	cache := newValkeyCache(valkeyClient)
-	// Wire a real Mongo for user+room enrichment. CCS tests don't seed users
-	// or rooms, so enrichment returns empty results — SearchMessage fields
-	// will have zero-value enrichment fields, which is fine for the CCS tests.
-	mongoDB := testutil.MongoDB(t, "search_service_test")
-	mStore := newMongoStore(mongoDB)
-	handler := newHandler(store, mStore, nil, cache, handlerConfig{
+	handler := newHandler(store, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
@@ -1159,19 +1154,16 @@ func TestIntegration_SearchSubscriptions_RoomTypeAppReturnsBadRequest(t *testing
 
 // --- search.messages v2 integration -----------------------------------------
 
-// messagesV2Fixture stubs ES with a fake HTTP server (httptest) and wires
-// a real Mongo for user + room enrichment. The CCS fixture is not needed
-// here — the messages path does not exercise cross-cluster search.
+// messagesV2Fixture stubs ES with a fake HTTP server (httptest). The
+// messages path is pure ES — no Mongo round-trip — so no Mongo fixture
+// is wired.
 type messagesV2Fixture struct {
 	clientNATS *nats.Conn
-	mongoDB    *mongo.Database
 }
 
 func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	t.Helper()
 	ctx := context.Background()
-
-	mongoDB := testutil.MongoDB(t, "search_service_test")
 
 	// Stub ES: always return a canned response containing one hit.
 	esStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1204,13 +1196,13 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { clientNATS.Close() })
 
-	// Wire search-service with the stub ES engine + real Mongo.
+	// Wire search-service with the stub ES engine. No Mongo store needed
+	// for the messages path.
 	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esStub.URL})
 	require.NoError(t, err)
 	esStore := newESStore(engine, testUserRoomIndex)
-	mStore := newMongoStore(mongoDB)
 
-	h := newHandler(esStore, mStore, nil, fakeValkey, handlerConfig{
+	h := newHandler(esStore, nil, nil, fakeValkey, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
@@ -1227,20 +1219,11 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	require.NoError(t, serverNATS.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 
-	return &messagesV2Fixture{clientNATS: clientNATS, mongoDB: mongoDB}
+	return &messagesV2Fixture{clientNATS: clientNATS}
 }
 
-func TestIntegration_SearchMessages_V2_EnrichedResponse(t *testing.T) {
+func TestIntegration_SearchMessages_V2_HitProjection(t *testing.T) {
 	f := setupMessagesV2Fixture(t)
-	ctx := context.Background()
-
-	// Seed users and rooms collections.
-	_, err := f.mongoDB.Collection("users").InsertOne(ctx,
-		map[string]any{"_id": "u1", "account": "alice", "engName": "Alice Wang", "chineseName": "愛麗絲王"})
-	require.NoError(t, err)
-	_, err = f.mongoDB.Collection("rooms").InsertOne(ctx,
-		map[string]any{"_id": "r1", "name": "general", "type": "channel"})
-	require.NoError(t, err)
 
 	reqBytes, err := json.Marshal(model.SearchMessagesRequest{SearchText: "hello"})
 	require.NoError(t, err)
@@ -1251,16 +1234,15 @@ func TestIntegration_SearchMessages_V2_EnrichedResponse(t *testing.T) {
 	var resp model.SearchMessagesResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
-	require.Len(t, resp.Messages, 1, "expected one enriched message")
+	require.Len(t, resp.Messages, 1)
 	assert.EqualValues(t, 1, resp.Total)
 
 	got := resp.Messages[0]
 	assert.Equal(t, "m1", got.MessageID)
 	assert.Equal(t, "r1", got.RoomID)
-	assert.Equal(t, "general", got.RoomName, "room name must be hydrated from Mongo")
+	assert.Equal(t, "site-a", got.SiteID)
 	assert.Equal(t, "alice", got.UserAccount)
-	assert.Equal(t, "Alice Wang", got.UserEngName, "user eng name must be hydrated from Mongo")
-	assert.Equal(t, "愛麗絲王", got.UserChineseName)
+	assert.Equal(t, "hello", got.Content)
 }
 
 func TestIntegration_SearchMessages_V2_EmptySearchTextReturnsBadRequest(t *testing.T) {

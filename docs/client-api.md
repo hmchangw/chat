@@ -1506,14 +1506,12 @@ See [Error envelope](#5-error-envelope-reference).
     {
       "messageId": "m1",
       "roomId": "r1",
-      "roomName": "general",
       "siteId": "site-a",
       "userAccount": "alice",
-      "userEngName": "Alice Wang",
-      "userChineseName": "愛麗絲王",
       "content": "hello world",
       "createdAt": "2026-04-01T12:00:00Z",
-      "threadParentMessageId": "p0"
+      "threadParentMessageId": "p0",
+      "threadParentMessageCreatedAt": "2026-04-01T11:58:00Z"
     }
   ],
   "total": 42
@@ -1525,20 +1523,20 @@ See [Error envelope](#5-error-envelope-reference).
 | `messages` | SearchMessage[] | Per-hit projection. Always an array (empty `[]` when no results). |
 | `total` | integer | Total matching hits (may exceed `messages.length` when paginating). |
 
-**`SearchMessage` fields:**
+**`SearchMessage` fields** (all sourced directly from the ES message index — no Mongo round-trip):
 
 | Field | Type | Omitted when |
 |---|---|---|
 | `messageId` | string | — |
 | `roomId` | string | — |
-| `roomName` | string | empty (room not found in Mongo) |
 | `siteId` | string | — |
 | `userAccount` | string | — |
-| `userEngName` | string | empty (user not found in Mongo) |
-| `userChineseName` | string | empty |
 | `content` | string | — |
 | `createdAt` | RFC3339 timestamp | — |
 | `threadParentMessageId` | string | omitted when not a thread reply |
+| `threadParentMessageCreatedAt` | RFC3339 timestamp (nullable) | omitted when not a thread reply |
+
+Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via the `user-service` lookups (`user.{siteID}.profile.getByName`) or their own subscription cache.
 
 ##### Error response
 
@@ -1547,7 +1545,7 @@ See [Error envelope](#5-error-envelope-reference).
 | Code | Reason |
 |---|---|
 | `bad_request` | `searchText` is empty; or `size`/`offset` is negative. |
-| `internal` | ES backend failure, Mongo enrichment failure, or cache failure with no ES fallback. Raw errors are never leaked to the client. |
+| `internal` | ES backend failure or cache failure with no ES fallback. Raw errors are never leaked to the client. |
 
 **Access control for `roomIds`:**
 - Rooms in neither the user's subscription set nor the restricted-rooms map are silently excluded.

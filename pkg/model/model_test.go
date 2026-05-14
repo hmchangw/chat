@@ -1535,24 +1535,21 @@ func TestSearchMessageJSON(t *testing.T) {
 		msg := model.SearchMessage{
 			MessageID:             "m1",
 			RoomID:                "r1",
-			RoomName:              "general",
+			SiteID:                "site-a",
 			Content:               "hello world",
 			UserAccount:           "alice",
-			UserEngName:           "Alice Wang",
 			CreatedAt:             time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 			ThreadParentMessageID: "p1",
 		}
 		roundTrip(t, &msg, &model.SearchMessage{})
 	})
 
-	t.Run("optional fields omitted when zero", func(t *testing.T) {
+	t.Run("optional thread parent omitted when zero", func(t *testing.T) {
 		msg := model.SearchMessage{MessageID: "m1", RoomID: "r1", Content: "hi"}
 		data, err := json.Marshal(&msg)
 		require.NoError(t, err)
 		assert.NotContains(t, string(data), `"threadParentMessageId":""`,
 			"empty thread parent must be omitted")
-		assert.NotContains(t, string(data), `"roomName":""`,
-			"empty roomName must be omitted")
 	})
 }
 
