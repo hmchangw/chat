@@ -1390,7 +1390,11 @@ git commit -m "feat(chat-frontend): add MessageActions hover menu (Thread + Repl
 
 ### Task 3.3: Create `MessageRow.jsx`
 
-`MessageRow` renders one message: an optional in-bubble `QuotedBlock` above the content, the sender + time + content, and the `MessageActions` menu. Today's `MessageArea` does this inline (lines 89–95 — sender, time, content); we lift it out. The row is focusable (`tabindex="0"`) so keyboard users can reveal the action menu via `:focus-within`.
+`MessageRow` renders one message: an optional in-bubble `QuotedBlock` above the content, the sender + time + content, the `MessageActions` hover menu (Thread + Reply), and the **existing `MessageActionMenu` read-receipt kebab** (`chat-frontend/src/components/MessageActionMenu.jsx`). Today's `MessageArea.jsx:96-101` does the sender/time/content/kebab inline; we lift it into `MessageRow` so both the main feed and the future thread panel share the same row implementation.
+
+`MessageActions` (Thread + Reply / Edit + Delete from Ch.4) is **separate** from `MessageActionMenu` (read-receipts kebab). Both render side-by-side on every row. They serve different purposes and have different visibility rules: `MessageActions` is hover-revealed and varies by message context (own/other, main/thread); `MessageActionMenu` is a persistent kebab that only appears on the user's OWN messages and opens a popover with read-receipt info.
+
+Because `MessageActionMenu` requires a `room` prop (it derives `siteId` and constructs the read-receipt subject), `MessageRow` accepts a new `room` prop and forwards it. `MessageList` (Task 3.4) plumbs `room` through from its container. In the thread panel, `room` resolves to the parent message's room (looked up via `activeParent.roomId` against `RoomEventsContext` summaries).
 
 Reply-count badge ("💬 N replies") and the click-to-jump on `QuotedBlock` come in later chapters — this task just renders the static shape.
 
@@ -1407,16 +1411,26 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import MessageRow from './MessageRow'
 
+// Mock the existing read-receipt kebab so MessageRow tests don't depend on
+// NatsContext (the kebab calls useNats internally). We still want to assert
+// it's mounted and receives the right props.
+vi.mock('../MessageActionMenu', () => ({
+  default: ({ message, room }) => (
+    <div data-testid="kebab" data-message-id={message.id} data-room-id={room?.id ?? ''} />
+  ),
+}))
+
 const msg = {
   id: 'm1',
   content: 'hello world',
   createdAt: '2026-05-13T10:42:00Z',
   sender: { engName: 'Alice', account: 'alice' },
 }
+const room = { id: 'r1', siteId: 's1', type: 'channel', userCount: 5 }
 
 describe('MessageRow', () => {
   it('renders sender, time, and content', () => {
-    render(<MessageRow message={msg} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    render(<MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
     expect(screen.getByText('Alice')).toBeInTheDocument()
     expect(screen.getByText('hello world')).toBeInTheDocument()
     expect(screen.getByText(/\d\d:\d\d/)).toBeInTheDocument()
@@ -1424,7 +1438,7 @@ describe('MessageRow', () => {
 
   it('renders the row with tabindex 0 and data-message-id', () => {
     const { container } = render(
-      <MessageRow message={msg} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+      <MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
     )
     const row = container.querySelector('.message-row')
     expect(row).not.toBeNull()
@@ -1432,12 +1446,19 @@ describe('MessageRow', () => {
     expect(row.getAttribute('data-message-id')).toBe('m1')
   })
 
+  it('mounts the read-receipt kebab (MessageActionMenu) and forwards message + room', () => {
+    render(<MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    const kebab = screen.getByTestId('kebab')
+    expect(kebab.getAttribute('data-message-id')).toBe('m1')
+    expect(kebab.getAttribute('data-room-id')).toBe('r1')
+  })
+
   it('renders an in-bubble QuotedBlock when message.quotedParentMessage is set', () => {
     const quoted = {
       ...msg,
       quotedParentMessage: { id: 'orig', senderName: 'bob', content: 'the original' },
     }
-    render(<MessageRow message={quoted} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    render(<MessageRow message={quoted} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
     expect(screen.getByText('bob')).toBeInTheDocument()
     expect(screen.getByText('the original')).toBeInTheDocument()
   })
@@ -1449,7 +1470,7 @@ describe('MessageRow', () => {
       quotedParentMessage: { id: 'orig', senderName: 'bob', content: 'the original' },
     }
     const { container } = render(
-      <MessageRow message={quoted} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={onJumpToMessage} />
+      <MessageRow message={quoted} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={onJumpToMessage} />
     )
     fireEvent.click(container.querySelector('.quoted-block-bubble'))
     expect(onJumpToMessage).toHaveBeenCalledWith('orig')
@@ -1458,7 +1479,7 @@ describe('MessageRow', () => {
   it('forwards Thread/Reply clicks via MessageActions', () => {
     const onThread = vi.fn()
     const onReply = vi.fn()
-    render(<MessageRow message={msg} context="main" onThread={onThread} onReply={onReply} onJumpToMessage={() => {}} />)
+    render(<MessageRow message={msg} room={room} context="main" onThread={onThread} onReply={onReply} onJumpToMessage={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /reply in thread/i }))
     expect(onThread).toHaveBeenCalledWith(msg)
     fireEvent.click(screen.getByRole('button', { name: /quote/i }))
@@ -1477,6 +1498,7 @@ Expected: FAIL — `Cannot find module './MessageRow'`.
 Create `chat-frontend/src/components/messages/MessageRow.jsx`:
 
 ```jsx
+import MessageActionMenu from '../MessageActionMenu'
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
 
@@ -1498,6 +1520,7 @@ function messageContent(msg) {
 
 export default function MessageRow({
   message,
+  room,
   context,
   onThread,
   onReply,
@@ -1527,6 +1550,7 @@ export default function MessageRow({
         onThread={onThread}
         onReply={onReply}
       />
+      <MessageActionMenu message={message} room={room} />
     </div>
   )
 }
@@ -1535,7 +1559,7 @@ export default function MessageRow({
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd chat-frontend && npx vitest run src/components/messages/MessageRow.test.jsx`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1548,6 +1572,7 @@ git commit -m "feat(chat-frontend): add MessageRow with embedded QuotedBlock + M
 
 `MessageList` is the scrolling list. It accepts:
 - `messages` — array
+- `room` — the room object (forwarded to each row so the read-receipt kebab can construct its NATS subject)
 - `context` — `'main' | 'thread'` (passed through to each row's `MessageActions`)
 - `focusMessageId` — when set, scroll the matching row into view + add `flash-jump` class for 2 s
 - `hasLoadedHistory`, `historyLoading`, `historyError` — drive the loading / error rendering
@@ -1632,6 +1657,7 @@ import MessageRow from './MessageRow'
 
 export default function MessageList({
   messages,
+  room,
   hasLoadedHistory,
   historyLoading,
   historyError,
@@ -1673,6 +1699,7 @@ export default function MessageList({
         <MessageRow
           key={msg.id}
           message={msg}
+          room={room}
           context={context}
           onThread={onThread}
           onReply={onReply}
