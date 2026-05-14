@@ -197,3 +197,47 @@ describe('MessageRow — failed-row UI', () => {
     expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
   })
 })
+
+describe('MessageRow — reply-count badge', () => {
+  it('renders the badge when tcount > 0; clicking calls onThread', () => {
+    const onThread = vi.fn()
+    render(
+      <MessageRow
+        message={{ ...msg, tcount: 3 }}
+        room={room}
+        context="main"
+        onThread={onThread}
+        onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    const btn = screen.getByRole('button', { name: /3 replies/i })
+    fireEvent.click(btn)
+    expect(onThread).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }))
+  })
+
+  it('singular form for tcount === 1', () => {
+    render(
+      <MessageRow
+        message={{ ...msg, tcount: 1 }}
+        room={room}
+        context="main"
+        onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}}
+      />
+    )
+    expect(screen.getByRole('button', { name: /1 reply/i })).toBeInTheDocument()
+  })
+
+  it('no badge when tcount is 0 or missing', () => {
+    render(
+      <MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /replies?/i })).not.toBeInTheDocument()
+  })
+
+  it('no badge inside the thread panel even when tcount > 0', () => {
+    render(
+      <MessageRow message={{ ...msg, tcount: 5 }} room={room} context="thread-parent" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />
+    )
+    expect(screen.queryByRole('button', { name: /replies/i })).not.toBeInTheDocument()
+  })
+})

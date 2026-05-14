@@ -87,6 +87,15 @@ export default function MessageRow({
       ) : (
         <div className="message-content">{messageContent(message)}</div>
       )}
+      {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
+        <button
+          type="button"
+          className="message-reply-badge"
+          onClick={() => onThread?.(message)}
+        >
+          💬 {message.tcount} {message.tcount === 1 ? 'reply' : 'replies'}
+        </button>
+      )}
       {!editing && (
         <MessageActions
           message={message}
