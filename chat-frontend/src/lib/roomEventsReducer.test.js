@@ -474,3 +474,71 @@ describe('roomEventsReducer: buffer mode (jump-to-message)', () => {
     expect(next.roomState.missing?.bufferMode ?? BUFFER_MODE.LIVE).toBe(BUFFER_MODE.LIVE)
   })
 })
+
+describe('MESSAGE_EDITED_LOCAL', () => {
+  it('replaces content + editedAt on the matching message in roomState[roomId].messages', () => {
+    const seed = {
+      ...initialState,
+      roomState: {
+        r1: {
+          messages: [{ id: 'm1', content: 'old' }, { id: 'm2', content: 'other' }],
+          hasLoadedHistory: true,
+          historyError: null,
+          unreadCount: 0,
+          hasMention: false,
+          mentionAll: false,
+          lastMsgAt: null,
+          lastMsgId: null,
+          bufferMode: 'live',
+          pendingLiveMessages: [],
+          focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED_LOCAL',
+      roomId: 'r1',
+      messageId: 'm1',
+      content: 'new',
+      editedAt: '2026-05-13T11:00:00Z',
+    })
+    expect(out.roomState.r1.messages[0]).toEqual({
+      id: 'm1', content: 'new', editedAt: '2026-05-13T11:00:00Z',
+    })
+    expect(out.roomState.r1.messages[1]).toEqual({ id: 'm2', content: 'other' })
+  })
+
+  it('is a no-op when the message id is not buffered', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'm1', content: 'old' }] } },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED_LOCAL', roomId: 'r1', messageId: 'unknown', content: 'x', editedAt: 't',
+    })
+    expect(out).toBe(seed)
+  })
+})
+
+describe('MESSAGE_DELETED_LOCAL', () => {
+  it('flags the matching message as deleted', () => {
+    const seed = {
+      ...initialState,
+      roomState: { r1: { messages: [{ id: 'm1', content: 'bye' }] } },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'm1',
+    })
+    expect(out.roomState.r1.messages[0]).toEqual({
+      id: 'm1', content: 'bye', deleted: true,
+    })
+  })
+
+  it('is a no-op when the message id is not buffered', () => {
+    const seed = { ...initialState, roomState: { r1: { messages: [] } } }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED_LOCAL', roomId: 'r1', messageId: 'm1',
+    })
+    expect(out).toBe(seed)
+  })
+})

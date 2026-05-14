@@ -291,6 +291,30 @@ export function roomEventsReducer(state, action) {
     case 'ROOMS_FAILED': {
       return { ...state, roomsError: action.error }
     }
+    case 'MESSAGE_EDITED_LOCAL': {
+      const prev = state.roomState[action.roomId]
+      if (!prev) return state
+      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updatedMsg = { ...prev.messages[idx], content: action.content, editedAt: action.editedAt }
+      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      return {
+        ...state,
+        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+      }
+    }
+    case 'MESSAGE_DELETED_LOCAL': {
+      const prev = state.roomState[action.roomId]
+      if (!prev) return state
+      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updatedMsg = { ...prev.messages[idx], deleted: true }
+      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      return {
+        ...state,
+        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+      }
+    }
     default:
       return state
   }
