@@ -32,7 +32,7 @@ type config struct {
 	CassandraUsername  string                  `env:"CASSANDRA_USERNAME"   envDefault:""`
 	CassandraPassword  string                  `env:"CASSANDRA_PASSWORD"   envDefault:""`
 	MaxWorkers         int                     `env:"MAX_WORKERS"          envDefault:"100"`
-	MessageBucketHours int                     `env:"MESSAGE_BUCKET_HOURS" envDefault:"24"`
+	MessageBucketHours int                     `env:"MESSAGE_BUCKET_HOURS" envDefault:"72"`
 	MongoURI           string                  `env:"MONGO_URI,required"`
 	MongoDB            string                  `env:"MONGO_DB"             envDefault:"chat"`
 	MongoUsername      string                  `env:"MONGO_USERNAME"       envDefault:""`
