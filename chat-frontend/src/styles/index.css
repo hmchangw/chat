@@ -447,13 +447,13 @@ body {
 }
 
 /* Chat Layout */
-.chat-layout {
+.app-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
 
-.chat-header {
+.app-header {
   position: relative;
   display: flex;
   align-items: center;
@@ -469,13 +469,13 @@ body {
   font-size: 16px;
 }
 
-.chat-header-user {
+.app-header-user {
   font-size: 13px;
   color: var(--text-muted);
   margin-left: auto;
 }
 
-.chat-header-logout {
+.app-header-logout {
   padding: 0.3rem 0.75rem;
   background: transparent;
   border: 1px solid var(--border-strong);
@@ -485,25 +485,25 @@ body {
   cursor: pointer;
 }
 
-.chat-header-logout:hover {
+.app-header-logout:hover {
   background: var(--bg-selected);
   color: var(--text-primary);
 }
 
-.chat-body {
+.app-row {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-.chat-sidebar {
+.app-sidebar {
   display: flex;
   flex-direction: column;
   width: 240px;
   flex-shrink: 0;
 }
 
-.chat-sidebar .room-list {
+.app-sidebar .room-list {
   flex: 1;
   overflow-y: auto;
 }
@@ -526,23 +526,46 @@ body {
   color: var(--text-secondary);
 }
 
-.chat-main {
+.chat-page {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
 }
 
-.chat-main .message-area {
+.chat-page .message-area {
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-.chat-main .message-list {
+.chat-page .message-list {
   flex: 1;
   overflow-y: auto;
+}
+
+.chat-room-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md, 12px);
+  padding: var(--space-sm, 8px) var(--space-md, 12px);
+  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
+  background: var(--bg-surface);
+}
+.chat-room-header .chat-room-name {
+  font-weight: 600;
+}
+.chat-room-header .chat-room-header-spacer {
+  flex: 1;
+}
+
+.chat-page-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  /* Internal scrolling owned by .chat-main-content and right-rail occupants
+     (InRoomSearch today, ThreadRightBar in Chapter 7). */
 }
 
 /* Unread + mention badges */
@@ -768,7 +791,7 @@ body {
 /* Header search bar — Teams-style centered overlay. Absolute positioning
  * keeps it anchored to the header center regardless of how wide the title
  * or right-side controls grow. */
-.chat-header-search {
+.app-header-search {
   position: absolute;
   left: 50%;
   top: 50%;
