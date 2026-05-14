@@ -156,3 +156,38 @@ describe('threadEventsReducer — RESET', () => {
     expect(threadEventsReducer(seed, { type: 'RESET' })).toEqual(initialState)
   })
 })
+
+describe('threadEventsReducer — REPLY_EDITED_LOCAL', () => {
+  it('updates content + editedAt on the matching message', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'old' }, { id: 'r2', content: 'other' }] }
+    const out = threadEventsReducer(seeded, {
+      type: 'REPLY_EDITED_LOCAL', messageId: 'r1', content: 'new', editedAt: '2026-05-13T12:00:00Z',
+    })
+    expect(out.messages[0]).toEqual({ id: 'r1', content: 'new', editedAt: '2026-05-13T12:00:00Z' })
+    expect(out.messages[1]).toEqual({ id: 'r2', content: 'other' })
+  })
+
+  it('is a no-op when the messageId is not buffered', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, {
+      type: 'REPLY_EDITED_LOCAL', messageId: 'unknown', content: 'x', editedAt: 't',
+    })
+    expect(out).toBe(open)
+  })
+})
+
+describe('threadEventsReducer — REPLY_DELETED_LOCAL', () => {
+  it('flags the matching reply as deleted', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'bye' }] }
+    const out = threadEventsReducer(seeded, { type: 'REPLY_DELETED_LOCAL', messageId: 'r1' })
+    expect(out.messages[0]).toEqual({ id: 'r1', content: 'bye', deleted: true })
+  })
+
+  it('is a no-op when messageId is not buffered', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, { type: 'REPLY_DELETED_LOCAL', messageId: 'r1' })
+    expect(out).toBe(open)
+  })
+})

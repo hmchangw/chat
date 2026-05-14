@@ -75,6 +75,20 @@ export function threadEventsReducer(state, action) {
       return { ...state, messages: unsetStatus(state.messages, action.messageId) }
     case 'REPLY_DISMISSED':
       return { ...state, messages: state.messages.filter((m) => m.id !== action.messageId) }
+    case 'REPLY_EDITED_LOCAL': {
+      const idx = state.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updated = { ...state.messages[idx], content: action.content, editedAt: action.editedAt }
+      const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+      return { ...state, messages }
+    }
+    case 'REPLY_DELETED_LOCAL': {
+      const idx = state.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updated = { ...state.messages[idx], deleted: true }
+      const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+      return { ...state, messages }
+    }
     case 'RESET':
       return initialState
     default:
