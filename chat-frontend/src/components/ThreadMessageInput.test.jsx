@@ -42,7 +42,10 @@ describe('ThreadMessageInput', () => {
     const input = screen.getByPlaceholderText('Reply…')
     fireEvent.change(input, { target: { value: 'reply' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    expect(sendReply).toHaveBeenCalledWith('reply', { quotedParentMessageId: 'q1' })
+    expect(sendReply).toHaveBeenCalledWith('reply', {
+      quotedParentMessageId: 'q1',
+      quotedSnapshot: { senderName: 'bob', content: 'orig' },
+    })
   })
 
   it('clears the staged quote chip after send (sync — no broker ack)', () => {

@@ -66,14 +66,17 @@ export default function MessageRow({
           <span className="message-time">{formatTime(message.createdAt)}</span>
           {message.editedAt && <span className="message-edited"> (edited)</span>}
         </div>
+        {/* QuotedBlock sits OUTSIDE message-bubble-wrap so hovering the
+            quote doesn't trigger the action toolbar. CSS pulls it flush
+            against the bubble's top so it still looks attached. */}
+        {message.quotedParentMessage && (
+          <QuotedBlock
+            variant="bubble"
+            snapshot={message.quotedParentMessage}
+            onClick={onJumpToMessage}
+          />
+        )}
         <div className="message-bubble-wrap" {...handlers}>
-          {message.quotedParentMessage && (
-            <QuotedBlock
-              variant="bubble"
-              snapshot={message.quotedParentMessage}
-              onClick={onJumpToMessage}
-            />
-          )}
           <div className="message-bubble">{messageContent(message)}</div>
           {hovered && (
             <div className="message-actions-host" {...handlers}>

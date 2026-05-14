@@ -241,6 +241,22 @@ export function roomEventsReducer(state, action) {
         },
       }
     }
+    case 'FOCUS_CLEARED': {
+      // Drop the focusMessageId after MessageList has consumed it for the
+      // scroll-into-view + flash-jump animation. Without this, switching
+      // rooms and back replays the flash, AND clicking the same quoted
+      // message twice no-ops (the focusMessageId effect deps don't change
+      // between the two clicks).
+      const prev = state.roomState[action.roomId]
+      if (!prev || prev.focusMessageId == null) return state
+      return {
+        ...state,
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: { ...prev, focusMessageId: null },
+        },
+      }
+    }
     case 'RESET_TO_LIVE_TAIL': {
       const prev = state.roomState[action.roomId]
       if (!prev) {

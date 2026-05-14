@@ -101,6 +101,7 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
         onEdit={handleEdit}
         onDelete={handleDelete}
         onJumpToMessage={(msgId) => jumpToMessage?.(msgId)?.catch?.(() => {})}
+        onFocusConsumed={() => dispatch({ type: 'FOCUS_CLEARED', roomId: room.id })}
         bottomRef={bottomRef}
       />
       {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (

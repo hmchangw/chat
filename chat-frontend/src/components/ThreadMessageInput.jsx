@@ -17,7 +17,19 @@ export default function ThreadMessageInput({ quotedTarget, onClearQuote }) {
 
   const handleSubmit = () => {
     if (!text.trim() || !activeParent) return
-    const opts = quotedTarget ? { quotedParentMessageId: quotedTarget.id } : {}
+    // Pass the full snapshot (senderName, content) alongside the id so
+    // ThreadEventsContext can build the optimistic quotedParentMessage
+    // with a sender label — without it the optimistic snapshot only carries
+    // the id and renders as "Unknown" until the server broadcast arrives.
+    const opts = quotedTarget
+      ? {
+          quotedParentMessageId: quotedTarget.id,
+          quotedSnapshot: {
+            senderName: quotedTarget.senderName,
+            content: quotedTarget.content,
+          },
+        }
+      : {}
     const content = text.trim()
     setText('')
     sendReply(content, opts)  // sync; thread context handles _status='failed' on throw

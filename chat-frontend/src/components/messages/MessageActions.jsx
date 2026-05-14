@@ -4,10 +4,21 @@ export default function MessageActions({
   message, room, context, isOwn,
   onThread, onReply, onEdit, onDelete,
 }) {
-  const showThread = context !== 'thread-parent'
-  const showReply = context !== 'thread-parent'
+  // Thread: only opens new threads from the main feed. Inside the thread
+  // panel (parent OR replies) it's hidden — you're already in a thread.
+  // Quote: always available — any visible message can be quoted in a reply,
+  // including the thread parent (you reply to it inside the thread input).
+  // Edit / Delete: own-only.
+  const showThread = context === 'main'
+  const showReply = true
   const showEdit = !!isOwn
   const showDelete = !!isOwn
+
+  // If nothing would render and the kebab is hidden too (others' message),
+  // skip the toolbar entirely so we don't paint an empty floating bar.
+  const hasAnyButton = showThread || showReply || showEdit || showDelete
+  const hasKebab = !!isOwn
+  if (!hasAnyButton && !hasKebab) return null
 
   return (
     <div className="message-actions" role="toolbar" aria-label="Message actions">

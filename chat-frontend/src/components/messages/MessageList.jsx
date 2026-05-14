@@ -20,6 +20,7 @@ export default function MessageList({
   ariaLive,
   onRetry,
   onDismiss,
+  onFocusConsumed,
   parentMessageId,
 }) {
   const listRef = useRef(null)
@@ -33,6 +34,11 @@ export default function MessageList({
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     el.classList.add('flash-jump')
     const timer = setTimeout(() => el.classList.remove('flash-jump'), 2000)
+    // Tell the owning context the focus has been consumed so it can clear
+    // focusMessageId. Without this:
+    //   - clicking the same quote twice no-ops (deps don't change)
+    //   - leaving the room and coming back replays the flash-jump
+    onFocusConsumed?.(focusMessageId)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusMessageId])

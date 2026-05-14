@@ -93,10 +93,14 @@ export function ThreadEventsProvider({ children }) {
         _local: true,
       }
       if (opts?.quotedParentMessageId) {
+        // Mirror the server's cassandra.QuotedParentMessage shape so the
+        // optimistic snapshot renders identically to what later broadcasts
+        // / history loads will carry (messageId / sender.engName / msg).
+        const sn = opts.quotedSnapshot?.senderName
         optimistic.quotedParentMessage = {
-          id: opts.quotedParentMessageId,
-          senderName: opts.quotedSnapshot?.senderName,
-          content: opts.quotedSnapshot?.content,
+          messageId: opts.quotedParentMessageId,
+          sender: { engName: sn, account: sn },
+          msg: opts.quotedSnapshot?.content,
         }
       }
       dispatch({ type: 'REPLY_SENT_LOCAL', message: optimistic })
@@ -121,7 +125,9 @@ export function ThreadEventsProvider({ children }) {
         publishReply(
           messageId,
           row.content,
-          row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined
+          row.quotedParentMessage
+            ? { quotedParentMessageId: row.quotedParentMessage.messageId ?? row.quotedParentMessage.id }
+            : undefined
         )
         // Intentionally NOT dispatching OWN_THREAD_REPLY_SENT here. A retry is
         // the continuation of a logical send, not a new one; double-bumping the

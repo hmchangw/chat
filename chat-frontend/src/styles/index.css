@@ -1348,15 +1348,15 @@ body {
   white-space: pre-wrap;
 }
 
-/* Quote rendered ABOVE the bubble inside .message-bubble-wrap — a
-   distinct card with explicit theme tokens (the previous rgba()
-   fallbacks were invisible in dark mode). The bubble below stays the
-   primary visual unit; the quote is a header card showing "this is
-   what I'm replying to". */
-.message-bubble-wrap > .quoted-block-bubble {
+/* Quote rendered as a sibling of the bubble (under .message-row-body) so
+   hovering it doesn't trigger the bubble's action toolbar. CSS pulls it
+   flush to the top of the bubble so it still reads as "this is what I'm
+   replying to". */
+.message-row-body > .quoted-block-bubble {
   display: block;
-  max-width: 100%;
-  margin: 0 0 2px 0;
+  align-self: flex-start;
+  max-width: min(100%, 420px);
+  margin: 0;
   padding: 4px 8px;
   background: var(--bg-hover);
   border-left: 3px solid var(--accent);
@@ -1365,11 +1365,14 @@ body {
   cursor: pointer;
   font-size: 0.85em;
 }
-.message-bubble-wrap > .quoted-block-bubble .quoted-block-sender {
+.message-row-own .message-row-body > .quoted-block-bubble {
+  align-self: flex-end;
+}
+.message-row-body > .quoted-block-bubble .quoted-block-sender {
   font-weight: 600;
   color: var(--text-primary);
 }
-.message-bubble-wrap > .quoted-block-bubble .quoted-block-content {
+.message-row-body > .quoted-block-bubble .quoted-block-content {
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -1475,16 +1478,14 @@ body {
   position: relative;
   display: inline-flex;
 }
-/* Popover (read-receipts) anchors to the kebab button. */
+/* Popover (read-receipts) anchors to the kebab button. The kebab only
+   appears on own messages, where the toolbar is right-anchored to the
+   bubble's right edge — so the kebab sits at the bubble's right corner.
+   `right: 0` of the kebab makes the popover extend LEFTWARD into the
+   body so it can't escape the viewport. */
 .message-actions .message-action-popover {
   top: calc(100% + 4px);
   right: 0;
-}
-.message-row-own .message-actions .message-action-popover {
-  /* For own-messages the toolbar is on the LEFT of the bubble; the
-     popover should still open below the kebab without escaping the row. */
-  right: auto;
-  left: 0;
 }
 .quoted-block {
   border-left: 3px solid var(--border-subtle, #ccc);

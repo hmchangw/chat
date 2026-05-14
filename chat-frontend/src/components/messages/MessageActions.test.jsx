@@ -17,10 +17,17 @@ describe('MessageActions', () => {
     expect(screen.getByRole('button', { name: /quote/i })).toBeInTheDocument()
   })
 
-  it('omits Thread and Reply when context is thread-parent', () => {
+  it('omits Thread on thread-parent (already in a thread) but keeps Quote', () => {
     render(<MessageActions message={msg} context="thread-parent" onThread={() => {}} onReply={() => {}} />)
     expect(screen.queryByRole('button', { name: /reply in thread/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /quote/i })).not.toBeInTheDocument()
+    // Quote stays so users can quote the parent inside their thread reply.
+    expect(screen.getByRole('button', { name: /quote/i })).toBeInTheDocument()
+  })
+
+  it('omits Thread inside the thread reply list — only Quote remains', () => {
+    render(<MessageActions message={msg} context="thread" onThread={() => {}} onReply={() => {}} />)
+    expect(screen.queryByRole('button', { name: /reply in thread/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /quote/i })).toBeInTheDocument()
   })
 
   it('clicking Thread invokes onThread with the message', () => {
