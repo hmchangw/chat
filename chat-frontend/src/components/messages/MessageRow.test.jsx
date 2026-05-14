@@ -37,8 +37,11 @@ describe('MessageRow', () => {
     expect(row.getAttribute('data-message-id')).toBe('m1')
   })
 
-  it('mounts the read-receipt kebab (MessageActionMenu) and forwards message + room', () => {
-    render(<MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+  it('mounts the read-receipt kebab (MessageActionMenu) on hover and forwards message + room', () => {
+    const { container } = render(<MessageRow message={msg} room={room} context="main" onThread={() => {}} onReply={() => {}} onJumpToMessage={() => {}} />)
+    // Menu is JS-driven; only in the DOM while bubble is hovered. Simulate
+    // mouseenter so the toolbar (and the kebab inside it) mounts.
+    fireEvent.mouseEnter(container.querySelector('.message-bubble-wrap'))
     const kebab = screen.getByTestId('kebab')
     expect(kebab.getAttribute('data-message-id')).toBe('m1')
     expect(kebab.getAttribute('data-room-id')).toBe('r1')
@@ -67,10 +70,13 @@ describe('MessageRow', () => {
     expect(onJumpToMessage).toHaveBeenCalledWith('orig')
   })
 
-  it('forwards Thread/Reply clicks via MessageActions', () => {
+  it('forwards Thread/Reply clicks via MessageActions (after hover-reveal)', () => {
     const onThread = vi.fn()
     const onReply = vi.fn()
-    render(<MessageRow message={msg} room={room} context="main" onThread={onThread} onReply={onReply} onJumpToMessage={() => {}} />)
+    const { container } = render(<MessageRow message={msg} room={room} context="main" onThread={onThread} onReply={onReply} onJumpToMessage={() => {}} />)
+    // Hover to mount the action toolbar; clicking Thread / Reply otherwise
+    // doesn't find the buttons (they aren't in the DOM until hover).
+    fireEvent.mouseEnter(container.querySelector('.message-bubble-wrap'))
     fireEvent.click(screen.getByRole('button', { name: /reply in thread/i }))
     expect(onThread).toHaveBeenCalledWith(msg)
     fireEvent.click(screen.getByRole('button', { name: /quote/i }))

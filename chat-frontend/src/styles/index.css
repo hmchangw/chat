@@ -1345,43 +1345,36 @@ body {
   line-height: 1.4;
   word-wrap: break-word;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
-/* Quote rendered INSIDE the bubble — visually inset card, full width of
-   the bubble's content area, with a subtle border-left + faded bg so it
-   reads as "the message being replied to". */
-.message-bubble .quoted-block-bubble {
+/* Quote rendered ABOVE the bubble inside .message-bubble-wrap — a
+   distinct card with explicit theme tokens (the previous rgba()
+   fallbacks were invisible in dark mode). The bubble below stays the
+   primary visual unit; the quote is a header card showing "this is
+   what I'm replying to". */
+.message-bubble-wrap > .quoted-block-bubble {
   display: block;
-  margin: 0 0 4px 0;
+  max-width: 100%;
+  margin: 0 0 2px 0;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--bg-hover);
   border-left: 3px solid var(--accent);
-  border-radius: 4px;
+  border-radius: 4px 4px 0 0;
+  color: var(--text-primary);
   cursor: pointer;
-}
-.message-row-own .message-bubble .quoted-block-bubble {
-  background: rgba(255, 255, 255, 0.12);
-}
-.message-bubble .quoted-block-sender {
   font-size: 0.85em;
+}
+.message-bubble-wrap > .quoted-block-bubble .quoted-block-sender {
   font-weight: 600;
   color: var(--text-primary);
-  opacity: 0.85;
 }
-.message-bubble .quoted-block-content {
-  font-size: 0.9em;
-  color: var(--text-primary);
-  opacity: 0.85;
+.message-bubble-wrap > .quoted-block-bubble .quoted-block-content {
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-}
-
-.message-bubble-content {
-  display: block;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* Own messages: avatar omitted, body right-aligns the bubble, blue tint. */
@@ -1428,48 +1421,36 @@ body {
   font-size: 0.85em;
 }
 
-/* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Lives
-   inside .message-bubble-wrap. Positioned so it overlaps the bubble's
-   top corner (so the cursor never crosses an "invisible gap" between
-   bubble and toolbar) AND uses a 250ms delayed hide so the user has
-   time to travel from bubble to toolbar without losing hover.
+/* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Mount
+   state is driven by useHoverWithDelay in MessageRow — when not hovered,
+   the toolbar isn't in the DOM. So no opacity / pointer-events / transition
+   gymnastics here; just position the host correctly.
 
-   For OTHERS' messages: anchored right-of-bubble — slightly to the
-   right of the bubble's right edge so it doesn't cover content.
-   For OWN messages: mirrored to left-of-bubble — the bubble lives at
-   the right edge of the row, so a right-anchored toolbar would
-   overflow the viewport. */
-.message-bubble-wrap .message-actions {
+   Smart positioning: the bubble's far edge always anchors the toolbar so
+   the toolbar extends INTO the row (toward open space), never outward off
+   the viewport.
+   - Others' messages: bubble on the LEFT, toolbar anchored `left: 0` of the
+     bubble, extends RIGHTWARD into the body.
+   - Own messages:    bubble on the RIGHT, toolbar anchored `right: 0` of
+     the bubble, extends LEFTWARD into the body. */
+.message-actions-host {
   position: absolute;
-  /* Overlap the bubble's top edge by 8px — eliminates the hover gap
-     while still showing the toolbar mostly above the bubble. */
   top: -16px;
-  right: -2px;
+  left: 0;
+  z-index: 2;
+}
+.message-row-own .message-actions-host {
+  left: auto;
+  right: 0;
+}
+.message-actions-host .message-actions {
   display: flex;
   gap: 4px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 2px 4px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-  opacity: 0;
-  pointer-events: none;
-  /* Delayed hide (250ms) so the user can move mouse from bubble to
-     toolbar without losing hover. Immediate show (80ms) for snap. */
-  transition: opacity 80ms ease 250ms;
-  z-index: 2;
-}
-.message-row-own .message-bubble-wrap .message-actions {
-  right: auto;
-  left: -2px;
-}
-.message-bubble-wrap:hover .message-actions,
-.message-bubble-wrap:focus-within .message-actions,
-.message-actions:hover,
-.message-actions:focus-within {
-  opacity: 1;
-  pointer-events: auto;
-  transition: opacity 80ms ease 0ms;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.10);
 }
 .message-action {
   padding: 2px 6px;

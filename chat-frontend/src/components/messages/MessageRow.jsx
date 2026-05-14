@@ -1,5 +1,6 @@
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
+import useHoverWithDelay from '../../lib/useHoverWithDelay'
 
 function formatTime(dateStr) {
   const d = new Date(dateStr)
@@ -35,9 +36,14 @@ export default function MessageRow({
   onRetry,
   onDismiss,
 }) {
+  // Hover state driven from JS, NOT CSS :hover — see useHoverWithDelay for
+  // why. Attach the same `handlers` to both the bubble-wrap (trigger) and
+  // the floating menu (so the menu stays open while the cursor travels
+  // between them).
+  const { hovered, handlers } = useHoverWithDelay(200)
+
   // Deleted messages are removed from the feed entirely. (Also filtered at
-  // MessageList — this is defense-in-depth in case a caller bypasses the
-  // list and renders a row directly.)
+  // MessageList — this is defense-in-depth.)
   if (message.deleted) return null
 
   const rowClasses = ['message-row']
@@ -49,9 +55,6 @@ export default function MessageRow({
       data-message-id={message.id}
       tabIndex={0}
     >
-      {/* Avatar only for messages from other users. Own messages don't show
-          one — the bubble alone (right-aligned, blue-tinted) is enough to
-          identify the sender. */}
       {!isOwn && (
         <div className="message-row-avatar" aria-hidden="true">
           {senderInitial(message)}
@@ -63,32 +66,29 @@ export default function MessageRow({
           <span className="message-time">{formatTime(message.createdAt)}</span>
           {message.editedAt && <span className="message-edited"> (edited)</span>}
         </div>
-        {/* Bubble + hover-revealed action toolbar share a positioned wrapper.
-            Hover/focus on the wrapper toggles the actions, NOT hover on the
-            whole row — so the avatar / header stay inert. The QuotedBlock is
-            rendered INSIDE the bubble (when present) so the bubble auto-sizes
-            to include it. */}
-        <div className="message-bubble-wrap">
-          <div className="message-bubble">
-            {message.quotedParentMessage && (
-              <QuotedBlock
-                variant="bubble"
-                snapshot={message.quotedParentMessage}
-                onClick={onJumpToMessage}
+        <div className="message-bubble-wrap" {...handlers}>
+          {message.quotedParentMessage && (
+            <QuotedBlock
+              variant="bubble"
+              snapshot={message.quotedParentMessage}
+              onClick={onJumpToMessage}
+            />
+          )}
+          <div className="message-bubble">{messageContent(message)}</div>
+          {hovered && (
+            <div className="message-actions-host" {...handlers}>
+              <MessageActions
+                message={message}
+                room={room}
+                context={context}
+                isOwn={isOwn}
+                onThread={onThread}
+                onReply={onReply}
+                onEdit={onEdit}
+                onDelete={onDelete}
               />
-            )}
-            <div className="message-bubble-content">{messageContent(message)}</div>
-          </div>
-          <MessageActions
-            message={message}
-            room={room}
-            context={context}
-            isOwn={isOwn}
-            onThread={onThread}
-            onReply={onReply}
-            onEdit={onEdit}
-            onDelete={onDelete}
-          />
+            </div>
+          )}
         </div>
         {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
           <button
