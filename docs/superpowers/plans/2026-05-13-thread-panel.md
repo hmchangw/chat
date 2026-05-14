@@ -606,8 +606,19 @@ vi.mock('../pages/SearchResultsPane', () => ({
     </section>
   ),
 }))
+// Mock summaries are populated with the rooms the tests will click. The
+// MainApp's "evict on summary disappearance" effect compares selectedRoom
+// against summaries; without the rooms here the effect would clear the
+// selection mid-test.
 vi.mock('../context/RoomEventsContext', () => ({
-  useRoomSummaries: () => ({ summaries: [], setActiveRoom: vi.fn(), jumpToMessage: vi.fn() }),
+  useRoomSummaries: () => ({
+    summaries: [
+      { id: 'r-from-side', name: 's' },
+      { id: 'r-from-search', name: 'r' },
+    ],
+    setActiveRoom: vi.fn(),
+    jumpToMessage: vi.fn(),
+  }),
 }))
 
 describe('MainApp', () => {

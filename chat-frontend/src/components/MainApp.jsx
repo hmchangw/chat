@@ -11,10 +11,8 @@ export default function MainApp() {
   const [searchQuery, setSearchQuery] = useState(null)
 
   // Clear selection if the room disappears from summaries (left / kicked).
-  // Guard: only act once summaries has been loaded (non-empty) to avoid
-  // clearing on startup when summaries is still an empty array.
   useEffect(() => {
-    if (selectedRoom && summaries.length > 0 && !summaries.some((r) => r.id === selectedRoom.id)) {
+    if (selectedRoom && !summaries.some((r) => r.id === selectedRoom.id)) {
       setSelectedRoom(null)
       setActiveRoom(null)
     }
