@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRoomSummaries } from '../context/RoomEventsContext'
 import { useThreadEvents } from '../context/ThreadEventsContext'
 import RoomMessageArea from '../components/RoomMessageArea'
@@ -19,6 +19,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
   // the pattern in upstream MessageArea (pre-refactor).
   const [membersRefreshKey, setMembersRefreshKey] = useState(0)
   const [quotedTarget, setQuotedTarget] = useState(null)
+  const triggerRef = useRef(null)
 
   // When the selected room changes, close room-scoped overlays.
   useEffect(() => {
@@ -37,6 +38,14 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
       closeThread()
     }
   }, [selectedRoom?.id, activeParent, closeThread])
+
+  // Restore focus to the trigger element when the thread panel closes.
+  useEffect(() => {
+    if (!activeParent && triggerRef.current) {
+      triggerRef.current.focus?.()
+      triggerRef.current = null
+    }
+  }, [activeParent])
 
   // Ctrl/Cmd-F opens the in-room side panel; Esc closes it.
   useEffect(() => {
@@ -62,6 +71,7 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
 
   const handleThread = (msg) => {
     if (!selectedRoom || !msg) return
+    triggerRef.current = document.activeElement
     setInRoomSearchOpen(false)
     openThread({
       roomId: selectedRoom.id,

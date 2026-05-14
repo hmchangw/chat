@@ -60,6 +60,14 @@ describe('ThreadRightBar', () => {
   })
 })
 
+describe('ThreadRightBar — focus on mount', () => {
+  it('focuses the ✕ close button when mounted', () => {
+    render(<ThreadRightBar />)
+    const closeBtn = screen.getByRole('button', { name: /close thread/i })
+    expect(document.activeElement).toBe(closeBtn)
+  })
+})
+
 describe('ThreadRightBar — Esc to close', () => {
   beforeEach(() => closeThread.mockClear())
 
