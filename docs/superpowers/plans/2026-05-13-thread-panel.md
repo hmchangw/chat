@@ -770,7 +770,12 @@ git commit -m "refactor(chat-frontend): mount MainApp shell from App"
 
 ### Task 2.5: Slim `ChatPage.jsx` — receive props, render room-header strip
 
-`ChatPage` no longer owns: selectedRoom state, AppHeader content, Sidebar, CreateRoomDialog, SearchResultsPane. It DOES own: the room-header strip (room name + Members + Leave), the message area + input area, the in-room search panel, the ManageMembersDialog mount.
+`ChatPage` no longer owns: selectedRoom state, AppHeader content, Sidebar, CreateRoomDialog, SearchResultsPane. It DOES own: the room-header strip (room name + `RoomMembersBadge` + Leave), the message area + input area, the in-room search panel, the ManageMembersDialog mount, and the `membersRefreshKey` bump-on-dialog-close pattern.
+
+**Reuse of upstream pieces.** The room-header strip preserves three upstream behaviors that today live inside `MessageArea.jsx`:
+1. `RoomMembersBadge` (with `refreshKey` so the count refetches when the dialog closes)
+2. `roomDisplayName(room)` for the title (DM rooms have no canonical Room.Name)
+3. The `membersRefreshKey` counter bumped on dialog close
 
 **Files:**
 - Modify: `chat-frontend/src/pages/ChatPage.jsx`
@@ -787,12 +792,17 @@ import MessageInput from '../components/MessageInput'
 import ManageMembersDialog from '../components/ManageMembersDialog'
 import LeaveRoomButton from '../components/LeaveRoomButton'
 import InRoomSearch from '../components/InRoomSearch'
-import { roomPrefix } from '../lib/roomFormat'
+import RoomMembersBadge from '../components/RoomMembersBadge'
+import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
 
 export default function ChatPage({ selectedRoom, onSelectRoom }) {
   const { jumpToMessage } = useRoomSummaries()
   const [showMembers, setShowMembers] = useState(false)
   const [inRoomSearchOpen, setInRoomSearchOpen] = useState(false)
+  // Bumped each time ManageMembersDialog closes so RoomMembersBadge refetches
+  // its count immediately, without waiting for the next room switch. Mirrors
+  // the pattern in upstream MessageArea (pre-refactor).
+  const [membersRefreshKey, setMembersRefreshKey] = useState(0)
 
   // When the selected room changes, close room-scoped overlays.
   useEffect(() => {
@@ -828,27 +838,24 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
       {selectedRoom && (
         <header className="chat-room-header">
           <span className="chat-room-name">
-            {roomPrefix(selectedRoom.type)}{selectedRoom.name}
+            {roomPrefix(selectedRoom.type)}{roomDisplayName(selectedRoom)}
           </span>
-          <span className="chat-room-members-count">{selectedRoom.userCount} members</span>
+          <RoomMembersBadge
+            room={selectedRoom}
+            onOpen={() => setShowMembers(true)}
+            refreshKey={membersRefreshKey}
+          />
           <div className="chat-room-header-spacer" />
-          {isChannel && (
-            <>
-              <button
-                type="button"
-                className="chat-room-members-btn"
-                onClick={() => setShowMembers(true)}
-              >
-                Members
-              </button>
-              <LeaveRoomButton room={selectedRoom} />
-            </>
-          )}
+          {isChannel && <LeaveRoomButton room={selectedRoom} />}
         </header>
       )}
       <div className="chat-page-body">
         <div className="chat-main-content">
-          <MessageArea room={selectedRoom} />
+          <MessageArea
+            room={selectedRoom}
+            onOpenMembers={() => setShowMembers(true)}
+            membersRefreshKey={membersRefreshKey}
+          />
           <MessageInput room={selectedRoom} />
         </div>
         {inRoomSearchOpen && selectedRoom && (
@@ -862,7 +869,10 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
       {showMembers && selectedRoom && (
         <ManageMembersDialog
           room={selectedRoom}
-          onClose={() => setShowMembers(false)}
+          onClose={() => {
+            setShowMembers(false)
+            setMembersRefreshKey((k) => k + 1)
+          }}
         />
       )}
     </main>
@@ -870,7 +880,9 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
 }
 ```
 
-`onSelectRoom` is accepted as a prop for future use (deselect on leave) but isn't called from inside yet — `LeaveRoomButton` already triggers room removal via the summary update path.
+Notes:
+- `MessageArea` continues to receive `onOpenMembers` + `membersRefreshKey` so its own internal header (which we'll remove in Task 3.6) keeps working until then. Once Task 3.6 swaps in `RoomMessageArea` (which has no header), the room-header strip in `ChatPage` is the sole owner of the badge.
+- `onSelectRoom` is accepted for future use (deselect on leave) but isn't called yet — `LeaveRoomButton` already triggers room removal via the summary update path.
 
 - [ ] **Step 2: Run the chat-frontend suite**
 
@@ -2014,13 +2026,14 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
     <div className="message-area">
       <MessageList
         messages={messages}
+        room={room}
         hasLoadedHistory={hasLoadedHistory}
         historyError={historyError}
         context="main"
         focusMessageId={focusMessageId}
         onThread={onThread}
         onReply={onReply}
-        onJumpToMessage={(msgId) => jumpToMessage?.(room.id, msgId)?.catch?.(() => {})}
+        onJumpToMessage={(msgId) => jumpToMessage?.(msgId)?.catch?.(() => {})}
         bottomRef={bottomRef}
       />
       {bufferMode === BUFFER_MODE.HISTORICAL && pendingCount > 0 && (
@@ -2034,6 +2047,10 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
   )
 }
 ```
+
+**`jumpToMessage` curry** — `useRoomEvents(roomId).jumpToMessage` is **already bound to the room** (see `RoomEventsContext.jsx:203-206`). It takes `(messageId)` only. The raw two-arg form `jumpToMessage(roomId, messageId)` lives on `useRoomSummaries()` for cross-room jumps from search/SearchResultsPane.
+
+**`room` prop forwarding** — MessageList receives `room` so it can hand it to each `MessageRow`, which in turn renders the read-receipt kebab (`MessageActionMenu`) that needs `room.id` and `room.siteId`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
