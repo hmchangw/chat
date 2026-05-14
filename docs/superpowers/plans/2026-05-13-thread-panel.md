@@ -1025,14 +1025,31 @@ For every selector that names the *page-level* layout (the outermost layout grid
 .chat-main            → .chat-page         /* the middle column */
 ```
 
-**Important — also update descendant rules.** `index.css` contains rules that scope to `.chat-main` as an ancestor, e.g. lines 536 + 543:
+**Important — descendant rules and prefix-collision.** `index.css` (post-rebase line numbers) contains:
 
 ```css
-.chat-main .message-area  { /* … */ }
-.chat-main .message-list  { /* … */ }
+.chat-main { … }                       /* line 529 — RENAME → .chat-page */
+.chat-main .message-area { … }         /* line 536 — RENAME → .chat-page .message-area */
+.chat-main .message-list { … }         /* line 543 — RENAME → .chat-page .message-list */
+.chat-main-with-side-panel { … }       /* line 1009 — KEEP (inner layout helper) */
+.chat-main-content { … }               /* line 1015 — KEEP (inner content wrapper) */
 ```
 
-These MUST be renamed to `.chat-page .message-area` and `.chat-page .message-list` respectively. Run `grep -n "chat-main\|chat-layout\|chat-header\|chat-body\|chat-sidebar" chat-frontend/src/styles/index.css` after the rename and verify ZERO remaining matches that aren't the new `.chat-main-content` (which stays — it's the inner content wrapper, see CSS line 879).
+`.chat-main-with-side-panel` and `.chat-main-content` are inner-layout helpers that should NOT be renamed. **Do not use a naive `sed s/\.chat-main/\.chat-page/g`** — it will rename the inner helpers too, breaking `ChatPage.jsx`'s `<div className="chat-main-with-side-panel">` and `<div className="chat-main-content">`. Use a word-boundary aware substitution: in selectors, target `.chat-main` only when followed by whitespace, `{`, `,`, `:`, `>`, `+`, `~`, or end-of-line — NOT when followed by `-` or another identifier char.
+
+Recommended approach: **Edit each of the three rules above by hand** (they're contiguous), then re-grep:
+
+```bash
+grep -nE "\.chat-(layout|header|body|sidebar|main)([^-A-Za-z0-9]|$)" chat-frontend/src/styles/index.css
+```
+
+Expected after rename: ZERO matches. Then verify `.chat-main-with-side-panel` and `.chat-main-content` are still present:
+
+```bash
+grep -n "\.chat-main-" chat-frontend/src/styles/index.css
+```
+
+Expected: 2 matches (lines for `-with-side-panel` and `-content`).
 
 Add a new `.chat-room-header` rule after `.chat-page`:
 
