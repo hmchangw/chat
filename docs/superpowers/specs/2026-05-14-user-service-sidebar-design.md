@@ -25,7 +25,7 @@ Reorganize the chat-frontend sidebar into three sections (Favorite, Apps, Channe
 The change is entirely in `chat-frontend/`. Three layers are touched:
 
 1. **Subjects (`src/lib/subjects.js`)** — add three new builders mirroring the Go definitions.
-2. **State (`src/lib/roomEventsReducer.js` + `src/context/RoomEventsContext.jsx`)** — extend the reducer with three Sets: `favoriteIds` (frozen at login), `appIds` (mutated on realtime events), and `otherIds` (mutated on realtime events). Fire the three new RPCs in parallel with the existing `roomsList` call on login. Augment `ROOM_ADDED`/`ROOM_REMOVED` to maintain the two non-frozen Sets.
+2. **State (`src/lib/roomEventsReducer.js` + `src/context/RoomEventsContext.jsx`)** — extend the reducer with three Sets: `favoriteIds` (frozen at login), `appIds` (mutated on realtime events), and `channelDmIds` (mutated on realtime events). Fire the three new RPCs in parallel with the existing `roomsList` call on login. Augment `ROOM_ADDED`/`ROOM_REMOVED` to maintain the two non-frozen Sets.
 3. **Rendering (`src/components/RoomList.jsx`)** — partition `summaries` into three sections and render three collapsible blocks.
 
 `RoomEventsContext` remains the single source of truth for live room state (unread, mention, last-message-at, name, userCount). The three new RPCs do not seed room metadata — they only decide bucket assignment.
@@ -37,14 +37,14 @@ Each room is rendered in exactly one section. Favorite wins over Apps wins over 
 ```
 section('Favorite')         = summaries  filter (favoriteIds.has(id))
 section('Apps')             = summaries  filter (appIds.has(id)   AND NOT favoriteIds.has(id))
-section('Channels and DMs') = summaries  filter (otherIds.has(id) AND NOT favoriteIds.has(id) AND NOT appIds.has(id))
+section('Channels and DMs') = summaries  filter (channelDmIds.has(id) AND NOT favoriteIds.has(id) AND NOT appIds.has(id))
 ```
 
 A room present in `summaries` but in none of the three Sets does not render in the sidebar. It can be recovered by reload, or by a matching `subscription.update added` event that triggers `ROOM_ADDED` and tags it. See "Risks and trade-offs."
 
 ### App discriminator
 
-For realtime re-bucketing on `subscription.update added` events, an "app" is identified by `roomType === 'botDM'`. All other room types (`channel`, `dm`, `discussion`) are tagged as `otherIds`.
+For realtime re-bucketing on `subscription.update added` events, an "app" is identified by `roomType === 'botDM'`. All other room types (`channel`, `dm`, `discussion`) are tagged as `channelDmIds`.
 
 ### Bootstrap flow (login)
 
@@ -60,7 +60,7 @@ dispatch({
   type: 'BUCKETS_LOADED',
   favoriteIds: favResp.subscriptions.map(s => s.roomId),
   appIds:      appResp.subscriptions.map(s => s.roomId),
-  otherIds:    roomResp.subscriptions.map(s => s.roomId),
+  channelDmIds:    roomResp.subscriptions.map(s => s.roomId),
 })
 ```
 
@@ -70,7 +70,7 @@ Each RPC failure is independent and silently leaves its Set empty (no error disp
 
 ### Realtime updates
 
-- `subscription.update` with `action: 'added'`, after the existing `roomsGet` enrichment, dispatch `ROOM_ADDED` (existing action). Reducer augmentation: if `room.type === 'botDM'`, add `room.id` to `appIds`; otherwise add it to `otherIds`. Never adds to `favoriteIds`.
+- `subscription.update` with `action: 'added'`, after the existing `roomsGet` enrichment, dispatch `ROOM_ADDED` (existing action). Reducer augmentation: if `room.type === 'botDM'`, add `room.id` to `appIds`; otherwise add it to `channelDmIds`. Never adds to `favoriteIds`.
 - `subscription.update` with `action: 'removed'`, dispatch `ROOM_REMOVED` (existing action). Reducer augmentation: remove the roomId from all three Sets.
 - `favoriteIds` is **frozen at login**. A subscription becoming favorited (or un-favorited) on the server after login is not reflected until the next reload. This is an explicit non-goal.
 
@@ -109,18 +109,18 @@ Extend `initialState`:
 ```js
 favoriteIds: new Set(),  // frozen at login
 appIds:      new Set(),  // mutated on realtime events
-otherIds:    new Set(),  // mutated on realtime events
+channelDmIds:    new Set(),  // mutated on realtime events
 ```
 
 All three are Sets because only membership is needed (rendering iterates `summaries` and filters).
 
 New reducer action:
 
-- `BUCKETS_LOADED { favoriteIds: string[], appIds: string[], otherIds: string[] }` — replaces all three Sets with new Sets built from the supplied arrays.
+- `BUCKETS_LOADED { favoriteIds: string[], appIds: string[], channelDmIds: string[] }` — replaces all three Sets with new Sets built from the supplied arrays.
 
 Augmentations to existing actions:
 
-- `ROOM_ADDED { room }` — in addition to existing behavior: if `room.type === 'botDM'`, return a new `appIds` with `room.id` added; otherwise return a new `otherIds` with `room.id` added. No-op if `room.id` is already in the target Set. Never modifies `favoriteIds`.
+- `ROOM_ADDED { room }` — in addition to existing behavior: if `room.type === 'botDM'`, return a new `appIds` with `room.id` added; otherwise return a new `channelDmIds` with `room.id` added. No-op if `room.id` is already in the target Set. Never modifies `favoriteIds`.
 - `ROOM_REMOVED { roomId }` — in addition to existing behavior: if `roomId` is in any of the three Sets, return a new Set for each affected one without the roomId.
 - `RESET` — also resets all three Sets to new empty instances.
 
@@ -140,17 +140,17 @@ Expose a new hook `useSidebarSections()` from `RoomEventsContext.jsx` that retur
 for (const room of summaries) {
   if      (favoriteIds.has(room.id)) favorite.push(room)
   else if (appIds.has(room.id))      apps.push(room)
-  else if (otherIds.has(room.id))    other.push(room)
+  else if (channelDmIds.has(room.id))    channelDm.push(room)
   // rooms in none of the three Sets are not rendered
 }
 return [
-  { key: 'favorite', title: 'Favorite',          rooms: favorite },
-  { key: 'apps',     title: 'Apps',              rooms: apps     },
-  { key: 'other',    title: 'Channels and DMs',  rooms: other    },
+  { key: 'favorite',  title: 'Favorite',          rooms: favorite  },
+  { key: 'apps',      title: 'Apps',              rooms: apps      },
+  { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
 ]
 ```
 
-Memoize on `[summaries, favoriteIds, appIds, otherIds]` so the partition only re-runs when one of the four changes.
+Memoize on `[summaries, favoriteIds, appIds, channelDmIds]` so the partition only re-runs when one of the four changes.
 
 The existing `useRoomSummaries` hook is left unchanged so unrelated callers (e.g. `ChatPage.jsx`'s `summaries.find(...)` and `summaries.some(...)`) keep working.
 
@@ -188,21 +188,21 @@ All tests are unit tests, using the existing Vitest setup.
 - **`roomEventsReducer.test.js`** —
   - `BUCKETS_LOADED` populates all three Sets with the supplied roomIds.
   - `BUCKETS_LOADED` replaces previous content (subsequent dispatch wins).
-  - `ROOM_ADDED` with `room.type === 'botDM'` adds `room.id` to `appIds`, leaves `otherIds` unchanged.
-  - `ROOM_ADDED` with `room.type` in `{channel, dm, discussion}` adds `room.id` to `otherIds`, leaves `appIds` unchanged.
+  - `ROOM_ADDED` with `room.type === 'botDM'` adds `room.id` to `appIds`, leaves `channelDmIds` unchanged.
+  - `ROOM_ADDED` with `room.type` in `{channel, dm, discussion}` adds `room.id` to `channelDmIds`, leaves `appIds` unchanged.
   - `ROOM_ADDED` never modifies `favoriteIds`.
   - `ROOM_ADDED` for a roomId already in the target Set is a no-op for the bucket.
   - `ROOM_REMOVED` removes the roomId from any of the three Sets that contains it.
   - `ROOM_REMOVED` for a roomId in none of the Sets is a no-op for the buckets.
   - `RESET` empties all three Sets.
 - **`RoomEventsContext.test.jsx`** — mount the provider with a mocked `request`, assert that on login all three new subjects are requested with the documented payloads (`{ favorite: true }`, `{}`, `{}`), and that `BUCKETS_LOADED` is dispatched with the response roomIds. Failure of one RPC leaves the others' Sets populated.
-- **`RoomList.test.jsx`** — with seeded `summaries`, `favoriteIds`, `appIds`, and `otherIds`:
+- **`RoomList.test.jsx`** — with seeded `summaries`, `favoriteIds`, `appIds`, and `channelDmIds`:
   - Three sections render in the fixed order when each has at least one room.
   - A roomId in both `favoriteIds` and `appIds` appears under Favorite only.
-  - A roomId in both `favoriteIds` and `otherIds` appears under Favorite only.
-  - A roomId in both `appIds` and `otherIds` appears under Apps only.
+  - A roomId in both `favoriteIds` and `channelDmIds` appears under Favorite only.
+  - A roomId in both `appIds` and `channelDmIds` appears under Apps only.
   - A roomId in only `appIds` appears under Apps only.
-  - A roomId in only `otherIds` appears under Channels and DMs only.
+  - A roomId in only `channelDmIds` appears under Channels and DMs only.
   - A roomId in `summaries` but in none of the three Sets does not render.
   - Empty sections are hidden (no header).
   - Clicking a section header toggles collapse; collapsed state hides items but keeps the header visible.
@@ -215,8 +215,8 @@ Coverage target: 90% for the touched files (matches the project's "core business
 
 - **Stale favorites:** `favoriteIds` is frozen at login. If a user favorites a room from another client, the sidebar does not reflect it until the next reload. Accepted per scoping. A future improvement would be a new `subscription.favorite.update` server event.
 - **Four parallel RPCs on login:** `roomsList` + three user-service calls. All run in parallel and none block rendering, so login latency is bounded by the slowest of the four. Acceptable.
-- **Rooms in `summaries` but in no bucket Set do not render.** This can happen if `roomsList` and the three user-service RPCs disagree at login (e.g., a new subscription created between the two snapshots). The room is recoverable via reload, or via a matching `subscription.update added` event that fires `ROOM_ADDED` and tags it into `appIds` or `otherIds`. The flat-list fallback that the previous draft used (elimination-style "default to Channels and DMs") is deliberately not in this design: per the user's instruction, Channels and DMs is sourced from `getRooms`.
-- **App membership not maintained for non-botDM roomtype changes:** if a room's `roomType` could change at runtime (e.g. from `channel` to `botDM`), `appIds`/`otherIds` would not move it. There is no event today for "roomType changed," and the assumption is that roomType is immutable post-creation.
+- **Rooms in `summaries` but in no bucket Set do not render.** This can happen if `roomsList` and the three user-service RPCs disagree at login (e.g., a new subscription created between the two snapshots). The room is recoverable via reload, or via a matching `subscription.update added` event that fires `ROOM_ADDED` and tags it into `appIds` or `channelDmIds`. The flat-list fallback that the previous draft used (elimination-style "default to Channels and DMs") is deliberately not in this design: per the user's instruction, Channels and DMs is sourced from `getRooms`.
+- **App membership not maintained for non-botDM roomtype changes:** if a room's `roomType` could change at runtime (e.g. from `channel` to `botDM`), `appIds`/`channelDmIds` would not move it. There is no event today for "roomType changed," and the assumption is that roomType is immutable post-creation.
 
 ## Open questions
 
