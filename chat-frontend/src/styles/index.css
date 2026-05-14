@@ -1353,3 +1353,59 @@ body {
   color: var(--text-muted);
   padding: 12px;
 }
+
+/* Thread Panel */
+.thread-rightbar {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-subtle, #e5e7eb);
+  background: var(--bg-surface);
+  min-height: 0;
+}
+
+.thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.thread-header-title {
+  font-weight: 600;
+}
+
+.thread-header-close {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.1em;
+  padding: 2px 6px;
+}
+
+.thread-message-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.thread-rightbar .message-input-form {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.message-row-failed {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--text-error, #b00020);
+  font-size: 0.85em;
+}
+
+.message-row-failed button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
