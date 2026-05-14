@@ -1,8 +1,15 @@
-// Public surface of the api/ layer. Each operation hides its transport
-// (NATS request/reply, JetStream publish, two-phase async-job) so callers
-// just say `addMembers(nats, args)` and don't need to know what subject
-// it lands on. Subject builders live in `_transport/subjects.js` and are
-// considered internal to this folder.
+// Public surface of the api/ layer.
+//
+// Each operation hides its transport (NATS request/reply, JetStream
+// publish, two-phase async-job) so callers just say `addMembers(nats,
+// args)` and don't need to know what subject it lands on.
+//
+// Components should ONLY import from this file. The `_transport/`
+// folder is internal — subjects, the two-phase request helper, and
+// the wire-shape normaliser live there because they're implementation
+// details of the api/ layer. Anything callers legitimately need from
+// transport (the error class, the format helper, the error-kind enum)
+// is re-exported here.
 
 export { addMembers } from './addMembers'
 export { createRoom } from './createRoom'
@@ -26,3 +33,12 @@ export { subscribeToRoomMetadataUpdates } from './subscribeToRoomMetadataUpdates
 export { subscribeToSubscriptionUpdates } from './subscribeToSubscriptionUpdates'
 export { subscribeToUserRoomEvents } from './subscribeToUserRoomEvents'
 export { updateMemberRole } from './updateMemberRole'
+
+// Transport-level error utilities that callers legitimately need.
+// `_transport/` stays internal otherwise.
+export {
+  AsyncJobError,
+  ASYNC_JOB_ERROR_KINDS,
+  formatAsyncJobError,
+} from './_transport/asyncJob'
+export type { AsyncJobErrorKind } from './_transport/asyncJob'

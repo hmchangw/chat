@@ -148,7 +148,7 @@ describe('MemberRoster', () => {
     await waitFor(() =>
       expect(requestWithAsyncResult).toHaveBeenCalledWith(
         'chat.user.alice.request.room.r1.site-A.member.role-update',
-        { roomId: 'r1', account: 'bob', newRole: 'owner' }
+        { roomId: 'r1', account: 'bob', newRole: 'owner' }, undefined
       )
     )
   })
@@ -164,7 +164,7 @@ describe('MemberRoster', () => {
     await waitFor(() =>
       expect(requestWithAsyncResult).toHaveBeenCalledWith(
         'chat.user.alice.request.room.r1.site-A.member.role-update',
-        { roomId: 'r1', account: 'carol', newRole: 'member' }
+        { roomId: 'r1', account: 'carol', newRole: 'member' }, undefined
       )
     )
   })
@@ -177,7 +177,7 @@ describe('MemberRoster', () => {
     await waitFor(() =>
       expect(requestWithAsyncResult).toHaveBeenCalledWith(
         'chat.user.alice.request.room.r1.site-A.member.remove',
-        { roomId: 'r1', account: 'bob' }
+        { roomId: 'r1', account: 'bob' }, undefined
       )
     )
   })
@@ -190,7 +190,7 @@ describe('MemberRoster', () => {
     await waitFor(() =>
       expect(requestWithAsyncResult).toHaveBeenCalledWith(
         'chat.user.alice.request.room.r1.site-A.member.remove',
-        { roomId: 'r1', orgId: 'org-eng' }
+        { roomId: 'r1', orgId: 'org-eng' }, undefined
       )
     )
   })
@@ -297,7 +297,7 @@ describe('MemberRoster', () => {
       await waitFor(() =>
         expect(requestWithAsyncResult).toHaveBeenCalledWith(
           'chat.user.alice.request.room.r1.site-A.member.remove',
-          { roomId: 'r1', account: 'alice' }
+          { roomId: 'r1', account: 'alice' }, undefined
         )
       )
     } finally {

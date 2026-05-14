@@ -3,7 +3,7 @@ import { useNats } from '@/context/NatsContext'
 import { useRoomSummaries } from '@/context/RoomEventsContext'
 import { createRoom } from '@/api'
 import { isDMExistsReply } from '@/lib/constants'
-import { formatAsyncJobError } from '@/api/_transport/asyncJob'
+import { formatAsyncJobError } from '@/api'
 import MemberPicker from '@/components/MainApp/ChatPage/ManageMembersDialog/MemberPicker/MemberPicker'
 
 // How long to wait for the server's subscription.update event before

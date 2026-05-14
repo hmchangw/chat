@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import MessageActionMenu from './MessageActionMenu'
-import { readReceipt } from '@/api/_transport/subjects'
+// The subject builder lives in api/_transport (internal); the test
+// asserts on the wire subject by hardcoding the expected string. If
+// the format ever changes both the production code and this string
+// need to flip together.
+const READ_RECEIPT_SUBJECT = 'chat.user.alice.request.room.r1.siteA.message.read-receipt'
 
 vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
@@ -128,7 +132,7 @@ describe('MessageActionMenu read-receipt RPC', () => {
     render(<MessageActionMenu message={msg} room={room} />)
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     expect(request).toHaveBeenCalledWith(
-      readReceipt('alice', 'r1', 'siteA'),
+      READ_RECEIPT_SUBJECT,
       { messageId: 'm1' }
     )
   })
@@ -218,7 +222,7 @@ describe('MessageActionMenu read-receipt RPC', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     expect(request).toHaveBeenCalledWith(
-      readReceipt('alice', 'r1', 'siteA'),
+      READ_RECEIPT_SUBJECT,
       { messageId: 'm1' }
     )
   })

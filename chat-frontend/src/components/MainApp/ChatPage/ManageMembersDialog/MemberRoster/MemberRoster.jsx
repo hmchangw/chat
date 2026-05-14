@@ -7,7 +7,7 @@ import {
   updateMemberRole,
 } from '@/api'
 import { ROLE_OWNER, ROLE_MEMBER } from '@/lib/constants'
-import { formatAsyncJobError } from '@/api/_transport/asyncJob'
+import { formatAsyncJobError } from '@/api'
 import './style.css'
 
 export default function MemberRoster({ room }) {

@@ -17,9 +17,6 @@ export async function updateMemberRole(
   opts?: AsyncJobOptions,
 ): Promise<AsyncJobResult> {
   const { roomId, siteId, account, newRole } = args
-  const subject = memberRoleUpdate(user.account, roomId, siteId)
   const payload = { roomId, account, newRole }
-  return opts
-    ? requestWithAsyncResult(subject, payload, opts)
-    : requestWithAsyncResult(subject, payload)
+  return requestWithAsyncResult(memberRoleUpdate(user.account, roomId, siteId), payload, opts)
 }

@@ -24,8 +24,5 @@ export async function addMembers(
   const { roomId, siteId, users = [], orgs = [], channels = [], history } = args
   const payload: Record<string, unknown> = { roomId, users, orgs, channels }
   if (history) payload.history = history
-  const subject = memberAdd(user.account, roomId, siteId)
-  return opts
-    ? requestWithAsyncResult(subject, payload, opts)
-    : requestWithAsyncResult(subject, payload)
+  return requestWithAsyncResult(memberAdd(user.account, roomId, siteId), payload, opts)
 }

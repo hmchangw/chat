@@ -36,9 +36,10 @@ export async function createRoom(
   opts?: AsyncJobOptions,
 ): Promise<AsyncJobResult<CreateRoomSyncReply>> {
   const { name = '', users = [], orgs = [], channels = [] } = args
-  const subject = roomCreate(user.account, user.siteId)
   const payload = { name, users, orgs, channels }
-  return opts
-    ? requestWithAsyncResult<CreateRoomSyncReply>(subject, payload, opts)
-    : requestWithAsyncResult<CreateRoomSyncReply>(subject, payload)
+  return requestWithAsyncResult<CreateRoomSyncReply>(
+    roomCreate(user.account, user.siteId),
+    payload,
+    opts,
+  )
 }

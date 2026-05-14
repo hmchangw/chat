@@ -25,8 +25,5 @@ export async function removeMember(
   const payload: Record<string, unknown> = { roomId }
   if (account) payload.account = account
   if (orgId) payload.orgId = orgId
-  const subject = memberRemove(user.account, roomId, siteId)
-  return opts
-    ? requestWithAsyncResult(subject, payload, opts)
-    : requestWithAsyncResult(subject, payload)
+  return requestWithAsyncResult(memberRemove(user.account, roomId, siteId), payload, opts)
 }

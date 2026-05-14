@@ -57,7 +57,7 @@ describe('AddMembersForm', () => {
         orgs: ['eng'],
         channels: [{ roomId: 'r-x', siteId: 'site-A' }],
         history: { mode: 'all' },
-      }
+      }, undefined
     )
   })
 

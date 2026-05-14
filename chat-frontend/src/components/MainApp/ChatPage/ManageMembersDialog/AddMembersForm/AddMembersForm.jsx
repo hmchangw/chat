@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNats } from '@/context/NatsContext'
 import { addMembers } from '@/api'
 import { HISTORY_MODE_ALL, HISTORY_MODE_NONE } from '@/lib/constants'
-import { formatAsyncJobError } from '@/api/_transport/asyncJob'
+import { formatAsyncJobError } from '@/api'
 import MemberPicker from '../MemberPicker/MemberPicker'
 
 const SUCCESS_BANNER_MS = 3000
