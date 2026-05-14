@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -16,7 +14,6 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // --- In-memory InboxStore stub ---
@@ -202,8 +199,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -272,8 +268,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 			{ID: "uid-carol", Account: "carol", SiteID: "site-a"},
 		},
 	}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
@@ -322,8 +317,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 func TestHandleEvent_RoomSync(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	room := model.Room{
 		ID:        "room-1",
@@ -380,8 +374,7 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 
 func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	// Insert initial room
 	room1 := model.Room{
@@ -426,8 +419,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 
 func TestHandleEvent_UnknownType(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	evt := model.OutboxEvent{
 		Type:       "unknown_type",
@@ -456,8 +448,7 @@ func TestHandleEvent_UnknownType(t *testing.T) {
 
 func TestHandleEvent_InvalidJSON(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	err := h.HandleEvent(context.Background(), []byte("not json"))
 	if err == nil {
@@ -467,8 +458,7 @@ func TestHandleEvent_InvalidJSON(t *testing.T) {
 
 func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -495,8 +485,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 			{ID: "uid-bob", Account: "account-bob", SiteID: "site-a"},
 		},
 	}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -553,8 +542,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -632,8 +620,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 			{ID: "uid-dave", Account: "dave", SiteID: "site-a"},
 		},
 	}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	change := model.MemberAddEvent{
 		Type:     "member_added",
@@ -669,8 +656,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	evt := model.OutboxEvent{
 		Type:       "room_sync",
@@ -693,8 +679,7 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: "u2",
 		Subscription: model.Subscription{
@@ -728,8 +713,7 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 	evt := model.OutboxEvent{
 		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: []byte("not valid json"),
@@ -746,8 +730,7 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
@@ -775,8 +758,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	evt := model.OutboxEvent{
 		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
@@ -790,8 +772,7 @@ func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 
 	// Pre-populate subscriptions for both accounts
 	store.mu.Lock()
@@ -824,8 +805,7 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
@@ -845,8 +825,7 @@ func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ st
 
 func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
@@ -860,8 +839,7 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	inner := model.SubscriptionReadEvent{
 		Account:    "alice",
@@ -894,8 +872,7 @@ func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: []byte("not-json")}
 	data, _ := json.Marshal(evt)
 	require.Error(t, h.HandleEvent(context.Background(), data))
@@ -903,8 +880,7 @@ func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -941,8 +917,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -976,8 +951,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 
 func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	evt := model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
@@ -991,8 +965,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -1054,8 +1027,7 @@ func TestSubscriptionIsSubscribed(t *testing.T) {
 
 func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
 		RoomID: "r1", RoomType: model.RoomTypeChannel,
 		Accounts: []string{"bob"},
@@ -1067,8 +1039,7 @@ func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 
 func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
 	store := &stubInboxStore{}
-	keyStoreT, clientT := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStoreT, clientT)
+	h := NewHandler(store, "site-test")
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1084,8 +1055,7 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1118,8 +1088,7 @@ func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
 			{ID: "u_ian", Account: "ian", SiteID: "site-B"},
 		},
 	}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1150,8 +1119,7 @@ func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 
 	change := model.MemberAddEvent{
 		Type:      "member_added",
@@ -1195,8 +1163,7 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 			{ID: "u_weather", Account: "weather.bot", SiteID: "site-B"},
 		},
 	}
-	keyStore, client := newKeyDepsForTest()
-	h := NewHandler(store, "site-test", keyStore, client)
+	h := NewHandler(store, "site-test")
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1222,435 +1189,4 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 	assert.Equal(t, model.RoomTypeBotDM, subs[0].RoomType)
 	assert.Equal(t, "u_weather", subs[0].User.ID)
 	assert.Equal(t, "weather.bot", subs[0].User.Account)
-}
-
-// TestHandleMemberAdded_ReplicatesLocalKeyOnMiss verifies that on a local Valkey miss,
-// handleMemberAdded fetches from origin via RPC and stores the key locally.
-// No user-side fan-out happens here — origin room-worker handles that via supercluster.
-func TestHandleMemberAdded_ReplicatesLocalKeyOnMiss(t *testing.T) {
-	store := &stubInboxStore{}
-	store.users = []model.User{
-		{ID: "u-c", Account: "charlie", SiteID: "site-b"},
-	}
-	keyStore := newStubKeyStore()
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID: "r1", Version: 2,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x07}, 32),
-		},
-	}
-
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	memberAdded := model.MemberAddEvent{
-		RoomID: "r1", Accounts: []string{"charlie"}, SiteID: "site-origin",
-		RoomName: "general", JoinedAt: time.Now().UnixMilli(),
-	}
-	pData, err := json.Marshal(memberAdded)
-	require.NoError(t, err)
-	envelope := &model.OutboxEvent{Type: "member_added", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
-
-	require.NoError(t, h.handleMemberAdded(context.Background(), envelope))
-
-	// Key must be replicated to local Valkey.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair, "key must be stored locally after RPC fetch")
-	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
-}
-
-// TestHandleMemberAdded_NoRPCOnLocalHit verifies that when the key is already
-// in local Valkey, no RPC is made. No user-side fan-out either.
-func TestHandleMemberAdded_NoRPCOnLocalHit(t *testing.T) {
-	store := &stubInboxStore{}
-	store.users = []model.User{
-		{ID: "u-c", Account: "charlie", SiteID: "site-b"},
-	}
-	keyStore := newStubKeyStore()
-	// Pre-seed local key.
-	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x09}, 32),
-	})
-	client := &stubInterSiteClient{}
-
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	memberAdded := model.MemberAddEvent{
-		RoomID: "r1", Accounts: []string{"charlie"}, SiteID: "site-origin",
-		RoomName: "general", JoinedAt: time.Now().UnixMilli(),
-	}
-	pData, err := json.Marshal(memberAdded)
-	require.NoError(t, err)
-	envelope := &model.OutboxEvent{Type: "member_added", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
-
-	require.NoError(t, h.handleMemberAdded(context.Background(), envelope))
-	// RPC should NOT have been called (local hit).
-	assert.Empty(t, client.calls)
-}
-
-// TestHandleMemberRemoved_RotatesLocalKey verifies that on member_removed the local
-// Valkey key is rotated. No user-side fan-out — origin room-worker handles that.
-func TestHandleMemberRemoved_RotatesLocalKey(t *testing.T) {
-	store := &stubInboxStore{}
-	store.subscriptions = []model.Subscription{
-		{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-b"},
-	}
-	keyStore := newStubKeyStore()
-	// Pre-seed previous key so Rotate succeeds (not falls through to Set).
-	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x01}, 32),
-	})
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID: "r1", Version: 5,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x08}, 32),
-		},
-	}
-
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	rmv := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-origin", NewKeyVersion: 5}
-	pData, err := json.Marshal(rmv)
-	require.NoError(t, err)
-	envelope := &model.OutboxEvent{Type: "member_removed", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
-	require.NoError(t, h.handleMemberRemoved(context.Background(), envelope))
-
-	// Valkey key rotated to the new pair.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey, "key must be rotated to new pair")
-}
-
-func TestHandleMemberRemoved_NaksOnRPCFailure(t *testing.T) {
-	store := &stubInboxStore{}
-	keyStore := newStubKeyStore()
-	// Pre-seed a key so Rotate (not Set) is attempted.
-	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x01}, 32),
-	})
-	client := &stubInterSiteClient{getErr: fmt.Errorf("rpc timeout")}
-
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	rmv := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-origin"}
-	pData, err := json.Marshal(rmv)
-	require.NoError(t, err)
-	envelope := &model.OutboxEvent{Type: "member_removed", SiteID: "site-origin", DestSiteID: "site-b", Payload: pData}
-
-	err = h.handleMemberRemoved(context.Background(), envelope)
-	require.Error(t, err, "expected error to be propagated for NAK")
-	assert.Contains(t, err.Error(), "rotate local key")
-	assert.Contains(t, err.Error(), "rpc timeout")
-}
-
-// TestHandleRoomCreated_ReplicatesLocalKey verifies that on room_created the local
-// Valkey key is populated via RPC. No user-side fan-out — origin room-worker handles that.
-func TestHandleRoomCreated_ReplicatesLocalKey(t *testing.T) {
-	store := &stubInboxStore{
-		users: []model.User{
-			{ID: "u-bob", Account: "bob", SiteID: "site-b"},
-		},
-	}
-	keyStore := newStubKeyStore()
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID:     "r1",
-			Version:    1,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x06}, 32),
-		},
-	}
-
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	outbox := model.RoomCreatedOutbox{
-		RoomID:           "r1",
-		HomeSiteID:       "site-origin",
-		Accounts:         []string{"bob"},
-		RoomType:         model.RoomTypeChannel,
-		RequesterAccount: "alice",
-		Timestamp:        time.Now().UnixMilli(),
-	}
-	pData, err := json.Marshal(outbox)
-	require.NoError(t, err)
-	envelope := &model.OutboxEvent{
-		Type:       model.OutboxTypeRoomCreated,
-		SiteID:     "site-origin",
-		DestSiteID: "site-b",
-		Payload:    pData,
-	}
-
-	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0193")
-	require.NoError(t, h.handleRoomCreated(ctx, envelope))
-
-	// Verify Set was called with the fetched keypair.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-}
-
-func TestFetchAndStoreKey_AdoptsOriginVersionWhenLocalLags(t *testing.T) {
-	// Pre-seed local store with a version 0 key.
-	keyStore := newStubKeyStore()
-	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
-	})
-
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID: "r1", Version: 5,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
-		},
-	}
-
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
-
-	// Local must mirror origin's version so on-wire message envelopes match what clients hold.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	assert.Equal(t, client.getResp.Version, pair.Version,
-		"replicated key must adopt origin's version, not bump local independently")
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-}
-
-func TestFetchAndStoreKey_SkipsWhenLocalAtOrAheadOfOrigin(t *testing.T) {
-	keyStore := newStubKeyStore()
-	require.NoError(t, keyStore.SetWithVersion(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x09}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x0a}, 32),
-	}, 5))
-
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID: "r1", Version: 5,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
-		},
-	}
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
-
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	// Redelivery must not bump or overwrite when versions match.
-	assert.Equal(t, 5, pair.Version)
-	assert.Equal(t, bytes.Repeat([]byte{0x09}, 65), pair.KeyPair.PublicKey,
-		"local public key must not change when versions are equal")
-	assert.Equal(t, bytes.Repeat([]byte{0x0a}, 32), pair.KeyPair.PrivateKey,
-		"local private key must not change when versions are equal")
-}
-
-// --- replicateLocalKey direct tests ---
-
-// TestReplicateLocalKey_NoRPCOnCacheHit confirms that when the local key
-// is already cached, no RPC is made (it's a no-op).
-func TestReplicateLocalKey_NoRPCOnCacheHit(t *testing.T) {
-	keyStore := newStubKeyStore()
-	_, err := keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x03}, 32),
-	})
-	require.NoError(t, err)
-
-	client := &stubInterSiteClient{}
-
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.replicateLocalKey(context.Background(), "site-a", "r1"))
-
-	// Key was served from cache — interSiteClient must not have been called.
-	client.mu.Lock()
-	nCalls := len(client.calls)
-	client.mu.Unlock()
-	assert.Equal(t, 0, nCalls, "interSiteClient must not be called on a cache hit")
-}
-
-// TestReplicateLocalKey_FallsBackToRPCOnMiss confirms that when the
-// local cache is empty the function fetches from the origin via RPC and stores
-// the key locally. No user-side fan-out.
-func TestReplicateLocalKey_FallsBackToRPCOnMiss(t *testing.T) {
-	keyStore := newStubKeyStore() // empty cache
-
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID:     "r1",
-			Version:    3,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
-		},
-	}
-
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.replicateLocalKey(context.Background(), "site-a", "r1"))
-
-	// RPC was made to fetch from origin.
-	client.mu.Lock()
-	nCalls := len(client.calls)
-	client.mu.Unlock()
-	assert.Equal(t, 1, nCalls, "expected one RPC call to interSiteClient")
-
-	// Key should now be stored locally.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair, "key must be persisted locally after RPC fetch")
-}
-
-// TestReplicateLocalKey_ReturnsErrorOnKeyStoreFailure verifies that a
-// Valkey Get failure is propagated as an error rather than silently falling
-// through to the RPC path.
-func TestReplicateLocalKey_ReturnsErrorOnKeyStoreFailure(t *testing.T) {
-	valkeyErr := errors.New("valkey: connection refused")
-	keyStore := &stubKeyStore{
-		store:  map[string]*roomkeystore.VersionedKeyPair{},
-		getErr: valkeyErr,
-	}
-	client := &stubInterSiteClient{}
-
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	err := h.replicateLocalKey(context.Background(), "site-a", "r1")
-	require.Error(t, err, "expected error when keyStore.Get fails")
-	require.ErrorIs(t, err, valkeyErr, "error must wrap the underlying Valkey error")
-
-	// RPC path must NOT be reached when Get returns an error.
-	client.mu.Lock()
-	nCalls := len(client.calls)
-	client.mu.Unlock()
-	assert.Equal(t, 0, nCalls, "interSiteClient must not be called on Valkey Get failure")
-}
-
-// --- fetchAndStoreKey direct tests ---
-
-// TestFetchAndStoreKey_HappyPath verifies that on an empty local store the
-// fetched key is written with origin's exact version (no Set-at-version-0 quirk).
-func TestFetchAndStoreKey_HappyPath(t *testing.T) {
-	keyStore := newStubKeyStore() // empty
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID:     "r1",
-			Version:    1,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
-		},
-	}
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
-
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	assert.Equal(t, client.getResp.Version, pair.Version, "local must adopt origin's version exactly")
-	assert.Equal(t, client.getResp.PublicKey, pair.KeyPair.PublicKey)
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-}
-
-// TestFetchAndStoreKey_AdvancesLocalWhenOriginNewer verifies version catch-up:
-// when origin is at version=3 but local is at version=0, fetchAndStoreKey writes
-// the fetched key at version=3 (not local+1).
-func TestFetchAndStoreKey_AdvancesLocalWhenOriginNewer(t *testing.T) {
-	keyStore := newStubKeyStore()
-	_, _ = keyStore.Set(context.Background(), "r1", roomkeystore.RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
-		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
-	})
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID:     "r1",
-			Version:    3,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x07}, 32),
-		},
-	}
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	require.NoError(t, h.fetchAndStoreKey(context.Background(), "site-origin", "r1"))
-
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair)
-	assert.Equal(t, client.getResp.Version, pair.Version, "local must adopt origin's version exactly")
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
-}
-
-// TestFetchAndStoreKey_RPCFailurePropagates verifies that an RPC error is returned.
-func TestFetchAndStoreKey_RPCFailurePropagates(t *testing.T) {
-	keyStore := newStubKeyStore()
-	rpcErr := fmt.Errorf("origin unreachable")
-	client := &stubInterSiteClient{getErr: rpcErr}
-	h := NewHandler(nil, "site-b", keyStore, client)
-
-	err := h.fetchAndStoreKey(context.Background(), "site-origin", "r1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, rpcErr)
-}
-
-// TestHandleEvent_MemberRemoved_RotatesLocalKey verifies that a
-// member_removed OutboxEvent passes through the dispatch table and reaches the
-// key-rotation path when key dependencies are fully wired. No fan-out.
-func TestHandleEvent_MemberRemoved_RotatesLocalKey(t *testing.T) {
-	store := &stubInboxStore{}
-
-	store.mu.Lock()
-	store.subscriptions = append(store.subscriptions, model.Subscription{
-		ID: "s-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
-		RoomID: "r1", SiteID: "site-b",
-	})
-	store.mu.Unlock()
-
-	keyStore := newStubKeyStore()
-	// Pre-seed the origin key in the interSiteClient so GetRoomKey succeeds.
-	client := &stubInterSiteClient{
-		getResp: &model.RoomKeyEvent{
-			RoomID:     "r1",
-			Version:    5,
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x03}, 32),
-		},
-	}
-	h := NewHandler(store, "site-b", keyStore, client)
-
-	memberEvt := model.MemberRemoveEvent{
-		Type:          "member-removed",
-		RoomID:        "r1",
-		Accounts:      []string{"charlie"},
-		SiteID:        "site-a",
-		NewKeyVersion: 5,
-	}
-	payload, err := json.Marshal(memberEvt)
-	require.NoError(t, err)
-	outboxEvt := model.OutboxEvent{
-		Type:       "member_removed",
-		SiteID:     "site-a",
-		DestSiteID: "site-b",
-		Payload:    payload,
-		Timestamp:  time.Now().UnixMilli(),
-	}
-	data, err := json.Marshal(outboxEvt)
-	require.NoError(t, err)
-
-	err = h.HandleEvent(context.Background(), data)
-	require.NoError(t, err)
-
-	// Valkey has the rotated key — proves dispatch reached rotation path.
-	pair, err := keyStore.Get(context.Background(), "r1")
-	require.NoError(t, err)
-	require.NotNil(t, pair, "local key must be stored after rotation")
-	assert.Equal(t, client.getResp.PrivateKey, pair.KeyPair.PrivateKey)
 }

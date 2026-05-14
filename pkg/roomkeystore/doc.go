@@ -21,6 +21,8 @@
 //
 // # Federation
 //
-// This package is site-local. Cross-site replication is the responsibility of
-// inbox-worker via chat.server.request.roomkey.<siteID>.get RPC.
+// Site-local only. A room exists on its origin site, so the broadcast pipeline
+// that needs the key runs on that same site and reads from the origin's local
+// keystore. There is no cross-site key replication; inbox-worker on remote
+// sites replicates subscription/room metadata but never room keys.
 package roomkeystore

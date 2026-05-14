@@ -174,7 +174,11 @@ type MemberRemoveEvent struct {
 	SiteID    string   `json:"siteId"          bson:"siteId"`
 	OrgID     string   `json:"orgId,omitempty" bson:"orgId,omitempty"`
 	Timestamp int64    `json:"timestamp"       bson:"timestamp"`
-	// Federated key version for inbox-worker's local rotation.
+	// Key version after the rotation triggered by this removal. Used by
+	// room-worker (same site as room-service) to wait for the rotation to
+	// settle in Valkey before processing the canonical event. Cross-site
+	// consumers ignore this field — rooms only exist on their origin site,
+	// so remote sites never need to track the room's key version.
 	NewKeyVersion int `json:"newKeyVersion" bson:"newKeyVersion"`
 }
 

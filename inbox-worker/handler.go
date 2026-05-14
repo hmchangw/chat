@@ -9,14 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeymetrics"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -36,32 +31,21 @@ type InboxStore interface {
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 }
 
-// RoomKeyStore is the local Valkey-backed keystore used by inbox-worker.
-// Replication adopts the origin's exact version via SetWithVersion so on-wire
-// message envelopes carry a version every client (across every site) holds —
-// inbox-worker never calls Rotate, since that would diverge from origin.
-type RoomKeyStore interface {
-	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
-	SetWithVersion(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair, version int) error
-	Close() error
-}
-
-// InterSiteKeyClient fetches a keypair from an origin site via NATS RPC.
-type InterSiteKeyClient interface {
-	GetRoomKey(ctx context.Context, originSiteID, roomID string) (*model.RoomKeyEvent, error)
-}
-
 // Handler processes incoming cross-site OutboxEvent messages.
+//
+// Room encryption keys are NOT replicated cross-site: a room only ever exists
+// on its origin site, so broadcast for that room runs on the origin and reads
+// the key from the origin's local Valkey. inbox-worker therefore only
+// replicates subscription/room metadata so this site's UI can render
+// memberships and basic room info.
 type Handler struct {
-	store           InboxStore
-	siteID          string
-	keyStore        RoomKeyStore
-	interSiteClient InterSiteKeyClient
+	store  InboxStore
+	siteID string
 }
 
-// NewHandler creates a Handler with the given store and optional key-handling dependencies.
-func NewHandler(store InboxStore, siteID string, keyStore RoomKeyStore, client InterSiteKeyClient) *Handler {
-	return &Handler{store: store, siteID: siteID, keyStore: keyStore, interSiteClient: client}
+// NewHandler creates a Handler with the given store.
+func NewHandler(store InboxStore, siteID string) *Handler {
+	return &Handler{store: store, siteID: siteID}
 }
 
 // HandleEvent processes a single JetStream message payload.
@@ -98,7 +82,6 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("unmarshal member_added payload: %w", err)
 	}
 
-	// 1. Look up users locally
 	users, err := h.store.FindUsersByAccounts(ctx, event.Accounts)
 	if err != nil {
 		return fmt.Errorf("find users by accounts: %w", err)
@@ -115,7 +98,6 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		historySharedSince = &t
 	}
 
-	// 2. Build subscriptions
 	subs := make([]*model.Subscription, 0, len(event.Accounts))
 	for _, account := range event.Accounts {
 		user, ok := userMap[account]
@@ -140,17 +122,8 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 		subs = append(subs, sub)
 	}
 
-	// 3. Bulk create subscriptions
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subscriptions: %w", err)
-	}
-
-	// 4. Replicate room key locally. Origin room-worker already published
-	// chat.user.<account>.event.room.key for each new member; the supercluster
-	// routes it to the user's home site. This call only ensures local Valkey
-	// has the key so broadcast-worker on this site can encrypt.
-	if err := h.replicateLocalKey(ctx, evt.SiteID, event.RoomID); err != nil {
-		return fmt.Errorf("replicate local key for room %s from %s: %w", event.RoomID, evt.SiteID, err)
 	}
 
 	// No SubscriptionUpdateEvent is published here — room-worker already publishes
@@ -170,21 +143,11 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	if err := json.Unmarshal(evt.Payload, &memberEvt); err != nil {
 		return fmt.Errorf("unmarshal member removed payload: %w", err)
 	}
-	// Skip the Mongo delete when nothing to delete, but ALWAYS pull the rotated
-	// key from origin: the removal happened on the origin site even when no
-	// subscription on this site is affected, and the local broadcast-worker
-	// would otherwise keep encrypting under an older version than the survivors
-	// hold.
-	if len(memberEvt.Accounts) > 0 {
-		if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
-			return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
-		}
+	if len(memberEvt.Accounts) == 0 {
+		return nil
 	}
-	// Rotate local Valkey key so broadcast-worker on this site uses the new pair.
-	// Origin room-worker already published chat.user.<account>.event.room.key to
-	// all survivors; the supercluster routes those events to home sites.
-	if err := h.fetchAndStoreKey(ctx, evt.SiteID, memberEvt.RoomID); err != nil {
-		return fmt.Errorf("rotate local key (room %s, origin %s): %w", memberEvt.RoomID, evt.SiteID, err)
+	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
+		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
 	}
 	return nil
 }
@@ -342,57 +305,8 @@ func (h *Handler) handleRoomCreated(ctx context.Context, evt *model.OutboxEvent)
 	if len(subs) == 0 {
 		return nil
 	}
-	// BulkCreateSubscriptions is now $setOnInsert-based: redeliveries are no-ops on
-	// Mongo, so we always proceed to (re-)attempt key replication. Earlier code had
-	// a duplicate-key escape hatch here; with idempotent upserts it's unreachable.
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
-	}
-	if err := h.fetchAndStoreKey(ctx, data.HomeSiteID, data.RoomID); err != nil {
-		return fmt.Errorf("replicate room key for room %s from %s: %w", data.RoomID, data.HomeSiteID, err)
-	}
-	return nil
-}
-
-// replicateLocalKey ensures the local Valkey has the room key, fetching from origin on a cache miss.
-// keyStore and interSiteClient are required (see VALKEY_ADDR gate in main.go).
-func (h *Handler) replicateLocalKey(ctx context.Context, originSiteID, roomID string) error {
-	pair, err := h.keyStore.Get(ctx, roomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		return fmt.Errorf("get local key: %w", err)
-	}
-	if pair != nil {
-		// Key already present locally — nothing to do.
-		return nil
-	}
-	// Local miss → replicate from origin.
-	return h.fetchAndStoreKey(ctx, originSiteID, roomID)
-}
-
-// fetchAndStoreKey RPCs the origin for its current key and replicates it into local Valkey
-// at the origin's exact version, so this site's broadcast-worker emits envelopes whose
-// version every client (across every site) already holds. Duplicate JetStream deliveries
-// no-op once the local copy is at or beyond the fetched version; never re-rotates.
-// No user-side fan-out — origin room-worker handles that via NATS supercluster.
-func (h *Handler) fetchAndStoreKey(ctx context.Context, originSiteID, roomID string) error {
-	fetched, err := h.interSiteClient.GetRoomKey(ctx, originSiteID, roomID)
-	if err != nil {
-		return fmt.Errorf("rpc origin: %w", err)
-	}
-	local, err := h.keyStore.Get(ctx, roomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		return fmt.Errorf("get local key: %w", err)
-	}
-	if local != nil && local.Version >= fetched.Version {
-		// Local is current or ahead — redelivery / out-of-order; don't downgrade or re-bump.
-		return nil
-	}
-	pair := roomkeystore.RoomKeyPair{PublicKey: fetched.PublicKey, PrivateKey: fetched.PrivateKey}
-	if err := h.keyStore.SetWithVersion(ctx, roomID, pair, fetched.Version); err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "SetWithVersion")))
-		return fmt.Errorf("set local key at version %d: %w", fetched.Version, err)
 	}
 	return nil
 }

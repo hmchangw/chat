@@ -19,8 +19,6 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
-	"github.com/hmchangw/chat/pkg/roomkeymetrics"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -36,18 +34,6 @@ type config struct {
 	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
-
-	// Valkey wiring; required. inbox-worker cannot replicate cross-site keys
-	// without it and would NAK every key-bearing outbox event.
-	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
-	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
-	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
-	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
-	RoomKeyRPCTimeout    time.Duration `env:"ROOM_KEY_RPC_TIMEOUT"      envDefault:"5s"`
-	// RoomKeyMaxRedeliver caps how many times a message may be redelivered before
-	// inbox-worker terminates it (Ack + log) instead of NAK-looping indefinitely.
-	// Applies when the origin site is unreachable and fetchAndStoreKey keeps failing.
-	RoomKeyMaxRedeliver int `env:"ROOM_KEY_MAX_REDELIVER" envDefault:"10"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -110,9 +96,7 @@ func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []st
 // BulkCreateSubscriptions inserts the supplied subs idempotently. Each is
 // keyed by (roomId, u.account) and written via $setOnInsert so an existing
 // sub (from a previous delivery, or with read-state already accumulated) is
-// preserved. Redelivered cross-site events become no-ops on Mongo and let
-// the handler proceed to (re-)attempt key replication without surfacing a
-// duplicate-key path to the caller.
+// preserved. Redelivered cross-site events become no-ops on Mongo.
 func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
 	if len(subs) == 0 {
 		return nil
@@ -206,25 +190,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.ValkeyKeyGracePeriod <= 0 {
-		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
-			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
-		os.Exit(1)
-	}
-	if cfg.RoomKeyMaxRedeliver <= 0 {
-		// A zero or negative cap would satisfy the >= check on the very first
-		// delivery and silently terminate every event before the handler runs.
-		slog.Error("ROOM_KEY_MAX_REDELIVER must be a positive integer",
-			"room_key_max_redeliver", cfg.RoomKeyMaxRedeliver)
-		os.Exit(1)
-	}
-	if cfg.RoomKeyRPCTimeout <= 0 {
-		// A zero or negative timeout makes every inter-site key RPC fail immediately.
-		slog.Error("ROOM_KEY_RPC_TIMEOUT must be a positive duration",
-			"room_key_rpc_timeout", cfg.RoomKeyRPCTimeout)
-		os.Exit(1)
-	}
-
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "inbox-worker")
@@ -282,35 +247,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr: cfg.ValkeyAddr, Password: cfg.ValkeyPassword, GracePeriod: cfg.ValkeyKeyGracePeriod,
-	})
-	if err != nil {
-		slog.Error("valkey connect failed", "error", err)
-		os.Exit(1)
-	}
-	interSiteClient := newNatsInterSiteKeyClient(nc.NatsConn(), cfg.RoomKeyRPCTimeout)
-
-	handler := NewHandler(store, cfg.SiteID, keyStore, interSiteClient)
+	handler := NewHandler(store, cfg.SiteID)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
-
-		// Terminate messages that have been redelivered too many times to prevent indefinite
-		// NAK-loops when the origin site is unreachable (e.g. fetchAndStoreKey keeps failing).
-		if meta, metaErr := m.Metadata(); metaErr == nil && meta != nil {
-			if exceedsMaxRedeliver(meta.NumDelivered, cfg.RoomKeyMaxRedeliver) {
-				slog.Error("inbox event terminated after max redeliver",
-					"numDelivered", meta.NumDelivered,
-					"maxRedeliver", cfg.RoomKeyMaxRedeliver,
-					"request_id", natsutil.RequestIDFromContext(handlerCtx))
-				roomkeymetrics.ReplicationTerminated.Add(handlerCtx, 1)
-				if err := m.Ack(); err != nil {
-					slog.Error("failed to ack terminated message", "error", err)
-				}
-				return
-			}
-		}
 
 		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
 			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
@@ -332,7 +272,7 @@ func main() {
 
 	// Shutdown ordering: drain inbound work first, then close client connections,
 	// THEN flush observability exporters. Reverse order drops traces/metrics
-	// emitted during NATS drain, mongo disconnect, and keyStore close.
+	// emitted during NATS drain and mongo disconnect.
 	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			cctx.Stop()
@@ -340,18 +280,11 @@ func main() {
 		},
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-		func(ctx context.Context) error { return keyStore.Close() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
-}
-
-// exceedsMaxRedeliver reports whether numDelivered has reached or exceeded the
-// configured maximum. Extracted for unit-testing without a real JetStream Msg.
-func exceedsMaxRedeliver(numDelivered uint64, maxRedeliver int) bool {
-	return int(numDelivered) >= maxRedeliver
 }
 
 // buildConsumerConfig returns the durable consumer config for

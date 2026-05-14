@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -14,15 +13,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -31,15 +27,6 @@ import (
 
 func setupMongo(t *testing.T) *mongo.Database {
 	return testutil.MongoDB(t, "inbox_worker_test")
-}
-
-// newHandlerWithStubKeys constructs a Handler with the production-required key
-// wiring populated by in-process stubs. Production refuses to start without
-// Valkey (see main.go's VALKEY_ADDR=required gate), so integration tests that
-// don't otherwise exercise key behavior need non-nil dependencies here.
-func newHandlerWithStubKeys(_ *testing.T, store InboxStore, siteID string) *Handler {
-	ks, client := newKeyDepsForTest()
-	return NewHandler(store, siteID, ks, client)
 }
 
 func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
@@ -51,7 +38,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := newHandlerWithStubKeys(t, store, "site-b")
+	handler := NewHandler(store, "site-b")
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -99,7 +86,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := newHandlerWithStubKeys(t, store, "site-b")
+	handler := NewHandler(store, "site-b")
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -130,7 +117,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := newHandlerWithStubKeys(t, store, "site-b")
+	handler := NewHandler(store, "site-b")
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -243,7 +230,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	h := newHandlerWithStubKeys(t, store, "site-b")
+	h := NewHandler(store, "site-b")
 
 	ctx := context.Background()
 
@@ -378,7 +365,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := newHandlerWithStubKeys(t, store, "site-b")
+	handler := NewHandler(store, "site-b")
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
@@ -422,7 +409,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := newHandlerWithStubKeys(t, store, "site-b")
+	handler := NewHandler(store, "site-b")
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
@@ -500,7 +487,7 @@ func newIntegrationHandler(t *testing.T, db *mongo.Database, sid string) *Handle
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	return newHandlerWithStubKeys(t, store, sid)
+	return NewHandler(store, sid)
 }
 
 func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
@@ -644,143 +631,4 @@ func TestInboxWorker_FilterScoping_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, info.NumPending,
 		"FilterSubjects must scope inbox-worker to the aggregate.> lane only")
-}
-
-// setupValkeyStore starts a Valkey testcontainer and returns a connected key store.
-func setupValkeyStore(t *testing.T) roomkeystore.RoomKeyStore {
-	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-	cfg := roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
-		GracePeriod: time.Hour,
-	}
-	ks, err := roomkeystore.NewValkeyStore(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ks.Close() })
-	return ks
-}
-
-// startNATSContainer starts the standard testcontainers-go NATS module and returns
-// a connected core-NATS client tied to the test's lifetime. Used by tests that
-// need a real broker for request/reply rather than JetStream (see setupNATS for
-// the JetStream-backed flavor). Per CLAUDE.md: integration tests use the
-// testcontainers official module, not an embedded server.
-func startNATSContainer(t *testing.T) *nats.Conn {
-	t.Helper()
-	ctx := context.Background()
-
-	c, err := natsmod.Run(ctx, testimages.NATS)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
-
-	url, err := c.ConnectionString(ctx)
-	require.NoError(t, err)
-
-	nc, err := nats.Connect(url)
-	require.NoError(t, err)
-	t.Cleanup(nc.Close)
-	return nc
-}
-
-// TestIntegration_CrossSiteKeyReplication verifies the end-to-end cross-site key
-// replication path in handleRoomCreated:
-//
-//  1. A NATS responder simulates the origin site's NatsHandleGetRoomKey endpoint
-//     (serving chat.server.request.roomkey.{originSiteID}.get).
-//  2. handleRoomCreated is driven with a room_created outbox event whose HomeSiteID
-//     points to the "origin" site.
-//  3. After the call, the destination Valkey must hold the same keypair.
-//     Fan-out to individual user subjects is origin room-worker's responsibility
-//     and is not verified here.
-func TestIntegration_CrossSiteKeyReplication(t *testing.T) {
-	const (
-		originSiteID = "site-origin"
-		destSiteID   = "site-dest"
-		roomID       = "r1"
-	)
-
-	ctx := context.Background()
-	db := setupMongo(t)
-
-	// Seed user on destination site so handleRoomCreated can look them up.
-	mustInsertUser(t, db, &model.User{
-		ID: "u_bob", Account: "bob", SiteID: destSiteID,
-		EngName: "Bob", ChineseName: "鲍勃",
-	})
-
-	// Destination Valkey — this is what we assert on.
-	destKS := setupValkeyStore(t)
-
-	// Containerized NATS for both the origin RPC handler and the keySender fan-out.
-	nc := startNATSContainer(t)
-
-	// Seed a keypair that the "origin" will return via RPC.
-	originPub := []byte("origin-public-key-bytes")
-	originPriv := []byte("origin-private-key-bytes")
-
-	// Register origin RPC handler: serves chat.server.request.roomkey.{originSiteID}.get.
-	_, err := nc.Subscribe(subject.ServerRoomKeyGet(originSiteID), func(m *nats.Msg) {
-		evt := model.RoomKeyEvent{
-			RoomID:     roomID,
-			Version:    0,
-			PublicKey:  originPub,
-			PrivateKey: originPriv,
-		}
-		data, _ := json.Marshal(evt)
-		_ = m.Respond(data)
-	})
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-
-	// Wire up handler: real Mongo store, real dest Valkey, NATS inter-site client.
-	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
-		userCol: db.Collection("users"),
-	}
-	interSiteClient := newNatsInterSiteKeyClient(nc, 5*time.Second)
-	h := NewHandler(store, destSiteID, destKS, interSiteClient)
-
-	// Build and drive a room_created outbox event for bob on the destination site.
-	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0002"
-	ctx = natsutil.WithRequestID(ctx, reqID)
-
-	payload, err := json.Marshal(model.RoomCreatedOutbox{
-		RoomID:           roomID,
-		RoomType:         model.RoomTypeChannel,
-		RoomName:         "secure channel",
-		HomeSiteID:       originSiteID,
-		Accounts:         []string{"bob"},
-		RequesterAccount: "alice",
-		Timestamp:        time.Now().UTC().UnixMilli(),
-	})
-	require.NoError(t, err)
-	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{
-		Type:       model.MessageTypeRoomCreated,
-		SiteID:     originSiteID,
-		DestSiteID: destSiteID,
-		Payload:    payload,
-		Timestamp:  time.Now().UTC().UnixMilli(),
-	}))
-
-	// Assert destination Valkey now holds the origin keypair.
-	pair, err := destKS.Get(ctx, roomID)
-	require.NoError(t, err)
-	require.NotNil(t, pair, "destination keystore must have the replicated keypair")
-	assert.Equal(t, originPub, pair.KeyPair.PublicKey, "public key must match origin")
-	assert.Equal(t, originPriv, pair.KeyPair.PrivateKey, "private key must match origin")
 }
