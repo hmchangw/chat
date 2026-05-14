@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { useNats } from '../../../../context/NatsContext'
-import { searchMessages } from '../../../../lib/subjects'
+import { searchMessages } from '../../../../api'
 import './style.css'
 
 // Submit-on-Enter (no search-as-you-type). The header's global search bar
@@ -11,7 +11,7 @@ import './style.css'
 // pattern.
 
 export default function InRoomSearch({ roomId, onClose, onJumpToMessage }) {
-  const { user, request } = useNats()
+  const nats = useNats()
   const inputRef = useRef(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -28,18 +28,14 @@ export default function InRoomSearch({ roomId, onClose, onJumpToMessage }) {
     setLoading(true)
     setSubmitted(true)
     try {
-      const resp = await request(searchMessages(user.account), {
-        searchText: q,
-        roomIds: [roomId],
-        size: 50,
-      })
+      const resp = await searchMessages(nats, { searchText: q, roomIds: [roomId], size: 50 })
       setResults(resp.results ?? [])
     } catch {
       setResults([])
     } finally {
       setLoading(false)
     }
-  }, [query, roomId, request, user])
+  }, [query, roomId, nats])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {

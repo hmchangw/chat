@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../../../context/NatsContext'
-import { readReceipt } from '../../../../../../lib/subjects'
+import { fetchReadReceipt } from '../../../../../../api'
 import './style.css'
 
 function formatReaderName(r) {
@@ -9,7 +9,8 @@ function formatReaderName(r) {
 }
 
 export default function MessageActionMenu({ message, room }) {
-  const { user, request } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -52,8 +53,7 @@ export default function MessageActionMenu({ message, room }) {
     setReaders(null)
     setTooltipOpen(false)
     const siteId = room?.siteId ?? user.siteId
-    const subject = readReceipt(user.account, room.id, siteId)
-    Promise.resolve(request(subject, { messageId: message.id }))
+    Promise.resolve(fetchReadReceipt(nats, { roomId: room.id, siteId, messageId: message.id }))
       .then((resp) => {
         if (!mountedRef.current) return
         setReaders(resp?.readers ?? [])

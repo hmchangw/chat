@@ -1,18 +1,15 @@
 import { useNats } from '../../../../context/NatsContext'
-import { memberRemove } from '../../../../lib/subjects'
+import { leaveRoom } from '../../../../api'
 
 export default function LeaveRoomButton({ room }) {
-  const { user, request } = useNats()
+  const nats = useNats()
 
   if (!room || room.type !== 'channel') return null
 
   const handleClick = async () => {
     if (!window.confirm(`Leave "${room.name}"?`)) return
     try {
-      await request(memberRemove(user.account, room.id, room.siteId), {
-        roomId: room.id,
-        account: user.account,
-      })
+      await leaveRoom(nats, { roomId: room.id, siteId: room.siteId })
     } catch (err) {
       window.alert(`Failed to leave: ${err.message}`)
     }

@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { useRoomEvents } from '../../../../context/RoomEventsContext'
 import { BUFFER_MODE } from '../../../../lib/roomEventsReducer'
-import { msgEdit, msgDelete } from '../../../../lib/subjects'
+import { editMessage, deleteMessage } from '../../../../api'
 import MessageList from '../../../shared/MessageList/MessageList'
 import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'
 import TextInputDialog from '../../../shared/TextInputDialog/TextInputDialog'
 import './style.css'
 
 export default function RoomMessageArea({ room, onThread, onReply }) {
-  const { user, publish } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const {
     messages,
     hasLoadedHistory,
@@ -49,9 +50,10 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
   const handleEditSave = (newContent) => {
     if (!editingMessage) return
     // Server: EditMessageRequest{ MessageID, NewMsg }. No createdAt, no requestId.
-    publish(msgEdit(user.account, room.id, user.siteId), {
-      messageId: editingMessage.id,
-      newMsg: newContent,
+    editMessage(nats, {
+      roomId: room.id,
+      siteId: user.siteId,
+      payload: { messageId: editingMessage.id, newMsg: newContent },
     })
     dispatch({
       type: 'MESSAGE_EDITED_LOCAL',
@@ -68,8 +70,10 @@ export default function RoomMessageArea({ room, onThread, onReply }) {
   const handleDeleteConfirm = () => {
     if (!pendingDelete) return
     // Server: DeleteMessageRequest{ MessageID }.
-    publish(msgDelete(user.account, room.id, user.siteId), {
-      messageId: pendingDelete.id,
+    deleteMessage(nats, {
+      roomId: room.id,
+      siteId: user.siteId,
+      payload: { messageId: pendingDelete.id },
     })
     dispatch({
       type: 'MESSAGE_DELETED_LOCAL',

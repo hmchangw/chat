@@ -2,7 +2,7 @@ import { createContext, useContext, useRef, useState, useCallback, useMemo } fro
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 import { AUTH_URL, NATS_URL } from '../lib/runtimeConfig'
-import { requestWithAsyncResult as asyncJobRequest } from '../lib/asyncJob'
+import { requestWithAsyncResult as asyncJobRequest } from '../api/_transport/asyncJob'
 
 export const NatsContext = createContext(null)
 
@@ -100,7 +100,7 @@ export function NatsProvider({ children }) {
    * get the final ok/error from the worker, not the optimistic accept.
    *
    * Injects the current `user.account` and the live `nc`; for the full
-   * contract see {@link asyncJobRequest} in `lib/asyncJob.js`.
+   * contract see {@link asyncJobRequest} in `api/_transport/asyncJob.js`.
    *
    * @param {string} subject
    * @param {unknown} [data={}]

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { useRoomSummaries } from '../../../../context/RoomEventsContext'
-import { roomCreate } from '../../../../lib/subjects'
+import { createRoom } from '../../../../api'
 import { isDMExistsReply } from '../../../../lib/constants'
-import { formatAsyncJobError } from '../../../../lib/asyncJob'
+import { formatAsyncJobError } from '../../../../api/_transport/asyncJob'
 import MemberPicker from '../../ChatPage/ManageMembersDialog/MemberPicker/MemberPicker'
 
 // How long to wait for the server's subscription.update event before
@@ -15,7 +15,8 @@ const SUBSCRIPTION_WAIT_TIMEOUT_MS = 3000
 
 // Type inferred server-side from payload shape (name vs. members).
 export default function CreateRoomDialog({ onClose, onCreated }) {
-  const { user, requestWithAsyncResult } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const { summaries } = useRoomSummaries()
   const [name, setName] = useState('')
   const [users, setUsers] = useState([])
@@ -83,8 +84,8 @@ export default function CreateRoomDialog({ onClose, onCreated }) {
     setLoading(true)
     setError(null)
     try {
-      const { sync } = await requestWithAsyncResult(
-        roomCreate(user.account, user.siteId),
+      const { sync } = await createRoom(
+        nats,
         { name: trimmedName, users: finalUsers, orgs: finalOrgs, channels: finalChannels },
         { treatAsSuccess: isDMExistsReply }
       )

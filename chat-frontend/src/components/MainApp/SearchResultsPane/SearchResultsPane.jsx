@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNats } from '../../../context/NatsContext'
-import { searchRooms, searchMessages } from '../../../lib/subjects'
+import { searchRooms, searchMessages } from '../../../api'
 import { roomFromSearchHit, searchRoomPrefix } from '../../../lib/roomFormat'
 
 export default function SearchResultsPane({
@@ -9,7 +9,8 @@ export default function SearchResultsPane({
   onSelectRoom,
   onJumpToMessage,
 }) {
-  const { user, request } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const [activeTab, setActiveTab] = useState('rooms')
   const [roomResults, setRoomResults] = useState([])
   const [roomTotal, setRoomTotal] = useState(0)
@@ -30,11 +31,7 @@ export default function SearchResultsPane({
     setRoomsError(null)
     setMsgsError(null)
 
-    request(searchRooms(user.account), {
-      searchText: query,
-      scope: 'all',
-      size: 50,
-    })
+    searchRooms(nats, { searchText: query, scope: 'all', size: 50 })
       .then((resp) => {
         if (cancelled) return
         setRoomResults(resp.results ?? [])
@@ -47,10 +44,7 @@ export default function SearchResultsPane({
         if (!cancelled) setRoomsLoading(false)
       })
 
-    request(searchMessages(user.account), {
-      searchText: query,
-      size: 50,
-    })
+    searchMessages(nats, { searchText: query, size: 50 })
       .then((resp) => {
         if (cancelled) return
         setMsgResults(resp.results ?? [])
@@ -66,7 +60,7 @@ export default function SearchResultsPane({
     return () => {
       cancelled = true
     }
-  }, [query, user, request])
+  }, [query, user, nats])
 
   const handleRoomClick = (hit) => {
     onSelectRoom(roomFromSearchHit(hit))

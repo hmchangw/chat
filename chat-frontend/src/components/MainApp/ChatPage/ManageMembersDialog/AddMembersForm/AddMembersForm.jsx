@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../../context/NatsContext'
-import { memberAdd } from '../../../../../lib/subjects'
+import { addMembers } from '../../../../../api'
 import { HISTORY_MODE_ALL, HISTORY_MODE_NONE } from '../../../../../lib/constants'
-import { formatAsyncJobError } from '../../../../../lib/asyncJob'
+import { formatAsyncJobError } from '../../../../../api/_transport/asyncJob'
 import MemberPicker from '../MemberPicker/MemberPicker'
 
 const SUCCESS_BANNER_MS = 3000
 
 export default function AddMembersForm({ room, onClose }) {
-  const { user, requestWithAsyncResult } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const [users, setUsers] = useState([])
   const [orgs, setOrgs] = useState([])
   const [channels, setChannels] = useState([])
@@ -38,8 +39,9 @@ export default function AddMembersForm({ room, onClose }) {
     setError(null)
     setSuccess(false)
     try {
-      await requestWithAsyncResult(memberAdd(user.account, room.id, room.siteId), {
+      await addMembers(nats, {
         roomId: room.id,
+        siteId: room.siteId,
         users: finalUsers,
         orgs: finalOrgs,
         channels: finalChannels,

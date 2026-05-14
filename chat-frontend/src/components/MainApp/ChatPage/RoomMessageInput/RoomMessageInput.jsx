@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../../../../context/NatsContext'
 import { useRoomDispatch } from '../../../../context/RoomEventsContext'
-import { msgSend } from '../../../../lib/subjects'
+import { sendMessage } from '../../../../api'
 import { generateMessageID } from '../../../../lib/idgen'
 import { roomPrefix, roomDisplayName } from '../../../../lib/roomFormat'
 import MessageInputForm from '../../../shared/MessageInputForm/MessageInputForm'
 
 export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
-  const { user, publish } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const dispatch = useRoomDispatch()
   const [text, setText] = useState('')
   const inputRef = useRef(null)
@@ -56,7 +57,7 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
       }
     }
     dispatch({ type: 'MESSAGE_SENT_LOCAL', roomId: room.id, message: optimistic })
-    publish(msgSend(user.account, room.id, user.siteId), payload)
+    sendMessage(nats, { roomId: room.id, siteId: user.siteId, payload })
     setText('')
     onClearQuote?.()
   }

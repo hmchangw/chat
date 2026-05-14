@@ -1,7 +1,7 @@
 import { useState, useCallback, forwardRef, useImperativeHandle, useRef } from 'react'
 import { useNats } from '../../../../../context/NatsContext'
 import { useDebouncedSearch } from '../../../../../lib/useDebouncedSearch'
-import { searchRooms } from '../../../../../lib/subjects'
+import { searchRooms } from '../../../../../api'
 import './style.css'
 
 // Split a typed string into individual entries on commas, trim each segment,
@@ -73,14 +73,15 @@ const MemberPicker = forwardRef(function MemberPicker(
   },
   ref
 ) {
-  const { user, request } = useNats()
+  const nats = useNats()
+  const { user } = nats
 
   const channelFetcher = useCallback(
     async (q) => {
-      const resp = await request(searchRooms(user.account), { searchText: q, scope: 'all', size: 8 })
+      const resp = await searchRooms(nats, { searchText: q, scope: 'all', size: 8 })
       return resp.results ?? []
     },
-    [request, user.account]
+    [nats]
   )
 
   // Channel parseEntries captures user.siteId so it stays inline; users/orgs

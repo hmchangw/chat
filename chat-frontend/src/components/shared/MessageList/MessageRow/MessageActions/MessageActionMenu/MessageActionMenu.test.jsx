@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import MessageActionMenu from './MessageActionMenu'
-import { readReceipt } from '../../../../../../lib/subjects'
+import { readReceipt } from '../../../../../../api/_transport/subjects'
 
 vi.mock('../../../../../../context/NatsContext', () => ({
   useNats: vi.fn(),

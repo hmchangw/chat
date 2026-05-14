@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNats } from '../../../../../context/NatsContext'
-import { memberList, memberRemove, memberRoleUpdate, orgMembers } from '../../../../../lib/subjects'
+import {
+  listRoomMembers,
+  listOrgMembers,
+  removeMember,
+  updateMemberRole,
+} from '../../../../../api'
 import { ROLE_OWNER, ROLE_MEMBER } from '../../../../../lib/constants'
-import { formatAsyncJobError } from '../../../../../lib/asyncJob'
+import { formatAsyncJobError } from '../../../../../api/_transport/asyncJob'
 import './style.css'
 
 export default function MemberRoster({ room }) {
-  const { user, request, requestWithAsyncResult } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const account = user?.account
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -47,7 +53,7 @@ export default function MemberRoster({ room }) {
     setError(null)
     setLoading(true)
     try {
-      const resp = await request(memberList(account, room.id, room.siteId), { enrich: true })
+      const resp = await listRoomMembers(nats, { roomId: room.id, siteId: room.siteId, enrich: true })
       if (gen !== memberListGenRef.current) return
       setMembers(resp.members ?? [])
     } catch (err) {
@@ -56,7 +62,7 @@ export default function MemberRoster({ room }) {
     } finally {
       if (gen === memberListGenRef.current) setLoading(false)
     }
-  }, [request, account, room.id, room.siteId])
+  }, [nats, account, room.id, room.siteId])
 
   useEffect(() => {
     fetchMembers()
@@ -80,15 +86,16 @@ export default function MemberRoster({ room }) {
   }, [members])
 
   /**
-   * Run a member.{remove|role-update} action through requestWithAsyncResult,
-   * surface failures as a banner, and refetch the roster on success.
+   * Wrap an api/<op> call with the shared busy/error/refetch plumbing.
+   * Callers pass a thunk that returns the operation's promise; the api
+   * layer hides which subject / transport gets used.
    */
   const runAction = useCallback(
-    async (key, subject, payload) => {
+    async (key, performer) => {
       setBusyKey(key)
       setActionError(null)
       try {
-        await requestWithAsyncResult(subject, payload)
+        await performer()
         await fetchMembers()
         return true
       } catch (err) {
@@ -98,7 +105,7 @@ export default function MemberRoster({ room }) {
         setBusyKey(null)
       }
     },
-    [requestWithAsyncResult, fetchMembers]
+    [fetchMembers]
   )
 
   /**
@@ -114,16 +121,13 @@ export default function MemberRoster({ room }) {
     setBusyKey(`leave:${account}`)
     setActionError(null)
     try {
-      await requestWithAsyncResult(memberRemove(account, room.id, room.siteId), {
-        roomId: room.id,
-        account,
-      })
+      await removeMember(nats, { roomId: room.id, siteId: room.siteId, account })
     } catch (err) {
       setActionError(formatAsyncJobError(err))
     } finally {
       setBusyKey(null)
     }
-  }, [room.id, room.siteId, room.name, account, requestWithAsyncResult])
+  }, [room.id, room.siteId, room.name, account, nats])
 
   /**
    * Toggle an org row open/closed. On the first open we fetch the org's
@@ -148,7 +152,7 @@ export default function MemberRoster({ room }) {
       orgFetchGenRef.current[orgId] = gen
       setOrgFetchState((s) => ({ ...s, [orgId]: 'loading' }))
       try {
-        const resp = await request(orgMembers(account, orgId), {})
+        const resp = await listOrgMembers(nats, { orgId })
         if (orgFetchGenRef.current[orgId] !== gen) return
         setOrgChildren((s) => ({ ...s, [orgId]: resp?.members ?? [] }))
         setOrgFetchState((s) => {
@@ -160,7 +164,7 @@ export default function MemberRoster({ room }) {
         setOrgFetchState((s) => ({ ...s, [orgId]: 'error' }))
       }
     },
-    [expandedOrgs, orgChildren, request, account]
+    [expandedOrgs, orgChildren, nats, account]
   )
 
   if (loading) return <div className="roster-loading">Loading members…</div>
@@ -180,7 +184,7 @@ export default function MemberRoster({ room }) {
                   busyKey,
                   isCurrentUserOwner,
                   room,
-                  user,
+                  nats,
                   runAction,
                   expanded: !!expandedOrgs[m.member.id],
                   children: orgChildren[m.member.id],
@@ -191,7 +195,7 @@ export default function MemberRoster({ room }) {
                   busyKey,
                   isCurrentUserOwner,
                   room,
-                  user,
+                  nats,
                   runAction,
                   handleLeave,
                 })
@@ -202,7 +206,7 @@ export default function MemberRoster({ room }) {
   )
 }
 
-function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction, expanded, children, fetchState, toggleOrg }) {
+function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, nats, runAction, expanded, children, fetchState, toggleOrg }) {
   const entry = m.member
   const orgId = entry.id
   const display = entry.sectName || orgId
@@ -230,10 +234,8 @@ function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction, e
               aria-label={`Remove ${orgId}`}
               disabled={busyKey === removeKey}
               onClick={() =>
-                runAction(
-                  removeKey,
-                  memberRemove(user.account, room.id, room.siteId),
-                  { roomId: room.id, orgId }
+                runAction(removeKey, () =>
+                  removeMember(nats, { roomId: room.id, siteId: room.siteId, orgId })
                 )
               }
             >
@@ -273,10 +275,10 @@ function renderOrgRow(m, { busyKey, isCurrentUserOwner, room, user, runAction, e
   )
 }
 
-function renderIndividualRow(m, { busyKey, isCurrentUserOwner, room, user, runAction, handleLeave }) {
+function renderIndividualRow(m, { busyKey, isCurrentUserOwner, room, nats, runAction, handleLeave }) {
   const entry = m.member
   const isOwner = !!entry.isOwner
-  const isSelf = entry.account === user.account
+  const isSelf = entry.account === nats.user.account
   const primary = entry.engName || entry.account
   const secondary = entry.chineseName || ''
   const promoteKey = `promote:${entry.account}`
@@ -312,10 +314,13 @@ function renderIndividualRow(m, { busyKey, isCurrentUserOwner, room, user, runAc
                 aria-label={`Demote ${entry.account}`}
                 disabled={busyKey === demoteKey}
                 onClick={() =>
-                  runAction(
-                    demoteKey,
-                    memberRoleUpdate(user.account, room.id, room.siteId),
-                    { roomId: room.id, account: entry.account, newRole: ROLE_MEMBER }
+                  runAction(demoteKey, () =>
+                    updateMemberRole(nats, {
+                      roomId: room.id,
+                      siteId: room.siteId,
+                      account: entry.account,
+                      newRole: ROLE_MEMBER,
+                    })
                   )
                 }
               >
@@ -327,10 +332,13 @@ function renderIndividualRow(m, { busyKey, isCurrentUserOwner, room, user, runAc
                 aria-label={`Promote ${entry.account}`}
                 disabled={busyKey === promoteKey}
                 onClick={() =>
-                  runAction(
-                    promoteKey,
-                    memberRoleUpdate(user.account, room.id, room.siteId),
-                    { roomId: room.id, account: entry.account, newRole: ROLE_OWNER }
+                  runAction(promoteKey, () =>
+                    updateMemberRole(nats, {
+                      roomId: room.id,
+                      siteId: room.siteId,
+                      account: entry.account,
+                      newRole: ROLE_OWNER,
+                    })
                   )
                 }
               >
@@ -342,10 +350,12 @@ function renderIndividualRow(m, { busyKey, isCurrentUserOwner, room, user, runAc
               aria-label={`Remove ${entry.account}`}
               disabled={busyKey === removeKey}
               onClick={() =>
-                runAction(
-                  removeKey,
-                  memberRemove(user.account, room.id, room.siteId),
-                  { roomId: room.id, account: entry.account }
+                runAction(removeKey, () =>
+                  removeMember(nats, {
+                    roomId: room.id,
+                    siteId: room.siteId,
+                    account: entry.account,
+                  })
                 )
               }
             >

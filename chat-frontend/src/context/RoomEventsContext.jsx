@@ -2,21 +2,22 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { useNats } from './NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from '../lib/roomEventsReducer'
 import {
-  msgHistory,
-  msgSurrounding,
-  roomEvent,
-  roomsGet,
-  roomsList,
-  subscriptionUpdate,
-  roomMetadataUpdate,
-  userRoomEvent,
-} from '../lib/subjects'
+  fetchMessageHistory,
+  fetchSurroundingMessages,
+  getRoom,
+  listRooms,
+  subscribeToRoomEvents,
+  subscribeToRoomMetadataUpdates,
+  subscribeToSubscriptionUpdates,
+  subscribeToUserRoomEvents,
+} from '../api'
 import { normalizeHistoricalMessages } from '../lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
 
 export function RoomEventsProvider({ children }) {
-  const { user, request, subscribe } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const [state, dispatch] = useReducer(roomEventsReducer, initialState)
   const inflightHistory = useRef(new Map())
   const stateRef = useRef(state)
@@ -36,7 +37,7 @@ export function RoomEventsProvider({ children }) {
       dispatch(action)
     }
 
-    const dmSub = subscribe(userRoomEvent(user.account), (evt) => {
+    const dmSub = subscribeToUserRoomEvents(nats, (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
       }
@@ -44,8 +45,7 @@ export function RoomEventsProvider({ children }) {
 
     const openChannelSub = (roomId) => {
       if (channelSubs.current.has(roomId)) return
-      const subj = roomEvent(roomId)
-      const sub = subscribe(subj, (evt) => {
+      const sub = subscribeToRoomEvents(nats, { roomId }, (evt) => {
         if (evt?.type === 'new_message') {
           const hasMention = (evt.mentions ?? []).some(
             (p) => p.account === user.account
@@ -64,10 +64,10 @@ export function RoomEventsProvider({ children }) {
       }
     }
 
-    const subUpdate = subscribe(subscriptionUpdate(user.account), (evt) => {
+    const subUpdate = subscribeToSubscriptionUpdates(nats, (evt) => {
       if (cancelledRef.current) return
       if (evt.action === 'added' && evt.subscription?.roomId) {
-        request(roomsGet(user.account, evt.subscription.roomId), {})
+        getRoom(nats, { roomId: evt.subscription.roomId })
           .then((room) => {
             if (cancelledRef.current || !room) return
             // DM rooms have no canonical Room.Name server-side — the friendly
@@ -88,7 +88,7 @@ export function RoomEventsProvider({ children }) {
       }
     })
 
-    const metaUpdate = subscribe(roomMetadataUpdate(user.account), (evt) => {
+    const metaUpdate = subscribeToRoomMetadataUpdates(nats, (evt) => {
       safeDispatch({
         type: 'ROOM_METADATA_UPDATED',
         roomId: evt.roomId,
@@ -98,7 +98,7 @@ export function RoomEventsProvider({ children }) {
       })
     })
 
-    request(roomsList(user.account), {})
+    listRooms(nats)
       .then((resp) => {
         if (cancelledRef.current) return
         const rooms = resp.rooms ?? []
@@ -120,7 +120,7 @@ export function RoomEventsProvider({ children }) {
       channelSubs.current.clear()
       dispatch({ type: 'RESET' })   // RESET runs even when cancelled — it's the cleanup itself
     }
-  }, [user, subscribe, request])
+  }, [user, nats])
 
   const loadHistory = useCallback(
     async (roomId) => {
@@ -132,7 +132,7 @@ export function RoomEventsProvider({ children }) {
       const gen = generationRef.current
       const promise = (async () => {
         try {
-          const resp = await request(msgHistory(user.account, roomId, user.siteId), { limit: 50 })
+          const resp = await fetchMessageHistory(nats, { roomId, siteId: user.siteId, limit: 50 })
           // history-service returns cassandra.Message (messageId/msg); the
           // reducer + UI consume model.Message (id/content). Normalize here
           // so msg.id is defined for click handlers downstream.
@@ -149,7 +149,7 @@ export function RoomEventsProvider({ children }) {
       inflightHistory.current.set(roomId, promise)
       return promise
     },
-    [user, request]
+    [user, nats]
   )
 
   const setActiveRoom = useCallback((roomId) => {
@@ -163,7 +163,7 @@ export function RoomEventsProvider({ children }) {
       const siteId = summary?.siteId ?? user.siteId
       const gen = generationRef.current
       try {
-        const resp = await request(msgSurrounding(user.account, roomId, siteId), { messageId })
+        const resp = await fetchSurroundingMessages(nats, { roomId, siteId, messageId })
         if (generationRef.current !== gen) return
         const messages = normalizeHistoricalMessages(resp.messages ?? [])
         dispatch({
@@ -179,7 +179,7 @@ export function RoomEventsProvider({ children }) {
         throw err
       }
     },
-    [user, request]
+    [user, nats]
   )
 
   const resetToLiveTail = useCallback((roomId) => {

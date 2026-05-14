@@ -1,26 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNats } from '../../../../context/NatsContext'
-import { searchRooms } from '../../../../lib/subjects'
+import { searchRooms } from '../../../../api'
 import { useDebouncedSearch } from '../../../../lib/useDebouncedSearch'
 import { roomFromSearchHit, searchRoomPrefix } from '../../../../lib/roomFormat'
 import './style.css'
 
 export default function SearchBar({ onSelectRoom, onEnterSearch }) {
-  const { user, request } = useNats()
+  const nats = useNats()
   const [activeIdx, setActiveIdx] = useState(0)
   const inputRef = useRef(null)
 
   const fetcher = useCallback(
     async (q) => {
-      const resp = await request(searchRooms(user.account), {
-        searchText: q,
-        scope: 'all',
-        size: 8,
-      })
+      const resp = await searchRooms(nats, { searchText: q, scope: 'all', size: 8 })
       setActiveIdx(0)
       return resp.results ?? []
     },
-    [request, user]
+    [nats]
   )
 
   const { query, results, onChange, reset } = useDebouncedSearch({

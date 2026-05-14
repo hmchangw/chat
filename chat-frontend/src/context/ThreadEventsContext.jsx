@@ -3,14 +3,15 @@ import { v4 as uuidv4 } from 'uuid'
 import { useNats } from './NatsContext'
 import { useRoomDispatch } from './RoomEventsContext'
 import { generateMessageID } from '../lib/idgen'
-import { msgSend, msgThread } from '../lib/subjects'
+import { fetchThreadMessages, sendMessage } from '../api'
 import { threadEventsReducer, initialState } from '../lib/threadEventsReducer'
 import { normalizeHistoricalMessages } from '../lib/normalizeMessage'
 
 const ThreadEventsContext = createContext(null)
 
 export function ThreadEventsProvider({ children }) {
-  const { user, request, publish } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const roomDispatch = useRoomDispatch()
   const [state, dispatch] = useReducer(threadEventsReducer, initialState)
   const generationRef = useRef(0)
@@ -29,8 +30,12 @@ export function ThreadEventsProvider({ children }) {
       const myGen = ++generationRef.current
       dispatch({ type: 'OPEN_THREAD', parent })
       if (!user) return
-      const subj = msgThread(user.account, parent.roomId, parent.siteId)
-      request(subj, { threadMessageId: parent.messageId, limit: 50 })
+      fetchThreadMessages(nats, {
+        roomId: parent.roomId,
+        siteId: parent.siteId,
+        threadMessageId: parent.messageId,
+        limit: 50,
+      })
         .then((resp) => {
           if (myGen !== generationRef.current) return
           // Normalize the cassandra-shaped thread messages into the broadcast
@@ -51,7 +56,7 @@ export function ThreadEventsProvider({ children }) {
           })
         })
     },
-    [user, request]
+    [user, nats]
   )
 
   const closeThread = useCallback(() => {
@@ -73,9 +78,9 @@ export function ThreadEventsProvider({ children }) {
         threadParentMessageCreatedAt: parent.createdAtMs,
       }
       if (opts?.quotedParentMessageId) payload.quotedParentMessageId = opts.quotedParentMessageId
-      publish(msgSend(user.account, parent.roomId, parent.siteId), payload)
+      sendMessage(nats, { roomId: parent.roomId, siteId: parent.siteId, payload })
     },
-    [user, publish]
+    [user, nats]
   )
 
   const sendReply = useCallback(

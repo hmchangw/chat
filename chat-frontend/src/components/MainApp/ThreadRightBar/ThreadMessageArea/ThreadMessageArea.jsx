@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { useThreadEvents } from '../../../../context/ThreadEventsContext'
 import { useRoomEvents, useRoomDispatch, useRoomSummaries } from '../../../../context/RoomEventsContext'
-import { msgEdit, msgDelete } from '../../../../lib/subjects'
+import { editMessage, deleteMessage } from '../../../../api'
 import MessageList from '../../../shared/MessageList/MessageList'
 import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'
 import TextInputDialog from '../../../shared/TextInputDialog/TextInputDialog'
@@ -20,7 +20,8 @@ export default function ThreadMessageArea({ onReply }) {
   // to MessageActionMenu (the kebab needs room.id + siteId for read-receipts).
   const { summaries, jumpToMessage } = useRoomSummaries()
   const room = (summaries ?? []).find((r) => r.id === activeParent?.roomId) ?? null
-  const { user, publish } = useNats()
+  const nats = useNats()
+  const { user } = nats
   const bottomRef = useRef(null)
   const [editingMessage, setEditingMessage] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -53,8 +54,10 @@ export default function ThreadMessageArea({ onReply }) {
   const handleEditCancel = () => setEditingMessage(null)
   const handleEditSave = (newContent) => {
     if (!editingMessage) return
-    publish(msgEdit(user.account, activeParent.roomId, activeParent.siteId), {
-      messageId: editingMessage.id, newMsg: newContent,
+    editMessage(nats, {
+      roomId: activeParent.roomId,
+      siteId: activeParent.siteId,
+      payload: { messageId: editingMessage.id, newMsg: newContent },
     })
     if (isParent(editingMessage.id)) {
       roomDispatch({
@@ -74,8 +77,10 @@ export default function ThreadMessageArea({ onReply }) {
   const handleDeleteCancel = () => setPendingDelete(null)
   const handleDeleteConfirm = () => {
     if (!pendingDelete) return
-    publish(msgDelete(user.account, activeParent.roomId, activeParent.siteId), {
-      messageId: pendingDelete.id,
+    deleteMessage(nats, {
+      roomId: activeParent.roomId,
+      siteId: activeParent.siteId,
+      payload: { messageId: pendingDelete.id },
     })
     if (isParent(pendingDelete.id)) {
       roomDispatch({ type: 'MESSAGE_DELETED_LOCAL', roomId: activeParent.roomId, messageId: pendingDelete.id })
