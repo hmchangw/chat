@@ -340,7 +340,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	// A list failure here means the key has rotated at room-service but
 	// survivors can't be enumerated — NAK so JetStream retries rather than
 	// stranding the room on a key nobody received.
-	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
 	if listErr != nil {
 		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 	}
@@ -493,7 +493,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// ListByRoom after the delete returns the already-filtered survivor set.
 	// See the org-individual analog above: a list failure here would leave
 	// the rotated key undelivered, so propagate to NAK + retry.
-	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID, "")
+	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
 	if listErr != nil {
 		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 	}

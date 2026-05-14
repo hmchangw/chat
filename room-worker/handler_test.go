@@ -396,7 +396,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -581,7 +581,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1022,7 +1022,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil) // recount after removal
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1082,7 +1082,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1299,7 +1299,7 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1338,7 +1338,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -3336,7 +3336,7 @@ func TestHandler_ProcessRemoveIndividual_NewKeyVersionInOutbox(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	keyStore := NewMockRoomKeyStore(ctrl)
 	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{
@@ -3420,7 +3420,7 @@ func TestHandler_ProcessRemoveMember_OrgNewKeyVersionInOutbox(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID, "").Return(nil, nil)
+		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
 
 	keyStore := NewMockRoomKeyStore(ctrl)
 	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{

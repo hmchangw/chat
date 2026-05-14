@@ -306,18 +306,18 @@ func (mr *MockSubscriptionStoreMockRecorder) HasOrgRoomMembers(ctx, roomID any) 
 }
 
 // ListByRoom mocks base method.
-func (m *MockSubscriptionStore) ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error) {
+func (m *MockSubscriptionStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListByRoom", ctx, roomID, siteID)
+	ret := m.ctrl.Call(m, "ListByRoom", ctx, roomID)
 	ret0, _ := ret[0].([]model.Subscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListByRoom indicates an expected call of ListByRoom.
-func (mr *MockSubscriptionStoreMockRecorder) ListByRoom(ctx, roomID, siteID any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) ListByRoom(ctx, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListByRoom), ctx, roomID, siteID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).ListByRoom), ctx, roomID)
 }
 
 // ListNewMembers mocks base method.

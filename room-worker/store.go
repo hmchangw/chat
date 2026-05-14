@@ -36,9 +36,8 @@ type SubscriptionStore interface {
 	// --- existing methods (invite flow) ---
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
-	// ListByRoom returns subscriptions for roomID. When siteID is non-empty, only
-	// subscriptions matching that siteID are returned; otherwise all sites are included.
-	ListByRoom(ctx context.Context, roomID, siteID string) ([]model.Subscription, error)
+	// ListByRoom returns all subscriptions for roomID across every site.
+	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
 	// Room.AppCount (bot subs) by scanning the subscriptions collection,
 	// then writes both back to the rooms collection in a single update.

@@ -113,7 +113,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 
 	// Test ListByRoom
-	subs, err := store.ListByRoom(ctx, "r1", "")
+	subs, err := store.ListByRoom(ctx, "r1")
 	if err != nil {
 		t.Fatalf("ListByRoom: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestMongoStore_DeleteSubscription_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), deleted)
 
-	subs, err := store.ListByRoom(ctx, "r1", "")
+	subs, err := store.ListByRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Empty(t, subs)
 }
@@ -346,7 +346,7 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), deleted)
 
-	subs, err := store.ListByRoom(ctx, "r1", "")
+	subs, err := store.ListByRoom(ctx, "r1")
 	require.NoError(t, err)
 	require.Len(t, subs, 1)
 	assert.Equal(t, "carol", subs[0].User.Account)
