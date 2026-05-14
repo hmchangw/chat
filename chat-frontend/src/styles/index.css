@@ -963,8 +963,22 @@ a:focus-visible,
   border-bottom-color: var(--accent);
 }
 
+/* The footer Close-button row sits as a flex child of .dialog — the
+   dialog already supplies a --space-md gap between siblings, so adding
+   another margin-top here was stacking spacing on top of spacing. */
 .manage-members-footer {
-  margin-top: var(--space-md);
+  margin-top: 0;
+}
+
+/* The ManageMembers tabs + form + footer are flex children of .dialog;
+   when the form itself contains MemberPicker + checkbox + actions we
+   want THOSE to have consistent spacing too. Without this the
+   checkbox is flush against the chip input and the inner Add-button
+   row collapses against the field. */
+.manage-members-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
 /* Roster (Members tab body). */
@@ -1123,7 +1137,7 @@ a:focus-visible,
   width: 100%;
   padding: var(--space-sm) var(--space-md);
   background: var(--bg-input);
-  border: 1px solid transparent;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-size: var(--text-sm);
@@ -1133,7 +1147,10 @@ a:focus-visible,
 }
 
 .search-bar::placeholder { color: var(--text-muted); }
-.search-bar:hover { background: var(--bg-input-hover); }
+.search-bar:hover {
+  background: var(--bg-input-hover);
+  border-color: var(--text-muted);
+}
 .search-bar:focus {
   background: var(--bg-surface);
   border-color: var(--accent);
