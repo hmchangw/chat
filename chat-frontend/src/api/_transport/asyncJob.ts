@@ -10,24 +10,38 @@
 import { StringCodec, headers as natsHeaders } from 'nats.ws'
 import { v7 as uuidv7 } from 'uuid'
 import { userResponse } from './subjects'
+import type { AsyncJobOptions, AsyncJobResult } from '../types'
 
 const sc = StringCodec()
 
 const DEFAULT_SYNC_TIMEOUT = 5000
 const DEFAULT_ASYNC_TIMEOUT = 30000
 
-// Error kinds attached to every Error thrown from this helper so callers
-// can distinguish wire-level failures from server-reported ones without
-// string-matching the message.
-export const ASYNC_JOB_ERROR_KINDS = Object.freeze({
-  SyncError: 'sync-error',
-  AsyncError: 'async-error',
-  AsyncTimeout: 'async-timeout',
-  SubscriptionClosed: 'subscription-closed',
-})
+/** Discriminant on Error.kind so callers can distinguish wire-level
+ *  failures from server-reported ones without string-matching. */
+export type AsyncJobErrorKind =
+  | 'sync-error'
+  | 'async-error'
+  | 'async-timeout'
+  | 'subscription-closed'
 
-function taggedError(message, kind, cause) {
-  const err = new Error(message)
+export const ASYNC_JOB_ERROR_KINDS: Readonly<Record<string, AsyncJobErrorKind>> =
+  Object.freeze({
+    SyncError: 'sync-error',
+    AsyncError: 'async-error',
+    AsyncTimeout: 'async-timeout',
+    SubscriptionClosed: 'subscription-closed',
+  })
+
+/** Error subtype thrown from this module. Casting from a caught
+ *  `unknown` is the typical access pattern. */
+export interface AsyncJobError extends Error {
+  kind: AsyncJobErrorKind
+  cause?: unknown
+}
+
+function taggedError(message: string, kind: AsyncJobErrorKind, cause?: unknown): AsyncJobError {
+  const err = new Error(message) as AsyncJobError
   err.kind = kind
   if (cause) err.cause = cause
   return err
@@ -41,21 +55,27 @@ function taggedError(message, kind, cause) {
  * (`AsyncTimeout`, `SubscriptionClosed`) get a friendlier hint that says what
  * happened and what the user can do about it — the raw "async result timeout"
  * isn't actionable.
- *
- * @param {Error & {kind?: string}} err
- * @returns {string}
  */
-export function formatAsyncJobError(err) {
+export function formatAsyncJobError(err: unknown): string {
   if (!err) return ''
-  switch (err.kind) {
+  const kind = (err as AsyncJobError).kind
+  switch (kind) {
     case ASYNC_JOB_ERROR_KINDS.AsyncTimeout:
       return "The server didn't respond in time. The action may still complete — refresh to check."
     case ASYNC_JOB_ERROR_KINDS.SubscriptionClosed:
       return 'Connection interrupted before the server confirmed. Refresh to check the result.'
     default:
-      return err.message ?? ''
+      return (err as Error)?.message ?? ''
   }
 }
+
+// Internal envelope passed from the inbox loop to the awaiter. Discriminated
+// so the awaiter can pattern-match on `kind` without optional chaining.
+type Envelope =
+  | { kind: 'data'; data: any }
+  | { kind: 'closed' }
+  | { kind: 'error'; error: unknown }
+  | { kind: 'timeout' }
 
 /**
  * Issues a NATS request whose handler responds in two phases: a sync reply
@@ -67,26 +87,17 @@ export function formatAsyncJobError(err) {
  * can't beat the client to the punch. Sets the `X-Request-ID` NATS header
  * so the worker knows where to publish the async result.
  *
- * @param {object} nc                 nats.ws connection
- * @param {string} account            requester's account (used to build the response subject)
- * @param {string} subject            request subject (e.g. result of `roomCreate(...)`)
- * @param {object} payload            JSON-serialisable request body
- * @param {object} [opts]
- * @param {string} [opts.requestId]   defaults to a fresh UUIDv7
- * @param {number} [opts.syncTimeout=5000]    ms to wait for sync reply
- * @param {number} [opts.asyncTimeout=30000]  ms to wait for AsyncJobResult after sync accept
- * @param {(reply: object) => boolean} [opts.treatAsSuccess]
- *   Predicate over the sync reply. Returning true short-circuits: caller gets
- *   `{requestId, sync, async: null}` instead of throwing on `sync.error`.
- *   Use this for "200-with-error-but-actually-success" replies (e.g. DM-exists
- *   dedup — see `isDMExistsReply`).
- *
- * @returns {Promise<{requestId: string, sync: object, async: object|null}>}
- * @throws {Error & {kind: string}} On any failure, with `err.kind` set to one
- *   of {@link ASYNC_JOB_ERROR_KINDS}. Pass to `formatAsyncJobError(err)` for
- *   user-facing text.
+ * @throws {AsyncJobError} On any failure, with `.kind` set to one of
+ *   the `AsyncJobErrorKind` values. Pass to `formatAsyncJobError(err)`
+ *   for user-facing text.
  */
-export async function requestWithAsyncResult(nc, account, subject, payload, opts = {}) {
+export async function requestWithAsyncResult<S = any, A = any>(
+  nc: any,
+  account: string,
+  subject: string,
+  payload: unknown,
+  opts: AsyncJobOptions = {}
+): Promise<AsyncJobResult<S, A | null>> {
   const {
     requestId = uuidv7(),
     syncTimeout = DEFAULT_SYNC_TIMEOUT,
@@ -99,8 +110,8 @@ export async function requestWithAsyncResult(nc, account, subject, payload, opts
   // Register before request resolves so a result that arrives during the
   // sync window is buffered, not dropped. Tagged-envelope resolves never
   // reject so late cleanup signals can't surface as unhandled rejections.
-  let resolveAsync
-  const asyncPromise = new Promise((res) => { resolveAsync = res })
+  let resolveAsync!: (env: Envelope) => void
+  const asyncPromise = new Promise<Envelope>((res) => { resolveAsync = res })
   ;(async () => {
     try {
       for await (const msg of sub) {
@@ -117,7 +128,7 @@ export async function requestWithAsyncResult(nc, account, subject, payload, opts
     try { sub.unsubscribe() } catch { /* already closed */ }
   }
 
-  let sync
+  let sync: S
   try {
     const h = natsHeaders()
     h.set('X-Request-ID', requestId)
@@ -125,13 +136,13 @@ export async function requestWithAsyncResult(nc, account, subject, payload, opts
       timeout: syncTimeout,
       headers: h,
     })
-    sync = JSON.parse(sc.decode(resp.data))
+    sync = JSON.parse(sc.decode(resp.data)) as S
   } catch (err) {
     cleanupSub()
-    throw taggedError(err.message, ASYNC_JOB_ERROR_KINDS.SyncError, err)
+    throw taggedError((err as Error).message, ASYNC_JOB_ERROR_KINDS.SyncError, err)
   }
 
-  if (sync.error) {
+  if ((sync as any)?.error) {
     // DM-exists and similar "200 with error+roomId" replies are success cases
     // for the caller. The caller opts into this with treatAsSuccess(reply).
     if (treatAsSuccess && treatAsSuccess(sync)) {
@@ -139,36 +150,40 @@ export async function requestWithAsyncResult(nc, account, subject, payload, opts
       return { requestId, sync, async: null }
     }
     cleanupSub()
-    throw taggedError(sync.error, ASYNC_JOB_ERROR_KINDS.SyncError)
+    throw taggedError((sync as any).error, ASYNC_JOB_ERROR_KINDS.SyncError)
   }
 
-  let timer
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const timeoutPromise = new Promise((resolve) => {
+    const timeoutPromise = new Promise<Envelope>((resolve) => {
       timer = setTimeout(() => resolve({ kind: 'timeout' }), asyncTimeout)
     })
     const envelope = await Promise.race([asyncPromise, timeoutPromise])
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
     if (envelope.kind === 'timeout') {
       throw taggedError('async result timeout', ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
     }
     if (envelope.kind === 'error') {
-      throw taggedError(envelope.error?.message ?? 'subscription error',
-        ASYNC_JOB_ERROR_KINDS.SubscriptionClosed, envelope.error)
+      throw taggedError(
+        (envelope.error as Error)?.message ?? 'subscription error',
+        ASYNC_JOB_ERROR_KINDS.SubscriptionClosed,
+        envelope.error
+      )
     }
     if (envelope.kind === 'closed') {
-      throw taggedError('subscription closed before result arrived',
-        ASYNC_JOB_ERROR_KINDS.SubscriptionClosed)
+      throw taggedError(
+        'subscription closed before result arrived',
+        ASYNC_JOB_ERROR_KINDS.SubscriptionClosed
+      )
     }
-    const asyncResult = envelope.data
+    const asyncResult = envelope.data as A & { status?: string; error?: string }
     if (asyncResult.status === 'error') {
-      throw taggedError(asyncResult.error || 'operation failed',
-        ASYNC_JOB_ERROR_KINDS.AsyncError)
+      throw taggedError(asyncResult.error || 'operation failed', ASYNC_JOB_ERROR_KINDS.AsyncError)
     }
     cleanupSub()
     return { requestId, sync, async: asyncResult }
   } catch (err) {
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
     cleanupSub()
     throw err
   }

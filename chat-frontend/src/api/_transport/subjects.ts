@@ -1,93 +1,93 @@
 // NATS subject builders — mirrors Go pkg/subject/subject.go
 // Keep in sync with the Go definitions when adding new subjects.
 
-export function msgSend(account, roomId, siteId) {
+export function msgSend(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.room.${roomId}.${siteId}.msg.send`
 }
 
-export function msgHistory(account, roomId, siteId) {
+export function msgHistory(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.history`
 }
 
-export function msgSurrounding(account, roomId, siteId) {
+export function msgSurrounding(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.surrounding`
 }
 
-export function msgThread(account, roomId, siteId) {
+export function msgThread(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.thread`
 }
 
-export function msgEdit(account, roomId, siteId) {
+export function msgEdit(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.edit`
 }
 
-export function msgDelete(account, roomId, siteId) {
+export function msgDelete(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.msg.delete`
 }
 
-export function roomEvent(roomId) {
+export function roomEvent(roomId: string): string {
   return `chat.room.${roomId}.event`
 }
 
-export function roomsList(account) {
+export function roomsList(account: string): string {
   return `chat.user.${account}.request.rooms.list`
 }
 
-export function roomsGet(account, roomId) {
+export function roomsGet(account: string, roomId: string): string {
   return `chat.user.${account}.request.rooms.get.${roomId}`
 }
 
 // roomCreate is the room-service create subject. The site segment is the
 // requester's site — room-service queue-subscribes on its own siteID, so a
 // caller from site-A always lands its create on the site-A room-service.
-export function roomCreate(account, siteId) {
+export function roomCreate(account: string, siteId: string): string {
   return `chat.user.${account}.request.room.${siteId}.create`
 }
 
-export function subscriptionUpdate(account) {
+export function subscriptionUpdate(account: string): string {
   return `chat.user.${account}.event.subscription.update`
 }
 
-export function roomMetadataUpdate(account) {
+export function roomMetadataUpdate(account: string): string {
   return `chat.user.${account}.event.room.metadata.update`
 }
 
-export function userRoomEvent(account) {
+export function userRoomEvent(account: string): string {
   return `chat.user.${account}.event.room`
 }
 
-export function memberAdd(account, roomId, siteId) {
+export function memberAdd(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.add`
 }
 
-export function memberRemove(account, roomId, siteId) {
+export function memberRemove(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.remove`
 }
 
-export function memberRoleUpdate(account, roomId, siteId) {
+export function memberRoleUpdate(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.role-update`
 }
 
-export function readReceipt(account, roomId, siteId) {
+export function readReceipt(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read-receipt`
 }
 
-export function memberList(account, roomId, siteId) {
+export function memberList(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.list`
 }
 
 // userResponse is where room-worker publishes AsyncJobResult after finishing
 // a deferred operation. The client subscribes here before publishing the
 // request and X-Request-ID header so it can match the result back.
-export function userResponse(account, requestId) {
+export function userResponse(account: string, requestId: string): string {
   return `chat.user.${account}.response.${requestId}`
 }
 
-export function searchRooms(account) {
+export function searchRooms(account: string): string {
   return `chat.user.${account}.request.search.rooms`
 }
 
-export function searchMessages(account) {
+export function searchMessages(account: string): string {
   return `chat.user.${account}.request.search.messages`
 }
 
@@ -95,6 +95,6 @@ export function searchMessages(account) {
 // Used by MemberRoster to expand an org row into its individual members.
 // Response shape: { members: [{ id, account, engName, chineseName, siteId }] }.
 // Mirrors pkg/subject/subject.go::OrgMembers.
-export function orgMembers(account, orgId) {
+export function orgMembers(account: string, orgId: string): string {
   return `chat.user.${account}.request.orgs.${orgId}.members`
 }
