@@ -3579,6 +3579,13 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
         </button>
       ),
     }))
+    // The file-top vi.mock('../components/RoomMessageInput', …) survives
+    // resetModules and continues serving its stub even for dynamic imports.
+    // Re-doMock with importActual so the *real* RoomMessageInput loads here —
+    // this E2E test needs the actual publish wiring.
+    viE2E.doMock('../components/RoomMessageInput', async () =>
+      await viE2E.importActual('../components/RoomMessageInput')
+    )
     viE2E.doMock('../components/InRoomSearch', () => ({ default: () => null }))
     viE2E.doMock('../components/ManageMembersDialog', () => ({ default: () => null }))
     viE2E.doMock('../components/LeaveRoomButton', () => ({ default: () => null }))
@@ -3632,9 +3639,13 @@ Create `chat-frontend/src/components/RoomMessageArea.quoted.test.jsx`:
 
 ```jsx
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
 import { BUFFER_MODE } from '../lib/roomEventsReducer'
+
+// jsdom does not implement scrollIntoView; stub it to avoid the error thrown
+// by RoomMessageArea's useEffect that calls bottomRef.current.scrollIntoView.
+window.HTMLElement.prototype.scrollIntoView = vi.fn()
 
 const jumpToMessage = vi.fn(async () => {})
 vi.mock('../context/NatsContext', () => ({
