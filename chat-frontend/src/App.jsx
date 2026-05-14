@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { NatsProvider, useNats } from './context/NatsContext'
 import { RoomEventsProvider } from './context/RoomEventsContext'
+import { ThreadEventsProvider } from './context/ThreadEventsContext'
 import LoginPage from './pages/LoginPage'
 import MainApp from './components/MainApp'
 import OidcCallback from './pages/OidcCallback'
@@ -34,7 +35,9 @@ function AppContent() {
 
   return (
     <RoomEventsProvider>
-      <MainApp />
+      <ThreadEventsProvider>
+        <MainApp />
+      </ThreadEventsProvider>
     </RoomEventsProvider>
   )
 }
