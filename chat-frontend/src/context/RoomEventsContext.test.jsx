@@ -60,6 +60,7 @@ describe('RoomEventsProvider', () => {
     const request = vi.fn().mockImplementation((subject) => {
       if (subject.includes('.msg.history')) return Promise.resolve({ messages: [...history] })
       if (subject.endsWith('.rooms.list')) return Promise.resolve({ rooms: [] })
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected subject: ' + subject)
     })
     const nats = mockNats({ request })
@@ -138,6 +139,7 @@ describe('RoomEventsProvider subscriptions', () => {
     ]
     const request = vi.fn().mockImplementation((subject) => {
       if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected request: ' + subject)
     })
     const subjects = []
@@ -189,6 +191,7 @@ describe('RoomEventsProvider subscriptions', () => {
       if (subject === 'chat.user.alice.request.rooms.get.g2') {
         return Promise.resolve({ id: 'g2', name: 'new', type: 'channel', siteId: 'site-A', userCount: 1, lastMsgAt: null })
       }
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected request: ' + subject)
     })
     const handlers = new Map()
@@ -334,6 +337,7 @@ describe('RoomEventsProvider subscriptions', () => {
       if (subject.includes('bob') && subject.includes('.msg.history')) {
         return new Promise(() => {}) // bob's history never resolves in this test
       }
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected: ' + subject)
     })
     const subscribe = vi.fn().mockReturnValue({ unsubscribe: vi.fn() })
@@ -390,6 +394,7 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
       if (subject.includes('.msg.surrounding')) {
         return Promise.resolve({ messages: surrounding })
       }
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected subject: ' + subject)
     })
     const nats = mockNats({ request })
@@ -444,6 +449,7 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
           ],
         })
       }
+      if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected subject: ' + subject)
     })
     const subscribe = vi.fn().mockImplementation((subject, cb) => {
@@ -508,5 +514,59 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
     render(wrap(<Probe />, nats))
     await waitFor(() => expect(nats.request).toHaveBeenCalled())
     expect(typeof captured).toBe('function')
+  })
+})
+
+describe('RoomEventsProvider sidebar buckets bootstrap', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('fires the three user-service subjects on login with the documented payloads', async () => {
+    const calls = []
+    const request = vi.fn().mockImplementation((subject, payload) => {
+      calls.push({ subject, payload })
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
+      if (subject.endsWith('.subscription.getCurrent'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'f1' }] })
+      if (subject.endsWith('.subscription.getApps'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'a1' }] })
+      if (subject.endsWith('.subscription.getRooms'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'c1' }] })
+      throw new Error('unexpected subject: ' + subject)
+    })
+    const nats = mockNats({ request })
+
+    render(wrap(<SummariesProbe />, nats))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
+
+    const getCurrent = calls.find((c) => c.subject.endsWith('.subscription.getCurrent'))
+    const getApps = calls.find((c) => c.subject.endsWith('.subscription.getApps'))
+    const getRooms = calls.find((c) => c.subject.endsWith('.subscription.getRooms'))
+
+    expect(getCurrent.subject).toBe(
+      'chat.user.alice.request.user.site-A.subscription.getCurrent'
+    )
+    expect(getCurrent.payload).toEqual({ favorite: true })
+    expect(getApps.subject).toBe('chat.user.alice.request.user.site-A.subscription.getApps')
+    expect(getApps.payload).toEqual({})
+    expect(getRooms.subject).toBe('chat.user.alice.request.user.site-A.subscription.getRooms')
+    expect(getRooms.payload).toEqual({})
+  })
+
+  it('does not block rendering when one bucket RPC fails', async () => {
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
+      if (subject.endsWith('.subscription.getCurrent'))
+        return Promise.reject(new Error('boom'))
+      if (subject.endsWith('.subscription.getApps'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'a1' }] })
+      if (subject.endsWith('.subscription.getRooms'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'c1' }] })
+      throw new Error('unexpected subject: ' + subject)
+    })
+    const nats = mockNats({ request })
+
+    render(wrap(<SummariesProbe />, nats))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
+    expect(screen.getByTestId('count').textContent).toBe('0')
   })
 })

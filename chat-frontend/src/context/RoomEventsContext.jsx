@@ -10,6 +10,9 @@ import {
   subscriptionUpdate,
   roomMetadataUpdate,
   userRoomEvent,
+  userSubscriptionGetCurrent,
+  userSubscriptionGetApps,
+  userSubscriptionGetRooms,
 } from '../lib/subjects'
 
 const RoomEventsContext = createContext(null)
@@ -108,6 +111,26 @@ export function RoomEventsProvider({ children }) {
       })
       .catch((err) => {
         if (!cancelledRef.current) safeDispatch({ type: 'ROOMS_FAILED', error: err.message })
+      })
+
+    Promise.all([
+      request(userSubscriptionGetCurrent(user.account, user.siteId), { favorite: true }),
+      request(userSubscriptionGetApps(user.account, user.siteId), {}),
+      request(userSubscriptionGetRooms(user.account, user.siteId), {}),
+    ])
+      .then(([favResp, appResp, roomResp]) => {
+        if (cancelledRef.current) return
+        safeDispatch({
+          type: 'BUCKETS_LOADED',
+          favoriteIds: (favResp?.subscriptions ?? []).map((s) => s.roomId),
+          appIds: (appResp?.subscriptions ?? []).map((s) => s.roomId),
+          channelDmIds: (roomResp?.subscriptions ?? []).map((s) => s.roomId),
+        })
+      })
+      .catch((err) => {
+        // Bucket RPC failure is non-fatal — sidebar grouping degrades but rooms
+        // still render via the existing roomsList path.
+        console.warn('sidebar bucket bootstrap failed:', err.message)
       })
 
     return () => {
