@@ -1994,10 +1994,12 @@ describe('RoomMessageArea', () => {
     expect(onReply).toHaveBeenCalledWith({ id: 'a' })
   })
 
-  it('routes onJumpToMessage to jumpToMessage(room.id, msgId)', () => {
+  it('routes onJumpToMessage to the per-room jumpToMessage(msgId) curry', () => {
+    // useRoomEvents(roomId).jumpToMessage is already bound to the room,
+    // so it takes (messageId) only. Asserting the single-arg shape.
     render(<RoomMessageArea room={room} onThread={() => {}} onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-jump'))
-    expect(jumpToMessage).toHaveBeenCalledWith('r1', 'a')
+    expect(jumpToMessage).toHaveBeenCalledWith('a')
   })
 })
 ```
