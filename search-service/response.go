@@ -24,8 +24,13 @@ type rawResponse[T any] struct {
 }
 
 // messageSearchHit is the internal staging type produced by parseMessagesResponse.
-// It is used ONLY between the ES parse step and the Mongo enrichment step; it
-// is never serialised to clients. The public reply type is model.SearchMessage.
+// Fields mirror the ES messages-* index; the public reply type
+// (model.SearchMessage) is a projection of this struct with `UserID` dropped.
+//
+// TODO(searchMessages-editedAt-updatedAt): add `EditedAt *time.Time` and
+// `UpdatedAt *time.Time` once the upstream wiring lands (model.Message +
+// MessageSearchIndex in search-sync-worker). See pkg/model/search.go's
+// SearchMessage doc comment and spec follow-up #5.
 type messageSearchHit struct {
 	MessageID             string     `json:"messageId"`
 	RoomID                string     `json:"roomId"`
