@@ -1189,12 +1189,9 @@ body {
   position: relative;
 }
 
-.message-action-menu {
-  position: absolute;
-  top: 4px;
-  right: 6px;
-}
-
+/* .message-action-menu positioning + .message-action-kebab visibility are
+   defined inside .message-bubble-wrap further down — see the row-redesign
+   block. The base kebab button styling is kept here. */
 .message-action-kebab {
   background: transparent;
   border: 0;
@@ -1203,19 +1200,7 @@ body {
   line-height: 1;
   cursor: pointer;
   color: var(--text-primary);
-  opacity: 0;
   border-radius: 4px;
-  transition: opacity 80ms ease, background 80ms ease;
-}
-
-/* Reveal kebab whenever the row is hovered or focused. The legacy
-   selector targeted `.message` which is the old row class — replaced
-   with `.message-row` (and its focus-within state for keyboard nav). */
-.message-row:hover .message-action-kebab,
-.message-row:focus-within .message-action-kebab,
-.message-action-kebab:focus-visible,
-.message-action-menu:focus-within .message-action-kebab {
-  opacity: 1;
 }
 
 .message-action-kebab:hover {
@@ -1291,22 +1276,23 @@ body {
 
 /* ---------------------------------------------------------------
    Message row (new design: avatar + body, own messages mirror right).
-   Each row is a flex row with an avatar circle on the left and a
-   body column on the right containing header + bubble + extras.
-   `.message-row-own` reverses the layout so own messages appear
-   right-aligned with the avatar on the right side of the screen.
+   Each row is a flex row with an avatar circle on the left (only for
+   OTHER users' messages — own messages omit it) and a body column on
+   the right containing header + bubble + extras. `.message-row-own`
+   reverses the layout so own messages right-align with no avatar.
+   Hover-revealed actions are scoped to .message-bubble-wrap rather
+   than the row, so the avatar / header area stays inert.
 --------------------------------------------------------------- */
 .message-row {
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 6px 12px;
+  padding: 6px 0 6px 8px;
 }
-.message-row:hover,
-.message-row:focus-within {
-  background: var(--bg-hover);
-}
+/* No row-wide hover background — the bubble's hover state is the trigger
+   that matters. Row background stays neutral so the cursor passing through
+   the avatar / header is non-disruptive. */
 
 .message-row-avatar {
   width: 36px;
@@ -1331,12 +1317,19 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
+  padding-right: 12px;
 }
 
 .message-row .message-header {
   display: flex;
   gap: 8px;
   align-items: baseline;
+}
+
+.message-bubble-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
 }
 
 .message-bubble {
@@ -1351,12 +1344,16 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* Own messages: avatar on the right, body content right-aligned, blue bubble. */
+/* Own messages: avatar omitted, body right-aligns the bubble, blue tint. */
 .message-row-own {
   flex-direction: row-reverse;
+  /* No avatar — restore symmetric padding. */
+  padding: 6px 12px;
 }
 .message-row-own .message-row-body {
   align-items: flex-end;
+  padding-right: 0;
+  padding-left: 12px;
 }
 .message-row-own .message-header {
   flex-direction: row-reverse;
@@ -1366,8 +1363,8 @@ body {
   color: var(--text-primary);
 }
 
-/* Inline edit input replaces the bubble while editing — give it bubble-ish
-   chrome so the row's visual rhythm doesn't break mid-edit. */
+/* Inline edit input — bubble-shaped chrome so the row's rhythm doesn't
+   break mid-edit. */
 .message-edit-input {
   display: inline-block;
   max-width: 100%;
@@ -1391,29 +1388,35 @@ body {
   font-size: 0.85em;
 }
 
-/* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Floats
-   over the row's top edge. For own messages we mirror to the left so the
-   group sits next to the bubble's top-LEFT (the bubble is right-aligned). */
-.message-row .message-actions {
+/* Hover-revealed action toolbar (Reply / Edit / Delete / Thread). Lives
+   inside .message-bubble-wrap and appears on hover/focus of the bubble
+   area only. */
+.message-bubble-wrap .message-actions {
   position: absolute;
-  top: 4px;
-  right: 44px;
-  display: none;
+  top: -14px;
+  right: 8px;
+  display: flex;
   gap: 4px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 2px 4px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms ease;
   z-index: 2;
 }
-.message-row-own .message-actions {
+/* Mirror to the left for own messages (the bubble is right-aligned in the
+   body, so its top-left is the closer corner). */
+.message-row-own .message-bubble-wrap .message-actions {
   right: auto;
-  left: 44px;
+  left: 8px;
 }
-.message-row:hover .message-actions,
-.message-row:focus-within .message-actions {
-  display: flex;
+.message-bubble-wrap:hover .message-actions,
+.message-bubble-wrap:focus-within .message-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .message-action {
   padding: 2px 6px;
@@ -1428,17 +1431,21 @@ body {
   background: var(--bg-hover);
 }
 
-/* Mirror the kebab for own messages (it lives at the original right edge
-   for others'; for own it moves to the left edge to stay near the bubble). */
-.message-row-own .message-action-menu {
-  right: auto;
-  left: 6px;
+/* Kebab is now rendered as the trailing button INSIDE .message-actions
+   (the hover-revealed toolbar). It's no longer a standalone floating
+   element — its visibility is inherited from the toolbar's opacity. */
+.message-actions .message-action-menu {
+  position: relative;
+  display: inline-flex;
 }
-.message-row-own .message-action-popover {
-  right: auto;
-  left: 0;
+/* Popover (read-receipts) anchors to the kebab button. */
+.message-actions .message-action-popover {
+  top: calc(100% + 4px);
+  right: 0;
 }
-.message-row-own .read-receipt-tooltip {
+.message-row-own .message-actions .message-action-popover {
+  /* For own-messages the toolbar is on the LEFT of the bubble; the
+     popover should still open below the kebab without escaping the row. */
   right: auto;
   left: 0;
 }

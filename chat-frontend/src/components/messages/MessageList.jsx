@@ -42,6 +42,11 @@ export default function MessageList({
 
   const empty = hasLoadedHistory && !historyLoading && !historyError && messages.length === 0
 
+  // Filter out deleted messages entirely — they shouldn't take up any visual
+  // space (no avatar, no row, no anything). MessageRow ALSO short-circuits
+  // on `deleted` as a defense-in-depth; this filter is the primary gate.
+  const visibleMessages = messages.filter((m) => !m.deleted)
+
   return (
     <div
       className="message-list"
@@ -50,7 +55,7 @@ export default function MessageList({
     >
       {historyLoading && <div className="message-loading">Loading messages…</div>}
       {historyError && <div className="message-error">{historyError}</div>}
-      {messages.map((msg) => {
+      {visibleMessages.map((msg) => {
         const isParent = context === 'thread' && parentMessageId === msg.id
         const rowContext = isParent ? 'thread-parent' : context
         return (
@@ -73,6 +78,10 @@ export default function MessageList({
           />
         )
       })}
+      {visibleMessages.length === 0 && messages.length > 0 && (
+        // All buffered messages have been deleted — show the empty state.
+        emptyText && <div className="message-empty">{emptyText}</div>
+      )}
       {empty && emptyText && <div className="message-empty">{emptyText}</div>}
       <div ref={effectiveBottomRef} />
     </div>

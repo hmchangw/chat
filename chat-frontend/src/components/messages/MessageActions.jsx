@@ -1,5 +1,7 @@
+import MessageActionMenu from '../MessageActionMenu'
+
 export default function MessageActions({
-  message, context, isOwn,
+  message, room, context, isOwn,
   onThread, onReply, onEdit, onDelete,
 }) {
   const showThread = context !== 'thread-parent'
@@ -8,7 +10,7 @@ export default function MessageActions({
   const showDelete = !!isOwn
 
   return (
-    <div className="message-actions" role="toolbar">
+    <div className="message-actions" role="toolbar" aria-label="Message actions">
       {showThread && (
         <button
           type="button"
@@ -49,6 +51,10 @@ export default function MessageActions({
           🗑
         </button>
       )}
+      {/* Read-receipt kebab — only renders on own messages (handled inside
+          MessageActionMenu). When rendered, it sits as the last button in
+          the toolbar so the whole group reveals/dismisses together. */}
+      <MessageActionMenu message={message} room={room} />
     </div>
   )
 }

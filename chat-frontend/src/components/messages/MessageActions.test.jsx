@@ -2,6 +2,12 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import MessageActions from './MessageActions'
 
+// MessageActionMenu (the kebab) is rendered as the last button inside
+// MessageActions. It depends on NatsContext at runtime, which we don't
+// want to pull into this isolated component test. Mock it down to a
+// no-op stub.
+vi.mock('../MessageActionMenu', () => ({ default: () => null }))
+
 const msg = { id: 'm1', userAccount: 'alice' }
 
 describe('MessageActions', () => {

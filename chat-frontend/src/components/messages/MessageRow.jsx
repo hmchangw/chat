@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import MessageActionMenu from '../MessageActionMenu'
 import MessageActions from './MessageActions'
 import QuotedBlock from './QuotedBlock'
 
@@ -46,7 +45,9 @@ export default function MessageRow({
     setDraft(messageContent(message))
   }, [message, editing])
 
-  // Deleted messages are removed from the feed entirely.
+  // Deleted messages are removed from the feed entirely. (Also filtered at
+  // MessageList — this is defense-in-depth in case a caller bypasses the
+  // list and renders a row directly.)
   if (message.deleted) return null
 
   const rowClasses = ['message-row']
@@ -59,11 +60,14 @@ export default function MessageRow({
       data-message-id={message.id}
       tabIndex={0}
     >
-      {/* Default avatar — a colored circle with the sender's initial. Replace
-          with a real image once the avatar service lands. */}
-      <div className="message-row-avatar" aria-hidden="true">
-        {senderInitial(message)}
-      </div>
+      {/* Avatar only for messages from other users. Own messages don't show
+          one — the bubble alone (right-aligned, blue-tinted) is enough to
+          identify the sender. */}
+      {!isOwn && (
+        <div className="message-row-avatar" aria-hidden="true">
+          {senderInitial(message)}
+        </div>
+      )}
       <div className="message-row-body">
         <div className="message-header">
           <span className="message-sender">{senderName(message)}</span>
@@ -77,26 +81,44 @@ export default function MessageRow({
             onClick={onJumpToMessage}
           />
         )}
-        {editing ? (
-          <input
-            type="text"
-            className="message-edit-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                if (draft.trim()) onEditSubmit?.(message, draft.trim())
-              } else if (e.key === 'Escape') {
-                e.preventDefault()
-                onEditCancel?.()
-              }
-            }}
-            autoFocus
-          />
-        ) : (
-          <div className="message-bubble">{messageContent(message)}</div>
-        )}
+        {/* The bubble + hover-revealed action group share a positioned wrapper.
+            Hover/focus on this wrapper is what toggles the actions, NOT hover
+            on the whole row — so the visible chrome (avatar / header) stays
+            inert as the cursor passes through. */}
+        <div className="message-bubble-wrap">
+          {editing ? (
+            <input
+              type="text"
+              className="message-edit-input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  if (draft.trim()) onEditSubmit?.(message, draft.trim())
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  onEditCancel?.()
+                }
+              }}
+              autoFocus
+            />
+          ) : (
+            <div className="message-bubble">{messageContent(message)}</div>
+          )}
+          {!editing && (
+            <MessageActions
+              message={message}
+              room={room}
+              context={context}
+              isOwn={isOwn}
+              onThread={onThread}
+              onReply={onReply}
+              onEdit={onEdit}
+              onDelete={onDelete}
+            />
+          )}
+        </div>
         {message.tcount > 0 && context !== 'thread' && context !== 'thread-parent' && (
           <button
             type="button"
@@ -114,19 +136,6 @@ export default function MessageRow({
           </div>
         )}
       </div>
-      {!editing && (
-        <MessageActions
-          message={message}
-          context={context}
-          isOwn={isOwn}
-          onThread={onThread}
-          onReply={onReply}
-          onEdit={onEdit}
-          onDelete={onDelete}
-        />
-      )}
-      {/* Read-receipt kebab — separate from MessageActions; rendered in non-edit state. */}
-      {!editing && <MessageActionMenu message={message} room={room} />}
     </div>
   )
 }
