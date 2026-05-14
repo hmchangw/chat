@@ -1,5 +1,6 @@
 import { msgThread } from '../_transport/subjects'
-import type { Nats, Message } from '../types'
+import { normalizeHistoricalMessages } from '../_transport/normalizeMessage'
+import type { Nats, Message, HistoryMessage } from '../types'
 
 export interface FetchThreadMessagesArgs {
   roomId: string
@@ -10,14 +11,34 @@ export interface FetchThreadMessagesArgs {
 }
 
 export interface FetchThreadMessagesResponse {
+  /** Normalised broadcast shape. */
   messages: Message[]
+  nextCursor?: string
+  hasNext: boolean
 }
 
-/** Load the reply chain for a thread (parent + replies). */
+interface WireResponse {
+  messages?: HistoryMessage[]
+  nextCursor?: string
+  hasNext?: boolean
+}
+
+/**
+ * Load the reply chain for a thread (parent + replies).
+ * Normalises cassandra shape into broadcast shape.
+ */
 export async function fetchThreadMessages(
   { user, request }: Nats,
   args: FetchThreadMessagesArgs,
 ): Promise<FetchThreadMessagesResponse> {
   const { roomId, siteId, threadMessageId, limit = 50 } = args
-  return request(msgThread(user.account, roomId, siteId), { threadMessageId, limit })
+  const resp = await request<WireResponse>(
+    msgThread(user.account, roomId, siteId),
+    { threadMessageId, limit },
+  )
+  return {
+    messages: normalizeHistoricalMessages(resp.messages),
+    nextCursor: resp.nextCursor,
+    hasNext: resp.hasNext ?? false,
+  }
 }

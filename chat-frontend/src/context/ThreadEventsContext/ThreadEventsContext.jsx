@@ -5,7 +5,6 @@ import { useRoomDispatch } from '../RoomEventsContext/RoomEventsContext'
 import { generateMessageID } from '@/lib/idgen'
 import { fetchThreadMessages, sendMessage } from '@/api'
 import { threadEventsReducer, initialState } from './reducer'
-import { normalizeHistoricalMessages } from '@/lib/normalizeMessage'
 
 const ThreadEventsContext = createContext(null)
 
@@ -38,14 +37,9 @@ export function ThreadEventsProvider({ children }) {
       })
         .then((resp) => {
           if (myGen !== generationRef.current) return
-          // Normalize the cassandra-shaped thread messages into the broadcast
-          // shape (id/content) so MessageRow + click handlers work identically
-          // for thread replies and main-feed messages.
-          const normalized = {
-            ...resp,
-            messages: normalizeHistoricalMessages(resp?.messages ?? []),
-          }
-          dispatch({ type: 'HISTORY_LOADED', parentId: parent.messageId, resp: normalized })
+          // The api op already normalises into broadcast shape (id/content);
+          // hand it straight to the reducer.
+          dispatch({ type: 'HISTORY_LOADED', parentId: parent.messageId, resp })
         })
         .catch((err) => {
           if (myGen !== generationRef.current) return

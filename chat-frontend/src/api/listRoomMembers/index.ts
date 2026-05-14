@@ -19,5 +19,5 @@ export async function listRoomMembers(
   { roomId, siteId, enrich = false }: ListRoomMembersArgs,
 ): Promise<ListRoomMembersResponse> {
   const payload = enrich ? { enrich: true } : {}
-  return request(memberList(user.account, roomId, siteId), payload)
+  return request<ListRoomMembersResponse>(memberList(user.account, roomId, siteId), payload)
 }

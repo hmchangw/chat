@@ -27,16 +27,23 @@ export interface ChannelRef {
 }
 
 /** Mirrors model.User as it ships down from auth-service (after the
- *  NATS handshake). The siteId is added client-side in NatsContext. */
+ *  NATS handshake). siteId is added client-side in NatsContext. The
+ *  other sect/employee fields arrive from the auth payload but might
+ *  be empty depending on the user's directory entry. */
 export interface User {
   id: string
   account: string
+  siteId: string
+  sectId?: string
+  sectName?: string
   engName?: string
   chineseName?: string
-  siteId: string
+  employeeId?: string
 }
 
-/** Mirrors model.Room. Timestamps come down as RFC-3339 strings. */
+/** Mirrors model.Room. Timestamps come down as RFC-3339 strings.
+ *  `lastMsgAt`, `lastMentionAllAt`, `minUserLastSeenAt` are `omitempty`
+ *  on the wire — typed optional. The rest are always present. */
 export interface Room {
   id: string
   name: string
@@ -44,23 +51,27 @@ export interface Room {
   createdBy: string
   siteId: string
   userCount: number
-  appCount?: number
+  appCount: number
+  lastMsgId: string
   lastMsgAt?: string
-  lastMsgId?: string
+  lastMentionAllAt?: string
+  minUserLastSeenAt?: string
   createdAt: string
   updatedAt: string
+  restricted?: boolean
   /** Set client-side on DM rooms so the sidebar has a friendly fallback
    *  while the canonical name lands via subscription.update. */
   subscriptionName?: string
 }
 
 /** Mirrors model.Participant — the embedded sender/reader on messages
- *  and read-receipts. */
+ *  and read-receipts. `siteId` rides along on enriched senders. */
 export interface Participant {
   account: string
   userId?: string
   engName?: string
   chineseName?: string
+  siteId?: string
 }
 
 /** Cassandra's QuotedParentMessage shape — what gets embedded on a
@@ -73,9 +84,36 @@ export interface QuotedParentMessage {
   msg?: string
 }
 
-/** Mirrors model.Message after the frontend's `normalizeHistoricalMessage`
- *  step. Historic messages come in with `messageId` + `msg`; this is the
- *  unified shape every renderer downstream consumes. */
+/**
+ * Cassandra-shape message as it arrives from history-service.
+ * Distinct from the broadcast `Message` shape: history rows carry
+ * `messageId` + `msg`, broadcasts carry `id` + `content`. The api/
+ * layer normalises history results into `Message` before handing them
+ * to callers — this type is mostly internal to the normalisation step.
+ */
+export interface HistoryMessage {
+  messageId: string
+  roomId: string
+  sender?: Participant
+  createdAt: string
+  msg: string
+  editedAt?: string
+  deleted?: boolean
+  type?: string
+  sysMsgData?: string
+  mentions?: Participant[]
+  quotedParentMessage?: QuotedParentMessage
+  threadParentId?: string
+  threadParentCreatedAt?: string
+  tcount?: number
+}
+
+/**
+ * Normalised message shape consumed by every renderer (MessageRow,
+ * QuotedBlock, SystemMessage). Broadcast events arrive in this shape;
+ * historic rows are mapped to it by `normalizeHistoricalMessages` in
+ * the api layer.
+ */
 export interface Message {
   id: string
   content: string
@@ -100,9 +138,13 @@ export interface Message {
   tcount?: number
 }
 
-/** Enriched roster entry returned by `member.list { enrich: true }`. */
+/** Mirrors model.RoomMember. `id` is the Mongo doc id, `rid` is the
+ *  containing room, `ts` is the join timestamp. `member` carries the
+ *  type-tagged details (individual vs org). */
 export interface MemberEntry {
   id: string
+  rid: string
+  ts: string
   member: {
     type: 'individual' | 'org'
     id: string
@@ -130,15 +172,16 @@ export interface Subscription {
   unsubscribe: () => void
 }
 
-/** The shape of an inbound NATS callback. We type events as `unknown`
- *  because each subscriber narrows them based on `evt.type`. */
-export type SubscriptionCallback = (event: any) => void
+/** Inbound NATS event payload. Subscribers narrow on `evt.type` to
+ *  reach the variant fields. Typed `unknown` so call sites can't
+ *  bypass the discriminator. */
+export type SubscriptionCallback = (event: unknown) => void
 
 /** Two-phase async-job result returned by `requestWithAsyncResult`. */
 export interface AsyncJobResult<S = unknown, A = unknown> {
   requestId: string
   sync: S
-  async: A
+  async: A | null
 }
 
 /** Options forwarded to `requestWithAsyncResult` from the api layer. */
@@ -152,20 +195,25 @@ export interface AsyncJobOptions {
   asyncTimeout?: number
 }
 
-/** The shape of `useNats()`'s return value as consumed by the api layer.
+/**
+ * The shape of `useNats()`'s return value as consumed by the api layer.
  *
- *  We type only the fields the api functions actually use. The full
- *  NatsContext also exposes `connect`, `disconnect`, `connected`,
- *  `error` — components stay .jsx for now, so those fields don't need
- *  types here. */
+ * `request<T>` is generic so each api op declares its response shape
+ * once and gets type-checked at the call site — `Promise<any>` would
+ * silently swallow shape mismatches.
+ *
+ * Only the fields the api layer actually uses are typed; NatsContext
+ * also exposes `connect`/`disconnect`/`connected`/`error`, but those
+ * are component-facing and JSX consumers don't need a TS type yet.
+ */
 export interface Nats {
   user: User
-  request: (subject: string, data?: unknown) => Promise<any>
+  request: <T = unknown>(subject: string, data?: unknown) => Promise<T>
   publish: (subject: string, data?: unknown) => void
   subscribe: (subject: string, cb: SubscriptionCallback) => Subscription
   requestWithAsyncResult: <S = unknown, A = unknown>(
     subject: string,
     data?: unknown,
-    opts?: AsyncJobOptions
+    opts?: AsyncJobOptions,
   ) => Promise<AsyncJobResult<S, A>>
 }

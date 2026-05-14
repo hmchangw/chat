@@ -10,7 +10,7 @@ export interface OrgMember {
   account: string
   engName?: string
   chineseName?: string
-  siteId?: string
+  siteId: string
 }
 
 export interface ListOrgMembersResponse {
@@ -22,5 +22,5 @@ export async function listOrgMembers(
   { user, request }: Nats,
   { orgId }: ListOrgMembersArgs,
 ): Promise<ListOrgMembersResponse> {
-  return request(orgMembers(user.account, orgId), {})
+  return request<ListOrgMembersResponse>(orgMembers(user.account, orgId), {})
 }

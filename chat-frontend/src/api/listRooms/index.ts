@@ -7,5 +7,5 @@ export interface ListRoomsResponse {
 
 /** List all rooms the current user is subscribed to. */
 export async function listRooms({ user, request }: Nats): Promise<ListRoomsResponse> {
-  return request(roomsList(user.account), {})
+  return request<ListRoomsResponse>(roomsList(user.account), {})
 }

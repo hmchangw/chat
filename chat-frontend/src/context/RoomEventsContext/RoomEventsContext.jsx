@@ -3,7 +3,6 @@ import { useNats } from '@/context/NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 import { useRoomSubscriptions } from './useRoomSubscriptions'
 import { fetchMessageHistory, fetchSurroundingMessages } from '@/api'
-import { normalizeHistoricalMessages } from '@/lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
 
@@ -33,12 +32,11 @@ export function RoomEventsProvider({ children }) {
       const promise = (async () => {
         try {
           const resp = await fetchMessageHistory(nats, { roomId, siteId: user.siteId, limit: 50 })
-          // history-service returns cassandra.Message (messageId/msg); the
-          // reducer + UI consume model.Message (id/content). Normalize here
-          // so msg.id is defined for click handlers downstream.
+          // history-service ships newest-first; the UI reads chronological.
+          // Normalisation to the broadcast `Message` shape now happens inside
+          // the api op.
           const asc = [...(resp.messages ?? [])].reverse()
-          const normalized = normalizeHistoricalMessages(asc)
-          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: normalized })
+          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
         } catch (err) {
           if (generationRef.current === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
           throw err
@@ -65,11 +63,10 @@ export function RoomEventsProvider({ children }) {
       try {
         const resp = await fetchSurroundingMessages(nats, { roomId, siteId, messageId })
         if (generationRef.current !== gen) return
-        const messages = normalizeHistoricalMessages(resp.messages ?? [])
         dispatch({
           type: 'REPLACE_ROOM_BUFFER',
           roomId,
-          messages,
+          messages: resp.messages,
           focusMessageId: messageId,
         })
       } catch (err) {

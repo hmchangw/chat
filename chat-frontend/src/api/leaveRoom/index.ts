@@ -12,7 +12,7 @@ export async function leaveRoom(
   { user, request }: Nats,
   { roomId, siteId }: LeaveRoomArgs,
 ): Promise<unknown> {
-  return request(memberRemove(user.account, roomId, siteId), {
+  return request<unknown>(memberRemove(user.account, roomId, siteId), {
     roomId,
     account: user.account,
   })

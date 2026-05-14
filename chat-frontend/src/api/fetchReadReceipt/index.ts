@@ -17,5 +17,5 @@ export async function fetchReadReceipt(
   args: FetchReadReceiptArgs,
 ): Promise<FetchReadReceiptResponse> {
   const { roomId, siteId, messageId } = args
-  return request(readReceipt(user.account, roomId, siteId), { messageId })
+  return request<FetchReadReceiptResponse>(readReceipt(user.account, roomId, siteId), { messageId })
 }

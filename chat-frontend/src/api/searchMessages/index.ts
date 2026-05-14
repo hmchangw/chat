@@ -11,15 +11,18 @@ export interface SearchMessagesArgs {
 export interface SearchMessageHit {
   messageId: string
   roomId: string
-  roomName?: string
-  content: string
+  siteId: string
+  userId: string
   userAccount: string
+  content: string
   createdAt: string
+  threadParentMessageId?: string
+  threadParentMessageCreatedAt?: string
 }
 
 export interface SearchMessagesResponse {
+  total: number
   results: SearchMessageHit[]
-  total?: number
 }
 
 /** Full-text search across messages. Optionally scope to a room subset. */
@@ -27,5 +30,5 @@ export async function searchMessages(
   { user, request }: Nats,
   args: SearchMessagesArgs,
 ): Promise<SearchMessagesResponse> {
-  return request(searchMessagesSubject(user.account), args)
+  return request<SearchMessagesResponse>(searchMessagesSubject(user.account), args)
 }
