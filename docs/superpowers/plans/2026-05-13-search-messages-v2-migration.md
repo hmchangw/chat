@@ -146,7 +146,7 @@ Also find `TestSearchMessagesRequestJSON` (around line 1470) and add a new `t.Ru
 ```go
 func TestSearchMessagesRequestJSON_WithRoomIDs(t *testing.T) {
     req := model.SearchMessagesRequest{
-        SearchText: "hello",
+        Query: "hello",
         RoomIDs:    []string{"r1", "r2"},
         Size:       10,
         Offset:     0,
@@ -154,7 +154,7 @@ func TestSearchMessagesRequestJSON_WithRoomIDs(t *testing.T) {
     roundTrip(t, &req, &model.SearchMessagesRequest{})
 
     // Verify omitempty for nil RoomIDs
-    reqNoRooms := model.SearchMessagesRequest{SearchText: "hello"}
+    reqNoRooms := model.SearchMessagesRequest{Query: "hello"}
     data, err := json.Marshal(&reqNoRooms)
     require.NoError(t, err)
     assert.NotContains(t, string(data), `"roomIds"`,
@@ -206,7 +206,7 @@ type SearchMessage struct {
 }
 ```
 
-Also confirm `SearchMessagesRequest` already has `RoomIDs []string \`json:"roomIds,omitempty"\`` — it was added in Plan 4's spec. If not present, add it after `SearchText`.
+Also confirm `SearchMessagesRequest` already has `RoomIDs []string \`json:"roomIds,omitempty"\`` — it was added in Plan 4's spec. If not present, add it after `Query`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -860,7 +860,7 @@ func TestHandler_SearchMessages_UserWithNoSubsReturnsEmpty(t *testing.T) {
     mongo := &fakeMongo{}
     h := newTestHandler(store, mongo, cache)
 
-    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "x"})
+    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "x"})
     require.NoError(t, err)
     assert.EqualValues(t, 0, resp.Total)
     assert.Empty(t, resp.Messages) // was resp.Results
@@ -894,7 +894,7 @@ func TestHandler_SearchMessages_MongoEnrichmentHappyPath(t *testing.T) {
     }
     h := newTestHandler(store, mongo, cache)
 
-    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
+    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hello"})
     require.NoError(t, err)
     require.EqualValues(t, 1, resp.Total)
     require.Len(t, resp.Messages, 1)
@@ -924,7 +924,7 @@ func TestHandler_SearchMessages_MongoEnrichmentUserError(t *testing.T) {
     mongo := &fakeMongo{findUsersByIDsErr: errors.New("mongo down")}
     h := newTestHandler(store, mongo, cache)
 
-    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
+    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hello"})
     require.Error(t, err)
     var rerr *natsrouter.RouteError
     require.True(t, errors.As(err, &rerr))
@@ -944,7 +944,7 @@ func TestHandler_SearchMessages_MongoEnrichmentRoomError(t *testing.T) {
     mongo := &fakeMongo{findRoomsByIDsErr: errors.New("rooms collection down")}
     h := newTestHandler(store, mongo, cache)
 
-    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
+    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hello"})
     require.Error(t, err)
     var rerr *natsrouter.RouteError
     require.True(t, errors.As(err, &rerr))
@@ -960,7 +960,7 @@ func TestHandler_SearchMessages_NoHitsSkipsMongo(t *testing.T) {
     mongo := &fakeMongo{}
     h := newTestHandler(store, mongo, cache)
 
-    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "nope"})
+    resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "nope"})
     require.NoError(t, err)
     assert.Empty(t, resp.Messages)
     assert.Len(t, mongo.findUsersByIDsCalls, 0, "no hits → no Mongo calls")
@@ -976,7 +976,7 @@ func TestHandler_SearchMessages_WithRoomIDsCallsClassify(t *testing.T) {
     h := newTestHandler(store, mongo, cache)
 
     _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{
-        SearchText: "hello",
+        Query: "hello",
         RoomIDs:    []string{"r1", "rx"},
     })
     require.NoError(t, err)
@@ -1010,7 +1010,7 @@ func TestHandler_SearchMessages_DeduplicatesUserAndRoomIDs(t *testing.T) {
     mongo := &fakeMongo{}
     h := newTestHandler(store, mongo, cache)
 
-    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
+    _, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hello"})
     require.NoError(t, err)
 
     require.Len(t, mongo.findUsersByIDsCalls, 1)
@@ -1045,8 +1045,8 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
     if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
         return nil, err
     }
-    if req.SearchText == "" {
-        return nil, natsrouter.ErrBadRequest("searchText is required")
+    if req.Query == "" {
+        return nil, natsrouter.ErrBadRequest("query is required")
     }
 
     ctx, cancel := h.withRequestTimeout(c)
@@ -1222,7 +1222,7 @@ Replace the existing `search.messages` section with the updated content below. P
 **Request body:**
 ```json
 {
-  "searchText": "hello world",
+  "query": "hello world",
   "roomIds": ["r1", "r2"],
   "size": 25,
   "offset": 0
@@ -1231,7 +1231,7 @@ Replace the existing `search.messages` section with the updated content below. P
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `searchText` | string | **yes** | Full-text query. Empty string is rejected. |
+| `query` | string | **yes** | Full-text query. Empty string is rejected. |
 | `roomIds` | string[] | no | Scope the search to these rooms. Omit for global search across all accessible rooms. Unknown room IDs and rooms the user cannot access are silently excluded (enforced by the ES terms-lookup + restricted-rooms floor). |
 | `size` | integer | no | Page size. Default `25`, capped at `100`. |
 | `offset` | integer | no | Page offset. Default `0`. |
@@ -1281,7 +1281,7 @@ Replace the existing `search.messages` section with the updated content below. P
 
 | Code | Reason |
 |---|---|
-| `bad_request` | `searchText` is empty; or `size`/`offset` is negative. |
+| `bad_request` | `query` is empty; or `size`/`offset` is negative. |
 | `internal` | ES backend failure, Mongo enrichment failure, or cache failure with no ES fallback. Raw errors are never leaked to the client. |
 
 **Access control for `roomIds`:**
@@ -1409,7 +1409,7 @@ func TestIntegration_SearchMessages_V2_EnrichedResponse(t *testing.T) {
         map[string]any{"_id": "r1", "name": "general", "type": "channel"})
     require.NoError(t, err)
 
-    reqBytes, err := json.Marshal(model.SearchMessagesRequest{SearchText: "hello"})
+    reqBytes, err := json.Marshal(model.SearchMessagesRequest{Query: "hello"})
     require.NoError(t, err)
 
     msg, err := f.clientNATS.Request(subject.SearchMessages("alice"), reqBytes, 5*time.Second)
@@ -1430,10 +1430,10 @@ func TestIntegration_SearchMessages_V2_EnrichedResponse(t *testing.T) {
     assert.Equal(t, "愛麗絲王", got.UserChineseName)
 }
 
-func TestIntegration_SearchMessages_V2_EmptySearchTextReturnsBadRequest(t *testing.T) {
+func TestIntegration_SearchMessages_V2_EmptyQueryReturnsBadRequest(t *testing.T) {
     f := setupMessagesV2Fixture(t)
 
-    reqBytes, err := json.Marshal(model.SearchMessagesRequest{SearchText: ""})
+    reqBytes, err := json.Marshal(model.SearchMessagesRequest{Query: ""})
     require.NoError(t, err)
 
     msg, err := f.clientNATS.Request(subject.SearchMessages("alice"), reqBytes, 5*time.Second)

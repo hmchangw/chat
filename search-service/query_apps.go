@@ -16,18 +16,18 @@ import (
 // function as the real pipeline gets authored; the function signature
 // is the stable contract.
 //
-// All metacharacters in nameQuery are escaped via regexp.QuoteMeta so
+// All metacharacters in query are escaped via regexp.QuoteMeta so
 // a caller can't inject regex syntax (ReDoS or pattern injection).
 // The match is case-insensitive substring (no anchors).
 // offset is applied via $skip before $limit.
 func buildSearchAppsPipeline(
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	offset, limit int,
 ) []bson.M {
 	matchStage := bson.M{
 		"name": bson.M{
-			"$regex":   regexp.QuoteMeta(nameQuery),
+			"$regex":   regexp.QuoteMeta(query),
 			"$options": "i",
 		},
 	}

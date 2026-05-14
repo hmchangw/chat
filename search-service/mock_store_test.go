@@ -168,18 +168,18 @@ func (mr *MockMongoStoreMockRecorder) HydrateRooms(ctx, account, roomIDs any) *g
 }
 
 // SearchAppsByName mocks base method.
-func (m *MockMongoStore) SearchAppsByName(ctx context.Context, nameQuery, account string, assistantEnabled *bool, offset, limit int) ([]model.App, error) {
+func (m *MockMongoStore) SearchAppsByName(ctx context.Context, query, account string, assistantEnabled *bool, offset, limit int) ([]model.App, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SearchAppsByName", ctx, nameQuery, account, assistantEnabled, offset, limit)
+	ret := m.ctrl.Call(m, "SearchAppsByName", ctx, query, account, assistantEnabled, offset, limit)
 	ret0, _ := ret[0].([]model.App)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SearchAppsByName indicates an expected call of SearchAppsByName.
-func (mr *MockMongoStoreMockRecorder) SearchAppsByName(ctx, nameQuery, account, assistantEnabled, offset, limit any) *gomock.Call {
+func (mr *MockMongoStoreMockRecorder) SearchAppsByName(ctx, query, account, assistantEnabled, offset, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchAppsByName", reflect.TypeOf((*MockMongoStore)(nil).SearchAppsByName), ctx, nameQuery, account, assistantEnabled, offset, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchAppsByName", reflect.TypeOf((*MockMongoStore)(nil).SearchAppsByName), ctx, query, account, assistantEnabled, offset, limit)
 }
 
 // MockSearchUsersClient is a mock of SearchUsersClient interface.

@@ -36,7 +36,7 @@ type UserRoomDoc struct {
 type MongoStore interface {
 	SearchAppsByName(
 		ctx context.Context,
-		nameQuery, account string,
+		query, account string,
 		assistantEnabled *bool,
 		offset, limit int,
 	) ([]model.App, error)

@@ -25,11 +25,11 @@ func newMongoStore(db *mongo.Database) *mongoStore {
 
 func (s *mongoStore) SearchAppsByName(
 	ctx context.Context,
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	offset, limit int,
 ) ([]model.App, error) {
-	pipeline := buildSearchAppsPipeline(nameQuery, account, assistantEnabled, offset, limit)
+	pipeline := buildSearchAppsPipeline(query, account, assistantEnabled, offset, limit)
 	cur, err := s.apps.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate apps: %w", err)

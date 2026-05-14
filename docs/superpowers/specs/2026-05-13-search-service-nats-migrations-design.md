@@ -92,7 +92,7 @@ with `defer observeRequest(metricKindX, &err)()` for Prometheus.
 **Request (`pkg/model/search.go`):**
 ```go
 type SearchAppsRequest struct {
-    NameQuery        string `json:"nameQuery"`
+    Query        string `json:"query"`
     AssistantEnabled *bool  `json:"assistantEnabled,omitempty"`
     Size             int    `json:"size,omitempty"`
     Offset           int    `json:"offset,omitempty"`
@@ -107,7 +107,7 @@ type SearchAppsResponse struct {
 ```
 
 **Validation:**
-- `strings.TrimSpace(NameQuery)` — if empty, return `natsrouter.ErrBadRequest("nameQuery is required")`.
+- `strings.TrimSpace(Query)` — if empty, return `natsrouter.ErrBadRequest("query is required")`.
 - `normalizePagination(&Size, &Offset)` (existing helper) — clamp; reject negatives.
 
 **`AssistantEnabled` semantics (strict equality):**
@@ -122,7 +122,7 @@ type SearchAppsResponse struct {
 **Request (`pkg/model/search.go`, extended):**
 ```go
 type SearchMessagesRequest struct {
-    SearchText string   `json:"searchText"`
+    Query string   `json:"query"`
     RoomIDs    []string `json:"roomIds,omitempty"`  // NEW — scope to these rooms if set
     Size       int      `json:"size,omitempty"`
     Offset     int      `json:"offset,omitempty"`
@@ -142,7 +142,7 @@ type SearchMessagesResponse struct {
 between the ES query and the Mongo hydration step. The public reply type is
 `model.SearchMessage`.)
 
-**Validation:** unchanged from current (`SearchText` required; pagination
+**Validation:** unchanged from current (`Query` required; pagination
 normalized via existing helper).
 
 ### 5.3 `search.users`
@@ -220,8 +220,8 @@ the same commit as the rename.)
 |---|---|---|
 | `search-service/store.go` | edit | Add `MongoStore` interface (methods: `SearchAppsByName`, `FindUsersByIDs`, `FindRoomsByIDs`, `HydrateRooms`). Add `SearchUsersClient` interface (single method `SearchUsers(ctx, query) ([]model.SearchUser, error)`). Keep existing `SearchStore` and `RestrictedRoomCache` interfaces. Update `//go:generate mockgen` directive. |
 | `search-service/store_mongo.go` | **new** | `mongoStore` struct + implementations for all four `MongoStore` methods. Binds `apps` collection; aggregations on subs/rooms/users referenced by string name in pipelines. |
-| `search-service/query_apps.go` | **new** | `buildSearchAppsPipeline(nameQuery, account, assistantEnabled, limit)` — pipeline body **authored by the user**; the spec provides the function signature and a placeholder `[]bson.M{}`. Pipeline shape: `$match name+assistantEnabled` → `$lookup subscriptions` (the access guard) → `$group` → `$lookup rooms` → `$limit` → `$project` matching `model.App`. |
-| `search-service/query_apps_test.go` | **new** | Table-driven pipeline-builder tests against expected BSON shape. Verifies regex escaping (`regexp.QuoteMeta` on `nameQuery`), optional stages present/absent based on `assistantEnabled` being `nil` / `true` / `false`, and `$limit` reflecting `Size`. |
+| `search-service/query_apps.go` | **new** | `buildSearchAppsPipeline(query, account, assistantEnabled, limit)` — pipeline body **authored by the user**; the spec provides the function signature and a placeholder `[]bson.M{}`. Pipeline shape: `$match name+assistantEnabled` → `$lookup subscriptions` (the access guard) → `$group` → `$lookup rooms` → `$limit` → `$project` matching `model.App`. |
+| `search-service/query_apps_test.go` | **new** | Table-driven pipeline-builder tests against expected BSON shape. Verifies regex escaping (`regexp.QuoteMeta` on `query`), optional stages present/absent based on `assistantEnabled` being `nil` / `true` / `false`, and `$limit` reflecting `Size`. |
 | `search-service/users_client.go` | **new** | `httpUsersClient` Resty adapter implementing `SearchUsersClient`. Wraps the outbound HTTP call to the third-party HR endpoint. **Third-party request/response wire shape: TBD** — fill in when implementing; the interface boundary keeps the handler tests independent of it. |
 | `search-service/handler.go` | edit | Inject `mongo MongoStore` and `users SearchUsersClient` into `handler`. Add `searchApps`, `searchUsers` handler methods. Refactor existing `searchMessages` for ES → Mongo enrichment → `SearchMessage` transformation. Refactor existing `searchRooms` → `searchRooms` (subject rename, request/response reshape, Mongo hydration). Register all four routes on `Router`. |
 | `search-service/handler_test.go` | edit | New table-driven test groups for each of the four endpoints, using mocked stores. Cover: happy path; empty input rejection; pagination clamping; backend errors; access-guard behavior (restricted-rooms classification for `/messages` with supplied `RoomIDs`); `assistantEnabled` pass-through for `/apps`. |
@@ -248,9 +248,9 @@ the same commit as the rename.)
 3. `searchApps(c, req)`:
    1. `account, _ := c.Params.Require("account")`.
    2. `h.normalizePagination(&req.Size, &req.Offset)`.
-   3. `nameQuery := strings.TrimSpace(req.NameQuery)`; if empty → `ErrBadRequest("nameQuery is required")`.
+   3. `query := strings.TrimSpace(req.Query)`; if empty → `ErrBadRequest("query is required")`.
    4. `ctx, cancel := h.withRequestTimeout(c); defer cancel()`.
-   5. `apps, err := h.mongo.SearchAppsByName(ctx, nameQuery, account, req.AssistantEnabled, req.Size)`.
+   5. `apps, err := h.mongo.SearchAppsByName(ctx, query, account, req.AssistantEnabled, req.Size)`.
       - On error: log with `account` + err; return `ErrInternal("search backend unavailable")`.
    6. Return `&SearchAppsResponse{Apps: apps}`.
 4. `defer observeRequest(metricKindApps, &err)()` records duration + outcome.
@@ -258,7 +258,7 @@ the same commit as the rename.)
 ### 7.2 `search.messages` v2
 
 1. As above, account from subject.
-2. `normalizePagination`; reject empty `SearchText`.
+2. `normalizePagination`; reject empty `Query`.
 3. `restricted, err := h.loadRestricted(ctx, account)` — existing Valkey-cached restricted-rooms map.
 4. `accessibleRoomIDs, err := classifyRoomIDs(req.RoomIDs, restricted)` — see §8.
 5. `body, err := buildMessageQuery(req, account, accessibleRoomIDs, ...)` — existing builder, parameterized to take a pre-classified room list when `RoomIDs` is set.

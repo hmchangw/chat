@@ -454,7 +454,7 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 	// restrictedRooms from Valkey (miss → ES prefetch → Valkey SET), then
 	// builds the CCS query against `messages-*,*:messages-*` and parses
 	// the merged response.
-	req := model.SearchMessagesRequest{SearchText: "hello"}
+	req := model.SearchMessagesRequest{Query: "hello"}
 	reqData, err := json.Marshal(req)
 	require.NoError(t, err)
 
@@ -612,7 +612,7 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	})
 
 	// --- Search ---------------------------------------------------------
-	reqData, err := json.Marshal(model.SearchMessagesRequest{SearchText: "hello"})
+	reqData, err := json.Marshal(model.SearchMessagesRequest{Query: "hello"})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchMessages(account), reqData, 30*time.Second)
@@ -719,7 +719,7 @@ func TestIntegration_SearchApps_PrototypePipeline(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchAppsRequest{NameQuery: "weather"})
+	reqBytes, err := json.Marshal(model.SearchAppsRequest{Query: "weather"})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchApps("alice"), reqBytes, 5*time.Second)
@@ -746,7 +746,7 @@ func TestIntegration_SearchApps_AssistantEnabledFilter(t *testing.T) {
 
 	enabled := true
 	reqBytes, err := json.Marshal(model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:            "weather",
 		AssistantEnabled: &enabled,
 	})
 	require.NoError(t, err)
@@ -761,10 +761,10 @@ func TestIntegration_SearchApps_AssistantEnabledFilter(t *testing.T) {
 	assert.Equal(t, "Weather Alpha", resp.Apps[0].Name)
 }
 
-func TestIntegration_SearchApps_EmptyNameQueryReturnsBadRequest(t *testing.T) {
+func TestIntegration_SearchApps_EmptyQueryReturnsBadRequest(t *testing.T) {
 	f := setupAppsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchAppsRequest{NameQuery: ""})
+	reqBytes, err := json.Marshal(model.SearchAppsRequest{Query: ""})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchApps("alice"), reqBytes, 5*time.Second)
@@ -1225,7 +1225,7 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 func TestIntegration_SearchMessages_V2_HitProjection(t *testing.T) {
 	f := setupMessagesV2Fixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchMessagesRequest{SearchText: "hello"})
+	reqBytes, err := json.Marshal(model.SearchMessagesRequest{Query: "hello"})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchMessages("alice"), reqBytes, 5*time.Second)
@@ -1245,10 +1245,10 @@ func TestIntegration_SearchMessages_V2_HitProjection(t *testing.T) {
 	assert.Equal(t, "hello", got.Content)
 }
 
-func TestIntegration_SearchMessages_V2_EmptySearchTextReturnsBadRequest(t *testing.T) {
+func TestIntegration_SearchMessages_V2_EmptyQueryReturnsBadRequest(t *testing.T) {
 	f := setupMessagesV2Fixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchMessagesRequest{SearchText: ""})
+	reqBytes, err := json.Marshal(model.SearchMessagesRequest{Query: ""})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchMessages("alice"), reqBytes, 5*time.Second)

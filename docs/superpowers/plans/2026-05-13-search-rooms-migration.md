@@ -405,7 +405,7 @@ git commit -m "refactor(search-service): rename metricKindRooms -> metricKindRoo
 - Delete: `search-service/query_rooms_test.go`
 - Create: `search-service/query_subscriptions_test.go`
 
-The ES query logic is unchanged; only the input type and field names change. `buildRoomQuery` is renamed to `buildRoomQuery` and adapted to read from `SearchRoomsRequest.Query` (was `SearchText`) and `SearchRoomsRequest.RoomType` (was `Scope`). The internal scope constants are renamed to reduce confusion.
+The ES query logic is unchanged; only the input type and field names change. `buildRoomQuery` is renamed to `buildRoomQuery` and adapted to read from `SearchRoomsRequest.Query` (was `Query`) and `SearchRoomsRequest.RoomType` (was `Scope`). The internal scope constants are renamed to reduce confusion.
 
 - [ ] **Step 1: Write the failing tests first (new file)**
 
@@ -512,7 +512,7 @@ func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
 	assert.Equal(t, "desc", joinedAt["order"])
 }
 
-func TestBuildSubscriptionQuery_QueryFieldUsedAsSearchText(t *testing.T) {
+func TestBuildSubscriptionQuery_QueryFieldFlowsToESBody(t *testing.T) {
 	req := model.SearchRoomsRequest{Query: "engineering", Size: 5}
 	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)
@@ -801,7 +801,7 @@ In `search-service/store.go`, find the `MongoStore` interface. **Replace** its c
 type MongoStore interface {
 	SearchAppsByName(
 		ctx context.Context,
-		nameQuery, account string,
+		query, account string,
 		assistantEnabled *bool,
 		offset, limit int,
 	) ([]model.App, error)
@@ -970,7 +970,7 @@ type fakeMongo struct {
 }
 
 type searchAppsCall struct {
-	nameQuery        string
+	query        string
 	account          string
 	assistantEnabled *bool
 	offset           int
@@ -984,12 +984,12 @@ type hydrateRoomsCall struct {
 
 func (f *fakeMongo) SearchAppsByName(
 	_ context.Context,
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	offset, limit int,
 ) ([]model.App, error) {
 	f.searchAppsCalls = append(f.searchAppsCalls, searchAppsCall{
-		nameQuery: nameQuery, account: account, assistantEnabled: assistantEnabled, offset: offset, limit: limit,
+		query: query, account: account, assistantEnabled: assistantEnabled, offset: offset, limit: limit,
 	})
 	if f.searchAppsErr != nil {
 		return nil, f.searchAppsErr

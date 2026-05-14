@@ -75,7 +75,7 @@ Append to `pkg/model/model_test.go` (just before the closing of the file — fin
 func TestSearchAppsRequestJSON(t *testing.T) {
 	enabled := true
 	r := model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:        "weather",
 		AssistantEnabled: &enabled,
 		Size:             50,
 		Offset:           0,
@@ -84,7 +84,7 @@ func TestSearchAppsRequestJSON(t *testing.T) {
 }
 
 func TestSearchAppsRequestJSON_OmitOptional(t *testing.T) {
-	r := model.SearchAppsRequest{NameQuery: "weather"}
+	r := model.SearchAppsRequest{Query: "weather"}
 	roundTrip(t, &r, &model.SearchAppsRequest{})
 
 	data, err := json.Marshal(&r)
@@ -128,10 +128,10 @@ Append at the end of `pkg/model/search.go`:
 ```go
 // SearchAppsRequest is the NATS payload for `chat.user.{account}.request.search.apps`.
 //
-// NameQuery is a non-empty substring match (case-insensitive). AssistantEnabled is a
+// Query is a non-empty substring match (case-insensitive). AssistantEnabled is a
 // strict equality filter on `app.assistant.enabled` when non-nil; nil means no filter.
 type SearchAppsRequest struct {
-	NameQuery        string `json:"nameQuery"`
+	Query        string `json:"query"`
 	AssistantEnabled *bool  `json:"assistantEnabled,omitempty"`
 	Size             int    `json:"size,omitempty"`
 	Offset           int    `json:"offset,omitempty"`
@@ -238,7 +238,7 @@ In `search-service/store.go`, append after the existing `UserRoomDoc` struct:
 type MongoStore interface {
 	SearchAppsByName(
 		ctx context.Context,
-		nameQuery, account string,
+		query, account string,
 		assistantEnabled *bool,
 		limit int,
 	) ([]model.App, error)
@@ -321,7 +321,7 @@ func TestBuildSearchAppsPipeline_MatchesNameRegex(t *testing.T) {
 	require.True(t, ok, "first stage must be $match")
 	name, ok := match["name"].(bson.M)
 	require.True(t, ok, "$match.name must be a bson.M holding $regex/$options")
-	assert.Equal(t, "weather", name["$regex"], "regex literal must be the raw nameQuery (after QuoteMeta)")
+	assert.Equal(t, "weather", name["$regex"], "regex literal must be the raw query (after QuoteMeta)")
 	assert.Equal(t, "i", name["$options"], "regex must be case-insensitive")
 }
 
@@ -399,17 +399,17 @@ import (
 // function as the real pipeline gets authored; the function signature
 // is the stable contract.
 //
-// All metacharacters in nameQuery are escaped via regexp.QuoteMeta so
+// All metacharacters in query are escaped via regexp.QuoteMeta so
 // a caller can't inject regex syntax (ReDoS or pattern injection).
 // The match is case-insensitive substring (no anchors).
 func buildSearchAppsPipeline(
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	limit int,
 ) []bson.M {
 	matchStage := bson.M{
 		"name": bson.M{
-			"$regex":   regexp.QuoteMeta(nameQuery),
+			"$regex":   regexp.QuoteMeta(query),
 			"$options": "i",
 		},
 	}
@@ -491,11 +491,11 @@ func newMongoStore(db *mongo.Database) *mongoStore {
 
 func (s *mongoStore) SearchAppsByName(
 	ctx context.Context,
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	limit int,
 ) ([]model.App, error) {
-	pipeline := buildSearchAppsPipeline(nameQuery, account, assistantEnabled, limit)
+	pipeline := buildSearchAppsPipeline(query, account, assistantEnabled, limit)
 	cur, err := s.apps.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate apps: %w", err)
@@ -741,7 +741,7 @@ type fakeMongo struct {
 }
 
 type searchAppsCall struct {
-	nameQuery        string
+	query        string
 	account          string
 	assistantEnabled *bool
 	limit            int
@@ -749,12 +749,12 @@ type searchAppsCall struct {
 
 func (f *fakeMongo) SearchAppsByName(
 	_ context.Context,
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	limit int,
 ) ([]model.App, error) {
 	f.searchAppsCalls = append(f.searchAppsCalls, searchAppsCall{
-		nameQuery: nameQuery, account: account, assistantEnabled: assistantEnabled, limit: limit,
+		query: query, account: account, assistantEnabled: assistantEnabled, limit: limit,
 	})
 	if f.searchAppsErr != nil {
 		return nil, f.searchAppsErr
@@ -769,7 +769,7 @@ func TestHandler_SearchApps_Happy(t *testing.T) {
 	}}
 	h := newTestHandler(nil, mongo, newFakeCache())
 
-	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "weather"})
+	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "weather"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Len(t, resp.Apps, 2)
@@ -777,7 +777,7 @@ func TestHandler_SearchApps_Happy(t *testing.T) {
 
 	require.Len(t, mongo.searchAppsCalls, 1)
 	call := mongo.searchAppsCalls[0]
-	assert.Equal(t, "weather", call.nameQuery)
+	assert.Equal(t, "weather", call.query)
 	assert.Equal(t, "alice", call.account)
 	assert.Nil(t, call.assistantEnabled)
 	assert.Equal(t, 25, call.limit, "Size unset → defaults to DocCounts=25")
@@ -789,7 +789,7 @@ func TestHandler_SearchApps_PassesAssistantEnabled(t *testing.T) {
 
 	enabled := true
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:        "weather",
 		AssistantEnabled: &enabled,
 		Size:             10,
 	})
@@ -801,11 +801,11 @@ func TestHandler_SearchApps_PassesAssistantEnabled(t *testing.T) {
 	assert.Equal(t, 10, mongo.searchAppsCalls[0].limit)
 }
 
-func TestHandler_SearchApps_EmptyNameQueryRejected(t *testing.T) {
+func TestHandler_SearchApps_EmptyQueryRejected(t *testing.T) {
 	mongo := &fakeMongo{}
 	h := newTestHandler(nil, mongo, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: ""})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: ""})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -814,11 +814,11 @@ func TestHandler_SearchApps_EmptyNameQueryRejected(t *testing.T) {
 	assert.Len(t, mongo.searchAppsCalls, 0, "validation must short-circuit before backend call")
 }
 
-func TestHandler_SearchApps_WhitespaceNameQueryRejected(t *testing.T) {
+func TestHandler_SearchApps_WhitespaceQueryRejected(t *testing.T) {
 	mongo := &fakeMongo{}
 	h := newTestHandler(nil, mongo, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "   \t  "})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "   \t  "})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -829,7 +829,7 @@ func TestHandler_SearchApps_BackendErrorSanitized(t *testing.T) {
 	mongo := &fakeMongo{searchAppsErr: errors.New("mongo down")}
 	h := newTestHandler(nil, mongo, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "weather"})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "weather"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -841,7 +841,7 @@ func TestHandler_SearchApps_EmptyResultsReturnsEmptySlice(t *testing.T) {
 	mongo := &fakeMongo{searchAppsResults: nil}
 	h := newTestHandler(nil, mongo, newFakeCache())
 
-	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "nope"})
+	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "nope"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.NotNil(t, resp.Apps, "must be empty slice, never nil — to marshal as [] not null")
@@ -853,7 +853,7 @@ func TestHandler_SearchApps_SizeClamped(t *testing.T) {
 	h := newTestHandler(nil, mongo, newFakeCache())
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery: "weather",
+		Query: "weather",
 		Size:      500, // exceeds MaxDocCounts (100)
 	})
 	require.NoError(t, err)
@@ -867,7 +867,7 @@ func TestHandler_SearchApps_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(nil, mongo, newFakeCache())
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery: "weather",
+		Query: "weather",
 		Size:      -1,
 	})
 	require.Error(t, err)
@@ -902,15 +902,15 @@ func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest)
 		return nil, err
 	}
 
-	nameQuery := strings.TrimSpace(req.NameQuery)
-	if nameQuery == "" {
-		return nil, natsrouter.ErrBadRequest("nameQuery is required")
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, natsrouter.ErrBadRequest("query is required")
 	}
 
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	apps, err := h.mongo.SearchAppsByName(ctx, nameQuery, account, req.AssistantEnabled, req.Size)
+	apps, err := h.mongo.SearchAppsByName(ctx, query, account, req.AssistantEnabled, req.Size)
 	if err != nil {
 		slog.Error("app search backend failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("search backend unavailable")
@@ -1204,7 +1204,7 @@ func TestIntegration_SearchApps_PrototypePipeline(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBytes, err := json.Marshal(model.SearchAppsRequest{NameQuery: "weather"})
+	reqBytes, err := json.Marshal(model.SearchAppsRequest{Query: "weather"})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchApps("alice"), reqBytes, 5*time.Second)
@@ -1231,7 +1231,7 @@ func TestIntegration_SearchApps_AssistantEnabledFilter(t *testing.T) {
 
 	enabled := true
 	reqBytes, err := json.Marshal(model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:        "weather",
 		AssistantEnabled: &enabled,
 	})
 	require.NoError(t, err)
@@ -1246,10 +1246,10 @@ func TestIntegration_SearchApps_AssistantEnabledFilter(t *testing.T) {
 	assert.Equal(t, "Weather Alpha", resp.Apps[0].Name)
 }
 
-func TestIntegration_SearchApps_EmptyNameQueryReturnsBadRequest(t *testing.T) {
+func TestIntegration_SearchApps_EmptyQueryReturnsBadRequest(t *testing.T) {
 	f := setupAppsFixture(t)
 
-	reqBytes, err := json.Marshal(model.SearchAppsRequest{NameQuery: ""})
+	reqBytes, err := json.Marshal(model.SearchAppsRequest{Query: ""})
 	require.NoError(t, err)
 
 	msg, err := f.clientNATS.Request(subject.SearchApps("alice"), reqBytes, 5*time.Second)
@@ -1305,7 +1305,7 @@ Open `docs/client-api.md` and locate the section for `search-service` (search fo
 **Request body:**
 ```json
 {
-  "nameQuery": "weather",
+  "query": "weather",
   "assistantEnabled": true,
   "size": 25,
   "offset": 0
@@ -1314,7 +1314,7 @@ Open `docs/client-api.md` and locate the section for `search-service` (search fo
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `nameQuery` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
+| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
 | `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
 | `size` | integer | no | Page size. Default `25`, capped at `100`. |
 | `offset` | integer | no | Page offset. Default `0`. |
@@ -1338,7 +1338,7 @@ Open `docs/client-api.md` and locate the section for `search-service` (search fo
 
 | Code | Reason |
 |---|---|
-| `bad_request` | `nameQuery` missing, empty, or whitespace-only; or negative `size`/`offset`. |
+| `bad_request` | `query` missing, empty, or whitespace-only; or negative `size`/`offset`. |
 | `internal` | Mongo backend failure (transient or permanent). The raw error is never leaked to the client. |
 ````
 

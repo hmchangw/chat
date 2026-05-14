@@ -73,8 +73,8 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
 		return nil, err
 	}
-	if req.SearchText == "" {
-		return nil, natsrouter.ErrBadRequest("searchText is required")
+	if req.Query == "" {
+		return nil, natsrouter.ErrBadRequest("query is required")
 	}
 
 	ctx, cancel := h.withRequestTimeout(c)
@@ -233,15 +233,15 @@ func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest)
 		return nil, err
 	}
 
-	nameQuery := strings.TrimSpace(req.NameQuery)
-	if nameQuery == "" {
-		return nil, natsrouter.ErrBadRequest("nameQuery is required")
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, natsrouter.ErrBadRequest("query is required")
 	}
 
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	apps, err := h.mongo.SearchAppsByName(ctx, nameQuery, account, req.AssistantEnabled, req.Offset, req.Size)
+	apps, err := h.mongo.SearchAppsByName(ctx, query, account, req.AssistantEnabled, req.Offset, req.Size)
 	if err != nil {
 		slog.Error("app search backend failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("search backend unavailable")

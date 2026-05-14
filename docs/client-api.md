@@ -1484,7 +1484,7 @@ See [Error envelope](#5-error-envelope-reference).
 
 ```json
 {
-  "searchText": "hello world",
+  "query": "hello world",
   "roomIds": ["r1", "r2"],
   "size": 25,
   "offset": 0
@@ -1493,7 +1493,7 @@ See [Error envelope](#5-error-envelope-reference).
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `searchText` | string | **yes** | Full-text query. Empty string is rejected. |
+| `query` | string | **yes** | Full-text query. Empty string is rejected. |
 | `roomIds` | string[] | no | Scope the search to these rooms. Omit for global search across all accessible rooms. Unknown room IDs and rooms the user cannot access are silently excluded (enforced by the ES terms-lookup + restricted-rooms floor). |
 | `size` | integer | no | Page size. Default `25`, capped at `100`. |
 | `offset` | integer | no | Page offset. Default `0`. |
@@ -1544,7 +1544,7 @@ See [Error envelope](#5-error-envelope-reference).
 
 | Code | Reason |
 |---|---|
-| `bad_request` | `searchText` is empty; or `size`/`offset` is negative. |
+| `bad_request` | `query` is empty; or `size`/`offset` is negative. |
 | `internal` | ES backend failure or cache failure with no ES fallback. Raw errors are never leaked to the client. |
 
 **Access control for `roomIds`:**
@@ -1636,14 +1636,14 @@ See [Error envelope](#5-error-envelope-reference).
 
 **Auth:** the `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout).
 
-**Current behavior (prototype):** results are matched by `nameQuery` (and optional `assistantEnabled`) only. The response is **not** yet subscription-scoped — every app whose name matches the query is returned.
+**Current behavior (prototype):** results are matched by `query` (and optional `assistantEnabled`) only. The response is **not** yet subscription-scoped — every app whose name matches the query is returned.
 
 **Planned behavior:** the response will be scoped to apps the caller has subscribed to once the pipeline's `$lookup` access guard against the `subscriptions` collection is enabled. See `TODO(searchApps-pipeline)` in `search-service/query_apps.go`.
 
 **Request body:**
 ```json
 {
-  "nameQuery": "weather",
+  "query": "weather",
   "assistantEnabled": true,
   "size": 25,
   "offset": 0
@@ -1652,7 +1652,7 @@ See [Error envelope](#5-error-envelope-reference).
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `nameQuery` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
+| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
 | `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
 | `size` | integer | no | Page size. Default `25`, capped at `100`. |
 | `offset` | integer | no | Page offset. Default `0`. |
@@ -1676,7 +1676,7 @@ See [Error envelope](#5-error-envelope-reference).
 
 | Category | Reason |
 |---|---|
-| `bad_request` | Validation failures (`nameQuery` missing/blank, negative `size`/`offset`). |
+| `bad_request` | Validation failures (`query` missing/blank, negative `size`/`offset`). |
 | `internal` | Backend failure (transient or permanent). The raw error is never leaked to the client. |
 
 These are documentation categories. The wire error envelope is `{ "error": "<human-readable reason>", "code": "<category>" }` per `pkg/model.ErrorResponse` (see §5).

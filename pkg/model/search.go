@@ -8,10 +8,10 @@ import "time"
 // access to. When set, the search is scoped to the listed rooms; the service
 // enforces access using the per-user restricted-rooms map.
 type SearchMessagesRequest struct {
-	SearchText string   `json:"searchText"`
-	RoomIDs    []string `json:"roomIds,omitempty"`
-	Size       int      `json:"size,omitempty"`
-	Offset     int      `json:"offset,omitempty"`
+	Query   string   `json:"query"`
+	RoomIDs []string `json:"roomIds,omitempty"`
+	Size    int      `json:"size,omitempty"`
+	Offset  int      `json:"offset,omitempty"`
 }
 
 // SearchMessagesResponse is the NATS reply for `search.messages`.
@@ -81,10 +81,10 @@ type SearchRoom struct {
 
 // SearchAppsRequest is the NATS payload for `chat.user.{account}.request.search.apps`.
 //
-// NameQuery is a non-empty substring match (case-insensitive). AssistantEnabled is a
+// Query is a non-empty substring match (case-insensitive). AssistantEnabled is a
 // strict equality filter on `app.assistant.enabled` when non-nil; nil means no filter.
 type SearchAppsRequest struct {
-	NameQuery        string `json:"nameQuery"`
+	Query            string `json:"query"`
 	AssistantEnabled *bool  `json:"assistantEnabled,omitempty"`
 	Size             int    `json:"size,omitempty"`
 	Offset           int    `json:"offset,omitempty"`

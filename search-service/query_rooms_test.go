@@ -98,7 +98,7 @@ func TestBuildSubscriptionQuery_SortByScoreThenJoinedAtDesc(t *testing.T) {
 	assert.Equal(t, "desc", joinedAt["order"])
 }
 
-func TestBuildSubscriptionQuery_QueryFieldUsedAsSearchText(t *testing.T) {
+func TestBuildSubscriptionQuery_QueryFieldFlowsToESBody(t *testing.T) {
 	req := model.SearchRoomsRequest{Query: "engineering", Size: 5}
 	raw, err := buildRoomQuery(req, "alice")
 	require.NoError(t, err)

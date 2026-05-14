@@ -1470,10 +1470,10 @@ func TestRoomsInfoBatchResponseJSON(t *testing.T) {
 func TestSearchMessagesRequestJSON(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
 		req := model.SearchMessagesRequest{
-			SearchText: "hello",
-			RoomIDs:    []string{"r1", "r2"},
-			Size:       50,
-			Offset:     25,
+			Query:   "hello",
+			RoomIDs: []string{"r1", "r2"},
+			Size:    50,
+			Offset:  25,
 		}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
@@ -1483,7 +1483,7 @@ func TestSearchMessagesRequestJSON(t *testing.T) {
 	})
 
 	t.Run("global (roomIds omitted when nil)", func(t *testing.T) {
-		req := model.SearchMessagesRequest{SearchText: "hello"}
+		req := model.SearchMessagesRequest{Query: "hello"}
 		data, err := json.Marshal(&req)
 		require.NoError(t, err)
 		var raw map[string]any
@@ -1555,15 +1555,15 @@ func TestSearchMessageJSON(t *testing.T) {
 
 func TestSearchMessagesRequestJSON_WithRoomIDs(t *testing.T) {
 	req := model.SearchMessagesRequest{
-		SearchText: "hello",
-		RoomIDs:    []string{"r1", "r2"},
-		Size:       10,
-		Offset:     0,
+		Query:   "hello",
+		RoomIDs: []string{"r1", "r2"},
+		Size:    10,
+		Offset:  0,
 	}
 	roundTrip(t, &req, &model.SearchMessagesRequest{})
 
 	// Verify omitempty for nil RoomIDs
-	reqNoRooms := model.SearchMessagesRequest{SearchText: "hello"}
+	reqNoRooms := model.SearchMessagesRequest{Query: "hello"}
 	data, err := json.Marshal(&reqNoRooms)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), `"roomIds"`,
@@ -2111,7 +2111,7 @@ func TestSyncCreateDMReplyJSON(t *testing.T) {
 func TestSearchAppsRequestJSON(t *testing.T) {
 	enabled := true
 	r := model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:            "weather",
 		AssistantEnabled: &enabled,
 		Size:             50,
 		Offset:           0,
@@ -2120,7 +2120,7 @@ func TestSearchAppsRequestJSON(t *testing.T) {
 }
 
 func TestSearchAppsRequestJSON_OmitOptional(t *testing.T) {
-	r := model.SearchAppsRequest{NameQuery: "weather"}
+	r := model.SearchAppsRequest{Query: "weather"}
 	roundTrip(t, &r, &model.SearchAppsRequest{})
 
 	data, err := json.Marshal(&r)

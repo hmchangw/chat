@@ -16,7 +16,7 @@ func TestBuildSearchAppsPipeline_MatchesNameRegex(t *testing.T) {
 	require.True(t, ok, "first stage must be $match")
 	name, ok := match["name"].(bson.M)
 	require.True(t, ok, "$match.name must be a bson.M holding $regex/$options")
-	assert.Equal(t, "weather", name["$regex"], "regex literal must be the raw nameQuery (after QuoteMeta)")
+	assert.Equal(t, "weather", name["$regex"], "regex literal must be the raw query (after QuoteMeta)")
 	assert.Equal(t, "i", name["$options"], "regex must be case-insensitive")
 }
 

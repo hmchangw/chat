@@ -101,7 +101,7 @@ func TestHandler_SearchMessages_CacheHitUnrestricted(t *testing.T) {
 
 	h := newTestHandler(store, nil, nil, cache)
 
-	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, resp.Total)
 
@@ -118,7 +118,7 @@ func TestHandler_SearchMessages_CacheMissPopulatesFromES(t *testing.T) {
 	cache := newFakeCache()
 
 	h := newTestHandler(store, nil, nil, cache)
-	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, resp.Total)
 
@@ -133,7 +133,7 @@ func TestHandler_SearchMessages_CacheErrorFallsThroughToES(t *testing.T) {
 	cache.getErr = errors.New("valkey down")
 
 	h := newTestHandler(store, nil, nil, cache)
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, store.userRoomCalls, "cache error triggers ES prefetch")
 	// Verify the handler skips SetRestricted when the prior GetRestricted
@@ -148,7 +148,7 @@ func TestHandler_SearchMessages_CacheAndESFailReturnInternal(t *testing.T) {
 	cache.getErr = errors.New("valkey down")
 
 	h := newTestHandler(store, nil, nil, cache)
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.Error(t, err)
 
 	var rerr *natsrouter.RouteError
@@ -162,14 +162,14 @@ func TestHandler_SearchMessages_ESSearchError(t *testing.T) {
 	cache.store["alice"] = map[string]int64{}
 
 	h := newTestHandler(store, nil, nil, cache)
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
 	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
 }
 
-func TestHandler_SearchMessages_EmptySearchText(t *testing.T) {
+func TestHandler_SearchMessages_EmptyQuery(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, nil, nil, newFakeCache())
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{})
 	require.Error(t, err)
@@ -180,7 +180,7 @@ func TestHandler_SearchMessages_EmptySearchText(t *testing.T) {
 
 func TestHandler_SearchMessages_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, nil, nil, newFakeCache())
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "x", Size: -1})
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "x", Size: -1})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -198,7 +198,7 @@ func TestHandler_SearchMessages_SizeClamped(t *testing.T) {
 		RestrictedRoomsCacheTTL: time.Minute,
 		RecentWindow:            time.Hour,
 	})
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "x", Size: 1000})
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "x", Size: 1000})
 	require.NoError(t, err)
 
 	// Inspect the emitted query body — size should be clamped to 50.
@@ -213,7 +213,7 @@ func TestHandler_SearchMessages_UserWithNoSubsReturnsEmpty(t *testing.T) {
 	cache := newFakeCache()
 	h := newTestHandler(store, nil, nil, cache)
 
-	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "x"})
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "x"})
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, resp.Total)
 	assert.Empty(t, resp.Messages)
@@ -235,7 +235,7 @@ type fakeMongo struct {
 }
 
 type searchAppsCall struct {
-	nameQuery        string
+	query            string
 	account          string
 	assistantEnabled *bool
 	offset           int
@@ -249,12 +249,12 @@ type hydrateRoomsCall struct {
 
 func (f *fakeMongo) SearchAppsByName(
 	_ context.Context,
-	nameQuery, account string,
+	query, account string,
 	assistantEnabled *bool,
 	offset, limit int,
 ) ([]model.App, error) {
 	f.searchAppsCalls = append(f.searchAppsCalls, searchAppsCall{
-		nameQuery: nameQuery, account: account, assistantEnabled: assistantEnabled, offset: offset, limit: limit,
+		query: query, account: account, assistantEnabled: assistantEnabled, offset: offset, limit: limit,
 	})
 	if f.searchAppsErr != nil {
 		return nil, f.searchAppsErr
@@ -424,7 +424,7 @@ func TestHandler_SearchApps_Happy(t *testing.T) {
 	}}
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
-	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "weather"})
+	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "weather"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Len(t, resp.Apps, 2)
@@ -432,7 +432,7 @@ func TestHandler_SearchApps_Happy(t *testing.T) {
 
 	require.Len(t, mongo.searchAppsCalls, 1)
 	call := mongo.searchAppsCalls[0]
-	assert.Equal(t, "weather", call.nameQuery)
+	assert.Equal(t, "weather", call.query)
 	assert.Equal(t, "alice", call.account)
 	assert.Nil(t, call.assistantEnabled)
 	assert.Equal(t, 0, call.offset)
@@ -444,8 +444,8 @@ func TestHandler_SearchApps_PassesOffset(t *testing.T) {
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery: "weather",
-		Offset:    50,
+		Query:  "weather",
+		Offset: 50,
 	})
 	require.NoError(t, err)
 
@@ -459,7 +459,7 @@ func TestHandler_SearchApps_PassesAssistantEnabled(t *testing.T) {
 
 	enabled := true
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery:        "weather",
+		Query:            "weather",
 		AssistantEnabled: &enabled,
 		Size:             10,
 	})
@@ -471,11 +471,11 @@ func TestHandler_SearchApps_PassesAssistantEnabled(t *testing.T) {
 	assert.Equal(t, 10, mongo.searchAppsCalls[0].limit)
 }
 
-func TestHandler_SearchApps_EmptyNameQueryRejected(t *testing.T) {
+func TestHandler_SearchApps_EmptyQueryRejected(t *testing.T) {
 	mongo := &fakeMongo{}
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: ""})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: ""})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -484,11 +484,11 @@ func TestHandler_SearchApps_EmptyNameQueryRejected(t *testing.T) {
 	assert.Len(t, mongo.searchAppsCalls, 0, "validation must short-circuit before backend call")
 }
 
-func TestHandler_SearchApps_WhitespaceNameQueryRejected(t *testing.T) {
+func TestHandler_SearchApps_WhitespaceQueryRejected(t *testing.T) {
 	mongo := &fakeMongo{}
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "   \t  "})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "   \t  "})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -499,7 +499,7 @@ func TestHandler_SearchApps_BackendErrorSanitized(t *testing.T) {
 	mongo := &fakeMongo{searchAppsErr: errors.New("mongo down")}
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
-	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "weather"})
+	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "weather"})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
 	require.True(t, errors.As(err, &rerr))
@@ -511,7 +511,7 @@ func TestHandler_SearchApps_EmptyResultsReturnsEmptySlice(t *testing.T) {
 	mongo := &fakeMongo{searchAppsResults: nil}
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
-	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{NameQuery: "nope"})
+	resp, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "nope"})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.NotNil(t, resp.Apps, "must be empty slice, never nil — to marshal as [] not null")
@@ -523,8 +523,8 @@ func TestHandler_SearchApps_SizeClamped(t *testing.T) {
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery: "weather",
-		Size:      500, // exceeds MaxDocCounts (100)
+		Query: "weather",
+		Size:  500, // exceeds MaxDocCounts (100)
 	})
 	require.NoError(t, err)
 
@@ -537,8 +537,8 @@ func TestHandler_SearchApps_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(nil, mongo, nil, newFakeCache())
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{
-		NameQuery: "weather",
-		Size:      -1,
+		Query: "weather",
+		Size:  -1,
 	})
 	require.Error(t, err)
 	var rerr *natsrouter.RouteError
@@ -553,8 +553,8 @@ func TestHandler_SearchMessages_ScopedPartitioning(t *testing.T) {
 
 	h := newTestHandler(store, nil, nil, cache)
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{
-		SearchText: "x",
-		RoomIDs:    []string{"r1", "rr", "r2"},
+		Query:   "x",
+		RoomIDs: []string{"r1", "rr", "r2"},
 	})
 	require.NoError(t, err)
 
@@ -683,7 +683,7 @@ func TestHandler_SearchMessages_HitProjection(t *testing.T) {
 
 	h := newTestHandler(store, nil, nil, cache)
 
-	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hello"})
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hello"})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, resp.Total)
 	require.Len(t, resp.Messages, 1)
@@ -702,7 +702,7 @@ func TestHandler_SearchMessages_NoHitsReturnsEmpty(t *testing.T) {
 	cache.store["alice"] = map[string]int64{}
 	h := newTestHandler(store, nil, nil, cache)
 
-	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "nope"})
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "nope"})
 	require.NoError(t, err)
 	assert.NotNil(t, resp.Messages, "empty slice, not nil — to marshal as [] not null")
 	assert.Empty(t, resp.Messages)
@@ -721,8 +721,8 @@ func TestHandler_SearchMessages_WithRoomIDsBuildsScopedQuery(t *testing.T) {
 	h := newTestHandler(store, mongo, nil, cache)
 
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{
-		SearchText: "hello",
-		RoomIDs:    []string{"r1", "rx"},
+		Query:   "hello",
+		RoomIDs: []string{"r1", "rx"},
 	})
 	require.NoError(t, err)
 
