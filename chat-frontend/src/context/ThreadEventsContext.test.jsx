@@ -13,6 +13,11 @@ vi.mock('./NatsContext', () => ({
 vi.mock('../lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
 vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
 
+const roomDispatch = vi.fn()
+vi.mock('./RoomEventsContext', () => ({
+  useRoomDispatch: () => roomDispatch,
+}))
+
 function Probe() {
   const t = useThreadEvents()
   return (
@@ -128,5 +133,35 @@ describe('ThreadEventsContext', () => {
     await act(async () => { screen.getByText('send').click() })
     await act(async () => { screen.getByText('dismiss').click() })
     expect(screen.getByText('count:0')).toBeInTheDocument()
+  })
+})
+
+describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
+  beforeEach(() => {
+    request.mockReset()
+    publish.mockReset()
+    roomDispatch.mockClear()
+  })
+
+  it('on successful sendReply, dispatches OWN_THREAD_REPLY_SENT to RoomEventsContext', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    // publish is sync void — default no-op is success.
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    expect(roomDispatch).toHaveBeenCalledWith({
+      type: 'OWN_THREAD_REPLY_SENT',
+      roomId: 'r1',
+      parentId: 'p1',
+    })
+  })
+
+  it('does NOT dispatch when publish throws synchronously', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    publish.mockImplementation(() => { throw new Error('Not connected') })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => { screen.getByText('send').click() })
+    expect(roomDispatch).not.toHaveBeenCalled()
   })
 })

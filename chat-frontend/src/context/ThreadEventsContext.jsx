@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from './NatsContext'
+import { useRoomDispatch } from './RoomEventsContext'
 import { generateMessageID } from '../lib/idgen'
 import { msgSend, msgThread } from '../lib/subjects'
 import { threadEventsReducer, initialState } from '../lib/threadEventsReducer'
@@ -9,6 +10,7 @@ const ThreadEventsContext = createContext(null)
 
 export function ThreadEventsProvider({ children }) {
   const { user, request, publish } = useNats()
+  const roomDispatch = useRoomDispatch()
   const [state, dispatch] = useReducer(threadEventsReducer, initialState)
   const generationRef = useRef(0)
   const stateRef = useRef(state)
@@ -92,18 +94,21 @@ export function ThreadEventsProvider({ children }) {
       dispatch({ type: 'REPLY_SENT_LOCAL', message: optimistic })
       try {
         publishReply(id, content.trim(), opts)
-        // Ch.8 task 8.3 adds: roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', ... })
+        if (parent) {
+          roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+        }
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
       }
     },
-    [user, publishReply]
+    [user, publishReply, roomDispatch]
   )
 
   const retryReply = useCallback(
     (messageId) => {
       const row = stateRef.current.messages.find((m) => m.id === messageId)
       if (!row) return
+      const parent = stateRef.current.activeParent
       dispatch({ type: 'REPLY_RETRIED', messageId })
       try {
         publishReply(
@@ -111,12 +116,14 @@ export function ThreadEventsProvider({ children }) {
           row.content,
           row.quotedParentMessage ? { quotedParentMessageId: row.quotedParentMessage.id } : undefined
         )
-        // Ch.8 task 8.3 adds: roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', ... })
+        if (parent) {
+          roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+        }
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: err?.message ?? String(err) })
       }
     },
-    [publishReply]
+    [publishReply, roomDispatch]
   )
 
   const dismissReply = useCallback((messageId) => {
