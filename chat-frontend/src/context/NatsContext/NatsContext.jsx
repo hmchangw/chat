@@ -1,8 +1,8 @@
 import { createContext, useContext, useRef, useState, useCallback, useMemo } from 'react'
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
-import { AUTH_URL, NATS_URL } from '../lib/runtimeConfig'
-import { requestWithAsyncResult as asyncJobRequest } from '../api/_transport/asyncJob'
+import { AUTH_URL, NATS_URL } from '../../lib/runtimeConfig'
+import { requestWithAsyncResult as asyncJobRequest } from '../../api/_transport/asyncJob'
 
 export const NatsContext = createContext(null)
 

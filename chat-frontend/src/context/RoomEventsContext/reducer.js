@@ -1,4 +1,4 @@
-import { appendBounded, mergeById, MAX_CACHED } from './messageBuffer'
+import { appendBounded, mergeById, MAX_CACHED } from '../../lib/messageBuffer'
 
 export { MAX_CACHED }
 

@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
-import { BUFFER_MODE } from '../../../../lib/roomEventsReducer'
+import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
 
 // jsdom does not implement scrollIntoView; stub it to avoid the error thrown
 // by RoomMessageArea's useEffect that calls bottomRef.current.scrollIntoView.

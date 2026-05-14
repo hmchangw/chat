@@ -4,17 +4,17 @@ import { ThreadEventsProvider, useThreadEvents } from './ThreadEventsContext'
 
 const request = vi.fn()
 const publish = vi.fn()
-vi.mock('./NatsContext', () => ({
+vi.mock('../NatsContext/NatsContext', () => ({
   useNats: () => ({
     user: { account: 'alice', siteId: 's1' },
     request, publish,
   }),
 }))
-vi.mock('../lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
+vi.mock('../../lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
 vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
 
 const roomDispatch = vi.fn()
-vi.mock('./RoomEventsContext', () => ({
+vi.mock('../RoomEventsContext/RoomEventsContext', () => ({
   useRoomDispatch: () => roomDispatch,
 }))
 

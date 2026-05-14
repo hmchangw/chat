@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { useRoomEvents } from '../../../../context/RoomEventsContext'
-import { BUFFER_MODE } from '../../../../lib/roomEventsReducer'
+import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
 import { editMessage, deleteMessage } from '../../../../api'
 import MessageList from '../../../shared/MessageList/MessageList'
 import DeleteConfirmDialog from '../../../shared/DeleteConfirmDialog/DeleteConfirmDialog'

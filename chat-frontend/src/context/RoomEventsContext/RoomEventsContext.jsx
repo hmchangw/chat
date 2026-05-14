@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
-import { useNats } from './NatsContext'
-import { BUFFER_MODE, initialState, roomEventsReducer } from '../lib/roomEventsReducer'
+import { useNats } from '../NatsContext/NatsContext'
+import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 import {
   fetchMessageHistory,
   fetchSurroundingMessages,
@@ -10,8 +10,8 @@ import {
   subscribeToRoomMetadataUpdates,
   subscribeToSubscriptionUpdates,
   subscribeToUserRoomEvents,
-} from '../api'
-import { normalizeHistoricalMessages } from '../lib/normalizeMessage'
+} from '../../api'
+import { normalizeHistoricalMessages } from '../../lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
 

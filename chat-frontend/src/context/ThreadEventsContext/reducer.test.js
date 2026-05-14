@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { threadEventsReducer, initialState } from './threadEventsReducer'
+import { threadEventsReducer, initialState } from './reducer'
 
 const parent = { roomId: 'r1', siteId: 's1', messageId: 'p1', createdAtMs: 1000 }
 

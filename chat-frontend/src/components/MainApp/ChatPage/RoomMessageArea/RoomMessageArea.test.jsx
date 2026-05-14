@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import RoomMessageArea from './RoomMessageArea'
-import { BUFFER_MODE } from '../../../../lib/roomEventsReducer'
+import { BUFFER_MODE } from '../../../../context/RoomEventsContext/reducer'
 
 const loadHistory = vi.fn(async () => {})
 const resetToLiveTail = vi.fn()

@@ -1,6 +1,6 @@
 import { useState, useCallback, forwardRef, useImperativeHandle, useRef } from 'react'
 import { useNats } from '../../../../../context/NatsContext'
-import { useDebouncedSearch } from '../../../../../lib/useDebouncedSearch'
+import { useDebouncedSearch } from '../../../../../hooks/useDebouncedSearch'
 import { searchRooms } from '../../../../../api'
 import './style.css'
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { ThemeProvider, useTheme } from './ThemeContext'
-import { setMatchMedia, resetThemeState } from '../../test/themeTestUtils'
+import { setMatchMedia, resetThemeState } from '../../../test/themeTestUtils'
 
 function Probe() {
   const { theme } = useTheme()

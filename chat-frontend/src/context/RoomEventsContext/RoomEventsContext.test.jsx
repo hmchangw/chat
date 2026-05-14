@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
-import { NatsContext } from './NatsContext'
+import { NatsContext } from '../NatsContext/NatsContext'
 import { RoomEventsProvider, useRoomEvents, useRoomSummaries } from './RoomEventsContext'
-import { BUFFER_MODE } from '../lib/roomEventsReducer'
+import { BUFFER_MODE } from './reducer'
 // jumpToMessage / resetToLiveTail tests — see suite below
 
 function mockNats({ request, subscribe, user = { account: 'alice', siteId: 'site-A' } } = {}) {

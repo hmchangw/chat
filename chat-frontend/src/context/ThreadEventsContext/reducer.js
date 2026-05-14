@@ -1,4 +1,4 @@
-import { mergeById } from './messageBuffer'
+import { mergeById } from '../../lib/messageBuffer'
 
 export const initialState = {
   activeParent: null, // { roomId, siteId, messageId, createdAtMs }

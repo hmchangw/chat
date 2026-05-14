@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNats } from '../../../../context/NatsContext'
 import { searchRooms } from '../../../../api'
-import { useDebouncedSearch } from '../../../../lib/useDebouncedSearch'
+import { useDebouncedSearch } from '../../../../hooks/useDebouncedSearch'
 import { roomFromSearchHit, searchRoomPrefix } from '../../../../lib/roomFormat'
 import './style.css'
 

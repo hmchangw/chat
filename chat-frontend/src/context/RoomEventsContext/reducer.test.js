@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { BUFFER_MODE, initialState, roomEventsReducer } from './roomEventsReducer'
+import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 
 function room(id, overrides = {}) {
   return {
@@ -227,7 +227,7 @@ describe('roomEventsReducer: MESSAGE_RECEIVED', () => {
   })
 
   it('caps the cached messages at MAX_CACHED, dropping oldest', async () => {
-    const { MAX_CACHED } = await import('./roomEventsReducer')
+    const { MAX_CACHED } = await import('./reducer')
     let state = initialState
     for (let i = 0; i < MAX_CACHED + 5; i++) {
       state = roomEventsReducer(state, {
