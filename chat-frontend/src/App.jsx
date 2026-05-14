@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { NatsProvider, useNats } from './context/NatsContext'
 import { RoomEventsProvider } from './context/RoomEventsContext'
 import LoginPage from './pages/LoginPage'
-import ChatPage from './pages/ChatPage'
+import MainApp from './components/MainApp'
 import OidcCallback from './pages/OidcCallback'
 
 function AppContent() {
@@ -34,7 +34,7 @@ function AppContent() {
 
   return (
     <RoomEventsProvider>
-      <ChatPage />
+      <MainApp />
     </RoomEventsProvider>
   )
 }
