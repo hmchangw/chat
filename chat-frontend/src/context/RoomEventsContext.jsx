@@ -10,6 +10,7 @@ import {
   subscriptionUpdate,
   roomMetadataUpdate,
   userRoomEvent,
+  messageRead,
 } from '../lib/subjects'
 
 const RoomEventsContext = createContext(null)
@@ -25,6 +26,19 @@ export function RoomEventsProvider({ children }) {
   const cancelledRef = useRef(false)
   const generationRef = useRef(0)
 
+  // Fire-and-forget mark-room-read RPC. Used when the user opens a room and
+  // when new messages arrive while that room is the active one. Server applies
+  // lastSeenAt = now; errors are non-fatal for the UI.
+  const markRoomRead = useCallback(
+    (roomId) => {
+      if (!user || !roomId) return
+      const summary = stateRef.current.summaries.find((r) => r.id === roomId)
+      const siteId = summary?.siteId ?? user.siteId
+      request(messageRead(user.account, roomId, siteId), {}).catch(() => {})
+    },
+    [user, request]
+  )
+
   useEffect(() => {
     if (!user) return
     cancelledRef.current = false
@@ -35,9 +49,17 @@ export function RoomEventsProvider({ children }) {
       dispatch(action)
     }
 
+    const maybeMarkActiveRead = (evtRoomId, senderAccount) => {
+      if (!evtRoomId) return
+      if (stateRef.current.activeRoomId !== evtRoomId) return
+      if (senderAccount && senderAccount === user.account) return
+      markRoomRead(evtRoomId)
+    }
+
     const dmSub = subscribe(userRoomEvent(user.account), (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+        maybeMarkActiveRead(evt.roomId, evt.message?.sender?.account)
       }
     })
 
@@ -49,6 +71,7 @@ export function RoomEventsProvider({ children }) {
             (p) => p.account === user.account
           )
           safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
+          maybeMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
         }
       })
       channelSubs.current.set(roomId, sub)
@@ -112,7 +135,7 @@ export function RoomEventsProvider({ children }) {
       channelSubs.current.clear()
       dispatch({ type: 'RESET' })   // RESET runs even when cancelled — it's the cleanup itself
     }
-  }, [user, subscribe, request])
+  }, [user, subscribe, request, markRoomRead])
 
   const loadHistory = useCallback(
     async (roomId) => {
@@ -140,9 +163,13 @@ export function RoomEventsProvider({ children }) {
     [user, request]
   )
 
-  const setActiveRoom = useCallback((roomId) => {
-    dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
-  }, [])
+  const setActiveRoom = useCallback(
+    (roomId) => {
+      dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
+      if (roomId) markRoomRead(roomId)
+    },
+    [markRoomRead]
+  )
 
   const jumpToMessage = useCallback(
     async (roomId, messageId) => {

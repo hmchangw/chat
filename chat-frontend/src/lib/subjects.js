@@ -57,6 +57,10 @@ export function readReceipt(account, roomId, siteId) {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read-receipt`
 }
 
+export function messageRead(account, roomId, siteId) {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read`
+}
+
 export function searchRooms(account) {
   return `chat.user.${account}.request.search.rooms`
 }
