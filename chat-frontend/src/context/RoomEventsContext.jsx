@@ -11,6 +11,7 @@ import {
   roomMetadataUpdate,
   userRoomEvent,
 } from '../lib/subjects'
+import { normalizeHistoricalMessages } from '../lib/normalizeMessage'
 
 const RoomEventsContext = createContext(null)
 
@@ -132,8 +133,12 @@ export function RoomEventsProvider({ children }) {
       const promise = (async () => {
         try {
           const resp = await request(msgHistory(user.account, roomId, user.siteId), { limit: 50 })
+          // history-service returns cassandra.Message (messageId/msg); the
+          // reducer + UI consume model.Message (id/content). Normalize here
+          // so msg.id is defined for click handlers downstream.
           const asc = [...(resp.messages ?? [])].reverse()
-          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
+          const normalized = normalizeHistoricalMessages(asc)
+          if (generationRef.current === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: normalized })
         } catch (err) {
           if (generationRef.current === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
           throw err
@@ -160,7 +165,7 @@ export function RoomEventsProvider({ children }) {
       try {
         const resp = await request(msgSurrounding(user.account, roomId, siteId), { messageId })
         if (generationRef.current !== gen) return
-        const messages = resp.messages ?? []
+        const messages = normalizeHistoricalMessages(resp.messages ?? [])
         dispatch({
           type: 'REPLACE_ROOM_BUFFER',
           roomId,
