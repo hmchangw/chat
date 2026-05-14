@@ -1,12 +1,30 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import ChatPage from './ChatPage'
+import { vi as viE2E } from 'vitest'
 
 vi.mock('../components/RoomMessageArea', () => ({
-  default: ({ room }) => <div>area:{room?.id ?? 'none'}</div>,
+  default: ({ onReply }) => (
+    <div>
+      area
+      <button type="button" onClick={() => onReply?.({ id: 'm-orig', sender: { account: 'alice' }, content: 'hello there' })}>
+        fire-reply
+      </button>
+    </div>
+  ),
 }))
 vi.mock('../components/RoomMessageInput', () => ({
-  default: ({ room }) => <div>input:{room?.id ?? 'none'}</div>,
+  default: ({ room, quotedTarget, onClearQuote }) => (
+    <div>
+      input:{room?.id ?? 'none'}
+      {quotedTarget && (
+        <>
+          <span data-testid="staged">staged:{quotedTarget.id}</span>
+          <button type="button" onClick={onClearQuote}>clear-staged</button>
+        </>
+      )}
+    </div>
+  ),
 }))
 vi.mock('../components/InRoomSearch', () => ({
   default: ({ onClose }) => (
@@ -52,7 +70,7 @@ const dm = { id: 'r2', name: 'alice & bob', type: 'dm', userCount: 2 }
 describe('ChatPage (middle column)', () => {
   it('renders MessageArea and MessageInput with the selected room', () => {
     render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
-    expect(screen.getByText('area:r1')).toBeInTheDocument()
+    expect(screen.getByText('area')).toBeInTheDocument()
     expect(screen.getByText('input:r1')).toBeInTheDocument()
   })
 
@@ -85,6 +103,82 @@ describe('ChatPage (middle column)', () => {
   it('renders no room-header when no room is selected', () => {
     render(<ChatPage selectedRoom={null} onSelectRoom={() => {}} />)
     expect(screen.queryByRole('button', { name: /^members/i })).not.toBeInTheDocument()
-    expect(screen.getByText('area:none')).toBeInTheDocument()
+    expect(screen.getByText('area')).toBeInTheDocument()
+  })
+})
+
+describe('ChatPage — quote-reply staging', () => {
+  it('clicking Reply on a message stages the quotedTarget in the input', () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(screen.getByText('staged:m-orig')).toBeInTheDocument()
+  })
+
+  it("clicking the chip's clear button clears quotedTarget", () => {
+    render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    fireEvent.click(screen.getByText('clear-staged'))
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+  })
+
+  it('switching rooms clears quotedTarget', () => {
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    fireEvent.click(screen.getByText('fire-reply'))
+    expect(screen.getByText('staged:m-orig')).toBeInTheDocument()
+    rerender(<ChatPage selectedRoom={dm} onSelectRoom={() => {}} />)
+    expect(screen.queryByTestId('staged')).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
+  it('publish call carries quotedParentMessageId after Reply staging', async () => {
+    viE2E.resetModules()
+    const publish = viE2E.fn()
+
+    viE2E.doMock('../context/NatsContext', () => ({
+      useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+    }))
+    viE2E.doMock('../lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
+    viE2E.doMock('uuid', () => ({ v4: () => 'req-1' }))
+    viE2E.doMock('../components/RoomMessageArea', () => ({
+      default: ({ onReply }) => (
+        <button
+          type="button"
+          onClick={() => onReply?.({ id: 'orig', sender: { account: 'alice' }, content: 'hello' })}
+        >
+          stage
+        </button>
+      ),
+    }))
+    viE2E.doMock('../components/InRoomSearch', () => ({ default: () => null }))
+    viE2E.doMock('../components/ManageMembersDialog', () => ({ default: () => null }))
+    viE2E.doMock('../components/LeaveRoomButton', () => ({ default: () => null }))
+    viE2E.doMock('../context/RoomEventsContext', () => ({
+      useRoomSummaries: () => ({ jumpToMessage: viE2E.fn() }),
+    }))
+    viE2E.doMock('../components/RoomMembersBadge', () => ({ default: () => null }))
+    // Use the real RoomMessageInput so we can assert on the publish payload.
+    // vi.mock (hoisted) would otherwise override it; doMock + importActual wins
+    // for modules loaded via the subsequent dynamic import.
+    viE2E.doMock('../components/RoomMessageInput', async () => await viE2E.importActual('../components/RoomMessageInput'))
+
+    const { default: FreshChatPage } = await import('./ChatPage')
+    render(<FreshChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+
+    fireEvent.click(screen.getByText('stage'))
+    const input = screen.getByPlaceholderText(/general/i)
+    fireEvent.change(input, { target: { value: 'a reply' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(publish).toHaveBeenCalledWith(
+      'chat.user.alice.room.r1.s1.msg.send',
+      {
+        id: '12345678901234567890',
+        content: 'a reply',
+        requestId: 'req-1',
+        quotedParentMessageId: 'orig',
+      }
+    )
   })
 })

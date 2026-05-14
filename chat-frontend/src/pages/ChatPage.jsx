@@ -16,11 +16,17 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
   // its count immediately, without waiting for the next room switch. Mirrors
   // the pattern in upstream MessageArea (pre-refactor).
   const [membersRefreshKey, setMembersRefreshKey] = useState(0)
+  const [quotedTarget, setQuotedTarget] = useState(null)
 
   // When the selected room changes, close room-scoped overlays.
   useEffect(() => {
     setShowMembers(false)
     setInRoomSearchOpen(false)
+  }, [selectedRoom?.id])
+
+  // Clear quoted target on room change.
+  useEffect(() => {
+    setQuotedTarget(null)
   }, [selectedRoom?.id])
 
   // Ctrl/Cmd-F opens the in-room side panel; Esc closes it.
@@ -42,6 +48,14 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
     if (selectedRoom && jumpToMessage) {
       jumpToMessage(selectedRoom.id, msgId)?.catch?.(() => {})
     }
+  }
+
+  const handleReply = (msg) => {
+    setQuotedTarget({
+      id: msg.id,
+      senderName: msg.sender?.engName || msg.sender?.account || msg.userAccount || 'Unknown',
+      content: msg.content || msg.msg || '',
+    })
   }
 
   const isChannel = selectedRoom?.type === 'channel'
@@ -67,9 +81,9 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
           <RoomMessageArea
             room={selectedRoom}
             onThread={() => { /* wired in Chapter 7 */ }}
-            onReply={() => { /* wired in Chapter 5 */ }}
+            onReply={handleReply}
           />
-          <RoomMessageInput room={selectedRoom} />
+          <RoomMessageInput room={selectedRoom} quotedTarget={quotedTarget} onClearQuote={() => setQuotedTarget(null)} />
         </div>
         {inRoomSearchOpen && selectedRoom && (
           <InRoomSearch
