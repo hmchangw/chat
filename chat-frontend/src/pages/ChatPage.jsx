@@ -1,48 +1,31 @@
 import { useEffect, useState } from 'react'
-import { useNats } from '../context/NatsContext'
 import { useRoomSummaries } from '../context/RoomEventsContext'
-import RoomList from '../components/RoomList'
 import MessageArea from '../components/MessageArea'
 import MessageInput from '../components/MessageInput'
-import CreateRoomDialog from '../components/CreateRoomDialog'
 import ManageMembersDialog from '../components/ManageMembersDialog'
-import SearchBar from '../components/SearchBar'
-import SearchResultsPane from './SearchResultsPane'
+import LeaveRoomButton from '../components/LeaveRoomButton'
 import InRoomSearch from '../components/InRoomSearch'
-import ThemeToggle from '../components/ThemeToggle'
+import RoomMembersBadge from '../components/RoomMembersBadge'
+import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
 
-export default function ChatPage() {
-  const { user, disconnect } = useNats()
-  const { summaries, setActiveRoom, jumpToMessage } = useRoomSummaries()
-  const [selectedRoom, setSelectedRoom] = useState(null)
-  const [showCreateRoom, setShowCreateRoom] = useState(false)
+export default function ChatPage({ selectedRoom, onSelectRoom }) {
+  const { jumpToMessage } = useRoomSummaries()
   const [showMembers, setShowMembers] = useState(false)
-  // Bumped each time ManageMembersDialog closes so RoomMembersBadge refetches
-  // its count — a member-add/remove inside the dialog should be reflected in
-  // the badge immediately when the dialog dismisses, without waiting for the
-  // next room switch.
-  const [membersRefreshKey, setMembersRefreshKey] = useState(0)
-  const [searchQuery, setSearchQuery] = useState(null)
   const [inRoomSearchOpen, setInRoomSearchOpen] = useState(false)
+  // Bumped each time ManageMembersDialog closes so RoomMembersBadge refetches
+  // its count immediately, without waiting for the next room switch. Mirrors
+  // the pattern in upstream MessageArea (pre-refactor).
+  const [membersRefreshKey, setMembersRefreshKey] = useState(0)
 
-  // Clear selection and any open member dialog if the selected room disappears from summaries
+  // When the selected room changes, close room-scoped overlays.
   useEffect(() => {
-    if (selectedRoom && !summaries.some((r) => r.id === selectedRoom.id)) {
-      setSelectedRoom(null)
-      setActiveRoom(null)
-      setShowMembers(false)
-      setInRoomSearchOpen(false)
-    }
-  }, [summaries, selectedRoom, setActiveRoom])
+    setShowMembers(false)
+    setInRoomSearchOpen(false)
+  }, [selectedRoom?.id])
 
-  // Ctrl/Cmd-F opens the in-room search side panel; Esc closes it. Lives at
-  // ChatPage level so the panel sits as a sibling of MessageArea (Teams-
-  // style right rail) rather than overlaying inside the message list.
+  // Ctrl/Cmd-F opens the in-room side panel; Esc closes it.
   useEffect(() => {
-    // Disable the in-room shortcut while the full-search pane is showing,
-    // otherwise the side panel can open invisibly behind it and pop back
-    // when the user closes global search.
-    if (!selectedRoom || searchQuery) return
+    if (!selectedRoom) return
     const handler = (e) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
@@ -53,26 +36,7 @@ export default function ChatPage() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedRoom, searchQuery])
-
-  const handleSelectRoom = (room) => {
-    setSelectedRoom(room)
-    setActiveRoom(room?.id ?? null)
-    setShowMembers(false)
-    setSearchQuery(null)
-    setInRoomSearchOpen(false)
-  }
-
-  const handleJumpToMessage = (roomId, messageId) => {
-    const room = summaries.find((r) => r.id === roomId)
-    if (room) {
-      setSelectedRoom(room)
-      setActiveRoom(room.id)
-      setShowMembers(false)
-    }
-    setSearchQuery(null)
-    if (jumpToMessage) jumpToMessage(roomId, messageId)?.catch?.(() => {})
-  }
+  }, [selectedRoom])
 
   const handleInRoomJump = (msgId) => {
     if (selectedRoom && jumpToMessage) {
@@ -83,74 +47,38 @@ export default function ChatPage() {
   const isChannel = selectedRoom?.type === 'channel'
 
   return (
-    <div className="chat-layout">
-      <div className="chat-header">
-        <span className="chat-header-title">Chat</span>
-        <div className="chat-header-search">
-          <SearchBar
-            onSelectRoom={handleSelectRoom}
-            onEnterSearch={(q) => {
-              setSearchQuery(q)
-              setInRoomSearchOpen(false)
-            }}
+    <main className="chat-page">
+      {selectedRoom && (
+        <header className="chat-room-header">
+          <span className="chat-room-name">
+            {roomPrefix(selectedRoom.type)}{roomDisplayName(selectedRoom)}
+          </span>
+          <RoomMembersBadge
+            room={selectedRoom}
+            onOpen={() => setShowMembers(true)}
+            refreshKey={membersRefreshKey}
           />
-        </div>
-        <span className="chat-header-user">
-          {user?.account} &middot; {user?.siteId}
-        </span>
-        <ThemeToggle />
-        <button className="chat-header-logout" onClick={disconnect}>
-          Logout
-        </button>
-      </div>
-      <div className="chat-body">
-        <div className="chat-sidebar">
-          <RoomList
-            selectedRoomId={selectedRoom?.id}
-            onSelectRoom={handleSelectRoom}
-          />
-          <button
-            className="create-room-btn"
-            onClick={() => setShowCreateRoom(true)}
-          >
-            + Create Room
-          </button>
-        </div>
-        <div className="chat-main">
-          {searchQuery ? (
-            <SearchResultsPane
-              query={searchQuery}
-              onClose={() => setSearchQuery(null)}
-              onSelectRoom={handleSelectRoom}
-              onJumpToMessage={handleJumpToMessage}
-            />
-          ) : (
-            <div className="chat-main-with-side-panel">
-              <div className="chat-main-content">
-                <MessageArea
-                  room={selectedRoom}
-                  onOpenMembers={() => setShowMembers(true)}
-                  membersRefreshKey={membersRefreshKey}
-                />
-                <MessageInput room={selectedRoom} />
-              </div>
-              {inRoomSearchOpen && selectedRoom && (
-                <InRoomSearch
-                  roomId={selectedRoom.id}
-                  onClose={() => setInRoomSearchOpen(false)}
-                  onJumpToMessage={handleInRoomJump}
-                />
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      {showCreateRoom && (
-        <CreateRoomDialog
-          onClose={() => setShowCreateRoom(false)}
-          onCreated={(room) => handleSelectRoom(room)}
-        />
+          <div className="chat-room-header-spacer" />
+          {isChannel && <LeaveRoomButton room={selectedRoom} />}
+        </header>
       )}
+      <div className="chat-page-body">
+        <div className="chat-main-content">
+          <MessageArea
+            room={selectedRoom}
+            onOpenMembers={() => setShowMembers(true)}
+            membersRefreshKey={membersRefreshKey}
+          />
+          <MessageInput room={selectedRoom} />
+        </div>
+        {inRoomSearchOpen && selectedRoom && (
+          <InRoomSearch
+            roomId={selectedRoom.id}
+            onClose={() => setInRoomSearchOpen(false)}
+            onJumpToMessage={handleInRoomJump}
+          />
+        )}
+      </div>
       {showMembers && selectedRoom && (
         <ManageMembersDialog
           room={selectedRoom}
@@ -160,6 +88,6 @@ export default function ChatPage() {
           }}
         />
       )}
-    </div>
+    </main>
   )
 }
