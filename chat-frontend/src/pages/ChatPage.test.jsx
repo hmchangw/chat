@@ -70,8 +70,10 @@ vi.mock('../context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({ jumpToMessage: vi.fn() }),
 }))
 const openThread = vi.fn()
+const closeThread = vi.fn()
+let mockActiveParent = null
 vi.mock('../context/ThreadEventsContext', () => ({
-  useThreadEvents: () => ({ openThread, activeParent: null }),
+  useThreadEvents: () => ({ openThread, closeThread, activeParent: mockActiveParent }),
 }))
 
 const channel = { id: 'r1', name: 'general', type: 'channel', userCount: 7, siteId: 's1' }
@@ -205,5 +207,26 @@ describe('ChatPage — opening a thread', () => {
       messageId: 'm-thread',
       createdAtMs: Date.parse('2026-05-13T10:00:00.000Z'),
     })
+  })
+})
+
+describe('ChatPage — close thread on room switch', () => {
+  beforeEach(() => {
+    closeThread.mockClear()
+    mockActiveParent = { roomId: channel.id, messageId: 'p1' }
+  })
+  afterEach(() => { mockActiveParent = null })
+
+  it('changing selectedRoom calls closeThread', () => {
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    rerender(<ChatPage selectedRoom={dm} onSelectRoom={() => {}} />)
+    expect(closeThread).toHaveBeenCalled()
+  })
+
+  it('does NOT call closeThread when re-rendering with the same room', () => {
+    const { rerender } = render(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    closeThread.mockClear()
+    rerender(<ChatPage selectedRoom={channel} onSelectRoom={() => {}} />)
+    expect(closeThread).not.toHaveBeenCalled()
   })
 })

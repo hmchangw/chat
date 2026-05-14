@@ -11,7 +11,7 @@ import { roomPrefix, roomDisplayName } from '../lib/roomFormat'
 
 export default function ChatPage({ selectedRoom, onSelectRoom }) {
   const { jumpToMessage } = useRoomSummaries()
-  const { openThread } = useThreadEvents()
+  const { openThread, closeThread, activeParent } = useThreadEvents()
   const [showMembers, setShowMembers] = useState(false)
   const [inRoomSearchOpen, setInRoomSearchOpen] = useState(false)
   // Bumped each time ManageMembersDialog closes so RoomMembersBadge refetches
@@ -30,6 +30,13 @@ export default function ChatPage({ selectedRoom, onSelectRoom }) {
   useEffect(() => {
     setQuotedTarget(null)
   }, [selectedRoom?.id])
+
+  // Close thread when the user switches rooms.
+  useEffect(() => {
+    if (activeParent && activeParent.roomId !== selectedRoom?.id) {
+      closeThread()
+    }
+  }, [selectedRoom?.id, activeParent, closeThread])
 
   // Ctrl/Cmd-F opens the in-room side panel; Esc closes it.
   useEffect(() => {
