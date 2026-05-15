@@ -1604,10 +1604,10 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 // (local + remote). NATS supercluster routes user-subjects to home sites.
 // survivors is a pre-computed post-deletion snapshot supplied by the caller; pair must be non-nil.
 func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) {
+	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,
-		PublicKey:  pair.KeyPair.PublicKey,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
 	for i := range survivors {
@@ -1631,10 +1631,10 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
 		return newPermanentAbsent("room key absent for %s", roomID)
 	}
+	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,
-		PublicKey:  pair.KeyPair.PublicKey,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
 	for i := range users {

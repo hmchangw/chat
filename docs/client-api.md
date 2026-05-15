@@ -1993,17 +1993,16 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 {
   "roomId": "<room id>",
   "version": 0,
-  "publicKey": "<base64-encoded 65-byte uncompressed P-256 point>",
   "privateKey": "<base64-encoded 32-byte P-256 scalar>",
   "timestamp": 1747000000000
 }
 ```
 
-`[]byte` fields marshal to standard base64 in JSON.
+`[]byte` fields marshal to standard base64 in JSON. The room's public key is server-side only (used by `broadcast-worker` to encrypt outgoing messages) and is not transmitted to clients — clients only need the private key to decrypt incoming ciphertext.
 
 #### Client behavior
 
-1. On every `RoomKeyEvent`, store the keypair under `(roomId, version) → privateKey`.
+1. On every `RoomKeyEvent`, store the key under `(roomId, version) → privateKey`.
 2. When decrypting an incoming message, use the `version` stamped in the encrypted payload to look up the corresponding private key.
 3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
