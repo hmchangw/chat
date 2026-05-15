@@ -3,14 +3,20 @@ import {
   userSubscriptionGetApps,
   userSubscriptionGetRooms,
 } from '../_transport/subjects'
-import type { Nats, Subscription } from '../types'
+import type { Nats, DMSubscription } from '../types'
 
 /** Wire shape of every `subscription.get*` reply.
  *  Both fields are non-omitempty on the Go side
  *  (`mock-user-service/handler.go::subscriptionListResp`) — `Subscriptions`
- *  is always a slice (possibly empty), and `Total` is always an int. */
+ *  is always a slice (possibly empty), and `Total` is always an int.
+ *
+ *  Each entry is typed `DMSubscription` (= Subscription ∪ { hrInfo? }) to
+ *  match Go's flattened JSON for both subscription kinds: channels/groups
+ *  ship plain Subscription (hrInfo absent ⇒ typed `undefined`), DM rooms
+ *  ship DMSubscription (hrInfo present). One type covers both since
+ *  DMSubscription extends Subscription. */
 interface SidebarBucketReply {
-  subscriptions: Subscription[]
+  subscriptions: DMSubscription[]
   total: number
 }
 
@@ -18,11 +24,11 @@ export interface SidebarBuckets {
   favoriteIds: string[]
   appIds: string[]
   channelDmIds: string[]
-  /** Per-roomId map of the full Subscription record for every room
-   *  surfaced by any of the three bucket RPCs. The reducer stores
-   *  this directly under `state.subscriptions` so components can
+  /** Per-roomId map of the full subscription record (DM variant typing
+   *  covers both kinds — see SidebarBucketReply above). The reducer
+   *  stores this directly under `state.subscriptions` so components
    *  consume the live per-room state via `useSubscription(roomId)`. */
-  subscriptions: Record<string, Subscription>
+  subscriptions: Record<string, DMSubscription>
 }
 
 /**
@@ -43,7 +49,7 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     request<SidebarBucketReply>(userSubscriptionGetApps(user.account, user.siteId), {}),
     request<SidebarBucketReply>(userSubscriptionGetRooms(user.account, user.siteId), {}),
   ])
-  const subscriptions: Record<string, Subscription> = {}
+  const subscriptions: Record<string, DMSubscription> = {}
   const collect = (resp: SidebarBucketReply) => {
     for (const s of resp.subscriptions) {
       if (!s?.roomId) continue

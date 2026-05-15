@@ -835,11 +835,12 @@ describe('roomEventsReducer: bucket Sets', () => {
       channelDmIds: ['c1'],
       subscriptions: {
         f1: { roomId: 'f1', name: 'general', roles: ['member'], hasMention: false, alert: true },
-        c1: { roomId: 'c1', name: 'one-on-one', roles: ['member'], hasMention: false, alert: true, hrInfo: { engName: 'bob', name: '鮑勃' } },
+        c1: { roomId: 'c1', name: 'one-on-one', roles: ['member'], hasMention: false, alert: true, hrInfo: { account: 'bob', engName: 'bob', name: '鮑勃' } },
       },
     })
     expect(next.subscriptions.f1.name).toBe('general')
     expect(next.subscriptions.c1.hrInfo.engName).toBe('bob')
+    expect(next.subscriptions.c1.hrInfo.account).toBe('bob')
     expect(next.subscriptions.c1.roles).toEqual(['member'])
   })
 

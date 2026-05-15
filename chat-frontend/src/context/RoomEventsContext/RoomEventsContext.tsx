@@ -12,7 +12,7 @@ import { useNats } from '@/context/NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 import { useRoomSubscriptions } from './useRoomSubscriptions'
 import { fetchMessageHistory, fetchSurroundingMessages, markRoomRead } from '@/api'
-import type { Message, Nats, Room, Subscription } from '@/api/types'
+import type { DMSubscription, Message, Nats, Room, SubscriptionHRInfo } from '@/api/types'
 
 /** Per-room buffer state — owned by the reducer's `roomState` map. */
 interface RoomBufferState {
@@ -42,8 +42,10 @@ interface RoomSummary {
   unreadCount: number
   hasMention: boolean
   mentionAll: boolean
-  /** DM-room counterpart's HRInfo — added by useSidebarSections enrich. */
-  hrInfo?: Subscription['hrInfo']
+  /** DM-room counterpart's HRInfo — added by useSidebarSections enrich
+   *  for DM rooms whose subscription carried it. Plain channels stay
+   *  undefined here. */
+  hrInfo?: SubscriptionHRInfo
 }
 
 /** Top-level state shape returned by `roomEventsReducer`. */
@@ -55,7 +57,10 @@ interface RoomEventsState {
   favoriteIds: Set<string>
   appIds: Set<string>
   channelDmIds: Set<string>
-  subscriptions: Record<string, Subscription>
+  /** Keyed by roomId. Typed `DMSubscription` (Subscription ∪ hrInfo?)
+   *  so consumers reading the map for either channel or DM rooms see
+   *  hrInfo as optional without narrowing. */
+  subscriptions: Record<string, DMSubscription>
 }
 
 /** Surface exposed via React context. Components consume via
@@ -294,7 +299,7 @@ export function useSidebarSections(): SidebarSection[] {
  * could split this into a dedicated SubscriptionsContext or wire it
  * through `useSyncExternalStore` selectors — out of scope today.
  */
-export function useSubscription(roomId: string | null | undefined): Subscription | undefined {
+export function useSubscription(roomId: string | null | undefined): DMSubscription | undefined {
   const { state } = useRoomEventsInternal()
   return roomId ? state.subscriptions[roomId] : undefined
 }

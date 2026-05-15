@@ -829,7 +829,7 @@ describe('useSidebarSections', () => {
           return Promise.resolve({
             subscriptions: [
               { roomId: 'c1', name: 'frontend-team' },
-              { roomId: 'd1', name: 'bob-dm', hrInfo: { engName: 'Bob Chen', name: '鮑勃' } },
+              { roomId: 'd1', name: 'bob-dm', hrInfo: { account: 'bob', engName: 'Bob Chen', name: '鮑勃' } },
             ],
           })
         throw new Error('unexpected subject: ' + subject)

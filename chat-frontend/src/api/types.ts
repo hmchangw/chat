@@ -14,19 +14,20 @@ export type RoomType = 'channel' | 'dm' | 'botDM' | 'discussion'
 /** Mirrors model.Role. */
 export type Role = 'owner' | 'admin' | 'member'
 
-/** HRInfo carries the two name fields used to render a DM-room label.
- *  Backend (`pkg/model.Subscription.HRInfo *HRInfo \`json:"hrInfo,omitempty"\``)
- *  populates this struct ONLY on DM-type subscriptions; when the pointer
- *  is present both inner fields are populated. */
-export interface HRInfo {
-  engName: string
+/** Mirrors pkg/model.SubscriptionHRInfo — the counterpart's HR record
+ *  attached to a DM subscription. All three fields are required strings
+ *  on the wire (no `omitempty` server-side). */
+export interface SubscriptionHRInfo {
+  account: string
   name: string
+  engName: string
 }
 
-/** Mirrors model.Subscription — the per-user record linking a user to a
- *  room. Carries the room's roles for THIS user, the user's preferred
- *  name, mute/alert state, mention/thread-unread bookkeeping, and the
- *  optional HRInfo for DM-display. */
+/** Mirrors pkg/model.Subscription — the per-user record linking a user
+ *  to a room (channel / botDM / discussion). Carries the room's roles
+ *  for THIS user, the user's preferred name, mute/alert state, and
+ *  mention/thread-unread bookkeeping. DM subscriptions are a separate
+ *  type (`DMSubscription`) that extends this with HRInfo. */
 export interface Subscription {
   id: string
   u: { id: string; account: string }
@@ -42,8 +43,23 @@ export interface Subscription {
   hasMention: boolean
   threadUnread?: string[]
   alert: boolean
-  /** Only present on DM subscriptions. */
-  hrInfo?: HRInfo
+}
+
+/**
+ * Mirrors pkg/model.DMSubscription — Go embeds `*Subscription` and adds
+ * `HRInfo *SubscriptionHRInfo \`json:"hrInfo,omitempty"\``. Embedded-struct
+ * JSON serialization flattens: on the wire a DMSubscription is a
+ * Subscription with one extra top-level `hrInfo` field. Backend emits
+ * this wrapper only for `roomType === 'dm'` subscriptions; channels /
+ * botDMs / discussions ship plain Subscription (no hrInfo).
+ *
+ * For consumer ergonomics the reducer's state map + api wire types use
+ * `DMSubscription` for every entry — channels just have `hrInfo`
+ * undefined. Components needing hrInfo (e.g. `roomFormat`'s DM
+ * display) read `sub.hrInfo` directly with no narrow.
+ */
+export interface DMSubscription extends Subscription {
+  hrInfo?: SubscriptionHRInfo
 }
 
 /** Mirrors model.HistoryMode. */

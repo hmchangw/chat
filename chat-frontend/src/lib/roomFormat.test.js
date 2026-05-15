@@ -51,13 +51,19 @@ describe('roomDisplayName', () => {
 
   it('renders dm rooms using HRInfo.engName + " " + HRInfo.name', () => {
     expect(
-      roomDisplayName({ type: 'dm', id: 'r-dm', hrInfo: { engName: 'John Smith', name: '約翰史密斯' } })
+      roomDisplayName({
+        type: 'dm', id: 'r-dm',
+        hrInfo: { account: 'john', engName: 'John Smith', name: '約翰史密斯' },
+      })
     ).toBe('John Smith 約翰史密斯')
   })
 
   it('collapses dm display to a single HRInfo.name when engName equals name', () => {
     expect(
-      roomDisplayName({ type: 'dm', id: 'r-dm', hrInfo: { engName: 'John Smith', name: 'John Smith' } })
+      roomDisplayName({
+        type: 'dm', id: 'r-dm',
+        hrInfo: { account: 'john', engName: 'John Smith', name: 'John Smith' },
+      })
     ).toBe('John Smith')
   })
 
