@@ -24,6 +24,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -39,6 +40,10 @@ type config struct {
 	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
 	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
 	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
+	// Valkey for room-key fixtures. Required because broadcast-worker reads
+	// keys here when ENCRYPTION_ENABLED=true (the docker-local default).
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
 }
 
 func main() {
@@ -74,7 +79,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 	case "run":
 		return runRun(ctx, cfg, os.Args[2:])
 	case "teardown":
-		return runTeardown(ctx, cfg)
+		return runTeardown(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
@@ -101,34 +106,79 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	defer mongoutil.Disconnect(ctx, client)
+	keyStore, err := connectKeyStore(cfg)
+	if err != nil {
+		slog.Error("valkey connect", "error", err)
+		return 1
+	}
+	defer func() { _ = keyStore.Close() }()
 	db := client.Database(cfg.MongoDB)
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
-	if err := Seed(ctx, db, fixtures); err != nil {
+	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
+		return 1
+	}
+	if err := SeedRoomKeys(ctx, keyStore, &fixtures); err != nil {
+		slog.Error("seed room keys", "error", err)
 		return 1
 	}
 	slog.Info("seed complete",
 		"preset", p.Name,
 		"users", len(fixtures.Users),
 		"rooms", len(fixtures.Rooms),
-		"subs", len(fixtures.Subscriptions))
+		"subs", len(fixtures.Subscriptions),
+		"roomKeys", len(fixtures.RoomKeys))
 	return 0
 }
 
-func runTeardown(ctx context.Context, cfg *config) int {
+func runTeardown(ctx context.Context, cfg *config, args []string) int {
+	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
+	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
+	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
+	_ = fs.Parse(args)
+	if *preset == "" {
+		fmt.Fprintln(os.Stderr, "--preset required")
+		return 2
+	}
+	p, ok := BuiltinPreset(*preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		return 2
+	}
 	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect", "error", err)
 		return 1
 	}
 	defer mongoutil.Disconnect(ctx, client)
+	keyStore, err := connectKeyStore(cfg)
+	if err != nil {
+		slog.Error("valkey connect", "error", err)
+		return 1
+	}
+	defer func() { _ = keyStore.Close() }()
 	db := client.Database(cfg.MongoDB)
+	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
 	}
+	if err := TeardownRoomKeys(ctx, keyStore, &fixtures); err != nil {
+		slog.Error("teardown room keys", "error", err)
+		return 1
+	}
 	slog.Info("teardown complete")
 	return 0
+}
+
+// connectKeyStore opens a Valkey-backed RoomKeyStore. GracePeriod is unused
+// by Seed/Teardown (we never Rotate), so a placeholder is fine.
+func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
+	return roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: time.Hour,
+	})
 }
 
 func runRun(ctx context.Context, cfg *config, args []string) int {
@@ -236,16 +286,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer func() { _ = e1Sub.Unsubscribe() }()
 
 	// E2 subscription: broadcast events.
-	e2Handler := func(msg *nats.Msg) {
-		var evt model.RoomEvent
-		if err := json.Unmarshal(msg.Data, &evt); err != nil {
-			return
-		}
-		if evt.Message == nil || evt.Message.ID == "" {
-			return
-		}
-		collector.RecordBroadcast(evt.Message.ID, time.Now())
-	}
+	e2Handler := newE2Handler(collector)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
@@ -376,6 +417,24 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
 	return DetermineExitCode(summary.SentMeasured, totalErrs)
+}
+
+// newE2Handler returns the NATS subscription callback that correlates
+// broadcast events to publishes. It reads RoomEvent.LastMsgID rather than
+// RoomEvent.Message.ID so the same handler works for both the plaintext path
+// (Message populated) and the encrypted path (Message nil'd by broadcast-worker,
+// LastMsgID still in the cleartext envelope).
+func newE2Handler(collector *Collector) func(*nats.Msg) {
+	return func(msg *nats.Msg) {
+		var evt model.RoomEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			return
+		}
+		if evt.LastMsgID == "" {
+			return
+		}
+		collector.RecordBroadcast(evt.LastMsgID, time.Now())
+	}
 }
 
 type natsCorePublisher struct {

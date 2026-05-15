@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -8,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestLastToken(t *testing.T) {
@@ -106,6 +110,66 @@ func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 	assert.Nil(t, p2.nc)
 	assert.Nil(t, p2.js)
 	assert.False(t, p2.useJetStream)
+}
+
+func TestNewE2Handler_RecordsFromLastMsgIDEvenWhenMessageNil(t *testing.T) {
+	// Encrypted-path case: broadcast-worker sets evt.Message = nil and
+	// stamps the message ID in evt.LastMsgID (cleartext envelope).
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	pubTime := time.Unix(0, 0)
+	c.RecordPublish("req-1", "m-1", pubTime)
+
+	handler := newE2Handler(c)
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-1"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 1, c.E2Count())
+}
+
+func TestNewE2Handler_RecordsFromLastMsgIDWhenMessagePopulated(t *testing.T) {
+	// Plaintext-path case: evt.Message is set; LastMsgID still carries
+	// the same ID. Either way, the handler must record exactly once.
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-2", time.Unix(0, 0))
+
+	handler := newE2Handler(c)
+	evt := model.RoomEvent{
+		Type:      model.RoomEventNewMessage,
+		RoomID:    "r",
+		LastMsgID: "m-2",
+		Message:   &model.ClientMessage{Message: model.Message{ID: "m-2"}},
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 1, c.E2Count())
+}
+
+func TestNewE2Handler_SkipsEventWithoutLastMsgID(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-3", time.Unix(0, 0))
+
+	handler := newE2Handler(c)
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 0, c.E2Count())
+}
+
+func TestNewE2Handler_SkipsMalformedJSON(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	handler := newE2Handler(c)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: []byte("not json")})
+	assert.Equal(t, 0, c.E2Count())
 }
 
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {

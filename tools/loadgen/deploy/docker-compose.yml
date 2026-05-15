@@ -1,0 +1,66 @@
+name: loadgen
+
+# Thin overlay on docker-local. Backend stack (NATS, Mongo, Cassandra, Valkey,
+# Elasticsearch, Keycloak) comes from docker-local/compose.deps.yaml; the
+# microservices come from docker-local/compose.services.yaml. This file adds
+# only the load-test-specific containers and joins the shared chat-local
+# network as an external client.
+#
+# See deploy/Makefile for the orchestration.
+
+services:
+  loadgen:
+    build:
+      context: ../../..
+      dockerfile: tools/loadgen/deploy/Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NATS_CREDS_FILE=/etc/nats/backend.creds
+      - SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - VALKEY_ADDR=valkey:6379
+      - METRICS_ADDR=:9099
+      # Worker-pool cap for concurrent publishes. Set to 0 to publish
+      # serially on the ticker goroutine (legacy behavior).
+      - MAX_IN_FLIGHT=200
+      # Enable pprof on a separate port by uncommenting and mapping
+      # the port. Off by default so the metrics endpoint doesn't expose
+      # profiling.
+      # - PPROF_ADDR=:6060
+    volumes:
+      - ../../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+    ports:
+      - "9099:9099"
+    entrypoint: ["sleep", "infinity"]
+    networks:
+      - chat-local
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    profiles: [dashboards]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - chat-local
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    profiles: [dashboards]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true
