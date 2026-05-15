@@ -517,6 +517,150 @@ describe('RoomEventsProvider jumpToMessage / resetToLiveTail', () => {
   })
 })
 
+describe('RoomEventsProvider message.read wiring', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function readSubjectFor(roomId, siteId = 'site-A') {
+    return `chat.user.alice.request.room.${roomId}.${siteId}.message.read`
+  }
+
+  function setupWithRooms(rooms) {
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+      // every other request (incl. message.read) — return ok
+      return Promise.resolve({})
+    })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+    return { nats, request, handlers }
+  }
+
+  it('fires message.read when setActiveRoom is called with a non-null id', async () => {
+    const rooms = [
+      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+    ]
+    const { nats, request } = setupWithRooms(rooms)
+    let captured
+    function Probe() {
+      const { setActiveRoom } = useRoomSummaries()
+      captured = setActiveRoom
+      return null
+    }
+    render(wrap(<Probe />, nats))
+    await waitFor(() => expect(request).toHaveBeenCalledWith('chat.user.alice.request.rooms.list', {}))
+
+    act(() => { captured('g1') })
+
+    expect(request).toHaveBeenCalledWith(readSubjectFor('g1'), {})
+  })
+
+  it('does NOT fire message.read when setActiveRoom is called with null', async () => {
+    const { nats, request } = setupWithRooms([])
+    let captured
+    function Probe() {
+      const { setActiveRoom } = useRoomSummaries()
+      captured = setActiveRoom
+      return null
+    }
+    render(wrap(<Probe />, nats))
+    await waitFor(() => expect(request).toHaveBeenCalled())
+
+    request.mockClear()
+    act(() => { captured(null) })
+
+    const subjects = request.mock.calls.map((c) => c[0])
+    expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+  })
+
+  it('fires message.read when a new_message arrives in the active channel room', async () => {
+    const rooms = [
+      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+    ]
+    const { nats, request, handlers } = setupWithRooms(rooms)
+    let setActive
+    function Probe() {
+      const { setActiveRoom } = useRoomSummaries()
+      setActive = setActiveRoom
+      return null
+    }
+    render(wrap(<Probe />, nats))
+    await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+
+    act(() => { setActive('g1') })
+    request.mockClear()
+
+    act(() => {
+      handlers.get('chat.room.g1.event')({
+        type: 'new_message',
+        roomId: 'g1',
+        message: { id: 'm1', roomId: 'g1', sender: { account: 'bob' }, content: 'hi', createdAt: '2026-04-17T12:00:00Z' },
+      })
+    })
+
+    expect(request).toHaveBeenCalledWith(readSubjectFor('g1'), {})
+  })
+
+  it('does NOT fire message.read when a new_message arrives in a non-active room', async () => {
+    const rooms = [
+      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+      { id: 'g2', name: 'random',  type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+    ]
+    const { nats, request, handlers } = setupWithRooms(rooms)
+    let setActive
+    function Probe() {
+      const { setActiveRoom } = useRoomSummaries()
+      setActive = setActiveRoom
+      return null
+    }
+    render(wrap(<Probe />, nats))
+    await waitFor(() => expect(handlers.has('chat.room.g2.event')).toBe(true))
+
+    act(() => { setActive('g1') })
+    request.mockClear()
+
+    act(() => {
+      handlers.get('chat.room.g2.event')({
+        type: 'new_message',
+        roomId: 'g2',
+        message: { id: 'm9', roomId: 'g2', sender: { account: 'bob' }, content: 'hi', createdAt: '2026-04-17T12:00:00Z' },
+      })
+    })
+
+    const subjects = request.mock.calls.map((c) => c[0])
+    expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+  })
+
+  it('does NOT fire message.read when the active-room message was sent by self', async () => {
+    const rooms = [
+      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+    ]
+    const { nats, request, handlers } = setupWithRooms(rooms)
+    let setActive
+    function Probe() {
+      const { setActiveRoom } = useRoomSummaries()
+      setActive = setActiveRoom
+      return null
+    }
+    render(wrap(<Probe />, nats))
+    await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+
+    act(() => { setActive('g1') })
+    request.mockClear()
+
+    act(() => {
+      handlers.get('chat.room.g1.event')({
+        type: 'new_message',
+        roomId: 'g1',
+        message: { id: 'm1', roomId: 'g1', sender: { account: 'alice' }, content: 'self', createdAt: '2026-04-17T12:00:00Z' },
+      })
+    })
+
+    const subjects = request.mock.calls.map((c) => c[0])
+    expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
 describe('RoomEventsProvider sidebar buckets bootstrap', () => {
   beforeEach(() => vi.clearAllMocks())
 

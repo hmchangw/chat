@@ -52,7 +52,10 @@ export default function MessageActionMenu({ message, room }) {
     setTooltipOpen(false)
     const siteId = room?.siteId ?? user.siteId
     const subject = readReceipt(user.account, room.id, siteId)
-    Promise.resolve(request(subject, { messageId: message.id }))
+    // History-loaded messages (pkg/model/cassandra.Message) serialize their id
+    // as `messageId`; live new_message events (pkg/model/Message) use `id`.
+    const messageId = message.id ?? message.messageId
+    Promise.resolve(request(subject, { messageId }))
       .then((resp) => {
         if (!mountedRef.current) return
         setReaders(resp?.readers ?? [])
