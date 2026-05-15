@@ -240,6 +240,14 @@ When a message arrives in the active room, `useRoomSubscriptions.scheduleMarkAct
 - **Don't test:** trivial getters, pure pass-through wrappers, design-token CSS.
 - **`toHaveBeenCalledWith` is exact-arity.** When `requestWithAsyncResult` is called without `opts`, the third arg is `undefined` — assert on three args including `undefined`. The api functions always pass three args.
 
+### CI
+
+- **`npm run test:ci`** is the script CI invokes. It runs the full suite with two reporters: `verbose` (human-readable log in CI output) and `junit` with `outputFile.junit=./junit.xml`.
+- The JUnit report lands at **`chat-frontend/junit.xml`** (relative to the package root — vitest's `outputFile` is resolved against CWD, and CI runs the script from `chat-frontend/`). GitLab CI picks it up via `artifacts.reports.junit: chat-frontend/junit.xml`.
+- `junit.xml` is gitignored.
+- **Don't** redirect stdout to capture JUnit (`vitest run --reporter=junit > junit.xml`) — it mixes the default progress output with the XML and produces an invalid report. Always use `--outputFile.junit=…`.
+- If you add another reporter (e.g. coverage), add it via the same script; don't rely on env vars conditionally toggling reporters in `vitest.config.js`.
+
 ## Smoke tests
 
 `smoke-test.mjs` and `scripts/*.smoke.mjs` exercise live NATS / auth-service stacks. They reach directly into `api/_transport/` (subjects.ts, asyncJob.ts) because they operate at the wire layer — production code stays behind the barrel.

@@ -52,3 +52,7 @@ chat-frontend/dist/
 # Vitest cache (created when vitest is run from a non-package directory)
 .vite/
 chat-frontend/.vite/
+
+# CI test artifacts — JUnit report produced by `npm run test:ci`
+# (lives at chat-frontend root; GitLab CI uploads it via artifacts.reports.junit).
+chat-frontend/junit.xml
