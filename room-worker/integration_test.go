@@ -1302,7 +1302,7 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 		var evt model.RoomKeyEvent
 		require.NoError(t, json.Unmarshal(m.data, &evt))
 		assert.Equal(t, roomID, evt.RoomID, "RoomKeyEvent must carry the correct roomID")
-		assert.NotEmpty(t, evt.PublicKey, "PublicKey must be populated")
+		assert.Empty(t, evt.PublicKey, "PublicKey must be omitted from the client wire payload")
 		assert.NotEmpty(t, evt.PrivateKey, "PrivateKey must be populated")
 	}
 	assert.ElementsMatch(t,
