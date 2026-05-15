@@ -34,7 +34,7 @@ func setupValkey(t *testing.T) valkeyutil.Client {
 	})
 	require.NoError(t, err, "start valkey container")
 	t.Cleanup(func() {
-		_ = container.Terminate(ctx)
+		_ = container.Terminate(ctx) // best-effort; ignore cleanup errors
 	})
 
 	host, err := container.Host(ctx)
@@ -44,7 +44,7 @@ func setupValkey(t *testing.T) valkeyutil.Client {
 
 	client, err := valkeyutil.Connect(ctx, fmt.Sprintf("%s:%s", host, port.Port()), "")
 	require.NoError(t, err, "connect valkey")
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = client.Close() }) // best-effort; ignore cleanup errors
 	return client
 }
 
