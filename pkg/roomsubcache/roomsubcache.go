@@ -54,8 +54,6 @@ func cacheKey(roomID string) string {
 // errors.Is. An empty cached value is a hit and returns a non-nil empty
 // slice, distinguishable from a miss.
 func (c *valkeyCache) Get(ctx context.Context, roomID string) ([]Member, error) {
-	// Default to an empty slice so an empty cache hit stays non-nil and
-	// is distinguishable from a miss (which returns ErrCacheMiss instead).
 	members := []Member{}
 	if err := valkeyutil.GetJSON(ctx, c.client, cacheKey(roomID), &members); err != nil {
 		return nil, fmt.Errorf("get cached subscriptions for room %s: %w", roomID, err)
@@ -69,7 +67,6 @@ func (c *valkeyCache) Get(ctx context.Context, roomID string) ([]Member, error) 
 // empty/deleted rooms. A ttl of 0 stores the entry without expiry —
 // callers who want bounded staleness must pass a non-zero TTL.
 func (c *valkeyCache) Set(ctx context.Context, roomID string, members []Member, ttl time.Duration) error {
-	// Marshal nil as an empty list so Get returns []Member{} rather than nil.
 	if members == nil {
 		members = []Member{}
 	}
