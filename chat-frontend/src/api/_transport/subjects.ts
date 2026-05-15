@@ -106,8 +106,10 @@ export function orgMembers(account: string, orgId: string): string {
   return `chat.user.${account}.request.orgs.${orgId}.members`
 }
 
-// userSubscriptionGetCurrent fetches the caller's current subscriptions, optionally
-// filtered server-side. The sidebar passes `{ favorite: true }` to drive the
+// userSubscriptionGetCurrent fetches the caller's subscriptions. Called twice
+// by the sidebar bootstrap: once with no payload (canonical full list — feeds
+// `state.subscriptions` and the Channels and DMs section, partitioned by
+// roomType at render time) and once with `{ favorite: true }` to drive the
 // Favorite section. Mirrors pkg/subject/subject.go::UserSubscriptionGetCurrent.
 export function userSubscriptionGetCurrent(account: string, siteId: string): string {
   return `chat.user.${account}.request.user.${siteId}.subscription.getCurrent`
@@ -117,11 +119,4 @@ export function userSubscriptionGetCurrent(account: string, siteId: string): str
 // Apps section of the sidebar. Mirrors pkg/subject/subject.go::UserSubscriptionGetApps.
 export function userSubscriptionGetApps(account: string, siteId: string): string {
   return `chat.user.${account}.request.user.${siteId}.subscription.getApps`
-}
-
-// userSubscriptionGetRooms fetches the caller's non-app room subscriptions
-// (channels, DMs, discussions). Drives the Channels and DMs section of the
-// sidebar. Mirrors pkg/subject/subject.go::UserSubscriptionGetRooms.
-export function userSubscriptionGetRooms(account: string, siteId: string): string {
-  return `chat.user.${account}.request.user.${siteId}.subscription.getRooms`
 }

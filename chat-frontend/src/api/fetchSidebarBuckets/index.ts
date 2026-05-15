@@ -1,7 +1,6 @@
 import {
   userSubscriptionGetCurrent,
   userSubscriptionGetApps,
-  userSubscriptionGetRooms,
 } from '../_transport/subjects'
 import type { Nats, DMSubscription } from '../types'
 
@@ -32,22 +31,29 @@ export interface SidebarBuckets {
 }
 
 /**
- * Fetch the three sidebar bucket lists in parallel: favorites, apps,
- * and non-app rooms (channels / DMs / discussions). Each comes from
- * its own user-service RPC.
+ * Bootstrap the sidebar by fetching three lists from user-service in
+ * parallel:
+ *   1. `getCurrent()` — canonical full subscription list (every roomType).
+ *      Becomes `state.subscriptions` (source of truth for
+ *      `useSubscription`) and seeds `channelDmIds`. The Channels and DMs
+ *      section is partitioned by roomType at render time from this list.
+ *   2. `getCurrent({ favorite: true })` — favorited room IDs for the
+ *      Favorite section.
+ *   3. `getApps()` — app subscription IDs for the Apps section.
  *
- * Returns a single merged result so the caller doesn't have to know
- * about the three underlying subjects. The reducer's `BUCKETS_LOADED`
- * action consumes this shape directly.
+ * The reducer's `BUCKETS_LOADED` action consumes this shape directly.
+ * Partition exclusivity (favorite > apps > channelDm) is enforced at
+ * render time by `useSidebarSections`, so a room ID can appear in
+ * `channelDmIds` and one of the other Sets without double-render.
  */
 export async function fetchSidebarBuckets({ user, request }: Nats): Promise<SidebarBuckets> {
-  const [favResp, appResp, roomResp] = await Promise.all([
+  const [allResp, favResp, appResp] = await Promise.all([
+    request<SidebarBucketReply>(userSubscriptionGetCurrent(user.account, user.siteId), {}),
     request<SidebarBucketReply>(
       userSubscriptionGetCurrent(user.account, user.siteId),
       { favorite: true },
     ),
     request<SidebarBucketReply>(userSubscriptionGetApps(user.account, user.siteId), {}),
-    request<SidebarBucketReply>(userSubscriptionGetRooms(user.account, user.siteId), {}),
   ])
   const subscriptions: Record<string, DMSubscription> = {}
   const collect = (resp: SidebarBucketReply) => {
@@ -58,13 +64,13 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
       subscriptions[s.roomId] = s
     }
   }
+  collect(allResp)
   collect(favResp)
   collect(appResp)
-  collect(roomResp)
   return {
     favoriteIds: favResp.subscriptions.map((s) => s.roomId),
     appIds: appResp.subscriptions.map((s) => s.roomId),
-    channelDmIds: roomResp.subscriptions.map((s) => s.roomId),
+    channelDmIds: allResp.subscriptions.map((s) => s.roomId),
     subscriptions,
   }
 }

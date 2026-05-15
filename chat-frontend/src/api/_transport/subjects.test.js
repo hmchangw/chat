@@ -19,7 +19,6 @@ import {
   orgMembers,
   userSubscriptionGetCurrent,
   userSubscriptionGetApps,
-  userSubscriptionGetRooms,
 } from './subjects'
 
 describe('subjects', () => {
@@ -123,9 +122,4 @@ describe('subjects', () => {
     )
   })
 
-  it('userSubscriptionGetRooms builds the user-service getRooms subject', () => {
-    expect(userSubscriptionGetRooms('alice', 'site-A')).toBe(
-      'chat.user.alice.request.user.site-A.subscription.getRooms'
-    )
-  })
 })
