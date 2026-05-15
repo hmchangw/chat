@@ -284,10 +284,20 @@ export function useSidebarSections(): SidebarSection[] {
     const favorite: RoomSummary[] = []
     const apps: RoomSummary[] = []
     const channelDm: RoomSummary[] = []
+    // Cold-start safety: if all three bucket Sets are empty, the
+    // subscription.get* RPCs either failed or haven't landed yet.
+    // listRooms is independent and may have populated `summaries`
+    // already; strict partitioning would drop every one of those
+    // rooms and render an empty sidebar. Fall back to a flat list
+    // under Channels and DMs so the user can still reach their rooms;
+    // the next BUCKETS_LOADED dispatch re-partitions normally.
+    const allBucketsEmpty =
+      favoriteIds.size === 0 && appIds.size === 0 && channelDmIds.size === 0
     for (const room of summaries) {
       if (favoriteIds.has(room.id)) favorite.push(enrich(room))
       else if (appIds.has(room.id)) apps.push(enrich(room))
       else if (channelDmIds.has(room.id)) channelDm.push(enrich(room))
+      else if (allBucketsEmpty) channelDm.push(enrich(room))
     }
     return [
       { key: 'favorite',  title: 'Favorite',          rooms: favorite },

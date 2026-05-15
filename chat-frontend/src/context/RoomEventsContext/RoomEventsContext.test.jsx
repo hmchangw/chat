@@ -1043,6 +1043,28 @@ describe('useSidebarSections', () => {
     expect(screen.getByTestId('section-channelDm').textContent).not.toContain('u1')
   })
 
+  it('falls back to a flat list under Channels and DMs when every bucket is empty', async () => {
+    // Cold-start path: listRooms returns rooms but all three
+    // subscription.get* RPCs return empty (or fail). Without the
+    // fallback the sidebar would render blank even though summaries
+    // is populated; with the fallback every room shows up under
+    // "Channels and DMs" until the next BUCKETS_LOADED.
+    const nats = bootstrapNats({
+      buckets: { favoriteIds: [], appIds: [], channelDmIds: [] },
+    })
+    render(wrap(<SectionsProbe />, nats))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-channelDm').textContent).toContain('c1')
+    )
+    const channelDm = screen.getByTestId('section-channelDm').textContent
+    expect(channelDm).toContain('f1')
+    expect(channelDm).toContain('a1')
+    expect(channelDm).toContain('c1')
+    expect(channelDm).toContain('u1')
+    expect(screen.getByTestId('section-favorite').textContent).toBe('Favorite: ')
+    expect(screen.getByTestId('section-apps').textContent).toBe('Apps: ')
+  })
+
   it('preserves summaries recency order within each section', async () => {
     // bootstrapNats rooms in lastMsgAt order: c1 (12:00) > a1 (11:00) > f1 (10:00) > u1 (09:00)
     const nats = bootstrapNats({
