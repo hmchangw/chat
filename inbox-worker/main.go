@@ -198,12 +198,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	meterShutdown, err := otelutil.InitMeter("inbox-worker")
-	if err != nil {
-		slog.Error("init meter failed", "error", err)
-		os.Exit(1)
-	}
-
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		slog.Error("mongo connect failed", "error", err)
@@ -247,11 +241,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := NewHandler(store, cfg.SiteID)
+	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
 		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
-
 		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
 			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := m.Nak(); err != nil {
@@ -270,21 +263,15 @@ func main() {
 
 	slog.Info("inbox-worker started", "site", cfg.SiteID)
 
-	// Shutdown ordering: drain inbound work first, then close client connections,
-	// THEN flush observability exporters. Reverse order drops traces/metrics
-	// emitted during NATS drain and mongo disconnect.
-	hooks := []func(ctx context.Context) error{
+	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error {
 			cctx.Stop()
 			return nil
 		},
 		func(ctx context.Context) error { return nc.Drain() },
-		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
-		func(ctx context.Context) error { return meterShutdown(ctx) },
-	}
-
-	shutdown.Wait(ctx, 25*time.Second, hooks...)
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+	)
 }
 
 // buildConsumerConfig returns the durable consumer config for

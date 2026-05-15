@@ -102,7 +102,7 @@ In scope:
 
 - **Create-room** (all room types: `dm`, `botDM`, `channel`): `room-service` generates a P-256 key pair, writes it to local Valkey via `keyStore.Set`, then publishes the canonical create event. `room-worker` reads the key back from Valkey and gates its Mongo writes on the key being present, then fans out `RoomKeyEvent` to every initial member via `roomkeysender`.
 - **Add-member** (channel only — DM/botDM blocked at `room-service`): worker reads the current key from local Valkey and fans out `RoomKeyEvent` to each newly-added account. No rotation; no version bump. Add-member does NOT create a key for un-keyed rooms — backfill behavior deferred to a follow-up.
-- **Remove-member** (channel only — DM/botDM blocked at `room-service`): `room-service` rotates the room key via `keyStore.Rotate` after validation passes, **unless** the target has both individual and org membership (dual-membership), in which case rotation is skipped because the user remains in the room via their org membership. `room-worker` performs Mongo deletes, then fans out the new `RoomKeyEvent` to every surviving subscriber via `fanOutRoomKeyToSurvivors`. A single rotation per `RemoveMemberRequest` for non-dual-membership cases, regardless of org-vs-individual or removed-count.
+- **Remove-member** (channel only — DM/botDM blocked at `room-service`): `room-service` rotates the room key via `keyStore.Rotate` after validation passes, **unless** the target has both individual and org membership (dual-membership), in which case rotation is skipped because the user remains in the room via their org membership. `room-worker` performs Mongo deletes, then fans out the new `RoomKeyEvent` to every surviving subscriber via `fanOutRoomKeyToSurvivors`. A single rotation per `RemoveMemberRequest` for non-dual-membership cases, regardless of org-vs-individual or removed-count. **Superseded by 2026-05-15 amendment:** rotation has moved from `room-service` to `room-worker`; `room-service` only stamps `BaseKeyVersion` from a `Get`. See "Remove-member rotation flow (post-review)" at the top of this doc.
 - **Cross-site replication** (channels only — DM/botDM never spans sites except via the existing federated DM creation path which falls under create-room above): origin's `room-worker` publishes the existing outbox events (`room_created`, `member_added`, `member_removed`) without keypair bytes — and *also* publishes `RoomKeyEvent` to **every** room member's user subject (`chat.user.{account}.event.room.key`) so the NATS supercluster delivers the key to clients across sites. Remote `inbox-worker` instances replicate only subscription and room metadata; they do not hold a copy of the room key. The broadcast pipeline for any given room runs on the origin site (where the room lives), so only the origin's Valkey is consulted at encrypt time. Pre-amendment versions of this spec described a remote-Valkey replication path via `chat.server.request.roomkey.{originSiteID}.get`; that path has been removed.
 - **Defensive room-type guards** in `room-worker` for the add/remove paths. `RemoveMemberRequest` now carries a `RoomType` field (`pkg/model/member.go`). The worker reads it from the canonical event directly and asserts `room.Type == model.RoomTypeChannel`. As a backward-compatibility gate, an empty `RoomType` value is tolerated (federation redeliveries from pre-Batch-3 senders). A non-empty, non-channel `RoomType` fails as a permanent error (treated as a malformed canonical event since `room-service` is responsible for blocking these). For `processAddMembers`, `GetRoom` is still called for other reasons; the type guard on the add path continues to use that result.
 
@@ -183,6 +183,12 @@ A remote site that already has members of this room will already have the key lo
 
 ### Remove-member (channel only)
 
+> **Stale — superseded by 2026-05-15 amendment.** The flow below describes the
+> original rotate-in-`room-service` design. The shipped flow has rotation in
+> `room-worker` with order delete → fan-out → rotate → publish, and `inbox-worker`
+> no longer fetches keys from origin. Authoritative version: "Remove-member
+> rotation flow (post-review)" at the top of this doc.
+
 ```text
 room-service
   1. Validate (existing: authz, last-owner guard, last-member guard, org-only guard,
@@ -218,6 +224,11 @@ inbox-worker (each remote site with surviving members)
 
 ### Why rotate-first (in `room-service`) rather than rotate-after (in worker post-Mongo-delete)
 
+> **Stale — superseded by 2026-05-15 amendment.** Rotation now happens in
+> `room-worker` after the Mongo delete, with fan-out before Valkey rotate so
+> survivors hold v+1 before broadcast-worker switches. The rationale below is
+> retained for historical context only.
+
 Rotating before Mongo deletes guarantees that from the moment of rotation, `broadcast-worker` encrypts under the new public key, and the about-to-be-removed user — who only holds the old private key — cannot decrypt any message published after the rotation. That's the security property rotation exists for. Rotate-after (worker-side) would leave a window where the removed user could still decrypt new messages until the worker finished. Worse posture.
 
 The downside of rotate-first is that if the worker fails permanently (rare), the room is briefly unusable for everyone (encrypted under a key whose distribution to surviving members never completed). JetStream redelivery makes the window short; on a true permanent failure the `AsyncJobResult` error tells the requester to retry, and a retry generates a fresh rotation that completes cleanly.
@@ -225,6 +236,12 @@ The downside of rotate-first is that if the worker fails permanently (rare), the
 ## New & Changed Code
 
 ### New: cross-site key RPC handler in `room-worker`
+
+> **Stale — removed by 2026-05-14 amendment.** The cross-site key RPC has been
+> deleted: `NatsHandleGetRoomKey`, `subject.ServerRoomKeyGet`, and the
+> `RoomKeyGetRequest` payload no longer exist. Rooms only live on their origin
+> site, so broadcast reads from the origin's local Valkey and no remote site
+> needs to fetch keys. This entire subsection is retained for historical context.
 
 Subject: `chat.server.request.roomkey.{siteID}.get` — server-to-server, NKey-authed via the existing inter-site server connection.
 

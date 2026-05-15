@@ -38,7 +38,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b")
+	handler := NewHandler(store)
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -86,7 +86,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b")
+	handler := NewHandler(store)
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -117,7 +117,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, "site-b")
+	handler := NewHandler(store)
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -230,7 +230,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	h := NewHandler(store, "site-b")
+	h := NewHandler(store)
 
 	ctx := context.Background()
 
@@ -365,7 +365,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b")
+	handler := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
@@ -409,7 +409,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, "site-b")
+	handler := NewHandler(store)
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
@@ -480,14 +480,14 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 }
 
 // newIntegrationHandler creates a Handler wired to the given database for integration tests.
-func newIntegrationHandler(t *testing.T, db *mongo.Database, sid string) *Handler {
+func newIntegrationHandler(t *testing.T, db *mongo.Database) *Handler {
 	t.Helper()
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	return NewHandler(store, sid)
+	return NewHandler(store)
 }
 
 func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
@@ -498,7 +498,7 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u_ian", Account: "ian",
 		SiteID: "site-B", EngName: "Ian", ChineseName: "伊恩"})
 
-	h := newIntegrationHandler(t, db, "site-B")
+	h := newIntegrationHandler(t, db)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -534,7 +534,7 @@ func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
 		SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"})
 
-	h := newIntegrationHandler(t, db, "site-B")
+	h := newIntegrationHandler(t, db)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 

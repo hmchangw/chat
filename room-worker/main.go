@@ -35,12 +35,10 @@ type config struct {
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
-	// Valkey wiring; required. room-worker needs the key on every create / add /
-	// remove path and the inter-site `chat.server.request.roomkey.{siteID}.get`
-	// RPC handler depends on the keystore.
+	// Required: room-worker reads/rotates the room key on every create/add/remove path.
 	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
-	// ValkeyKeyGracePeriod controls how long the previous key remains readable after a rotation (TTL on the :prev slot).
+	// TTL on the :prev key slot after a rotation.
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 }
 

@@ -199,7 +199,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -268,7 +268,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 			{ID: "uid-carol", Account: "carol", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
@@ -317,7 +317,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 func TestHandleEvent_RoomSync(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	room := model.Room{
 		ID:        "room-1",
@@ -374,7 +374,7 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 
 func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	// Insert initial room
 	room1 := model.Room{
@@ -419,7 +419,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 
 func TestHandleEvent_UnknownType(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "unknown_type",
@@ -448,7 +448,7 @@ func TestHandleEvent_UnknownType(t *testing.T) {
 
 func TestHandleEvent_InvalidJSON(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	err := h.HandleEvent(context.Background(), []byte("not json"))
 	if err == nil {
@@ -458,7 +458,7 @@ func TestHandleEvent_InvalidJSON(t *testing.T) {
 
 func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -485,7 +485,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 			{ID: "uid-bob", Account: "account-bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -542,7 +542,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -620,7 +620,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 			{ID: "uid-dave", Account: "dave", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	change := model.MemberAddEvent{
 		Type:     "member_added",
@@ -656,7 +656,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type:       "room_sync",
@@ -679,7 +679,7 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: "u2",
 		Subscription: model.Subscription{
@@ -713,7 +713,7 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	evt := model.OutboxEvent{
 		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: []byte("not valid json"),
@@ -730,7 +730,7 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
@@ -758,7 +758,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
@@ -772,7 +772,7 @@ func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	// Pre-populate subscriptions for both accounts
 	store.mu.Lock()
@@ -805,7 +805,7 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
@@ -825,7 +825,7 @@ func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ st
 
 func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
@@ -839,7 +839,7 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	inner := model.SubscriptionReadEvent{
 		Account:    "alice",
@@ -872,7 +872,7 @@ func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: []byte("not-json")}
 	data, _ := json.Marshal(evt)
 	require.Error(t, h.HandleEvent(context.Background(), data))
@@ -880,7 +880,7 @@ func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -917,7 +917,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -951,7 +951,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 
 func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	evt := model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
@@ -965,7 +965,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -1027,7 +1027,7 @@ func TestSubscriptionIsSubscribed(t *testing.T) {
 
 func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	payload, _ := json.Marshal(model.RoomCreatedOutbox{
 		RoomID: "r1", RoomType: model.RoomTypeChannel,
 		Accounts: []string{"bob"},
@@ -1039,7 +1039,7 @@ func TestHandleRoomCreatedRequiresRequestID(t *testing.T) {
 
 func TestHandleRoomCreatedEmptyAccountsAcksWithWarn(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1055,7 +1055,7 @@ func TestHandleRoomCreatedDMBuildsRemoteSub(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1088,7 +1088,7 @@ func TestHandleRoomCreatedChannelBulkInsert(t *testing.T) {
 			{ID: "u_ian", Account: "ian", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
@@ -1119,7 +1119,7 @@ func TestHandleMemberAddedSetsNameAndRoomType(t *testing.T) {
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 
 	change := model.MemberAddEvent{
 		Type:      "member_added",
@@ -1163,7 +1163,7 @@ func TestHandleRoomCreatedBotDMBuildsRemoteBotSub(t *testing.T) {
 			{ID: "u_weather", Account: "weather.bot", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store, "site-test")
+	h := NewHandler(store)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 

@@ -31,21 +31,14 @@ type InboxStore interface {
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 }
 
-// Handler processes incoming cross-site OutboxEvent messages.
-//
-// Room encryption keys are NOT replicated cross-site: a room only ever exists
-// on its origin site, so broadcast for that room runs on the origin and reads
-// the key from the origin's local Valkey. inbox-worker therefore only
-// replicates subscription/room metadata so this site's UI can render
-// memberships and basic room info.
+// Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
 type Handler struct {
-	store  InboxStore
-	siteID string
+	store InboxStore
 }
 
 // NewHandler creates a Handler with the given store.
-func NewHandler(store InboxStore, siteID string) *Handler {
-	return &Handler{store: store, siteID: siteID}
+func NewHandler(store InboxStore) *Handler {
+	return &Handler{store: store}
 }
 
 // HandleEvent processes a single JetStream message payload.
