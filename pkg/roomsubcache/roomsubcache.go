@@ -49,6 +49,10 @@ func cacheKey(roomID string) string {
 	return "room:" + roomID + ":subs"
 }
 
+// Get returns the cached member list for roomID. On absence it returns
+// a wrapped valkeyutil.ErrCacheMiss — callers should branch with
+// errors.Is. An empty cached value is a hit and returns a non-nil empty
+// slice, distinguishable from a miss.
 func (c *valkeyCache) Get(ctx context.Context, roomID string) ([]Member, error) {
 	// Default to an empty slice so an empty cache hit stays non-nil and
 	// is distinguishable from a miss (which returns ErrCacheMiss instead).
@@ -59,6 +63,11 @@ func (c *valkeyCache) Get(ctx context.Context, roomID string) ([]Member, error) 
 	return members, nil
 }
 
+// Set stores members under roomID with the given TTL. A nil members
+// slice is stored as an empty list (so Get returns []Member{} rather
+// than nil on the next read), which doubles as a negative cache for
+// empty/deleted rooms. A ttl of 0 stores the entry without expiry —
+// callers who want bounded staleness must pass a non-zero TTL.
 func (c *valkeyCache) Set(ctx context.Context, roomID string, members []Member, ttl time.Duration) error {
 	// Marshal nil as an empty list so Get returns []Member{} rather than nil.
 	if members == nil {
@@ -70,6 +79,9 @@ func (c *valkeyCache) Set(ctx context.Context, roomID string, members []Member, 
 	return nil
 }
 
+// Invalidate removes the cached entry for roomID. Intended for a future
+// membership-change event listener; not called by the cache itself,
+// which relies on TTL expiry.
 func (c *valkeyCache) Invalidate(ctx context.Context, roomID string) error {
 	if err := c.client.Del(ctx, cacheKey(roomID)); err != nil {
 		return fmt.Errorf("invalidate cached subscriptions for room %s: %w", roomID, err)
