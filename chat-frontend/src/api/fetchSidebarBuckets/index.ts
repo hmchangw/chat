@@ -5,9 +5,13 @@ import {
 } from '../_transport/subjects'
 import type { Nats, Subscription } from '../types'
 
+/** Wire shape of every `subscription.get*` reply.
+ *  Both fields are non-omitempty on the Go side
+ *  (`mock-user-service/handler.go::subscriptionListResp`) — `Subscriptions`
+ *  is always a slice (possibly empty), and `Total` is always an int. */
 interface SidebarBucketReply {
-  subscriptions?: Subscription[]
-  total?: number
+  subscriptions: Subscription[]
+  total: number
 }
 
 export interface SidebarBuckets {
@@ -41,7 +45,7 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
   ])
   const subscriptions: Record<string, Subscription> = {}
   const collect = (resp: SidebarBucketReply) => {
-    for (const s of resp?.subscriptions ?? []) {
+    for (const s of resp.subscriptions) {
       if (!s?.roomId) continue
       // Later sources overwrite earlier ones, but the three responses
       // describe the same Subscription record so collisions are benign.
@@ -52,9 +56,9 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
   collect(appResp)
   collect(roomResp)
   return {
-    favoriteIds: (favResp?.subscriptions ?? []).map((s) => s.roomId),
-    appIds: (appResp?.subscriptions ?? []).map((s) => s.roomId),
-    channelDmIds: (roomResp?.subscriptions ?? []).map((s) => s.roomId),
+    favoriteIds: favResp.subscriptions.map((s) => s.roomId),
+    appIds: appResp.subscriptions.map((s) => s.roomId),
+    channelDmIds: roomResp.subscriptions.map((s) => s.roomId),
     subscriptions,
   }
 }

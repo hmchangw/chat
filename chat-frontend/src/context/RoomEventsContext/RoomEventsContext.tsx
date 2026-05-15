@@ -1,17 +1,90 @@
-import { createContext, useCallback, useContext, useMemo, useReducer, useRef } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useReducer,
+  useRef,
+  type Dispatch,
+  type ReactNode,
+} from 'react'
 import { useNats } from '@/context/NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 import { useRoomSubscriptions } from './useRoomSubscriptions'
 import { fetchMessageHistory, fetchSurroundingMessages } from '@/api'
+import type { Message, Nats, Room, Subscription } from '@/api/types'
 
-const RoomEventsContext = createContext(null)
+/** Per-room buffer state — owned by the reducer's `roomState` map. */
+interface RoomBufferState {
+  messages: Message[]
+  hasLoadedHistory: boolean
+  historyError: string | null
+  unreadCount: number
+  hasMention: boolean
+  mentionAll: boolean
+  lastMsgAt: string | null
+  lastMsgId: string | null
+  bufferMode: 'live' | 'historical'
+  pendingLiveMessages: Message[]
+  focusMessageId: string | null
+}
 
-export function RoomEventsProvider({ children }) {
-  const nats = useNats()
+/** Sidebar summary — derived from `model.Room` + the user's
+ *  Subscription. Only the fields the sidebar / chat header read. */
+interface RoomSummary {
+  id: string
+  name: string
+  subscriptionName?: string
+  type: Room['type']
+  siteId: string
+  userCount: number
+  lastMsgAt: string | null
+  unreadCount: number
+  hasMention: boolean
+  mentionAll: boolean
+  /** DM-room counterpart's HRInfo — added by useSidebarSections enrich. */
+  hrInfo?: Subscription['hrInfo']
+}
+
+/** Top-level state shape returned by `roomEventsReducer`. */
+interface RoomEventsState {
+  summaries: RoomSummary[]
+  roomState: Record<string, RoomBufferState>
+  activeRoomId: string | null
+  roomsError: string | null
+  favoriteIds: Set<string>
+  appIds: Set<string>
+  channelDmIds: Set<string>
+  subscriptions: Record<string, Subscription>
+}
+
+/** Surface exposed via React context. Components consume via
+ *  `useRoomEvents` / `useRoomSummaries` / `useSubscription` / etc. */
+interface RoomEventsContextValue {
+  state: RoomEventsState
+  dispatch: Dispatch<{ type: string; [k: string]: unknown }>
+  loadHistory: (roomId: string) => Promise<unknown> | void
+  setActiveRoom: (roomId: string | null) => void
+  jumpToMessage: (roomId: string, messageId: string) => Promise<void> | void
+  resetToLiveTail: (roomId: string) => void
+}
+
+const RoomEventsContext = createContext<RoomEventsContextValue | null>(null)
+
+export function RoomEventsProvider({ children }: { children: ReactNode }) {
+  // `useNats()` returns `never` to TS because NatsContext.jsx does
+  // `createContext(null)` without annotations. Cast here so downstream
+  // callbacks see the proper Nats interface — safe because the
+  // provider only renders inside the `connected` gate at App.jsx,
+  // where the NATS handshake has populated user/request/etc.
+  const nats = useNats() as unknown as Nats
   const { user } = nats
-  const [state, dispatch] = useReducer(roomEventsReducer, initialState)
+  const [state, dispatch] = useReducer(roomEventsReducer, initialState) as unknown as [
+    RoomEventsState,
+    Dispatch<{ type: string; [k: string]: unknown }>,
+  ]
 
-  const inflightHistory = useRef(new Map())
+  const inflightHistory = useRef(new Map<string, Promise<unknown>>())
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -20,7 +93,7 @@ export function RoomEventsProvider({ children }) {
   const { currentGeneration } = useRoomSubscriptions(nats, dispatch)
 
   const loadHistory = useCallback(
-    async (roomId) => {
+    async (roomId: string) => {
       if (!user || !roomId) return
       const prev = stateRef.current.roomState[roomId]
       if (prev?.hasLoadedHistory) return
@@ -36,7 +109,8 @@ export function RoomEventsProvider({ children }) {
           const asc = [...(resp.messages ?? [])].reverse()
           if (currentGeneration() === gen) dispatch({ type: 'HISTORY_LOADED', roomId, messages: asc })
         } catch (err) {
-          if (currentGeneration() === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
+          const message = err instanceof Error ? err.message : String(err)
+          if (currentGeneration() === gen) dispatch({ type: 'HISTORY_FAILED', roomId, error: message })
           throw err
         } finally {
           inflightHistory.current.delete(roomId)
@@ -45,15 +119,15 @@ export function RoomEventsProvider({ children }) {
       inflightHistory.current.set(roomId, promise)
       return promise
     },
-    [user, nats, currentGeneration]
+    [user, nats, currentGeneration],
   )
 
-  const setActiveRoom = useCallback((roomId) => {
+  const setActiveRoom = useCallback((roomId: string | null) => {
     dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
   }, [])
 
   const jumpToMessage = useCallback(
-    async (roomId, messageId) => {
+    async (roomId: string, messageId: string) => {
       if (!user || !roomId || !messageId) return
       const summary = stateRef.current.summaries.find((r) => r.id === roomId)
       const siteId = summary?.siteId ?? user.siteId
@@ -68,43 +142,44 @@ export function RoomEventsProvider({ children }) {
           focusMessageId: messageId,
         })
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
         if (currentGeneration() === gen) {
-          dispatch({ type: 'HISTORY_FAILED', roomId, error: err.message })
+          dispatch({ type: 'HISTORY_FAILED', roomId, error: message })
         }
         throw err
       }
     },
-    [user, nats, currentGeneration]
+    [user, nats, currentGeneration],
   )
 
-  const resetToLiveTail = useCallback((roomId) => {
+  const resetToLiveTail = useCallback((roomId: string) => {
     if (!roomId) return
     dispatch({ type: 'RESET_TO_LIVE_TAIL', roomId })
   }, [])
 
-  const value = useMemo(
+  const value = useMemo<RoomEventsContextValue>(
     () => ({ state, dispatch, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail }),
-    [state, dispatch, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail]
+    [state, dispatch, loadHistory, setActiveRoom, jumpToMessage, resetToLiveTail],
   )
 
   return <RoomEventsContext.Provider value={value}>{children}</RoomEventsContext.Provider>
 }
 
-function useRoomEventsInternal() {
+function useRoomEventsInternal(): RoomEventsContextValue {
   const ctx = useContext(RoomEventsContext)
   if (!ctx) throw new Error('RoomEvents hooks must be used inside RoomEventsProvider')
   return ctx
 }
 
-export function useRoomEvents(roomId) {
+export function useRoomEvents(roomId: string | null | undefined) {
   const { state, dispatch, loadHistory, jumpToMessage, resetToLiveTail } = useRoomEventsInternal()
-  const room = state.roomState[roomId]
-  const load = useCallback(() => loadHistory(roomId), [loadHistory, roomId])
+  const room = roomId ? state.roomState[roomId] : undefined
+  const load = useCallback(() => (roomId ? loadHistory(roomId) : undefined), [loadHistory, roomId])
   const jump = useCallback(
-    (messageId) => jumpToMessage(roomId, messageId),
-    [jumpToMessage, roomId]
+    (messageId: string) => (roomId ? jumpToMessage(roomId, messageId) : undefined),
+    [jumpToMessage, roomId],
   )
-  const reset = useCallback(() => resetToLiveTail(roomId), [resetToLiveTail, roomId])
+  const reset = useCallback(() => (roomId ? resetToLiveTail(roomId) : undefined), [resetToLiveTail, roomId])
   return useMemo(
     () => ({
       messages: room?.messages ?? [],
@@ -118,7 +193,7 @@ export function useRoomEvents(roomId) {
       resetToLiveTail: reset,
       dispatch,
     }),
-    [room, load, jump, reset, dispatch]
+    [room, load, jump, reset, dispatch],
   )
 }
 
@@ -132,10 +207,17 @@ export function useRoomSummaries() {
   }
 }
 
-export function useRoomDispatch() {
+export function useRoomDispatch(): RoomEventsContextValue['dispatch'] {
   const ctx = useContext(RoomEventsContext)
   if (!ctx) throw new Error('useRoomDispatch must be used inside RoomEventsProvider')
   return ctx.dispatch
+}
+
+/** Section descriptor returned by `useSidebarSections`. */
+export interface SidebarSection {
+  key: 'favorite' | 'apps' | 'channelDm'
+  title: string
+  rooms: RoomSummary[]
 }
 
 /**
@@ -153,11 +235,11 @@ export function useRoomDispatch() {
  * preferred name for channels and the counterpart's HRInfo for DMs
  * without the underlying summary structure carrying those fields.
  */
-export function useSidebarSections() {
+export function useSidebarSections(): SidebarSection[] {
   const { state } = useRoomEventsInternal()
   const { summaries, favoriteIds, appIds, channelDmIds, subscriptions } = state
   return useMemo(() => {
-    const enrich = (room) => {
+    const enrich = (room: RoomSummary): RoomSummary => {
       const sub = subscriptions[room.id]
       if (!sub) return room
       return {
@@ -166,9 +248,9 @@ export function useSidebarSections() {
         hrInfo: sub.hrInfo ?? room.hrInfo,
       }
     }
-    const favorite = []
-    const apps = []
-    const channelDm = []
+    const favorite: RoomSummary[] = []
+    const apps: RoomSummary[] = []
+    const channelDm: RoomSummary[] = []
     for (const room of summaries) {
       if (favoriteIds.has(room.id)) favorite.push(enrich(room))
       else if (appIds.has(room.id)) apps.push(enrich(room))
@@ -191,12 +273,16 @@ export function useSidebarSections() {
  * `undefined` until the bucket bootstrap completes or a
  * `subscription.update added` event lands.
  *
- * Hook re-renders only when the subscription for THIS room changes,
- * not when other rooms' subscriptions update — driven by the
- * dictionary's reference identity (the reducer rebuilds the map only
- * on writes touching `roomId`).
+ * Re-render scope: every consumer re-renders on ANY RoomEventsContext
+ * state change — this hook just reads through the context value.
+ * Memoise downstream (`useMemo(() => sub.roles.includes('owner'),
+ * [sub])`) if you only care about a derived bit. A future perf pass
+ * could split this into a dedicated SubscriptionsContext or wire it
+ * through `useSyncExternalStore` selectors — out of scope today.
  */
-export function useSubscription(roomId) {
+export function useSubscription(roomId: string | null | undefined): Subscription | undefined {
   const { state } = useRoomEventsInternal()
   return roomId ? state.subscriptions[roomId] : undefined
 }
+
+export type { RoomEventsState, RoomSummary, RoomBufferState, RoomEventsContextValue }

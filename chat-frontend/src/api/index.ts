@@ -43,3 +43,29 @@ export {
   formatAsyncJobError,
 } from './_transport/asyncJob'
 export type { AsyncJobErrorKind } from './_transport/asyncJob'
+
+// Shared wire types — mirror pkg/model. Components/contexts import
+// these from `@/api` instead of deep-importing `@/api/types`.
+export type {
+  Nats,
+  NatsSubscription,
+  SubscriptionCallback,
+  AsyncJobOptions,
+  AsyncJobResult,
+  // Domain types
+  User,
+  Room,
+  RoomType,
+  Role,
+  Subscription,
+  HRInfo,
+  Message,
+  HistoryMessage,
+  Participant,
+  QuotedParentMessage,
+  MemberEntry,
+  Reader,
+  ChannelRef,
+  HistoryConfig,
+  HistoryMode,
+} from './types'
