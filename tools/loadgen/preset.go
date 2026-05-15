@@ -69,13 +69,8 @@ func BuiltinPreset(name string) (Preset, bool) {
 	return p, ok
 }
 
-// Fixtures is the full seed data for a preset run.
-//
-// RoomKeys holds one P-256 keypair per room, derived from the same seed RNG
-// as the other fixtures. They are written to Valkey by SeedRoomKeys so that
-// broadcast-worker (when ENCRYPTION_ENABLED=true) can encrypt fan-out events.
-// These are load-test fixtures, not real secrets — reproducibility from
-// `seed` is the goal, not cryptographic secrecy.
+// Fixtures is the full seed data for a preset run. RoomKeys are load-test
+// fixtures derived deterministically from `seed`, not real secrets.
 type Fixtures struct {
 	Users         []model.User
 	Rooms         []model.Room
@@ -161,8 +156,6 @@ func deterministicRoomKeyPair(r io.Reader) roomkeystore.RoomKeyPair {
 	buf := make([]byte, 32)
 	for {
 		if _, err := io.ReadFull(r, buf); err != nil {
-			// Unreachable for math/rand.Rand.Read — kept as a guard for future
-			// reader swaps. Panic rather than silently degrade determinism.
 			panic(fmt.Errorf("read deterministic key bytes: %w", err))
 		}
 		priv, err := ecdh.P256().NewPrivateKey(buf)

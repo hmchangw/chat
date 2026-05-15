@@ -112,13 +112,10 @@ func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
 	assert.False(t, p2.useJetStream)
 }
 
-func TestNewE2Handler_RecordsFromLastMsgIDEvenWhenMessageNil(t *testing.T) {
-	// Encrypted-path case: broadcast-worker sets evt.Message = nil and
-	// stamps the message ID in evt.LastMsgID (cleartext envelope).
+func TestNewE2Handler_RecordsWhenMessageNil(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "small")
-	pubTime := time.Unix(0, 0)
-	c.RecordPublish("req-1", "m-1", pubTime)
+	c.RecordPublish("req-1", "m-1", time.Unix(0, 0))
 
 	handler := newE2Handler(c)
 	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-1"}
@@ -129,9 +126,7 @@ func TestNewE2Handler_RecordsFromLastMsgIDEvenWhenMessageNil(t *testing.T) {
 	assert.Equal(t, 1, c.E2Count())
 }
 
-func TestNewE2Handler_RecordsFromLastMsgIDWhenMessagePopulated(t *testing.T) {
-	// Plaintext-path case: evt.Message is set; LastMsgID still carries
-	// the same ID. Either way, the handler must record exactly once.
+func TestNewE2Handler_RecordsWhenMessagePopulated(t *testing.T) {
 	m := NewMetrics()
 	c := NewCollector(m, "small")
 	c.RecordPublish("req-1", "m-2", time.Unix(0, 0))

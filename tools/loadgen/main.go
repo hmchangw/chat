@@ -20,8 +20,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	dto "github.com/prometheus/client_model/go"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -30,18 +30,16 @@ import (
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL,required"`
-	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI      string `env:"MONGO_URI,required"`
-	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string `env:"MONGO_PASSWORD"  envDefault:""`
-	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
-	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
-	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
-	// Valkey for room-key fixtures. Required because broadcast-worker reads
-	// keys here when ENCRYPTION_ENABLED=true (the docker-local default).
+	NatsURL        string `env:"NATS_URL,required"`
+	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID         string `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI       string `env:"MONGO_URI,required"`
+	MongoDB        string `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername  string `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword  string `env:"MONGO_PASSWORD"  envDefault:""`
+	MetricsAddr    string `env:"METRICS_ADDR"    envDefault:":9099"`
+	MaxInFlight    int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
+	PProfAddr      string `env:"PPROF_ADDR"      envDefault:""`
 	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
 }
@@ -100,25 +98,17 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
 	if err != nil {
-		slog.Error("mongo connect", "error", err)
 		return 1
 	}
-	defer mongoutil.Disconnect(ctx, client)
-	keyStore, err := connectKeyStore(cfg)
-	if err != nil {
-		slog.Error("valkey connect", "error", err)
-		return 1
-	}
-	defer func() { _ = keyStore.Close() }()
-	db := client.Database(cfg.MongoDB)
+	defer cleanup()
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
 		return 1
 	}
-	if err := SeedRoomKeys(ctx, keyStore, &fixtures); err != nil {
+	if err := SeedRoomKeys(ctx, keyStore, fixtures.RoomKeys); err != nil {
 		slog.Error("seed room keys", "error", err)
 		return 1
 	}
@@ -145,25 +135,21 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
 	if err != nil {
-		slog.Error("mongo connect", "error", err)
 		return 1
 	}
-	defer mongoutil.Disconnect(ctx, client)
-	keyStore, err := connectKeyStore(cfg)
-	if err != nil {
-		slog.Error("valkey connect", "error", err)
-		return 1
-	}
-	defer func() { _ = keyStore.Close() }()
-	db := client.Database(cfg.MongoDB)
+	defer cleanup()
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+	roomIDs := make([]string, len(fixtures.Rooms))
+	for i := range fixtures.Rooms {
+		roomIDs[i] = fixtures.Rooms[i].ID
+	}
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
 	}
-	if err := TeardownRoomKeys(ctx, keyStore, &fixtures); err != nil {
+	if err := TeardownRoomKeys(ctx, keyStore, roomIDs); err != nil {
 		slog.Error("teardown room keys", "error", err)
 		return 1
 	}
@@ -171,8 +157,27 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-// connectKeyStore opens a Valkey-backed RoomKeyStore. GracePeriod is unused
-// by Seed/Teardown (we never Rotate), so a placeholder is fine.
+// connectStores opens Mongo and Valkey. cleanup disconnects both; the caller
+// must invoke it (typically via defer). On error, neither resource is leaked.
+func connectStores(ctx context.Context, cfg *config) (*mongo.Database, roomkeystore.RoomKeyStore, func(), error) {
+	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	if err != nil {
+		slog.Error("mongo connect", "error", err)
+		return nil, nil, nil, err
+	}
+	keyStore, err := connectKeyStore(cfg)
+	if err != nil {
+		mongoutil.Disconnect(ctx, client)
+		slog.Error("valkey connect", "error", err)
+		return nil, nil, nil, err
+	}
+	cleanup := func() {
+		_ = keyStore.Close()
+		mongoutil.Disconnect(ctx, client)
+	}
+	return client.Database(cfg.MongoDB), keyStore, cleanup, nil
+}
+
 func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
 	return roomkeystore.NewValkeyStore(roomkeystore.Config{
 		Addr:        cfg.ValkeyAddr,
@@ -419,14 +424,16 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	return DetermineExitCode(summary.SentMeasured, totalErrs)
 }
 
-// newE2Handler returns the NATS subscription callback that correlates
-// broadcast events to publishes. It reads RoomEvent.LastMsgID rather than
-// RoomEvent.Message.ID so the same handler works for both the plaintext path
-// (Message populated) and the encrypted path (Message nil'd by broadcast-worker,
-// LastMsgID still in the cleartext envelope).
+// newE2Handler reads only LastMsgID from the cleartext envelope so the same
+// handler works for plaintext and encrypted broadcasts (Message is nil under
+// encryption). Decoding into a minimal struct avoids per-event allocation of
+// the full RoomEvent's slices and pointers on this high-frequency path.
 func newE2Handler(collector *Collector) func(*nats.Msg) {
+	type envelope struct {
+		LastMsgID string `json:"lastMsgId"`
+	}
 	return func(msg *nats.Msg) {
-		var evt model.RoomEvent
+		var evt envelope
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			return
 		}
