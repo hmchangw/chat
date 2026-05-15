@@ -135,6 +135,20 @@ func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	return nil
 }
 
+func (s *MongoStore) UpdateDMParticipants(ctx context.Context, roomID string, uids, accounts []string) error {
+	res, err := s.rooms.UpdateOne(ctx,
+		bson.M{"_id": roomID},
+		bson.M{"$set": bson.M{"uids": uids, "accounts": accounts}},
+	)
+	if err != nil {
+		return fmt.Errorf("update dm participants (room %s): %w", roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update dm participants (room %s): room not found", roomID)
+	}
+	return nil
+}
+
 func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error) {
 	pipe := pipelines.GetNewMembersPipeline(orgIDs, accounts, "", excludeAccount)
 	pipe = append(pipe, bson.M{"$group": bson.M{
