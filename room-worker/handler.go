@@ -819,11 +819,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Fan out current key to newly-added local-site accounts only.
-	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, users); err != nil {
-		return fmt.Errorf("fan out room key: %w", err)
-	}
-
+	// Publish subscription.update BEFORE room.key so clients have a sub entry to store the key under.
 	for _, sub := range subs {
 		subEvt := model.SubscriptionUpdateEvent{
 			UserID:       sub.User.ID,
@@ -835,6 +831,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), subEvtData, ""); err != nil {
 			slog.Error("subscription update publish failed", "error", err, "account", sub.User.Account)
 		}
+	}
+
+	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, users); err != nil {
+		return fmt.Errorf("fan out room key: %w", err)
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)

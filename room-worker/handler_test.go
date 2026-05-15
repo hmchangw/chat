@@ -697,6 +697,62 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	assert.Equal(t, 1, outboxCount, "should publish exactly 1 batched outbox event per destination site")
 }
 
+// TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey locks in
+// the ordering invariant: clients must receive subscription.update BEFORE room.key
+// for the same account, otherwise the client has no place to store the key.
+func TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	// Wire both the regular publish callback and the keySender to a single
+	// mockPublisher so we get one chronological timeline across both event kinds.
+	pub := &mockPublisher{}
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		return pub.Publish(subj, data)
+	}
+	h := NewHandler(store, "site-a", publish, testKeyStore, roomkeysender.NewSender(pub))
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
+		Return([]string{"bob", "charlie"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
+		{ID: "u2", Account: "bob", SiteID: "site-a"},
+		{ID: "u3", Account: "charlie", SiteID: "site-a"},
+	}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+
+	req := model.AddMembersRequest{
+		RoomID: "r1", Users: []string{"bob", "charlie"},
+		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
+		Timestamp: 1,
+	}
+	reqData, _ := json.Marshal(req)
+
+	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-ordering")
+	require.NoError(t, h.processAddMembers(ctx, reqData))
+
+	for _, account := range []string{"bob", "charlie"} {
+		subSubj := subject.SubscriptionUpdate(account)
+		keySubj := subject.RoomKeyUpdate(account)
+		subIdx, keyIdx := -1, -1
+		for i, s := range pub.subjects {
+			if s == subSubj && subIdx == -1 {
+				subIdx = i
+			}
+			if s == keySubj && keyIdx == -1 {
+				keyIdx = i
+			}
+		}
+		require.NotEqual(t, -1, subIdx, "subscription.update not published for %s", account)
+		require.NotEqual(t, -1, keyIdx, "room.key not published for %s", account)
+		assert.Less(t, subIdx, keyIdx,
+			"account %s: subscription.update (idx %d) must precede room.key (idx %d)",
+			account, subIdx, keyIdx)
+	}
+}
+
 func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
