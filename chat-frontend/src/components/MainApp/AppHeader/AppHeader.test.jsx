@@ -21,6 +21,7 @@ describe('AppHeader', () => {
     render(<AppHeader onSelectRoom={() => {}} onEnterSearch={() => {}} />)
     expect(screen.getByText('alice · site-1')).toBeInTheDocument()
     expect(screen.getByText('fake-theme')).toBeInTheDocument()
+    expect(screen.getByText('fake-unread')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument()
   })
 
