@@ -576,32 +576,39 @@ describe('RoomEventsProvider message.read wiring', () => {
     expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
   })
 
-  it('fires message.read when a new_message arrives in the active channel room', async () => {
-    const rooms = [
-      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
-    ]
-    const { nats, request, handlers } = setupWithRooms(rooms)
-    let setActive
-    function Probe() {
-      const { setActiveRoom } = useRoomSummaries()
-      setActive = setActiveRoom
-      return null
-    }
-    render(wrap(<Probe />, nats))
-    await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+  it('fires message.read when a new_message arrives in the active channel room (after the trailing debounce)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [
+        { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+      ]
+      const { nats, request, handlers } = setupWithRooms(rooms)
+      let setActive
+      function Probe() {
+        const { setActiveRoom } = useRoomSummaries()
+        setActive = setActiveRoom
+        return null
+      }
+      render(wrap(<Probe />, nats))
+      await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
 
-    act(() => { setActive('g1') })
-    request.mockClear()
+      act(() => { setActive('g1') })
+      request.mockClear()
 
-    act(() => {
-      handlers.get('chat.room.g1.event')({
-        type: 'new_message',
-        roomId: 'g1',
-        message: { id: 'm1', roomId: 'g1', sender: { account: 'bob' }, content: 'hi', createdAt: '2026-04-17T12:00:00Z' },
+      act(() => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message',
+          roomId: 'g1',
+          message: { id: 'm1', roomId: 'g1', sender: { account: 'bob' }, content: 'hi', createdAt: '2026-04-17T12:00:00Z' },
+        })
       })
-    })
 
-    expect(request).toHaveBeenCalledWith(readSubjectFor('g1'), {})
+      // The new-message-in-active-room mark-read is debounced 500ms.
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+      expect(request).toHaveBeenCalledWith(readSubjectFor('g1'), {})
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does NOT fire message.read when a new_message arrives in a non-active room', async () => {
@@ -661,6 +668,119 @@ describe('RoomEventsProvider message.read wiring', () => {
 
     const subjects = request.mock.calls.map((c) => c[0])
     expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+  })
+
+  it('debounces a burst of active-room messages to a SINGLE trailing message.read RPC', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [{ id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 4, lastMsgAt: null }]
+      const request = vi.fn().mockImplementation((subject) => {
+        if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+        if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
+        return Promise.resolve({}) // every other (incl. message.read)
+      })
+      const handlers = new Map()
+      const subscribe = vi.fn().mockImplementation((subject, cb) => {
+        handlers.set(subject, cb)
+        return { unsubscribe: vi.fn() }
+      })
+      const nats = mockNats({ request, subscribe })
+
+      function Activator() {
+        const { setActiveRoom } = useRoomSummaries()
+        return <button onClick={() => setActiveRoom('g1')}>activate</button>
+      }
+      render(wrap(<Activator />, nats))
+
+      // Open the room — fires immediate mark-read for setActiveRoom (1 call).
+      await waitFor(() => expect(handlers.get('chat.room.g1.event')).toBeDefined())
+      await act(async () => { screen.getByText('activate').click() })
+      const after = request.mock.calls.filter((c) => c[0].endsWith('.message.read')).length
+      expect(after).toBe(1)
+
+      // Burst of 10 messages within the debounce window.
+      await act(async () => {
+        for (let i = 0; i < 10; i++) {
+          handlers.get('chat.room.g1.event')({
+            type: 'new_message',
+            roomId: 'g1',
+            message: { id: `m${i}`, roomId: 'g1', sender: { account: 'bob' }, content: 'hi', createdAt: '2026-04-17T12:00:00Z' },
+          })
+        }
+      })
+
+      // Inside the debounce window: no NEW message.read yet (still 1 from setActiveRoom).
+      const inWindow = request.mock.calls.filter((c) => c[0].endsWith('.message.read')).length
+      expect(inWindow).toBe(1)
+
+      // Advance past the debounce window.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600)
+      })
+      const afterDebounce = request.mock.calls.filter((c) => c[0].endsWith('.message.read')).length
+      // Exactly one trailing call should have fired for the burst.
+      expect(afterDebounce).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the pending mark-read timer if the user switches rooms mid-burst', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [
+        { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 4, lastMsgAt: null },
+        { id: 'g2', name: 'other',   type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null },
+      ]
+      const request = vi.fn().mockImplementation((subject) => {
+        if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+        if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
+        return Promise.resolve({})
+      })
+      const handlers = new Map()
+      const subscribe = vi.fn().mockImplementation((subject, cb) => {
+        handlers.set(subject, cb)
+        return { unsubscribe: vi.fn() }
+      })
+      const nats = mockNats({ request, subscribe })
+
+      function Activator() {
+        const { setActiveRoom } = useRoomSummaries()
+        return (
+          <>
+            <button onClick={() => setActiveRoom('g1')}>g1</button>
+            <button onClick={() => setActiveRoom('g2')}>g2</button>
+          </>
+        )
+      }
+      render(wrap(<Activator />, nats))
+
+      await waitFor(() => expect(handlers.get('chat.room.g1.event')).toBeDefined())
+      await waitFor(() => expect(handlers.get('chat.room.g2.event')).toBeDefined())
+      await act(async () => { screen.getByText('g1').click() }) // setActiveRoom: 1 read
+      // Burst in g1; trailing timer queued.
+      await act(async () => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message',
+          roomId: 'g1',
+          message: { id: 'm1', sender: { account: 'bob' }, content: 'hi', createdAt: '...' },
+        })
+      })
+      // Switch BEFORE the debounce fires.
+      await act(async () => { screen.getByText('g2').click() }) // setActiveRoom: 2 reads now (g1 + g2)
+      // Advance past the debounce window.
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+
+      const readCalls = request.mock.calls.filter((c) => c[0].endsWith('.message.read'))
+      // The trailing g1 timer must NOT fire (room is no longer active).
+      // Expected reads: setActiveRoom(g1) + setActiveRoom(g2) = 2.
+      expect(readCalls.length).toBe(2)
+      // Both setActiveRoom calls fired immediate reads — confirm by subject.
+      expect(readCalls.some((c) => c[0].includes('.room.g1.'))).toBe(true)
+      expect(readCalls.some((c) => c[0].includes('.room.g2.'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -10,6 +10,12 @@ import {
   subscribeToUserRoomEvents,
 } from '@/api'
 
+/** Trailing-debounce window for the active-room mark-read RPC. 500ms
+ *  collapses a burst of "10 msg/sec" room chatter into ONE RPC at the
+ *  trailing edge. Long enough that bursts coalesce; short enough that
+ *  the server's lastSeenAt for the active user stays current. */
+const MARK_READ_DEBOUNCE_MS = 500
+
 /**
  * Owns every backend subscription + the initial-room-list fetch that
  * keeps RoomEventsContext.state in sync with the server, AND owns the
@@ -65,6 +71,16 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
   const channelSubs = useRef(new Map())
   const cancelledRef = useRef(false)
 
+  // Trailing-edge debounce for the per-active-room mark-read RPC.
+  // A chatty room (10+ msg/sec) would otherwise generate one
+  // `message.read` RPC per inbound message; with this debounce a
+  // burst coalesces to a single trailing call after the room goes
+  // quiet for MARK_READ_DEBOUNCE_MS. The setActiveRoom path
+  // (provider-side) stays immediate — that's the explicit user
+  // action and not coalescable.
+  const pendingMarkReadRef = useRef(null)
+  const markReadTimeoutRef = useRef(null)
+
   useEffect(() => {
     if (!user) return
     cancelledRef.current = false
@@ -80,23 +96,37 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       dispatch(action)
     }
 
-    // Fire `message.read` for messages arriving in the room the user
-    // is currently looking at — unless the sender is the current user
-    // (we don't need to "read" our own message). Fire-and-forget,
-    // swallows errors inside markRoomRead.
-    const maybeMarkActiveRead = (evtRoomId, senderAccount) => {
+    // Schedule a trailing `message.read` for the active room with a
+    // 500ms debounce. A burst of N messages in a chatty room produces
+    // ONE RPC at the end of the burst instead of N. If the user
+    // switches rooms before the timer fires, the active-room check at
+    // fire time skips the stale entry.
+    const scheduleMarkActiveRead = (evtRoomId, senderAccount) => {
       if (!evtRoomId) return
       if (stateRef.current.activeRoomId !== evtRoomId) return
       if (senderAccount && senderAccount === user.account) return
       const summary = stateRef.current.summaries.find((r) => r.id === evtRoomId)
       const siteId = summary?.siteId ?? user.siteId
-      markRoomRead(natsRef.current, { roomId: evtRoomId, siteId })
+      pendingMarkReadRef.current = { roomId: evtRoomId, siteId }
+      if (markReadTimeoutRef.current) clearTimeout(markReadTimeoutRef.current)
+      markReadTimeoutRef.current = setTimeout(() => {
+        markReadTimeoutRef.current = null
+        const pending = pendingMarkReadRef.current
+        pendingMarkReadRef.current = null
+        if (!pending) return
+        // Re-check: only fire if the pending room is still the active
+        // room. Mid-burst room switch would otherwise misfire a
+        // mark-read for a room the user has already left.
+        if (cancelledRef.current) return
+        if (stateRef.current.activeRoomId !== pending.roomId) return
+        markRoomRead(natsRef.current, pending)
+      }, MARK_READ_DEBOUNCE_MS)
     }
 
     const dmSub = subscribeToUserRoomEvents(liveNats, (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
-        maybeMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+        scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
       }
     })
 
@@ -108,7 +138,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
             (p) => p.account === user.account
           )
           safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
-          maybeMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+          scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
         }
       })
       channelSubs.current.set(roomId, sub)
@@ -197,6 +227,13 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       metaUpdate.unsubscribe()
       for (const sub of channelSubs.current.values()) sub.unsubscribe()
       channelSubs.current.clear()
+      // Cancel any in-flight mark-read trailing timer so it doesn't
+      // fire after teardown (would `markRoomRead` against a dead nc).
+      if (markReadTimeoutRef.current) {
+        clearTimeout(markReadTimeoutRef.current)
+        markReadTimeoutRef.current = null
+      }
+      pendingMarkReadRef.current = null
       // RESET runs even when cancelled — it IS the cleanup.
       dispatch({ type: 'RESET' })
     }
