@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import {
+  fetchSidebarBuckets,
   getRoom,
   listRooms,
   subscribeToRoomEvents,
@@ -145,6 +146,22 @@ export function useRoomSubscriptions(nats, dispatch) {
       })
       .catch((err) => {
         if (!cancelledRef.current) safeDispatch({ type: 'ROOMS_FAILED', error: err.message })
+      })
+
+    // Fetch the three sidebar buckets (favorites / apps / channel+dm) in
+    // parallel. The api op orchestrates the three user-service RPCs and
+    // hands back a merged shape ready for the reducer. Non-fatal: if the
+    // user-service RPCs fail the sidebar grouping degrades to the legacy
+    // single-list rendering, but the rooms themselves still arrive via
+    // listRooms.
+    fetchSidebarBuckets(liveNats)
+      .then((buckets) => {
+        if (cancelledRef.current) return
+        safeDispatch({ type: 'BUCKETS_LOADED', ...buckets })
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('sidebar bucket bootstrap failed:', err?.message ?? err)
       })
 
     return () => {

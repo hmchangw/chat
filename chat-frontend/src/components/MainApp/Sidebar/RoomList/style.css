@@ -136,3 +136,32 @@
 
 .room-badge-mention { background: var(--mention); }
 .room-badge-mention-all { background: var(--mention-all); }
+
+/* ── Three-section sidebar buckets ─────────────────────────────────────
+   Favorite / Apps / Channels and DMs each render under a collapsible
+   header. The header inherits the design tokens so dark + light + the
+   black-and-white theme all pick up correct foregrounds without any
+   per-theme overrides here. */
+.room-list-section {
+  margin-bottom: var(--space-sm);
+}
+
+.room-list-section-header {
+  padding: var(--space-sm) var(--space-md);
+  font-weight: var(--font-semibold);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--motion-fast) var(--easing);
+}
+
+.room-list-section-header:hover {
+  color: var(--text-secondary);
+}
+
+.room-list-section-collapsed .room-list-section-header {
+  opacity: 0.7;
+}

@@ -137,3 +137,47 @@ export function useRoomDispatch() {
   if (!ctx) throw new Error('useRoomDispatch must be used inside RoomEventsProvider')
   return ctx.dispatch
 }
+
+/**
+ * Partition the room summaries into the three sidebar buckets:
+ * Favorite, Apps, Channels and DMs. Bucket membership comes from the
+ * `BUCKETS_LOADED` dispatch (fetched by useRoomSubscriptions on login)
+ * + the per-type ROOM_ADDED / ROOM_REMOVED maintenance the reducer
+ * applies.
+ *
+ * Returns an ordered array of `{key, title, rooms}` sections so the
+ * sidebar can render headers + rows without re-deriving the split.
+ *
+ * Per-room subscription metadata (subscription.Name + HRInfo) is
+ * merged onto each room here so `roomDisplayName` resolves the user's
+ * preferred name for channels and the counterpart's HRInfo for DMs
+ * without the underlying summary structure carrying those fields.
+ */
+export function useSidebarSections() {
+  const { state } = useRoomEventsInternal()
+  const { summaries, favoriteIds, appIds, channelDmIds, subscriptionData } = state
+  return useMemo(() => {
+    const enrich = (room) => {
+      const data = subscriptionData[room.id]
+      if (!data) return room
+      return {
+        ...room,
+        subscriptionName: data.name ?? room.subscriptionName,
+        hrInfo: data.hrInfo ?? room.hrInfo,
+      }
+    }
+    const favorite = []
+    const apps = []
+    const channelDm = []
+    for (const room of summaries) {
+      if (favoriteIds.has(room.id)) favorite.push(enrich(room))
+      else if (appIds.has(room.id)) apps.push(enrich(room))
+      else if (channelDmIds.has(room.id)) channelDm.push(enrich(room))
+    }
+    return [
+      { key: 'favorite',  title: 'Favorite',          rooms: favorite },
+      { key: 'apps',      title: 'Apps',              rooms: apps },
+      { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
+    ]
+  }, [summaries, favoriteIds, appIds, channelDmIds, subscriptionData])
+}
