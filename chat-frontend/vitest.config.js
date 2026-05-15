@@ -18,5 +18,18 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./test/setup.js'],
+    // Pin the JUnit reporter's output to an ABSOLUTE path anchored to
+    // this config file. Without the pin, vitest resolves outputFile
+    // against process.cwd() — which means the report lands at
+    // /workspace/junit.xml when CI runs vitest from the repo root
+    // (with `-c chat-frontend/vitest.config.js`) instead of at
+    // chat-frontend/junit.xml where GitLab's `artifacts.reports.junit`
+    // glob expects it. Anchoring via __dirname makes it CWD-independent.
+    //
+    // Only takes effect when the JUnit reporter is active (see
+    // `npm run test:ci`); plain `vitest run` doesn't write a file.
+    outputFile: {
+      junit: path.resolve(__dirname, 'junit.xml'),
+    },
   },
 })
