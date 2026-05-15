@@ -1172,6 +1172,14 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
+
+	uids, accounts := model.BuildDMParticipants(requester, other)
+	if err := h.store.UpdateDMParticipants(ctx, room.ID, uids, accounts); err != nil {
+		return fmt.Errorf("update dm participants: %w", err)
+	}
+	room.UIDs = uids
+	room.Accounts = accounts
+
 	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *other}, subs, requestID, now)
 }
 
@@ -1188,6 +1196,14 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
+
+	uids, accounts := model.BuildDMParticipants(requester, bot)
+	if err := h.store.UpdateDMParticipants(ctx, room.ID, uids, accounts); err != nil {
+		return fmt.Errorf("update dm participants: %w", err)
+	}
+	room.UIDs = uids
+	room.Accounts = accounts
+
 	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *bot}, subs, requestID, now)
 }
 
@@ -1520,6 +1536,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	acceptedAt := time.Now().UTC()
 	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
 
+	uids, accounts := model.BuildDMParticipants(requester, other)
+
 	// DMs/botDMs have a fixed 2-member roster — set counts at creation; no Reconcile needed.
 	userCount, appCount := 2, 0
 	if req.RoomType == model.RoomTypeBotDM {
@@ -1534,6 +1552,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		SiteID:    h.siteID,
 		UserCount: userCount,
 		AppCount:  appCount,
+		UIDs:      uids,
+		Accounts:  accounts,
 		CreatedAt: acceptedAt,
 		UpdatedAt: acceptedAt,
 	}
@@ -1557,6 +1577,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 				"requestID", requestID)
 			return nil, errRoomIDCollision
 		}
+		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing
 		acceptedAt = existing.CreatedAt
 	}
