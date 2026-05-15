@@ -32,12 +32,6 @@ var errPermanent = errors.New("permanent")
 // has no current key. Distinct from transient Valkey errors so operators can alert separately.
 var errRoomKeyAbsent = errors.New("room key absent")
 
-// Sentinel errors for handleGetRoomKey — internal only; NatsHandleGetRoomKey stringifies via err.Error() before crossing the wire.
-var (
-	errRoomKeyNotFound      = errors.New("room key not found")
-	errRoomKeyStoreInternal = errors.New("room key store internal error")
-)
-
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
 type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
 
@@ -1622,42 +1616,6 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
 		}
 	}
-}
-
-// handleGetRoomKey looks up the key for roomID and returns the event or an error.
-func (h *Handler) handleGetRoomKey(ctx context.Context, roomID string) (*model.RoomKeyEvent, error) {
-	pair, err := h.keyStore.Get(ctx, roomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		slog.Error("get room key", "error", err, "roomId", roomID)
-		return nil, fmt.Errorf("get room key for %s: %w", roomID, errRoomKeyStoreInternal)
-	}
-	if pair == nil {
-		return nil, errRoomKeyNotFound
-	}
-	return &model.RoomKeyEvent{
-		RoomID:     roomID,
-		Version:    pair.Version,
-		PublicKey:  pair.KeyPair.PublicKey,
-		PrivateKey: pair.KeyPair.PrivateKey,
-		Timestamp:  time.Now().UTC().UnixMilli(),
-	}, nil
-}
-
-// NatsHandleGetRoomKey serves chat.server.request.roomkey.{siteID}.get for inbox-worker on remote sites.
-func (h *Handler) NatsHandleGetRoomKey(m otelnats.Msg) {
-	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
-	var req model.RoomKeyGetRequest
-	if err := json.Unmarshal(m.Msg.Data, &req); err != nil {
-		natsutil.ReplyError(m.Msg, "invalid request")
-		return
-	}
-	evt, err := h.handleGetRoomKey(ctx, req.RoomID)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, evt)
 }
 
 // buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,

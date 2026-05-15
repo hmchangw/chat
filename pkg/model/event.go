@@ -221,11 +221,6 @@ const (
 	AsyncJobStatusError = "error"
 )
 
-// RoomKeyGetRequest is the inter-site RPC payload for the room key get endpoint.
-type RoomKeyGetRequest struct {
-	RoomID string `json:"roomId"`
-}
-
 // CreateRoomReply is the sync NATS reply returned after publishing the canonical create event.
 type CreateRoomReply struct {
 	Status   string `json:"status"`

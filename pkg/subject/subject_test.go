@@ -608,11 +608,3 @@ func TestUserServicePatternBuilders(t *testing.T) {
 		})
 	}
 }
-
-func TestServerRoomKeyGet(t *testing.T) {
-	got := subject.ServerRoomKeyGet("site-a")
-	want := "chat.server.request.roomkey.site-a.get"
-	if got != want {
-		t.Fatalf("ServerRoomKeyGet = %q, want %q", got, want)
-	}
-}

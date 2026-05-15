@@ -130,11 +130,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := nc.QueueSubscribe(subject.ServerRoomKeyGet(cfg.SiteID), "room-worker", handler.NatsHandleGetRoomKey); err != nil {
-		slog.Error("subscribe roomkey get failed", "error", err)
-		os.Exit(1)
-	}
-
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig(cfg.Consumer))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
