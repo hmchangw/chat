@@ -926,4 +926,81 @@ describe('roomEventsReducer: bucket Sets', () => {
     })
     expect(next).toBe(initialState)
   })
+
+  it('SUBSCRIPTION_UPSERTED with hasMention: false CLEARS an already-true summary mention (server-canonical)', () => {
+    // Pre-existing summary with a live-detected mention.
+    const seed = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const flagged = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        type: 'new_message',
+        roomId: 'c1',
+        timestamp: Date.now(),
+        message: { id: 'm1', content: 'hi @alice', createdAt: '2026-05-13T10:00:00Z' },
+        mentions: [{ account: 'alice' }],
+        hasMention: true,
+      },
+    })
+    expect(flagged.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+    // Server says "user marked-as-read".
+    const cleared = roomEventsReducer(flagged, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', hasMention: false, roles: ['member'] },
+    })
+    expect(cleared.summaries.find((s) => s.id === 'c1').hasMention).toBe(false)
+  })
+
+  it('ROOM_ADDED merges a pre-existing subscription record into the new summary', () => {
+    // Subscription arrives first (as in the live `subscription.update added`
+    // → SUBSCRIPTION_UPSERTED → async getRoom → ROOM_ADDED ordering).
+    const withSub = roomEventsReducer(initialState, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: {
+        roomId: 'r-new',
+        name: 'bob-dm',
+        roles: ['member'],
+        hasMention: true,
+        alert: true,
+      },
+    })
+    const next = roomEventsReducer(withSub, {
+      type: 'ROOM_ADDED',
+      room: room('r-new', { type: 'dm', name: '' }),
+    })
+    const summary = next.summaries.find((s) => s.id === 'r-new')
+    expect(summary.hasMention).toBe(true)
+    expect(summary.subscriptionName).toBe('bob-dm')
+  })
+
+  it('MESSAGE_RECEIVED with hasMention does NOT clobber a BUCKETS_LOADED-seeded mention', () => {
+    // Subscription with mention pending; summary already exists.
+    const withSummary = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const seeded = roomEventsReducer(withSummary, {
+      type: 'BUCKETS_LOADED',
+      favoriteIds: [],
+      appIds: [],
+      channelDmIds: ['c1'],
+      subscriptions: { c1: { roomId: 'c1', hasMention: true, roles: ['member'] } },
+    })
+    // A new message arrives that does NOT mention the user.
+    const next = roomEventsReducer(seeded, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        type: 'new_message',
+        roomId: 'c1',
+        timestamp: Date.now(),
+        message: { id: 'm2', content: 'hi', createdAt: '2026-05-13T10:01:00Z' },
+        mentions: [],
+        hasMention: false,
+      },
+    })
+    // The seeded `hasMention=true` must survive — MESSAGE_RECEIVED only OR's.
+    expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+  })
 })

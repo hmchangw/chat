@@ -59,6 +59,32 @@ function toSummary(room) {
   }
 }
 
+/**
+ * Apply the server's per-user subscription record onto a summary.
+ *
+ * Three call sites need this exact merge:
+ *   - `ROOM_ADDED` (when a subscription arrived ahead of the async
+ *     getRoom() that triggered the dispatch)
+ *   - `BUCKETS_LOADED` (cold-start: every summary already exists, we
+ *     fold in the freshly-fetched subscription records)
+ *   - `SUBSCRIPTION_UPSERTED` (live delta: server says "this changed")
+ *
+ * Semantics for `hasMention` are **server-canonical**. If the server
+ * says false, we clear; if true, we set. This is the "full-record"
+ * contract — room-worker's source of truth, including mark-as-read.
+ * Live mentions arriving via `MESSAGE_RECEIVED` re-OR `hasMention`
+ * back to true on the next event.
+ *
+ * `subscriptionName` is written only when the subscription has one,
+ * to avoid overwriting an existing summary name with `undefined`.
+ */
+function mergeSubscriptionIntoSummary(summary, sub) {
+  if (!sub) return summary
+  const next = { ...summary, hasMention: !!sub.hasMention }
+  if (sub.name) next.subscriptionName = sub.name
+  return next
+}
+
 function emptyRoomState() {
   return {
     messages: [],
@@ -83,8 +109,18 @@ export function roomEventsReducer(state, action) {
     }
     case 'ROOM_ADDED': {
       if (state.summaries.some((r) => r.id === action.room.id)) return state
-      const summaries = sortByLastMsgDesc([...state.summaries, toSummary(action.room)])
       const roomId = action.room.id
+      // A SUBSCRIPTION_UPSERTED commonly fires BEFORE this ROOM_ADDED
+      // (useRoomSubscriptions dispatches the subscription synchronously
+      // and awaits getRoom() before ROOM_ADDED). Merge the existing
+      // subscription record into the new summary so hasMention /
+      // subscriptionName survive — otherwise toSummary's zero-init
+      // would clobber them and the badge / DM name would silently drop.
+      const summary = mergeSubscriptionIntoSummary(
+        toSummary(action.room),
+        state.subscriptions[roomId],
+      )
+      const summaries = sortByLastMsgDesc([...state.summaries, summary])
       let appIds = state.appIds
       let channelDmIds = state.channelDmIds
       if (action.room.type === 'botDM') {
@@ -132,12 +168,12 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'BUCKETS_LOADED': {
-      // Seed `summary.hasMention` from the server's aggregated flag — the
-      // canonical state on cold start. Per-message detection in
-      // MESSAGE_RECEIVED still ORs in when new mentions arrive live.
+      // Seed every summary from the freshly-fetched subscription
+      // records — server-canonical hasMention / subscriptionName for
+      // the cold-start path. See `mergeSubscriptionIntoSummary`.
       const subs = action.subscriptions ?? {}
       const summaries = state.summaries.map((s) =>
-        subs[s.id]?.hasMention ? { ...s, hasMention: true } : s
+        subs[s.id] ? mergeSubscriptionIntoSummary(s, subs[s.id]) : s
       )
       return {
         ...state,
@@ -150,19 +186,16 @@ export function roomEventsReducer(state, action) {
     }
     case 'SUBSCRIPTION_UPSERTED': {
       // Upsert a single subscription record (live delta from
-      // `subscription.update` events). Also propagates `hasMention` /
-      // `name` updates into the matching summary so the sidebar stays
-      // in sync without a refetch.
+      // `subscription.update` events). Re-runs the canonical merge so
+      // a server-side mark-as-read clears `hasMention` from the
+      // summary (full-record semantics) — a subsequent live mention
+      // arrives via MESSAGE_RECEIVED and re-OR's the badge.
       const sub = action.subscription
       if (!sub?.roomId) return state
       const subscriptions = { ...state.subscriptions, [sub.roomId]: sub }
-      const summaries = state.summaries.map((s) => {
-        if (s.id !== sub.roomId) return s
-        const next = { ...s }
-        if (sub.hasMention) next.hasMention = true
-        if (sub.name && sub.name !== s.subscriptionName) next.subscriptionName = sub.name
-        return next === s ? s : next
-      })
+      const summaries = state.summaries.map((s) =>
+        s.id === sub.roomId ? mergeSubscriptionIntoSummary(s, sub) : s
+      )
       return { ...state, summaries, subscriptions }
     }
     case 'ROOM_METADATA_UPDATED': {
@@ -242,8 +275,12 @@ export function roomEventsReducer(state, action) {
                       ...r,
                       lastMsgAt: nextRoomState.lastMsgAt ?? r.lastMsgAt,
                       unreadCount: nextRoomState.unreadCount,
-                      hasMention: nextRoomState.hasMention,
-                      mentionAll: nextRoomState.mentionAll,
+                      // OR with the summary's existing mention so a
+                      // BUCKETS_LOADED / SUBSCRIPTION_UPSERTED seed
+                      // isn't clobbered by a subsequent non-mention
+                      // message. Active-room clears unconditionally.
+                      hasMention: isActive ? false : (r.hasMention || nextRoomState.hasMention),
+                      mentionAll: isActive ? false : (r.mentionAll || nextRoomState.mentionAll),
                     }
                   : r
               )
@@ -274,8 +311,9 @@ export function roomEventsReducer(state, action) {
                     ...r,
                     lastMsgAt: nextRoomState.lastMsgAt ?? r.lastMsgAt,
                     unreadCount: nextRoomState.unreadCount,
-                    hasMention: nextRoomState.hasMention,
-                    mentionAll: nextRoomState.mentionAll,
+                    // See historical-mode branch above for the OR rationale.
+                    hasMention: isActive ? false : (r.hasMention || nextRoomState.hasMention),
+                    mentionAll: isActive ? false : (r.mentionAll || nextRoomState.mentionAll),
                   }
                 : r
             )

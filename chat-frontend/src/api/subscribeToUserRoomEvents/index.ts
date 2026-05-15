@@ -1,10 +1,10 @@
 import { userRoomEvent } from '../_transport/subjects'
-import type { Nats, Subscription, SubscriptionCallback } from '../types'
+import type { Nats, NatsSubscription, SubscriptionCallback } from '../types'
 
 /** Subscribe to per-user room events (DM message broadcasts). */
 export function subscribeToUserRoomEvents(
   { user, subscribe }: Nats,
   callback: SubscriptionCallback,
-): Subscription {
+): NatsSubscription {
   return subscribe(userRoomEvent(user.account), callback)
 }

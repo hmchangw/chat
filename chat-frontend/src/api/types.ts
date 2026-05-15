@@ -200,10 +200,17 @@ export interface Reader {
   chineseName?: string
 }
 
-/** Subscription returned to the subscribe primitive — the NATS client
- *  hands back an object with `.unsubscribe()`. We narrow to that
- *  contract so callers don't need to import nats.ws's full type. */
-export interface Subscription {
+/** Handle returned by the NATS subscribe primitive — the client gives
+ *  us an object with `.unsubscribe()`. Narrowed here so callers don't
+ *  need to import nats.ws's full type.
+ *
+ *  NOTE: distinct from the `Subscription` model type above (which is
+ *  the per-user-per-room record from `pkg/model.Subscription`).
+ *  Same name would cause TS declaration merging to silently fuse the
+ *  two interfaces — disasterously, since callers would then see
+ *  `.roles` typed on a NATS handle. Renamed to `NatsSubscription` to
+ *  keep the two contracts strictly separate. */
+export interface NatsSubscription {
   unsubscribe: () => void
 }
 
@@ -245,7 +252,7 @@ export interface Nats {
   user: User
   request: <T = unknown>(subject: string, data?: unknown) => Promise<T>
   publish: (subject: string, data?: unknown) => void
-  subscribe: (subject: string, cb: SubscriptionCallback) => Subscription
+  subscribe: (subject: string, cb: SubscriptionCallback) => NatsSubscription
   requestWithAsyncResult: <S = unknown, A = unknown>(
     subject: string,
     data?: unknown,
