@@ -735,20 +735,24 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
-	writeIndividuals := len(req.Orgs) > 0
-	if !writeIndividuals {
-		hasOrgs, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
-		if err != nil {
-			slog.Warn("check existing org room members failed", "error", err, "roomID", req.RoomID)
-		}
-		writeIndividuals = hasOrgs
+	hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
+	if err != nil {
+		slog.Warn("check existing org room members failed", "error", err, "roomID", req.RoomID)
 	}
+	writeIndividuals := len(req.Orgs) > 0 || hadOrgsBefore
 
 	// Collect all room_member docs to write in a single bulk insert:
 	// new individuals + new orgs + (optional) backfill of existing subscribers.
 	roomMembers := make([]*model.RoomMember, 0, len(subs)+len(req.Orgs))
+	allowedIndiv := make(map[string]struct{}, len(req.Users))
+	for _, acc := range req.Users {
+		allowedIndiv[acc] = struct{}{}
+	}
 	if writeIndividuals {
 		for _, sub := range subs {
+			if _, ok := allowedIndiv[sub.User.Account]; !ok {
+				continue
+			}
 			roomMembers = append(roomMembers, &model.RoomMember{
 				ID:     idgen.GenerateUUIDv7(),
 				RoomID: req.RoomID,
@@ -775,7 +779,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 
 	// Backfill existing subscribers into room_members only when orgs are
 	// joining for the first time and we're starting to track individuals.
-	if writeIndividuals && len(req.Orgs) > 0 {
+	if len(req.Orgs) > 0 && !hadOrgsBefore {
 		existingAccounts, err := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
 		if err != nil {
 			slog.Warn("get subscription accounts for backfill failed", "error", err)
@@ -1173,8 +1177,16 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	}
 
 	if len(req.ResolvedOrgs) > 0 {
+		allowedIndiv := make(map[string]struct{}, len(req.ResolvedUsers)+1)
+		allowedIndiv[requester.Account] = struct{}{}
+		for _, acc := range req.ResolvedUsers {
+			allowedIndiv[acc] = struct{}{}
+		}
 		members := make([]*model.RoomMember, 0, len(subs)+len(req.ResolvedOrgs))
 		for _, sub := range subs {
+			if _, ok := allowedIndiv[sub.User.Account]; !ok {
+				continue
+			}
 			members = append(members, &model.RoomMember{
 				ID:     idgen.GenerateUUIDv7(),
 				RoomID: room.ID,

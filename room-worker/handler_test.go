@@ -923,6 +923,9 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+	// HasOrgRoomMembers is now called unconditionally (Task 2). Return false to
+	// preserve this test's first-org-transition semantics so backfill fires.
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 	// With orgs: BulkCreateRoomMembers called once with individual "bob" + org "eng" + backfill "alice"
 	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, members []*model.RoomMember) error {
@@ -3395,4 +3398,224 @@ func TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite(t *test
 		"chat.user.bob.event.room.key",
 		"chat.user.remote-carol.event.room.key",
 	}, pub.subjects)
+}
+
+// Task 2: Backfill must fire only on the first-org transition. The
+// restructured handler calls HasOrgRoomMembers unconditionally and gates the
+// backfill on `len(req.Orgs) > 0 && !hadOrgsBefore`.
+func TestHandler_ProcessAddMembers_BackfillRunsOnFirstOrgTransition(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	store.EXPECT().GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), []string{"o1"}, []string(nil), roomID).
+		Return([]string{"u_new"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u_new"}).
+		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil)
+	// GetUser expectation added in Task 5 (requester fetch).
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil) // first org
+
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+
+	// First-org transition MUST call GetSubscriptionAccounts (backfill kickoff).
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return([]string{"existing_user"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"existing_user"}).
+		Return([]model.User{{ID: "u_e", Account: "existing_user", SiteID: "site-a", EngName: "Ex", ChineseName: "存"}}, nil)
+
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+
+	req := model.AddMembersRequest{
+		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
+		Orgs: []string{"o1"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "req-backfill-first-org")
+	require.NoError(t, h.processAddMembers(ctx, data))
+}
+
+func TestHandler_ProcessAddMembers_BackfillSkippedWhenRoomAlreadyHasOrgs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	store.EXPECT().GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), []string{"o_new"}, []string(nil), roomID).
+		Return([]string{"u_new"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u_new"}).
+		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil)
+	// GetUser expectation added in Task 5 (requester fetch).
+	// Restructured code calls HasOrgRoomMembers unconditionally.
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(true, nil)
+
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).Return(nil)
+	// NO GetSubscriptionAccounts expectation — backfill must be skipped.
+
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+
+	req := model.AddMembersRequest{
+		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
+		Orgs: []string{"o_new"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "req-backfill-skipped")
+	require.NoError(t, h.processAddMembers(ctx, data))
+}
+
+// Task 3 (spec §2.1): a user only gets an individual room_members doc iff
+// their account is in req.Users. Org-only expansions must NOT emit indiv
+// docs for accounts pulled in via org expansion.
+
+// A1: Users=[u1], Orgs=[o1] (o1 has [u1, u2]). Expect indiv only for u1, org for o1.
+func TestHandler_ProcessAddMembers_IndivFilter_DirectAndOrgOverlap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	store.EXPECT().GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), []string{"o1"}, []string{"u1"}, roomID).
+		Return([]string{"u1", "u2"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1", "u2"}).
+		Return([]model.User{
+			{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"},
+			{ID: "u2_id", Account: "u2", SiteID: "site-a", EngName: "U2", ChineseName: "二"},
+		}, nil)
+	// GetUser expectation added in Task 5.
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
+
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return([]string{}, nil) // no pre-existing subs
+
+	var captured []*model.RoomMember
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, m []*model.RoomMember) error {
+			captured = m
+			return nil
+		})
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+
+	req := model.AddMembersRequest{
+		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
+		Users: []string{"u1"}, Orgs: []string{"o1"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "test-req-task3-a1")
+	require.NoError(t, h.processAddMembers(ctx, data))
+
+	var indivAccts []string
+	var orgIDs []string
+	for _, m := range captured {
+		switch m.Member.Type {
+		case model.RoomMemberIndividual:
+			indivAccts = append(indivAccts, m.Member.Account)
+		case model.RoomMemberOrg:
+			orgIDs = append(orgIDs, m.Member.ID)
+		}
+	}
+	assert.ElementsMatch(t, []string{"u1"}, indivAccts, "indiv docs limited to req.Users")
+	assert.ElementsMatch(t, []string{"o1"}, orgIDs)
+}
+
+// A2: Users=[], Orgs=[o1]. Expect org only, no indivs.
+func TestHandler_ProcessAddMembers_IndivFilter_OrgOnly(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	store.EXPECT().GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), []string{"o1"}, []string(nil), roomID).
+		Return([]string{"u1"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
+		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
+	// GetUser expectation added in Task 5.
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
+
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return([]string{}, nil)
+
+	var captured []*model.RoomMember
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, m []*model.RoomMember) error {
+			captured = m
+			return nil
+		})
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+
+	req := model.AddMembersRequest{
+		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
+		Orgs: []string{"o1"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "test-req-task3-a2")
+	require.NoError(t, h.processAddMembers(ctx, data))
+
+	for _, m := range captured {
+		assert.NotEqual(t, model.RoomMemberIndividual, m.Member.Type, "no indiv docs should be written")
+	}
+}
+
+// A4: Create channel ResolvedUsers=[u1], ResolvedOrgs=[o1] (o1 has [u1, u2]),
+// requester r. Expect indiv docs for r and u1, org doc for o1, no indiv for u2.
+func TestHandler_ProcessCreateRoom_Channel_IndivFilter(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	requester := &model.User{ID: "r_id", Account: "r", SiteID: "site-a", EngName: "Req", ChineseName: "請"}
+
+	store.EXPECT().ListNewMembersForNewRoom(gomock.Any(), []string{"o1"}, []string{"u1"}, "r").
+		Return([]string{"u1", "u2"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1", "u2"}).
+		Return([]model.User{
+			{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"},
+			{ID: "u2_id", Account: "u2", SiteID: "site-a", EngName: "U2", ChineseName: "二"},
+		}, nil)
+
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+
+	var captured []*model.RoomMember
+	store.EXPECT().BulkCreateRoomMembers(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, m []*model.RoomMember) error {
+			captured = m
+			return nil
+		})
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+
+	room := &model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}
+	req := &model.CreateRoomRequest{
+		RoomID:        roomID,
+		ResolvedUsers: []string{"u1"},
+		ResolvedOrgs:  []string{"o1"},
+		Timestamp:     1,
+	}
+	require.NoError(t, h.processCreateRoomChannel(context.Background(), req, room, requester, "req-1", time.UnixMilli(1).UTC(), time.UnixMilli(2).UTC()))
+
+	var indivAccts []string
+	var orgIDs []string
+	for _, m := range captured {
+		switch m.Member.Type {
+		case model.RoomMemberIndividual:
+			indivAccts = append(indivAccts, m.Member.Account)
+		case model.RoomMemberOrg:
+			orgIDs = append(orgIDs, m.Member.ID)
+		}
+	}
+	assert.ElementsMatch(t, []string{"r", "u1"}, indivAccts, "indiv docs limited to ResolvedUsers ∪ {requester}")
+	assert.ElementsMatch(t, []string{"o1"}, orgIDs)
 }
