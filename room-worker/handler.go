@@ -670,6 +670,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	if requestID == "" {
 		return newPermanent("missing X-Request-ID")
 	}
+	if !idgen.IsValidUUID(requestID) {
+		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
+	}
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -781,9 +784,10 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		return fmt.Errorf("bulk create subscriptions: %w", err)
 	}
 
+	// Fail closed: defaulting hadOrgsBefore=false on error would trigger spurious first-org backfill.
 	hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
 	if err != nil {
-		slog.Warn("check existing org room members failed", "error", err, "roomID", req.RoomID)
+		return fmt.Errorf("check existing org room members: %w", err)
 	}
 	writeIndividuals := len(req.Orgs) > 0 || hadOrgsBefore
 
@@ -932,11 +936,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	sysMsgData, _ := json.Marshal(membersAdded)
 	seed := messageDedupSeed(ctx, "processAddMembers", req.RoomID,
 		fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp))
-	// Single-form Content only fires when the requester added one user
-	// directly. Org-expanded adds always use the multi form — even if the
-	// org happens to expand to one user — because the requester's intent
-	// was "add the org", not "add Bob individually", and future org members
-	// would otherwise appear silently with no matching sys-message.
+	// Single form only for direct 1-user adds; org-bearing adds always use multi.
 	content := formatAddedMulti(requester)
 	if len(subs) == 1 && len(req.Orgs) == 0 {
 		onlyUser := userMap[subs[0].User.Account]
@@ -1061,6 +1061,9 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
 		return newPermanent("missing X-Request-ID")
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
 	}
 
 	var req model.CreateRoomRequest

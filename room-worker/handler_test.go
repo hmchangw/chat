@@ -326,13 +326,13 @@ func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
 	}
 	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-rw-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	reqData, _ := json.Marshal(req)
 	err := h.processRoleUpdate(ctx, reqData)
 	require.NoError(t, err)
 	require.NotNil(t, capturedCtx, "publish wrapper must receive a non-nil ctx")
-	assert.Equal(t, "req-rw-test", natsutil.RequestIDFromContext(capturedCtx),
+	assert.Equal(t, testRequestID, natsutil.RequestIDFromContext(capturedCtx),
 		"publish wrapper must receive ctx that still carries the request ID")
 }
 
@@ -630,7 +630,7 @@ func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T
 		Timestamp:        0,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-fallback-ts-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "timestamp must be > 0")
@@ -680,7 +680,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-basic")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctx, reqData)
 	require.NoError(t, err)
 
@@ -792,7 +792,7 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-history-all-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctx, reqData)
 	require.NoError(t, err)
 }
@@ -852,7 +852,7 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 		Timestamp:        reqTS,
 	}
 	reqData, _ := json.Marshal(req)
-	ctxR := natsutil.WithRequestID(context.Background(), "req-restricted-propagates")
+	ctxR := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctxR, reqData))
 
 	// Local RoomMemberEvent: HSS must be a non-nil pointer equal to request ts.
@@ -914,7 +914,7 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 		Timestamp:        1,
 	}
 	reqData, _ := json.Marshal(req)
-	ctxU := natsutil.WithRequestID(context.Background(), "req-unrestricted-wire")
+	ctxU := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctxU, reqData))
 
 	evt, raw := findMemberAddEvent(t, published, "r1")
@@ -970,7 +970,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctxOrgs := natsutil.WithRequestID(context.Background(), "req-with-orgs-test")
+	ctxOrgs := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctxOrgs, reqData)
 	require.NoError(t, err)
 }
@@ -1005,7 +1005,7 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctxUNF := natsutil.WithRequestID(context.Background(), "req-user-not-found-test")
+	ctxUNF := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctxUNF, reqData)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
@@ -1048,7 +1048,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctxMS := natsutil.WithRequestID(context.Background(), "req-multi-site-outbox-test")
+	ctxMS := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctxMS, reqData)
 	require.NoError(t, err)
 
@@ -1363,7 +1363,7 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctxEO := natsutil.WithRequestID(context.Background(), "req-existing-orgs-test")
+	ctxEO := natsutil.WithRequestID(context.Background(), testRequestID)
 	err := h.processAddMembers(ctxEO, reqData)
 	require.NoError(t, err)
 }
@@ -1480,7 +1480,7 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-async-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	req := model.AddMembersRequest{
 		RoomID:           "r1",
 		Users:            []string{"bob"},
@@ -1491,10 +1491,10 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	err := h.processAddMembers(ctx, reqData)
 	require.NoError(t, err)
 
-	assert.Equal(t, subject.UserResponse("alice", "req-async-test"), capturedSubject)
+	assert.Equal(t, subject.UserResponse("alice", testRequestID), capturedSubject)
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
-	assert.Equal(t, "req-async-test", result.RequestID)
+	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "ok", result.Status)
 	assert.Equal(t, "", result.Error)
@@ -1521,7 +1521,7 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	store.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").Return([]string{"bob"}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return(nil, fmt.Errorf("database connection failed"))
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-error-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	req := model.AddMembersRequest{
 		RoomID:           "r1",
 		Users:            []string{"bob"},
@@ -1534,10 +1534,10 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "find users by accounts")
 
 	// Verify failure event was published to requester
-	assert.Equal(t, subject.UserResponse("alice", "req-error-test"), capturedSubject)
+	assert.Equal(t, subject.UserResponse("alice", testRequestID), capturedSubject)
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
-	assert.Equal(t, "req-error-test", result.RequestID)
+	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status, "failure event must have Status=error")
 	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
@@ -1556,14 +1556,14 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	}
 	h := NewHandler(nil, "site1", publish, testKeyStore, testKeySender)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-err-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	jobErr := errors.New("oops")
 	h.publishAsyncJobResult(ctx, "alice", model.AsyncJobOpRoomMemberAdd, "r1", jobErr)
 
-	assert.Equal(t, subject.UserResponse("alice", "req-err-test"), capturedSubject)
+	assert.Equal(t, subject.UserResponse("alice", testRequestID), capturedSubject)
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(capturedData, &result))
-	assert.Equal(t, "req-err-test", result.RequestID)
+	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status)
 	assert.Equal(t, "operation failed", result.Error)
@@ -1591,7 +1591,7 @@ func TestHandler_publishAsyncJobResult_NoOpOnEmptyRequester(t *testing.T) {
 	}
 	h := NewHandler(nil, "site1", publish, testKeyStore, testKeySender)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-test")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	h.publishAsyncJobResult(ctx, "", model.AsyncJobOpRoomMemberAdd, "r1", nil)
 	assert.False(t, called, "publish must be skipped when requester account is empty")
 }
@@ -3491,7 +3491,7 @@ func TestHandler_ProcessAddMembers_BackfillRunsOnFirstOrgTransition(t *testing.T
 		Orgs: []string{"o1"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-backfill-first-org")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 }
 
@@ -3524,7 +3524,7 @@ func TestHandler_ProcessAddMembers_BackfillSkippedWhenRoomAlreadyHasOrgs(t *test
 		Orgs: []string{"o_new"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-backfill-skipped")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 }
 
@@ -3569,7 +3569,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_DirectAndOrgOverlap(t *testi
 		Users: []string{"u1"}, Orgs: []string{"o1"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-indiv-filter-direct-and-org-overlap")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	var indivAccts []string
@@ -3620,7 +3620,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_OrgOnly(t *testing.T) {
 		Orgs: []string{"o1"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-indiv-filter-org-only")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	for _, m := range captured {
@@ -3694,15 +3694,27 @@ func TestHandler_ProcessAddMembers_RequesterNotFound(t *testing.T) {
 		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "missing-requester").Return(nil, ErrUserNotFound)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	var published []publishedMsg
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "missing-id", RequesterAccount: "missing-requester", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-requester-not-found")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
 	assert.Contains(t, err.Error(), "missing-requester")
+
+	responses := userResponseFor(published, "missing-requester")
+	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(responses[0].data, &result))
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Contains(t, result.Error, "missing-requester")
+	assert.NotContains(t, result.Error, ": permanent")
 }
 
 // D2: requester has empty EngName → permanent error.
@@ -3720,14 +3732,26 @@ func TestHandler_ProcessAddMembers_RequesterEmptyName(t *testing.T) {
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "", ChineseName: "愛"}, nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	var published []publishedMsg
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-requester-empty-name")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
+
+	responses := userResponseFor(published, "alice")
+	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(responses[0].data, &result))
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Contains(t, result.Error, "missing required name fields")
+	assert.NotContains(t, result.Error, ": permanent")
 }
 
 // D3: added user has empty ChineseName → permanent error.
@@ -3744,14 +3768,26 @@ func TestHandler_ProcessAddMembers_AddedUserEmptyName(t *testing.T) {
 		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: ""}}, nil)
 	// Validation for added users should fire before requester fetch — do not mock GetUser here.
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	var published []publishedMsg
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-added-user-empty-name")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	err := h.processAddMembers(ctx, data)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
+
+	responses := userResponseFor(published, "alice")
+	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
+	var result model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(responses[0].data, &result))
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Contains(t, result.Error, "missing required name fields")
+	assert.NotContains(t, result.Error, ": permanent")
 }
 
 // findSysMsg locates the system message published on MsgCanonicalCreated for
@@ -3806,7 +3842,7 @@ func TestHandler_ProcessAddMembers_Content_Single(t *testing.T) {
 		Users: []string{"u1"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-content-single")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
@@ -3845,7 +3881,7 @@ func TestHandler_ProcessAddMembers_Content_Multi(t *testing.T) {
 		Users: []string{"u1", "u2"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-content-multi")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
@@ -4079,10 +4115,8 @@ func TestProcessCreateRoom_RequesterEmptyName_ReturnsPermanent(t *testing.T) {
 	}
 }
 
-// F4 (post-review): single form must NOT fire when the join came via an
-// org expansion — even if the org happens to have exactly one member. The
-// user's intent was "add the org", not "add Bob individually", so the
-// rendered Content uses the multi form.
+// F4: 1-member org expansion must still render multi-form Content.
+
 func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -4114,10 +4148,81 @@ func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *test
 		Orgs: []string{"eng"}, Timestamp: 1,
 	}
 	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-org-single-member")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
 	assert.Equal(t, "Alice 愛 added members to the channel", sysMsg.Content,
 		"org-add must use multi form even when org expands to a single user")
+}
+
+// HasOrgRoomMembers error must surface as non-permanent so JetStream retries.
+func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	store.EXPECT().GetRoom(gomock.Any(), roomID).
+		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().ListNewMembers(gomock.Any(), []string(nil), []string{"u1"}, roomID).
+		Return([]string{"u1"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
+		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").
+		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).
+		Return(false, fmt.Errorf("transient mongo error"))
+	// No BulkCreateRoomMembers / ReconcileMemberCounts — must short-circuit.
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	req := model.AddMembersRequest{
+		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
+		Users: []string{"u1"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	err := h.processAddMembers(ctx, data)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errPermanent, "Mongo errors must NOT be permanent — JetStream should retry")
+	assert.Contains(t, err.Error(), "check existing org room members")
+}
+
+// X-Request-ID must be a hyphenated UUID; non-UUIDs leak into reply subjects.
+func TestHandler_ProcessAddMembers_InvalidRequestID_ReturnsPermanent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	// No store mocks — validation must short-circuit before any store call.
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	req := model.AddMembersRequest{
+		RoomID: "r1", RequesterID: "u_a", RequesterAccount: "alice",
+		Users: []string{"u1"}, Timestamp: 1,
+	}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
+
+	err := h.processAddMembers(ctx, data)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent)
+	assert.Contains(t, err.Error(), "invalid X-Request-ID")
+}
+
+func TestProcessCreateRoom_InvalidRequestID_ReturnsPermanent(t *testing.T) {
+	h, mockStore, _ := newCreateRoomTestHandler(t)
+	_ = mockStore // store mocks intentionally unset — must short-circuit before any call
+	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-1",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        time.Now().UnixMilli(),
+	})
+
+	err := h.processCreateRoom(ctx, body)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent)
+	assert.Contains(t, err.Error(), "invalid X-Request-ID")
 }
