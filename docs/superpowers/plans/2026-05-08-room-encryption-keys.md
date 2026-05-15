@@ -26,7 +26,7 @@
 ### Remove-member flow (post-review, authoritative)
 
 ```
-Client ──► room-service ──► MESSAGES_CANONICAL ──► room-worker
+Client ──► room-service ──► ROOMS stream       ──► room-worker
               │ validate            (member_removed)        │ Get(roomID) → currentPair
               │ Get(roomID) → v                             │ shouldRotate := currentPair.Version <= req.BaseKeyVersion
               │ publish{ baseKeyVersion=v }                 │ Delete sub + reconcile counts
@@ -43,6 +43,8 @@ Client ──► room-service ──► MESSAGES_CANONICAL ──► room-worker
 Residual risks (accepted, documented in spec):
 1. Removed-user-read window (~10–100ms) between canonical publish and room-worker's Mongo delete — concurrent messages encrypted under v reach the still-listed removed user.
 2. Key-gen non-idempotence on JetStream redelivery between fan-out and Rotate — partial caches diverge. Recoverable through a future client-side refetch-on-decrypt-failure RPC.
+
+`actually_deleted` (rotation skip cases): individual remove with `user.HasOrgMembership` (user stays via org sub); org remove where every targeted account is also individually subscribed (`accounts` slice ends up empty, `len(accounts) > 0` gate fails).
 
 **Goal:** Wire room encryption keys end-to-end across `room-service`, `room-worker`, and `inbox-worker`. After this plan ships, every newly-created room has a P-256 keypair stored in Valkey, channel `member.remove` rotates the key, and channel `member.add` distributes the current key to new members. Cross-site clients receive `RoomKeyEvent` directly from the origin `room-worker`'s user-subject fan-out, routed by the NATS supercluster — there is no server-side key replication.
 

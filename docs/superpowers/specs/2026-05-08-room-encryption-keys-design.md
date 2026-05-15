@@ -41,8 +41,8 @@ Client ──┐
          │  publish canonical{ accounts, baseKeyVersion=v }
          │
          ▼
-  MESSAGES_CANONICAL
-         │
+  ROOMS stream
+         │  (chat.room.canonical.{site}.member.remove)
          └─────────► room-worker (member_removed handler)
                         1. keyStore.Get(roomID) → currentPair
                         2. shouldRotate := currentPair.Version <= req.BaseKeyVersion
@@ -65,6 +65,10 @@ Rationale for the order:
 - **Delete before rotate:** once the subscription is gone, broadcast-worker won't address the removed user — even with the old key still active.
 - **Fan-out before rotate:** survivors hold v+1 *before* broadcast-worker switches; eliminates the survivor decrypt-failure window of the pre-amendment design.
 - **System message last:** encrypted under v+1, decryptable by every survivor since they've all received v+1.
+
+What `actually_deleted` means in step 4:
+- **Individual remove:** skipped when the target has dual membership (`user.HasOrgMembership` is true) — the user remains in the room via their org sub, so no real subscription was deleted, so no rotation.
+- **Org remove:** skipped when every targeted org member is also individually subscribed — the org-membership row is deleted but `DeleteSubscriptionsByAccounts` runs with an empty `accounts` slice (`len(accounts) > 0` gate).
 
 ### Residual risks
 
