@@ -14,6 +14,7 @@ vi.mock('./SearchBar/SearchBar', () => ({
   ),
 }))
 vi.mock('./ThemeToggle/ThemeToggle', () => ({ default: () => <span>fake-theme</span> }))
+vi.mock('./UnreadBadge', () => ({ default: () => <span>fake-unread</span> }))
 
 describe('AppHeader', () => {
   it('renders user chip, theme toggle, logout', () => {
