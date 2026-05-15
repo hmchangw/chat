@@ -61,13 +61,13 @@ describe('roomDisplayName', () => {
     ).toBe('John Smith')
   })
 
-  it('falls back to "(DM)" for dm rooms with no hrInfo', () => {
+  it('falls back to "(DM)" for dm rooms with no hrInfo (subscription not loaded yet)', () => {
     expect(roomDisplayName({ type: 'dm', id: 'r-dm' })).toBe('(DM)')
   })
-
-  it('falls back to "(DM)" for dm rooms with an empty hrInfo object', () => {
-    expect(roomDisplayName({ type: 'dm', id: 'r-dm', hrInfo: {} })).toBe('(DM)')
-  })
+  // Note: an `hrInfo: {}` (partial) case is impossible by construction —
+  // backend ships a pointer (`*HRInfo \`json:"hrInfo,omitempty"\``) whose
+  // inner fields are required strings, so the object is either absent or
+  // fully populated. The frontend type mirrors this.
 })
 
 describe('roomFromSearchHit', () => {

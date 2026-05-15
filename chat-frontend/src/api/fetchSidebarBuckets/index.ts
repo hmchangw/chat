@@ -5,15 +5,25 @@ import {
 } from '../_transport/subjects'
 import type { Nats } from '../types'
 
+/**
+ * HRInfo carries the two name fields used to render a DM-room label.
+ * Backend (`pkg/model.Subscription.HRInfo *HRInfo \`json:"hrInfo,omitempty"\``)
+ * populates this struct ONLY on DM-type subscriptions; channels, botDMs,
+ * discussions never carry it. When the pointer is present both inner
+ * fields are populated (no per-field `omitempty`).
+ */
+export interface HRInfo {
+  engName: string
+  name: string
+}
+
 /** Per-room subscription metadata sourced from the user-service RPCs.
  *  Each entry corresponds to one of the three `subscription.get*` replies. */
 export interface SidebarSubscription {
   roomId: string
   name?: string
-  hrInfo?: {
-    engName?: string
-    name?: string
-  }
+  /** Only present on DM subscriptions (see HRInfo). */
+  hrInfo?: HRInfo
 }
 
 interface SidebarBucketReply {
@@ -28,7 +38,7 @@ export interface SidebarBuckets {
    *  RPCs. The reducer merges this onto room summaries at read time so
    *  `roomDisplayName` can resolve subscription.Name (channels) or
    *  HRInfo (dm rooms) without changing the underlying summary shape. */
-  subscriptionData: Record<string, { name?: string; hrInfo?: SidebarSubscription['hrInfo'] }>
+  subscriptionData: Record<string, { name?: string; hrInfo?: HRInfo }>
 }
 
 /**
