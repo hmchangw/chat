@@ -1003,4 +1003,97 @@ describe('roomEventsReducer: bucket Sets', () => {
     // The seeded `hasMention=true` must survive — MESSAGE_RECEIVED only OR's.
     expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
   })
+
+  it('SET_ACTIVE_ROOM clears state.subscriptions[roomId].hasMention so a cold reload does not resurrect the badge', () => {
+    // Seed: a room with a pending mention recorded on the subscription.
+    const withSummary = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const seeded = roomEventsReducer(withSummary, {
+      type: 'BUCKETS_LOADED',
+      favoriteIds: [],
+      appIds: [],
+      channelDmIds: ['c1'],
+      subscriptions: { c1: { roomId: 'c1', hasMention: true, roles: ['member'], alert: true } },
+    })
+    expect(seeded.subscriptions.c1.hasMention).toBe(true)
+    expect(seeded.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+
+    // Open the room.
+    const opened = roomEventsReducer(seeded, { type: 'SET_ACTIVE_ROOM', roomId: 'c1' })
+    expect(opened.summaries.find((s) => s.id === 'c1').hasMention).toBe(false)
+    // The CRITICAL assertion: the per-room subscription record also clears.
+    expect(opened.subscriptions.c1.hasMention).toBe(false)
+    // Other subscription fields preserved.
+    expect(opened.subscriptions.c1.roles).toEqual(['member'])
+    expect(opened.subscriptions.c1.alert).toBe(true)
+  })
+
+  it('SET_ACTIVE_ROOM is a no-op on the subscriptions map when the room has no pending mention', () => {
+    const seeded = roomEventsReducer(initialState, {
+      type: 'BUCKETS_LOADED',
+      favoriteIds: [],
+      appIds: [],
+      channelDmIds: ['c1'],
+      subscriptions: { c1: { roomId: 'c1', hasMention: false, roles: ['member'] } },
+    })
+    const opened = roomEventsReducer(seeded, { type: 'SET_ACTIVE_ROOM', roomId: 'c1' })
+    // Reference identity preserved — no needless map rebuild.
+    expect(opened.subscriptions).toBe(seeded.subscriptions)
+  })
+
+  it('SUBSCRIPTION_UPSERTED merges partial deltas into the prior record', () => {
+    // Seed with a full record.
+    const seeded = roomEventsReducer(initialState, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: {
+        roomId: 'c1',
+        name: 'general',
+        roles: ['member'],
+        hasMention: false,
+        alert: true,
+        lastSeenAt: '2026-05-14T10:00:00Z',
+        hrInfo: undefined,
+      },
+    })
+    // Partial event: role-update only carries the new roles.
+    const next = roomEventsReducer(seeded, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', roles: ['owner'] },
+    })
+    expect(next.subscriptions.c1.roles).toEqual(['owner'])
+    // Other fields preserved.
+    expect(next.subscriptions.c1.name).toBe('general')
+    expect(next.subscriptions.c1.alert).toBe(true)
+    expect(next.subscriptions.c1.lastSeenAt).toBe('2026-05-14T10:00:00Z')
+  })
+
+  it('SUBSCRIPTION_UPSERTED with a partial event does NOT clear an existing hasMention on the summary', () => {
+    // Pre-existing summary with live-detected mention.
+    const withSummary = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const mentioned = roomEventsReducer(withSummary, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        type: 'new_message',
+        roomId: 'c1',
+        timestamp: Date.now(),
+        message: { id: 'm1', content: 'hi @alice', createdAt: '2026-05-14T10:00:00Z' },
+        mentions: [{ account: 'alice' }],
+        hasMention: true,
+      },
+    })
+    expect(mentioned.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+
+    // Partial role-update event with NO hasMention field.
+    const next = roomEventsReducer(mentioned, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', roles: ['owner'] },
+    })
+    // hasMention must survive — the event didn't carry the field.
+    expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+  })
 })

@@ -69,18 +69,22 @@ function toSummary(room) {
  *     fold in the freshly-fetched subscription records)
  *   - `SUBSCRIPTION_UPSERTED` (live delta: server says "this changed")
  *
- * Semantics for `hasMention` are **server-canonical**. If the server
- * says false, we clear; if true, we set. This is the "full-record"
- * contract — room-worker's source of truth, including mark-as-read.
- * Live mentions arriving via `MESSAGE_RECEIVED` re-OR `hasMention`
- * back to true on the next event.
+ * **Field presence is honored.** Each field is only touched on the
+ * summary if it's actually present in the subscription payload. This
+ * matters because `SUBSCRIPTION_UPSERTED` events can carry partial
+ * deltas (e.g. role-update only emits roles + the constants); we
+ * must not clobber the summary's other fields with `undefined`.
  *
- * `subscriptionName` is written only when the subscription has one,
- * to avoid overwriting an existing summary name with `undefined`.
+ * Semantics for `hasMention`: server-canonical when present. If the
+ * sub has `hasMention: false`, we clear; if `true`, we set; if the
+ * field is absent (partial event), we leave the summary's value
+ * alone. Live mentions via `MESSAGE_RECEIVED` re-OR `hasMention` back
+ * to true on the next event regardless.
  */
 function mergeSubscriptionIntoSummary(summary, sub) {
   if (!sub) return summary
-  const next = { ...summary, hasMention: !!sub.hasMention }
+  const next = { ...summary }
+  if ('hasMention' in sub) next.hasMention = !!sub.hasMention
   if (sub.name) next.subscriptionName = sub.name
   return next
 }
@@ -186,14 +190,21 @@ export function roomEventsReducer(state, action) {
     }
     case 'SUBSCRIPTION_UPSERTED': {
       // Upsert a single subscription record (live delta from
-      // `subscription.update` events). Re-runs the canonical merge so
-      // a server-side mark-as-read clears `hasMention` from the
-      // summary (full-record semantics) — a subsequent live mention
-      // arrives via MESSAGE_RECEIVED and re-OR's the badge.
+      // `subscription.update` events). Spreads the new fields on top
+      // of the prior record so a partial event (role-update only
+      // carrying `roles`, mark-read only carrying `hasMention`, …)
+      // doesn't lose lastSeenAt / alert / hrInfo / etc. The full
+      // sender-of-truth is what room-worker emits; if it sends the
+      // full record we just replace, if partial we merge.
       const sub = action.subscription
       if (!sub?.roomId) return state
-      const subscriptions = { ...state.subscriptions, [sub.roomId]: sub }
+      const prevSub = state.subscriptions[sub.roomId]
+      const merged = prevSub ? { ...prevSub, ...sub } : sub
+      const subscriptions = { ...state.subscriptions, [sub.roomId]: merged }
       const summaries = state.summaries.map((s) =>
+        // Pass the INCOMING delta (not the merged record) so summary
+        // updates only touch fields the event actually carried — see
+        // `mergeSubscriptionIntoSummary`'s presence-aware writes.
         s.id === sub.roomId ? mergeSubscriptionIntoSummary(s, sub) : s
       )
       return { ...state, summaries, subscriptions }
@@ -429,11 +440,25 @@ export function roomEventsReducer(state, action) {
       const summaries = state.summaries.map((r) =>
         r.id === roomId ? { ...r, unreadCount: 0, hasMention: false, mentionAll: false } : r
       )
+      // Also clear the per-room subscription's hasMention so a cold
+      // reload (which reseeds summary.hasMention from
+      // state.subscriptions via BUCKETS_LOADED's merge) doesn't
+      // resurrect the badge before the server's subscription.update
+      // mark-read event lands. RoomEventsContext fires the
+      // markRoomRead RPC alongside this dispatch — server is the
+      // eventual source of truth; this just keeps the local view
+      // consistent in the interim.
+      let subscriptions = state.subscriptions
+      const existingSub = subscriptions[roomId]
+      if (existingSub?.hasMention) {
+        subscriptions = { ...subscriptions, [roomId]: { ...existingSub, hasMention: false } }
+      }
       return {
         ...state,
         activeRoomId: roomId,
         summaries,
         roomState: { ...state.roomState, [roomId]: nextRoomState },
+        subscriptions,
       }
     }
     case 'RESET': {
