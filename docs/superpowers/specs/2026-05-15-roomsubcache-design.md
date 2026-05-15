@@ -54,6 +54,11 @@ Notification-worker only reads two fields from each subscription: `User.ID` (to 
 
 `room:{roomID}:subs`. Single-site Valkey per deployment, so no site prefix. Coexists with `pkg/roomkeystore`'s `room:{roomID}:key` and `:key:prev` under a shared `room:` namespace; future additions should follow the same `room:{roomID}:<aspect>` pattern.
 
+### Input guards and size cap
+
+- **Empty `roomID` is rejected at every entry point** (`Get`, `Set`, `Invalidate`). Closes a logical-collision case where multiple callers would share the `room::subs` slot, and surfaces programmer errors at the call site rather than silently caching under a degenerate key.
+- **`Get` caps blob size at `DefaultMaxValueBytes` (16 MiB)** before unmarshaling — defense-in-depth against a compromised Valkey writer trying to OOM a reader via a multi-GB JSON array. Configurable per-instance via `WithMaxValueBytes`; pass `0` to disable. The cap does not prevent the wire-level transfer of an oversized value (Valkey already returned it before we check), only the unmarshal-time allocation explosion.
+
 ## API
 
 ```go

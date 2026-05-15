@@ -3,6 +3,7 @@ package roomsubcache_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +181,55 @@ func TestValkeyCache_Invalidate_TransportError_IsWrapped(t *testing.T) {
 	err := cache.Invalidate(ctx, "r1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestValkeyCache_EmptyRoomID_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cache := roomsubcache.NewValkeyCache(newFakeClient())
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"Get", func() error { _, err := cache.Get(ctx, ""); return err }},
+		{"Set", func() error { return cache.Set(ctx, "", nil, time.Minute) }},
+		{"Invalidate", func() error { return cache.Invalidate(ctx, "") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "empty roomID")
+		})
+	}
+}
+
+func TestValkeyCache_Get_OversizedBlob_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeClient()
+	cache := roomsubcache.NewValkeyCache(client, roomsubcache.WithMaxValueBytes(100))
+
+	// Stash a value larger than the cap directly through the fake — simulates
+	// a compromised or misbehaving Valkey writer.
+	client.store["room:big:subs"] = strings.Repeat("x", 101)
+
+	_, err := cache.Get(ctx, "big")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, valkeyutil.ErrCacheMiss)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestValkeyCache_Get_BlobAtMaxSize_IsAllowed(t *testing.T) {
+	ctx := context.Background()
+	client := newFakeClient()
+	// Use a max large enough to comfortably hold a small valid JSON array.
+	cache := roomsubcache.NewValkeyCache(client, roomsubcache.WithMaxValueBytes(1024))
+
+	require.NoError(t, cache.Set(ctx, "ok", []roomsubcache.Member{{ID: "u1", Account: "a"}}, time.Minute))
+
+	got, err := cache.Get(ctx, "ok")
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
 }
 
 func keysOf(m map[string]string) []string {
