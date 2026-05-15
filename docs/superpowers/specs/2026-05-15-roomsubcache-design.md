@@ -16,6 +16,7 @@ Multiple notification-worker replicas processing the same hot rooms would each l
 - **Notification-worker integration.** Wiring is deferred to a follow-up PR; this scope is library-only.
 - **Notification payload encryption.** Orthogonal concern; broadcast-worker's pattern (`pkg/roomkeystore` + per-room encrypt) will be mirrored when notification-worker is implemented.
 - **A general room-membership cache** for non-fan-out callers (e.g. room-service's member-list RPC). Different access pattern (paginated, role-aware) — not addressed here.
+- **A recipient list for security-sensitive delivery.** The cache MUST NOT be consulted to determine who receives room encryption keys, key rotations, or any other capability whose stale-read consequence is a correctness or security regression (an ex-member retaining decrypt access, a new member unable to decrypt). Key delivery is owned by the membership-mutation path itself (room-service / room-worker), reading the authoritative subscription list from MongoDB in the same transaction that wrote it. The TTL-bounded staleness this cache accepts is only defensible when the worst case is a missed push notification.
 
 ## Design
 
