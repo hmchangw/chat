@@ -3279,19 +3279,27 @@ func TestProcessAddMembers_RejectsNonChannel(t *testing.T) {
 
 // ---- Task 12: channel guard + version gate + fan-out to survivors ----
 
-func TestProcessRemoveMember_TransientErrorWhenVersionStale(t *testing.T) {
+// Skip-rotation guard: if Valkey is already past req.BaseKeyVersion, a previous
+// redelivery already rotated — current handler skips the rotation block (no key gen, no fan-out, no Rotate).
+func TestProcessRemoveMember_SkipsRotationWhenValkeyAlreadyAhead(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 	keyStore := NewMockRoomKeyStore(ctrl)
-	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(&roomkeystore.VersionedKeyPair{Version: 2}, nil)
 
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, nil)
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", NewKeyVersion: 5, RoomType: model.RoomTypeChannel}
+	// Valkey already at version 6; BaseKeyVersion = 5 means a prior delivery already rotated.
+	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(&roomkeystore.VersionedKeyPair{Version: 6}, nil)
+
+	// Mongo work still happens (idempotent). No Rotate/Set should be called.
+	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "bob").
+		Return(&UserWithMembership{User: model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}}, nil)
+	store.EXPECT().DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u-bob").Return(nil)
+	store.EXPECT().DeleteSubscription(gomock.Any(), "r1", "bob").Return(int64(1), nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+
+	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, testKeySender)
+	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", BaseKeyVersion: 5, RoomType: model.RoomTypeChannel}
 	data, _ := json.Marshal(req)
-	err := h.processRemoveMember(natsutil.WithRequestID(context.Background(), "req-1"), data)
-	require.Error(t, err)
-	assert.False(t, errors.Is(err, errPermanent), "stale version must NAK, not permanent-drop")
-	assert.Contains(t, err.Error(), "stale key version")
+	require.NoError(t, h.processRemoveMember(natsutil.WithRequestID(context.Background(), "req-1"), data))
 }
 
 func TestProcessRemoveMember_RejectsNonChannel(t *testing.T) {
@@ -3304,174 +3312,6 @@ func TestProcessRemoveMember_RejectsNonChannel(t *testing.T) {
 	err := h.processRemoveMember(natsutil.WithRequestID(context.Background(), "req-1"), data)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent))
-}
-
-func TestHandler_ProcessRemoveIndividual_NewKeyVersionInOutbox(t *testing.T) {
-	// Verify NewKeyVersion from RemoveMemberRequest propagates through
-	// MemberRemoveEvent into the outbox payload for cross-site federated users.
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	const (
-		roomID    = "room-1"
-		account   = "alice"
-		localSite = "site-a"
-		userSite  = "site-b"
-		newKeyVer = 5
-	)
-
-	store.EXPECT().
-		GetUserWithMembership(gomock.Any(), roomID, account).
-		Return(&UserWithMembership{
-			User:             model.User{ID: "u1", Account: account, SiteID: userSite},
-			HasOrgMembership: false,
-		}, nil)
-	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u1").
-		Return(nil)
-	store.EXPECT().
-		DeleteSubscription(gomock.Any(), roomID, account).
-		Return(int64(1), nil)
-	store.EXPECT().
-		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
-
-	keyStore := NewMockRoomKeyStore(ctrl)
-	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{
-		Version: newKeyVer,
-		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
-		},
-	}, nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore, testKeySender)
-
-	req := model.RemoveMemberRequest{
-		RoomID:        roomID,
-		Requester:     account,
-		Account:       account,
-		Timestamp:     1000,
-		NewKeyVersion: newKeyVer,
-		RoomType:      model.RoomTypeChannel,
-	}
-	data, _ := json.Marshal(req)
-
-	err := h.processRemoveMember(context.Background(), data)
-	require.NoError(t, err)
-
-	// Find the outbox publish (cross-site, destined for userSite)
-	var foundOutbox bool
-	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
-	for _, p := range published {
-		if p.subj != outboxSubj {
-			continue
-		}
-		foundOutbox = true
-
-		// Unmarshal outer OutboxEvent
-		var outbox model.OutboxEvent
-		require.NoError(t, json.Unmarshal(p.data, &outbox))
-
-		// Unmarshal inner MemberRemoveEvent from payload
-		var evt model.MemberRemoveEvent
-		require.NoError(t, json.Unmarshal(outbox.Payload, &evt))
-
-		// Verify NewKeyVersion propagated
-		assert.Equal(t, newKeyVer, evt.NewKeyVersion, "NewKeyVersion should propagate from request to outbox payload")
-		break
-	}
-	require.True(t, foundOutbox, "expected outbox publish to %s", outboxSubj)
-}
-
-func TestHandler_ProcessRemoveMember_OrgNewKeyVersionInOutbox(t *testing.T) {
-	// Verify NewKeyVersion from RemoveMemberRequest propagates through
-	// MemberRemoveEvent into the outbox payload for org removal with cross-site accounts.
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	const (
-		roomID     = "room-1"
-		orgID      = "org-1"
-		localSite  = "site-a"
-		remoteSite = "site-b"
-		newKeyVer  = 7
-	)
-
-	members := []OrgMemberStatus{
-		{Account: "alice", SiteID: remoteSite, HasIndividualMembership: false},
-	}
-
-	store.EXPECT().
-		GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).
-		Return(members, nil)
-	store.EXPECT().
-		DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"alice"}).
-		Return(int64(1), nil)
-	store.EXPECT().
-		DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).
-		Return(nil)
-	store.EXPECT().
-		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
-
-	keyStore := NewMockRoomKeyStore(ctrl)
-	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(&roomkeystore.VersionedKeyPair{
-		Version: newKeyVer,
-		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
-			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
-		},
-	}, nil)
-
-	var published []publishedMsg
-	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore, testKeySender)
-
-	req := model.RemoveMemberRequest{
-		RoomID:        roomID,
-		Requester:     "admin",
-		OrgID:         orgID,
-		Timestamp:     2000,
-		NewKeyVersion: newKeyVer,
-		RoomType:      model.RoomTypeChannel,
-	}
-	data, _ := json.Marshal(req)
-
-	err := h.processRemoveMember(context.Background(), data)
-	require.NoError(t, err)
-
-	// Find the outbox publish (cross-site, destined for remoteSite)
-	var foundOutbox bool
-	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
-	for _, p := range published {
-		if p.subj != outboxSubj {
-			continue
-		}
-		foundOutbox = true
-
-		// Unmarshal outer OutboxEvent
-		var outbox model.OutboxEvent
-		require.NoError(t, json.Unmarshal(p.data, &outbox))
-
-		// Unmarshal inner MemberRemoveEvent from payload
-		var evt model.MemberRemoveEvent
-		require.NoError(t, json.Unmarshal(outbox.Payload, &evt))
-
-		// Verify NewKeyVersion propagated
-		assert.Equal(t, newKeyVer, evt.NewKeyVersion, "NewKeyVersion should propagate from request to outbox payload")
-		assert.Contains(t, evt.Accounts, "alice")
-		break
-	}
-	require.True(t, foundOutbox, "expected outbox publish to %s", outboxSubj)
 }
 
 // TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite verifies that all survivors

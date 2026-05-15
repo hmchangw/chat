@@ -52,6 +52,14 @@ func (stubRoomKeyStore) Get(_ context.Context, _ string) (*roomkeystore.Versione
 	}, nil
 }
 
+func (stubRoomKeyStore) Set(_ context.Context, _ string, _ roomkeystore.RoomKeyPair) (int, error) {
+	return 0, nil
+}
+
+func (stubRoomKeyStore) Rotate(_ context.Context, _ string, _ roomkeystore.RoomKeyPair) (int, error) {
+	return 1, nil
+}
+
 // testKeyStore and testKeySender provide the default wiring used by tests that
 // don't override key behavior. See stubRoomKeyStore above.
 var (

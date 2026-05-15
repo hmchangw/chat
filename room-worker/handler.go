@@ -260,37 +260,66 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal RemoveMemberRequest: %w", err)
 	}
 
-	// RoomType was added in this release; zero value means a pre-upgrade sender, treat as channel.
-	// Guard with a non-empty check for federation backward compat: events from older senders
-	// omit the field (zero value ""); those are assumed channel-only since
-	// room-service already validated that before publishing.
+	// Pre-upgrade senders omit RoomType; treat zero value as channel since room-service validated it.
 	if req.RoomType != "" && req.RoomType != model.RoomTypeChannel {
 		return newPermanent("remove-member only valid on channel rooms, got %s", req.RoomType)
 	}
-	// Version assertion: room-service rotated the key before dispatching the remove; worker must see the new version.
-	// Fetch once here so callers (processRemoveIndividual / processRemoveOrg) can pass the same pair to fanOutRoomKeyToSurvivors.
-	keyPair, err := h.keyStore.Get(ctx, req.RoomID)
+	// Removed-user-read window: between this canonical event being published and the Mongo
+	// delete below, broadcast-worker may still address the removed user with the old key.
+	// Accepted as a documented limitation; see docs/superpowers/specs/2026-05-08-room-encryption-keys-design.md.
+	currentPair, err := h.keyStore.Get(ctx, req.RoomID)
 	if err != nil {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 		return fmt.Errorf("get room key: %w", err)
 	}
-	// Version gate assumes single-rotator semantics: only room-service originates rotations, so a scalar int suffices for ordering.
-	// First rotation (newVer=1) requires pair.Version >= 1; fallback-Set path stamps newVer=0 which trivially passes (room had no prior key to wait for).
-	if keyPair == nil || keyPair.Version < req.NewKeyVersion {
-		haveVersion := -1
-		if keyPair != nil {
-			haveVersion = keyPair.Version
-		}
-		return fmt.Errorf("stale key version (have=%d want>=%d); jetstream delivered before valkey settled, will retry", haveVersion, req.NewKeyVersion)
-	}
+	// Skip-rotation guard: a prior redelivery of this canonical event already rotated Valkey past req.BaseKeyVersion.
+	shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
 
 	if req.OrgID != "" {
-		return h.processRemoveOrg(ctx, &req, keyPair)
+		return h.processRemoveOrg(ctx, &req, currentPair, shouldRotate)
 	}
-	return h.processRemoveIndividual(ctx, &req, keyPair)
+	return h.processRemoveIndividual(ctx, &req, currentPair, shouldRotate)
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest, keyPair *roomkeystore.VersionedKeyPair) (err error) {
+// rotateAndFanOut generates v+1, fans it out to survivors, then commits via Valkey Rotate.
+// Fan-out before Rotate is intentional so survivors hold v+1 before broadcast-worker switches.
+func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) error {
+	newPair, err := roomkeystore.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generate room key: %w", err)
+	}
+	predictedVersion := 0
+	if currentPair != nil {
+		predictedVersion = currentPair.Version + 1
+	}
+	versioned := &roomkeystore.VersionedKeyPair{Version: predictedVersion, KeyPair: newPair}
+	h.fanOutRoomKeyToSurvivors(ctx, roomID, versioned, survivors)
+
+	if currentPair == nil {
+		if _, err := h.keyStore.Set(ctx, roomID, newPair); err != nil {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+			return fmt.Errorf("store room key (no prior): %w", err)
+		}
+		roomkeymetrics.KeyGenerated.Add(ctx, 1)
+		return nil
+	}
+	if _, err := h.keyStore.Rotate(ctx, roomID, newPair); err != nil {
+		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
+			if _, setErr := h.keyStore.Set(ctx, roomID, newPair); setErr != nil {
+				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+				return fmt.Errorf("store room key (fallback): %w", setErr)
+			}
+			roomkeymetrics.KeyGenerated.Add(ctx, 1)
+			return nil
+		}
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
+		return fmt.Errorf("rotate room key: %w", err)
+	}
+	roomkeymetrics.KeyRotated.Add(ctx, 1)
+	return nil
+}
+
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair, shouldRotate bool) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -310,7 +339,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("delete room member (individual): %w", err)
 	}
 
-	// Dual-membership: user stays via org source; strip owner role (org members can't be owners).
+	// Dual-membership: user stays via org source; strip owner role (org members can't be owners). No rotation since no sub deleted.
 	if user.HasOrgMembership {
 		if slices.Contains(user.Roles, model.RoleOwner) {
 			if err := h.store.RemoveRole(ctx, req.Account, req.RoomID, model.RoleOwner); err != nil {
@@ -329,16 +358,16 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Fan out the new key to all surviving subscribers (all sites).
-	// ListByRoom after the delete returns the already-filtered survivor set.
-	// A list failure here means the key has rotated at room-service but
-	// survivors can't be enumerated — NAK so JetStream retries rather than
-	// stranding the room on a key nobody received.
-	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
-	if listErr != nil {
-		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
+	// Rotate after delete + reconcile; ListByRoom returns post-deletion survivors.
+	if shouldRotate {
+		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
+		if listErr != nil {
+			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
+		}
+		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
+			return err
+		}
 	}
-	h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 
 	now := time.Now().UTC()
 
@@ -365,12 +394,11 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		evtType = "member_removed"
 	}
 	memberEvt := model.MemberRemoveEvent{
-		Type:          evtType,
-		RoomID:        req.RoomID,
-		Accounts:      []string{req.Account},
-		SiteID:        h.siteID,
-		Timestamp:     now.UnixMilli(),
-		NewKeyVersion: req.NewKeyVersion,
+		Type:      evtType,
+		RoomID:    req.RoomID,
+		Accounts:  []string{req.Account},
+		SiteID:    h.siteID,
+		Timestamp: now.UnixMilli(),
 	}
 	memberEvtData, _ := json.Marshal(memberEvt)
 	if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
@@ -443,7 +471,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest, keyPair *roomkeystore.VersionedKeyPair) (err error) {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair, shouldRotate bool) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -483,15 +511,16 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Fan out the new key to all surviving subscribers (all sites).
-	// ListByRoom after the delete returns the already-filtered survivor set.
-	// See the org-individual analog above: a list failure here would leave
-	// the rotated key undelivered, so propagate to NAK + retry.
-	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
-	if listErr != nil {
-		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
+	// Rotate only when something was actually deleted; ListByRoom returns post-deletion survivors.
+	if shouldRotate && len(accounts) > 0 {
+		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
+		if listErr != nil {
+			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
+		}
+		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
+			return err
+		}
 	}
-	h.fanOutRoomKeyToSurvivors(ctx, req.RoomID, keyPair, survivors)
 
 	now := time.Now().UTC()
 
@@ -519,13 +548,12 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// Member change event with all removed accounts
 	if len(accounts) > 0 {
 		memberEvt := model.MemberRemoveEvent{
-			Type:          "member_removed",
-			RoomID:        req.RoomID,
-			Accounts:      accounts,
-			SiteID:        h.siteID,
-			OrgID:         req.OrgID,
-			Timestamp:     now.UnixMilli(),
-			NewKeyVersion: req.NewKeyVersion,
+			Type:      "member_removed",
+			RoomID:    req.RoomID,
+			Accounts:  accounts,
+			SiteID:    h.siteID,
+			OrgID:     req.OrgID,
+			Timestamp: now.UnixMilli(),
 		}
 		memberEvtData, _ := json.Marshal(memberEvt)
 		if err := h.publish(ctx, subject.MemberEvent(req.RoomID), memberEvtData, ""); err != nil {
@@ -580,13 +608,12 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	for destSiteID, accounts := range siteAccounts {
 		evt := model.MemberRemoveEvent{
-			Type:          "member_removed",
-			RoomID:        req.RoomID,
-			Accounts:      accounts,
-			SiteID:        h.siteID,
-			OrgID:         req.OrgID,
-			Timestamp:     now.UnixMilli(),
-			NewKeyVersion: req.NewKeyVersion,
+			Type:      "member_removed",
+			RoomID:    req.RoomID,
+			Accounts:  accounts,
+			SiteID:    h.siteID,
+			OrgID:     req.OrgID,
+			Timestamp: now.UnixMilli(),
 		}
 		outbox := model.OutboxEvent{
 			Type:       "member_removed",

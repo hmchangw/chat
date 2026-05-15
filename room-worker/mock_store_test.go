@@ -416,3 +416,33 @@ func (mr *MockRoomKeyStoreMockRecorder) Get(ctx, roomID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockRoomKeyStore)(nil).Get), ctx, roomID)
 }
+
+// Rotate mocks base method.
+func (m *MockRoomKeyStore) Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Rotate", ctx, roomID, newPair)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Rotate indicates an expected call of Rotate.
+func (mr *MockRoomKeyStoreMockRecorder) Rotate(ctx, roomID, newPair any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Rotate", reflect.TypeOf((*MockRoomKeyStore)(nil).Rotate), ctx, roomID, newPair)
+}
+
+// Set mocks base method.
+func (m *MockRoomKeyStore) Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Set", ctx, roomID, pair)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Set indicates an expected call of Set.
+func (mr *MockRoomKeyStoreMockRecorder) Set(ctx, roomID, pair any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockRoomKeyStore)(nil).Set), ctx, roomID, pair)
+}

@@ -1011,9 +1011,9 @@ func TestRemoveMemberRequestJSON(t *testing.T) {
 		assert.False(t, hasOrgID, "orgId should be omitted when empty")
 	})
 
-	t.Run("RemoveMemberRequest with NewKeyVersion", func(t *testing.T) {
+	t.Run("RemoveMemberRequest with BaseKeyVersion", func(t *testing.T) {
 		r := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob",
-			Timestamp: 1700000000000, NewKeyVersion: 3}
+			Timestamp: 1700000000000, BaseKeyVersion: 3}
 		roundTrip(t, &r, &model.RemoveMemberRequest{})
 	})
 }
@@ -1026,13 +1026,6 @@ func TestMemberRemoveEventJSON(t *testing.T) {
 			Accounts: []string{"alice", "bob"},
 			SiteID:   "site-a",
 		}
-		roundTrip(t, &e, &model.MemberRemoveEvent{})
-	})
-
-	t.Run("MemberRemoveEvent with NewKeyVersion", func(t *testing.T) {
-		e := model.MemberRemoveEvent{Type: "member_removed", RoomID: "r1",
-			Accounts: []string{"bob"}, SiteID: "site-a",
-			Timestamp: 1700000000000, NewKeyVersion: 3}
 		roundTrip(t, &e, &model.MemberRemoveEvent{})
 	})
 }

@@ -87,7 +87,11 @@ type SubscriptionStore interface {
 	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
 }
 
-// Read-only key store used by room-worker.
+// Key store used by room-worker: reads for fan-out, writes for rotation.
 type RoomKeyStore interface {
 	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
+	// Set writes a fresh keypair at version 0 — fallback when Rotate finds no current key.
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+	// Rotate atomically increments version and writes newPair as current.
+	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
 }

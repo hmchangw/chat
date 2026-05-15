@@ -15,6 +15,63 @@
 > are retained for historical context; the actual code matches this
 > amendment, not the original spec.
 
+> **Post-review amendment (2026-05-15):** Key rotation on member-remove has
+> moved from `room-service` to `room-worker`, with the order changed to
+> **delete → fan-out new key → rotate Valkey → publish system message**. This
+> closes the previous survivor-decrypt window (broadcast-worker no longer
+> starts encrypting under v+1 before survivors have v+1). `room-service`
+> stamps the current Valkey version as `RemoveMemberRequest.BaseKeyVersion`;
+> `room-worker` uses it as a skip-rotation guard against JetStream
+> redeliveries of an already-rotated event. New flow diagram and residual
+> risks in the **Remove-member rotation flow (post-review)** section below.
+> The pre-amendment "rotate before publish in room-service" description in
+> the Scope and Architecture sections is retained for historical context.
+
+## Remove-member rotation flow (post-review)
+
+### Sequence
+
+```
+Client ──┐
+         │ RemoveMember
+         ▼
+   room-service
+         │  validate (room type, owner, last-member, dual-membership reject)
+         │  keyStore.Get(roomID) → current version v
+         │  publish canonical{ accounts, baseKeyVersion=v }
+         │
+         ▼
+  MESSAGES_CANONICAL
+         │
+         └─────────► room-worker (member_removed handler)
+                        1. keyStore.Get(roomID) → currentPair
+                        2. shouldRotate := currentPair.Version <= req.BaseKeyVersion
+                        3. DeleteSubscription(s) + DeleteRoomMember + ReconcileMemberCounts
+                        4. if shouldRotate && something_actually_deleted:
+                              a. survivors := ListByRoom(roomID)        # post-deletion
+                              b. newPair := roomkeystore.GenerateKeyPair()
+                              c. fanOutRoomKeyToSurvivors(newPair, version=v+1)  # ── chat.user.*.event.room.key
+                              d. keyStore.Rotate(roomID, newPair)        # broadcast-worker now uses v+1
+                        5. publish system message → MESSAGES_CANONICAL
+                                                  ── broadcast-worker fans out, encrypted with v+1
+
+  broadcast-worker (concurrent, processes message-create events):
+         1. ListByRoom(Mongo) → addressing
+         2. keyStore.Get(Valkey) → current key (v or v+1, monotonic)
+         3. encrypt + fan out to current subs
+```
+
+Rationale for the order:
+- **Delete before rotate:** once the subscription is gone, broadcast-worker won't address the removed user — even with the old key still active.
+- **Fan-out before rotate:** survivors hold v+1 *before* broadcast-worker switches; eliminates the survivor decrypt-failure window of the pre-amendment design.
+- **System message last:** encrypted under v+1, decryptable by every survivor since they've all received v+1.
+
+### Residual risks
+
+1. **Removed-user-read window (~10–100ms):** between room-service publishing the canonical event and room-worker reaching step 3 (Mongo delete), the removed user is still in `subscriptions` AND Valkey still holds v. Concurrent messages from other room members in that window are addressed to the removed user and encrypted under v, which they can decrypt with the key they hold. Accepted as a documented limitation; closing it would require synchronous subscription delete in room-service (rejected by ownership boundaries) or a fence flag broadcast-worker checks (rejected for hot-path cost).
+
+2. **Key-gen non-idempotence on JetStream redelivery:** step 4b regenerates fresh ECDSA bytes on every redelivery. The skip-rotation guard (step 2) catches the common case (crash after step 4d, ack lost); does not catch crash between 4b and 4d (re-gen with different bytes, partial caches diverge). Recoverable through a future client-side refetch-on-decrypt-failure RPC; not blocking on this PR. Noise scope is bounded: stale cached keys are dead weight, not security regressions.
+
 ## Summary
 
 Wires the existing `pkg/roomkeystore` (Valkey-backed key storage) and `pkg/roomkeysender` (NATS key delivery) libraries into the room lifecycle. After this spec ships, every room has a P-256 key pair generated at create time and pushed to every member's NATS subject so clients can decrypt messages encrypted by `broadcast-worker`. Removing a channel member rotates the key so the removed user can no longer decrypt messages sent after their removal.

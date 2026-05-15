@@ -348,7 +348,7 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 
 	// Generate and store room key BEFORE canonical event so worker's Get gate succeeds.
 	if h.keyStore != nil {
-		pair, err := generateRoomKeyPair()
+		pair, err := roomkeystore.GenerateKeyPair()
 		if err != nil {
 			return nil, fmt.Errorf("generate room key: %w", err)
 		}
@@ -491,13 +491,8 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("exactly one of account or orgId must be set")
 	}
 
-	// skipKeyRotation == true means no subscription will actually be deleted:
-	//   - individual-remove: target keeps the room via org membership
-	//   - org-remove: every org member is also individually subscribed
-	// In either case the member list doesn't shrink, so the key need not rotate.
-	var skipKeyRotation bool
+	// Permission + last-member checks. Dual-membership / no-actual-removal detection moves to room-worker (it owns deletion).
 	if req.Account != "" {
-		// Individual removal: cheapest-first validation (target → requester → counts).
 		target, err := h.store.GetSubscriptionWithMembership(ctx, roomID, req.Account)
 		if err != nil {
 			return nil, fmt.Errorf("get target subscription: %w", err)
@@ -524,7 +519,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
 			return nil, fmt.Errorf("last owner cannot leave the room")
 		}
-		skipKeyRotation = target.HasIndividualMembership && target.HasOrgMembership
 	} else {
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
 		sub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -534,43 +528,21 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		if !hasRole(sub.Roles, model.RoleOwner) {
 			return nil, fmt.Errorf("only owners can remove members")
 		}
-		if h.keyStore != nil {
-			count, err := h.store.CountOrgOnlySubs(ctx, req.RoomID, req.OrgID)
-			if err != nil {
-				return nil, fmt.Errorf("count org-only subs: %w", err)
-			}
-			skipKeyRotation = count == 0
-		}
 	}
 
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
-	// Rotate before publish so broadcast-worker encrypts under the new key immediately.
-	// See skipKeyRotation comment above for the cases this branch skips.
-	if h.keyStore != nil && !skipKeyRotation {
-		pair, err := generateRoomKeyPair()
+	// Stamp current Valkey version so room-worker's skip-rotation guard can detect already-rotated redeliveries.
+	if h.keyStore != nil {
+		current, err := h.keyStore.Get(ctx, req.RoomID)
 		if err != nil {
-			return nil, fmt.Errorf("generate new room key: %w", err)
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+			return nil, fmt.Errorf("get current room key: %w", err)
 		}
-		newVer, err := h.keyStore.Rotate(ctx, req.RoomID, pair)
-		if err != nil {
-			if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
-				// Pre-existing un-keyed room: fall back to Set (version 0).
-				if _, setErr := h.keyStore.Set(ctx, req.RoomID, pair); setErr != nil {
-					roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
-					return nil, fmt.Errorf("store room key (fallback): %w", setErr)
-				}
-				roomkeymetrics.KeyGenerated.Add(ctx, 1) // fallback = first-time key generation
-				newVer = 0
-			} else {
-				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
-				return nil, fmt.Errorf("rotate room key: %w", err)
-			}
-		} else {
-			roomkeymetrics.KeyRotated.Add(ctx, 1) // only true rotations
+		if current != nil {
+			req.BaseKeyVersion = current.Version
 		}
-		req.NewKeyVersion = newVer
 	}
 
 	// Publish to ROOMS stream for room-worker processing.

@@ -89,11 +89,6 @@ type RoomStore interface {
 
 	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
 
-	// CountOrgOnlySubs returns the count of subscriptions in roomID whose account
-	// is in orgID AND who do NOT have an individual room_members entry for roomID.
-	// These are the subs that an org-remove would actually delete.
-	CountOrgOnlySubs(ctx context.Context, roomID, orgID string) (int, error)
-
 	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.
@@ -106,10 +101,10 @@ type RoomStore interface {
 // Only the methods room-service needs are declared here.
 type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
+	// Get returns the current key for roomID, or (nil, nil) when absent.
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
 	// Set writes a fresh keypair as the room's current key (version 0).
 	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
-	// Rotate increments version and demotes current key to :prev with grace TTL.
-	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
 }
 
 // MessageReader looks up a message by ID. found=false with err=nil means no row matched.

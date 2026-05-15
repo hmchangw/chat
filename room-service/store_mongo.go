@@ -53,16 +53,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure room_members (rid,member.type,member.id) unique index: %w", err)
 	}
-	// Lookup index for CountOrgOnlySubs: the $lookup in store_mongo.go matches
-	// room_members on (rid, member.type, member.account); the (id) index above
-	// can't serve that join.
-	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.account", Value: 1}},
-	}); err != nil {
-		return fmt.Errorf("ensure room_members (rid,member.type,member.account) index: %w", err)
-	}
-	// Unique logical key for subscriptions. Same retry-idempotency rationale
-	// as room_members above.
+	// Unique logical key for subscriptions. Same retry-idempotency rationale as room_members above.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -798,63 +789,4 @@ func (s *MongoStore) ListReadReceipts(
 		return nil, fmt.Errorf("iterate read receipts for room %q: %w", roomID, err)
 	}
 	return rows, nil
-}
-
-// CountOrgOnlySubs returns the number of subscriptions in roomID whose account
-// belongs to orgID but does NOT have an individual room_members entry for roomID.
-// These are the subscriptions an org-remove would actually delete.
-func (s *MongoStore) CountOrgOnlySubs(ctx context.Context, roomID, orgID string) (int, error) {
-	// Step 1: find all user accounts whose sectId == orgID.
-	// Step 2: filter subscriptions in roomID whose account is in that set.
-	// Step 3: exclude accounts that also have an individual room_members entry for roomID.
-	// Step 4: count.
-	pipeline := bson.A{
-		// Match subscriptions for the target room.
-		bson.D{{Key: "$match", Value: bson.M{"roomId": roomID}}},
-		// Join with users to find org membership.
-		bson.D{{Key: "$lookup", Value: bson.M{
-			"from":         "users",
-			"localField":   "u.account",
-			"foreignField": "account",
-			"as":           "user",
-		}}},
-		bson.D{{Key: "$unwind", Value: "$user"}},
-		// Keep only subscriptions for users in the org.
-		bson.D{{Key: "$match", Value: bson.M{"user.sectId": orgID}}},
-		// Check whether an individual room_members entry exists for this user+room.
-		bson.D{{Key: "$lookup", Value: bson.M{
-			"from": "room_members",
-			"let":  bson.M{"acc": "$u.account", "rid": "$roomId"},
-			"pipeline": bson.A{
-				bson.D{{Key: "$match", Value: bson.M{"$expr": bson.M{"$and": bson.A{
-					bson.M{"$eq": bson.A{"$rid", "$$rid"}},
-					bson.M{"$eq": bson.A{"$member.account", "$$acc"}},
-					bson.M{"$eq": bson.A{"$member.type", model.RoomMemberIndividual}},
-				}}}}},
-			},
-			"as": "individualMember",
-		}}},
-		// Retain only those with no individual membership.
-		bson.D{{Key: "$match", Value: bson.M{"individualMember": bson.M{"$size": 0}}}},
-		bson.D{{Key: "$count", Value: "total"}},
-	}
-
-	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
-	if err != nil {
-		return 0, fmt.Errorf("count org-only subs for room %q org %q: %w", roomID, orgID, err)
-	}
-	defer cursor.Close(ctx)
-	if !cursor.Next(ctx) {
-		if err := cursor.Err(); err != nil {
-			return 0, fmt.Errorf("iterate org-only subs count for room %q org %q: %w", roomID, orgID, err)
-		}
-		return 0, nil
-	}
-	var result struct {
-		Total int `bson:"total"`
-	}
-	if err := cursor.Decode(&result); err != nil {
-		return 0, fmt.Errorf("decode org-only subs count for room %q org %q: %w", roomID, orgID, err)
-	}
-	return result.Total, nil
 }

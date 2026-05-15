@@ -13,9 +13,40 @@
 > `RoomKeyMaxRedeliver` cap is also gone (it existed solely to bound the
 > NAK-loop on that RPC).
 
+> **Post-review amendment (2026-05-15):** Key rotation on member-remove has
+> moved from `room-service` to `room-worker`. Room creation key generation
+> stays in `room-service` (sync failure surface). On remove, `room-service`
+> validates and stamps the current Valkey version as
+> `RemoveMemberRequest.BaseKeyVersion`; `room-worker` does
+> **delete → fan-out new key → rotate Valkey → publish system message**.
+> The new order eliminates the survivor decrypt-failure window present in
+> the pre-amendment design. Authoritative flow + residual risks live in
+> the spec's *Remove-member rotation flow (post-review)* section.
+
+### Remove-member flow (post-review, authoritative)
+
+```
+Client ──► room-service ──► MESSAGES_CANONICAL ──► room-worker
+              │ validate            (member_removed)        │ Get(roomID) → currentPair
+              │ Get(roomID) → v                             │ shouldRotate := currentPair.Version <= req.BaseKeyVersion
+              │ publish{ baseKeyVersion=v }                 │ Delete sub + reconcile counts
+              ▼                                             │ if shouldRotate && actually_deleted:
+                                                            │     survivors := ListByRoom (post-delete)
+                                                            │     newPair := roomkeystore.GenerateKeyPair()
+                                                            │     fanOutRoomKeyToSurvivors(newPair, v+1)
+                                                            │     keyStore.Rotate(newPair)
+                                                            │ publish system message
+                                                            ▼
+                                                       broadcast-worker fans out, encrypted with v+1
+```
+
+Residual risks (accepted, documented in spec):
+1. Removed-user-read window (~10–100ms) between canonical publish and room-worker's Mongo delete — concurrent messages encrypted under v reach the still-listed removed user.
+2. Key-gen non-idempotence on JetStream redelivery between fan-out and Rotate — partial caches diverge. Recoverable through a future client-side refetch-on-decrypt-failure RPC.
+
 **Goal:** Wire room encryption keys end-to-end across `room-service`, `room-worker`, and `inbox-worker`. After this plan ships, every newly-created room has a P-256 keypair stored in Valkey, channel `member.remove` rotates the key, and channel `member.add` distributes the current key to new members. Cross-site clients receive `RoomKeyEvent` directly from the origin `room-worker`'s user-subject fan-out, routed by the NATS supercluster — there is no server-side key replication.
 
-**Architecture:** `room-service` is the sole writer of fresh keys (`Set` on create, `Rotate` on remove). `room-worker` (origin) reads the current key from local Valkey, gates Mongo writes on key presence, and fans out `RoomKeyEvent` to **every** room member (local + remote) via `roomkeysender.Send` — the NATS supercluster routes `chat.user.{account}.event.*` to home sites. `inbox-worker` on remote sites replicates subscription and room metadata only; it does not hold or replicate the room key.
+**Architecture:** `room-service` generates the room key at create and stamps the pre-rotation Valkey version on remove. `room-worker` (origin) owns rotation: it deletes the subscription, fans out the new `RoomKeyEvent` to post-deletion survivors via `roomkeysender.Send`, then commits via `keyStore.Rotate`. `inbox-worker` on remote sites replicates subscription and room metadata only; it does not hold or replicate the room key.
 
 > **Implementation drift — read before following any task literally.** The
 > sections below were written in TDD-style as the design evolved. The

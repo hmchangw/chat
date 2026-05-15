@@ -1,4 +1,4 @@
-package main
+package roomkeystore_test
 
 import (
 	"bytes"
@@ -14,32 +14,28 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/hmchangw/chat/pkg/roomcrypto"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
-func TestGenerateRoomKeyPair_Shape(t *testing.T) {
-	pair, err := generateRoomKeyPair()
+func TestGenerateKeyPair_Shape(t *testing.T) {
+	pair, err := roomkeystore.GenerateKeyPair()
 	require.NoError(t, err)
 	assert.Len(t, pair.PublicKey, 65)
 	assert.Len(t, pair.PrivateKey, 32)
 }
 
-func TestGenerateRoomKeyPair_Distinct(t *testing.T) {
-	a, err := generateRoomKeyPair()
+func TestGenerateKeyPair_Distinct(t *testing.T) {
+	a, err := roomkeystore.GenerateKeyPair()
 	require.NoError(t, err)
-	b, err := generateRoomKeyPair()
+	b, err := roomkeystore.GenerateKeyPair()
 	require.NoError(t, err)
 	assert.False(t, bytes.Equal(a.PublicKey, b.PublicKey))
 	assert.False(t, bytes.Equal(a.PrivateKey, b.PrivateKey))
 }
 
-// TestGenerateRoomKeyPair_RoundTripWithRoomcrypto exercises the full
-// encrypt-then-decrypt path so a generator returning mismatched public/private
-// halves would actually fail the test (just asserting the encoded shape did
-// not). The decrypt routine mirrors roomcrypto.Encode's ECDH+HKDF+AES-GCM
-// construction inverted — kept here in test code because the production
-// roomcrypto package is encode-only (clients decrypt).
-func TestGenerateRoomKeyPair_RoundTripWithRoomcrypto(t *testing.T) {
-	pair, err := generateRoomKeyPair()
+// Exercises the full encrypt-then-decrypt path so a generator returning mismatched halves would fail.
+func TestGenerateKeyPair_RoundTripWithRoomcrypto(t *testing.T) {
+	pair, err := roomkeystore.GenerateKeyPair()
 	require.NoError(t, err)
 
 	const plaintext = "hello"
