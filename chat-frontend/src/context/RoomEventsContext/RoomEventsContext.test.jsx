@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { NatsContext } from '../NatsContext/NatsContext'
 import { RoomEventsProvider, useRoomEvents, useRoomSummaries, useSidebarSections, useSubscription } from './RoomEventsContext'
 import { BUFFER_MODE } from './reducer'
@@ -641,33 +642,154 @@ describe('RoomEventsProvider message.read wiring', () => {
     expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
   })
 
-  it('does NOT fire message.read when the active-room message was sent by self', async () => {
-    const rooms = [
-      { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
-    ]
-    const { nats, request, handlers } = setupWithRooms(rooms)
-    let setActive
-    function Probe() {
-      const { setActiveRoom } = useRoomSummaries()
-      setActive = setActiveRoom
-      return null
-    }
-    render(wrap(<Probe />, nats))
-    await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+  it('does NOT fire message.read when the active-room message was sent by self (even after the debounce window)', async () => {
+    // Self-sender path must short-circuit BEFORE scheduling. Advancing
+    // fake timers past the window catches any regression that moved the
+    // self-check after the schedule call.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [
+        { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+      ]
+      const { nats, request, handlers } = setupWithRooms(rooms)
+      let setActive
+      function Probe() {
+        const { setActiveRoom } = useRoomSummaries()
+        setActive = setActiveRoom
+        return null
+      }
+      render(wrap(<Probe />, nats))
+      await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
 
-    act(() => { setActive('g1') })
-    request.mockClear()
+      act(() => { setActive('g1') })
+      request.mockClear()
 
-    act(() => {
-      handlers.get('chat.room.g1.event')({
-        type: 'new_message',
-        roomId: 'g1',
-        message: { id: 'm1', roomId: 'g1', sender: { account: 'alice' }, content: 'self', createdAt: '2026-04-17T12:00:00Z' },
+      act(() => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message',
+          roomId: 'g1',
+          message: { id: 'm1', roomId: 'g1', sender: { account: 'alice' }, content: 'self', createdAt: '2026-04-17T12:00:00Z' },
+        })
       })
-    })
 
-    const subjects = request.mock.calls.map((c) => c[0])
-    expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+      // Advance past the debounce window — if the self-check is wrongly
+      // placed AFTER scheduleMarkActiveRead's setTimeout, this would
+      // fire the trailing RPC.
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+
+      const subjects = request.mock.calls.map((c) => c[0])
+      expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the pending mark-read timer on logout (user → null)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [
+        { id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null },
+      ]
+      const { request, handlers } = setupWithRooms(rooms)
+
+      // Build a NatsContext where user can be unset to simulate logout.
+      function ToggleProbe() {
+        const { setActiveRoom } = useRoomSummaries()
+        return <button onClick={() => setActiveRoom('g1')}>activate</button>
+      }
+
+      let setNatsValue
+      function NatsHarness({ children }) {
+        const [v, setV] = useState({
+          connected: true,
+          user: { account: 'alice', siteId: 'site-A' },
+          error: null,
+          connect: vi.fn(),
+          request,
+          publish: vi.fn(),
+          subscribe: vi.fn().mockImplementation((subject, cb) => {
+            handlers.set(subject, cb)
+            return { unsubscribe: vi.fn() }
+          }),
+          disconnect: vi.fn(),
+        })
+        setNatsValue = setV
+        return (
+          <NatsContext.Provider value={v}>
+            <RoomEventsProvider>{children}</RoomEventsProvider>
+          </NatsContext.Provider>
+        )
+      }
+
+      render(<NatsHarness><ToggleProbe /></NatsHarness>)
+      await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+      await act(async () => { screen.getByText('activate').click() })
+
+      // Schedule a trailing mark-read by simulating a burst…
+      act(() => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message',
+          roomId: 'g1',
+          message: { id: 'm1', sender: { account: 'bob' }, content: 'hi', createdAt: '...' },
+        })
+      })
+
+      // …then logout BEFORE the debounce fires.
+      const readsBefore = request.mock.calls.filter((c) => c[0].endsWith('.message.read')).length
+      await act(async () => {
+        setNatsValue((v) => ({ ...v, user: null }))
+      })
+      // Advance past the debounce window.
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+
+      const readsAfter = request.mock.calls.filter((c) => c[0].endsWith('.message.read')).length
+      // The pending timer must have been cancelled by the effect's cleanup.
+      expect(readsAfter).toBe(readsBefore)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('two bursts more than 500ms apart fire TWO trailing message.read RPCs', async () => {
+    // Confirms the timer re-arms cleanly after firing — not a sticky one-shot.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const rooms = [{ id: 'g1', name: 'general', type: 'channel', siteId: 'site-A', userCount: 3, lastMsgAt: null }]
+      const { nats, request, handlers } = setupWithRooms(rooms)
+      let setActive
+      function Probe() {
+        const { setActiveRoom } = useRoomSummaries()
+        setActive = setActiveRoom
+        return null
+      }
+      render(wrap(<Probe />, nats))
+      await waitFor(() => expect(handlers.has('chat.room.g1.event')).toBe(true))
+      act(() => { setActive('g1') })
+      request.mockClear()
+
+      // First burst.
+      act(() => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message', roomId: 'g1',
+          message: { id: 'b1m1', sender: { account: 'bob' }, content: 'hi', createdAt: '...' },
+        })
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+
+      // Second burst, well after the first trailing fired.
+      act(() => {
+        handlers.get('chat.room.g1.event')({
+          type: 'new_message', roomId: 'g1',
+          message: { id: 'b2m1', sender: { account: 'bob' }, content: 'hi again', createdAt: '...' },
+        })
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+
+      const reads = request.mock.calls.filter((c) => c[0].endsWith('.message.read'))
+      expect(reads.length).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('debounces a burst of active-room messages to a SINGLE trailing message.read RPC', async () => {

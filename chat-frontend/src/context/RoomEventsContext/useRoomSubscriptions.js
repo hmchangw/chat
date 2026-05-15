@@ -107,8 +107,12 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       if (senderAccount && senderAccount === user.account) return
       const summary = stateRef.current.summaries.find((r) => r.id === evtRoomId)
       const siteId = summary?.siteId ?? user.siteId
-      pendingMarkReadRef.current = { roomId: evtRoomId, siteId }
+      // Clear any prior pending timer FIRST, then write the new pending
+      // entry. Defensive ordering: if future code ever introduces async
+      // work between these two lines, the prior timer can't race with
+      // the new pending entry it was never meant to operate on.
       if (markReadTimeoutRef.current) clearTimeout(markReadTimeoutRef.current)
+      pendingMarkReadRef.current = { roomId: evtRoomId, siteId }
       markReadTimeoutRef.current = setTimeout(() => {
         markReadTimeoutRef.current = null
         const pending = pendingMarkReadRef.current

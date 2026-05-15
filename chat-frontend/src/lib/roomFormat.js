@@ -9,13 +9,12 @@ export function roomPrefix(type) {
 // affecting others); fall back to the canonical Room.Name, then to the
 // room id as a last-resort identifier.
 //
-// For dm: compose from the counterpart's HRInfo — engName + " " + name,
-// collapsed to just `name` when the two are identical. HRInfo lives on the
-// Subscription for dm rooms only (`hrInfo?: { engName, name }` — both inner
-// fields guaranteed when the pointer is present, per
-// pkg/model.Subscription.HRInfo). When the subscription hasn't loaded yet
-// the field is undefined and we render a "(DM)" placeholder so the sidebar
-// row stays identifiable.
+// For dm: compose from the counterpart's hrInfo — engName + " " + name,
+// collapsed to just `name` when the two are identical. The hrInfo field
+// lives on `DMSubscription` (pkg/model.DMSubscription wraps Subscription
+// with a `*SubscriptionHRInfo` pointer); for channels/botDMs/discussions
+// the field is absent and we render a "(DM)" placeholder so the sidebar
+// row stays identifiable until the DM subscription loads.
 export function roomDisplayName(room) {
   if (!room) return ''
   if (room.type === 'dm') {

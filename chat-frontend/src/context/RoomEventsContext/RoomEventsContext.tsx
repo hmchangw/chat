@@ -249,10 +249,11 @@ export interface SidebarSection {
  * Returns an ordered array of `{key, title, rooms}` sections so the
  * sidebar can render headers + rows without re-deriving the split.
  *
- * Per-room subscription metadata (subscription.Name + HRInfo) is
- * merged onto each room here so `roomDisplayName` resolves the user's
- * preferred name for channels and the counterpart's HRInfo for DMs
- * without the underlying summary structure carrying those fields.
+ * Per-room subscription metadata (subscription.name + hrInfo for DMs)
+ * is merged onto each room here so `roomDisplayName` resolves the user's
+ * preferred name for channels and the counterpart's hrInfo for DMs
+ * (only present on DMSubscription records) without the underlying
+ * summary structure carrying those fields directly.
  */
 export function useSidebarSections(): SidebarSection[] {
   const { state } = useRoomEventsInternal()
