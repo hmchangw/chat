@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { NatsContext } from '../NatsContext/NatsContext'
-import { RoomEventsProvider, useRoomEvents, useRoomSummaries, useSidebarSections } from './RoomEventsContext'
+import { RoomEventsProvider, useRoomEvents, useRoomSummaries, useSidebarSections, useSubscription } from './RoomEventsContext'
 import { BUFFER_MODE } from './reducer'
 // jumpToMessage / resetToLiveTail tests — see suite below
 
@@ -708,5 +708,52 @@ describe('useSidebarSections', () => {
     expect(screen.getByTestId('room-c1').textContent).toContain('name=frontend-team')
     expect(screen.getByTestId('room-d1').textContent).toContain('hrEng=Bob Chen')
     expect(screen.getByTestId('room-d1').textContent).toContain('hrName=鮑勃')
+  })
+})
+
+describe('useSubscription', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('returns the full per-room subscription once the bucket bootstrap resolves', async () => {
+    const nats = mockNats({
+      request: vi.fn().mockImplementation((subject) => {
+        if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
+        if (subject.endsWith('.subscription.getCurrent'))
+          return Promise.resolve({ subscriptions: [] })
+        if (subject.endsWith('.subscription.getApps'))
+          return Promise.resolve({ subscriptions: [] })
+        if (subject.endsWith('.subscription.getRooms'))
+          return Promise.resolve({
+            subscriptions: [
+              { roomId: 'r1', name: 'general', roles: ['owner'], hasMention: false, alert: true },
+            ],
+          })
+        throw new Error('unexpected subject: ' + subject)
+      }),
+    })
+
+    function Probe() {
+      const sub = useSubscription('r1')
+      if (!sub) return <div>no-sub</div>
+      return <div>roles={sub.roles.join(',')};name={sub.name}</div>
+    }
+
+    render(wrap(<Probe />, nats))
+    await waitFor(() =>
+      expect(screen.getByText(/roles=owner;name=general/)).toBeInTheDocument()
+    )
+  })
+
+  it('returns undefined for an unknown roomId or before bootstrap completes', () => {
+    const nats = mockNats({
+      // Never resolves — exercises the pre-bootstrap empty state synchronously.
+      request: vi.fn().mockReturnValue(new Promise(() => {})),
+    })
+    function Probe() {
+      const sub = useSubscription('unknown')
+      return <div>{sub === undefined ? 'absent' : 'present'}</div>
+    }
+    render(wrap(<Probe />, nats))
+    expect(screen.getByText('absent')).toBeInTheDocument()
   })
 })

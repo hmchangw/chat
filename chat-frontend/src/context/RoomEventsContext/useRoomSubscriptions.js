@@ -104,6 +104,11 @@ export function useRoomSubscriptions(nats, dispatch) {
     const subUpdate = subscribeToSubscriptionUpdates(liveNats, (evt) => {
       if (cancelledRef.current) return
       if (evt.action === 'added' && evt.subscription?.roomId) {
+        // Store the full subscription record FIRST so any consumer that
+        // wakes up on the ROOM_ADDED dispatch already sees fresh roles /
+        // hasMention / alert state. The full payload is what room-worker
+        // emits on `subscription.update`.
+        safeDispatch({ type: 'SUBSCRIPTION_UPSERTED', subscription: evt.subscription })
         getRoom(natsRef.current, { roomId: evt.subscription.roomId })
           .then((room) => {
             if (cancelledRef.current || !room) return

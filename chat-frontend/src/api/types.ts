@@ -11,6 +11,41 @@
 /** Mirrors model.RoomType. */
 export type RoomType = 'channel' | 'dm' | 'botDM' | 'discussion'
 
+/** Mirrors model.Role. */
+export type Role = 'owner' | 'admin' | 'member'
+
+/** HRInfo carries the two name fields used to render a DM-room label.
+ *  Backend (`pkg/model.Subscription.HRInfo *HRInfo \`json:"hrInfo,omitempty"\``)
+ *  populates this struct ONLY on DM-type subscriptions; when the pointer
+ *  is present both inner fields are populated. */
+export interface HRInfo {
+  engName: string
+  name: string
+}
+
+/** Mirrors model.Subscription — the per-user record linking a user to a
+ *  room. Carries the room's roles for THIS user, the user's preferred
+ *  name, mute/alert state, mention/thread-unread bookkeeping, and the
+ *  optional HRInfo for DM-display. */
+export interface Subscription {
+  id: string
+  u: { id: string; account: string }
+  roomId: string
+  siteId: string
+  roles: Role[]
+  name: string
+  roomType: RoomType
+  isSubscribed?: boolean
+  historySharedSince?: string
+  joinedAt: string
+  lastSeenAt?: string
+  hasMention: boolean
+  threadUnread?: string[]
+  alert: boolean
+  /** Only present on DM subscriptions. */
+  hrInfo?: HRInfo
+}
+
 /** Mirrors model.HistoryMode. */
 export type HistoryMode = 'all' | 'none'
 

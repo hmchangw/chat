@@ -15,12 +15,20 @@ export const initialState = {
   favoriteIds: new Set(),
   appIds: new Set(),
   channelDmIds: new Set(),
-  // Per-roomId subscription metadata sourced from the user-service RPCs.
-  // Shape: { [roomId]: { name?: string, hrInfo?: { engName, name } } }.
-  // Merged into rooms at read time by useSidebarSections so display logic
-  // (roomDisplayName) can use subscription.Name / HRInfo without changing
-  // the underlying summary structure.
-  subscriptionData: {},
+  /**
+   * Per-roomId map of the FULL model.Subscription record for every room
+   * the current user is subscribed to (sourced from the three user-service
+   * bucket RPCs + the live `subscription.update` event stream).
+   *
+   * Components read their per-room subscription via `useSubscription(roomId)`
+   * — gives them roles, alert, lastSeenAt, hasMention, hrInfo, etc. without
+   * a per-component fetch. The sidebar enrichment in `useSidebarSections`
+   * also pulls `name` + `hrInfo` from here.
+   *
+   * Shape: { [roomId]: Subscription } where Subscription mirrors
+   * pkg/model.Subscription (see chat-frontend/src/api/types.ts).
+   */
+  subscriptions: {},
 }
 
 function sortByLastMsgDesc(summaries) {
@@ -96,7 +104,7 @@ export function roomEventsReducer(state, action) {
       let favoriteIds = state.favoriteIds
       let appIds = state.appIds
       let channelDmIds = state.channelDmIds
-      let subscriptionData = state.subscriptionData
+      let subscriptions = state.subscriptions
       if (favoriteIds.has(action.roomId)) {
         favoriteIds = new Set(favoriteIds)
         favoriteIds.delete(action.roomId)
@@ -109,9 +117,9 @@ export function roomEventsReducer(state, action) {
         channelDmIds = new Set(channelDmIds)
         channelDmIds.delete(action.roomId)
       }
-      if (subscriptionData[action.roomId]) {
-        const { [action.roomId]: _drop, ...restData } = subscriptionData
-        subscriptionData = restData
+      if (subscriptions[action.roomId]) {
+        const { [action.roomId]: _drop, ...restSubs } = subscriptions
+        subscriptions = restSubs
       }
       return {
         ...state,
@@ -120,17 +128,42 @@ export function roomEventsReducer(state, action) {
         favoriteIds,
         appIds,
         channelDmIds,
-        subscriptionData,
+        subscriptions,
       }
     }
     case 'BUCKETS_LOADED': {
+      // Seed `summary.hasMention` from the server's aggregated flag — the
+      // canonical state on cold start. Per-message detection in
+      // MESSAGE_RECEIVED still ORs in when new mentions arrive live.
+      const subs = action.subscriptions ?? {}
+      const summaries = state.summaries.map((s) =>
+        subs[s.id]?.hasMention ? { ...s, hasMention: true } : s
+      )
       return {
         ...state,
+        summaries,
         favoriteIds: new Set(action.favoriteIds),
         appIds: new Set(action.appIds),
         channelDmIds: new Set(action.channelDmIds),
-        subscriptionData: action.subscriptionData ?? {},
+        subscriptions: subs,
       }
+    }
+    case 'SUBSCRIPTION_UPSERTED': {
+      // Upsert a single subscription record (live delta from
+      // `subscription.update` events). Also propagates `hasMention` /
+      // `name` updates into the matching summary so the sidebar stays
+      // in sync without a refetch.
+      const sub = action.subscription
+      if (!sub?.roomId) return state
+      const subscriptions = { ...state.subscriptions, [sub.roomId]: sub }
+      const summaries = state.summaries.map((s) => {
+        if (s.id !== sub.roomId) return s
+        const next = { ...s }
+        if (sub.hasMention) next.hasMention = true
+        if (sub.name && sub.name !== s.subscriptionName) next.subscriptionName = sub.name
+        return next === s ? s : next
+      })
+      return { ...state, summaries, subscriptions }
     }
     case 'ROOM_METADATA_UPDATED': {
       const existing = state.summaries.find((r) => r.id === action.roomId)

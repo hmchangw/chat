@@ -3,42 +3,22 @@ import {
   userSubscriptionGetApps,
   userSubscriptionGetRooms,
 } from '../_transport/subjects'
-import type { Nats } from '../types'
-
-/**
- * HRInfo carries the two name fields used to render a DM-room label.
- * Backend (`pkg/model.Subscription.HRInfo *HRInfo \`json:"hrInfo,omitempty"\``)
- * populates this struct ONLY on DM-type subscriptions; channels, botDMs,
- * discussions never carry it. When the pointer is present both inner
- * fields are populated (no per-field `omitempty`).
- */
-export interface HRInfo {
-  engName: string
-  name: string
-}
-
-/** Per-room subscription metadata sourced from the user-service RPCs.
- *  Each entry corresponds to one of the three `subscription.get*` replies. */
-export interface SidebarSubscription {
-  roomId: string
-  name?: string
-  /** Only present on DM subscriptions (see HRInfo). */
-  hrInfo?: HRInfo
-}
+import type { Nats, Subscription } from '../types'
 
 interface SidebarBucketReply {
-  subscriptions?: SidebarSubscription[]
+  subscriptions?: Subscription[]
+  total?: number
 }
 
 export interface SidebarBuckets {
   favoriteIds: string[]
   appIds: string[]
   channelDmIds: string[]
-  /** Per-roomId map of {name, hrInfo} sourced from any of the three
-   *  RPCs. The reducer merges this onto room summaries at read time so
-   *  `roomDisplayName` can resolve subscription.Name (channels) or
-   *  HRInfo (dm rooms) without changing the underlying summary shape. */
-  subscriptionData: Record<string, { name?: string; hrInfo?: HRInfo }>
+  /** Per-roomId map of the full Subscription record for every room
+   *  surfaced by any of the three bucket RPCs. The reducer stores
+   *  this directly under `state.subscriptions` so components can
+   *  consume the live per-room state via `useSubscription(roomId)`. */
+  subscriptions: Record<string, Subscription>
 }
 
 /**
@@ -59,13 +39,13 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     request<SidebarBucketReply>(userSubscriptionGetApps(user.account, user.siteId), {}),
     request<SidebarBucketReply>(userSubscriptionGetRooms(user.account, user.siteId), {}),
   ])
-  const subscriptionData: SidebarBuckets['subscriptionData'] = {}
+  const subscriptions: Record<string, Subscription> = {}
   const collect = (resp: SidebarBucketReply) => {
     for (const s of resp?.subscriptions ?? []) {
       if (!s?.roomId) continue
       // Later sources overwrite earlier ones, but the three responses
       // describe the same Subscription record so collisions are benign.
-      subscriptionData[s.roomId] = { name: s.name, hrInfo: s.hrInfo }
+      subscriptions[s.roomId] = s
     }
   }
   collect(favResp)
@@ -75,6 +55,6 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     favoriteIds: (favResp?.subscriptions ?? []).map((s) => s.roomId),
     appIds: (appResp?.subscriptions ?? []).map((s) => s.roomId),
     channelDmIds: (roomResp?.subscriptions ?? []).map((s) => s.roomId),
-    subscriptionData,
+    subscriptions,
   }
 }

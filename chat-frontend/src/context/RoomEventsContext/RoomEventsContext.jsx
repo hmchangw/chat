@@ -155,15 +155,15 @@ export function useRoomDispatch() {
  */
 export function useSidebarSections() {
   const { state } = useRoomEventsInternal()
-  const { summaries, favoriteIds, appIds, channelDmIds, subscriptionData } = state
+  const { summaries, favoriteIds, appIds, channelDmIds, subscriptions } = state
   return useMemo(() => {
     const enrich = (room) => {
-      const data = subscriptionData[room.id]
-      if (!data) return room
+      const sub = subscriptions[room.id]
+      if (!sub) return room
       return {
         ...room,
-        subscriptionName: data.name ?? room.subscriptionName,
-        hrInfo: data.hrInfo ?? room.hrInfo,
+        subscriptionName: sub.name ?? room.subscriptionName,
+        hrInfo: sub.hrInfo ?? room.hrInfo,
       }
     }
     const favorite = []
@@ -179,5 +179,24 @@ export function useSidebarSections() {
       { key: 'apps',      title: 'Apps',              rooms: apps },
       { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
     ]
-  }, [summaries, favoriteIds, appIds, channelDmIds, subscriptionData])
+  }, [summaries, favoriteIds, appIds, channelDmIds, subscriptions])
+}
+
+/**
+ * Read the current user's Subscription record for a single room.
+ *
+ * Returns the full `model.Subscription` (roles, alert, hasMention,
+ * lastSeenAt, hrInfo, …) so components don't have to re-fetch via
+ * `member.list` or re-derive permission from message events. Returns
+ * `undefined` until the bucket bootstrap completes or a
+ * `subscription.update added` event lands.
+ *
+ * Hook re-renders only when the subscription for THIS room changes,
+ * not when other rooms' subscriptions update — driven by the
+ * dictionary's reference identity (the reducer rebuilds the map only
+ * on writes touching `roomId`).
+ */
+export function useSubscription(roomId) {
+  const { state } = useRoomEventsInternal()
+  return roomId ? state.subscriptions[roomId] : undefined
 }

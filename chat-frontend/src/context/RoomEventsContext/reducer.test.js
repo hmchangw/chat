@@ -823,56 +823,107 @@ describe('roomEventsReducer: bucket Sets', () => {
     expect(next.channelDmIds.size).toBe(0)
   })
 
-  it('initialState has an empty subscriptionData map', () => {
-    expect(initialState.subscriptionData).toEqual({})
+  it('initialState has an empty subscriptions map', () => {
+    expect(initialState.subscriptions).toEqual({})
   })
 
-  it('BUCKETS_LOADED stores subscriptionData when provided', () => {
+  it('BUCKETS_LOADED stores the full subscription record per roomId', () => {
     const next = roomEventsReducer(initialState, {
       type: 'BUCKETS_LOADED',
       favoriteIds: ['f1'],
       appIds: ['a1'],
       channelDmIds: ['c1'],
-      subscriptionData: {
-        f1: { name: 'general', hrInfo: undefined },
-        c1: { name: 'one-on-one', hrInfo: { engName: 'bob', name: '鮑勃' } },
+      subscriptions: {
+        f1: { roomId: 'f1', name: 'general', roles: ['member'], hasMention: false, alert: true },
+        c1: { roomId: 'c1', name: 'one-on-one', roles: ['member'], hasMention: false, alert: true, hrInfo: { engName: 'bob', name: '鮑勃' } },
       },
     })
-    expect(next.subscriptionData.f1.name).toBe('general')
-    expect(next.subscriptionData.c1.hrInfo.engName).toBe('bob')
+    expect(next.subscriptions.f1.name).toBe('general')
+    expect(next.subscriptions.c1.hrInfo.engName).toBe('bob')
+    expect(next.subscriptions.c1.roles).toEqual(['member'])
   })
 
-  it('BUCKETS_LOADED with no subscriptionData payload keeps the map empty', () => {
+  it('BUCKETS_LOADED with no subscriptions payload keeps the map empty', () => {
     const next = roomEventsReducer(initialState, {
       type: 'BUCKETS_LOADED',
       favoriteIds: ['f1'],
       appIds: [],
       channelDmIds: [],
     })
-    expect(next.subscriptionData).toEqual({})
+    expect(next.subscriptions).toEqual({})
   })
 
-  it('ROOM_REMOVED also drops the room from subscriptionData', () => {
+  it('BUCKETS_LOADED seeds summary.hasMention from the server-side flag', () => {
+    // Pre-populate a summary so the seed has somewhere to write.
+    const withSummary = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const next = roomEventsReducer(withSummary, {
+      type: 'BUCKETS_LOADED',
+      favoriteIds: [],
+      appIds: [],
+      channelDmIds: ['c1'],
+      subscriptions: { c1: { roomId: 'c1', hasMention: true, roles: ['member'] } },
+    })
+    expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+  })
+
+  it('ROOM_REMOVED also drops the room from subscriptions', () => {
     const seeded = roomEventsReducer(initialState, {
       type: 'BUCKETS_LOADED',
       favoriteIds: [],
       appIds: [],
       channelDmIds: ['c1'],
-      subscriptionData: { c1: { name: 'one-on-one' } },
+      subscriptions: { c1: { roomId: 'c1', name: 'one-on-one', roles: ['member'] } },
     })
     const next = roomEventsReducer(seeded, { type: 'ROOM_REMOVED', roomId: 'c1' })
-    expect(next.subscriptionData.c1).toBeUndefined()
+    expect(next.subscriptions.c1).toBeUndefined()
   })
 
-  it('RESET also clears subscriptionData', () => {
+  it('RESET also clears subscriptions', () => {
     const seeded = roomEventsReducer(initialState, {
       type: 'BUCKETS_LOADED',
       favoriteIds: ['f1'],
       appIds: [],
       channelDmIds: [],
-      subscriptionData: { f1: { name: 'general' } },
+      subscriptions: { f1: { roomId: 'f1', name: 'general', roles: ['member'] } },
     })
     const next = roomEventsReducer(seeded, { type: 'RESET' })
-    expect(next.subscriptionData).toEqual({})
+    expect(next.subscriptions).toEqual({})
+  })
+
+  it('SUBSCRIPTION_UPSERTED inserts a new record and merges hasMention into the summary', () => {
+    const withSummary = roomEventsReducer(initialState, {
+      type: 'ROOM_ADDED',
+      room: room('c1', { type: 'channel' }),
+    })
+    const next = roomEventsReducer(withSummary, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', name: 'general', roles: ['owner'], hasMention: true, alert: true },
+    })
+    expect(next.subscriptions.c1.roles).toEqual(['owner'])
+    expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
+  })
+
+  it('SUBSCRIPTION_UPSERTED replaces an existing record (full-record semantics)', () => {
+    const seeded = roomEventsReducer(initialState, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', name: 'old', roles: ['member'] },
+    })
+    const next = roomEventsReducer(seeded, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { roomId: 'c1', name: 'new', roles: ['owner'] },
+    })
+    expect(next.subscriptions.c1.name).toBe('new')
+    expect(next.subscriptions.c1.roles).toEqual(['owner'])
+  })
+
+  it('SUBSCRIPTION_UPSERTED with no roomId is a no-op', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'SUBSCRIPTION_UPSERTED',
+      subscription: { name: 'orphan' },
+    })
+    expect(next).toBe(initialState)
   })
 })
