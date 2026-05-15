@@ -11,7 +11,7 @@ import {
 import { useNats } from '@/context/NatsContext'
 import { BUFFER_MODE, initialState, roomEventsReducer } from './reducer'
 import { useRoomSubscriptions } from './useRoomSubscriptions'
-import { fetchMessageHistory, fetchSurroundingMessages } from '@/api'
+import { fetchMessageHistory, fetchSurroundingMessages, markRoomRead } from '@/api'
 import type { Message, Nats, Room, Subscription } from '@/api/types'
 
 /** Per-room buffer state — owned by the reducer's `roomState` map. */
@@ -89,8 +89,11 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
   stateRef.current = state
 
   // The hook owns the generation counter that gates stale dispatches
-  // from this provider's async callbacks below.
-  const { currentGeneration } = useRoomSubscriptions(nats, dispatch)
+  // from this provider's async callbacks below. It also reads
+  // `stateRef.current.activeRoomId` / `.summaries` from inside the
+  // long-lived subscription callbacks to fire `markRoomRead` when
+  // messages arrive in the currently-active room.
+  const { currentGeneration } = useRoomSubscriptions(nats, dispatch, stateRef)
 
   const loadHistory = useCallback(
     async (roomId: string) => {
@@ -122,9 +125,20 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
     [user, nats, currentGeneration],
   )
 
-  const setActiveRoom = useCallback((roomId: string | null) => {
-    dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
-  }, [])
+  const setActiveRoom = useCallback(
+    (roomId: string | null) => {
+      dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
+      // Mark-read fire-and-forget when the user opens a room. siteId
+      // comes from the summary if we have one (cross-site DMs etc.);
+      // otherwise fall back to the user's home site.
+      if (roomId) {
+        const summary = stateRef.current.summaries.find((r) => r.id === roomId)
+        const siteId = summary?.siteId ?? user.siteId
+        markRoomRead(nats, { roomId, siteId })
+      }
+    },
+    [nats, user],
+  )
 
   const jumpToMessage = useCallback(
     async (roomId: string, messageId: string) => {

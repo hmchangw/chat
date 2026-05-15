@@ -3,6 +3,7 @@ import {
   fetchSidebarBuckets,
   getRoom,
   listRooms,
+  markRoomRead,
   subscribeToRoomEvents,
   subscribeToRoomMetadataUpdates,
   subscribeToSubscriptionUpdates,
@@ -40,8 +41,13 @@ import {
  * generation N, but generation is N+1 by the time I resolved — drop
  * this dispatch." Keeps the generation ref encapsulated in the hook
  * instead of threading it across the module boundary.
+ *
+ * The `stateRef` parameter is the provider's `useRef(state)` mirror —
+ * the hook reads `stateRef.current.activeRoomId` + `summaries` from
+ * inside long-lived subscription callbacks to decide whether to fire
+ * a `markRoomRead` RPC on incoming messages.
  */
-export function useRoomSubscriptions(nats, dispatch) {
+export function useRoomSubscriptions(nats, dispatch, stateRef) {
   const { user } = nats
   // Keep a live ref to `nats` so long-lived subscription callbacks
   // (subUpdate's getRoom call, listRooms inside the effect body) see
@@ -74,9 +80,23 @@ export function useRoomSubscriptions(nats, dispatch) {
       dispatch(action)
     }
 
+    // Fire `message.read` for messages arriving in the room the user
+    // is currently looking at — unless the sender is the current user
+    // (we don't need to "read" our own message). Fire-and-forget,
+    // swallows errors inside markRoomRead.
+    const maybeMarkActiveRead = (evtRoomId, senderAccount) => {
+      if (!evtRoomId) return
+      if (stateRef.current.activeRoomId !== evtRoomId) return
+      if (senderAccount && senderAccount === user.account) return
+      const summary = stateRef.current.summaries.find((r) => r.id === evtRoomId)
+      const siteId = summary?.siteId ?? user.siteId
+      markRoomRead(natsRef.current, { roomId: evtRoomId, siteId })
+    }
+
     const dmSub = subscribeToUserRoomEvents(liveNats, (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+        maybeMarkActiveRead(evt.roomId, evt.message?.sender?.account)
       }
     })
 
@@ -88,6 +108,7 @@ export function useRoomSubscriptions(nats, dispatch) {
             (p) => p.account === user.account
           )
           safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
+          maybeMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
         }
       })
       channelSubs.current.set(roomId, sub)
@@ -179,6 +200,9 @@ export function useRoomSubscriptions(nats, dispatch) {
       // RESET runs even when cancelled — it IS the cleanup.
       dispatch({ type: 'RESET' })
     }
+    // `stateRef` is consumed only via `.current` — stable across renders
+    // by construction; not in the dep array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, dispatch])
 
   // Memoised so the provider's downstream useMemo + useCallback that

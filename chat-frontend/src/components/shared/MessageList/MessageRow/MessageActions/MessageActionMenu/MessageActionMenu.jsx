@@ -53,7 +53,12 @@ export default function MessageActionMenu({ message, room }) {
     setReaders(null)
     setTooltipOpen(false)
     const siteId = room?.siteId ?? user.siteId
-    Promise.resolve(fetchReadReceipt(nats, { roomId: room.id, siteId, messageId: message.id }))
+    // History-loaded messages (pkg/model/cassandra.Message) serialize their
+    // id as `messageId`; the api layer's normalizeHistoricalMessage already
+    // remaps these to `id`, but the fallback keeps the menu working if any
+    // pre-normalization path is ever introduced (e.g. quoted-parent snapshots).
+    const messageId = message.id ?? message.messageId
+    Promise.resolve(fetchReadReceipt(nats, { roomId: room.id, siteId, messageId }))
       .then((resp) => {
         if (!mountedRef.current) return
         setReaders(resp?.readers ?? [])

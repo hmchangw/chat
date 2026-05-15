@@ -72,6 +72,13 @@ export function readReceipt(account: string, roomId: string, siteId: string): st
   return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read-receipt`
 }
 
+// messageRead is fire-and-forget — advances the caller's lastSeenAt to
+// `now()` on the server so subsequent read-receipt RPCs reflect the
+// current state. Mirrors pkg/subject/subject.go::MessageRead.
+export function messageRead(account: string, roomId: string, siteId: string): string {
+  return `chat.user.${account}.request.room.${roomId}.${siteId}.message.read`
+}
+
 export function memberList(account: string, roomId: string, siteId: string): string {
   return `chat.user.${account}.request.room.${roomId}.${siteId}.member.list`
 }

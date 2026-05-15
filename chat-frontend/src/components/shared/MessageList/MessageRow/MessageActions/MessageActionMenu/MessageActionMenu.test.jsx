@@ -207,6 +207,22 @@ describe('MessageActionMenu read-receipt RPC', () => {
     expect(request).toHaveBeenCalledTimes(2)
   })
 
+  it('uses message.messageId when message.id is absent (history-loaded shape)', () => {
+    const d = deferred()
+    const request = vi.fn().mockReturnValue(d.promise)
+    useNats.mockReturnValue({
+      user: { account: 'alice', siteId: 'siteA' },
+      request,
+    })
+    const historyMsg = { messageId: 'h1', sender: { account: 'alice' } }
+    render(<MessageActionMenu message={historyMsg} room={room} />)
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    expect(request).toHaveBeenCalledWith(
+      READ_RECEIPT_SUBJECT,
+      { messageId: 'h1' }
+    )
+  })
+
   it('falls back to user.siteId when room.siteId is missing', () => {
     const d = deferred()
     const request = vi.fn().mockReturnValue(d.promise)
