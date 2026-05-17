@@ -58,17 +58,43 @@ describe('RoomList: three-section render', () => {
     })
     const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
     const headers = Array.from(container.querySelectorAll('.room-list-section-header')).map(
-      (el) => el.textContent
+      (el) => el.textContent.replace(/^▾/, '')
     )
     expect(headers).toEqual(['Favorite', 'Apps', 'Channels and DMs'])
   })
 
-  it('hides empty sections (no header rendered)', () => {
+  it('always renders all three section headers even when a section is empty', () => {
     setupSections({ favorite: [], apps: [], channelDm: [summary('c1')] })
     render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
-    expect(screen.queryByText('Favorite')).not.toBeInTheDocument()
-    expect(screen.queryByText('Apps')).not.toBeInTheDocument()
+    expect(screen.getByText('Favorite')).toBeInTheDocument()
+    expect(screen.getByText('Apps')).toBeInTheDocument()
     expect(screen.getByText('Channels and DMs')).toBeInTheDocument()
+  })
+
+  it('shows a "No rooms" placeholder under an empty (expanded) section', () => {
+    setupSections({ favorite: [], apps: [], channelDm: [summary('c1')] })
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    const emptyPlaceholders = container.querySelectorAll('.room-list-section-empty')
+    // Favorite + Apps are empty; Channels and DMs has c1.
+    expect(emptyPlaceholders.length).toBe(2)
+    expect(emptyPlaceholders[0].textContent).toBe('No rooms')
+  })
+
+  it('renders a chevron in every section header that rotates when the section is collapsed', () => {
+    setupSections({
+      favorite:  [summary('f1')],
+      apps:      [summary('a1', { type: 'botDM' })],
+      channelDm: [summary('c1')],
+    })
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    expect(container.querySelectorAll('.room-list-section-chevron').length).toBe(3)
+    // Headers start expanded — no collapsed class.
+    expect(container.querySelectorAll('.room-list-section-collapsed').length).toBe(0)
+    fireEvent.click(screen.getByText('Apps'))
+    // After click, Apps' section carries the collapsed class (rotates the chevron via CSS).
+    const collapsed = container.querySelectorAll('.room-list-section-collapsed')
+    expect(collapsed.length).toBe(1)
+    expect(collapsed[0].textContent).toContain('Apps')
   })
 
   it('toggles section collapse on header click', () => {
