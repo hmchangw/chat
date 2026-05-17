@@ -80,6 +80,24 @@ describe('RoomList: three-section render', () => {
     expect(emptyPlaceholders[0].textContent).toBe('No rooms')
   })
 
+  it('renders a section `note` in place of room items / empty placeholder when present', () => {
+    useRoomSummaries.mockReturnValue({ summaries: [], setActiveRoom: vi.fn(), error: null })
+    useSidebarSections.mockReturnValue([
+      { key: 'favorite',  title: 'Favorite', rooms: [], note: 'Favorites are not yet supported' },
+      { key: 'apps',      title: 'Apps',     rooms: [] },
+      { key: 'channelDm', title: 'Channels and DMs', rooms: [summary('c1')] },
+    ])
+    const { container } = render(<RoomList selectedRoomId={null} onSelectRoom={vi.fn()} />)
+    // The note shows in the Favorite section…
+    expect(screen.getByText('Favorites are not yet supported')).toBeInTheDocument()
+    // …and the "No rooms" empty placeholder must NOT also render in that section
+    // (note overrides empty). Apps is still empty without a note → still shows "No rooms".
+    const notes = container.querySelectorAll('.room-list-section-note')
+    expect(notes).toHaveLength(1)
+    const empties = container.querySelectorAll('.room-list-section-empty')
+    expect(empties).toHaveLength(1)
+  })
+
   it('renders a chevron in every section header that rotates when the section is collapsed', () => {
     setupSections({
       favorite:  [summary('f1')],

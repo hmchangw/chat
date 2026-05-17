@@ -909,16 +909,13 @@ describe('RoomEventsProvider message.read wiring', () => {
 describe('RoomEventsProvider sidebar buckets bootstrap', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('fires getCurrent twice (canonical + favorite) and getApps with the documented payloads', async () => {
+  it('fires getCurrent (canonical) + getApps; skips the favorite RPC (disabled end-to-end)', async () => {
     const calls = []
     const request = vi.fn().mockImplementation((subject, payload) => {
       calls.push({ subject, payload })
       if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
-      if (subject.endsWith('.subscription.getCurrent')) {
-        if (payload?.favorite)
-          return Promise.resolve({ subscriptions: [{ roomId: 'f1' }] })
+      if (subject.endsWith('.subscription.getCurrent'))
         return Promise.resolve({ subscriptions: [{ roomId: 'c1' }] })
-      }
       if (subject.endsWith('.subscription.getApps'))
         return Promise.resolve({ subscriptions: [{ roomId: 'a1' }] })
       throw new Error('unexpected subject: ' + subject)
@@ -926,41 +923,43 @@ describe('RoomEventsProvider sidebar buckets bootstrap', () => {
     const nats = mockNats({ request })
 
     render(wrap(<SummariesProbe />, nats))
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
+    // listRooms + getCurrent + getApps = 3 calls (favorite RPC is skipped
+    // until backend supports it — see fetchSidebarBuckets/index.ts).
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(3))
 
     const currentCalls = calls.filter((c) => c.subject.endsWith('.subscription.getCurrent'))
+    const favoriteCalls = currentCalls.filter((c) => c.payload?.favorite)
     const getApps = calls.find((c) => c.subject.endsWith('.subscription.getApps'))
 
-    expect(currentCalls).toHaveLength(2)
-    expect(currentCalls.every((c) =>
-      c.subject === 'chat.user.alice.request.user.site-A.subscription.getCurrent'
-    )).toBe(true)
-    // One canonical (no/empty payload), one favorite-filtered.
-    const canonical = currentCalls.find((c) => !c.payload?.favorite)
-    const favorite = currentCalls.find((c) => c.payload?.favorite)
-    expect(canonical.payload).toEqual({})
-    expect(favorite.payload).toEqual({ favorite: true })
+    expect(currentCalls).toHaveLength(1)
+    expect(currentCalls[0].subject).toBe(
+      'chat.user.alice.request.user.site-A.subscription.getCurrent'
+    )
+    expect(currentCalls[0].payload).toEqual({})
+    expect(favoriteCalls).toHaveLength(0)
     expect(getApps.subject).toBe('chat.user.alice.request.user.site-A.subscription.getApps')
     expect(getApps.payload).toEqual({})
   })
 
-  it('does not block rendering when one bucket RPC fails', async () => {
-    const request = vi.fn().mockImplementation((subject, payload) => {
+  it('degrades gracefully (Promise.allSettled) when one bucket RPC fails', async () => {
+    // getApps rejects; canonical getCurrent + listRooms resolve. Sidebar
+    // should still bootstrap with the canonical subscriptions; the Apps
+    // bucket comes back empty.
+    const request = vi.fn().mockImplementation((subject) => {
       if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms: [] })
-      if (subject.endsWith('.subscription.getCurrent')) {
-        // The favorite-filtered call rejects; the canonical one resolves
-        // so we exercise an asymmetric failure (Promise.all still rejects).
-        if (payload?.favorite) return Promise.reject(new Error('boom'))
+      if (subject.endsWith('.subscription.getCurrent'))
         return Promise.resolve({ subscriptions: [{ roomId: 'c1' }] })
-      }
       if (subject.endsWith('.subscription.getApps'))
-        return Promise.resolve({ subscriptions: [{ roomId: 'a1' }] })
+        return Promise.reject(new Error('boom'))
       throw new Error('unexpected subject: ' + subject)
     })
     const nats = mockNats({ request })
 
     render(wrap(<SummariesProbe />, nats))
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(3))
+    // listRooms returned [] so summaries count is 0 — what we're really
+    // asserting is that the failing getApps doesn't reject the whole
+    // bootstrap (which with Promise.all would prevent any dispatch).
     expect(screen.getByTestId('count').textContent).toBe('0')
   })
 
@@ -1013,15 +1012,18 @@ describe('useSidebarSections', () => {
     expect(items).toEqual(['section-favorite', 'section-apps', 'section-channelDm'])
   })
 
-  it('puts favorited rooms only in Favorite (favorite > apps > channelDm exclusivity)', async () => {
+  it('keeps the Favorite section empty (path disabled) regardless of mock buckets', async () => {
+    // Favorite RPC is skipped in fetchSidebarBuckets (see comment there);
+    // even if a mock returned favorite IDs, they never enter state.
     const nats = bootstrapNats({
       buckets: { favoriteIds: ['f1', 'a1'], appIds: ['a1'], channelDmIds: ['c1', 'a1'] },
     })
     render(wrap(<SectionsProbe />, nats))
     await waitFor(() =>
-      expect(screen.getByTestId('section-favorite').textContent).toContain('a1')
+      expect(screen.getByTestId('section-apps').textContent).toContain('a1')
     )
-    expect(screen.getByTestId('section-apps').textContent).not.toContain('a1')
+    expect(screen.getByTestId('section-favorite').textContent).toBe('Favorite: ')
+    // App-vs-channelDm exclusivity still holds (apps > channelDm).
     expect(screen.getByTestId('section-channelDm').textContent).not.toContain('a1')
   })
 
@@ -1072,14 +1074,16 @@ describe('useSidebarSections', () => {
 
   it('preserves summaries recency order within each section', async () => {
     // bootstrapNats rooms in lastMsgAt order: c1 (12:00) > a1 (11:00) > f1 (10:00) > u1 (09:00)
+    // With favorites disabled, f1 / u1 / c1 all land in Channels and DMs
+    // (a1 goes to Apps). Expect channelDm ordered by lastMsgAt desc.
     const nats = bootstrapNats({
-      buckets: { favoriteIds: ['f1', 'c1'], appIds: ['a1'], channelDmIds: [] },
+      buckets: { favoriteIds: [], appIds: ['a1'], channelDmIds: ['f1', 'c1', 'u1'] },
     })
     render(wrap(<SectionsProbe />, nats))
     await waitFor(() =>
-      expect(screen.getByTestId('section-favorite').textContent).toContain('f1')
+      expect(screen.getByTestId('section-channelDm').textContent).toContain('c1')
     )
-    expect(screen.getByTestId('section-favorite').textContent).toMatch(/c1.*f1/)
+    expect(screen.getByTestId('section-channelDm').textContent).toMatch(/c1.*f1.*u1/)
   })
 
   it('merges subscription name and hrInfo from the bucket RPCs into each room', async () => {

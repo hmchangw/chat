@@ -250,6 +250,11 @@ export interface SidebarSection {
   key: 'favorite' | 'apps' | 'channelDm'
   title: string
   rooms: RoomSummary[]
+  /** Disabled-section banner. Rendered in place of room items when the
+   *  section is expanded — used today for the Favorite section while the
+   *  end-to-end favorite path is unimplemented (`pkg/model.Subscription`
+   *  has no Favorite field yet). */
+  note?: string
 }
 
 /**
@@ -300,7 +305,17 @@ export function useSidebarSections(): SidebarSection[] {
       else if (allBucketsEmpty) channelDm.push(enrich(room))
     }
     return [
-      { key: 'favorite',  title: 'Favorite',          rooms: favorite },
+      {
+        key: 'favorite',
+        title: 'Favorite',
+        rooms: favorite,
+        // Favorite path is unimplemented end-to-end (no `Favorite` field
+        // on `pkg/model.Subscription`, no toggle handler on the backend,
+        // and `fetchSidebarBuckets` currently skips the favorite RPC).
+        // The section header still renders for layout continuity; clear
+        // the note once the favorite path lands.
+        note: 'Favorites are not yet supported',
+      },
       { key: 'apps',      title: 'Apps',              rooms: apps },
       { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
     ]

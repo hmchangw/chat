@@ -51,10 +51,13 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
                 <span className="room-list-section-chevron" aria-hidden="true">▾</span>
                 {section.title}
               </div>
-              {!isCollapsed && section.rooms.length === 0 && (
+              {!isCollapsed && section.note && (
+                <div className="room-list-section-note">{section.note}</div>
+              )}
+              {!isCollapsed && !section.note && section.rooms.length === 0 && (
                 <div className="room-list-section-empty">No rooms</div>
               )}
-              {!isCollapsed &&
+              {!isCollapsed && !section.note &&
                 section.rooms.map((room) => (
                   <RoomItem
                     key={room.id}
