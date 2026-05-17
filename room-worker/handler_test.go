@@ -45,7 +45,7 @@ func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -96,7 +96,7 @@ func TestHandler_ProcessRoleUpdate_Demote(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -138,7 +138,7 @@ func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -210,7 +210,7 @@ func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	err := h.processRoleUpdate(context.Background(), []byte("not json"))
 	if err == nil {
@@ -226,7 +226,7 @@ func TestHandler_ProcessRoleUpdate_AddRoleError(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -245,7 +245,7 @@ func TestHandler_ProcessRoleUpdate_RemoveRoleError(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -264,7 +264,7 @@ func TestHandler_ProcessRoleUpdate_GetSubscriptionError(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -299,7 +299,7 @@ func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		t.Fatal("publish should not be called")
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin", Timestamp: 1}
 	data, _ := json.Marshal(req)
@@ -722,21 +722,24 @@ func TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey(t *t
 	store.EXPECT().ListNewMembers(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
 		Return([]string{"bob", "charlie"}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
-		{ID: "u2", Account: "bob", SiteID: "site-a"},
-		{ID: "u3", Account: "charlie", SiteID: "site-a"},
+		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
+		{ID: "u3", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
+	}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
 
 	req := model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob", "charlie"},
+		RoomID: "r1", RequesterAccount: "alice", Users: []string{"bob", "charlie"},
 		History:   model.HistoryConfig{Mode: model.HistoryModeNone},
 		Timestamp: 1,
 	}
 	reqData, _ := json.Marshal(req)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-add-members-ordering")
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 	require.NoError(t, h.processAddMembers(ctx, reqData))
 
 	for _, account := range []string{"bob", "charlie"} {
@@ -3287,7 +3290,10 @@ func TestProcessAddMembers_FansOutKeyToNewAccountsOnly(t *testing.T) {
 	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]string{"charlie"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie"}).Return([]model.User{
-		{ID: "u_charlie", Account: "charlie", SiteID: "site-a"},
+		{ID: "u_charlie", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
+	}, nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -3327,7 +3333,10 @@ func TestProcessAddMembers_PermanentErrorWhenKeyMissing(t *testing.T) {
 	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]string{"charlie"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie"}).Return([]model.User{
-		{ID: "u_charlie", Account: "charlie", SiteID: "site-a"},
+		{ID: "u_charlie", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
+	}, nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -3360,7 +3369,10 @@ func TestProcessAddMembers_TransientErrorWhenValkeyFails(t *testing.T) {
 	mockStore.EXPECT().ListNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]string{"charlie"}, nil)
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie"}).Return([]model.User{
-		{ID: "u_charlie", Account: "charlie", SiteID: "site-a"},
+		{ID: "u_charlie", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
+	}, nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -3409,7 +3421,7 @@ func TestProcessRemoveMember_SkipsRotationWhenValkeyAlreadyAhead(t *testing.T) {
 
 	// Mongo work still happens (idempotent). No Rotate/Set should be called.
 	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "bob").
-		Return(&UserWithMembership{User: model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"}}, nil)
+		Return(&UserWithMembership{User: model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"}}, nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u-bob").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "r1", "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
@@ -3488,7 +3500,7 @@ func TestHandler_ProcessAddMembers_BackfillRunsOnFirstOrgTransition(t *testing.T
 
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3521,7 +3533,7 @@ func TestHandler_ProcessAddMembers_BackfillSkippedWhenRoomAlreadyHasOrgs(t *test
 
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3566,7 +3578,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_DirectAndOrgOverlap(t *testi
 		})
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3617,7 +3629,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_OrgOnly(t *testing.T) {
 		})
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3659,7 +3671,7 @@ func TestHandler_ProcessCreateRoom_Channel_IndividualFilter(t *testing.T) {
 		})
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 
 	room := &model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}
 	req := &model.CreateRoomRequest{
@@ -3702,7 +3714,7 @@ func TestHandler_ProcessAddMembers_RequesterNotFound(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "missing-id", RequesterAccount: "missing-requester", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -3740,7 +3752,7 @@ func TestHandler_ProcessAddMembers_RequesterEmptyName(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -3776,7 +3788,7 @@ func TestHandler_ProcessAddMembers_AddedUserEmptyName(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
 	data, _ := json.Marshal(req)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -3839,7 +3851,7 @@ func TestHandler_ProcessAddMembers_Content_Single(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3878,7 +3890,7 @@ func TestHandler_ProcessAddMembers_Content_Multi(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -3901,7 +3913,7 @@ func TestHandler_PublishChannelSysMessages_MembersAddedContent(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	room := &model.Room{ID: "r1", Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}
 	requester := &model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}
@@ -3933,10 +3945,10 @@ func TestHandler_ProcessRemoveIndividual_SelfLeave_Content(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "bob", Account: "bob", Timestamp: 1}
-	require.NoError(t, h.processRemoveIndividual(context.Background(), &req))
+	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil, false))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_left")
 	assert.Equal(t, "bob", sysMsg.UserAccount)
@@ -3962,10 +3974,10 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", Account: "bob", Timestamp: 1}
-	require.NoError(t, h.processRemoveIndividual(context.Background(), &req))
+	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil, false))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
@@ -3989,11 +4001,11 @@ func TestHandler_ProcessRemoveIndividual_EmptyName(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", Timestamp: 1}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
-	err := h.processRemoveIndividual(ctx, &req)
+	err := h.processRemoveIndividual(ctx, &req, nil, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
 
@@ -4026,10 +4038,10 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
-	require.NoError(t, h.processRemoveOrg(context.Background(), &req))
+	require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil, false))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
@@ -4054,11 +4066,11 @@ func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", OrgID: "o1", Timestamp: 1}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
-	err := h.processRemoveOrg(ctx, &req)
+	err := h.processRemoveOrg(ctx, &req, nil, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
 
@@ -4275,7 +4287,7 @@ func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *test
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
-	}}
+	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
@@ -4309,7 +4321,7 @@ func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing
 		Return(false, fmt.Errorf("transient mongo error"))
 	// No BulkCreateRoomMembers / ReconcileMemberCounts — must short-circuit.
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.AddMembersRequest{
 		RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice",
 		Users: []string{"u1"}, Timestamp: 1,
@@ -4329,7 +4341,7 @@ func TestHandler_ProcessAddMembers_InvalidRequestID_ReturnsPermanent(t *testing.
 	store := NewMockSubscriptionStore(ctrl)
 	// No store mocks — validation must short-circuit before any store call.
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
 	req := model.AddMembersRequest{
 		RoomID: "r1", RequesterID: "u_a", RequesterAccount: "alice",
 		Users: []string{"u1"}, Timestamp: 1,
