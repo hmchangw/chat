@@ -47,13 +47,20 @@ export interface SidebarBuckets {
  * `channelDmIds` and one of the other Sets without double-render.
  */
 export async function fetchSidebarBuckets({ user, request }: Nats): Promise<SidebarBuckets> {
+  // TEMP DEBUG: log each subscription RPC reply so we can see exactly
+  // what the user-service returns on cold start. Remove once the live
+  // backend behaviour is verified.
+  const log = (subject: string, response: SidebarBucketReply): SidebarBucketReply => {
+    console.log('[sidebar-bootstrap]', subject, response)
+    return response
+  }
+  const currentSubject = userSubscriptionGetCurrent(user.account, user.siteId)
+  const appsSubject = userSubscriptionGetApps(user.account, user.siteId)
   const [allResp, favResp, appResp] = await Promise.all([
-    request<SidebarBucketReply>(userSubscriptionGetCurrent(user.account, user.siteId), {}),
-    request<SidebarBucketReply>(
-      userSubscriptionGetCurrent(user.account, user.siteId),
-      { favorite: true },
-    ),
-    request<SidebarBucketReply>(userSubscriptionGetApps(user.account, user.siteId), {}),
+    request<SidebarBucketReply>(currentSubject, {}).then((r) => log(currentSubject, r)),
+    request<SidebarBucketReply>(currentSubject, { favorite: true })
+      .then((r) => log(`${currentSubject} {favorite:true}`, r)),
+    request<SidebarBucketReply>(appsSubject, {}).then((r) => log(appsSubject, r)),
   ])
   const subscriptions: Record<string, DMSubscription> = {}
   const collect = (resp: SidebarBucketReply) => {
