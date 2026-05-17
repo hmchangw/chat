@@ -11,7 +11,12 @@ export async function listRooms({ user, request }: Nats): Promise<ListRoomsRespo
   const resp = await request<ListRoomsResponse>(subject, {})
   // TEMP DEBUG: pair with the [sidebar-bootstrap] logs in
   // fetchSidebarBuckets so we can diff what listRooms returns vs
-  // what the subscription RPCs return. Remove once verified.
-  console.log('[sidebar-bootstrap]', subject, resp)
+  // what the subscription RPCs return. Compact summary so the
+  // console stays readable for accounts with many rooms. Remove
+  // once verified.
+  console.log('[sidebar-bootstrap]', subject, {
+    count: resp.rooms?.length ?? 0,
+    roomIds: resp.rooms?.map((r) => r.id) ?? [],
+  })
   return resp
 }

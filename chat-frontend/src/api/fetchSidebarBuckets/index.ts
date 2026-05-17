@@ -72,10 +72,15 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     label: string,
   ): SidebarBucketReply => {
     if (result.status === 'fulfilled') {
-      // TEMP DEBUG: log each subscription RPC reply so we can see exactly
-      // what the user-service returns on cold start. Remove once the live
-      // backend behaviour is verified.
-      console.log('[sidebar-bootstrap]', label, result.value)
+      // TEMP DEBUG: log a compact summary of each subscription RPC reply
+      // (count + roomIds) so we can see exactly which rooms came back
+      // without flooding DevTools with full subscription objects for
+      // accounts with many rooms. Remove once the live backend
+      // behaviour is verified.
+      console.log('[sidebar-bootstrap]', label, {
+        count: result.value.subscriptions.length,
+        roomIds: result.value.subscriptions.map((s) => s.roomId),
+      })
       return result.value
     }
     const err = result.reason

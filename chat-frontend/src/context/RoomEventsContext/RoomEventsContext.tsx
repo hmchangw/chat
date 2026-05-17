@@ -309,12 +309,14 @@ export function useSidebarSections(): SidebarSection[] {
         key: 'favorite',
         title: 'Favorite',
         rooms: favorite,
-        // Favorite path is unimplemented end-to-end (no `Favorite` field
-        // on `pkg/model.Subscription`, no toggle handler on the backend,
-        // and `fetchSidebarBuckets` currently skips the favorite RPC).
-        // The section header still renders for layout continuity; clear
-        // the note once the favorite path lands.
-        note: 'Favorites are not yet supported',
+        // Favorite path is unimplemented end-to-end today (no `Favorite`
+        // field on `pkg/model.Subscription`, no toggle handler on the
+        // backend, `fetchSidebarBuckets` skips the favorite RPC). Show
+        // the note ONLY when there are no rooms to render — if a live
+        // event ever lands a roomId in favoriteIds (or the favorite RPC
+        // is re-enabled), prefer rendering the rooms over the
+        // unsupported note so we don't silently hide real content.
+        note: favorite.length === 0 ? 'Favorites are not yet supported' : undefined,
       },
       { key: 'apps',      title: 'Apps',              rooms: apps },
       { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
