@@ -4,7 +4,7 @@
 
 **Goal:** Fix three room-worker bugs — org-member duplication in `room_members`, empty `Content` on `members_added` sys-messages, and missing sender + empty `Content` on `member_removed` / `member_left` — without changing wire schemas or migrating existing data.
 
-**Architecture:** Introduce a `room-worker/sysmsg.go` helper file with five formatter functions. Apply localized changes inside `processAddMembers`, `processCreateRoomChannel`, `processRemoveIndividual`, `processRemoveOrg`, and `publishChannelSysMessages` in `room-worker/handler.go`. All changes are internal to `room-worker`; no store interface, model, or wire-protocol changes.
+**Architecture:** Introduce `room-worker/sysmsg.go` formatter helpers and update `room-worker/handler.go` membership flows. Also add DM participant persistence spanning `pkg/model` (`Room.UIDs`/`Room.Accounts` fields, `BuildDMParticipants` helper) and the `room-worker` store contract (`UpdateDMParticipants` on `SubscriptionStore`). No wire-protocol changes.
 
 **Tech Stack:** Go 1.25, NATS JetStream, MongoDB driver v2, `go.uber.org/mock` (mockgen), `stretchr/testify`.
 
@@ -21,7 +21,7 @@
 | `room-worker/handler.go` | Modify | `processAddMembers`, `processCreateRoomChannel`, `processRemoveIndividual`, `processRemoveOrg`, `publishChannelSysMessages` |
 | `room-worker/handler_test.go` | Modify | New table-driven tests for filter rule, backfill gate, Content, sender, name validation |
 
-No `store.go` changes — every method the plan needs is already on the `SubscriptionStore` interface.
+`store.go` is extended in Task 12 to add `UpdateDMParticipants` to the `SubscriptionStore` interface for DM participant persistence; the remaining tasks reuse methods already on the interface.
 
 ---
 

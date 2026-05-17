@@ -93,7 +93,7 @@ New `room-worker/sysmsg.go`:
 
 Display-name composition: `strings.TrimSpace(u.EngName + " " + u.ChineseName)`. Empty-name inputs are *not* handled by the formatters — callers validate `EngName`/`ChineseName` non-empty before invocation (§2.3, §2.4). The formatters trust their inputs.
 
-Unit tests in `room-worker/sysmsg_test.go`. No store interface changes.
+Unit tests in `room-worker/sysmsg_test.go`. The membership-correctness work above does not change the store interface; §3.4 adds `UpdateDMParticipants` to `SubscriptionStore` separately for DM participant persistence.
 
 ## 3. DM Participant Fields
 
