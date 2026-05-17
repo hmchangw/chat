@@ -20,25 +20,28 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	dto "github.com/prometheus/client_model/go"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
-	NatsURL       string `env:"NATS_URL,required"`
-	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI      string `env:"MONGO_URI,required"`
-	MongoDB       string `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string `env:"MONGO_PASSWORD"  envDefault:""`
-	MetricsAddr   string `env:"METRICS_ADDR"    envDefault:":9099"`
-	MaxInFlight   int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
-	PProfAddr     string `env:"PPROF_ADDR"      envDefault:""`
+	NatsURL        string `env:"NATS_URL,required"`
+	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID         string `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI       string `env:"MONGO_URI,required"`
+	MongoDB        string `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername  string `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword  string `env:"MONGO_PASSWORD"  envDefault:""`
+	MetricsAddr    string `env:"METRICS_ADDR"    envDefault:":9099"`
+	MaxInFlight    int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
+	PProfAddr      string `env:"PPROF_ADDR"      envDefault:""`
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
 }
 
 func main() {
@@ -74,7 +77,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 	case "run":
 		return runRun(ctx, cfg, os.Args[2:])
 	case "teardown":
-		return runTeardown(ctx, cfg)
+		return runTeardown(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
@@ -95,40 +98,92 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
 	if err != nil {
-		slog.Error("mongo connect", "error", err)
 		return 1
 	}
-	defer mongoutil.Disconnect(ctx, client)
-	db := client.Database(cfg.MongoDB)
+	defer cleanup()
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
-	if err := Seed(ctx, db, fixtures); err != nil {
+	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
+		return 1
+	}
+	if err := SeedRoomKeys(ctx, keyStore, fixtures.RoomKeys); err != nil {
+		slog.Error("seed room keys", "error", err)
 		return 1
 	}
 	slog.Info("seed complete",
 		"preset", p.Name,
 		"users", len(fixtures.Users),
 		"rooms", len(fixtures.Rooms),
-		"subs", len(fixtures.Subscriptions))
+		"subs", len(fixtures.Subscriptions),
+		"roomKeys", len(fixtures.RoomKeys))
 	return 0
 }
 
-func runTeardown(ctx context.Context, cfg *config) int {
-	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+func runTeardown(ctx context.Context, cfg *config, args []string) int {
+	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
+	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
+	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
+	_ = fs.Parse(args)
+	if *preset == "" {
+		fmt.Fprintln(os.Stderr, "--preset required")
+		return 2
+	}
+	p, ok := BuiltinPreset(*preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		return 2
+	}
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
 	if err != nil {
-		slog.Error("mongo connect", "error", err)
 		return 1
 	}
-	defer mongoutil.Disconnect(ctx, client)
-	db := client.Database(cfg.MongoDB)
+	defer cleanup()
+	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+	roomIDs := make([]string, len(fixtures.Rooms))
+	for i := range fixtures.Rooms {
+		roomIDs[i] = fixtures.Rooms[i].ID
+	}
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
 	}
+	if err := TeardownRoomKeys(ctx, keyStore, roomIDs); err != nil {
+		slog.Error("teardown room keys", "error", err)
+		return 1
+	}
 	slog.Info("teardown complete")
 	return 0
+}
+
+// connectStores opens Mongo and Valkey. cleanup disconnects both; the caller
+// must invoke it (typically via defer). On error, neither resource is leaked.
+func connectStores(ctx context.Context, cfg *config) (*mongo.Database, roomkeystore.RoomKeyStore, func(), error) {
+	client, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	if err != nil {
+		slog.Error("mongo connect", "error", err)
+		return nil, nil, nil, err
+	}
+	keyStore, err := connectKeyStore(cfg)
+	if err != nil {
+		mongoutil.Disconnect(ctx, client)
+		slog.Error("valkey connect", "error", err)
+		return nil, nil, nil, err
+	}
+	cleanup := func() {
+		_ = keyStore.Close()
+		mongoutil.Disconnect(ctx, client)
+	}
+	return client.Database(cfg.MongoDB), keyStore, cleanup, nil
+}
+
+func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
+	return roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: time.Hour,
+	})
 }
 
 func runRun(ctx context.Context, cfg *config, args []string) int {
@@ -236,16 +291,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer func() { _ = e1Sub.Unsubscribe() }()
 
 	// E2 subscription: broadcast events.
-	e2Handler := func(msg *nats.Msg) {
-		var evt model.RoomEvent
-		if err := json.Unmarshal(msg.Data, &evt); err != nil {
-			return
-		}
-		if evt.Message == nil || evt.Message.ID == "" {
-			return
-		}
-		collector.RecordBroadcast(evt.Message.ID, time.Now())
-	}
+	e2Handler := newE2Handler(collector)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
@@ -376,6 +422,26 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 
 	totalErrs := summary.PublishErrors + summary.GatekeeperErrors + summary.MissingReplies + summary.MissingBroadcasts
 	return DetermineExitCode(summary.SentMeasured, totalErrs)
+}
+
+// newE2Handler reads only LastMsgID from the cleartext envelope so the same
+// handler works for plaintext and encrypted broadcasts (Message is nil under
+// encryption). Decoding into a minimal struct avoids per-event allocation of
+// the full RoomEvent's slices and pointers on this high-frequency path.
+func newE2Handler(collector *Collector) func(*nats.Msg) {
+	type envelope struct {
+		LastMsgID string `json:"lastMsgId"`
+	}
+	return func(msg *nats.Msg) {
+		var evt envelope
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			return
+		}
+		if evt.LastMsgID == "" {
+			return
+		}
+		collector.RecordBroadcast(evt.LastMsgID, time.Now())
+	}
 }
 
 type natsCorePublisher struct {
