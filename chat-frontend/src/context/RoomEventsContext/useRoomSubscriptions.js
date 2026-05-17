@@ -182,6 +182,15 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
         if (!roomId) return
         closeChannelSub(roomId)
         safeDispatch({ type: 'ROOM_REMOVED', roomId })
+      } else if (evt.subscription?.roomId) {
+        // Catch-all for any other action that carries a subscription
+        // payload. Today the backend emits `role_updated` (room-worker
+        // handler.go:197); future actions (mute, favorite, mark-read)
+        // will flow through the same branch once the backend wires
+        // them. The reducer's SUBSCRIPTION_UPSERTED partial-merges so
+        // a payload missing fields (e.g. only `roles`) won't drop
+        // lastSeenAt / hasMention / alert from the prior record.
+        safeDispatch({ type: 'SUBSCRIPTION_UPSERTED', subscription: evt.subscription })
       }
     })
 

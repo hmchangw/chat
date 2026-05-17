@@ -243,6 +243,45 @@ describe('RoomEventsProvider subscriptions', () => {
     expect(unsubs[0].unsubscribe).toHaveBeenCalled()
   })
 
+  it('dispatches SUBSCRIPTION_UPSERTED on role_updated events (live propagation of role changes)', async () => {
+    // Cold-start returns a single channel-room subscription where the
+    // user is `member`. A live `role_updated` event arrives bumping
+    // them to `owner`; useSubscription should reflect the new roles
+    // without any other refresh.
+    const rooms = [{ id: 'g1', name: 'g', type: 'channel', siteId: 'site-A', userCount: 2, lastMsgAt: null }]
+    const request = vi.fn().mockImplementation((subject) => {
+      if (subject === 'chat.user.alice.request.rooms.list') return Promise.resolve({ rooms })
+      if (subject.endsWith('.subscription.getCurrent'))
+        return Promise.resolve({ subscriptions: [{ roomId: 'g1', roles: ['member'], name: 'g' }] })
+      if (subject.endsWith('.subscription.getApps')) return Promise.resolve({ subscriptions: [] })
+      throw new Error('unexpected request: ' + subject)
+    })
+    const handlers = new Map()
+    const subscribe = vi.fn().mockImplementation((subject, cb) => {
+      handlers.set(subject, cb)
+      return { unsubscribe: vi.fn() }
+    })
+    const nats = mockNats({ request, subscribe })
+
+    function RoleProbe() {
+      const sub = useSubscription('g1')
+      return <div data-testid="roles">{sub?.roles?.join(',') ?? '∅'}</div>
+    }
+
+    render(wrap(<RoleProbe />, nats))
+    await waitFor(() => expect(screen.getByTestId('roles').textContent).toBe('member'))
+
+    act(() => {
+      handlers.get('chat.user.alice.event.subscription.update')({
+        action: 'role_updated',
+        subscription: { roomId: 'g1', roles: ['owner', 'member'], name: 'g' },
+        userId: 'u-alice',
+        timestamp: Date.now(),
+      })
+    })
+    await waitFor(() => expect(screen.getByTestId('roles').textContent).toBe('owner,member'))
+  })
+
   it('tears down old subscriptions and opens new ones when the user changes', async () => {
     const request = vi.fn().mockResolvedValue({ rooms: [] })
     const subs = []
