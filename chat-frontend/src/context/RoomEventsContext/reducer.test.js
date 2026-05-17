@@ -749,6 +749,30 @@ describe('roomEventsReducer: bucket Sets', () => {
     expect([...next.favoriteIds]).toEqual(['f1'])
   })
 
+  it('ROOM_ADDED still runs bucket-Set maintenance when summary already exists (ROOMS_LOADED+live-add race)', () => {
+    // Race scenario: listRooms returns the room first → ROOMS_LOADED
+    // seeds the summary; then `subscription.update added` fires →
+    // ROOM_ADDED runs but the summary is already present. The old
+    // early-return left channelDmIds empty → useSidebarSections's
+    // partition dropped the room silently.
+    const a = room('a', { type: 'channel' })
+    const seeded = roomEventsReducer(initialState, { type: 'ROOMS_LOADED', rooms: [a] })
+    expect(seeded.channelDmIds.size).toBe(0)
+    const next = roomEventsReducer(seeded, { type: 'ROOM_ADDED', room: a })
+    expect(next.channelDmIds.has('a')).toBe(true)
+    expect(next.summaries).toHaveLength(1)
+  })
+
+  it('ROOM_ADDED is a true no-op when summary AND correct bucket are already present', () => {
+    // Idempotency check: a duplicate ROOM_ADDED (e.g. React StrictMode
+    // double-fire) should return the same state object — no spurious
+    // re-renders downstream.
+    const a = room('a', { type: 'channel' })
+    const after1 = roomEventsReducer(initialState, { type: 'ROOM_ADDED', room: a })
+    const after2 = roomEventsReducer(after1, { type: 'ROOM_ADDED', room: a })
+    expect(after2).toBe(after1)
+  })
+
   it('ROOM_ADDED for a roomId already in appIds is a no-op for the bucket', () => {
     const seeded = roomEventsReducer(initialState, {
       type: 'BUCKETS_LOADED',
@@ -952,6 +976,31 @@ describe('roomEventsReducer: bucket Sets', () => {
       subscription: { roomId: 'c1', hasMention: false, roles: ['member'] },
     })
     expect(cleared.summaries.find((s) => s.id === 'c1').hasMention).toBe(false)
+  })
+
+  it('ROOMS_LOADED enriches incoming summaries with already-seeded subscriptions (BUCKETS_LOADED race)', () => {
+    // Race scenario: BUCKETS_LOADED lands BEFORE ROOMS_LOADED (the
+    // bootstrap fan-out runs both in parallel). The subscription with
+    // a server-canonical mention should NOT be wiped out by
+    // toSummary's zero-init when ROOMS_LOADED arrives.
+    const seeded = roomEventsReducer(initialState, {
+      type: 'BUCKETS_LOADED',
+      favoriteIds: [],
+      appIds: [],
+      channelDmIds: ['r1'],
+      subscriptions: {
+        r1: { roomId: 'r1', name: 'frontend-team', hasMention: true, roles: ['member'] },
+      },
+    })
+    // summaries was empty when BUCKETS_LOADED ran — no enrichment yet.
+    expect(seeded.summaries).toHaveLength(0)
+    const next = roomEventsReducer(seeded, {
+      type: 'ROOMS_LOADED',
+      rooms: [room('r1', { name: 'old-canonical' })],
+    })
+    const s = next.summaries.find((x) => x.id === 'r1')
+    expect(s.hasMention).toBe(true)
+    expect(s.subscriptionName).toBe('frontend-team')
   })
 
   it('ROOM_ADDED merges a pre-existing subscription record into the new summary', () => {

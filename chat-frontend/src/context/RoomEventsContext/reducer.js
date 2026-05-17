@@ -126,23 +126,41 @@ function emptyRoomState() {
 export function roomEventsReducer(state, action) {
   switch (action.type) {
     case 'ROOMS_LOADED': {
-      const summaries = sortByLastMsgDesc(action.rooms.map(toSummary))
+      // Enrich every fresh summary with the matching subscription record
+      // if one is already in state. Without this, a BUCKETS_LOADED that
+      // landed BEFORE ROOMS_LOADED (parallel-fetched in the bootstrap)
+      // would have its server-canonical hasMention / subscriptionName
+      // wiped out by toSummary's zero-init when ROOMS_LOADED arrives.
+      const summaries = sortByLastMsgDesc(
+        action.rooms.map((r) =>
+          mergeSubscriptionIntoSummary(toSummary(r), state.subscriptions[r.id])
+        )
+      )
       return { ...state, summaries, roomsError: null }
     }
     case 'ROOM_ADDED': {
-      if (state.summaries.some((r) => r.id === action.room.id)) return state
       const roomId = action.room.id
-      // A SUBSCRIPTION_UPSERTED commonly fires BEFORE this ROOM_ADDED
-      // (useRoomSubscriptions dispatches the subscription synchronously
-      // and awaits getRoom() before ROOM_ADDED). Merge the existing
-      // subscription record into the new summary so hasMention /
-      // subscriptionName survive — otherwise toSummary's zero-init
-      // would clobber them and the badge / DM name would silently drop.
-      const summary = mergeSubscriptionIntoSummary(
-        toSummary(action.room),
-        state.subscriptions[roomId],
-      )
-      const summaries = sortByLastMsgDesc([...state.summaries, summary])
+      const existingIdx = state.summaries.findIndex((r) => r.id === roomId)
+      // The summary may already exist if ROOMS_LOADED ran first (the
+      // bootstrap fan-out + a live `subscription.update added` can race).
+      // In that case we still need the bucket-Set maintenance below —
+      // skipping it would leave the room in `summaries` but in NO
+      // bucket Set, so `useSidebarSections`'s strict partition would
+      // silently drop it (until the all-empty fallback kicks in).
+      let summaries = state.summaries
+      if (existingIdx === -1) {
+        // A SUBSCRIPTION_UPSERTED commonly fires BEFORE this ROOM_ADDED
+        // (useRoomSubscriptions dispatches the subscription synchronously
+        // and awaits getRoom() before ROOM_ADDED). Merge the existing
+        // subscription record into the new summary so hasMention /
+        // subscriptionName survive — otherwise toSummary's zero-init
+        // would clobber them and the badge / DM name would silently drop.
+        const summary = mergeSubscriptionIntoSummary(
+          toSummary(action.room),
+          state.subscriptions[roomId],
+        )
+        summaries = sortByLastMsgDesc([...state.summaries, summary])
+      }
       let appIds = state.appIds
       let channelDmIds = state.channelDmIds
       if (action.room.type === 'botDM') {
@@ -153,6 +171,15 @@ export function roomEventsReducer(state, action) {
       } else if (!channelDmIds.has(roomId)) {
         channelDmIds = new Set(channelDmIds)
         channelDmIds.add(roomId)
+      }
+      // Object-identity short-circuit so a true no-op (room already in
+      // summaries AND in the right bucket) doesn't trigger a re-render.
+      if (
+        summaries === state.summaries &&
+        appIds === state.appIds &&
+        channelDmIds === state.channelDmIds
+      ) {
+        return state
       }
       return { ...state, summaries, appIds, channelDmIds }
     }

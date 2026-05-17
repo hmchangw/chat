@@ -51,6 +51,8 @@ export type {
   Nats,
   NatsSubscription,
   SubscriptionCallback,
+  SubscriptionUpdateEvent,
+  SubscriptionUpdateAction,
   AsyncJobOptions,
   AsyncJobResult,
   // Domain types
