@@ -55,6 +55,11 @@ type Metrics struct {
 	// RAWVisibilityWindow records per-path visibility window:
 	// first-visible − last-not-visible. Companion to RAWLag.
 	RAWVisibilityWindow *prometheus.HistogramVec
+	// RoomOpen records per-leg latency for the room-open scenario (Phase 3 §3.14).
+	// Label "leg" identifies the request (history, rooms_get, presence, read, restricted).
+	RoomOpen *prometheus.HistogramVec
+	// RoomOpenE2E records end-to-end (slowest-leg) latency for the room-open scenario.
+	RoomOpenE2E prometheus.Histogram
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -155,6 +160,16 @@ func NewMetrics() *Metrics {
 			Help:    "Per-path visibility window: first-visible - last-not-visible.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"path"}),
+		RoomOpen: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_room_open_seconds",
+			Help:    "Per-leg latency for room-open scenario (legs: history, rooms_get, presence, read, restricted).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"leg"}),
+		RoomOpenE2E: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "loadgen_room_open_e2e_seconds",
+			Help:    "End-to-end (slowest-leg) latency for room-open scenario.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+		}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -167,6 +182,7 @@ func NewMetrics() *Metrics {
 		m.ThreadMessages,
 		m.PublishedByRoomType,
 		m.RAWLag, m.RAWVisibilityWindow,
+		m.RoomOpen, m.RoomOpenE2E,
 	)
 	return m
 }
