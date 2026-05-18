@@ -115,3 +115,11 @@ func (c *Cache) Stats() Stats {
 		Size:       c.lru.Len(),
 	}
 }
+
+// Invalidate removes any cached entry for roomID. Safe to call when
+// no entry exists; in that case it is a no-op. Included from v1 even
+// though no caller uses it, so future event-driven invalidation work
+// plugs in without an interface change.
+func (c *Cache) Invalidate(roomID string) {
+	c.lru.Remove(roomID)
+}

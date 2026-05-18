@@ -113,3 +113,22 @@ func TestCache_CapacityEviction(t *testing.T) {
 	_, _ = c.Get(context.Background(), "r3")
 	assert.Equal(t, int32(4), calls.Load(), "r3 should still be a hit")
 }
+
+func TestCache_Invalidate(t *testing.T) {
+	var calls atomic.Int32
+	loader := func(_ context.Context, roomID string) (roommetacache.Meta, error) {
+		calls.Add(1)
+		return makeMeta(roomID), nil
+	}
+	c, err := roommetacache.New(10, time.Minute, loader)
+	require.NoError(t, err)
+
+	_, _ = c.Get(context.Background(), "r1")
+	_, _ = c.Get(context.Background(), "r1")
+	require.Equal(t, int32(1), calls.Load())
+
+	c.Invalidate("r1")
+
+	_, _ = c.Get(context.Background(), "r1")
+	assert.Equal(t, int32(2), calls.Load(), "Invalidate should cause next Get to miss")
+}
