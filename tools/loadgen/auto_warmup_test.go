@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require" //nolint:depguard
 )
 
 func TestCollector_MessageIDs_ReturnsAllSeen(t *testing.T) {
@@ -28,27 +28,38 @@ func TestCollector_MessageIDs_ReturnsAllSeen(t *testing.T) {
 }
 
 func TestNeedsAutoWarmup_True_WhenMixIncludesIDKinds(t *testing.T) {
+	sc, ok := LookupScenario("history-read")
+	require.True(t, ok, "history-read must be registered")
+	aw, ok := sc.(AutoWarmer)
+	require.True(t, ok, "history-read must implement AutoWarmer")
 	p, _ := BuiltinPreset("history-read")
-	assert.True(t, needsAutoWarmup("history-read", &p),
+	assert.True(t, aw.NeedsAutoWarmup(&p),
 		"history-read with default mix needs warm-up (60% kinds need IDs)")
 }
 
 func TestNeedsAutoWarmup_False_ForLoadHistoryOnly(t *testing.T) {
+	sc, ok := LookupScenario("history-read")
+	require.True(t, ok)
+	aw, ok := sc.(AutoWarmer)
+	require.True(t, ok)
 	p := Preset{
 		Name:       "lh-only",
 		HistoryMix: map[historyRequestKind]int{HistoryLoadHistory: 100},
 	}
-	assert.False(t, needsAutoWarmup("history-read", &p),
+	assert.False(t, aw.NeedsAutoWarmup(&p),
 		"a 100%% LoadHistory mix has no kinds that need IDs")
 }
 
 func TestNeedsAutoWarmup_False_ForOtherScenarios(t *testing.T) {
-	p, _ := BuiltinPreset("search-read")
-	assert.False(t, needsAutoWarmup("search-read", &p))
-	p2, _ := BuiltinPreset("room-rpc")
-	assert.False(t, needsAutoWarmup("room-rpc", &p2))
-	p3, _ := BuiltinPreset("realistic")
-	assert.False(t, needsAutoWarmup("messaging-pipeline", &p3))
+	for _, name := range []string{"search-read", "room-rpc", "messaging-pipeline"} {
+		t.Run(name, func(t *testing.T) {
+			sc, ok := LookupScenario(name)
+			require.True(t, ok, "%s must be registered", name)
+			_, isWarmer := sc.(AutoWarmer)
+			assert.False(t, isWarmer,
+				"%s must not implement AutoWarmer", name)
+		})
+	}
 }
 
 // Bug 3: auto-warmup must always publish via the frontdoor (NATS core),

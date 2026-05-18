@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,14 +96,18 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	if rf.Abort.ErrorSustain > abortMaxSustain {
 		abortMaxSustain = rf.Abort.ErrorSustain
 	}
+	rampTo := 0
+	if rf.BuiltRamp != nil {
+		rampTo = rf.BuiltRamp.To
+	}
 	resolvedAbortCap := resolveAbortWindowMaxSamples(
 		rf.Abort.WindowMaxSamplesSet, rf.Abort.WindowMaxSamples,
-		resolveAbortPeakRPS(rf.Rate, rf.Ramp.To), abortMaxSustain,
+		resolveAbortPeakRPS(rf.Rate, rampTo), abortMaxSustain,
 	)
 	if resolvedAbortCap != rf.Abort.WindowMaxSamples {
 		slog.Info("abort-window-max-samples auto-sized",
 			"original", rf.Abort.WindowMaxSamples, "resolved", resolvedAbortCap,
-			"peak_rps", resolveAbortPeakRPS(rf.Rate, rf.Ramp.To),
+			"peak_rps", resolveAbortPeakRPS(rf.Rate, rampTo),
 			"max_sustain", abortMaxSustain.String())
 	}
 	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(resolvedAbortCap)
@@ -283,45 +288,74 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 
 	// Ramp + rate flags are validated in runRun (before any NATS connect).
 
+	// Build the ScenarioDeps adapter that exposes run-local state to the
+	// scenario registry. Constructed here so it can be passed to readiness
+	// and liveness probes, which are invoked before the generator is built.
+	// warmupDeadline and msgIDs are set below (after readiness and auto-warmup).
+	deps := &runDeps{
+		publisher:   publisher,
+		requester:   requester,
+		collector:   collector,
+		metrics:     metrics,
+		fixtures:    &fixtures,
+		preset:      p,
+		siteID:      cfg.SiteID,
+		maxInFlight: cfg.MaxInFlight,
+		omission:    rt.Omission(),
+		injectMode:  injectMode,
+		connIDFor:   func(userID string) string { return strconv.Itoa(pool.IndexFor(userID)) },
+		warmupPubl:  newWarmupPublisher(publisher),
+	}
+
+	// Dispatch to the registered scenario. All four built-in scenarios were
+	// registered via their init() functions in scenario_*.go files.
+	sc, ok := LookupScenario(rf.Scenario)
+	if !ok {
+		slog.Error("unknown scenario", "scenario", rf.Scenario, "available", scenarioNames())
+		return 2, Summary{}
+	}
+	factory, ok := sc.(GeneratorFactory)
+	if !ok {
+		slog.Error("scenario has no generator factory", "scenario", rf.Scenario)
+		return 2, Summary{}
+	}
+
 	// Phase 3 §3.3: readiness probe for read scenarios. Skipped for
-	// messaging-pipeline (which doesn't request/reply to a service) and
+	// messaging-pipeline (which doesn't implement ReadinessProber) and
 	// when --skip-readiness is set.
-	if !rf.Readiness.Skip && scenarioNeedsReadiness(rf.Scenario) && len(fixtures.Subscriptions) > 0 {
-		probeSub := fixtures.Subscriptions[0]
-		probe := buildReadinessProbe(rf.Scenario, &probeSub, cfg.SiteID, requester)
-		probeCtx, probeCancel := context.WithTimeout(ctx, rf.Readiness.Timeout)
-		if err := waitForReady(probeCtx, &readinessConfig{
-			Probe: probe, MinBackoff: 200 * time.Millisecond, MaxBackoff: 2 * time.Second,
-		}); err != nil {
+	if !rf.Readiness.Skip && len(fixtures.Subscriptions) > 0 {
+		if pr, hasprobe := sc.(ReadinessProber); hasprobe {
+			probe := pr.BuildReadinessProbe(deps)
+			probeCtx, probeCancel := context.WithTimeout(ctx, rf.Readiness.Timeout)
+			if err := waitForReady(probeCtx, &readinessConfig{
+				Probe: probe, MinBackoff: 200 * time.Millisecond, MaxBackoff: 2 * time.Second,
+			}); err != nil {
+				probeCancel()
+				slog.Error("readiness probe failed", "scenario", rf.Scenario, "error", err)
+				return 1, Summary{}
+			}
 			probeCancel()
-			slog.Error("readiness probe failed", "scenario", rf.Scenario, "error", err)
-			return 1, Summary{}
+			slog.Info("readiness probe succeeded", "scenario", rf.Scenario)
 		}
-		probeCancel()
-		slog.Info("readiness probe succeeded", "scenario", rf.Scenario)
 	}
 
 	warmupDeadline = time.Now().Add(rf.Warmup)
 
-	type runner interface {
-		Run(ctx context.Context) error
-	}
-	var gen runner
-	switch rf.Scenario {
-	case "history-read":
-		var msgIDs []string
-		if rf.AutoWarmup.Enabled && needsAutoWarmup(rf.Scenario, p) {
+	// Auto-warmup: let the scenario declare whether it needs a brief
+	// messaging-pipeline phase to populate the message-ID pool.
+	var msgIDs []string
+	if rf.AutoWarmup.Enabled {
+		if aw, ok := sc.(AutoWarmer); ok && aw.NeedsAutoWarmup(p) {
 			slog.Info("auto-warmup phase starting",
 				"rate", rf.AutoWarmup.Rate, "duration", rf.Warmup)
 			// Bug 3: auto-warmup must always go through the frontdoor
 			// even when --inject=canonical, otherwise PublishMsgAsync
 			// targets a non-stream subject and the message-ID pool stays
 			// empty.
-			warmupPublisher := newWarmupPublisher(publisher)
 			ids, werr := runAutoWarmup(ctx, &autoWarmupConfig{
 				Preset: p, Fixtures: fixtures, SiteID: cfg.SiteID,
 				Rate:      rf.AutoWarmup.Rate,
-				Publisher: warmupPublisher, Metrics: metrics, Collector: collector,
+				Publisher: deps.WarmupPublisher(), Metrics: metrics, Collector: collector,
 				Duration: rf.Warmup,
 				Seed:     rf.Seed,
 			})
@@ -339,51 +373,16 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			// the read generator's measured window starts fresh.
 			warmupDeadline = time.Now()
 		}
-		gen = NewHistoryReadGenerator(&HistoryReadConfig{
-			Preset: p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: rf.Rate, Requester: requester, Metrics: metrics,
-			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
-			Timeout:    rf.RequestTimeout,
-			MessageIDs: msgIDs,
-			Omission:   rt.Omission(),
-		}, rf.Seed)
-	case "search-read":
-		gen = NewSearchReadGenerator(&SearchReadConfig{
-			Preset: p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: rf.Rate, Requester: requester, Metrics: metrics,
-			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
-			Timeout:  rf.RequestTimeout,
-			Omission: rt.Omission(),
-		}, rf.Seed)
-	case "room-rpc":
-		gen = NewRoomRPCGenerator(&RoomRPCConfig{
-			Preset: p, Fixtures: fixtures, SiteID: cfg.SiteID,
-			Rate: rf.Rate, Requester: requester, Metrics: metrics,
-			Collector:      collector,
-			WarmupDeadline: warmupDeadline, MaxInFlight: cfg.MaxInFlight, Ramp: ramp(rf),
-			Timeout:  rf.RequestTimeout,
-			Omission: rt.Omission(),
-		}, rf.Seed)
-	default:
-		gen = NewGenerator(&GeneratorConfig{
-			Preset:         p,
-			Fixtures:       fixtures,
-			SiteID:         cfg.SiteID,
-			Rate:           rf.Rate,
-			Inject:         injectMode,
-			Publisher:      publisher,
-			Metrics:        metrics,
-			Collector:      collector,
-			WarmupDeadline: warmupDeadline,
-			MaxInFlight:    cfg.MaxInFlight,
-			Ramp:           ramp(rf),
-			ConnIDFor: func(userID string) string {
-				return strconv.Itoa(pool.IndexFor(userID))
-			},
-			Omission: rt.Omission(),
-		}, rf.Seed)
+	}
+	// Pass harvested message IDs and the (possibly-reset) warmupDeadline to
+	// deps so the generator factories (NewGenerator) can consume them.
+	deps.msgIDs = msgIDs
+	deps.warmupDeadline = warmupDeadline
+
+	gen, err := factory.NewGenerator(deps, rf)
+	if err != nil {
+		slog.Error("build generator", "error", err.Error())
+		return 1, Summary{}
 	}
 
 	// Settle phase: runs AFTER warmup, BEFORE the measured window starts.
@@ -502,12 +501,14 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	var livenessReason atomic.Value
 	var livenessWG sync.WaitGroup
 	if rf.Liveness.Interval > 0 && len(fixtures.Subscriptions) > 0 {
-		probeSub := fixtures.Subscriptions[0]
 		// Observer-routed requester so the probe uses the global creds
 		// (cfg.NatsCredsFile) regardless of pool fan-out and rotation.
 		observerPool := &ConnPool{observer: pool.Observer()}
 		observerReq := &natsRequester{pool: observerPool, runID: runID}
-		liveProbe := buildLivenessProbe(rf.Scenario, &probeSub, cfg.SiteID, observerReq, pool.Observer())
+		// Build a ScenarioDeps view restricted to the observer connection
+		// so per-user creds rotation can't cause permission-denied false-positives (F3 fix).
+		observerDeps := deps.withRequester(observerReq)
+		liveProbe := buildLivenessProbeFromScenario(sc, observerDeps, pool.Observer())
 		livenessWG.Add(1)
 		go func() {
 			defer livenessWG.Done()
@@ -737,14 +738,6 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	return baseCode, summary
 }
 
-// ramp returns the built *Ramp from the already-validated run flags.
-// The validation (buildRamp + validateRampVsRate) was done in runRun
-// before calling executeRun, so this call cannot fail.
-func ramp(rf *runFlags) *Ramp {
-	r, _ := buildRamp(rf.Ramp.From, rf.Ramp.To, rf.Ramp.Duration, rf.Ramp.Shape)
-	return r
-}
-
 // ---------------------------------------------------------------------------
 // Exit-code policy
 // ---------------------------------------------------------------------------
@@ -834,17 +827,23 @@ func computeActualRate(scenario string, inject InjectMode, measured time.Duratio
 		return 0
 	}
 	secs := measured.Seconds()
-	if scenarioNeedsReadiness(scenario) {
-		// Read scenarios: count post-warmup requests across all kinds for
-		// this scenario. RequestStats returns only "measured"-phase cells;
-		// warmup samples are excluded by phase label, not by DiscardBefore.
-		total := 0
-		for _, rs := range requestStats {
-			if rs.Scenario == scenario {
-				total += rs.Count
+	// Read scenarios implement ReadinessProber in the registry. For those,
+	// actual rate is the sum of post-warmup request counts across all kinds.
+	// Messaging-pipeline does not implement ReadinessProber, so it falls
+	// through to the E1/sentMeasured path below.
+	if sc, ok := LookupScenario(scenario); ok {
+		if _, isReadScenario := sc.(ReadinessProber); isReadScenario {
+			// Read scenarios: count post-warmup requests across all kinds for
+			// this scenario. RequestStats returns only "measured"-phase cells;
+			// warmup samples are excluded by phase label, not by DiscardBefore.
+			total := 0
+			for _, rs := range requestStats {
+				if rs.Scenario == scenario {
+					total += rs.Count
+				}
 			}
+			return float64(total) / secs
 		}
-		return float64(total) / secs
 	}
 	// Messaging-pipeline path.
 	switch inject {
@@ -997,4 +996,95 @@ func lastToken(subj string) string {
 		return subj
 	}
 	return subj[i+1:]
+}
+
+// ---------------------------------------------------------------------------
+// Scenario registry helpers
+// ---------------------------------------------------------------------------
+
+// scenarioNames returns a sorted slice of all registered scenario names.
+// Used in error messages so the operator can see what's valid.
+func scenarioNames() []string {
+	all := AllScenarios()
+	names := make([]string, 0, len(all))
+	for n := range all {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// buildLivenessProbeFromScenario returns a liveness probe function for the
+// given scenario. Scenarios that implement LivenessProber provide their own
+// probe; all others (including messaging-pipeline) fall back to a NATS
+// round-trip-time check on the observer connection so the "SUT is gone"
+// detector works for every scenario. F1 fix.
+func buildLivenessProbeFromScenario(sc Scenario, deps ScenarioDeps, conn natsConnLike) func(context.Context) error {
+	if lp, ok := sc.(LivenessProber); ok {
+		return lp.BuildLivenessProbe(deps)
+	}
+	// Default fallback: NATS RTT check on the observer conn.
+	return func(_ context.Context) error {
+		if conn == nil {
+			return nil
+		}
+		_, err := conn.RTT()
+		return err
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runDeps — ScenarioDeps adapter
+// ---------------------------------------------------------------------------
+
+// runDeps implements ScenarioDeps using run-local state constructed inside
+// executeRun. It is built after the publisher, requester, collector, and
+// pool are ready, and passed to readiness probes, liveness probes,
+// auto-warmup, and generator factories.
+type runDeps struct {
+	publisher   Publisher
+	requester   Requester
+	collector   *Collector
+	metrics     *Metrics
+	fixtures    *Fixtures
+	preset      *Preset
+	siteID      string
+	maxInFlight int
+	omission    *OmissionTracker
+	injectMode  InjectMode
+	// connIDFor maps userID → connection index; used by messaging-pipeline.
+	connIDFor  func(userID string) string
+	warmupPubl Publisher
+	// msgIDs and warmupDeadline are set after the readiness + auto-warmup
+	// phases complete, just before the generator factory is called.
+	msgIDs         []string
+	warmupDeadline time.Time
+}
+
+func (d *runDeps) Publisher() Publisher       { return d.publisher }
+func (d *runDeps) Requester() Requester       { return d.requester }
+func (d *runDeps) Collector() *Collector      { return d.collector }
+func (d *runDeps) Metrics() *Metrics          { return d.metrics }
+func (d *runDeps) Fixtures() *Fixtures        { return d.fixtures }
+func (d *runDeps) Preset() *Preset            { return d.preset }
+func (d *runDeps) SiteID() string             { return d.siteID }
+func (d *runDeps) MaxInFlight() int           { return d.maxInFlight }
+func (d *runDeps) WarmupPublisher() Publisher { return d.warmupPubl }
+func (d *runDeps) Omission() *OmissionTracker { return d.omission }
+func (d *runDeps) InjectMode() InjectMode     { return d.injectMode }
+func (d *runDeps) WarmupDeadline() time.Time  { return d.warmupDeadline }
+func (d *runDeps) MessageIDs() []string       { return d.msgIDs }
+
+// ConnIDFor maps a userID to the index of the data connection that
+// publishes on its behalf. Used by the messaging-pipeline scenario.
+// Not part of ScenarioDeps (messaging-pipeline-specific).
+func (d *runDeps) ConnIDFor() func(userID string) string { return d.connIDFor }
+
+// withRequester returns a shallow copy of d with the Requester field replaced.
+// Used for the observer-routed liveness probe so it bypasses per-user creds
+// rotation (F3 fix).
+func (d *runDeps) withRequester(r Requester) *runDeps {
+	cp := *d
+	cp.requester = r
+	return &cp
 }

@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Scenario is the minimum a scenario must implement.
@@ -24,7 +25,7 @@ type Scenario interface {
 
 // GeneratorFactory is a scenario that knows how to construct its load generator.
 type GeneratorFactory interface {
-	NewGenerator(deps ScenarioDeps, rf runFlags) (Runner, error)
+	NewGenerator(deps ScenarioDeps, rf *runFlags) (Runner, error)
 }
 
 // ReadinessProber is optional — scenario provides a SUT-readiness probe.
@@ -43,7 +44,8 @@ type AutoWarmer interface {
 }
 
 // ScenarioDeps is the runtime-side capability surface a Scenario may consume.
-// Implemented by *Runtime in Task 2.2; tests may provide fakes.
+// Implemented by runDeps (a thin adapter built in executeRun) in Task 2.2;
+// tests may provide fakes.
 //
 // TODO(Task 2.4): add Sites() []SiteDeps and Subscribers() *Subscribers once
 // concrete impls exist. Kept minimal here to avoid phantom dependencies.
@@ -53,6 +55,26 @@ type ScenarioDeps interface {
 	Collector() *Collector
 	Metrics() *Metrics
 	Fixtures() *Fixtures
+	// Preset returns the run preset (distribution config, mix weights, etc.).
+	Preset() *Preset
+
+	// SiteID returns the operator-configured site identifier (SITE_ID env var).
+	SiteID() string
+	// MaxInFlight returns the per-run cap on concurrent in-flight publishes/requests.
+	MaxInFlight() int
+	// WarmupPublisher returns a frontdoor-only publisher for the auto-warmup phase.
+	// Always publishes via NATS core (never JetStream) regardless of --inject mode.
+	WarmupPublisher() Publisher
+	// Omission returns the coordinated-omission tracker shared across the run.
+	Omission() *OmissionTracker
+	// InjectMode returns the parsed injection mode for the run (frontdoor|canonical).
+	InjectMode() InjectMode
+	// WarmupDeadline returns the effective warmup deadline for the generator.
+	// This may be time.Now() if auto-warmup reset it (history-read path).
+	WarmupDeadline() time.Time
+	// MessageIDs returns harvested auto-warmup message IDs. Only populated
+	// for history-read when auto-warmup ran.
+	MessageIDs() []string
 }
 
 // Runner is a constructed load generator. Run blocks until ctx is cancelled or

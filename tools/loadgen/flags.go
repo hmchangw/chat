@@ -50,15 +50,13 @@ func parseInjectMode(s string) (InjectMode, error) {
 	}
 }
 
-// parseScenarioFlag validates the --scenario string against the
-// allow-list. Returns nil when valid.
+// parseScenarioFlag validates the --scenario string against the registry.
+// Returns nil when valid.
 func parseScenarioFlag(s string) error {
-	switch s {
-	case "messaging-pipeline", "history-read", "search-read", "room-rpc":
+	if _, ok := LookupScenario(s); ok {
 		return nil
-	default:
-		return fmt.Errorf("unknown scenario: %s", s)
 	}
+	return fmt.Errorf("unknown scenario: %s", s)
 }
 
 // ErrMissingRampFields is returned when only some --ramp-* fields are
@@ -113,13 +111,17 @@ type runFlags struct {
 	RunTTL          time.Duration
 	Abort           abortFlags
 	Ramp            rampFlags
-	AutoWarmup      autoWarmupFlags
-	Liveness        livenessFlags
-	Readiness       readinessFlags
-	Progress        progressFlags
-	Conn            connFlags
-	JS              jetStreamFlags
-	Settle          SettleFlags
+	// BuiltRamp is the pre-validated *Ramp built from Ramp fields by ParseRunFlags.
+	// Nil means no ramp is configured. executeRun reads this directly instead of
+	// rebuilding the Ramp from Ramp.From/To/Duration/Shape (Phase 2 pre-condition).
+	BuiltRamp  *Ramp
+	AutoWarmup autoWarmupFlags
+	Liveness   livenessFlags
+	Readiness  readinessFlags
+	Progress   progressFlags
+	Conn       connFlags
+	JS         jetStreamFlags
+	Settle     SettleFlags
 }
 
 type abortFlags struct {
@@ -187,6 +189,11 @@ func PrintRunHelp(w io.Writer) {
 // ParseRunFlags parses the given argument slice into a runFlags struct.
 // It uses ContinueOnError with discarded output so callers can handle
 // errors themselves without spurious flag-package output.
+//
+// After parsing, ParseRunFlags calls buildRamp to pre-validate the ramp
+// fields and stores the result in rf.BuiltRamp. Any ramp construction
+// error is surfaced here so callers can exit early without opening
+// external connections.
 func ParseRunFlags(args []string) (runFlags, error) {
 	var rf runFlags
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -202,6 +209,14 @@ func ParseRunFlags(args []string) (runFlags, error) {
 			rf.Abort.WindowMaxSamplesSet = true
 		}
 	})
+	// Pre-validate ramp fields and store the built *Ramp so executeRun can
+	// read rf.BuiltRamp directly without rebuilding (Phase 2 pre-condition).
+	// An error here is returned to the caller (runRun exits 2).
+	builtRamp, err := buildRamp(rf.Ramp.From, rf.Ramp.To, rf.Ramp.Duration, rf.Ramp.Shape)
+	if err != nil {
+		return rf, fmt.Errorf("ramp flags: %w", err)
+	}
+	rf.BuiltRamp = builtRamp
 	return rf, nil
 }
 

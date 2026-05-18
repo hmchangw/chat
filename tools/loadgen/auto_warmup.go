@@ -6,28 +6,6 @@ import (
 	"time"
 )
 
-// needsAutoWarmup reports whether the chosen scenario requires a brief
-// messaging-pipeline phase to populate the message-ID pool. Today only
-// `history-read` does, and only when the configured HistoryMix includes
-// at least one kind that needs an ID
-// (GetMessageByID / LoadSurroundingMessages / GetThreadMessages).
-//
-// Phase 3 §3.1: auto warm-up is opt-out via --auto-warmup=false; this
-// helper only answers the "is it useful?" question, not the "is it
-// enabled?" question. Callers must AND the result with the user's
-// opt-out flag.
-func needsAutoWarmup(scenario string, p *Preset) bool {
-	if scenario != "history-read" {
-		return false
-	}
-	for kind := range p.HistoryMix {
-		if needsMessageID(kind) {
-			return true
-		}
-	}
-	return false
-}
-
 // autoWarmupConfig is the parameter bundle for runAutoWarmup. The
 // publisher must be the messaging-pipeline frontdoor publisher; the
 // collector is the same one that will later be passed to the read

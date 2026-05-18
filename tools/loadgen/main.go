@@ -291,15 +291,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 
-	// Validate ramp + rate flags BEFORE opening any external connections —
-	// fail fast on config errors so the operator doesn't wait for a NATS
-	// timeout to learn they typo'd a flag.
-	builtRamp, rerr := buildRamp(rf.Ramp.From, rf.Ramp.To, rf.Ramp.Duration, rf.Ramp.Shape)
-	if rerr != nil {
-		fmt.Fprintln(os.Stderr, rerr.Error())
-		return 2
-	}
-	if err := validateRampVsRate(rf.Rate, builtRamp); err != nil {
+	// Validate ramp vs rate BEFORE opening any external connections.
+	// The ramp itself was already built and validated in ParseRunFlags;
+	// rf.BuiltRamp is nil when no ramp was requested.
+	if err := validateRampVsRate(rf.Rate, rf.BuiltRamp); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
