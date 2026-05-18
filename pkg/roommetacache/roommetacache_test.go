@@ -2,6 +2,7 @@ package roommetacache_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,4 +49,26 @@ func TestCache_GetMissThenHit(t *testing.T) {
 	assert.Equal(t, uint64(1), stats.Hits)
 	assert.Equal(t, uint64(1), stats.Misses)
 	assert.Equal(t, uint64(0), stats.LoadErrors)
+}
+
+func TestCache_LoaderErrorNotCached(t *testing.T) {
+	var calls atomic.Int32
+	wantErr := errors.New("boom")
+	loader := func(_ context.Context, _ string) (roommetacache.Meta, error) {
+		calls.Add(1)
+		return roommetacache.Meta{}, wantErr
+	}
+	c, err := roommetacache.New(10, time.Minute, loader)
+	require.NoError(t, err)
+
+	_, err = c.Get(context.Background(), "r1")
+	assert.ErrorIs(t, err, wantErr)
+	_, err = c.Get(context.Background(), "r1")
+	assert.ErrorIs(t, err, wantErr)
+
+	assert.Equal(t, int32(2), calls.Load(), "errors should not be cached; loader must run again")
+
+	stats := c.Stats()
+	assert.Equal(t, uint64(2), stats.Misses)
+	assert.Equal(t, uint64(2), stats.LoadErrors)
 }
