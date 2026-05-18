@@ -544,10 +544,15 @@ The PR description must include before/after numbers from this run.
 - **Client API doc.** No client-facing handler changes; `docs/client-api.md`
   does not need updates per CLAUDE.md §5.
 
-## Open questions for review
+## Scope notes
 
-1. **Scope of `pkg/roommetacache`.** Should the package's public type
-   be generic over the value (so a future "user metadata cache" or
-   similar can reuse the same plumbing), or keep it specific to room
-   metadata for now? Default is specific — generalize when a second
-   consumer materializes.
+- **`pkg/roommetacache` is specific to room metadata, not generic over
+  the value type.** A generic LRU+TTL+singleflight primitive shared
+  across cache types is plausible future refactoring, but introducing
+  it now would be premature — there is only one consumer pattern
+  (room metadata) in this design, and the subscription cache lives
+  inside `message-gatekeeper` where its key/value shape can stay
+  private. If a second domain-specific cache materializes later
+  (e.g. a user metadata cache), the right move is to extract the
+  shared bits at that point with two concrete consumers shaping the
+  abstraction, not one.
