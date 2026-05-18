@@ -9,11 +9,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// HeaderRunID is the NATS header key stamped on every publish/request
-// so SUT services can correlate their traces / logs / metrics back to
-// the loadgen run that drove them. C3 fix.
-const HeaderRunID = "X-Loadgen-Run-ID"
-
 type natsCorePublisher struct {
 	pool         *ConnPool // Phase 3 §3.6 — picks the data conn per subject's userID
 	useJetStream bool
