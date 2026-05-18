@@ -60,6 +60,45 @@ which by itself removes the ~13% read-portion and a wire round-trip.
 The remaining ~25% write commit is left in place as a synchronous,
 fully-error-handled write.
 
+### Why a 2-minute TTL is safe
+
+The natural concern with a longer cache TTL is "stale role data lets a
+demoted admin keep their privileges for up to TTL seconds". This concern
+is much weaker than it first appears because of how role changes already
+propagate to clients in this system:
+
+`room-service.handleUpdateRole` validates a role-update request and
+publishes to JetStream; `room-worker.processRoleUpdate` writes the new
+role to Mongo and then publishes a `SubscriptionUpdateEvent` to
+`chat.user.{account}.event.subscription.update`
+(`room-worker/handler.go:224`). Cross-site role changes propagate via
+the outbox/inbox path and the remote site publishes the same per-user
+event. Every connected client is subscribed to its own user-event
+subject and receives the role change within milliseconds.
+
+Consequence:
+
+- **Honest clients reflect the change in UI immediately** and disable
+  affordances that depend on the lost role (e.g., the "post in large
+  room" send button for a demoted admin). The user does not attempt
+  the now-disallowed action, so server-side cache staleness produces
+  zero observable problem at any TTL.
+- **Malicious / modified clients** can still send requests during the
+  staleness window. They get up to TTL of stale large-room cap bypass
+  — at 2m TTL, that's ~120s × cap-rate worth of bypass. Bounded and
+  self-healing.
+- **For abuse cases that genuinely need immediate stop**, the
+  operational tool is "remove from room" (subscription delete), not
+  demote. Removal propagates on the very next request because this
+  design intentionally does not negative-cache subscriptions —
+  `ErrSubscriptionNotFound` always re-hits Mongo.
+
+The 2m default sits at the inflection point where the Mongo hit-ratio
+gains have effectively saturated and further TTL extension trades real
+moderation effectiveness for nearly-zero CPU gains. Production
+deployments with stricter moderation SLAs can dial the TTL down via
+env var.
+
 ## Non-goals
 
 - **Write coalescing / batched lastMessage updates.** The per-message
@@ -145,17 +184,14 @@ type cachedSubscription struct {
 }
 ```
 
-Negative results are also cached. A sentinel value (or a
-`(value, found)` pair) distinguishes "subscription exists, here are its
-fields" from "subscription confirmed absent". Negative caching prevents
-amplification when a misbehaving client retries against a room it cannot
-post to.
+Negative results are not cached (see "No negative caching" under
+Defaults below).
 
 **Defaults:**
 
 - Capacity: 100 000 entries (env: `GATEKEEPER_SUB_CACHE_SIZE`, default
   `100000`). Covers `large` preset's 10 000 subscriptions 10×.
-- TTL: `30s` (env: `GATEKEEPER_SUB_CACHE_TTL`, default `30s`).
+- TTL: `2m` (env: `GATEKEEPER_SUB_CACHE_TTL`, default `2m`).
 - **No negative caching.** A `subscriptions.FindOne` miss on the
   `{roomId, u.account}` compound index is a microsecond-scale index
   probe with nothing to fetch — negative-caching it saves negligible
@@ -202,14 +238,15 @@ check and is also surfaced in the broadcast event payload.
 
 - Capacity: 10 000 entries (env: `ROOM_META_CACHE_SIZE`, default
   `10000`). Covers `large` preset's 1 000 rooms 10×.
-- TTL: `30s` (env: `ROOM_META_CACHE_TTL`, default `30s`).
-- Negative TTL: `5s`. Newly-created rooms (especially via cross-site
-  federation) must become reachable on a short window — a longer
-  "room not found" cache would feel like a bug for users creating
-  rooms during high load. Room-not-found is rare in normal operation
-  (gatekeeper's subscription check fails fast and most "no such room"
-  requests never reach the room read), so even this short negative
-  cache contributes mainly hygiene against pathological retries.
+- TTL: `2m` (env: `ROOM_META_CACHE_TTL`, default `2m`).
+- **No negative caching.** Same reasoning as the subscription cache:
+  a `rooms.FindOne` miss on `_id` is a microsecond-scale index probe;
+  the publish path almost never reaches the room read for a
+  non-existent room anyway (gatekeeper's subscription check fails
+  fast); and on cross-site federation race, dropping the negative
+  cache means newly-created rooms become reachable on the very next
+  call rather than after a TTL tail. JetStream redelivery bounds the
+  per-message cost when broadcast-worker encounters a missing room.
 
 **Lives in a new package** `pkg/roommetacache` so the same type is
 instantiated by both services without code duplication. The package
@@ -217,15 +254,14 @@ exposes:
 
 ```go
 type Cache struct { ... }
-func New(size int, ttl, negativeTTL time.Duration) *Cache
-func (c *Cache) Get(roomID string) (meta, found, hit bool)
+func New(size int, ttl time.Duration) *Cache
+func (c *Cache) Get(roomID string) (meta cachedRoomMeta, hit bool)
 func (c *Cache) Put(roomID string, meta cachedRoomMeta)
-func (c *Cache) PutNegative(roomID string)
 func (c *Cache) Invalidate(roomID string)   // for future use
 ```
 
-`Invalidate` is included from v1 even though no caller uses it; the
-follow-up NATS-driven invalidation work will plug straight in without
+`Invalidate` is included from v1 even though no caller uses it; a
+future NATS-driven invalidation feature plugs straight in without
 needing a package interface change.
 
 ### Concurrent-miss handling (singleflight)
@@ -360,19 +396,20 @@ mocks via `mockgen`.
 - **Hit and miss bookkeeping.** Counters increment correctly.
 - **TTL eviction.** Injectable clock; advance past TTL; assert next
   `Get` returns miss.
-- **Negative TTL eviction.** Same, but for the shorter negative TTL.
 - **Capacity eviction.** Fill to `cap`; insert one more; assert at
   least one prior entry is no longer present.
 - **Concurrent populators.** Many goroutines call `Get` for the same
   key during a miss; assert the underlying loader runs at most once
   (singleflight semantics).
-- **`Invalidate` removes both positive and negative entries.**
+- **`Invalidate` removes the entry.**
 
 ### Unit tests (`message-gatekeeper`)
 
-- **Subscription cache hit / miss / negative.** Counting stub store;
-  assert cache-hit calls touch the store zero times; miss exactly once;
-  negative miss exactly once, then never again until TTL.
+- **Subscription cache hit / miss.** Counting stub store; assert
+  cache-hit calls touch the store zero times; miss exactly once,
+  result cached for subsequent calls; `ErrSubscriptionNotFound`
+  returned to the caller but **not** cached (next call re-issues the
+  store read).
 - **`canBypassLargeRoomCap` short-circuits `GetRoomUserCount`.**
   Cached bypass-eligible subscription; assert the handler does not
   call `GetRoomUserCount`.
@@ -431,11 +468,16 @@ The PR description must include before/after numbers from this run.
 - **No feature flag.** TTL-bounded read caches are correctness-safe
   for the fields they store (`Roles`, room metadata). Worst case on
   bug: revert.
-- **Defaults are conservative.** 60s TTL, 5s negative TTL, 10×
-  working-set capacity. Production may dial TTL down to 5–10s if
-  fresher role changes are desired.
+- **Defaults are middle-ground.** 2m TTL on both caches, no negative
+  caching, 10× working-set capacity. The 2m TTL is justified in the
+  Motivation section by the existing `SubscriptionUpdateEvent` push
+  to clients: well-behaved clients reflect role changes within
+  milliseconds, so server-side cache staleness produces no observable
+  UX problem for honest users and a bounded, self-healing window for
+  malicious ones. Production may dial up or down via env vars without
+  code changes.
 - **Observability.** Each cache exposes Prometheus metrics:
-  - `<name>_hits_total{result="hit|miss|negative"}`
+  - `<name>_hits_total{result="hit|miss"}`
   - `<name>_size`
   - `<name>_evictions_total{reason="ttl|capacity"}`
 
