@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -63,6 +62,9 @@ func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID st
 	}
 	c.misses.Add(1)
 
+	// roomIDs and accounts are validated as UUID/base62/email-style strings that
+	// cannot contain NUL bytes; the \x00 separator therefore makes the key
+	// collision-free across any (roomID, account) split.
 	sfKey := roomID + "\x00" + account
 	v, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
 		if cached, ok := c.lru.Get(key); ok {
@@ -84,9 +86,6 @@ func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID st
 	if err != nil {
 		return nil, err
 	}
-	if v == nil {
-		return nil, errors.New("subcache: nil value from loader") // unreachable
-	}
 	return fromCached(v.(cachedSubscription)), nil
 }
 
@@ -94,9 +93,26 @@ func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID st
 // projection. Only the fields gatekeeper reads (User.ID, User.Account,
 // Roles) are populated; other fields are zero. This is intentional —
 // the cache contract is the projection, not the full doc.
+//
+// The Roles slice is not defensively copied: the slice is already owned
+// by the cache (copied at cache-write in GetSubscription), and the only
+// consumer (canBypassLargeRoomCap) range-reads without mutation.
 func fromCached(c cachedSubscription) *model.Subscription {
 	return &model.Subscription{
 		User:  model.SubscriptionUser{ID: c.ID, Account: c.Account},
-		Roles: append([]model.Role(nil), c.Roles...),
+		Roles: c.Roles,
+	}
+}
+
+// SubStats is a snapshot of the subscription cache's hit/miss counters.
+type SubStats struct {
+	Hits, Misses uint64
+}
+
+// Stats returns a snapshot of the cache counters.
+func (c *cachedSubStore) Stats() SubStats {
+	return SubStats{
+		Hits:   c.hits.Load(),
+		Misses: c.misses.Load(),
 	}
 }
