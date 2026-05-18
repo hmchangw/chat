@@ -147,6 +147,9 @@
 }
 
 .room-list-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
   padding: var(--space-sm) var(--space-md);
   font-weight: var(--font-semibold);
   font-size: var(--text-xs);
@@ -164,4 +167,30 @@
 
 .room-list-section-collapsed .room-list-section-header {
   opacity: 0.7;
+}
+
+.room-list-section-chevron {
+  display: inline-block;
+  font-size: 0.85em;
+  line-height: 1;
+  transition: transform var(--motion-fast) var(--easing);
+}
+
+.room-list-section-collapsed .room-list-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.room-list-section-empty {
+  padding: var(--space-xs) var(--space-md) var(--space-sm) calc(var(--space-md) + var(--space-md));
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.room-list-section-note {
+  padding: var(--space-xs) var(--space-md) var(--space-sm) calc(var(--space-md) + var(--space-md));
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-muted);
+  opacity: 0.8;
 }

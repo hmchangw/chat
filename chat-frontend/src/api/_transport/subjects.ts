@@ -106,7 +106,7 @@ export function orgMembers(account: string, orgId: string): string {
   return `chat.user.${account}.request.orgs.${orgId}.members`
 }
 
-// userSubscriptionGetCurrent fetches the caller's current subscriptions, optionally
+// userSubscriptionGetCurrent fetches the caller's subscriptions, optionally
 // filtered server-side. The sidebar passes `{ favorite: true }` to drive the
 // Favorite section. Mirrors pkg/subject/subject.go::UserSubscriptionGetCurrent.
 export function userSubscriptionGetCurrent(account: string, siteId: string): string {

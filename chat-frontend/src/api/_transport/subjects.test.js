@@ -128,4 +128,5 @@ describe('subjects', () => {
       'chat.user.alice.request.user.site-A.subscription.getRooms'
     )
   })
+
 })
