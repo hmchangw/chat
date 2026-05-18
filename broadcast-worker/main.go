@@ -38,6 +38,8 @@ type config struct {
 	MaxWorkers           int                     `env:"MAX_WORKERS"               envDefault:"100"`
 	UserCacheSize        int                     `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration           `env:"USER_CACHE_TTL"            envDefault:"5m"`
+	RoomMetaCacheSize    int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
+	RoomMetaCacheTTL     time.Duration           `env:"ROOM_META_CACHE_TTL"       envDefault:"2m"`
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
@@ -70,6 +72,12 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	cachedStore, err := newCachedMetaStore(store, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
+	if err != nil {
+		slog.Error("init room meta cache failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("room-meta-cache enabled", "size", cfg.RoomMetaCacheSize, "ttl", cfg.RoomMetaCacheTTL)
 	us := userstore.NewMongoStore(db.Collection("users"))
 	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
 		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
@@ -123,7 +131,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, us, publisher, keyStore, cfg.Encryption.Enabled)
+	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
