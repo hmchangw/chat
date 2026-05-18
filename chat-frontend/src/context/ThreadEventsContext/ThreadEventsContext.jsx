@@ -1,7 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../NatsContext/NatsContext'
-import { useRoomDispatch } from '../RoomEventsContext/RoomEventsContext'
+import {
+  useRoomDispatch,
+  useRegisterThreadReplyHandler,
+} from '../RoomEventsContext/RoomEventsContext'
 import { generateMessageID } from '@/lib/idgen'
 import { fetchThreadMessages, sendMessage } from '@/api'
 import { threadEventsReducer, initialState } from './reducer'
@@ -12,6 +15,7 @@ export function ThreadEventsProvider({ children }) {
   const nats = useNats()
   const { user } = nats
   const roomDispatch = useRoomDispatch()
+  const registerThreadReplyHandler = useRegisterThreadReplyHandler()
   const [state, dispatch] = useReducer(threadEventsReducer, initialState)
   const generationRef = useRef(0)
   const stateRef = useRef(state)
@@ -21,6 +25,18 @@ export function ThreadEventsProvider({ children }) {
   useEffect(() => {
     if (!user) dispatch({ type: 'RESET' })
   }, [user])
+
+  // Bridge live room-channel thread replies → THREAD_REPLY_RECEIVED.
+  useEffect(() => {
+    const unsubscribe = registerThreadReplyHandler((evt) => {
+      dispatch({
+        type: 'THREAD_REPLY_RECEIVED',
+        parentId: evt.parentMessageId,
+        message: evt.message,
+      })
+    })
+    return unsubscribe
+  }, [registerThreadReplyHandler])
 
   const openThread = useCallback(
     (parent) => {
@@ -106,7 +122,13 @@ export function ThreadEventsProvider({ children }) {
       try {
         publishReply(id, content.trim(), opts)
         if (parent) {
-          roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+          // replyId lets the room reducer dedupe the inbound echo on tcount.
+          roomDispatch({
+            type: 'OWN_THREAD_REPLY_SENT',
+            roomId: parent.roomId,
+            parentId: parent.messageId,
+            replyId: id,
+          })
         }
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })

@@ -9,6 +9,7 @@ import (
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
@@ -39,8 +40,15 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrForbidden("thread is outside access window")
 	}
 
-	// Empty ThreadRoomID: no replies yet, or stamp skipped due to missing event fields.
+	// Empty ThreadRoomID = no replies yet OR a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
+		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
+			"request_id", natsutil.RequestIDFromContext(c),
+			"roomID", roomID,
+			"messageID", req.ThreadMessageID,
+			"messageCreatedAt", msg.CreatedAt,
+			"account", account,
+		)
 		return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}, nil
 	}
 

@@ -11,10 +11,16 @@ export interface DeleteMessageArgs {
   payload: DeleteMessagePayload
 }
 
-/** Soft-delete a message. Fire-and-forget. */
+/** Wire shape of MsgDelete reply; passed through `request<T>` per convention. */
+export interface DeleteMessageResponse {
+  messageId?: string
+  deletedAt?: number
+}
+
+/** Soft-delete a message. Same publish→request reasoning as editMessage. */
 export function deleteMessage(
-  { user, publish }: Nats,
+  { user, request }: Nats,
   { roomId, siteId, payload }: DeleteMessageArgs,
 ): void {
-  publish(msgDelete(user.account, roomId, siteId), payload)
+  request<DeleteMessageResponse>(msgDelete(user.account, roomId, siteId), payload).catch(() => {})
 }

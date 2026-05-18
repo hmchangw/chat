@@ -293,11 +293,37 @@ export function roomEventsReducer(state, action) {
         }
       }
       if (!msg || !msg.id) return state
-      // Thread replies are written to thread tables only, but broadcast-worker
-      // publishes them on the main subject too. Filter them here so they don't
-      // flicker into the main feed.
+      // Thread reply: bump parent's tcount (dedupe via threadReplyIds to skip
+      // sender's own echo), don't insert into main feed.
       if (msg.threadParentMessageId) {
-        return state
+        const tRoomId = evt.roomId
+        const tPrev = state.roomState[tRoomId]
+        // No room buffer means no parent in state to update — skip silently;
+        // the count will be authoritative when history is fetched later.
+        if (!tPrev) return state
+        const parentIdx = tPrev.messages.findIndex(
+          (m) => m.id === msg.threadParentMessageId
+        )
+        if (parentIdx < 0) return state
+        const parent = tPrev.messages[parentIdx]
+        const seenReplies = parent.threadReplyIds ?? new Set()
+        if (seenReplies.has(msg.id)) return state
+        const nextSeen = new Set(seenReplies)
+        nextSeen.add(msg.id)
+        const updatedParent = {
+          ...parent,
+          tcount: (parent.tcount ?? 0) + 1,
+          threadReplyIds: nextSeen,
+        }
+        const messages = [
+          ...tPrev.messages.slice(0, parentIdx),
+          updatedParent,
+          ...tPrev.messages.slice(parentIdx + 1),
+        ]
+        return {
+          ...state,
+          roomState: { ...state.roomState, [tRoomId]: { ...tPrev, messages } },
+        }
       }
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
@@ -344,7 +370,24 @@ export function roomEventsReducer(state, action) {
           roomState: { ...state.roomState, [roomId]: nextRoomState },
         }
       }
-      if (prev.messages.some((m) => m.id === msg.id)) return state
+      // Replace optimistic createdAt (client clock) with server's — keeping
+      // it stale breaks message-worker's IF EXISTS stamp for thread replies.
+      const existingIdx = prev.messages.findIndex((m) => m.id === msg.id)
+      if (existingIdx >= 0) {
+        const existing = prev.messages[existingIdx]
+        const replaced = { ...existing, ...msg }
+        if (existing._local) replaced._local = existing._local
+        if (existing._status) replaced._status = existing._status
+        const mergedMessages = [
+          ...prev.messages.slice(0, existingIdx),
+          replaced,
+          ...prev.messages.slice(existingIdx + 1),
+        ]
+        return {
+          ...state,
+          roomState: { ...state.roomState, [roomId]: { ...prev, messages: mergedMessages } },
+        }
+      }
       const messages = appendBounded(prev.messages, msg)
       const nextRoomState = {
         ...prev,
@@ -551,12 +594,21 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'OWN_THREAD_REPLY_SENT': {
+      // Optimistic tcount bump; inbound echo dedupes off threadReplyIds.
       const prev = state.roomState[action.roomId]
       if (!prev) return state
       const idx = prev.messages.findIndex((m) => m.id === action.parentId)
       if (idx < 0) return state
-      const tcount = (prev.messages[idx].tcount ?? 0) + 1
-      const updatedMsg = { ...prev.messages[idx], tcount }
+      const parent = prev.messages[idx]
+      const seen = parent.threadReplyIds ?? new Set()
+      // Idempotency: don't re-bump if this replyId was already counted.
+      if (action.replyId && seen.has(action.replyId)) return state
+      const nextSeen =
+        action.replyId && !seen.has(action.replyId)
+          ? (() => { const s = new Set(seen); s.add(action.replyId); return s })()
+          : seen
+      const tcount = (parent.tcount ?? 0) + 1
+      const updatedMsg = { ...parent, tcount, threadReplyIds: nextSeen }
       const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
       return {
         ...state,

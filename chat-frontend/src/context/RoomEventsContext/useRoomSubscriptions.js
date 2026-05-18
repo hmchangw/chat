@@ -52,7 +52,7 @@ const MARK_READ_DEBOUNCE_MS = 500
  * inside long-lived subscription callbacks to decide whether to fire
  * a `markRoomRead` RPC on incoming messages.
  */
-export function useRoomSubscriptions(nats, dispatch, stateRef) {
+export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandlerRef) {
   const { user } = nats
   // Keep a live ref to `nats` so long-lived subscription callbacks
   // (subUpdate's getRoom call, listRooms inside the effect body) see
@@ -126,10 +126,38 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       }, MARK_READ_DEBOUNCE_MS)
     }
 
+    // Fan thread-reply events to ThreadEvents; no-op if no consumer is registered.
+    const fanThreadReply = (evt) => {
+      const msg = evt?.message
+      if (!msg?.threadParentMessageId) return
+      const handler = threadReplyHandlerRef?.current
+      if (!handler) return
+      try {
+        handler({
+          parentMessageId: msg.threadParentMessageId,
+          roomId: evt.roomId,
+          siteId: evt.siteId,
+          message: msg,
+        })
+      } catch (err) {
+        // Don't let a handler exception break the subscription callback.
+        // eslint-disable-next-line no-console
+        console.warn(
+          'thread-reply handler threw:',
+          err?.message ?? err,
+          { roomId: evt.roomId, parentMessageId: msg.threadParentMessageId },
+        )
+      }
+    }
+
     const dmSub = subscribeToUserRoomEvents(liveNats, (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
-        scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+        fanThreadReply(evt)
+        // Thread replies don't advance the main-feed lastSeenAt.
+        if (!evt.message?.threadParentMessageId) {
+          scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+        }
       }
     })
 
@@ -140,8 +168,13 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
           const hasMention = (evt.mentions ?? []).some(
             (p) => p.account === user.account
           )
-          safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
-          scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+          const normalized = { ...evt, hasMention }
+          safeDispatch({ type: 'MESSAGE_RECEIVED', event: normalized })
+          fanThreadReply(normalized)
+          // See dm path above — skip main-feed mark-read for thread replies.
+          if (!evt.message?.threadParentMessageId) {
+            scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+          }
         }
       })
       channelSubs.current.set(roomId, sub)

@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -187,12 +188,19 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		}
 	}
 
-	// Requires ThreadParentMessageCreatedAt to address the Cassandra row;
-	// skipped when absent.
+	// Requires ThreadParentMessageCreatedAt; missing → permanent silent thread-fetch failure.
 	if msg.ThreadParentMessageCreatedAt != nil {
 		if err := h.store.UpdateParentMessageThreadRoomID(ctx, msg.ThreadParentMessageID, msg.RoomID, *msg.ThreadParentMessageCreatedAt, threadRoomID); err != nil {
 			return fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
+	} else {
+		slog.Error("first thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", threadRoomID,
+			"roomID", msg.RoomID,
+		)
 	}
 
 	return nil
@@ -260,10 +268,27 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 
 	// Re-stamp handles redelivery: first attempt may have created the thread room
 	// but crashed before the stamp landed. IF EXISTS in the store prevents phantom rows.
-	if parentFound && msg.ThreadParentMessageCreatedAt != nil {
+	switch {
+	case parentFound && msg.ThreadParentMessageCreatedAt != nil:
 		if err := h.store.UpdateParentMessageThreadRoomID(ctx, msg.ThreadParentMessageID, msg.RoomID, *msg.ThreadParentMessageCreatedAt, existingRoom.ID); err != nil {
 			return "", fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
+	case !parentFound:
+		slog.Error("subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", existingRoom.ID,
+			"roomID", msg.RoomID,
+		)
+	default: // msg.ThreadParentMessageCreatedAt == nil
+		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", existingRoom.ID,
+			"roomID", msg.RoomID,
+		)
 	}
 
 	return existingRoom.ID, nil

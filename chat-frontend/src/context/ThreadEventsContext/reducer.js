@@ -69,6 +69,15 @@ export function threadEventsReducer(state, action) {
       if (state.messages.some((m) => m.id === msg.id)) return state
       return { ...state, messages: [...state.messages, msg] }
     }
+    case 'THREAD_REPLY_RECEIVED': {
+      // Append inbound reply if the open thread matches; dedupe by message id.
+      if (!state.activeParent) return state
+      if (state.activeParent.messageId !== action.parentId) return state
+      const msg = action.message
+      if (!msg?.id) return state
+      if (state.messages.some((m) => m.id === msg.id)) return state
+      return { ...state, messages: [...state.messages, msg] }
+    }
     case 'REPLY_SEND_FAILED':
       return { ...state, messages: setMessage(state.messages, action.messageId, { _status: 'failed' }) }
     case 'REPLY_RETRIED':

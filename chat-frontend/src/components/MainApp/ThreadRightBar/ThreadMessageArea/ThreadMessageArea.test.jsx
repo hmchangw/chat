@@ -12,6 +12,7 @@ const dismissReply = vi.fn()
 const threadDispatch = vi.fn()
 const roomDispatch = vi.fn()
 const publish = vi.fn()
+const request = vi.fn().mockResolvedValue({})
 const jumpToMessage = vi.fn()
 
 vi.mock('@/context/ThreadEventsContext', () => ({
@@ -36,7 +37,7 @@ vi.mock('@/context/RoomEventsContext', () => ({
   useRoomSummaries: () => ({ jumpToMessage }),
 }))
 vi.mock('@/context/NatsContext', () => ({
-  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish, request }),
 }))
 vi.mock('@/components/shared/MessageList/MessageList', () => ({
   default: ({ messages, emptyText, context, onReply, onRetry, onDismiss,
@@ -98,16 +99,16 @@ describe('ThreadMessageArea', () => {
 })
 
 describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
-  beforeEach(() => { publish.mockClear(); threadDispatch.mockClear(); roomDispatch.mockClear() })
+  beforeEach(() => { publish.mockClear(); request.mockClear(); threadDispatch.mockClear(); roomDispatch.mockClear() })
 
-  it('saving the edit dialog on a reply publishes msg.edit and dispatches REPLY_EDITED_LOCAL', () => {
+  it('saving the edit dialog on a reply requests msg.edit and dispatches REPLY_EDITED_LOCAL', () => {
     render(<ThreadMessageArea onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-edit-reply'))
     const dialog = screen.getByRole('dialog')
     const input = within(dialog).getByDisplayValue('original reply')
     fireEvent.change(input, { target: { value: 'edited' } })
     fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
-    expect(publish).toHaveBeenCalledWith(
+    expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'reply-1', newMsg: 'edited' }
     )
@@ -116,11 +117,11 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     }))
   })
 
-  it('confirming delete on a reply publishes msg.delete and dispatches REPLY_DELETED_LOCAL', () => {
+  it('confirming delete on a reply requests msg.delete and dispatches REPLY_DELETED_LOCAL', () => {
     render(<ThreadMessageArea onReply={() => {}} />)
     fireEvent.click(screen.getByText('fire-delete-reply'))
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
-    expect(publish).toHaveBeenCalledWith(
+    expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.delete',
       { messageId: 'reply-1' }
     )
@@ -134,7 +135,7 @@ describe('ThreadMessageArea — Edit / Delete on thread reply', () => {
     const input = within(dialog).getByDisplayValue('original parent')
     fireEvent.change(input, { target: { value: 'edited-parent' } })
     fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
-    expect(publish).toHaveBeenCalledWith(
+    expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'p1', newMsg: 'edited-parent' }
     )

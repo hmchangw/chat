@@ -12,10 +12,16 @@ export interface EditMessageArgs {
   payload: EditMessagePayload
 }
 
-/** Edit an existing message's content. Fire-and-forget. */
+/** Wire shape of MsgEdit reply; passed through `request<T>` per convention. */
+export interface EditMessageResponse {
+  messageId?: string
+  editedAt?: number
+}
+
+/** Edit a message's content. Uses NATS request (backend is request/reply); errors swallowed. */
 export function editMessage(
-  { user, publish }: Nats,
+  { user, request }: Nats,
   { roomId, siteId, payload }: EditMessageArgs,
 ): void {
-  publish(msgEdit(user.account, roomId, siteId), payload)
+  request<EditMessageResponse>(msgEdit(user.account, roomId, siteId), payload).catch(() => {})
 }

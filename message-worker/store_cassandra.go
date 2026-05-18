@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/msgbucket"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // errMessageNotFound is returned by GetMessageSender when the message row is
@@ -210,8 +211,8 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	return nil
 }
 
-// IF EXISTS prevents phantom rows: without it a bare UPDATE on a missing row would
-// materialise a partial Cassandra row containing only thread_room_id.
+// IF EXISTS prevents phantom rows on missing parents; misses log at ERROR
+// because a silent miss permanently breaks thread reads for that parent.
 func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error {
 	parentBucket := s.bucket.Of(parentCreatedAt)
 
@@ -223,7 +224,12 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_id: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_id; thread_room_id not stamped", "messageID", parentMessageID)
+		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"messageID", parentMessageID,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 
 	applied, err = s.cassSession.Query(
@@ -234,7 +240,14 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_room: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_room; thread_room_id not stamped", "messageID", parentMessageID, "roomID", roomID)
+		slog.Error("thread_room_id stamp on messages_by_room missed: parent row not found at the given (room_id, bucket, created_at, message_id) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"messageID", parentMessageID,
+			"roomID", roomID,
+			"bucket", parentBucket,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 	return nil
 }

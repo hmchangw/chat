@@ -14,8 +14,16 @@ vi.mock('@/lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000
 vi.mock('uuid', () => ({ v4: () => 'req-uuid' }))
 
 const roomDispatch = vi.fn()
+let registeredThreadReplyHandler = null
+const registerThreadReplyHandler = vi.fn((handler) => {
+  registeredThreadReplyHandler = handler
+  return () => {
+    if (registeredThreadReplyHandler === handler) registeredThreadReplyHandler = null
+  }
+})
 vi.mock('../RoomEventsContext/RoomEventsContext', () => ({
   useRoomDispatch: () => roomDispatch,
+  useRegisterThreadReplyHandler: () => registerThreadReplyHandler,
 }))
 
 function Probe() {
@@ -41,7 +49,12 @@ const setup = () =>
   render(<ThreadEventsProvider><Probe /></ThreadEventsProvider>)
 
 describe('ThreadEventsContext', () => {
-  beforeEach(() => { request.mockReset(); publish.mockReset() })
+  beforeEach(() => {
+    request.mockReset()
+    publish.mockReset()
+    registerThreadReplyHandler.mockClear()
+    registeredThreadReplyHandler = null
+  })
 
   it('openThread sets activeParent and fires msg.thread RPC; on success dispatches HISTORY_LOADED', async () => {
     request.mockResolvedValueOnce({ messages: [{ id: 'r1' }, { id: 'r2' }], hasNext: false, nextCursor: null })
@@ -153,6 +166,7 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
       type: 'OWN_THREAD_REPLY_SENT',
       roomId: 'r1',
       parentId: 'p1',
+      replyId: 'OPT-000000000000000000',
     })
   })
 
@@ -183,5 +197,51 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
     // happened to fail; the next successful send is a continuation, not a new
     // reply).
     expect(roomDispatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('ThreadEventsContext — live THREAD_REPLY_RECEIVED bridge', () => {
+  beforeEach(() => {
+    request.mockReset()
+    publish.mockReset()
+    registerThreadReplyHandler.mockClear()
+    registeredThreadReplyHandler = null
+  })
+
+  it('registers a handler on mount and unregisters on unmount', () => {
+    const { unmount } = setup()
+    expect(registerThreadReplyHandler).toHaveBeenCalledTimes(1)
+    expect(typeof registeredThreadReplyHandler).toBe('function')
+    unmount()
+    expect(registeredThreadReplyHandler).toBe(null)
+  })
+
+  it('appends an inbound thread reply when the open thread matches', async () => {
+    request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    await act(async () => {
+      registeredThreadReplyHandler({
+        parentMessageId: 'p1',
+        roomId: 'r1',
+        siteId: 's1',
+        message: { id: 'live-1', content: 'from B', threadParentMessageId: 'p1' },
+      })
+    })
+    expect(screen.getByText('count:1')).toBeInTheDocument()
+  })
+
+  it('ignores inbound thread replies when no thread is open', async () => {
+    setup()
+    expect(screen.getByText('active:none')).toBeInTheDocument()
+    await act(async () => {
+      registeredThreadReplyHandler({
+        parentMessageId: 'p1',
+        roomId: 'r1',
+        siteId: 's1',
+        message: { id: 'live-1', threadParentMessageId: 'p1' },
+      })
+    })
+    expect(screen.getByText('count:0')).toBeInTheDocument()
   })
 })
