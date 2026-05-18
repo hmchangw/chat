@@ -119,27 +119,16 @@ Process-local was chosen over a shared Valkey cache because:
   Valkey round trip or coupling two cache layouts that change for
   independent reasons.
 
-#### Cache implementation choice
+#### Cache implementation
 
-Two viable options for the underlying LRU/TTL mechanism:
+Backed by `github.com/hashicorp/golang-lru/v2`'s `Expirable[K, V]`.
+Battle-tested, thread-safe, and provides exactly the semantics we
+need: get-or-set with per-entry TTL and capacity-bounded LRU eviction.
+~400 LoC, no transitive runtime deps, MPL-2.0.
 
-1. **Add `github.com/hashicorp/golang-lru/v2` as a dependency.** Battle-tested,
-   thread-safe `Expirable[K, V]` with the exact semantics we want.
-   ~400 LoC, no transitive deps, MPL-2.0. Requires user approval per
-   CLAUDE.md §5 ("Ask before adding new third-party dependencies").
-2. **Build a small TTL+capacity cache in a new internal package.** The
-   semantics needed are limited: get-or-load with TTL expiry, capacity
-   cap with random or FIFO eviction (true LRU is not required — the
-   working set fits in cap with room to spare). ~150 LoC plus tests.
-
-Recommendation: **Option 1** if the dependency is acceptable. The
-hashicorp library is the de-facto Go standard for this and matches the
-project's existing pattern of preferring well-known small libraries
-(`caarlos0/env`, `gocql/gocql`, etc.). Fall back to Option 2 only if
-adding the dependency is undesired.
-
-This question requires explicit user approval before implementation
-begins.
+`go.mod` gains `github.com/hashicorp/golang-lru/v2` as a direct
+dependency. This is the only new third-party addition this design
+introduces.
 
 ### Cache 1: subscription cache in `message-gatekeeper`
 
@@ -460,11 +449,9 @@ The PR description must include before/after numbers from this run.
 
 ## Open questions for review
 
-1. **Dependency approval.** May we add `github.com/hashicorp/golang-lru/v2`,
-   or do you prefer a small internal TTL+capacity cache instead?
-2. **Cache TTL defaults.** 60s positive, 5s negative — acceptable, or
+1. **Cache TTL defaults.** 60s positive, 5s negative — acceptable, or
    should we ship with shorter values pending production telemetry?
-3. **Scope of `pkg/roommetacache`.** Should the package's public type
+2. **Scope of `pkg/roommetacache`.** Should the package's public type
    be generic over the value (so a future "user metadata cache" or
    similar can reuse the same plumbing), or keep it specific to room
    metadata for now? Default is specific — generalize when a second
