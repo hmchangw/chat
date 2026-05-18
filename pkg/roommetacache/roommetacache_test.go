@@ -164,3 +164,28 @@ func TestCache_SingleflightDedupsMisses(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load(),
 		"singleflight should collapse N concurrent misses on the same key to 1 loader call")
 }
+
+func TestNew_RejectsInvalidArgs(t *testing.T) {
+	okLoader := func(_ context.Context, _ string) (roommetacache.Meta, error) { return roommetacache.Meta{}, nil }
+	tests := []struct {
+		name    string
+		size    int
+		ttl     time.Duration
+		loader  roommetacache.Loader
+		wantErr string
+	}{
+		{"zero size", 0, time.Minute, okLoader, "size must be positive"},
+		{"negative size", -1, time.Minute, okLoader, "size must be positive"},
+		{"zero ttl", 10, 0, okLoader, "ttl must be positive"},
+		{"negative ttl", 10, -1, okLoader, "ttl must be positive"},
+		{"nil loader", 10, time.Minute, nil, "loader must not be nil"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := roommetacache.New(tc.size, tc.ttl, tc.loader)
+			assert.Nil(t, c)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
