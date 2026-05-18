@@ -60,7 +60,7 @@ Usage of run:
   -run-ttl duration
     	max age for an active runlock entry before it is considered orphaned and ignored (default 2h0m0s)
   -scenario string
-    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast (default "messaging-pipeline")
+    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout (default "messaging-pipeline")
   -seed int
     	RNG seed (default 42)
   -settle-interval duration

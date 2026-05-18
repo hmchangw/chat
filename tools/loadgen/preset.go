@@ -144,6 +144,19 @@ type Preset struct {
 	// DM rooms + remainder channel rooms. Zero value = all channel (no DM rooms).
 	DMRatio float64
 
+	// OfflineUserFraction is the fraction of fixture users treated as offline
+	// when the notification-fanout scenario (Phase 3 §3.4b) is active. Offline
+	// users do not receive in-app notifications; the scenario instead expects
+	// push/email delivery. Zero value = all users online (no push/email traffic).
+	// Only consumed when built with the notif_routing_ready build tag.
+	OfflineUserFraction float64
+
+	// DNDUserFraction is the fraction of fixture users in Do-Not-Disturb mode
+	// when the notification-fanout scenario (Phase 3 §3.4b) is active. DND users
+	// suppress push/email delivery entirely. Zero value = no DND users.
+	// Only consumed when built with the notif_routing_ready build tag.
+	DNDUserFraction float64
+
 	// Burst envelope: periodically multiply the effective rate by BurstRatio
 	// for BurstDuration every BurstPeriod. Models incident/spike traffic shapes
 	// (e.g. a support flood after an outage). Zero values disable the envelope

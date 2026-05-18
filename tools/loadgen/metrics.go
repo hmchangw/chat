@@ -71,6 +71,11 @@ type Metrics struct {
 	// for the large-room-broadcast scenario (Phase 3 §3.2). Labels: "preset" and
 	// "quantile" (p50|p99).
 	LargeRoomCompletion *prometheus.GaugeVec
+	// NotificationLag records publish→subscriber-receipt lag for the
+	// notification-fanout scenario (Phase 3 §3.4). Label "channel" identifies
+	// the delivery channel: "inapp" (Phase 3.4a, unconditional), "push" and
+	// "email" (Phase 3.4b, gated on notif_routing_ready build tag).
+	NotificationLag *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -195,6 +200,11 @@ func NewMetrics() *Metrics {
 			Name: "loadgen_largeroom_completion_ratio",
 			Help: "Per-message completion ratio at p99 receive-time. Quantile labels: p50|p99.",
 		}, []string{"preset", "quantile"}),
+		NotificationLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_notification_lag_seconds",
+			Help:    "Notification publish→subscriber-receipt lag, by channel (inapp|push|email).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"channel"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -210,6 +220,7 @@ func NewMetrics() *Metrics {
 		m.RoomOpen, m.RoomOpenE2E,
 		m.MessageRead,
 		m.LargeRoomReceive, m.LargeRoomCompletion,
+		m.NotificationLag,
 	)
 	return m
 }
