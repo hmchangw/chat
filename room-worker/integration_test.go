@@ -935,7 +935,7 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
 	assert.Equal(t, model.MessageTypeMembersAdded, sysEvt.Message.Type)
 	assert.Equal(t, "alice", sysEvt.Message.UserAccount, "sender is the requester")
-	assert.Equal(t, "Alice 爱丽丝 added members to the channel", sysEvt.Message.Content,
+	assert.Equal(t, `"Alice 爱丽丝" added members to the channel`, sysEvt.Message.Content,
 		"multi-add Content uses formatAddedMulti(requester)")
 }
 
@@ -1001,7 +1001,7 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
 	assert.Equal(t, model.MessageTypeMemberRemoved, sysEvt.Message.Type)
 	assert.Equal(t, "alice", sysEvt.Message.UserAccount, "sender is the requester, not the removed user")
-	assert.Equal(t, "Bob 鲍勃 has been removed from the channel", sysEvt.Message.Content,
+	assert.Equal(t, `"Bob 鲍勃" has been removed from the channel`, sysEvt.Message.Content,
 		"forced-remove Content uses formatRemovedUser(user)")
 }
 
