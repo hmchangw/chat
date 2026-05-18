@@ -85,6 +85,11 @@ type Metrics struct {
 	// FirstDMLag records per-stage lag for the first-DM scenario (Phase 3 §3.13).
 	// Label "stage" is one of: room, subs, persist, e2e.
 	FirstDMLag *prometheus.HistogramVec
+	// AuthReconnect records the time from connection drop to M successful
+	// re-handshakes for the auth-reconnect-storm preset (Phase 3 §3.8).
+	AuthReconnect prometheus.Histogram
+	// AuthReconnectsCompleted counts successfully completed reconnect-storm events.
+	AuthReconnectsCompleted prometheus.Counter
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -228,6 +233,15 @@ func NewMetrics() *Metrics {
 			Help:    "Per-stage lag for first-DM scenario (4 stages: room, subs, persist, e2e).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"stage"}),
+		AuthReconnect: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "loadgen_auth_reconnect_seconds",
+			Help:    "Time from connection drop to M successful re-handshakes (auth-reconnect-storm preset).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}),
+		AuthReconnectsCompleted: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "loadgen_auth_reconnects_completed_total",
+			Help: "Count of successfully completed reconnect-storm events.",
+		}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -246,6 +260,7 @@ func NewMetrics() *Metrics {
 		m.NotificationLag,
 		m.SubsChurn, m.SubsChurnTotal,
 		m.FirstDMLag,
+		m.AuthReconnect, m.AuthReconnectsCompleted,
 	)
 	return m
 }

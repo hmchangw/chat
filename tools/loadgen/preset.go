@@ -244,6 +244,18 @@ type Preset struct {
 	// Non-mutate scenarios leave both at zero (no behavior change).
 	EditRate   float64
 	DeleteRate float64
+
+	// AuthIdleConnections is the number of idle NATS connections to spin up
+	// for the auth-reconnect-storm preset. M connections are dropped at
+	// T+AuthStormPeriod and recovery time is measured via
+	// loadgen_auth_reconnect_seconds + loadgen_auth_reconnects_completed_total.
+	// Only consumed by the auth-load scenario when the storm preset is active.
+	AuthIdleConnections int
+
+	// AuthStormPeriod is the interval between reconnect-storm events for the
+	// auth-reconnect-storm preset. 0 means a single one-shot drop at T+30s.
+	// Can be overridden per-run by --auth-storm-period.
+	AuthStormPeriod time.Duration
 }
 
 var builtinPresets = map[string]Preset{
@@ -383,6 +395,22 @@ var builtinPresets = map[string]Preset{
 		SenderDist:   DistUniform,
 		ContentBytes: Range{Min: 20, Max: 100},
 		DMRatio:      0,
+	},
+
+	// auth-reconnect-storm: spins up M=1000 idle NATS connections, drops them
+	// at T+30s, and measures recovery time. Used by the auth-load scenario to
+	// benchmark auth-service under a client reconnect flood.
+	// Users/Rooms are placeholders — the storm preset doesn't exercise message
+	// routing; fixture seeding is a no-op for this workload.
+	"auth-reconnect-storm": {
+		Name:                "auth-reconnect-storm",
+		Users:               100,
+		Rooms:               1,
+		RoomSizeDist:        DistUniform,
+		SenderDist:          DistUniform,
+		ContentBytes:        Range{Min: 200, Max: 200},
+		AuthIdleConnections: 1000,
+		AuthStormPeriod:     30 * time.Second,
 	},
 }
 

@@ -11,6 +11,8 @@ Usage of run:
     	S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional. (default 10000)
   -allow-concurrent
     	allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)
+  -auth-storm-period duration
+    	auth-load: interval between reconnect-storm events (0 = single one-shot drop at T+30s)
   -auto-warmup
     	run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them (default true)
   -auto-warmup-rate int
@@ -68,7 +70,7 @@ Usage of run:
   -run-ttl duration
     	max age for an active runlock entry before it is considered orphaned and ignored (default 2h0m0s)
   -scenario string
-    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm (default "messaging-pipeline")
+    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm|auth-load (default "messaging-pipeline")
   -seed int
     	RNG seed (default 42)
   -settle-interval duration

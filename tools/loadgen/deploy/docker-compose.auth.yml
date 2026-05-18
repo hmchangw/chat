@@ -1,0 +1,40 @@
+# docker-compose.auth.yml — auth-service overlay for the auth-load scenario.
+# Gated by Compose profile `auth` (default-off); the base loadgen stack runs
+# without it and no auth-service containers are started.
+#
+# Usage:
+#   docker compose -f docker-compose.loadtest.yml \
+#                  -f docker-compose.auth.yml \
+#                  --profile auth up -d
+#
+# Auth-service config notes:
+#   - DEV_MODE=true bypasses OIDC validation so the loadgen scenario can call
+#     POST /auth with a plain account name + natsPublicKey without a real SSO
+#     provider. Set DEV_MODE=false and configure OIDC_ISSUER_URL + OIDC_AUDIENCES
+#     if you want to test the full OIDC validation path.
+#   - AUTH_SIGNING_KEY must be a valid NATS NKey seed (starts with "SA...").
+#     The value below is a well-known dev seed — NEVER use in production.
+#   - Auth-service does not need MongoDB (no store.go); the only external
+#     dependency is NATS (for callout integration) — but the loadgen HTTP
+#     benchmark path does not use NATS callout, so `nats` is listed as
+#     service_started (not service_healthy) to keep startup fast.
+
+services:
+  auth-service:
+    build:
+      context: ../../..
+      dockerfile: auth-service/deploy/Dockerfile
+    profiles: [auth]
+    environment:
+      - PORT=8080
+      - DEV_MODE=true
+      # Dev-mode NATS NKey seed — NOT for production use.
+      - AUTH_SIGNING_KEY=SAAHJ6OFZ5BUWRUT2LXLNWEYQEDFBKXJBG76KBZCHBMWV5AQKIXVGBZKY
+      - NATS_JWT_EXPIRY=2h
+    depends_on:
+      nats:
+        condition: service_started
+    ports:
+      - "8081:8080"
+    networks:
+      - loadtest
