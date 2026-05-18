@@ -41,6 +41,7 @@ type config struct {
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
+	RoomKeyCacheTTL      time.Duration           `env:"ROOM_KEY_CACHE_TTL"        envDefault:"10m"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -123,7 +124,16 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(store, us, publisher, keyStore, cfg.Encryption.Enabled)
+
+	var keyProvider RoomKeyProvider = keyStore
+	if cfg.Encryption.Enabled && cfg.RoomKeyCacheTTL > 0 {
+		keyProvider = NewCachedKeyProvider(keyStore, cfg.RoomKeyCacheTTL)
+		slog.Info("room-key cache enabled", "ttl", cfg.RoomKeyCacheTTL)
+	} else if cfg.Encryption.Enabled {
+		slog.Info("room-key cache disabled")
+	}
+
+	handler := NewHandler(store, us, publisher, keyProvider, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
