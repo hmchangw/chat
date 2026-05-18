@@ -26,8 +26,9 @@ vi.mock('@/context/RoomEventsContext', () => ({
 }))
 
 const publish = vi.fn()
+const request = vi.fn().mockResolvedValue({})
 vi.mock('@/context/NatsContext', () => ({
-  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+  useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish, request }),
 }))
 
 vi.mock('@/components/shared/MessageList/MessageList', () => ({
@@ -100,14 +101,16 @@ describe('RoomMessageArea — Edit (modal)', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('saving the edit dialog publishes msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
+  it('saving the edit dialog requests msg.edit and dispatches MESSAGE_EDITED_LOCAL', () => {
     render(<RoomMessageArea room={room} />)
     fireEvent.click(screen.getByText('fire-edit'))
     const dialog = screen.getByRole('dialog')
     const input = within(dialog).getByDisplayValue('original text')
     fireEvent.change(input, { target: { value: 'new text' } })
     fireEvent.click(within(dialog).getByRole('button', { name: /save/i }))
-    expect(publish).toHaveBeenCalledWith(
+    // Now uses NATS request (not publish) so history-service's
+    // request/reply handler can Respond without "reply failed".
+    expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.edit',
       { messageId: 'a', newMsg: 'new text' }
     )
@@ -136,11 +139,11 @@ describe('RoomMessageArea — Delete', () => {
     expect(dispatch).not.toHaveBeenCalled()
   })
 
-  it('confirming publishes msg.delete and dispatches MESSAGE_DELETED_LOCAL', () => {
+  it('confirming requests msg.delete and dispatches MESSAGE_DELETED_LOCAL', () => {
     render(<RoomMessageArea room={room} />)
     fireEvent.click(screen.getByText('fire-delete'))
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
-    expect(publish).toHaveBeenCalledWith(
+    expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.s1.msg.delete',
       { messageId: 'a' }
     )

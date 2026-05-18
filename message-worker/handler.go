@@ -187,12 +187,24 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		}
 	}
 
-	// Requires ThreadParentMessageCreatedAt to address the Cassandra row;
-	// skipped when absent.
+	// Requires ThreadParentMessageCreatedAt to address the Cassandra row.
+	// When absent the stamp is skipped — log at ERROR because the
+	// downstream effect is permanent: history-service's thread fetch
+	// returns empty for this parent until something else stamps the
+	// column. Normal client sends always include the field (validated
+	// in message-gatekeeper), so reaching this branch means a bug in
+	// upstream code or an out-of-band event source.
 	if msg.ThreadParentMessageCreatedAt != nil {
 		if err := h.store.UpdateParentMessageThreadRoomID(ctx, msg.ThreadParentMessageID, msg.RoomID, *msg.ThreadParentMessageCreatedAt, threadRoomID); err != nil {
 			return fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
+	} else {
+		slog.Error("first thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", threadRoomID,
+			"roomID", msg.RoomID,
+		)
 	}
 
 	return nil
@@ -264,6 +276,20 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		if err := h.store.UpdateParentMessageThreadRoomID(ctx, msg.ThreadParentMessageID, msg.RoomID, *msg.ThreadParentMessageCreatedAt, existingRoom.ID); err != nil {
 			return "", fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
+	} else if !parentFound {
+		slog.Error("subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", existingRoom.ID,
+			"roomID", msg.RoomID,
+		)
+	} else if msg.ThreadParentMessageCreatedAt == nil {
+		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"replyID", msg.ID,
+			"parentMessageID", msg.ThreadParentMessageID,
+			"threadRoomID", existingRoom.ID,
+			"roomID", msg.RoomID,
+		)
 	}
 
 	return existingRoom.ID, nil

@@ -212,6 +212,15 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 
 // IF EXISTS prevents phantom rows: without it a bare UPDATE on a missing row would
 // materialise a partial Cassandra row containing only thread_room_id.
+//
+// Diagnostic: when `applied=false`, the parent row was not found at the
+// `(message_id, created_at)` / `(room_id, bucket, created_at, message_id)`
+// coordinates we tried. That is the bug pattern history-service observes
+// downstream as "empty ThreadRoomID, no replies" — pair the logs by
+// matching `messageID` across the two services. Logged at ERROR (was
+// WARN) because a missed stamp permanently breaks thread reads for that
+// parent until the column is re-stamped — silent skips were too easy to
+// miss.
 func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error {
 	parentBucket := s.bucket.Of(parentCreatedAt)
 
@@ -223,7 +232,11 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_id: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_id; thread_room_id not stamped", "messageID", parentMessageID)
+		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+			"messageID", parentMessageID,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 
 	applied, err = s.cassSession.Query(
@@ -234,7 +247,13 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_room: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_room; thread_room_id not stamped", "messageID", parentMessageID, "roomID", roomID)
+		slog.Error("thread_room_id stamp on messages_by_room missed: parent row not found at the given (room_id, bucket, created_at, message_id) coordinates",
+			"messageID", parentMessageID,
+			"roomID", roomID,
+			"bucket", parentBucket,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 	return nil
 }
