@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose -f docker-compose.loadtest.yml
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards
+.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts
 
 up:
 	$(COMPOSE) up -d --build
@@ -66,3 +66,9 @@ validate-rules:
 		-v $(CURDIR)/prometheus/rules:/rules:ro \
 		prom/prometheus:latest \
 		promtool test rules /rules/loadgen_test.yml
+
+# shellcheck-scripts runs shellcheck against all operator-facing shell scripts.
+# Install shellcheck: apt-get install shellcheck  or  brew install shellcheck
+shellcheck-scripts:
+	@which shellcheck >/dev/null || { echo "shellcheck not installed; install with 'apt-get install shellcheck' or 'brew install shellcheck'"; exit 2; }
+	shellcheck $(CURDIR)/../scripts/*.sh
