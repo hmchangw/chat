@@ -14,7 +14,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 )
 
 // Scenario is the minimum a scenario must implement.
@@ -46,9 +52,6 @@ type AutoWarmer interface {
 // ScenarioDeps is the runtime-side capability surface a Scenario may consume.
 // Implemented by runDeps (a thin adapter built in executeRun) in Task 2.2;
 // tests may provide fakes.
-//
-// TODO(Task 2.4): add Sites() []SiteDeps and Subscribers() *Subscribers once
-// concrete impls exist. Kept minimal here to avoid phantom dependencies.
 type ScenarioDeps interface {
 	Publisher() Publisher
 	Requester() Requester
@@ -74,6 +77,14 @@ type ScenarioDeps interface {
 	MessageIDs() []string
 	// Note: WarmupPublisher is NOT on this interface — it's a phantom that only
 	// executeRun consumes via the concrete *runDeps type directly.
+
+	// Sites returns per-site NATS/JS/Mongo dependencies. Length is always 1 in
+	// Phase 2; Phase 3.9 federation overlay will append a second SiteDeps.
+	Sites() []SiteDeps
+	// Subscribers returns the per-run long-lived subscription registry. Phase
+	// 3.2 large-room scenario registers one inbox sub per fixture user here so
+	// subscriptions survive for the duration of the run.
+	Subscribers() *Subscribers
 }
 
 // Runner is a constructed load generator. Run blocks until ctx is cancelled or
@@ -82,26 +93,75 @@ type Runner interface {
 	Run(ctx context.Context) error
 }
 
-// SiteDeps holds per-site dependencies (NATS conn, JS, Mongo handle).
-// For federation (Phase 3 §3.9), Runtime returns multiple SiteDeps.
-// Concrete implementation is Task 2.4's responsibility; defined here as a
-// placeholder so GeneratorFactory signatures are complete.
-//
-// TODO(Task 2.4): replace any fields with concrete typed accessors.
-type SiteDeps interface {
-	Name() string
-	NC() any // typed to *nats.Conn in concrete impls; kept loose here
-	JS() any // typed to jetstream.JetStream in concrete impls
-	Mongo() any
+// SiteDeps holds per-site NATS, JetStream, and traced-conn dependencies.
+// For federation (Phase 3 §3.9), Runtime.Sites() returns two entries —
+// one for the local site and one for the remote. Phase 2 always returns
+// a single-element slice.
+type SiteDeps struct {
+	// Name is a human-readable identifier, e.g. "site-local" or "site-remote".
+	Name string
+	// NC is the traced NATS connection for this site.
+	NC *otelnats.Conn
+	// JS is the JetStream client for this site.
+	JS jetstream.JetStream
 }
 
-// Subscribers is a long-lived subscriptions registry used by large-room
-// scenarios (Phase 3 §3.2). Concrete impl is Task 2.4's responsibility.
+// Subscribers is a long-lived subscription registry used by large-room
+// scenarios (Phase 3 §3.2) that need one inbox subscription per fixture user
+// at startup. Subscriptions registered here survive until Runtime.Close.
 //
-// TODO(Task 2.4): implement in runtime.go alongside ScenarioDeps.
-type Subscribers interface {
-	Subscribe(subject string, handler func([]byte)) error
-	Close() error
+// Implemented by Runtime; wired into runDeps via Runtime.Subscribers().
+type Subscribers struct {
+	mu   sync.Mutex
+	subs map[string]*nats.Subscription
+	nc   *nats.Conn
+}
+
+// NewSubscribers creates a new Subscribers registry bound to the given NATS
+// connection. Call Close to unsubscribe all registered subscriptions.
+func NewSubscribers(nc *nats.Conn) *Subscribers {
+	return &Subscribers{
+		subs: make(map[string]*nats.Subscription),
+		nc:   nc,
+	}
+}
+
+// Subscribe creates a long-lived subscription on the given subject. If the
+// subject is already subscribed, returns the existing subscription (idempotent).
+func (s *Subscribers) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.subs[subject]; ok {
+		return existing, nil
+	}
+	sub, err := s.nc.Subscribe(subject, handler)
+	if err != nil {
+		return nil, fmt.Errorf("subscribe to %s: %w", subject, err)
+	}
+	s.subs[subject] = sub
+	return sub, nil
+}
+
+// Close unsubscribes all registered subscriptions and clears the registry.
+// Safe to call multiple times. Returns the first unsubscribe error encountered.
+func (s *Subscribers) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var firstErr error
+	for subject, sub := range s.subs {
+		if err := sub.Unsubscribe(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("unsubscribe %s: %w", subject, err)
+		}
+	}
+	s.subs = make(map[string]*nats.Subscription)
+	return firstErr
+}
+
+// Count returns the number of active subscriptions. Primarily used in tests.
+func (s *Subscribers) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subs)
 }
 
 // ---------------- registry ----------------

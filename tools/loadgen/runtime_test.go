@@ -8,6 +8,7 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +123,98 @@ func TestNewRuntime_BadNATSURL(t *testing.T) {
 	cfg.NatsURL = "nats://127.0.0.1:1" // port 1 is always refused
 	_, err := NewRuntime(context.Background(), &cfg, "bad-url-run", nil)
 	require.Error(t, err)
+}
+
+// newTestRuntime is a convenience helper that creates a Runtime using
+// defaultTestConfig and registers t.Cleanup to close it. The returned
+// cleanup function may be called early if the test needs to force Close
+// before the deferred cleanup fires.
+func newTestRuntime(t *testing.T) (*Runtime, func()) {
+	t.Helper()
+	cfg := defaultTestConfig(t)
+	rt, err := NewRuntime(context.Background(), &cfg, "test-run-id", nil)
+	require.NoError(t, err)
+	cleanup := func() { _ = rt.Close() }
+	t.Cleanup(cleanup)
+	return rt, cleanup
+}
+
+// TestRuntime_Sites_ReturnsLengthOne verifies that Sites() always returns a
+// single-element slice in Phase 2, with non-nil NC and JS.
+func TestRuntime_Sites_ReturnsLengthOne(t *testing.T) {
+	rt, cleanup := newTestRuntime(t)
+	defer cleanup()
+
+	sites := rt.Sites()
+	require.Len(t, sites, 1)
+	assert.Equal(t, rt.cfg.SiteID, sites[0].Name)
+	assert.NotNil(t, sites[0].NC)
+	assert.NotNil(t, sites[0].JS)
+}
+
+// TestRuntime_Subscribers_IsLongLived verifies that Subscribers() returns a
+// non-nil registry and that subscriptions registered through it receive messages.
+func TestRuntime_Subscribers_IsLongLived(t *testing.T) {
+	rt, cleanup := newTestRuntime(t)
+	defer cleanup()
+
+	subs := rt.Subscribers()
+	require.NotNil(t, subs)
+
+	delivered := make(chan struct{}, 1)
+	_, err := subs.Subscribe("test.subject.longlived", func(_ *nats.Msg) {
+		delivered <- struct{}{}
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, subs.Count())
+
+	// Publish to verify the subscription is live.
+	require.NoError(t, rt.NC().NatsConn().Publish("test.subject.longlived", []byte("hi")))
+	require.NoError(t, rt.NC().NatsConn().Flush())
+	select {
+	case <-delivered:
+		// good — handler was invoked
+	case <-time.After(time.Second):
+		t.Fatal("subscription handler not invoked within 1s")
+	}
+}
+
+// TestSubscribers_SubscribeIsIdempotent verifies that calling Subscribe twice
+// on the same subject returns the same subscription object and does not
+// create a duplicate.
+func TestSubscribers_SubscribeIsIdempotent(t *testing.T) {
+	rt, cleanup := newTestRuntime(t)
+	defer cleanup()
+
+	subs := rt.Subscribers()
+
+	sub1, err := subs.Subscribe("test.idempotent", func(_ *nats.Msg) {})
+	require.NoError(t, err)
+	require.NotNil(t, sub1)
+	assert.Equal(t, 1, subs.Count())
+
+	sub2, err := subs.Subscribe("test.idempotent", func(_ *nats.Msg) {})
+	require.NoError(t, err)
+	// Must return the same subscription pointer, not a new one.
+	assert.Same(t, sub1, sub2)
+	// Count must remain 1 — no duplicate registered.
+	assert.Equal(t, 1, subs.Count())
+}
+
+// TestSubscribers_CloseDrainsAll verifies that Close() unsubscribes all
+// registered subscriptions and resets the count to zero.
+func TestSubscribers_CloseDrainsAll(t *testing.T) {
+	rt, cleanup := newTestRuntime(t)
+	defer cleanup()
+
+	subs := rt.Subscribers()
+
+	_, err := subs.Subscribe("test.close.a", func(_ *nats.Msg) {})
+	require.NoError(t, err)
+	_, err = subs.Subscribe("test.close.b", func(_ *nats.Msg) {})
+	require.NoError(t, err)
+	assert.Equal(t, 2, subs.Count())
+
+	require.NoError(t, subs.Close())
+	assert.Equal(t, 0, subs.Count())
 }

@@ -29,16 +29,17 @@ import (
 // shares the same Metrics registry for real metric accounting. Phase 2
 // will collapse this into a single Collector passed at construction time.
 type Runtime struct {
-	cfg        config
-	runID      string
-	nc         *otelnats.Conn
-	js         jetstream.JetStream
-	pool       *ConnPool
-	metrics    *Metrics
-	collector  *Collector
-	omission   *OmissionTracker
-	metricsSrv *http.Server
-	pprofSrv   *http.Server
+	cfg         config
+	runID       string
+	nc          *otelnats.Conn
+	js          jetstream.JetStream
+	pool        *ConnPool
+	metrics     *Metrics
+	collector   *Collector
+	omission    *OmissionTracker
+	subscribers *Subscribers
+	metricsSrv  *http.Server
+	pprofSrv    *http.Server
 	// runLock is non-nil when the run acquired a distributed advisory lock.
 	// Released in Close via a fresh context.
 	runLock *RunLock
@@ -109,15 +110,16 @@ func NewRuntime(ctx context.Context, cfg *config, runID string, lp *RunLockParam
 	collector := NewCollector(metrics, "")
 
 	rt := &Runtime{
-		cfg:       *cfg,
-		runID:     runID,
-		nc:        nc,
-		js:        js,
-		pool:      pool,
-		metrics:   metrics,
-		collector: collector,
-		omission:  NewOmissionTracker(metrics),
-		runLock:   acquiredLock,
+		cfg:         *cfg,
+		runID:       runID,
+		nc:          nc,
+		js:          js,
+		pool:        pool,
+		metrics:     metrics,
+		collector:   collector,
+		omission:    NewOmissionTracker(metrics),
+		subscribers: NewSubscribers(nc.NatsConn()),
+		runLock:     acquiredLock,
 	}
 
 	rt.metricsSrv = rt.startMetricsServer()
@@ -195,6 +197,23 @@ func (r *Runtime) Metrics() *Metrics { return r.metrics }
 
 // Omission returns the coordinated-omission tracker shared across the run.
 func (r *Runtime) Omission() *OmissionTracker { return r.omission }
+
+// Sites returns per-site NATS/JS dependencies. Length is always 1 in Phase 2.
+// Phase 3.9 federation overlay will dial a second site and return 2.
+func (r *Runtime) Sites() []SiteDeps {
+	return []SiteDeps{
+		{
+			Name: r.cfg.SiteID,
+			NC:   r.nc,
+			JS:   r.js,
+		},
+	}
+}
+
+// Subscribers returns the per-Runtime long-lived subscription registry.
+// Subscriptions registered via Subscribers().Subscribe(...) survive until
+// Runtime.Close drains them.
+func (r *Runtime) Subscribers() *Subscribers { return r.subscribers }
 
 // RunID returns the per-run correlation identifier.
 func (r *Runtime) RunID() string { return r.runID }
@@ -320,6 +339,13 @@ func (r *Runtime) Close() error {
 			if c != nil {
 				_ = c.Drain()
 			}
+		}
+	}
+	// Unsubscribe long-lived subscriptions before draining NATS so
+	// unsubscribes flush cleanly through the connection.
+	if r.subscribers != nil {
+		if err := r.subscribers.Close(); err != nil {
+			slog.Warn("subscribers close", "error", err)
 		}
 	}
 	if r.nc != nil {

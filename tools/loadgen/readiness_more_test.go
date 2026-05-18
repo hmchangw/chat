@@ -54,6 +54,8 @@ func (f *fakeScenarioDeps) Omission() *OmissionTracker {
 func (f *fakeScenarioDeps) InjectMode() InjectMode    { return InjectFrontdoor }
 func (f *fakeScenarioDeps) WarmupDeadline() time.Time { return f.warmupDeadline }
 func (f *fakeScenarioDeps) MessageIDs() []string      { return f.msgIDs }
+func (f *fakeScenarioDeps) Sites() []SiteDeps         { return nil }
+func (f *fakeScenarioDeps) Subscribers() *Subscribers { return nil }
 
 // TestScenarioReadiness_RegistryBased verifies that the three read scenarios
 // implement ReadinessProber and messaging-pipeline does not, using the registry.

@@ -305,6 +305,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		injectMode:  injectMode,
 		connIDFor:   func(userID string) string { return strconv.Itoa(pool.IndexFor(userID)) },
 		warmupPubl:  newWarmupPublisher(publisher),
+		rt:          rt,
 	}
 
 	// Dispatch to the registered scenario. All four built-in scenarios were
@@ -1059,6 +1060,8 @@ type runDeps struct {
 	// phases complete, just before the generator factory is called.
 	msgIDs         []string
 	warmupDeadline time.Time
+	// rt is the owning Runtime; used to forward Sites() and Subscribers().
+	rt *Runtime
 }
 
 func (d *runDeps) Publisher() Publisher       { return d.publisher }
@@ -1074,6 +1077,8 @@ func (d *runDeps) Omission() *OmissionTracker { return d.omission }
 func (d *runDeps) InjectMode() InjectMode     { return d.injectMode }
 func (d *runDeps) WarmupDeadline() time.Time  { return d.warmupDeadline }
 func (d *runDeps) MessageIDs() []string       { return d.msgIDs }
+func (d *runDeps) Sites() []SiteDeps          { return d.rt.Sites() }
+func (d *runDeps) Subscribers() *Subscribers  { return d.rt.Subscribers() }
 
 // ConnIDFor maps a userID to the index of the data connection that
 // publishes on its behalf. Used by the messaging-pipeline scenario.
