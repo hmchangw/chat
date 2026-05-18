@@ -9,7 +9,7 @@ hardcoded mock now and swap it for the live call later with a one-line edit.
 
 ## RPC contract
 
-- **Subject:** `chat.user.{account}.request.user.{siteID}.subscription.count`
+- **Subject:** `chat.user.{account}.request.user.{siteId}.subscription.count`
 - **Request:** `{ "unread": true }`
 - **Response:** `{ "count": 42 }`
 
@@ -37,7 +37,8 @@ hardcoded mock now and swap it for the live call later with a one-line edit.
      the old summaries count used to decrement on read. With the mock this
      re-fetch is a harmless no-op (always 42); with the real RPC it
      reflects the new count.
-   - Returns `total: number`. Guarded by the existing stale-cycle
+   - Returns a plain `number` (the unread count; `0` until the first
+     fetch resolves). Guarded by the existing stale-cycle
      generation-counter pattern.
 
 4. **`UnreadBadge.jsx`** — consume `useUnreadCount()` instead of

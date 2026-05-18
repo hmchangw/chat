@@ -27,6 +27,13 @@
   vertical-align: super;
 }
 
+/* UnreadBadge renders null at zero unread; the <sup> stays in the DOM,
+ * so collapse it when empty to keep the "Chat" wordmark gap-free. */
+.chat-header-badge:empty {
+  display: none;
+  margin-left: 0;
+}
+
 .app-header-user {
   font-size: var(--text-sm);
   color: var(--text-muted);
