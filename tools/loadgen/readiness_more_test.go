@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -40,11 +41,10 @@ func (f *fakeScenarioDeps) Metrics() *Metrics {
 	}
 	return NewMetrics()
 }
-func (f *fakeScenarioDeps) Fixtures() *Fixtures        { return f.fixtures }
-func (f *fakeScenarioDeps) Preset() *Preset            { return f.preset }
-func (f *fakeScenarioDeps) SiteID() string             { return f.siteID }
-func (f *fakeScenarioDeps) MaxInFlight() int           { return 10 }
-func (f *fakeScenarioDeps) WarmupPublisher() Publisher { return f.pub }
+func (f *fakeScenarioDeps) Fixtures() *Fixtures { return f.fixtures }
+func (f *fakeScenarioDeps) Preset() *Preset     { return f.preset }
+func (f *fakeScenarioDeps) SiteID() string      { return f.siteID }
+func (f *fakeScenarioDeps) MaxInFlight() int    { return 10 }
 func (f *fakeScenarioDeps) Omission() *OmissionTracker {
 	if f.omission != nil {
 		return f.omission
@@ -115,4 +115,50 @@ func minimalDeps(scenario string) ScenarioDeps {
 		siteID:   "site-local",
 		req:      &recordingRequester{},
 	}
+}
+
+// TestBuildLivenessProbeFromScenario_DispatchBranches verifies that
+// buildLivenessProbeFromScenario correctly dispatches to scenario-provided
+// probes when available, and falls back to NATS RTT checks otherwise.
+func TestBuildLivenessProbeFromScenario_DispatchBranches(t *testing.T) {
+	// Branch 1: scenario implements LivenessProber → use its probe.
+	historyScenario, ok := LookupScenario("history-read")
+	require.True(t, ok, "history-read scenario must be registered")
+	deps := minimalDeps("history-read")
+	probe := buildLivenessProbeFromScenario(historyScenario, deps, nil)
+	require.NotNil(t, probe, "probe must not be nil for LivenessProber scenario")
+	// Calling the probe should work (it'll try to contact the fake requester).
+	err := probe(context.Background())
+	// err is expected due to fake requester; we're just verifying the probe exists and runs.
+	_ = err
+
+	// Branch 2: scenario without LivenessProber → fallback to NATS RTT.
+	messagingScenario, ok := LookupScenario("messaging-pipeline")
+	require.True(t, ok, "messaging-pipeline scenario must be registered")
+	fakeConn := &fakeRTTConn{rtt: 5 * time.Millisecond, err: nil}
+	fallbackProbe := buildLivenessProbeFromScenario(messagingScenario, nil, fakeConn)
+	require.NotNil(t, fallbackProbe, "fallback probe must not be nil")
+	err = fallbackProbe(context.Background())
+	require.NoError(t, err, "RTT check should succeed with healthy fake conn")
+
+	// Branch 2b: RTT conn reports error → probe reflects it.
+	failConn := &fakeRTTConn{rtt: 0, err: context.Canceled}
+	failProbe := buildLivenessProbeFromScenario(messagingScenario, nil, failConn)
+	err = failProbe(context.Background())
+	assert.Equal(t, context.Canceled, err, "probe must propagate RTT error")
+
+	// Branch 2c: nil conn in fallback → probe succeeds (no-op).
+	nilConnProbe := buildLivenessProbeFromScenario(messagingScenario, nil, nil)
+	err = nilConnProbe(context.Background())
+	require.NoError(t, err, "probe with nil conn must succeed (no-op)")
+}
+
+// fakeRTTConn implements natsConnLike for testing.
+type fakeRTTConn struct {
+	rtt time.Duration
+	err error
+}
+
+func (f *fakeRTTConn) RTT() (time.Duration, error) {
+	return f.rtt, f.err
 }

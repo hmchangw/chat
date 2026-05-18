@@ -9,7 +9,8 @@ import (
 
 // LivenessProbe is the per-attempt callable used by runLiveness. Returns
 // nil if the SUT is reachable, an error otherwise. Same shape as
-// readinessConfig.Probe so callers can reuse buildReadinessProbe.
+// readinessConfig.Probe so callers can supply per-scenario probes via
+// the Scenario.BuildLivenessProbe interface (Phase 2 §2.2).
 type LivenessProbe func(ctx context.Context) error
 
 // livenessConfig is the parameter bundle for runLiveness.

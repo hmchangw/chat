@@ -62,9 +62,6 @@ type ScenarioDeps interface {
 	SiteID() string
 	// MaxInFlight returns the per-run cap on concurrent in-flight publishes/requests.
 	MaxInFlight() int
-	// WarmupPublisher returns a frontdoor-only publisher for the auto-warmup phase.
-	// Always publishes via NATS core (never JetStream) regardless of --inject mode.
-	WarmupPublisher() Publisher
 	// Omission returns the coordinated-omission tracker shared across the run.
 	Omission() *OmissionTracker
 	// InjectMode returns the parsed injection mode for the run (frontdoor|canonical).
@@ -75,6 +72,8 @@ type ScenarioDeps interface {
 	// MessageIDs returns harvested auto-warmup message IDs. Only populated
 	// for history-read when auto-warmup ran.
 	MessageIDs() []string
+	// Note: WarmupPublisher is NOT on this interface — it's a phantom that only
+	// executeRun consumes via the concrete *runDeps type directly.
 }
 
 // Runner is a constructed load generator. Run blocks until ctx is cancelled or

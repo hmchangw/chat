@@ -10,6 +10,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+// searchReadScenario issues search queries against the search-service index.
+// Requires search-sync-worker to have indexed published messages.
 type searchReadScenario struct{}
 
 func (searchReadScenario) Name() string          { return "search-read" }

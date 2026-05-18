@@ -5,6 +5,8 @@ package main
 
 import "strconv"
 
+// messagingPipelineScenario publishes user messages through the gatekeeper
+// → canonical → broadcast pipeline. It's the default load profile.
 type messagingPipelineScenario struct{}
 
 func (messagingPipelineScenario) Name() string          { return "messaging-pipeline" }

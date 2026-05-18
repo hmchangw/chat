@@ -10,6 +10,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+// roomRPCScenario exercises room-service request/reply paths (room info,
+// member list, subscription updates) without publishing messages.
 type roomRPCScenario struct{}
 
 func (roomRPCScenario) Name() string          { return "room-rpc" }

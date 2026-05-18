@@ -10,6 +10,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+// historyReadScenario issues read requests against history-service for
+// recently-published messages. Requires pre-existing message IDs (auto-warmup).
 type historyReadScenario struct{}
 
 func (historyReadScenario) Name() string          { return "history-read" }
