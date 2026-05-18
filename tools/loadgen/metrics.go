@@ -60,6 +60,9 @@ type Metrics struct {
 	RoomOpen *prometheus.HistogramVec
 	// RoomOpenE2E records end-to-end (slowest-leg) latency for the room-open scenario.
 	RoomOpenE2E prometheus.Histogram
+	// MessageRead records the latency to send a MessageRead event, broken down by
+	// room type (channel|dm). Used by the read-receipts scenario (Phase 3 §3.16).
+	MessageRead *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -170,6 +173,11 @@ func NewMetrics() *Metrics {
 			Help:    "End-to-end (slowest-leg) latency for room-open scenario.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}),
+		MessageRead: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_message_read_seconds",
+			Help:    "Latency to send a MessageRead event, by room type (channel|dm).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"room_type"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -183,6 +191,7 @@ func NewMetrics() *Metrics {
 		m.PublishedByRoomType,
 		m.RAWLag, m.RAWVisibilityWindow,
 		m.RoomOpen, m.RoomOpenE2E,
+		m.MessageRead,
 	)
 	return m
 }

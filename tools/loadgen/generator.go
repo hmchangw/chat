@@ -335,6 +335,13 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if parentID != "" {
 		g.cfg.Metrics.ThreadMessages.WithLabelValues(g.cfg.Preset.Name).Inc()
 	}
+	// Phase 3 §3.16: record in the recent ring buffer so the read-receipts
+	// scenario can pick message IDs without an extra lookup.
+	g.cfg.Collector.RecordPublished(RecentMessage{
+		MessageID: msgID,
+		RoomID:    sub.RoomID,
+		RoomType:  string(sub.RoomType),
+	})
 }
 
 // pickRoomByDMRatio selects a room from f.Rooms weighted by DMRatio:

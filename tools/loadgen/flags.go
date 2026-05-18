@@ -114,15 +114,16 @@ type runFlags struct {
 	// BuiltRamp is the pre-validated *Ramp built from Ramp fields by ParseRunFlags.
 	// Nil means no ramp is configured. executeRun reads this directly instead of
 	// rebuilding the Ramp from Ramp.From/To/Duration/Shape (Phase 2 pre-condition).
-	BuiltRamp  *Ramp
-	AutoWarmup autoWarmupFlags
-	Liveness   livenessFlags
-	Readiness  readinessFlags
-	Progress   progressFlags
-	Conn       connFlags
-	JS         jetStreamFlags
-	Settle     SettleFlags
-	RAW        RAWFlags
+	BuiltRamp       *Ramp
+	AutoWarmup      autoWarmupFlags
+	Liveness        livenessFlags
+	Readiness       readinessFlags
+	Progress        progressFlags
+	Conn            connFlags
+	JS              jetStreamFlags
+	Settle          SettleFlags
+	RAW             RAWFlags
+	ReceiptCoverage float64
 }
 
 type abortFlags struct {
@@ -239,7 +240,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
 	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
 	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
-	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts")
 	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
@@ -266,6 +267,8 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"raw-consistency scenario: interval between visibility polls per path")
 	fs.DurationVar(&rf.RAW.Timeout, "raw-timeout", 5*time.Second,
 		"raw-consistency scenario: per-message poll timeout before declaring not-visible")
+	fs.Float64Var(&rf.ReceiptCoverage, "receipt-coverage", 0.6,
+		"read-receipts scenario: fraction of recipients to fire MessageRead for per published message")
 	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
 	fs.DurationVar(&rf.Settle.Interval, "settle-interval", 500*time.Millisecond, "settle phase: poll interval between probe rounds")
 	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")

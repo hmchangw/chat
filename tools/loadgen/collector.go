@@ -55,6 +55,20 @@ type requestShard struct {
 	errors int64
 }
 
+// RecentMessage carries a published message's ID and room metadata so the
+// read-receipts scenario (Phase 3 §3.16) can fire MessageRead events for a
+// configurable fraction of recipients without an extra lookup.
+type RecentMessage struct {
+	MessageID string
+	RoomID    string
+	RoomType  string // "channel" or "dm"
+}
+
+// recentCap is the ring-buffer capacity for the recent-published list.
+// At 1024 entries × ~60 bytes each the working set is ~60 KB — small enough
+// to copy cheaply for RecentMessages snapshots.
+const recentCap = 1024
+
 // Collector correlates publishes with replies (E1) and broadcasts (E2).
 //
 // LOCK-ORDER INVARIANT (do not violate when adding methods):
@@ -95,6 +109,11 @@ type Collector struct {
 	requests       map[requestKey]*requestShard
 	seenMessageIDs []string       // Phase 3 §3.1: append-only log; never deleted
 	window         *LatencyWindow // Phase 3 §3.5: sliding window for abort watcher
+	// recentMu protects the recent ring buffer. Separate from c.mu to
+	// avoid extending the lock-order invariant to a new field; RecordPublished
+	// is called from hot-path goroutines and must not race with c.mu holders.
+	recentMu sync.Mutex
+	recent   []RecentMessage // ring buffer; capacity recentCap
 }
 
 // AttachWindow wires a LatencyWindow into the collector. Subsequent
@@ -603,6 +622,43 @@ func (c *Collector) ExportHistograms() map[string]*hdr.Snapshot {
 		key := fmt.Sprintf("%s|%s|%s", p.key.scenario, p.key.kind, p.key.phase)
 		out[key] = snap
 	}
+	return out
+}
+
+// RecordPublished appends msg to the recent ring buffer. Called by publishOne
+// after a successful publish so the read-receipts scenario (Phase 3 §3.16)
+// can pick message IDs from a sliding window of recent activity.
+// The ring is bounded by recentCap; oldest entries are overwritten in FIFO order.
+func (c *Collector) RecordPublished(msg RecentMessage) {
+	c.recentMu.Lock()
+	defer c.recentMu.Unlock()
+	if cap(c.recent) == 0 {
+		c.recent = make([]RecentMessage, 0, recentCap)
+	}
+	if len(c.recent) < recentCap {
+		c.recent = append(c.recent, msg)
+	} else {
+		// Shift left and overwrite the tail. At recentCap=1024 × ~60 bytes the
+		// per-call copy is ~60 KB — acceptable at typical publish rates (≤5k/s).
+		copy(c.recent, c.recent[1:])
+		c.recent[len(c.recent)-1] = msg
+	}
+}
+
+// RecentMessages returns up to n recently-published messages (newest last).
+// Returns a copy so callers can iterate without holding the lock.
+func (c *Collector) RecentMessages(n int) []RecentMessage {
+	c.recentMu.Lock()
+	defer c.recentMu.Unlock()
+	total := len(c.recent)
+	if n > total {
+		n = total
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]RecentMessage, n)
+	copy(out, c.recent[total-n:])
 	return out
 }
 
