@@ -57,6 +57,28 @@ func padInt(i int) string {
 	return fmt.Sprintf("%07d", i)
 }
 
+// augmentWithFirstDMFixtures adds nPairs user pairs that have NEVER messaged
+// each other. Users are prefixed with "loadgen-firstdm-". No rooms or
+// subscriptions are added — the scenario creates DM rooms on-the-fly via
+// idgen.BuildDMRoomID at first publish.
+//
+// The preset parameter is accepted for API symmetry with augmentWithChurnFixtures;
+// the first-DM pool size is controlled exclusively by nPairs.
+func augmentWithFirstDMFixtures(f *Fixtures, _ *Preset, nPairs int) {
+	const prefix = "loadgen-firstdm-"
+	for i := 0; i < nPairs; i++ {
+		userA := model.User{
+			ID:      prefix + "user-" + padInt(2*i+1),
+			Account: prefix + "user-" + padInt(2*i+1),
+		}
+		userB := model.User{
+			ID:      prefix + "user-" + padInt(2*i+2),
+			Account: prefix + "user-" + padInt(2*i+2),
+		}
+		f.Users = append(f.Users, userA, userB)
+	}
+}
+
 // pickDMPairs picks n distinct unordered user pairs deterministically by
 // iterating in (i, j) order where i < j. If n exceeds C(len(users), 2), the
 // available pairs are returned and a warning is logged. The rng parameter is

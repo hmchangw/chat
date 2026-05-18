@@ -25,6 +25,8 @@ Usage of run:
     	run duration (default 1m0s)
   -edit-age-distribution string
     	message-mutate scenario: typo,correction fractions (last 30s vs 24h) (default "0.7,0.3")
+  -first-dm-recycle
+    	first-dm scenario: wrap around the user-pair pool when exhausted (default: exit cleanly)
   -inject string
     	injection point: frontdoor|canonical (default "frontdoor")
   -js-async-max-pending int
@@ -66,7 +68,7 @@ Usage of run:
   -run-ttl duration
     	max age for an active runlock entry before it is considered orphaned and ignored (default 2h0m0s)
   -scenario string
-    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn (default "messaging-pipeline")
+    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm (default "messaging-pipeline")
   -seed int
     	RNG seed (default 42)
   -settle-interval duration

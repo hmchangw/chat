@@ -127,6 +127,7 @@ type runFlags struct {
 	MutateRate          int
 	EditAgeDistribution string
 	ChurnRate           int
+	FirstDMRecycle      bool
 }
 
 type abortFlags struct {
@@ -243,7 +244,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
 	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
 	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
-	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm")
 	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
@@ -283,4 +284,6 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"message-mutate scenario: typo,correction fractions (last 30s vs 24h)")
 	fs.IntVar(&rf.ChurnRate, "churn-rate", 0,
 		"subscription-churn scenario: churn events per second; 0 uses scenario default (5)")
+	fs.BoolVar(&rf.FirstDMRecycle, "first-dm-recycle", false,
+		"first-dm scenario: wrap around the user-pair pool when exhausted (default: exit cleanly)")
 }

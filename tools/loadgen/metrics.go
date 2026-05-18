@@ -82,6 +82,9 @@ type Metrics struct {
 	// SubsChurnTotal counts subscription churn actions by action+outcome.
 	// Labels: "action" (join|leave), "outcome" (ok|error).
 	SubsChurnTotal *prometheus.CounterVec
+	// FirstDMLag records per-stage lag for the first-DM scenario (Phase 3 §3.13).
+	// Label "stage" is one of: room, subs, persist, e2e.
+	FirstDMLag *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -220,6 +223,11 @@ func NewMetrics() *Metrics {
 			Name: "loadgen_subs_churn_total",
 			Help: "Count of subscription churn actions by action+outcome.",
 		}, []string{"action", "outcome"}),
+		FirstDMLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_first_dm_lag_seconds",
+			Help:    "Per-stage lag for first-DM scenario (4 stages: room, subs, persist, e2e).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+		}, []string{"stage"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -237,6 +245,7 @@ func NewMetrics() *Metrics {
 		m.LargeRoomReceive, m.LargeRoomCompletion,
 		m.NotificationLag,
 		m.SubsChurn, m.SubsChurnTotal,
+		m.FirstDMLag,
 	)
 	return m
 }

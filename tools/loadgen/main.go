@@ -90,6 +90,10 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		"provision placeholder federation NKeys into runs/<run_id>/creds/ (Phase 3.9 will replace with real NKey generation)")
 	includeChurn := fs.Bool("include-churn-fixtures", false,
 		"subscription-churn scenario: provision a dedicated loadgen-churn- prefixed user/room pool alongside the main fixtures")
+	includeFirstDM := fs.Bool("include-first-dm-fixtures", false,
+		"first-dm scenario: provision a dedicated loadgen-firstdm- prefixed user pool")
+	firstDMPairs := fs.Int("first-dm-pairs", 1000,
+		"first-dm scenario: number of user pairs to provision (only effective with --include-first-dm-fixtures)")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -114,6 +118,9 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	if *includeChurn {
 		fixtures = augmentWithChurnFixtures(&fixtures, &p, *seed)
+	}
+	if *includeFirstDM {
+		augmentWithFirstDMFixtures(&fixtures, &p, *firstDMPairs)
 	}
 	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
