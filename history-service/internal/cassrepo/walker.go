@@ -32,7 +32,9 @@ func encodeBucketCursor(bucket int64, pageState []byte) (string, error) {
 		return "", fmt.Errorf("encode bucket cursor: pageState length %d exceeds maximum %d", len(pageState), maxEncodedPageState)
 	}
 	buf := make([]byte, bucketCursorHeaderBytes+len(pageState))
+	// #nosec G115 -- lossless int64->uint64 bit reinterpretation for fixed-width framing; reversed in decodeBucketCursor
 	binary.BigEndian.PutUint64(buf[0:8], uint64(bucket))
+	// #nosec G115 -- len(pageState) is bounded <= maxEncodedPageState (502) by the guard above, well below math.MaxUint16
 	binary.BigEndian.PutUint16(buf[8:10], uint16(len(pageState)))
 	copy(buf[bucketCursorHeaderBytes:], pageState)
 	return base64.StdEncoding.EncodeToString(buf), nil
@@ -55,6 +57,7 @@ func decodeBucketCursor(encoded string) (int64, []byte, error) {
 	if len(raw) < bucketCursorHeaderBytes {
 		return 0, nil, fmt.Errorf("decode bucket cursor: truncated framing (%d bytes)", len(raw))
 	}
+	// #nosec G115 -- inverse of the lossless uint64(bucket) framing in encodeBucketCursor; exact round-trip
 	bucket := int64(binary.BigEndian.Uint64(raw[0:8]))
 	psLen := int(binary.BigEndian.Uint16(raw[8:10]))
 	if bucketCursorHeaderBytes+psLen != len(raw) {

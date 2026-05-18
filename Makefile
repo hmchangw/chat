@@ -1,10 +1,37 @@
-.PHONY: lint fmt test test-integration generate build deps-up deps-down up down
+.PHONY: lint fmt test test-integration generate build deps-up deps-down up down \
+        tools sast sast-gosec sast-vuln sast-semgrep
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
 NATS_CREDS       := docker-local/backend.creds
 NATS_CONF        := docker-local/nats.conf
 NATS_CONTAINER   := chat-local-nats
+
+# --- SAST / dev tooling ------------------------------------------------------
+# Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with
+# .github/workflows/ci.yml. golangci-lint/gosec/govulncheck install via
+# `go install` into $(GOBIN_DIR) (no go.mod impact); semgrep is a Python
+# tool installed via pipx.
+GOBIN_DIR             := $(shell go env GOPATH)/bin
+GOLANGCI_LINT_VERSION := v2.11.4
+GOSEC_VERSION         := v2.21.4
+GOVULNCHECK_VERSION   := v1.3.0
+SEMGREP_VERSION       := 1.86.0
+
+GOSEC       := $(GOBIN_DIR)/gosec
+GOVULNCHECK := $(GOBIN_DIR)/govulncheck
+
+# gosec scope: shipped product code only. tools/ holds dev/ops utilities
+# (loadgen, nats-debug) that are not deployed services; chat-frontend is
+# JS. -tests=false skips *_test.go (including generated mocks);
+# -exclude-generated skips code-generated files. Gate: medium+ severity.
+GOSEC_FLAGS := -quiet -severity medium -confidence medium -tests=false \
+               -exclude-generated -exclude-dir=tools -exclude-dir=testdata
+
+# semgrep: fail on medium+ (WARNING/ERROR; INFO is informational/low).
+SEMGREP_FLAGS := --error --severity=WARNING --severity=ERROR --metrics=off \
+                 --exclude=tools --exclude=chat-frontend --exclude=testdata \
+                 --exclude=docs --config=p/golang --config=p/security-audit
 
 # Makefile for the distributed multi-site chat system.
 
@@ -90,3 +117,41 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) down
 endif
+
+# --- SAST -------------------------------------------------------------------
+# Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
+# no go.mod impact; semgrep installs via pipx. Idempotent — safe to re-run.
+tools:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@command -v pipx >/dev/null 2>&1 \
+	  && pipx install --force semgrep==$(SEMGREP_VERSION) \
+	  || echo "pipx not found — install semgrep manually: pipx install semgrep==$(SEMGREP_VERSION) (or: pip install --user semgrep==$(SEMGREP_VERSION))"
+
+# Run all SAST scans (gosec, govulncheck, semgrep). All three always run
+# (no fail-fast) so every category is reported in one pass; exits non-zero
+# if any scan finds an issue. This is the exact command CI enforces.
+sast:
+	@rc=0; \
+	$(MAKE) --no-print-directory sast-gosec   || rc=1; \
+	$(MAKE) --no-print-directory sast-vuln    || rc=1; \
+	$(MAKE) --no-print-directory sast-semgrep || rc=1; \
+	exit $$rc
+
+# gosec: Go security static analysis (injection, weak crypto, unsafe code).
+sast-gosec:
+	@test -x "$(GOSEC)" || { echo "gosec not installed — run 'make tools'"; exit 1; }
+	$(GOSEC) $(GOSEC_FLAGS) ./...
+
+# govulncheck: known CVEs in dependencies with call-graph reachability.
+# Requires outbound network access to https://vuln.go.dev.
+sast-vuln:
+	@test -x "$(GOVULNCHECK)" || { echo "govulncheck not installed — run 'make tools'"; exit 1; }
+	$(GOVULNCHECK) ./...
+
+# semgrep: rule-based SAST (Go security + security-audit rulesets).
+# Requires outbound network access to the Semgrep registry on first run.
+sast-semgrep:
+	@command -v semgrep >/dev/null 2>&1 || { echo "semgrep not installed — run 'make tools' (needs pipx), or: pipx install semgrep==$(SEMGREP_VERSION)"; exit 1; }
+	semgrep scan $(SEMGREP_FLAGS) .

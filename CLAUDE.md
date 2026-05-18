@@ -53,6 +53,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate` | Regenerate all mocks |
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
+| `make tools` | Install pinned dev/SAST tooling (`golangci-lint`, `gosec`, `govulncheck`, `semgrep`) |
+| `make sast` | Run all SAST scans (`gosec`, `govulncheck`, `semgrep`); fails on medium+ |
+| `make sast-gosec` / `make sast-vuln` / `make sast-semgrep` | Run a single SAST scan |
 
 ## Section 3: Coding Rules
 
@@ -163,6 +166,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 ### Before Committing
 - Run `make generate` first if store interfaces were changed
 - Lint and tests are enforced by a pre-commit hook — fix failures before retrying
+- SAST (`gosec`, `govulncheck`, `semgrep`) is a **blocking CI gate** (the `sast` job, fail on medium+). Run `make sast` locally before pushing. Suppress only genuine false positives with a justified gosec-native comment — `// #nosec <RULE> -- reason` on the line **directly above** the statement. Note: golangci-lint's `//nolint:gosec` directive does NOT suppress standalone `gosec`; the two mechanisms are independent and a knowingly-unsafe `InsecureSkipVerify`/conversion needs both.
 - Never commit `.env` files
 - Never merge code directly into `master` or `main` — always create a PR for review first
 - If your changes touch a client-facing handler (any handler registered with `nc.QueueSubscribe` or `natsrouter.Register` whose subject begins with `chat.user.{account}.request.…` or `chat.user.{account}.room.{roomID}.{siteID}.msg.send`, or any HTTP route in `auth-service`), update `docs/client-api.md` in the same PR to reflect the new request/response schema, error cases, and triggered events.

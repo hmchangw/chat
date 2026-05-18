@@ -215,6 +215,39 @@ jobs:
       - name: Unit tests
         run: make test
 
+  # Static Application Security Testing. Blocking gate: fails the run on
+  # any medium+ gosec finding, any reachable govulncheck vulnerability, or
+  # any semgrep WARNING/ERROR. Runs `make sast` so it is byte-identical to
+  # what developers run locally. To make this a required check, add `sast`
+  # to the branch protection rules for the protected branch.
+  sast:
+    needs: prewarm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+      # Installs the pinned SAST toolchain (gosec, govulncheck, semgrep)
+      # via the Makefile so CI and local `make sast` stay in lockstep.
+      # govulncheck needs network to https://vuln.go.dev; semgrep fetches
+      # its rulesets from the Semgrep registry on first run (both reachable
+      # from GitHub-hosted runners). pipx is preinstalled on ubuntu-latest;
+      # add its bin dir to PATH for the semgrep scan step.
+      - name: Install SAST tools
+        run: |
+          make tools
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: SAST (gosec + govulncheck + semgrep, fail on medium+)
+        run: make sast
+
   test-integration:
     needs: prewarm
     if: needs.prewarm.outputs.affected-integration != '[]'
