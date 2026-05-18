@@ -114,16 +114,18 @@ type runFlags struct {
 	// BuiltRamp is the pre-validated *Ramp built from Ramp fields by ParseRunFlags.
 	// Nil means no ramp is configured. executeRun reads this directly instead of
 	// rebuilding the Ramp from Ramp.From/To/Duration/Shape (Phase 2 pre-condition).
-	BuiltRamp       *Ramp
-	AutoWarmup      autoWarmupFlags
-	Liveness        livenessFlags
-	Readiness       readinessFlags
-	Progress        progressFlags
-	Conn            connFlags
-	JS              jetStreamFlags
-	Settle          SettleFlags
-	RAW             RAWFlags
-	ReceiptCoverage float64
+	BuiltRamp           *Ramp
+	AutoWarmup          autoWarmupFlags
+	Liveness            livenessFlags
+	Readiness           readinessFlags
+	Progress            progressFlags
+	Conn                connFlags
+	JS                  jetStreamFlags
+	Settle              SettleFlags
+	RAW                 RAWFlags
+	ReceiptCoverage     float64
+	MutateRate          int
+	EditAgeDistribution string
 }
 
 type abortFlags struct {
@@ -240,7 +242,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
 	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
 	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
-	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate")
 	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
@@ -274,4 +276,8 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")
 	fs.BoolVar(&rf.AllowConcurrent, "allow-concurrent", false, "allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)")
 	fs.DurationVar(&rf.RunTTL, "run-ttl", 2*time.Hour, "max age for an active runlock entry before it is considered orphaned and ignored")
+	fs.IntVar(&rf.MutateRate, "mutate-rate", 0,
+		"message-mutate scenario: mutations per second; 0 uses scenario default (5)")
+	fs.StringVar(&rf.EditAgeDistribution, "edit-age-distribution", "0.7,0.3",
+		"message-mutate scenario: typo,correction fractions (last 30s vs 24h)")
 }

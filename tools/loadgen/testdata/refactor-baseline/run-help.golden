@@ -21,6 +21,8 @@ Usage of run:
     	optional csv output path
   -duration duration
     	run duration (default 1m0s)
+  -edit-age-distribution string
+    	message-mutate scenario: typo,correction fractions (last 30s vs 24h) (default "0.7,0.3")
   -inject string
     	injection point: frontdoor|canonical (default "frontdoor")
   -js-async-max-pending int
@@ -31,6 +33,8 @@ Usage of run:
     	mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration. (default 10s)
   -liveness-timeout duration
     	per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3). (default 5s)
+  -mutate-rate int
+    	message-mutate scenario: mutations per second; 0 uses scenario default (5)
   -nats-creds-dir string
     	directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)
   -preset string
@@ -60,7 +64,7 @@ Usage of run:
   -run-ttl duration
     	max age for an active runlock entry before it is considered orphaned and ignored (default 2h0m0s)
   -scenario string
-    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout (default "messaging-pipeline")
+    	scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate (default "messaging-pipeline")
   -seed int
     	RNG seed (default 42)
   -settle-interval duration

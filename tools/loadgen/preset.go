@@ -170,6 +170,14 @@ type Preset struct {
 	BurstPeriod   time.Duration
 	BurstRatio    int
 	BurstDuration time.Duration
+
+	// EditRate + DeleteRate: relative weights for the message-mutate scenario.
+	// EditRate/(EditRate+DeleteRate) = fraction of mutations that are edits;
+	// the remainder are deletes. E.g., EditRate=0.7, DeleteRate=0.3 means 70%
+	// of mutations are edits. Zero values in both fields default to edit-only.
+	// Non-mutate scenarios leave both at zero (no behavior change).
+	EditRate   float64
+	DeleteRate float64
 }
 
 var builtinPresets = map[string]Preset{
@@ -195,6 +203,8 @@ var builtinPresets = map[string]Preset{
 		MentionRate:  0.10,
 		ThreadRate:   0.05,
 		DMRatio:      0.6,
+		EditRate:     0.05,
+		DeleteRate:   0.02,
 	},
 	"channel-heavy": {
 		Name: "channel-heavy", Users: 1000, Rooms: 100,
