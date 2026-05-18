@@ -43,6 +43,14 @@ export interface Subscription {
   hasMention: boolean
   threadUnread?: string[]
   alert: boolean
+  /** Room-level metadata that the real user-service embeds on subscription
+   *  replies (the three `subscription.get*` RPCs return joined Room data
+   *  inline so the frontend doesn't need a separate `rooms.list` call).
+   *  Optional because mock-user-service and live `subscription.update`
+   *  events don't carry them today; default to 0 / null at the consumer. */
+  userCount?: number
+  lastMsgAt?: string | null
+  lastMsgId?: string
 }
 
 /**

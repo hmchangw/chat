@@ -1,8 +1,9 @@
 import {
   userSubscriptionGetCurrent,
   userSubscriptionGetApps,
+  userSubscriptionGetRooms,
 } from '../_transport/subjects'
-import type { Nats, DMSubscription } from '../types'
+import type { Nats, DMSubscription, Room } from '../types'
 
 /** Wire shape of every `subscription.get*` reply.
  *  Both fields are non-omitempty on the Go side
@@ -13,7 +14,9 @@ import type { Nats, DMSubscription } from '../types'
  *  match Go's flattened JSON for both subscription kinds: channels/groups
  *  ship plain Subscription (hrInfo absent ⇒ typed `undefined`), DM rooms
  *  ship DMSubscription (hrInfo present). One type covers both since
- *  DMSubscription extends Subscription. */
+ *  DMSubscription extends Subscription. The real user-service additionally
+ *  embeds room-level metadata (userCount, lastMsgAt, lastMsgId) inline so
+ *  the frontend doesn't need a separate `rooms.list` call. */
 interface SidebarBucketReply {
   subscriptions: DMSubscription[]
   total: number
@@ -28,43 +31,41 @@ export interface SidebarBuckets {
    *  stores this directly under `state.subscriptions` so components
    *  consume the live per-room state via `useSubscription(roomId)`. */
   subscriptions: Record<string, DMSubscription>
+  /** Room records derived from the union of the three subscription
+   *  responses, deduped by roomId. The reducer's BUCKETS_LOADED case
+   *  consumes this to build `state.summaries` — no separate rooms.list
+   *  RPC is needed because the real user-service embeds room metadata
+   *  inline on each subscription reply. */
+  rooms: Room[]
 }
 
 /**
  * Bootstrap the sidebar by fetching three lists from user-service in
  * parallel:
- *   1. `getCurrent()` — canonical full subscription list (every roomType).
- *      Becomes `state.subscriptions` (source of truth for
- *      `useSubscription`) and seeds `channelDmIds`. The Channels and DMs
- *      section is partitioned by roomType at render time from this list.
- *   2. `getCurrent({ favorite: true })` — favorited room IDs for the
- *      Favorite section.
- *   3. `getApps()` — app subscription IDs for the Apps section.
+ *   1. `getCurrent({ favorite: true })` — favorited subscriptions, drives
+ *      the Favorite section.
+ *   2. `getApps()` — app subscriptions, drives the Apps section.
+ *   3. `getRooms()` — non-app room subscriptions (channels / DMs /
+ *      discussions), drives the Channels and DMs section.
  *
- * The reducer's `BUCKETS_LOADED` action consumes this shape directly.
- * Partition exclusivity (favorite > apps > channelDm) is enforced at
- * render time by `useSidebarSections`, so a room ID can appear in
- * `channelDmIds` and one of the other Sets without double-render.
+ * Each subscription record carries its room metadata inline on the real
+ * user-service, so we derive `rooms` from the union of all three replies
+ * (deduped by roomId). The reducer's `BUCKETS_LOADED` action consumes
+ * this shape directly. Partition exclusivity (favorite > apps > channelDm)
+ * is enforced at render time by `useSidebarSections`, so a room ID can
+ * appear in more than one bucket without double-render.
+ *
+ * Uses `Promise.allSettled` so a single bucket RPC failure degrades that
+ * one bucket to empty rather than black-holing the whole bootstrap.
  */
 export async function fetchSidebarBuckets({ user, request }: Nats): Promise<SidebarBuckets> {
-  const currentSubject = userSubscriptionGetCurrent(user.account, user.siteId)
+  const favSubject = userSubscriptionGetCurrent(user.account, user.siteId)
   const appsSubject = userSubscriptionGetApps(user.account, user.siteId)
-  // Favorite RPC is commented out for now — `pkg/model.Subscription` has no
-  // `Favorite` field, so the user-service `{favorite:true}` filter is
-  // unenforceable end-to-end. Keep the call commented (not deleted) so the
-  // path is easy to re-enable once the backend supports favorites. The
-  // sidebar's Favorite section renders a "Favorites are not yet supported"
-  // note in the meantime — see `useSidebarSections`.
-  // const favSubject = userSubscriptionGetCurrent(user.account, user.siteId)
-  // const favPromise = request<SidebarBucketReply>(favSubject, { favorite: true })
-
-  // Promise.allSettled so a single RPC failure degrades to an empty bucket
-  // instead of black-holing the entire sidebar bootstrap (which would have
-  // happened with Promise.all). Each failure is logged with its subject for
-  // diagnosis.
+  const roomsSubject = userSubscriptionGetRooms(user.account, user.siteId)
   const results = await Promise.allSettled([
-    request<SidebarBucketReply>(currentSubject, {}),
+    request<SidebarBucketReply>(favSubject, { favorite: true }),
     request<SidebarBucketReply>(appsSubject, {}),
+    request<SidebarBucketReply>(roomsSubject, {}),
   ])
   const empty: SidebarBucketReply = { subscriptions: [], total: 0 }
   const unwrap = (
@@ -72,11 +73,8 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     label: string,
   ): SidebarBucketReply => {
     if (result.status === 'fulfilled') {
-      // TEMP DEBUG: log a compact summary of each subscription RPC reply
-      // (count + roomIds) so we can see exactly which rooms came back
-      // without flooding DevTools with full subscription objects for
-      // accounts with many rooms. Remove once the live backend
-      // behaviour is verified.
+      // TEMP DEBUG: compact summary so we can verify what each
+      // subscription RPC returns on cold start. Remove once verified.
       console.log('[sidebar-bootstrap]', label, {
         count: result.value.subscriptions.length,
         roomIds: result.value.subscriptions.map((s) => s.roomId),
@@ -92,23 +90,50 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     )
     return empty
   }
-  const allResp = unwrap(results[0], currentSubject)
+  const favResp = unwrap(results[0], `${favSubject} {favorite:true}`)
   const appResp = unwrap(results[1], appsSubject)
+  const roomResp = unwrap(results[2], roomsSubject)
+
   const subscriptions: Record<string, DMSubscription> = {}
+  const rooms: Room[] = []
   const collect = (resp: SidebarBucketReply) => {
     for (const s of resp.subscriptions) {
       if (!s?.roomId) continue
-      // Later sources overwrite earlier ones, but the responses describe
-      // the same Subscription record so collisions are benign.
+      // Later sources overwrite earlier ones, but the three responses
+      // describe the same Subscription record so collisions are benign.
+      const first = subscriptions[s.roomId] === undefined
       subscriptions[s.roomId] = s
+      if (first) rooms.push(subToRoom(s, user.siteId))
     }
   }
-  collect(allResp)
+  collect(favResp)
   collect(appResp)
+  collect(roomResp)
   return {
-    favoriteIds: [],
+    favoriteIds: favResp.subscriptions.map((s) => s.roomId),
     appIds: appResp.subscriptions.map((s) => s.roomId),
-    channelDmIds: allResp.subscriptions.map((s) => s.roomId),
+    channelDmIds: roomResp.subscriptions.map((s) => s.roomId),
     subscriptions,
+    rooms,
+  }
+}
+
+/** Derive a `Room` from a subscription record. The real user-service
+ *  embeds the fields we actually need (userCount, lastMsgAt, lastMsgId);
+ *  fields the reducer's `toSummary` doesn't read default to neutral
+ *  zero/empty values so the type contract is satisfied. */
+function subToRoom(sub: DMSubscription, fallbackSiteId: string): Room {
+  return {
+    id: sub.roomId,
+    name: sub.name ?? '',
+    type: sub.roomType,
+    siteId: sub.siteId ?? fallbackSiteId,
+    userCount: sub.userCount ?? 0,
+    appCount: 0,
+    lastMsgId: sub.lastMsgId ?? '',
+    lastMsgAt: sub.lastMsgAt ?? undefined,
+    createdBy: '',
+    createdAt: '',
+    updatedAt: '',
   }
 }

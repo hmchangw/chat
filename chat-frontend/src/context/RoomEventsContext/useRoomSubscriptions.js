@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import {
   fetchSidebarBuckets,
   getRoom,
-  listRooms,
   markRoomRead,
   subscribeToRoomEvents,
   subscribeToRoomMetadataUpdates,
@@ -204,29 +203,19 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       })
     })
 
-    listRooms(liveNats)
-      .then((resp) => {
-        if (cancelledRef.current) return
-        const rooms = resp.rooms ?? []
-        safeDispatch({ type: 'ROOMS_LOADED', rooms })
-        for (const r of rooms) {
-          if (r.type === 'channel') openChannelSub(r.id)
-        }
-      })
-      .catch((err) => {
-        if (!cancelledRef.current) safeDispatch({ type: 'ROOMS_FAILED', error: err.message })
-      })
-
-    // Fetch the three sidebar buckets (favorites / apps / channel+dm) in
-    // parallel. The api op orchestrates the three user-service RPCs and
-    // hands back a merged shape ready for the reducer. Non-fatal: if the
-    // user-service RPCs fail the sidebar grouping degrades to the legacy
-    // single-list rendering, but the rooms themselves still arrive via
-    // listRooms.
+    // Bootstrap the sidebar via the three user-service subscription
+    // RPCs (favorites / apps / channel+dm). Each reply embeds the room
+    // metadata inline, so `buckets.rooms` is the canonical full list —
+    // no separate `rooms.list` RPC is needed. Per-bucket failures
+    // degrade to empty (fetchSidebarBuckets uses Promise.allSettled);
+    // a total failure leaves the sidebar empty.
     fetchSidebarBuckets(liveNats)
       .then((buckets) => {
         if (cancelledRef.current) return
         safeDispatch({ type: 'BUCKETS_LOADED', ...buckets })
+        for (const r of buckets.rooms) {
+          if (r.type === 'channel') openChannelSub(r.id)
+        }
       })
       .catch((err) => {
         // eslint-disable-next-line no-console

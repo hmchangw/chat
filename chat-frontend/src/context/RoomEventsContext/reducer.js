@@ -217,13 +217,26 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'BUCKETS_LOADED': {
-      // Seed every summary from the freshly-fetched subscription
-      // records — server-canonical hasMention / subscriptionName for
-      // the cold-start path. See `mergeSubscriptionIntoSummary`.
       const subs = action.subscriptions ?? {}
-      const summaries = state.summaries.map((s) =>
-        subs[s.id] ? mergeSubscriptionIntoSummary(s, subs[s.id]) : s
-      )
+      let summaries
+      if (action.rooms) {
+        // Cold-start path: rooms are derived from the three subscription
+        // RPCs (the real user-service embeds room metadata inline). Build
+        // summaries from scratch and merge in the per-room subscription
+        // for server-canonical hasMention / subscriptionName.
+        summaries = sortByLastMsgDesc(
+          action.rooms.map((r) =>
+            mergeSubscriptionIntoSummary(toSummary(r), subs[r.id])
+          )
+        )
+      } else {
+        // Partial-update path (e.g. tests, future bucket-refresh): no
+        // rooms supplied, just enrich existing summaries with new sub
+        // metadata.
+        summaries = state.summaries.map((s) =>
+          subs[s.id] ? mergeSubscriptionIntoSummary(s, subs[s.id]) : s
+        )
+      }
       return {
         ...state,
         summaries,

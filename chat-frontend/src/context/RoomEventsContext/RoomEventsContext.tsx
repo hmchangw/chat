@@ -305,19 +305,7 @@ export function useSidebarSections(): SidebarSection[] {
       else if (allBucketsEmpty) channelDm.push(enrich(room))
     }
     return [
-      {
-        key: 'favorite',
-        title: 'Favorite',
-        rooms: favorite,
-        // Favorite path is unimplemented end-to-end today (no `Favorite`
-        // field on `pkg/model.Subscription`, no toggle handler on the
-        // backend, `fetchSidebarBuckets` skips the favorite RPC). Show
-        // the note ONLY when there are no rooms to render — if a live
-        // event ever lands a roomId in favoriteIds (or the favorite RPC
-        // is re-enabled), prefer rendering the rooms over the
-        // unsupported note so we don't silently hide real content.
-        note: favorite.length === 0 ? 'Favorites are not yet supported' : undefined,
-      },
+      { key: 'favorite',  title: 'Favorite',          rooms: favorite },
       { key: 'apps',      title: 'Apps',              rooms: apps },
       { key: 'channelDm', title: 'Channels and DMs',  rooms: channelDm },
     ]
