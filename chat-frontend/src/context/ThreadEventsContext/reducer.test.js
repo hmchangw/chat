@@ -125,6 +125,52 @@ describe('threadEventsReducer — REPLY_SENT_LOCAL', () => {
   })
 })
 
+describe('threadEventsReducer — THREAD_REPLY_RECEIVED', () => {
+  it('appends an inbound reply when the open thread matches the parentId', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, {
+      type: 'THREAD_REPLY_RECEIVED',
+      parentId: parent.messageId,
+      message: { id: 'live-1', content: 'from B', threadParentMessageId: parent.messageId },
+    })
+    expect(out.messages.map((m) => m.id)).toEqual(['live-1'])
+  })
+
+  it('is a no-op when no thread is open (closed panel)', () => {
+    const out = threadEventsReducer(initialState, {
+      type: 'THREAD_REPLY_RECEIVED',
+      parentId: parent.messageId,
+      message: { id: 'live-1', threadParentMessageId: parent.messageId },
+    })
+    expect(out).toBe(initialState)
+  })
+
+  it('is a no-op when the open thread is on a different parent', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const out = threadEventsReducer(open, {
+      type: 'THREAD_REPLY_RECEIVED',
+      parentId: 'some-other-parent',
+      message: { id: 'live-1', threadParentMessageId: 'some-other-parent' },
+    })
+    expect(out).toBe(open)
+  })
+
+  it('dedupes by message id (sender echo after REPLY_SENT_LOCAL)', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const local = threadEventsReducer(open, {
+      type: 'REPLY_SENT_LOCAL',
+      message: { id: 'opt-1', content: 'mine', _local: true },
+    })
+    // Server echo arrives with the same ID.
+    const echoed = threadEventsReducer(local, {
+      type: 'THREAD_REPLY_RECEIVED',
+      parentId: parent.messageId,
+      message: { id: 'opt-1', threadParentMessageId: parent.messageId },
+    })
+    expect(echoed).toBe(local)
+  })
+})
+
 describe('threadEventsReducer — REPLY_SEND_FAILED / REPLY_RETRIED / REPLY_DISMISSED', () => {
   const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
   const sent = threadEventsReducer(open, {

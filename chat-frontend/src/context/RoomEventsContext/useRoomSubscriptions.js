@@ -52,7 +52,7 @@ const MARK_READ_DEBOUNCE_MS = 500
  * inside long-lived subscription callbacks to decide whether to fire
  * a `markRoomRead` RPC on incoming messages.
  */
-export function useRoomSubscriptions(nats, dispatch, stateRef) {
+export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandlerRef) {
   const { user } = nats
   // Keep a live ref to `nats` so long-lived subscription callbacks
   // (subUpdate's getRoom call, listRooms inside the effect body) see
@@ -126,9 +126,27 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
       }, MARK_READ_DEBOUNCE_MS)
     }
 
+    // Route thread-reply events to the registered handler (ThreadEvents).
+    // The handler returns nothing; if no consumer is registered (e.g.
+    // ThreadEventsProvider not mounted), the event is silently skipped —
+    // the room reducer still bumps the parent's tcount via MESSAGE_RECEIVED.
+    const fanThreadReply = (evt) => {
+      const msg = evt?.message
+      if (!msg?.threadParentMessageId) return
+      const handler = threadReplyHandlerRef?.current
+      if (!handler) return
+      handler({
+        parentMessageId: msg.threadParentMessageId,
+        roomId: evt.roomId,
+        siteId: evt.siteId,
+        message: msg,
+      })
+    }
+
     const dmSub = subscribeToUserRoomEvents(liveNats, (evt) => {
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
+        fanThreadReply(evt)
         scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
       }
     })
@@ -140,7 +158,9 @@ export function useRoomSubscriptions(nats, dispatch, stateRef) {
           const hasMention = (evt.mentions ?? []).some(
             (p) => p.account === user.account
           )
-          safeDispatch({ type: 'MESSAGE_RECEIVED', event: { ...evt, hasMention } })
+          const normalized = { ...evt, hasMention }
+          safeDispatch({ type: 'MESSAGE_RECEIVED', event: normalized })
+          fanThreadReply(normalized)
           scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
         }
       })

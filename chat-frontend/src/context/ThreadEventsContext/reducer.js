@@ -69,6 +69,20 @@ export function threadEventsReducer(state, action) {
       if (state.messages.some((m) => m.id === msg.id)) return state
       return { ...state, messages: [...state.messages, msg] }
     }
+    case 'THREAD_REPLY_RECEIVED': {
+      // Live thread-reply broadcast addressed at the currently-open
+      // thread. No-op if the panel is closed or open on a different
+      // parent (the room reducer still bumps tcount on the parent
+      // message regardless, so the badge updates either way). Dedupe
+      // by message ID so the sender's own echo doesn't double-insert
+      // after `REPLY_SENT_LOCAL` already added it.
+      if (!state.activeParent) return state
+      if (state.activeParent.messageId !== action.parentId) return state
+      const msg = action.message
+      if (!msg?.id) return state
+      if (state.messages.some((m) => m.id === msg.id)) return state
+      return { ...state, messages: [...state.messages, msg] }
+    }
     case 'REPLY_SEND_FAILED':
       return { ...state, messages: setMessage(state.messages, action.messageId, { _status: 'failed' }) }
     case 'REPLY_RETRIED':

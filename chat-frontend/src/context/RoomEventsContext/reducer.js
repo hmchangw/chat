@@ -294,10 +294,40 @@ export function roomEventsReducer(state, action) {
       }
       if (!msg || !msg.id) return state
       // Thread replies are written to thread tables only, but broadcast-worker
-      // publishes them on the main subject too. Filter them here so they don't
-      // flicker into the main feed.
+      // publishes them on the main subject too. We do NOT add them to the
+      // main feed, but we DO need to bump the parent message's tcount so the
+      // "N replies" badge on the parent updates live (otherwise the badge
+      // stays stale until reload). Dedupe by reply message ID to skip
+      // sender's own echo (their OWN_THREAD_REPLY_SENT already bumped).
       if (msg.threadParentMessageId) {
-        return state
+        const tRoomId = evt.roomId
+        const tPrev = state.roomState[tRoomId]
+        // No room buffer means no parent in state to update — skip silently;
+        // the count will be authoritative when history is fetched later.
+        if (!tPrev) return state
+        const parentIdx = tPrev.messages.findIndex(
+          (m) => m.id === msg.threadParentMessageId
+        )
+        if (parentIdx < 0) return state
+        const parent = tPrev.messages[parentIdx]
+        const seenReplies = parent.threadReplyIds ?? new Set()
+        if (seenReplies.has(msg.id)) return state
+        const nextSeen = new Set(seenReplies)
+        nextSeen.add(msg.id)
+        const updatedParent = {
+          ...parent,
+          tcount: (parent.tcount ?? 0) + 1,
+          threadReplyIds: nextSeen,
+        }
+        const messages = [
+          ...tPrev.messages.slice(0, parentIdx),
+          updatedParent,
+          ...tPrev.messages.slice(parentIdx + 1),
+        ]
+        return {
+          ...state,
+          roomState: { ...state.roomState, [tRoomId]: { ...tPrev, messages } },
+        }
       }
       const roomId = evt.roomId
       const prev = state.roomState[roomId] ?? emptyRoomState()
@@ -551,12 +581,26 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'OWN_THREAD_REPLY_SENT': {
+      // Optimistic bump for the sender; the inbound echo via
+      // MESSAGE_RECEIVED dedupes off `parent.threadReplyIds` to avoid
+      // double-counting. Callers should pass `replyId` so the dedupe
+      // works — legacy callers without it still bump but won't be
+      // protected from the echo (one acceptable extra +1).
       const prev = state.roomState[action.roomId]
       if (!prev) return state
       const idx = prev.messages.findIndex((m) => m.id === action.parentId)
       if (idx < 0) return state
-      const tcount = (prev.messages[idx].tcount ?? 0) + 1
-      const updatedMsg = { ...prev.messages[idx], tcount }
+      const parent = prev.messages[idx]
+      const seen = parent.threadReplyIds ?? new Set()
+      // Idempotency: if this exact reply ID was already counted (e.g.
+      // duplicate dispatch from a retry), don't re-bump.
+      if (action.replyId && seen.has(action.replyId)) return state
+      const nextSeen =
+        action.replyId && !seen.has(action.replyId)
+          ? (() => { const s = new Set(seen); s.add(action.replyId); return s })()
+          : seen
+      const tcount = (parent.tcount ?? 0) + 1
+      const updatedMsg = { ...parent, tcount, threadReplyIds: nextSeen }
       const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
       return {
         ...state,

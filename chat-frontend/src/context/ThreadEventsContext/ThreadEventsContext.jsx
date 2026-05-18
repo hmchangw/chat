@@ -1,7 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '../NatsContext/NatsContext'
-import { useRoomDispatch } from '../RoomEventsContext/RoomEventsContext'
+import {
+  useRoomDispatch,
+  useRegisterThreadReplyHandler,
+} from '../RoomEventsContext/RoomEventsContext'
 import { generateMessageID } from '@/lib/idgen'
 import { fetchThreadMessages, sendMessage } from '@/api'
 import { threadEventsReducer, initialState } from './reducer'
@@ -12,6 +15,7 @@ export function ThreadEventsProvider({ children }) {
   const nats = useNats()
   const { user } = nats
   const roomDispatch = useRoomDispatch()
+  const registerThreadReplyHandler = useRegisterThreadReplyHandler()
   const [state, dispatch] = useReducer(threadEventsReducer, initialState)
   const generationRef = useRef(0)
   const stateRef = useRef(state)
@@ -21,6 +25,21 @@ export function ThreadEventsProvider({ children }) {
   useEffect(() => {
     if (!user) dispatch({ type: 'RESET' })
   }, [user])
+
+  // Bridge: every live thread-reply event observed on the room channel
+  // (see `useRoomSubscriptions`) becomes a THREAD_REPLY_RECEIVED dispatch
+  // here. The reducer no-ops if the panel isn't open on the matching
+  // parent, so we can safely receive every event without gating.
+  useEffect(() => {
+    const unsubscribe = registerThreadReplyHandler((evt) => {
+      dispatch({
+        type: 'THREAD_REPLY_RECEIVED',
+        parentId: evt.parentMessageId,
+        message: evt.message,
+      })
+    })
+    return unsubscribe
+  }, [registerThreadReplyHandler])
 
   const openThread = useCallback(
     (parent) => {
@@ -106,7 +125,16 @@ export function ThreadEventsProvider({ children }) {
       try {
         publishReply(id, content.trim(), opts)
         if (parent) {
-          roomDispatch({ type: 'OWN_THREAD_REPLY_SENT', roomId: parent.roomId, parentId: parent.messageId })
+          // Pass `replyId` so the room reducer can record it on the
+          // parent's `threadReplyIds` set — the inbound echo via
+          // MESSAGE_RECEIVED then dedupes off that set instead of
+          // double-bumping `tcount`.
+          roomDispatch({
+            type: 'OWN_THREAD_REPLY_SENT',
+            roomId: parent.roomId,
+            parentId: parent.messageId,
+            replyId: id,
+          })
         }
       } catch (err) {
         dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
