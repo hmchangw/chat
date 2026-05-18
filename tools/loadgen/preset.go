@@ -143,6 +143,20 @@ type Preset struct {
 	// DM. The seed step provisions DM rooms in proportion: round(Rooms×DMRatio)
 	// DM rooms + remainder channel rooms. Zero value = all channel (no DM rooms).
 	DMRatio float64
+
+	// Burst envelope: periodically multiply the effective rate by BurstRatio
+	// for BurstDuration every BurstPeriod. Models incident/spike traffic shapes
+	// (e.g. a support flood after an outage). Zero values disable the envelope
+	// — the preset runs at a steady Rate.
+	//
+	// BaselineRate is the quiet-period rate. BurstRatio is the integer
+	// multiplier applied during the burst window (e.g. 40 = 40× baseline).
+	// Burst-aware presets set BaselineRate instead of relying on Rate;
+	// non-burst presets leave all four fields zero.
+	BaselineRate  int
+	BurstPeriod   time.Duration
+	BurstRatio    int
+	BurstDuration time.Duration
 }
 
 var builtinPresets = map[string]Preset{
@@ -221,6 +235,23 @@ var builtinPresets = map[string]Preset{
 			MemberAddKind:  2,
 		},
 		WriteIDPrefix: "loadgen-",
+	},
+	// incident-burst models the "support flood after an outage" scenario:
+	// 100 users across 10 rooms with a quiet baseline of 5 msg/s that spikes
+	// to 200 msg/s (40×) for 10s every 30s. DMRatio 0.2 keeps most traffic
+	// in channel rooms (realistic for a support/incident channel pattern).
+	"incident-burst": {
+		Name:          "incident-burst",
+		Users:         100,
+		Rooms:         10,
+		RoomSizeDist:  DistUniform,
+		SenderDist:    DistUniform,
+		ContentBytes:  Range{Min: 100, Max: 1000},
+		DMRatio:       0.2,
+		BaselineRate:  5,
+		BurstPeriod:   30 * time.Second,
+		BurstRatio:    40,
+		BurstDuration: 10 * time.Second,
 	},
 }
 

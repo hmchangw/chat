@@ -29,6 +29,57 @@ type tickLoopConfig struct {
 	// is safe: time.Now().Before(zero) is always false, so every drop is
 	// labelled "measured" — correct for callers that don't have a warmup.
 	WarmupDeadline time.Time
+
+	// Burst envelope: periodically multiply the rate by BurstRatio for
+	// BurstDuration every BurstPeriod. Models incident/spike traffic shapes.
+	// Zero values disable the envelope (steady rate).
+	//
+	// BaselineRate is the quiet-period rate used when burst is active; if
+	// zero, Rate is used instead. BurstRatio is the integer multiplier applied
+	// during the burst window (e.g. 40 = 40× baseline). The burst window
+	// starts at elapsed=0 relative to the loop start time.
+	BaselineRate  int
+	BurstPeriod   time.Duration
+	BurstRatio    int
+	BurstDuration time.Duration
+}
+
+// burstEnabled reports whether cfg has a fully-specified burst envelope.
+func (cfg *tickLoopConfig) burstEnabled() bool {
+	return cfg.BurstPeriod > 0 && cfg.BurstRatio > 1 && cfg.BurstDuration > 0
+}
+
+// currentRate returns the effective ticks-per-second at time now given the
+// loop's start time. When burst is disabled or Ramp is active, the Ramp or
+// Rate field governs (unchanged from original behaviour).
+//
+// When burst is active, the rate alternates between BaselineRate (or Rate if
+// BaselineRate is zero) during the quiet phase and BaselineRate×BurstRatio
+// during the burst phase. Burst windows begin at elapsed multiples of
+// BurstPeriod and last for BurstDuration.
+func (cfg *tickLoopConfig) currentRate(now, start time.Time) int {
+	if !cfg.burstEnabled() {
+		// Burst disabled — callers that also have a Ramp will not call this
+		// for the ramp path; this is the steady-rate fallback.
+		base := cfg.BaselineRate
+		if base <= 0 {
+			base = cfg.Rate
+		}
+		return base
+	}
+	base := cfg.BaselineRate
+	if base <= 0 {
+		base = cfg.Rate
+	}
+	elapsed := now.Sub(start)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	cyclePos := elapsed % cfg.BurstPeriod
+	if cyclePos < cfg.BurstDuration {
+		return base * cfg.BurstRatio
+	}
+	return base
 }
 
 // rateRebuildInterval is how often tickLoop polls the Ramp curve to
@@ -46,12 +97,22 @@ const rateRebuildInterval = 1 * time.Second
 // When cfg.Ramp is non-nil, the rate follows the ramp curve and the
 // ticker is rebuilt every rateRebuildInterval (~1s).
 //
+// When cfg.BurstPeriod > 0, the tick rate alternates between
+// cfg.BaselineRate (or cfg.Rate) and cfg.BaselineRate×cfg.BurstRatio on
+// a BurstPeriod cycle. The burst envelope rebuild cadence is
+// BurstDuration/10 (capped at rateRebuildInterval) so that short burst
+// windows are detected promptly.
+//
 // On ctx cancellation, drains in-flight ticks for up to drainGracePeriod
 // before returning.
 func tickLoop(ctx context.Context, cfg *tickLoopConfig, tick func(context.Context)) {
+	start := time.Now()
+
 	rate := cfg.Rate
 	if cfg.Ramp != nil {
 		rate = cfg.Ramp.RateAt(0)
+	} else if cfg.burstEnabled() {
+		rate = cfg.currentRate(start, start)
 	}
 	interval := tickInterval(rate)
 
@@ -59,15 +120,16 @@ func tickLoop(ctx context.Context, cfg *tickLoopConfig, tick func(context.Contex
 	defer t.Stop()
 
 	var rebuild <-chan time.Time
-	start := time.Now()
-	if cfg.Ramp != nil {
-		// Sample the ramp curve at most every rateRebuildInterval, but
-		// never less often than 10 sub-intervals across the ramp window
-		// — keeps short test ramps observable while bounding overhead on
-		// production-length runs.
+	if cfg.Ramp != nil || cfg.burstEnabled() {
+		// Choose the rebuild cadence: for ramp, at most rateRebuildInterval
+		// but at least Duration/10; for burst, at most rateRebuildInterval
+		// but at least BurstDuration/10 so we don't miss a burst edge.
 		ri := rateRebuildInterval
-		if cfg.Ramp.Duration > 0 && cfg.Ramp.Duration/10 < ri {
+		if cfg.Ramp != nil && cfg.Ramp.Duration > 0 && cfg.Ramp.Duration/10 < ri {
 			ri = cfg.Ramp.Duration / 10
+		}
+		if cfg.burstEnabled() && cfg.BurstDuration/10 < ri {
+			ri = cfg.BurstDuration / 10
 		}
 		if ri <= 0 {
 			ri = rateRebuildInterval
@@ -78,10 +140,12 @@ func tickLoop(ctx context.Context, cfg *tickLoopConfig, tick func(context.Contex
 	}
 
 	maybeRebuild := func() {
-		if cfg.Ramp == nil {
-			return
+		var newRate int
+		if cfg.Ramp != nil {
+			newRate = cfg.Ramp.RateAt(time.Since(start))
+		} else if cfg.burstEnabled() {
+			newRate = cfg.currentRate(time.Now(), start)
 		}
-		newRate := cfg.Ramp.RateAt(time.Since(start))
 		if newRate <= 0 {
 			return
 		}
