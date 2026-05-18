@@ -60,44 +60,99 @@ which by itself removes the ~13% read-portion and a wire round-trip.
 The remaining ~25% write commit is left in place as a synchronous,
 fully-error-handled write.
 
-### Why a 2-minute TTL is safe
+### Why the TTL default is 2 minutes
 
-The natural concern with a longer cache TTL is "stale role data lets a
-demoted admin keep their privileges for up to TTL seconds". This concern
-is much weaker than it first appears because of how role changes already
-propagate to clients in this system:
+The TTL is the central tuning knob of this design and the only choice
+in it that trades safety for performance. This section records the
+analysis behind picking 2 minutes specifically.
 
-`room-service.handleUpdateRole` validates a role-update request and
-publishes to JetStream; `room-worker.processRoleUpdate` writes the new
-role to Mongo and then publishes a `SubscriptionUpdateEvent` to
-`chat.user.{account}.event.subscription.update`
-(`room-worker/handler.go:224`). Cross-site role changes propagate via
-the outbox/inbox path and the remote site publishes the same per-user
-event. Every connected client is subscribed to its own user-event
-subject and receives the role change within milliseconds.
+#### What TTL trades
 
-Consequence:
+**Higher TTL** → higher hit ratio (less Mongo load) AND higher worst-case
+staleness for cached fields. **Lower TTL** → fresher data AND more
+Mongo refresh load. There is no third axis: the choice is one number
+on this curve.
 
-- **Honest clients reflect the change in UI immediately** and disable
-  affordances that depend on the lost role (e.g., the "post in large
-  room" send button for a demoted admin). The user does not attempt
-  the now-disallowed action, so server-side cache staleness produces
-  zero observable problem at any TTL.
-- **Malicious / modified clients** can still send requests during the
-  staleness window. They get up to TTL of stale large-room cap bypass
-  — at 2m TTL, that's ~120s × cap-rate worth of bypass. Bounded and
-  self-healing.
-- **For abuse cases that genuinely need immediate stop**, the
-  operational tool is "remove from room" (subscription delete), not
-  demote. Removal propagates on the very next request because this
-  design intentionally does not negative-cache subscriptions —
-  `ErrSubscriptionNotFound` always re-hits Mongo.
+#### Diminishing returns on Mongo CPU
 
-The 2m default sits at the inflection point where the Mongo hit-ratio
-gains have effectively saturated and further TTL extension trades real
-moderation effectiveness for nearly-zero CPU gains. Production
-deployments with stricter moderation SLAs can dial the TTL down via
-env var.
+Hit ratio per cache key as a function of TTL × per-key access rate
+(`hit_ratio ≈ (rate × TTL) / (rate × TTL + 1)`):
+
+| TTL | Hit ratio at 0.1 req/sec/key | Hit ratio at 1 req/sec/key |
+|---|---|---|
+| 30s | 75% | 97% |
+| 60s | 86% | 98% |
+| 2min | 92% | 99.2% |
+| 5min | 97% | 99.7% |
+| 1hr | 99.7% | 99.97% |
+
+At any production-realistic access rate, the curve is essentially flat
+past ~5 minutes. The Mongo-CPU savings from going from 2m to 5m are
+real but small; from 5m to 1hr are negligible.
+
+#### Linear growth of the malicious-user abuse window
+
+The staleness concern is bounded by the existing `SubscriptionUpdateEvent`
+push path (see Motivation): honest clients reflect role/subscription
+changes in their UI within milliseconds, so server-side cache staleness
+produces no observable problem for well-behaved users at any TTL.
+
+For malicious or modified clients that ignore the push event, the
+abuse window scales linearly with TTL:
+
+| TTL | Approx. messages a demoted abuser can post under stale cap bypass |
+|---|---|
+| 30s | ~25 |
+| 60s | ~50 |
+| 2min | ~100 |
+| 5min | ~250 |
+| 1hr | ~3000 |
+
+(Rough numbers assuming sustained ~0.8 msg/sec from one client; varies
+with the cap and rate limits applied elsewhere.)
+
+The "remove from room" escape hatch propagates immediately under this
+design (no subscription negative caching → next request re-reads Mongo
+and gets `ErrSubscriptionNotFound`). So even in the abuse case, the
+TTL window is the failure mode for "demote was the chosen response";
+"remove" remains an immediate-effect tool.
+
+#### Choosing the number
+
+Reasonable defenders of three different points on the curve:
+
+- **60s** — optimizes for moderation responsiveness. Mongo win is
+  ~86% hit ratio on wide workloads. Best choice if active-moderation
+  use cases dominate.
+- **5min** — optimizes for Mongo CPU. Hit ratio is near saturation;
+  abuse window (~250 msgs) is still bounded and self-healing. Best
+  choice for large deployments where Mongo load is the operational
+  concern.
+- **2min** — middle ground. Captures most of the Mongo win (92% vs
+  97%) at half the abuse-window cost (~100 vs ~250 msgs). No strong
+  signal toward either pole, so the balanced default wins.
+
+This is a deployment-time choice, not a code-time choice. The env vars
+(`GATEKEEPER_SUB_CACHE_TTL`, `ROOM_META_CACHE_TTL`) let operators dial
+the number per environment without code changes. A production
+deployment that finds 2m too lax can run with 30s; one that finds
+Mongo load still high can run with 5m. The 2m default is the starting
+point, not the contract.
+
+#### Bounds and ceilings
+
+- **Below ~30s**, the cache is doing measurably less work because
+  entries expire faster than typical access cycles for slow-changing
+  metadata. Paying Mongo for no UX benefit.
+- **Above ~5min**, the moderation-cost curve grows linearly while
+  the Mongo-savings curve flattens. Net negative for most operating
+  regimes.
+- **Hard ceiling at deploy frequency.** Any TTL longer than the time
+  between deploys means cached struct projections could outlive a
+  schema change. We do not currently version the cache key on
+  schema change, so TTLs comparable to deploy cadence (hours+) need
+  that mechanism added before going there. 2m is comfortably below
+  this ceiling.
 
 ## Non-goals
 
