@@ -272,18 +272,19 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 
 	// Re-stamp handles redelivery: first attempt may have created the thread room
 	// but crashed before the stamp landed. IF EXISTS in the store prevents phantom rows.
-	if parentFound && msg.ThreadParentMessageCreatedAt != nil {
+	switch {
+	case parentFound && msg.ThreadParentMessageCreatedAt != nil:
 		if err := h.store.UpdateParentMessageThreadRoomID(ctx, msg.ThreadParentMessageID, msg.RoomID, *msg.ThreadParentMessageCreatedAt, existingRoom.ID); err != nil {
 			return "", fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
-	} else if !parentFound {
+	case !parentFound:
 		slog.Error("subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", existingRoom.ID,
 			"roomID", msg.RoomID,
 		)
-	} else if msg.ThreadParentMessageCreatedAt == nil {
+	default: // msg.ThreadParentMessageCreatedAt == nil
 		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
