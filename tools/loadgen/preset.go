@@ -420,6 +420,17 @@ func BuiltinPreset(name string) (Preset, bool) {
 	return p, ok
 }
 
+// AllBuiltinPresets returns a slice of all built-in presets. The slice is a
+// copy — mutations do not affect the registry.
+func AllBuiltinPresets() []Preset {
+	out := make([]Preset, 0, len(builtinPresets))
+	for name := range builtinPresets {
+		p := builtinPresets[name]
+		out = append(out, p)
+	}
+	return out
+}
+
 // pickWeighted draws a key from the weights map with probability proportional
 // to its weight. Iteration order is sorted by key for stable enumeration.
 // Total weight must be > 0; the caller owns that invariant since both callers

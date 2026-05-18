@@ -45,9 +45,24 @@ type config struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|chaos> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|chaos|scenarios|presets|recommend|doctor> [flags]")
 		os.Exit(2)
 	}
+
+	// Discoverability subcommands (Task X.1) require no external connections
+	// and must work without NATS_URL / MONGO_URI env vars. Dispatch them
+	// before the config parse so operators can explore the binary offline.
+	switch os.Args[1] {
+	case "scenarios":
+		os.Exit(runScenarios(nil, os.Args[2:]))
+	case "presets":
+		os.Exit(runPresets(nil, os.Args[2:]))
+	case "recommend":
+		os.Exit(runRecommend(nil, os.Args[2:]))
+	case "doctor":
+		os.Exit(runDoctor(nil, os.Args[2:]))
+	}
+
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
@@ -78,6 +93,14 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runTeardown(ctx, cfg, os.Args[2:])
 	case "chaos":
 		return runChaos(ctx, cfg, os.Args[2:])
+	case "scenarios":
+		return runScenarios(cfg, os.Args[2:])
+	case "presets":
+		return runPresets(cfg, os.Args[2:])
+	case "recommend":
+		return runRecommend(cfg, os.Args[2:])
+	case "doctor":
+		return runDoctor(cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
