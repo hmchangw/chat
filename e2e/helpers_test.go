@@ -407,3 +407,18 @@ func setupChannelRoom(t *testing.T, ctx context.Context, site harness.SiteEndpoi
 	awaitSubscription(t, ctx, site.MongoDB(t), bob.Account, roomID)
 	return alice, bob, roomID
 }
+
+// enableAlert flips the per-room subscription's `alert` flag to true so
+// notification-worker dispatches notifications to this account. New subs
+// from room creation default to alert=false; tests that assert on
+// notification arrival must call this after awaitSubscription.
+func enableAlert(t *testing.T, ctx context.Context, db *mongo.Database, account, roomID string) {
+	t.Helper()
+	res, err := db.Collection("subscriptions").UpdateOne(ctx,
+		bson.M{"u.account": account, "roomId": roomID},
+		bson.M{"$set": bson.M{"alert": true, "isSubscribed": true}},
+	)
+	require.NoError(t, err, "enableAlert(%s,%s)", account, roomID)
+	require.Equal(t, int64(1), res.MatchedCount,
+		"enableAlert(%s,%s): expected exactly one sub matched", account, roomID)
+}
