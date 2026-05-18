@@ -1,5 +1,5 @@
+import { userSubscriptionCount } from '../_transport/subjects'
 import type { Nats } from '../types'
-// import { userSubscriptionCount } from '../_transport/subjects'
 
 export interface UnreadCountResponse {
   count: number
@@ -8,16 +8,16 @@ export interface UnreadCountResponse {
 /**
  * Fetch the caller's unread-message total for the header badge.
  *
- * MOCK: the real RPC lives in a local user-service that is not in this
- * repo. To go live: change the destructure to `{ user, request }`,
- * uncomment the subjects import + the `request` line, and delete the
- * hardcoded return. The subject + payload below are the production ones.
- *
- *   const subject = userSubscriptionCount(user.account, user.siteId)
- *   return request<UnreadCountResponse>(subject, { unread: true })
+ * Sync request/reply to the user-service `subscription.count` subject.
+ * In local dev this is served by `mock-user-service` (hardcoded count);
+ * the real user-service answers it in deployed environments.
  */
-export async function getUnreadCount(
-  _nats: Nats,
-): Promise<UnreadCountResponse> {
-  return { count: 42 }
+export async function getUnreadCount({
+  user,
+  request,
+}: Nats): Promise<UnreadCountResponse> {
+  return request<UnreadCountResponse>(
+    userSubscriptionCount(user.account, user.siteId),
+    { unread: true },
+  )
 }
