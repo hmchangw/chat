@@ -446,17 +446,3 @@ func (mr *MockRoomKeyStoreMockRecorder) Set(ctx, roomID, pair any) *gomock.Call 
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockRoomKeyStore)(nil).Set), ctx, roomID, pair)
 }
-
-// UpdateDMParticipants mocks base method.
-func (m *MockSubscriptionStore) UpdateDMParticipants(ctx context.Context, roomID string, uids, accounts []string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateDMParticipants", ctx, roomID, uids, accounts)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateDMParticipants indicates an expected call of UpdateDMParticipants.
-func (mr *MockSubscriptionStoreMockRecorder) UpdateDMParticipants(ctx, roomID, uids, accounts any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDMParticipants", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateDMParticipants), ctx, roomID, uids, accounts)
-}

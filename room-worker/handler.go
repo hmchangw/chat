@@ -1108,6 +1108,24 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		CreatedAt: acceptedAt,
 		UpdatedAt: acceptedAt,
 	}
+
+	// Fetch the DM/botDM counterpart upfront so the room can be inserted in a
+	// single write with UIDs/Accounts populated, matching the sync DM path.
+	var counterpart *model.User
+	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
+		counterpart, err = h.store.GetUser(ctx, req.Users[0])
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				if roomType == model.RoomTypeBotDM {
+					return newPermanent("bot user not found")
+				}
+				return newPermanent("counterpart not found")
+			}
+			return fmt.Errorf("get counterpart: %w", err)
+		}
+		room.UIDs, room.Accounts = model.BuildDMParticipants(requester, counterpart)
+	}
+
 	if err := h.store.CreateRoom(ctx, room); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			existing, fetchErr := h.store.GetRoom(ctx, room.ID)
@@ -1134,10 +1152,17 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}
 
 	switch roomType {
-	case model.RoomTypeDM:
-		return h.processCreateRoomDM(ctx, &req, room, requester, requestID, acceptedAt, now)
-	case model.RoomTypeBotDM:
-		return h.processCreateRoomBotDM(ctx, &req, room, requester, requestID, acceptedAt, now)
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+		var subs []*model.Subscription
+		if roomType == model.RoomTypeBotDM {
+			subs = buildBotDMSubs(requester, counterpart, room, acceptedAt)
+		} else {
+			subs = buildDMSubs(requester, counterpart, room, acceptedAt)
+		}
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subs: %w", err)
+		}
+		return h.finishCreateRoom(ctx, &req, room, requester, []model.User{*requester, *counterpart}, subs, requestID, now)
 	case model.RoomTypeChannel:
 		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
 	default:
@@ -1157,54 +1182,6 @@ func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 		return model.RoomTypeDM
 	}
 	return model.RoomTypeChannel
-}
-
-func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
-	other, err := h.store.GetUser(ctx, req.Users[0])
-	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return newPermanent("counterpart not found")
-		}
-		return fmt.Errorf("get counterpart: %w", err)
-	}
-
-	subs := buildDMSubs(requester, other, room, acceptedAt)
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		return fmt.Errorf("bulk create subs: %w", err)
-	}
-
-	uids, accounts := model.BuildDMParticipants(requester, other)
-	if err := h.store.UpdateDMParticipants(ctx, room.ID, uids, accounts); err != nil {
-		return fmt.Errorf("update dm participants: %w", err)
-	}
-	room.UIDs = uids
-	room.Accounts = accounts
-
-	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *other}, subs, requestID, now)
-}
-
-func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
-	bot, err := h.store.GetUser(ctx, req.Users[0])
-	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return newPermanent("bot user not found")
-		}
-		return fmt.Errorf("get bot user: %w", err)
-	}
-
-	subs := buildBotDMSubs(requester, bot, room, acceptedAt)
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		return fmt.Errorf("bulk create subs: %w", err)
-	}
-
-	uids, accounts := model.BuildDMParticipants(requester, bot)
-	if err := h.store.UpdateDMParticipants(ctx, room.ID, uids, accounts); err != nil {
-		return fmt.Errorf("update dm participants: %w", err)
-	}
-	room.UIDs = uids
-	room.Accounts = accounts
-
-	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *bot}, subs, requestID, now)
 }
 
 func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {

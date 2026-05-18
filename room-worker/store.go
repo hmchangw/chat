@@ -78,11 +78,6 @@ type SubscriptionStore interface {
 	// matching-existing-room as success-on-redelivery.
 	CreateRoom(ctx context.Context, room *model.Room) error
 
-	// UpdateDMParticipants $sets the room's uids/accounts pair on dm/botDM
-	// rooms after the counterpart user has been resolved. Idempotent under
-	// JetStream redelivery; safe to call multiple times with the same args.
-	UpdateDMParticipants(ctx context.Context, roomID string, uids, accounts []string) error
-
 	// ListNewMembersForNewRoom is the empty-roomID variant of
 	// ListNewMembers — same dedup + bot filter, no "already-subscribed"
 	// pruning since the room doesn't exist yet. excludeAccount drops one

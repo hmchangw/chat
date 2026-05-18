@@ -1998,8 +1998,8 @@ func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 
 	var capturedSubs []*model.Subscription
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
@@ -2007,7 +2007,6 @@ func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 			capturedSubs = subs
 			return nil
 		})
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2047,10 +2046,9 @@ func TestProcessCreateRoom_DM_EmitsNoSysMessages(t *testing.T) {
 	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2072,8 +2070,8 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 	bot := &model.User{ID: "u_bot", Account: "helper.bot", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "helper.bot").Return(bot, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 
 	var capturedSubs []*model.Subscription
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
@@ -2081,7 +2079,6 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 			capturedSubs = subs
 			return nil
 		})
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-bot-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2445,8 +2442,11 @@ func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testi
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	requester := &model.User{ID: "u_alice", Account: "alice", EngName: "Alice A", ChineseName: "艾麗斯", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob B", ChineseName: "鮑伯", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	// Counterpart resolved upfront so CreateRoom can set UIDs/Accounts in one write.
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	// Insert collides on _id.
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(mongo.WriteException{
 		WriteErrors: []mongo.WriteError{{Code: 11000, Message: "duplicate key"}},
@@ -3077,10 +3077,9 @@ func TestProcessCreateRoom_DM_PublishesLocalInbox(t *testing.T) {
 	other := &model.User{ID: "u_bob", Account: "bob", EngName: "Bob", ChineseName: "鮑", SiteID: "site-B"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-inbox").Return(nil)
 
 	ts := time.Now().UnixMilli()
@@ -4131,7 +4130,8 @@ func TestProcessCreateRoom_RequesterEmptyName_ReturnsPermanent(t *testing.T) {
 	}
 }
 
-// F1: async DM create sets UIDs/Accounts sorted by UID, paired by index.
+// F1: async DM create sets UIDs/Accounts sorted by UID, paired by index, on
+// the initial CreateRoom insert (single Mongo write, no follow-up update).
 func TestProcessCreateRoom_DM_SetsParticipantFields(t *testing.T) {
 	h, mockStore, _ := newCreateRoomTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -4140,15 +4140,16 @@ func TestProcessCreateRoom_DM_SetsParticipantFields(t *testing.T) {
 	other := &model.User{ID: "u_aaa", Account: "bob", EngName: "Bob", ChineseName: "鮑", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+
+	var captured *model.Room
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			captured = r
+			return nil
+		})
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-fields").Return(nil)
-
-	// UIDs sorted: ["u_aaa","u_zzz"]; Accounts mirror that permutation.
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), "room-dm-fields",
-		[]string{"u_aaa", "u_zzz"}, []string{"bob", "alice"}).
-		Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID:           "room-dm-fields",
@@ -4157,9 +4158,15 @@ func TestProcessCreateRoom_DM_SetsParticipantFields(t *testing.T) {
 		Timestamp:        time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.NotNil(t, captured)
+	// UIDs sorted: ["u_aaa","u_zzz"]; Accounts mirror that permutation.
+	assert.Equal(t, []string{"u_aaa", "u_zzz"}, captured.UIDs)
+	assert.Equal(t, []string{"bob", "alice"}, captured.Accounts, "accounts paired with uid sort order")
 }
 
-// F2: async botDM create persists room with UIDs/Accounts paired by index.
+// F2: async botDM create persists room with UIDs/Accounts paired by index on
+// the initial CreateRoom insert (single Mongo write, no follow-up update).
 func TestProcessCreateRoom_BotDM_SetsParticipantFields(t *testing.T) {
 	h, mockStore, _ := newCreateRoomTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -4168,14 +4175,16 @@ func TestProcessCreateRoom_BotDM_SetsParticipantFields(t *testing.T) {
 	bot := &model.User{ID: "u_aaa", Account: "supportbot.bot", EngName: "Support", ChineseName: "支援", SiteID: "site-A"}
 
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
-	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "supportbot.bot").Return(bot, nil)
+
+	var captured *model.Room
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			captured = r
+			return nil
+		})
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-botdm-fields").Return(nil)
-
-	mockStore.EXPECT().UpdateDMParticipants(gomock.Any(), "room-botdm-fields",
-		[]string{"u_aaa", "u_zzz"}, []string{"supportbot.bot", "alice"}).
-		Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID:           "room-botdm-fields",
@@ -4184,6 +4193,10 @@ func TestProcessCreateRoom_BotDM_SetsParticipantFields(t *testing.T) {
 		Timestamp:        time.Now().UnixMilli(),
 	})
 	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	require.NotNil(t, captured)
+	assert.Equal(t, []string{"u_aaa", "u_zzz"}, captured.UIDs)
+	assert.Equal(t, []string{"supportbot.bot", "alice"}, captured.Accounts)
 }
 
 // F3: sync DM create sets UIDs/Accounts on the initial CreateRoom literal.
@@ -4210,7 +4223,6 @@ func TestHandleSyncCreateDM_SetsParticipantFieldsOnInitialCreate(t *testing.T) {
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: requester.ID, Account: requester.Account}}, nil)
 	mockStore.EXPECT().FindDMSubscription(gomock.Any(), "bob", "alice").
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: other.ID, Account: other.Account}}, nil)
-	// No UpdateDMParticipants expectation — sync path sets fields on the literal.
 
 	reqBody, err := json.Marshal(model.SyncCreateDMRequest{
 		RequesterAccount: "alice",
@@ -4247,7 +4259,6 @@ func TestProcessCreateRoom_Channel_DoesNotSetParticipantFields(t *testing.T) {
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{bob}, nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-chan-fields").Return(nil)
-	// No UpdateDMParticipants — channel path must never touch the fields.
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
 		RoomID:           "room-chan-fields",

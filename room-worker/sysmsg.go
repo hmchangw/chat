@@ -7,6 +7,9 @@ import (
 )
 
 func displayName(u *model.User) string {
+	if u.EngName == u.ChineseName {
+		return strings.TrimSpace(u.EngName)
+	}
 	return strings.TrimSpace(u.EngName + " " + u.ChineseName)
 }
 

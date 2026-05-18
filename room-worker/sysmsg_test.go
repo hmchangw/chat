@@ -46,6 +46,19 @@ func TestFormatLeft_TrimsEmptyNameSide(t *testing.T) {
 	assert.Equal(t, "鮑勃 left the channel", formatLeft(&model.User{ChineseName: "鮑勃"}))
 }
 
+func TestFormatLeft_EngEqualsChineseRendersOnce(t *testing.T) {
+	// When EngName and ChineseName are identical (e.g. account-only users),
+	// render the name a single time — repeating it as "Bob Bob" looks wrong.
+	assert.Equal(t, "Bob left the channel", formatLeft(&model.User{EngName: "Bob", ChineseName: "Bob"}))
+	assert.Equal(t,
+		"Alice 愛麗絲 added Bob to the channel",
+		formatAddedSingle(
+			&model.User{EngName: "Alice", ChineseName: "愛麗絲"},
+			&model.User{EngName: "Bob", ChineseName: "Bob"},
+		),
+	)
+}
+
 func TestValidateUserNames(t *testing.T) {
 	cases := []struct {
 		name    string
