@@ -374,7 +374,37 @@ export function roomEventsReducer(state, action) {
           roomState: { ...state.roomState, [roomId]: nextRoomState },
         }
       }
-      if (prev.messages.some((m) => m.id === msg.id)) return state
+      // Broadcast echo of our own optimistic send: the optimistic
+      // `createdAt` is the CLIENT clock (set in RoomMessageInput as
+      // `new Date().toISOString()`). The server's broadcast carries the
+      // SERVER clock — and crucially Cassandra stores the parent at the
+      // server's ms. If we keep the optimistic `createdAt`, any later
+      // `threadParentMessageCreatedAt` derived from this row will be
+      // the client's ms — the
+      // `messages_by_id WHERE message_id=? AND created_at=? IF EXISTS`
+      // stamp in message-worker then misses, and every thread reply on
+      // this parent silently fails until the page is refreshed (which
+      // refetches the parent from Cassandra with the server's ms).
+      // Replace the optimistic with the server canonical fields,
+      // preserving only the `_local` / `_status` flags. Then early
+      // return — we don't re-count unread / lastMsgAt because this is
+      // the same message we already accounted for on first arrival.
+      const existingIdx = prev.messages.findIndex((m) => m.id === msg.id)
+      if (existingIdx >= 0) {
+        const existing = prev.messages[existingIdx]
+        const replaced = { ...existing, ...msg }
+        if (existing._local) replaced._local = existing._local
+        if (existing._status) replaced._status = existing._status
+        const mergedMessages = [
+          ...prev.messages.slice(0, existingIdx),
+          replaced,
+          ...prev.messages.slice(existingIdx + 1),
+        ]
+        return {
+          ...state,
+          roomState: { ...state.roomState, [roomId]: { ...prev, messages: mergedMessages } },
+        }
+      }
       const messages = appendBounded(prev.messages, msg)
       const nextRoomState = {
         ...prev,

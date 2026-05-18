@@ -574,6 +574,84 @@ describe('MESSAGE_DELETED_LOCAL', () => {
   })
 })
 
+describe('MESSAGE_RECEIVED — server echo overwrites optimistic createdAt', () => {
+  // Regression for: every thread reply silently failing message-worker's
+  // IF EXISTS stamp on messages_by_id because the parent message in
+  // frontend state kept the OPTIMISTIC `new Date().toISOString()` value
+  // (client clock) instead of the SERVER's canonical createdAt. Then
+  // `threadParentMessageCreatedAt` derived from the parent's `createdAt`
+  // pointed at a time Cassandra never stored, IF EXISTS missed, and the
+  // thread_room_id stamp on the parent silently failed — leading to
+  // empty thread fetches on close+reopen.
+  it('replaces the optimistic message with the server broadcast for the same id (preserving _local)', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'g', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [
+            // OPTIMISTIC — client clock, has _local flag
+            { id: 'msg-1', content: 'hi', createdAt: '2026-05-18T10:23:45.123Z', _local: true },
+          ],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    // Server broadcast echo with the SAME id but the authoritative server createdAt.
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        roomId: 'r1',
+        lastMsgAt: '2026-05-18T10:23:45.789Z',
+        lastMsgId: 'msg-1',
+        message: {
+          id: 'msg-1',
+          content: 'hi',
+          createdAt: '2026-05-18T10:23:45.789Z', // server's clock
+          sender: { account: 'alice' },
+        },
+      },
+    })
+    const msg = out.roomState.r1.messages.find((m) => m.id === 'msg-1')
+    expect(msg.createdAt).toBe('2026-05-18T10:23:45.789Z')
+    // _local flag preserved so any pending-row UI affordance stays.
+    expect(msg._local).toBe(true)
+    // sender survived from the broadcast.
+    expect(msg.sender?.account).toBe('alice')
+    // exactly one entry — no duplicate row.
+    expect(out.roomState.r1.messages).toHaveLength(1)
+  })
+
+  it('still appends as a new row when no existing entry has that id', () => {
+    const seed = {
+      ...initialState,
+      summaries: [{ id: 'r1', name: 'g', type: 'channel', siteId: 's', userCount: 1, lastMsgAt: null, unreadCount: 0, hasMention: false, mentionAll: false }],
+      activeRoomId: 'r1',
+      roomState: {
+        r1: {
+          messages: [],
+          hasLoadedHistory: true, historyError: null,
+          unreadCount: 0, hasMention: false, mentionAll: false,
+          lastMsgAt: null, lastMsgId: null,
+          bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+        },
+      },
+    }
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_RECEIVED',
+      event: {
+        roomId: 'r1',
+        message: { id: 'msg-1', content: 'hi', createdAt: '2026-05-18T10:23:45.789Z' },
+      },
+    })
+    expect(out.roomState.r1.messages.map((m) => m.id)).toEqual(['msg-1'])
+  })
+})
+
 describe('MESSAGE_RECEIVED — thread-reply tcount bump', () => {
   it('increments parent.tcount when a thread reply arrives and the parent is in the buffer', () => {
     const seed = {
