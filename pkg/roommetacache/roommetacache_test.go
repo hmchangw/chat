@@ -90,3 +90,26 @@ func TestCache_TTLExpires(t *testing.T) {
 	_, _ = c.Get(context.Background(), "r1")
 	assert.Equal(t, int32(2), calls.Load(), "after TTL expiry, loader runs again")
 }
+
+func TestCache_CapacityEviction(t *testing.T) {
+	var calls atomic.Int32
+	loader := func(_ context.Context, roomID string) (roommetacache.Meta, error) {
+		calls.Add(1)
+		return makeMeta(roomID), nil
+	}
+	c, err := roommetacache.New(2, time.Minute, loader)
+	require.NoError(t, err)
+
+	_, _ = c.Get(context.Background(), "r1") // miss
+	_, _ = c.Get(context.Background(), "r2") // miss
+	_, _ = c.Get(context.Background(), "r3") // miss; evicts r1 (LRU)
+	require.Equal(t, int32(3), calls.Load())
+
+	// r1 should be evicted; re-loading produces another miss.
+	_, _ = c.Get(context.Background(), "r1")
+	assert.Equal(t, int32(4), calls.Load(), "r1 should have been evicted by capacity")
+
+	// r3 should still be cached.
+	_, _ = c.Get(context.Background(), "r3")
+	assert.Equal(t, int32(4), calls.Load(), "r3 should still be a hit")
+}
