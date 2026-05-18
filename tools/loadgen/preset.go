@@ -253,6 +253,48 @@ var builtinPresets = map[string]Preset{
 		BurstRatio:    40,
 		BurstDuration: 10 * time.Second,
 	},
+
+	// announce-room: 10k members in a single channel room, very low write rate.
+	// Spec requests 1 write/min; Rate is a per-second field so Rate=1 is the
+	// closest granularity. Operators may pass --rate=1 and rely on the slow
+	// tick interval; sub-1 rates (e.g. 1/min) are out of scope for this task.
+	// All users are members of the single room — DistUniform round-robin
+	// assigns every user to the one room (totalRooms=1, every i%1==0).
+	// TODO Phase 3.2 follow-up: introduce DistAll constant for explicit "all
+	// members in one room" semantics when Preset gains a subscription-distribution
+	// field.
+	"announce-room": {
+		Name:         "announce-room",
+		Users:        10000,
+		Rooms:        1,
+		RoomSizeDist: DistUniform,
+		SenderDist:   DistUniform,
+		ContentBytes: Range{Min: 100, Max: 500},
+		DMRatio:      0,
+	},
+
+	// firehose-room: 1k members, 50 writes/s (moderate, balanced fanout).
+	// Default preset for the large-room-broadcast scenario.
+	"firehose-room": {
+		Name:         "firehose-room",
+		Users:        1000,
+		Rooms:        1,
+		RoomSizeDist: DistUniform,
+		SenderDist:   DistUniform,
+		ContentBytes: Range{Min: 50, Max: 200},
+		DMRatio:      0,
+	},
+
+	// bot-room: 100 members, 200 writes/s (high write rate from few senders).
+	"bot-room": {
+		Name:         "bot-room",
+		Users:        100,
+		Rooms:        1,
+		RoomSizeDist: DistUniform,
+		SenderDist:   DistUniform,
+		ContentBytes: Range{Min: 20, Max: 100},
+		DMRatio:      0,
+	},
 }
 
 // BuiltinPreset looks up a preset by name.

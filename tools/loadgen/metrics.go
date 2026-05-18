@@ -63,6 +63,14 @@ type Metrics struct {
 	// MessageRead records the latency to send a MessageRead event, broken down by
 	// room type (channel|dm). Used by the read-receipts scenario (Phase 3 §3.16).
 	MessageRead *prometheus.HistogramVec
+	// LargeRoomReceive records per-(message, recipient) receive latency for the
+	// large-room-broadcast scenario (Phase 3 §3.2). Label "preset" identifies
+	// the active preset (announce-room|firehose-room|bot-room).
+	LargeRoomReceive *prometheus.HistogramVec
+	// LargeRoomCompletion records per-message completion ratio at p99 receive-time
+	// for the large-room-broadcast scenario (Phase 3 §3.2). Labels: "preset" and
+	// "quantile" (p50|p99).
+	LargeRoomCompletion *prometheus.GaugeVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -178,6 +186,15 @@ func NewMetrics() *Metrics {
 			Help:    "Latency to send a MessageRead event, by room type (channel|dm).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
 		}, []string{"room_type"}),
+		LargeRoomReceive: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_largeroom_receive_latency_seconds",
+			Help:    "Per-(message, recipient) receive latency for large-room-broadcast scenario.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"preset"}),
+		LargeRoomCompletion: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loadgen_largeroom_completion_ratio",
+			Help: "Per-message completion ratio at p99 receive-time. Quantile labels: p50|p99.",
+		}, []string{"preset", "quantile"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -192,6 +209,7 @@ func NewMetrics() *Metrics {
 		m.RAWLag, m.RAWVisibilityWindow,
 		m.RoomOpen, m.RoomOpenE2E,
 		m.MessageRead,
+		m.LargeRoomReceive, m.LargeRoomCompletion,
 	)
 	return m
 }
