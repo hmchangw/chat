@@ -75,3 +75,43 @@ func New(size int, ttl time.Duration, loader Loader) (*Cache, error) {
 		loader: loader,
 	}, nil
 }
+
+// Get returns the cached Meta for roomID. On miss it calls the configured
+// loader (deduped via singleflight) and caches the result. Loader errors
+// are returned to the caller and not cached.
+func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error) {
+	if v, ok := c.lru.Get(roomID); ok {
+		c.hits.Add(1)
+		return v, nil
+	}
+	c.misses.Add(1)
+
+	v, err, _ := c.sf.Do(roomID, func() (interface{}, error) {
+		// Recheck the cache inside singleflight in case a sibling caller
+		// populated it while we were waiting for the lock.
+		if cached, ok := c.lru.Get(roomID); ok {
+			return cached, nil
+		}
+		loaded, err := c.loader(ctx, roomID)
+		if err != nil {
+			return Meta{}, err
+		}
+		c.lru.Add(roomID, loaded)
+		return loaded, nil
+	})
+	if err != nil {
+		c.loadErrs.Add(1)
+		return Meta{}, err
+	}
+	return v.(Meta), nil
+}
+
+// Stats returns a snapshot of the cache's counters.
+func (c *Cache) Stats() Stats {
+	return Stats{
+		Hits:       c.hits.Load(),
+		Misses:     c.misses.Load(),
+		LoadErrors: c.loadErrs.Load(),
+		Size:       c.lru.Len(),
+	}
+}
