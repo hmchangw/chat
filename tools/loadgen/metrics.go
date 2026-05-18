@@ -48,6 +48,13 @@ type Metrics struct {
 	// ("channel" or "dm"). Separate from Published to avoid inflating that
 	// counter's label cardinality. Only incremented when Preset.DMRatio > 0.
 	PublishedByRoomType *prometheus.CounterVec
+	// RAWLag records per-path read-after-write lag: first-visible − published.
+	// Used by the raw-consistency scenario (Phase 3 §3.1) and consumed by the
+	// v2 dashboard's RAW panels.
+	RAWLag *prometheus.HistogramVec
+	// RAWVisibilityWindow records per-path visibility window:
+	// first-visible − last-not-visible. Companion to RAWLag.
+	RAWVisibilityWindow *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -138,6 +145,16 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"preset", "room_type"},
 		),
+		RAWLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_raw_lag_seconds",
+			Help:    "Per-path read-after-write lag: first-visible - published.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"path"}),
+		RAWVisibilityWindow: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_raw_visibility_window_seconds",
+			Help:    "Per-path visibility window: first-visible - last-not-visible.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+		}, []string{"path"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -149,6 +166,7 @@ func NewMetrics() *Metrics {
 		m.RunQuality,
 		m.ThreadMessages,
 		m.PublishedByRoomType,
+		m.RAWLag, m.RAWVisibilityWindow,
 	)
 	return m
 }

@@ -122,6 +122,7 @@ type runFlags struct {
 	Conn       connFlags
 	JS         jetStreamFlags
 	Settle     SettleFlags
+	RAW        RAWFlags
 }
 
 type abortFlags struct {
@@ -166,6 +167,14 @@ type connFlags struct {
 
 type jetStreamFlags struct {
 	AsyncMaxPending int
+}
+
+// RAWFlags holds flags specific to the raw-consistency scenario.
+type RAWFlags struct {
+	// PollInterval is the interval between visibility polls per read path.
+	PollInterval time.Duration
+	// Timeout is the per-message deadline before declaring not-visible.
+	Timeout time.Duration
 }
 
 // PrintRunHelp writes the run-subcommand flag usage to w in the same
@@ -230,7 +239,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
 	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
 	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
-	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency")
 	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
@@ -253,6 +262,10 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.JS.AsyncMaxPending, "js-async-max-pending", 4096, "S5: max in-flight async JetStream publishes for canonical inject; 0 falls back to sync js.PublishMsg (legacy / bisection)")
 	fs.IntVar(&rf.Abort.WindowMaxSamples, "abort-window-max-samples", 10000, "S3: cap on the abort/progress latency ring buffer; 0 disables the cap (legacy). Bounds the per-tick percentile sort under sustained high publish rates. WARNING: when peak_rps × max(abort-*-sustain) > cap, retention is compressed below the sustain interval and the abort watcher cannot fire; it emits a slog.Warn 'abort watcher deafened by sample cap' so the silent no-fire is detectable. Size cap >= peak_rps × max_sustain to keep the watcher functional.")
 	fs.StringVar(&rf.CSV, "csv", "", "optional csv output path")
+	fs.DurationVar(&rf.RAW.PollInterval, "raw-poll-interval", 10*time.Millisecond,
+		"raw-consistency scenario: interval between visibility polls per path")
+	fs.DurationVar(&rf.RAW.Timeout, "raw-timeout", 5*time.Second,
+		"raw-consistency scenario: per-message poll timeout before declaring not-visible")
 	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
 	fs.DurationVar(&rf.Settle.Interval, "settle-interval", 500*time.Millisecond, "settle phase: poll interval between probe rounds")
 	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")
