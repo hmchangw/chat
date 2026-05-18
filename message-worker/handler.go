@@ -13,6 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -200,6 +201,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 		}
 	} else {
 		slog.Error("first thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", threadRoomID,
@@ -279,6 +281,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		}
 	case !parentFound:
 		slog.Error("subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", existingRoom.ID,
@@ -286,6 +289,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		)
 	default: // msg.ThreadParentMessageCreatedAt == nil
 		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", existingRoom.ID,

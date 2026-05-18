@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/msgbucket"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // errMessageNotFound is returned by GetMessageSender when the message row is
@@ -233,6 +234,7 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	}
 	if !applied {
 		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
 			"messageID", parentMessageID,
 			"parentCreatedAt", parentCreatedAt,
 			"threadRoomID", threadRoomID,
@@ -248,6 +250,7 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	}
 	if !applied {
 		slog.Error("thread_room_id stamp on messages_by_room missed: parent row not found at the given (room_id, bucket, created_at, message_id) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
 			"messageID", parentMessageID,
 			"roomID", roomID,
 			"bucket", parentBucket,

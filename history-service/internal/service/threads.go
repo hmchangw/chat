@@ -9,6 +9,7 @@ import (
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
@@ -48,6 +49,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// skipped" entries with the same messageID to confirm.
 	if msg.ThreadRoomID == "" {
 		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
+			"request_id", natsutil.RequestIDFromContext(c),
 			"roomID", roomID,
 			"messageID", req.ThreadMessageID,
 			"messageCreatedAt", msg.CreatedAt,

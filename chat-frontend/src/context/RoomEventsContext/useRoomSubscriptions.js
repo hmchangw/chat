@@ -135,12 +135,24 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
       if (!msg?.threadParentMessageId) return
       const handler = threadReplyHandlerRef?.current
       if (!handler) return
-      handler({
-        parentMessageId: msg.threadParentMessageId,
-        roomId: evt.roomId,
-        siteId: evt.siteId,
-        message: msg,
-      })
+      try {
+        handler({
+          parentMessageId: msg.threadParentMessageId,
+          roomId: evt.roomId,
+          siteId: evt.siteId,
+          message: msg,
+        })
+      } catch (err) {
+        // Don't let a handler exception break the subscription callback —
+        // other event consumers (MESSAGE_RECEIVED dispatch above, mark-read
+        // scheduling below) must still run.
+        // eslint-disable-next-line no-console
+        console.warn(
+          'thread-reply handler threw:',
+          err?.message ?? err,
+          { roomId: evt.roomId, parentMessageId: msg.threadParentMessageId },
+        )
+      }
     }
 
     const dmSub = subscribeToUserRoomEvents(liveNats, (evt) => {

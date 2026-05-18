@@ -12,6 +12,15 @@ export interface EditMessageArgs {
   payload: EditMessagePayload
 }
 
+/** Wire shape of the history-service `MsgEdit` reply. Frontend doesn't
+ *  consume the fields today (the optimistic `MESSAGE_EDITED_LOCAL`
+ *  dispatch already carries the user's editedAt), but the generic is
+ *  passed through `request<T>` per project convention. */
+export interface EditMessageResponse {
+  messageId?: string
+  editedAt?: number
+}
+
 /**
  * Edit an existing message's content. Fire-and-forget at the call site,
  * but uses NATS request (not publish) under the hood. The backend
@@ -27,5 +36,5 @@ export function editMessage(
   { user, request }: Nats,
   { roomId, siteId, payload }: EditMessageArgs,
 ): void {
-  request(msgEdit(user.account, roomId, siteId), payload).catch(() => {})
+  request<EditMessageResponse>(msgEdit(user.account, roomId, siteId), payload).catch(() => {})
 }

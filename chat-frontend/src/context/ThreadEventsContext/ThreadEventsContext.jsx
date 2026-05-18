@@ -43,24 +43,8 @@ export function ThreadEventsProvider({ children }) {
 
   const openThread = useCallback(
     (parent) => {
-      // TEMP DEBUG: pin the exact `parent` object the panel was opened
-      // with so close+reopen failures can be diffed against working
-      // (refresh+open) cases. Remove once the close+reopen
-      // empty-thread bug is root-caused.
-      // eslint-disable-next-line no-console
-      console.log('[thread-debug] openThread called with', {
-        roomId: parent?.roomId,
-        siteId: parent?.siteId,
-        messageId: parent?.messageId,
-        createdAtMs: parent?.createdAtMs,
-        currentActiveParentId: stateRef.current.activeParent?.messageId ?? null,
-      })
       // Short-circuit if it's already the same parent (mirrors reducer guard).
-      if (stateRef.current.activeParent?.messageId === parent.messageId) {
-        // eslint-disable-next-line no-console
-        console.log('[thread-debug] openThread SHORT-CIRCUITED — same parent already open')
-        return
-      }
+      if (stateRef.current.activeParent?.messageId === parent.messageId) return
       const myGen = ++generationRef.current
       dispatch({ type: 'OPEN_THREAD', parent })
       if (!user) return
@@ -71,25 +55,12 @@ export function ThreadEventsProvider({ children }) {
         limit: 50,
       })
         .then((resp) => {
-          // eslint-disable-next-line no-console
-          console.log('[thread-debug] fetchThreadMessages resolved', {
-            messageId: parent.messageId,
-            messageCount: resp?.messages?.length ?? 0,
-            hasNext: resp?.hasNext,
-            generationStillCurrent: myGen === generationRef.current,
-            firstFewIds: (resp?.messages ?? []).slice(0, 3).map((m) => m.id),
-          })
           if (myGen !== generationRef.current) return
           // The api op already normalises into broadcast shape (id/content);
           // hand it straight to the reducer.
           dispatch({ type: 'HISTORY_LOADED', parentId: parent.messageId, resp })
         })
         .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.log('[thread-debug] fetchThreadMessages REJECTED', {
-            messageId: parent.messageId,
-            error: err?.message ?? String(err),
-          })
           if (myGen !== generationRef.current) return
           dispatch({
             type: 'HISTORY_FAILED',

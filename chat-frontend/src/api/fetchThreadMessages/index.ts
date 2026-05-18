@@ -32,25 +32,10 @@ export async function fetchThreadMessages(
   args: FetchThreadMessagesArgs,
 ): Promise<FetchThreadMessagesResponse> {
   const { roomId, siteId, threadMessageId, limit = 50 } = args
-  const subject = msgThread(user.account, roomId, siteId)
-  const payload = { threadMessageId, limit }
-  // TEMP DEBUG: log the exact wire-level args + response so we can see
-  // whether close+reopen sends identical args to refresh+open and what
-  // the backend actually returns each time. Remove once the empty-on-
-  // reopen bug is root-caused.
-  // eslint-disable-next-line no-console
-  console.log('[thread-debug] fetchThreadMessages → request', { subject, payload })
-  const resp = await request<WireResponse>(subject, payload)
-  // eslint-disable-next-line no-console
-  console.log('[thread-debug] fetchThreadMessages ← response', {
-    subject,
-    rawMessageCount: resp?.messages?.length ?? 0,
-    hasNext: resp?.hasNext ?? false,
-    nextCursor: resp?.nextCursor ?? null,
-    firstRawIds: (resp?.messages ?? []).slice(0, 3).map(
-      (m: HistoryMessage) => m?.messageId ?? (m as unknown as Message)?.id
-    ),
-  })
+  const resp = await request<WireResponse>(
+    msgThread(user.account, roomId, siteId),
+    { threadMessageId, limit },
+  )
   return {
     messages: normalizeHistoricalMessages(resp.messages),
     nextCursor: resp.nextCursor,
