@@ -136,3 +136,29 @@ func TestCachedSubStore_GetRoomMetaPassesThrough(t *testing.T) {
 	_, _ = cached.GetRoomMeta(context.Background(), "r1")
 	_, _ = cached.GetRoomMeta(context.Background(), "r1")
 }
+
+func TestNewCachedSubStore_RejectsInvalidArgs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockStore(ctrl)
+
+	tests := []struct {
+		name    string
+		size    int
+		ttl     time.Duration
+		wantErr string
+	}{
+		{"zero size", 0, time.Minute, "size must be positive"},
+		{"negative size", -1, time.Minute, "size must be positive"},
+		{"zero ttl", 10, 0, "ttl must be positive"},
+		{"negative ttl", 10, -1, "ttl must be positive"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := newCachedSubStore(inner, tc.size, tc.ttl)
+			assert.Nil(t, c)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
