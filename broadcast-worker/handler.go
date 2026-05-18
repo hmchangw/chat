@@ -12,6 +12,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -72,13 +73,16 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		slog.Warn("mention resolve failed", "error", err)
 	}
 
-	room, err := h.store.FetchAndUpdateRoom(ctx, msg.RoomID, msg.ID, msg.CreatedAt, resolved.MentionAll)
+	if err := h.store.UpdateRoomLastMessage(ctx, msg.RoomID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
+		return fmt.Errorf("update room last message %s: %w", msg.RoomID, err)
+	}
+	meta, err := h.store.GetRoomMeta(ctx, msg.RoomID)
 	if err != nil {
-		return fmt.Errorf("fetch and update room %s: %w", msg.RoomID, err)
+		return fmt.Errorf("get room meta %s: %w", msg.RoomID, err)
 	}
 
 	if len(resolved.Accounts) > 0 {
-		if err := h.store.SetSubscriptionMentions(ctx, room.ID, resolved.Accounts); err != nil {
+		if err := h.store.SetSubscriptionMentions(ctx, meta.ID, resolved.Accounts); err != nil {
 			return fmt.Errorf("set subscription mentions: %w", err)
 		}
 	}
@@ -95,13 +99,13 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 
 	clientMsg := buildClientMessage(&msg, senderMap)
 
-	switch room.Type {
+	switch meta.Type {
 	case model.RoomTypeChannel:
-		return h.publishChannelEvent(ctx, room, clientMsg, resolved.MentionAll, resolved.Participants)
+		return h.publishChannelEvent(ctx, meta, clientMsg, resolved.MentionAll, resolved.Participants)
 	case model.RoomTypeDM:
-		return h.publishDMEvents(ctx, room, clientMsg, resolved.Accounts)
+		return h.publishDMEvents(ctx, meta, clientMsg, resolved.Accounts)
 	default:
-		slog.Warn("unknown room type, skipping fan-out", "type", room.Type, "roomID", room.ID)
+		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "roomID", meta.ID)
 		return nil
 	}
 }
@@ -231,8 +235,8 @@ func (h *Handler) currentRoomKey(ctx context.Context, roomID string) (*roomkeyst
 	return key, nil
 }
 
-func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
-	evt := buildRoomEvent(room, clientMsg)
+func (h *Handler) publishChannelEvent(ctx context.Context, meta roommetacache.Meta, clientMsg *model.ClientMessage, mentionAll bool, mentions []model.Participant) error {
+	evt := buildRoomEvent(meta, clientMsg)
 	evt.MentionAll = mentionAll
 	if len(mentions) > 0 {
 		evt.Mentions = mentions
@@ -244,14 +248,14 @@ func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, cli
 			return fmt.Errorf("marshal client message: %w", err)
 		}
 
-		key, err := h.currentRoomKey(ctx, room.ID)
+		key, err := h.currentRoomKey(ctx, meta.ID)
 		if err != nil {
 			return err
 		}
 
 		encrypted, err := roomcrypto.Encode(string(msgJSON), key.KeyPair.PublicKey, key.Version)
 		if err != nil {
-			return fmt.Errorf("encrypt message for room %s: %w", room.ID, err)
+			return fmt.Errorf("encrypt message for room %s: %w", meta.ID, err)
 		}
 
 		encJSON, err := json.Marshal(encrypted)
@@ -269,13 +273,13 @@ func (h *Handler) publishChannelEvent(ctx context.Context, room *model.Room, cli
 		return fmt.Errorf("marshal channel event: %w", err)
 	}
 
-	return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
+	return h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload)
 }
 
-func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientMsg *model.ClientMessage, mentionedAccounts []string) error {
-	subs, err := h.store.ListSubscriptions(ctx, room.ID)
+func (h *Handler) publishDMEvents(ctx context.Context, meta roommetacache.Meta, clientMsg *model.ClientMessage, mentionedAccounts []string) error {
+	subs, err := h.store.ListSubscriptions(ctx, meta.ID)
 	if err != nil {
-		return fmt.Errorf("list subscriptions for DM room %s: %w", room.ID, err)
+		return fmt.Errorf("list subscriptions for DM room %s: %w", meta.ID, err)
 	}
 
 	mentionSet := make(map[string]struct{}, len(mentionedAccounts))
@@ -286,7 +290,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientM
 	for i := range subs {
 		_, hasMention := mentionSet[subs[i].User.Account]
 
-		evt := buildRoomEvent(room, clientMsg)
+		evt := buildRoomEvent(meta, clientMsg)
 		evt.HasMention = hasMention
 
 		payload, err := json.Marshal(evt)
@@ -300,15 +304,15 @@ func (h *Handler) publishDMEvents(ctx context.Context, room *model.Room, clientM
 	return nil
 }
 
-func buildRoomEvent(room *model.Room, clientMsg *model.ClientMessage) model.RoomEvent {
+func buildRoomEvent(meta roommetacache.Meta, clientMsg *model.ClientMessage) model.RoomEvent {
 	return model.RoomEvent{
 		Type:      model.RoomEventNewMessage,
-		RoomID:    room.ID,
+		RoomID:    meta.ID,
 		Timestamp: time.Now().UTC().UnixMilli(),
-		RoomName:  room.Name,
-		RoomType:  room.Type,
-		SiteID:    room.SiteID,
-		UserCount: room.UserCount,
+		RoomName:  meta.Name,
+		RoomType:  meta.Type,
+		SiteID:    meta.SiteID,
+		UserCount: meta.UserCount,
 		LastMsgAt: clientMsg.CreatedAt,
 		LastMsgID: clientMsg.ID,
 		Message:   clientMsg,

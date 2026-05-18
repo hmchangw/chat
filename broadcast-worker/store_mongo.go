@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
 type mongoStore struct {
@@ -44,7 +45,34 @@ func (m *mongoStore) ListSubscriptions(ctx context.Context, roomID string) ([]mo
 	return subs, nil
 }
 
-func (m *mongoStore) FetchAndUpdateRoom(ctx context.Context, roomID, msgID string, msgAt time.Time, mentionAll bool) (*model.Room, error) {
+func (m *mongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+	filter := bson.M{"_id": roomID}
+	opts := options.FindOne().SetProjection(bson.M{
+		"type":      1,
+		"name":      1,
+		"siteId":    1,
+		"userCount": 1,
+	})
+	var doc struct {
+		ID        string         `bson:"_id"`
+		Type      model.RoomType `bson:"type"`
+		Name      string         `bson:"name"`
+		SiteID    string         `bson:"siteId"`
+		UserCount int            `bson:"userCount"`
+	}
+	if err := m.roomCol.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
+		return roommetacache.Meta{}, fmt.Errorf("get room meta %s: %w", roomID, err)
+	}
+	return roommetacache.Meta{
+		ID:        doc.ID,
+		Type:      doc.Type,
+		Name:      doc.Name,
+		SiteID:    doc.SiteID,
+		UserCount: doc.UserCount,
+	}, nil
+}
+
+func (m *mongoStore) UpdateRoomLastMessage(ctx context.Context, roomID, msgID string, msgAt time.Time, mentionAll bool) error {
 	fields := bson.M{
 		"lastMsgAt": msgAt,
 		"lastMsgId": msgID,
@@ -55,13 +83,15 @@ func (m *mongoStore) FetchAndUpdateRoom(ctx context.Context, roomID, msgID strin
 	}
 	filter := bson.M{"_id": roomID}
 	update := bson.M{"$set": fields}
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 
-	var room model.Room
-	if err := m.roomCol.FindOneAndUpdate(ctx, filter, update, opts).Decode(&room); err != nil {
-		return nil, fmt.Errorf("fetch and update room %s: %w", roomID, err)
+	res, err := m.roomCol.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update room last message %s: %w", roomID, err)
 	}
-	return &room, nil
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update room last message %s: %w", roomID, mongo.ErrNoDocuments)
+	}
+	return nil
 }
 
 func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error {
