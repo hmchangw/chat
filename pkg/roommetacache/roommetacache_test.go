@@ -72,3 +72,21 @@ func TestCache_LoaderErrorNotCached(t *testing.T) {
 	assert.Equal(t, uint64(2), stats.Misses)
 	assert.Equal(t, uint64(2), stats.LoadErrors)
 }
+
+func TestCache_TTLExpires(t *testing.T) {
+	var calls atomic.Int32
+	loader := func(_ context.Context, roomID string) (roommetacache.Meta, error) {
+		calls.Add(1)
+		return makeMeta(roomID), nil
+	}
+	c, err := roommetacache.New(10, 50*time.Millisecond, loader)
+	require.NoError(t, err)
+
+	_, _ = c.Get(context.Background(), "r1")
+	_, _ = c.Get(context.Background(), "r1")
+	require.Equal(t, int32(1), calls.Load(), "second call within TTL should be a hit")
+
+	time.Sleep(75 * time.Millisecond)
+	_, _ = c.Get(context.Background(), "r1")
+	assert.Equal(t, int32(2), calls.Load(), "after TTL expiry, loader runs again")
+}
