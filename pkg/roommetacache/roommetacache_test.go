@@ -3,6 +3,7 @@ package roommetacache_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -131,4 +132,35 @@ func TestCache_Invalidate(t *testing.T) {
 
 	_, _ = c.Get(context.Background(), "r1")
 	assert.Equal(t, int32(2), calls.Load(), "Invalidate should cause next Get to miss")
+}
+
+func TestCache_SingleflightDedupsMisses(t *testing.T) {
+	var calls atomic.Int32
+	gate := make(chan struct{})
+	loader := func(_ context.Context, roomID string) (roommetacache.Meta, error) {
+		calls.Add(1)
+		<-gate // hold so concurrent callers pile up
+		return makeMeta(roomID), nil
+	}
+	c, err := roommetacache.New(10, time.Minute, loader)
+	require.NoError(t, err)
+
+	const N = 50
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := c.Get(context.Background(), "r1")
+			assert.NoError(t, err)
+		}()
+	}
+
+	// Give all callers a moment to enter Get and block on singleflight.
+	time.Sleep(20 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), calls.Load(),
+		"singleflight should collapse N concurrent misses on the same key to 1 loader call")
 }
