@@ -45,7 +45,7 @@ type config struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|chaos> [flags]")
 		os.Exit(2)
 	}
 	cfg, err := env.ParseAs[config]()
@@ -76,6 +76,8 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runRun(ctx, cfg, os.Args[2:])
 	case "teardown":
 		return runTeardown(ctx, cfg, os.Args[2:])
+	case "chaos":
+		return runChaos(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2

@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose -f docker-compose.loadtest.yml
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts
+.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts validate-chaos
 
 up:
 	$(COMPOSE) up -d --build
@@ -72,3 +72,11 @@ validate-rules:
 shellcheck-scripts:
 	@which shellcheck >/dev/null || { echo "shellcheck not installed; install with 'apt-get install shellcheck' or 'brew install shellcheck'"; exit 2; }
 	shellcheck $(CURDIR)/../scripts/*.sh
+
+# validate-chaos checks that the chaos overlay Compose file is syntactically
+# valid and that run-chaos.sh passes shellcheck (if shellcheck is installed).
+.PHONY: validate-chaos
+validate-chaos:
+	@docker compose -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos config -q
+	@which shellcheck >/dev/null || { echo "shellcheck not installed; skipping script lint"; exit 0; }
+	@shellcheck $(CURDIR)/../scripts/run-chaos.sh

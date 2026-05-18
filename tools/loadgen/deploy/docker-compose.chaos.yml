@@ -1,0 +1,37 @@
+# docker-compose.chaos.yml — toxiproxy chaos overlay.
+# Default-off (profile: chaos).
+# Usage: docker compose -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos up -d
+
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.7.0
+    profiles: [chaos]
+    networks:
+      loadtest:
+        aliases: [toxiproxy]
+    ports:
+      - "8474:8474"   # admin API
+      - "22220:22220" # NATS proxy port (operators wire clients to nats://toxiproxy:22220)
+      - "22221:22221" # Cassandra proxy port
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8474/proxies || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  toxiproxy-init:
+    image: ghcr.io/shopify/toxiproxy:2.7.0
+    profiles: [chaos]
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+    networks:
+      loadtest:
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        # Create proxies. NATS upstream is reachable via the loadtest network.
+        /toxiproxy-cli -h toxiproxy:8474 create -l toxiproxy:22220 -u nats:4222 nats_inbound
+        /toxiproxy-cli -h toxiproxy:8474 create -l toxiproxy:22221 -u cassandra:9042 cassandra_inbound
+        echo "toxiproxy initialized: proxies created for nats_inbound, cassandra_inbound"
