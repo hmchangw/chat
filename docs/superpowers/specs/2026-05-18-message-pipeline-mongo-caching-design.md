@@ -155,26 +155,23 @@ post to.
 
 - Capacity: 100 000 entries (env: `GATEKEEPER_SUB_CACHE_SIZE`, default
   `100000`). Covers `large` preset's 10 000 subscriptions 10×.
-- TTL: `60s` (env: `GATEKEEPER_SUB_CACHE_TTL`, default `60s`).
-- Negative TTL: `60s`. A user not subscribed to a room is unlikely to
-  become subscribed within that window; if they do, the next minute's
-  worth of attempts harmlessly hit the negative cache.
+- TTL: `30s` (env: `GATEKEEPER_SUB_CACHE_TTL`, default `30s`).
+- **No negative caching.** A `subscriptions.FindOne` miss on the
+  `{roomId, u.account}` compound index is a microsecond-scale index
+  probe with nothing to fetch — negative-caching it saves negligible
+  Mongo CPU while introducing a user-visible "I just joined but can't
+  post yet" tail. Every miss falls through to Mongo on every call.
 
 **Behavior:**
 
 ```
 GetSubscription(account, roomID):
     key = {roomID, account}
-    if hit, value, found := cache.Get(key); hit:
-        if !found:
-            return nil, ErrSubscriptionNotFound
+    if value, hit := cache.Get(key); hit:
         return value, nil
     sub, err := store.GetSubscription(ctx, account, roomID)
-    if errors.Is(err, ErrSubscriptionNotFound):
-        cache.Put(key, negative, negativeTTL)
-        return nil, err
     if err != nil:
-        return nil, err  // never cache transient errors
+        return nil, err  // not cached — neither ErrSubscriptionNotFound nor transient errors
     cache.Put(key, projection(sub), ttl)
     return sub, nil
 ```
@@ -205,11 +202,14 @@ check and is also surfaced in the broadcast event payload.
 
 - Capacity: 10 000 entries (env: `ROOM_META_CACHE_SIZE`, default
   `10000`). Covers `large` preset's 1 000 rooms 10×.
-- TTL: `60s` (env: `ROOM_META_CACHE_TTL`, default `60s`).
+- TTL: `30s` (env: `ROOM_META_CACHE_TTL`, default `30s`).
 - Negative TTL: `5s`. Newly-created rooms (especially via cross-site
-  federation) must become reachable on a short window — 60s of
-  "room not found" caching would feel like a bug for users creating
-  rooms during high load.
+  federation) must become reachable on a short window — a longer
+  "room not found" cache would feel like a bug for users creating
+  rooms during high load. Room-not-found is rare in normal operation
+  (gatekeeper's subscription check fails fast and most "no such room"
+  requests never reach the room read), so even this short negative
+  cache contributes mainly hygiene against pathological retries.
 
 **Lives in a new package** `pkg/roommetacache` so the same type is
 instantiated by both services without code duplication. The package
@@ -449,9 +449,7 @@ The PR description must include before/after numbers from this run.
 
 ## Open questions for review
 
-1. **Cache TTL defaults.** 60s positive, 5s negative — acceptable, or
-   should we ship with shorter values pending production telemetry?
-2. **Scope of `pkg/roommetacache`.** Should the package's public type
+1. **Scope of `pkg/roommetacache`.** Should the package's public type
    be generic over the value (so a future "user metadata cache" or
    similar can reuse the same plumbing), or keep it specific to room
    metadata for now? Default is specific — generalize when a second
