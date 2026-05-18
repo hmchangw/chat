@@ -9,6 +9,7 @@ export default function AppHeader({ onSelectRoom, onEnterSearch }) {
 
   return (
     <header className="app-header">
+      <span className="app-header-brand">Chat</span>
       <div className="app-header-search">
         <SearchBar onSelectRoom={onSelectRoom} onEnterSearch={onEnterSearch} />
       </div>

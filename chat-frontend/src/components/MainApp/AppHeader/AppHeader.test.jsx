@@ -19,6 +19,7 @@ vi.mock('./UnreadBadge', () => ({ default: () => <span>fake-unread</span> }))
 describe('AppHeader', () => {
   it('renders user chip, theme toggle, logout', () => {
     render(<AppHeader onSelectRoom={() => {}} onEnterSearch={() => {}} />)
+    expect(screen.getByText('Chat')).toBeInTheDocument()
     expect(screen.getByText('alice · site-1')).toBeInTheDocument()
     expect(screen.getByText('fake-theme')).toBeInTheDocument()
     expect(screen.getByText('fake-unread')).toBeInTheDocument()

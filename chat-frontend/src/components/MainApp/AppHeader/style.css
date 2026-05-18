@@ -10,6 +10,14 @@
   flex-shrink: 0;
 }
 
+.app-header-brand {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  letter-spacing: -0.02em;
+  color: var(--accent);
+  user-select: none;
+}
+
 .chat-header-title {
   font-weight: var(--font-semibold);
   font-size: var(--text-md);
