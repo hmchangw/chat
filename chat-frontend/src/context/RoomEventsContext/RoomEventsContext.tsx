@@ -121,6 +121,11 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
   // registers itself here on mount via `registerThreadReplyHandler`).
   // `useRoomSubscriptions` reads `.current` when a thread reply lands
   // on the room event channel.
+  //
+  // Single-slot by design — ThreadEventsProvider is the only consumer
+  // today, and last-write-wins is the simplest contract. If a future
+  // feature needs multiple consumers, convert this to a Set of
+  // handlers and fan out in `useRoomSubscriptions`.
   const threadReplyHandlerRef = useRef<ThreadReplyHandler | null>(null)
   const registerThreadReplyHandler = useCallback((h: ThreadReplyHandler) => {
     threadReplyHandlerRef.current = h

@@ -147,7 +147,13 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
         fanThreadReply(evt)
-        scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+        // Thread replies don't appear in the main feed — they shouldn't
+        // advance the main-feed `lastSeenAt`. The thread panel has its
+        // own read semantics (out of scope for now); main-feed
+        // mark-read only fires for top-level messages.
+        if (!evt.message?.threadParentMessageId) {
+          scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+        }
       }
     })
 
@@ -161,7 +167,10 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
           const normalized = { ...evt, hasMention }
           safeDispatch({ type: 'MESSAGE_RECEIVED', event: normalized })
           fanThreadReply(normalized)
-          scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+          // See dm path above — skip main-feed mark-read for thread replies.
+          if (!evt.message?.threadParentMessageId) {
+            scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+          }
         }
       })
       channelSubs.current.set(roomId, sub)
