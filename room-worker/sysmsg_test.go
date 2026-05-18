@@ -1,11 +1,9 @@
 package main
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -15,100 +13,87 @@ func TestFormatAddedSingle(t *testing.T) {
 		&model.User{EngName: "Alice", ChineseName: "愛麗絲"},
 		&model.User{EngName: "Bob", ChineseName: "鮑勃"},
 	)
-	assert.Equal(t, "Alice 愛麗絲 added Bob 鮑勃 to the channel", got)
+	assert.Equal(t, `"Alice 愛麗絲" added "Bob 鮑勃" to the channel`, got)
 }
 
 func TestFormatAddedMulti(t *testing.T) {
 	got := formatAddedMulti(&model.User{EngName: "Alice", ChineseName: "愛麗絲"})
-	assert.Equal(t, "Alice 愛麗絲 added members to the channel", got)
+	assert.Equal(t, `"Alice 愛麗絲" added members to the channel`, got)
 }
 
 func TestFormatRemovedUser(t *testing.T) {
 	got := formatRemovedUser(&model.User{EngName: "Bob", ChineseName: "鮑勃"})
-	assert.Equal(t, "Bob 鮑勃 has been removed from the channel", got)
+	assert.Equal(t, `"Bob 鮑勃" has been removed from the channel`, got)
 }
 
 func TestFormatRemovedOrg(t *testing.T) {
 	got := formatRemovedOrg("Engineering")
-	assert.Equal(t, "Engineering has been removed from the channel", got)
+	assert.Equal(t, `"Engineering" has been removed from the channel`, got)
 }
 
 func TestFormatLeft(t *testing.T) {
 	got := formatLeft(&model.User{EngName: "Bob", ChineseName: "鮑勃"})
-	assert.Equal(t, "Bob 鮑勃 left the channel", got)
+	assert.Equal(t, `"Bob 鮑勃" left the channel`, got)
 }
 
-func TestFormatLeft_TrimsEmptyNameSide(t *testing.T) {
-	// Spec §2.6: TrimSpace(EngName + " " + ChineseName) — when one side is empty,
-	// the result still has no leading/trailing whitespace. Callers must reject
-	// fully-empty inputs upstream; this test pins the trim behavior only.
-	assert.Equal(t, "Bob left the channel", formatLeft(&model.User{EngName: "Bob"}))
-	assert.Equal(t, "鮑勃 left the channel", formatLeft(&model.User{ChineseName: "鮑勃"}))
-}
-
-func TestFormatLeft_EngEqualsChineseRendersOnce(t *testing.T) {
-	// When EngName and ChineseName are identical (e.g. account-only users),
-	// render the name a single time — repeating it as "Bob Bob" looks wrong.
-	assert.Equal(t, "Bob left the channel", formatLeft(&model.User{EngName: "Bob", ChineseName: "Bob"}))
-	assert.Equal(t,
-		"Alice 愛麗絲 added Bob to the channel",
-		formatAddedSingle(
-			&model.User{EngName: "Alice", ChineseName: "愛麗絲"},
-			&model.User{EngName: "Bob", ChineseName: "Bob"},
-		),
-	)
-}
-
-func TestValidateUserNames(t *testing.T) {
+func TestDisplayName(t *testing.T) {
 	cases := []struct {
-		name    string
-		user    model.User
-		role    string
-		roomID  string
-		wantErr bool
-		wantMsg string
+		name string
+		user model.User
+		want string
 	}{
 		{
-			name: "both names set",
-			user: model.User{Account: "alice", EngName: "Alice", ChineseName: "愛"},
-			role: "user", roomID: "r1",
-			wantErr: false,
+			name: "both names set — concatenated",
+			user: model.User{Account: "alice", EngName: "Alice", ChineseName: "愛麗絲"},
+			want: "Alice 愛麗絲",
 		},
 		{
-			name: "empty EngName",
-			user: model.User{Account: "bob", EngName: "", ChineseName: "鮑"},
-			role: "user", roomID: "r1",
-			wantErr: true, wantMsg: "user bob missing required name fields (room r1)",
+			name: "only EngName — use it",
+			user: model.User{Account: "alice", EngName: "Alice"},
+			want: "Alice",
 		},
 		{
-			name: "empty ChineseName",
-			user: model.User{Account: "bob", EngName: "Bob", ChineseName: ""},
-			role: "user", roomID: "r1",
-			wantErr: true, wantMsg: "user bob missing required name fields (room r1)",
+			name: "only ChineseName — use it",
+			user: model.User{Account: "alice", ChineseName: "愛麗絲"},
+			want: "愛麗絲",
 		},
 		{
-			name: "both empty",
-			user: model.User{Account: "bob", EngName: "", ChineseName: ""},
-			role: "user", roomID: "r1",
-			wantErr: true, wantMsg: "user bob missing required name fields (room r1)",
+			name: "EngName equals ChineseName — render once",
+			user: model.User{Account: "alice", EngName: "Bob", ChineseName: "Bob"},
+			want: "Bob",
 		},
 		{
-			name: "requester role label propagated",
-			user: model.User{Account: "alice", EngName: ""},
-			role: "requester", roomID: "r2",
-			wantErr: true, wantMsg: "requester alice missing required name fields (room r2)",
+			name: "both empty — fall back to Account",
+			user: model.User{Account: "alice"},
+			want: "alice",
+		},
+		{
+			name: "whitespace-only names — fall back to Account",
+			user: model.User{Account: "alice", EngName: "  ", ChineseName: "\t"},
+			want: "alice",
+		},
+		{
+			name: "leading/trailing whitespace trimmed on each side",
+			user: model.User{Account: "alice", EngName: "  Alice  ", ChineseName: " 愛 "},
+			want: "Alice 愛",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateUserNames(&tc.user, tc.role, tc.roomID)
-			if !tc.wantErr {
-				require.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			assert.True(t, errors.Is(err, errPermanent), "validation failure must be permanent")
-			assert.Equal(t, tc.wantMsg, err.Error())
+			assert.Equal(t, tc.want, displayName(&tc.user))
 		})
 	}
+}
+
+func TestFormatLeft_FallsBackToAccount(t *testing.T) {
+	got := formatLeft(&model.User{Account: "alice"})
+	assert.Equal(t, `"alice" left the channel`, got)
+}
+
+func TestFormatAddedSingle_SingleNameSide(t *testing.T) {
+	got := formatAddedSingle(
+		&model.User{EngName: "Alice"},
+		&model.User{ChineseName: "鮑勃"},
+	)
+	assert.Equal(t, `"Alice" added "鮑勃" to the channel`, got)
 }

@@ -333,9 +333,6 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	if err != nil {
 		return fmt.Errorf("get user with membership: %w", err)
 	}
-	if err := validateUserNames(&user.User, "user", req.RoomID); err != nil {
-		return err
-	}
 
 	// room_members.member.id stores the user's internal ID, not the account.
 	if err := h.store.DeleteRoomMember(ctx, req.RoomID, model.RoomMemberIndividual, user.ID); err != nil {
@@ -423,7 +420,17 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		slog.Error("local inbox member_removed publish failed", "error", err, "roomID", req.RoomID)
 	}
 
-	// System message
+	// Sys-msg sender: leaving user for self-leave, requester for forced removal.
+	requester := &user.User
+	if !isSelfLeave {
+		requester, err = h.store.GetUser(ctx, req.Requester)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				return newPermanent("requester %s not found (room %s)", req.Requester, req.RoomID)
+			}
+			return fmt.Errorf("get requester: %w", err)
+		}
+	}
 	sysMsgUser := model.SysMsgUser{
 		Account:     user.Account,
 		EngName:     user.EngName,
@@ -446,7 +453,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	sysMsg := model.Message{
 		ID:          idgen.MessageIDFromRequestID(seed, "rmindiv"),
 		RoomID:      req.RoomID,
-		UserAccount: req.Requester,
+		UserID:      requester.ID,
+		UserAccount: requester.Account,
 		Type:        evtType,
 		Content:     content,
 		SysMsgData:  sysMsgData,
@@ -599,7 +607,14 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 	}
 
-	// System message
+	// Sys-msg sender is the requester.
+	requester, err := h.store.GetUser(ctx, req.Requester)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return newPermanent("requester %s not found (room %s)", req.Requester, req.RoomID)
+		}
+		return fmt.Errorf("get requester: %w", err)
+	}
 	sysMsgPayload, _ := json.Marshal(model.MemberRemoved{
 		OrgID:             req.OrgID,
 		SectName:          sectName,
@@ -610,7 +625,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	sysMsg := model.Message{
 		ID:          idgen.MessageIDFromRequestID(seed, "rmorg"),
 		RoomID:      req.RoomID,
-		UserAccount: req.Requester,
+		UserID:      requester.ID,
+		UserAccount: requester.Account,
 		Type:        model.MessageTypeMemberRemoved,
 		Content:     formatRemovedOrg(sectName),
 		SysMsgData:  sysMsgPayload,
@@ -718,24 +734,12 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	// Validate added users' name fields before fetching the requester so that
-	// a cheap in-memory check on the already-fetched data short-circuits the
-	// extra GetUser round trip when the input is bad.
-	for i := range users {
-		if err := validateUserNames(&users[i], "user", req.RoomID); err != nil {
-			return err
-		}
-	}
-
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			return newPermanent("requester %s not found (room %s)", req.RequesterAccount, req.RoomID)
 		}
 		return fmt.Errorf("get requester: %w", err)
-	}
-	if err := validateUserNames(requester, "requester", req.RoomID); err != nil {
-		return err
 	}
 
 	// acceptedAt is the stable request-acceptance time (set by room-service).
@@ -1091,9 +1095,6 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		}
 		return fmt.Errorf("get requester: %w", err)
 	}
-	if err := validateUserNames(requester, "requester", req.RoomID); err != nil {
-		return err
-	}
 
 	roomType := determineRoomTypeFromPayload(&req)
 	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
@@ -1204,9 +1205,6 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	userSet := make(map[string]struct{}, len(users))
 	for i := range users {
 		userSet[users[i].Account] = struct{}{}
-		if err := validateUserNames(&users[i], "user", room.ID); err != nil {
-			return err
-		}
 	}
 	for _, account := range accounts {
 		if _, ok := userSet[account]; !ok {
@@ -1397,7 +1395,7 @@ func (h *Handler) publishChannelSysMessages(ctx context.Context, req *model.Crea
 		UserID:      requester.ID,
 		UserAccount: requester.Account,
 		Type:        model.MessageTypeRoomCreated,
-		Content:     "a new room has been created",
+		Content:     "A new room has been created",
 		SysMsgData:  sysData1,
 		CreatedAt:   acceptedAt,
 	}

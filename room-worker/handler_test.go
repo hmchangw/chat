@@ -583,6 +583,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
 		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+	store.EXPECT().
+		GetUser(gomock.Any(), requester).
+		Return(&model.User{ID: "u_alice", Account: requester, SiteID: siteID, EngName: "Alice", ChineseName: "愛"}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1108,6 +1111,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil) // recount after removal
 	store.EXPECT().
 		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+	store.EXPECT().
+		GetUser(gomock.Any(), requester).
+		Return(&model.User{ID: "u_alice", Account: requester, SiteID: siteID, EngName: "Alice", ChineseName: "愛"}, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1140,8 +1146,8 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	// undetected.
 	sysMsg := findSysMsg(t, published, siteID, model.MessageTypeMemberRemoved)
 	assert.Equal(t, requester, sysMsg.UserAccount, "sender envelope must be set to requester")
-	assert.Empty(t, sysMsg.UserID, "UserID must stay empty per spec §2.4")
-	assert.Equal(t, "Engineering has been removed from the channel", sysMsg.Content)
+	assert.Equal(t, "u_alice", sysMsg.UserID, "UserID set to requester so message-worker can populate Cassandra sender column")
+	assert.Equal(t, `"Engineering" has been removed from the channel`, sysMsg.Content)
 }
 
 func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
@@ -1438,6 +1444,8 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+	store.EXPECT().GetUser(gomock.Any(), requester).
+		Return(&model.User{ID: "u_alice", Account: requester, SiteID: localSite, EngName: "Alice", ChineseName: "愛"}, nil)
 
 	outboxSubj := subject.Outbox(localSite, remoteSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -3424,6 +3432,8 @@ func TestProcessRemoveMember_SkipsRotationWhenValkeyAlreadyAhead(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u-bob").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), "r1", "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").
+		Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, testKeySender)
 	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", BaseKeyVersion: 5, RoomType: model.RoomTypeChannel}
@@ -3732,79 +3742,6 @@ func TestHandler_ProcessAddMembers_RequesterNotFound(t *testing.T) {
 	assert.NotContains(t, result.Error, ": permanent")
 }
 
-// D2: requester has empty EngName → permanent error.
-func TestHandler_ProcessAddMembers_RequesterEmptyName(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
-	store.EXPECT().ListNewMembers(gomock.Any(), []string(nil), []string{"u1"}, roomID).
-		Return([]string{"u1"}, nil)
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
-		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "alice").
-		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "", ChineseName: "愛"}, nil)
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
-
-	err := h.processAddMembers(ctx, data)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-
-	responses := userResponseFor(published, "alice")
-	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
-	var result model.AsyncJobResult
-	require.NoError(t, json.Unmarshal(responses[0].data, &result))
-	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "missing required name fields")
-	assert.NotContains(t, result.Error, ": permanent")
-}
-
-// D3: added user has empty ChineseName → permanent error.
-func TestHandler_ProcessAddMembers_AddedUserEmptyName(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
-		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
-	store.EXPECT().ListNewMembers(gomock.Any(), []string(nil), []string{"u1"}, roomID).
-		Return([]string{"u1"}, nil)
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
-		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: ""}}, nil)
-	// Validation for added users should fire before requester fetch — do not mock GetUser here.
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.AddMembersRequest{RoomID: roomID, RequesterID: "u_a", RequesterAccount: "alice", Users: []string{"u1"}, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
-
-	err := h.processAddMembers(ctx, data)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-
-	responses := userResponseFor(published, "alice")
-	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
-	var result model.AsyncJobResult
-	require.NoError(t, json.Unmarshal(responses[0].data, &result))
-	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "missing required name fields")
-	assert.NotContains(t, result.Error, ": permanent")
-}
-
 // findSysMsg locates the system message published on MsgCanonicalCreated for
 // the given site with the requested Type. Fails the test if no such publish
 // occurred.
@@ -3861,7 +3798,7 @@ func TestHandler_ProcessAddMembers_Content_Single(t *testing.T) {
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
-	assert.Equal(t, "Alice 愛 added U1 一 to the channel", sysMsg.Content)
+	assert.Equal(t, `"Alice 愛" added "U1 一" to the channel`, sysMsg.Content)
 }
 
 // B2: len(subs)>=2 → multi form.
@@ -3900,7 +3837,7 @@ func TestHandler_ProcessAddMembers_Content_Multi(t *testing.T) {
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
-	assert.Equal(t, "Alice 愛 added members to the channel", sysMsg.Content)
+	assert.Equal(t, `"Alice 愛" added members to the channel`, sysMsg.Content)
 }
 
 // B3: create-room channel publishes members_added with always-multi form.
@@ -3921,7 +3858,7 @@ func TestHandler_PublishChannelSysMessages_MembersAddedContent(t *testing.T) {
 	require.NoError(t, h.publishChannelSysMessages(context.Background(), req, room, requester, 2, "req-1", time.UnixMilli(1).UTC()))
 
 	sysMsg := findSysMsg(t, published, "site-a", model.MessageTypeMembersAdded)
-	assert.Equal(t, "Alice 愛 added members to the channel", sysMsg.Content)
+	assert.Equal(t, `"Alice 愛" added members to the channel`, sysMsg.Content)
 }
 
 // C1: self-leave full removal → member_left with sender + Content.
@@ -3951,8 +3888,8 @@ func TestHandler_ProcessRemoveIndividual_SelfLeave_Content(t *testing.T) {
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_left")
 	assert.Equal(t, "bob", sysMsg.UserAccount)
-	assert.Empty(t, sysMsg.UserID, "UserID must stay empty per spec §2.4")
-	assert.Equal(t, "Bob 鮑 left the channel", sysMsg.Content)
+	assert.Equal(t, "u_b", sysMsg.UserID, "self-leave reuses leaving-user's ID as sender")
+	assert.Equal(t, `"Bob 鮑" left the channel`, sysMsg.Content)
 }
 
 // C2: removed-by-other full removal → member_removed with sender + Content.
@@ -3968,6 +3905,8 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u_b").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").
+		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
@@ -3980,41 +3919,8 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
-	assert.Empty(t, sysMsg.UserID)
-	assert.Equal(t, "Bob 鮑 has been removed from the channel", sysMsg.Content)
-}
-
-// D4: target user has empty ChineseName → permanent error. Deferred
-// async-job result must surface a sanitized error to the requester.
-func TestHandler_ProcessRemoveIndividual_EmptyName(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "bob").
-		Return(&UserWithMembership{
-			User: model.User{ID: "u_b", Account: "bob", SiteID: "site-a", EngName: "Bob"},
-		}, nil)
-	// No other mocks expected — empty-name validation must return BEFORE delete/publish.
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", Timestamp: 1}
-	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
-
-	err := h.processRemoveIndividual(ctx, &req, nil, false)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-
-	responses := userResponseFor(published, "alice")
-	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
-	var result model.AsyncJobResult
-	require.NoError(t, json.Unmarshal(responses[0].data, &result))
-	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "missing required name fields")
-	assert.NotContains(t, result.Error, ": permanent")
+	assert.Equal(t, "u_a", sysMsg.UserID, "forced removal sets sender to requester")
+	assert.Equal(t, `"Bob 鮑" has been removed from the channel`, sysMsg.Content)
 }
 
 // C3: org remove with every member also having individual subs (toRemove empty)
@@ -4032,6 +3938,8 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 	// toRemove is empty → no DeleteSubscriptionsByAccounts call expected.
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "o1").Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").
+		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
@@ -4044,8 +3952,8 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
-	assert.Empty(t, sysMsg.UserID)
-	assert.Equal(t, "Engineering has been removed from the channel", sysMsg.Content)
+	assert.Equal(t, "u_a", sysMsg.UserID, "org removal sets sender to requester")
+	assert.Equal(t, `"Engineering" has been removed from the channel`, sysMsg.Content)
 }
 
 // D5: every member SectName empty → permanent error. The deferred
@@ -4080,54 +3988,6 @@ func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 	assert.Equal(t, model.AsyncJobStatusError, result.Status)
 	assert.Contains(t, result.Error, "missing SectName")
 	assert.NotContains(t, result.Error, ": permanent")
-}
-
-// Requester-name validation in processCreateRoom: §2.3 promises Content is
-// well-formed on every channel sys-message, but publishChannelSysMessages
-// calls formatAddedMulti(requester) which renders a malformed body when the
-// requester has empty EngName/ChineseName. Validate immediately after fetch
-// so the path bails before CreateRoom even runs.
-func TestProcessCreateRoom_RequesterEmptyName_ReturnsPermanent(t *testing.T) {
-	cases := []struct {
-		name     string
-		eng      string
-		chinese  string
-		wantText string
-	}{
-		{name: "empty EngName", eng: "", chinese: "愛", wantText: "requester alice missing required name fields"},
-		{name: "empty ChineseName", eng: "Alice", chinese: "", wantText: "requester alice missing required name fields"},
-		{name: "both empty", eng: "", chinese: "", wantText: "requester alice missing required name fields"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h, mockStore, getPublished := newCreateRoomTestHandler(t)
-			ctx := natsutil.WithRequestID(context.Background(), testRequestID)
-
-			mockStore.EXPECT().GetUser(gomock.Any(), "alice").
-				Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-A", EngName: tc.eng, ChineseName: tc.chinese}, nil)
-			// CreateRoom MUST NOT be called — validation short-circuits first.
-
-			body := makeCreateRoomBody(t, &model.CreateRoomRequest{
-				RoomID:           "r-empty-name",
-				RequesterAccount: "alice",
-				Users:            []string{"bob"},
-				Timestamp:        time.Now().UnixMilli(),
-			})
-
-			err := h.processCreateRoom(ctx, body)
-			require.Error(t, err)
-			assert.ErrorIs(t, err, errPermanent)
-			assert.Contains(t, err.Error(), tc.wantText)
-
-			// Async-job error event must be published via the defer.
-			responses := userResponseFor(getPublished(), "alice")
-			require.NotEmpty(t, responses, "permanent error must publish async-job error event")
-			var result model.AsyncJobResult
-			require.NoError(t, json.Unmarshal(responses[0].data, &result))
-			assert.Equal(t, model.AsyncJobStatusError, result.Status)
-			assert.Contains(t, result.Error, tc.wantText)
-		})
-	}
 }
 
 // F1: async DM create sets UIDs/Accounts sorted by UID, paired by index, on
@@ -4309,7 +4169,7 @@ func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *test
 	require.NoError(t, h.processAddMembers(ctx, data))
 
 	sysMsg := findSysMsg(t, published, "site-a", "members_added")
-	assert.Equal(t, "Alice 愛 added members to the channel", sysMsg.Content,
+	assert.Equal(t, `"Alice 愛" added members to the channel`, sysMsg.Content,
 		"org-add must use multi form even when org expands to a single user")
 }
 
