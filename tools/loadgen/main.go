@@ -34,6 +34,12 @@ type config struct {
 	// Finalize writes runs/<run_id>/ with the full bundle. Empty disables
 	// artifact writing (default — opt-in via RUNS_DIR env var).
 	RunsDir string `env:"RUNS_DIR" envDefault:""`
+	// FederationSecondaryNATSURL is the NATS URL for site-b in the
+	// federation-lag scenario. When non-empty, NewRuntime dials the secondary
+	// and Sites() returns 2 SiteDeps. Typically set via
+	// --federation-secondary-nats-url (mirrors the run flag).
+	// Env: FEDERATION_SECONDARY_NATS_URL (optional, default disabled).
+	FederationSecondaryNATSURL string `env:"FEDERATION_SECONDARY_NATS_URL" envDefault:""`
 }
 
 func main() {
@@ -329,6 +335,13 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		Lock:            runLock,
 		Scenario:        rf.Scenario,
 		AllowConcurrent: rf.AllowConcurrent,
+	}
+
+	// Propagate the --federation-secondary-nats-url flag into cfg so
+	// NewRuntime can dial site-b when the flag is set. The flag takes
+	// precedence over the FEDERATION_SECONDARY_NATS_URL env var.
+	if rf.FederationSecondaryNATSURL != "" {
+		cfg.FederationSecondaryNATSURL = rf.FederationSecondaryNATSURL
 	}
 
 	rt, err := NewRuntime(ctx, cfg, runID, lp)

@@ -90,6 +90,16 @@ type Metrics struct {
 	AuthReconnect prometheus.Histogram
 	// AuthReconnectsCompleted counts successfully completed reconnect-storm events.
 	AuthReconnectsCompleted prometheus.Counter
+	// FederationLag records per-stage cross-site replication lag for the
+	// federation-lag scenario (Phase 3 §3.9). Label "stage" is one of:
+	// outbox, inbox, persist, visible.
+	FederationLag *prometheus.HistogramVec
+	// FederationFlapDrain records the time from site-b restart to first INBOX
+	// event observed (backlog drain) for the --federation-flap sub-mode.
+	FederationFlapDrain prometheus.Histogram
+	// FederationCrossRead records the latency of a siteA user reading siteB
+	// room history (--federation-cross-read sub-mode).
+	FederationCrossRead prometheus.Histogram
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -242,6 +252,21 @@ func NewMetrics() *Metrics {
 			Name: "loadgen_auth_reconnects_completed_total",
 			Help: "Count of successfully completed reconnect-storm events.",
 		}),
+		FederationLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_federation_lag_seconds",
+			Help:    "Per-stage cross-site replication lag (stages: outbox, inbox, persist, visible).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"stage"}),
+		FederationFlapDrain: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "loadgen_federation_flap_drain_seconds",
+			Help:    "Time from site-b restart to first INBOX event observed (backlog drain).",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12), // 100ms … ~400s
+		}),
+		FederationCrossRead: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "loadgen_federation_cross_read_seconds",
+			Help:    "Latency of siteA user reading siteB room history (cross-read sub-mode).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -261,6 +286,7 @@ func NewMetrics() *Metrics {
 		m.SubsChurn, m.SubsChurnTotal,
 		m.FirstDMLag,
 		m.AuthReconnect, m.AuthReconnectsCompleted,
+		m.FederationLag, m.FederationFlapDrain, m.FederationCrossRead,
 	)
 	return m
 }

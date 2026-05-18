@@ -46,6 +46,11 @@ type Runtime struct {
 	// lastSettle is set by SetLastSettle (called from executeRun) so that
 	// Finalize can include the settle outcome in the artifact bundle.
 	lastSettle SettleOutcome
+	// secondaryNC and secondaryJS are the site-b NATS connection and JetStream
+	// client. Non-nil only when --federation-secondary-nats-url is set.
+	// Phase 3.9: Sites() returns 2 SiteDeps when secondaryNC is set.
+	secondaryNC *otelnats.Conn
+	secondaryJS jetstream.JetStream
 }
 
 // RunLockParams bundles the options needed to acquire the run-isolation lock.
@@ -120,6 +125,36 @@ func NewRuntime(ctx context.Context, cfg *config, runID string, lp *RunLockParam
 		omission:    NewOmissionTracker(metrics),
 		subscribers: NewSubscribers(nc.NatsConn()),
 		runLock:     acquiredLock,
+	}
+
+	// Phase 3.9: dial the secondary (site-b) NATS when the URL is configured.
+	// When dialing fails, NewRuntime returns an error to prevent running the
+	// federation-lag scenario against a single-site setup.
+	// TODO Phase 3.9 follow-up: support creds file for the secondary connection.
+	if cfg.FederationSecondaryNATSURL != "" {
+		secondaryNC, secondaryErr := natsutil.Connect(cfg.FederationSecondaryNATSURL, "")
+		if secondaryErr != nil {
+			_ = nc.Drain()
+			if acquiredLock != nil {
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer releaseCancel()
+				_ = acquiredLock.Release(releaseCtx)
+			}
+			return nil, fmt.Errorf("connect secondary NATS (site-b): %w", secondaryErr)
+		}
+		secondaryJS, secondaryJSErr := jetstream.New(secondaryNC.NatsConn())
+		if secondaryJSErr != nil {
+			_ = secondaryNC.Drain()
+			_ = nc.Drain()
+			if acquiredLock != nil {
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer releaseCancel()
+				_ = acquiredLock.Release(releaseCtx)
+			}
+			return nil, fmt.Errorf("init secondary JetStream (site-b): %w", secondaryJSErr)
+		}
+		rt.secondaryNC = secondaryNC
+		rt.secondaryJS = secondaryJS
 	}
 
 	rt.metricsSrv = rt.startMetricsServer()
@@ -198,16 +233,26 @@ func (r *Runtime) Metrics() *Metrics { return r.metrics }
 // Omission returns the coordinated-omission tracker shared across the run.
 func (r *Runtime) Omission() *OmissionTracker { return r.omission }
 
-// Sites returns per-site NATS/JS dependencies. Length is always 1 in Phase 2.
-// Phase 3.9 federation overlay will dial a second site and return 2.
+// Sites returns per-site NATS/JS dependencies. Returns 1 site in standard
+// operation. Returns 2 sites when --federation-secondary-nats-url is set
+// (Phase 3.9 federation overlay): sites[0] is site-a (primary), sites[1]
+// is site-b (secondary).
 func (r *Runtime) Sites() []SiteDeps {
-	return []SiteDeps{
+	sites := []SiteDeps{
 		{
 			Name: r.cfg.SiteID,
 			NC:   r.nc,
 			JS:   r.js,
 		},
 	}
+	if r.secondaryNC != nil {
+		sites = append(sites, SiteDeps{
+			Name: "site-b",
+			NC:   r.secondaryNC,
+			JS:   r.secondaryJS,
+		})
+	}
+	return sites
 }
 
 // Subscribers returns the per-Runtime long-lived subscription registry.
@@ -347,6 +392,9 @@ func (r *Runtime) Close() error {
 		if err := r.subscribers.Close(); err != nil {
 			slog.Warn("subscribers close", "error", err)
 		}
+	}
+	if r.secondaryNC != nil {
+		_ = r.secondaryNC.Drain()
 	}
 	if r.nc != nil {
 		_ = r.nc.Drain()

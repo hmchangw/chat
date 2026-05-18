@@ -1,0 +1,26 @@
+{
+  "site-a": {
+    "INBOX_site-a": {
+      "sources": [
+        {
+          "name": "OUTBOX_site-b",
+          "subject_transforms": [
+            {"src": "outbox.site-b.to.site-a.>", "dest": "inbox.from.site-b.>"}
+          ]
+        }
+      ]
+    }
+  },
+  "site-b": {
+    "INBOX_site-b": {
+      "sources": [
+        {
+          "name": "OUTBOX_site-a",
+          "subject_transforms": [
+            {"src": "outbox.site-a.to.site-b.>", "dest": "inbox.from.site-a.>"}
+          ]
+        }
+      ]
+    }
+  }
+}

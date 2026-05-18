@@ -129,6 +129,12 @@ type runFlags struct {
 	ChurnRate           int
 	FirstDMRecycle      bool
 	AuthStormPeriod     time.Duration
+	// Federation flags (Phase 3 §3.9).
+	FederationFlap             bool
+	FederationCrossRead        bool
+	FlapPeriod                 time.Duration
+	FlapDown                   time.Duration
+	FederationSecondaryNATSURL string
 }
 
 type abortFlags struct {
@@ -245,7 +251,7 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
 	fs.DurationVar(&rf.Warmup, "warmup", 10*time.Second, "warmup window (samples discarded)")
 	fs.StringVar(&rf.Inject, "inject", "frontdoor", "injection point: frontdoor|canonical")
-	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm|auth-load")
+	fs.StringVar(&rf.Scenario, "scenario", "messaging-pipeline", "scenario: messaging-pipeline|history-read|search-read|room-rpc|raw-consistency|room-open|read-receipts|large-room-broadcast|notification-fanout|message-mutate|subscription-churn|first-dm|auth-load|federation-lag")
 	fs.DurationVar(&rf.RequestTimeout, "request-timeout", 5*time.Second, "per-request timeout for read scenarios")
 	fs.BoolVar(&rf.AutoWarmup.Enabled, "auto-warmup", true, "run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them")
 	fs.IntVar(&rf.AutoWarmup.Rate, "auto-warmup-rate", 200, "publish rate (rps) during the auto-warmup phase")
@@ -289,4 +295,14 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"first-dm scenario: wrap around the user-pair pool when exhausted (default: exit cleanly)")
 	fs.DurationVar(&rf.AuthStormPeriod, "auth-storm-period", 0,
 		"auth-load: interval between reconnect-storm events (0 = single one-shot drop at T+30s)")
+	fs.BoolVar(&rf.FederationFlap, "federation-flap", false,
+		"federation-lag: enable periodic site-b stop/restart to measure INBOX backlog drain")
+	fs.BoolVar(&rf.FederationCrossRead, "federation-cross-read", false,
+		"federation-lag: enable cross-site read sub-mode (siteA user reads siteB room history)")
+	fs.DurationVar(&rf.FlapPeriod, "flap-period", 60*time.Second,
+		"federation-lag: interval between flap events")
+	fs.DurationVar(&rf.FlapDown, "flap-down", 30*time.Second,
+		"federation-lag: site-b downtime per flap event")
+	fs.StringVar(&rf.FederationSecondaryNATSURL, "federation-secondary-nats-url", "",
+		"federation-lag: NATS URL for site-b (typically nats://site-b-nats:4222 when running the federation Compose overlay)")
 }

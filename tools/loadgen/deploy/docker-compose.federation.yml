@@ -1,0 +1,39 @@
+# docker-compose.federation.yml — 2-site federation overlay.
+# Default-off (profile: federation).
+# Usage:
+#   docker compose -f docker-compose.loadtest.yml -f docker-compose.federation.yml \
+#     --profile federation up -d
+#
+# Doubles the per-site footprint: nats-site-b + mongo-site-b for Phase 3.9's
+# initial landing. The cross-site Sources+SubjectTransforms wiring is loaded
+# from tools/loadgen/testdata/federation/streams.json by the integration test
+# setup helper BEFORE tests run — loadgen production code is blind to federation
+# policy (CLAUDE.md §6).
+#
+# TODO Phase 3.9 follow-up: add cassandra-site-b, message-gatekeeper-site-b,
+# message-worker-site-b, broadcast-worker-site-b, inbox-worker-site-b, etc.
+# For Phase 3.9's initial landing, only nats-site-b + mongo-site-b are
+# provisioned — enough for the secondary-NATS dial to succeed in NewRuntime
+# when --federation-secondary-nats-url is set.
+
+services:
+  nats-site-b:
+    image: nats:2.10-alpine
+    profiles: [federation]
+    command:
+      - "--jetstream"
+      - "--http_port=8222"
+      - "--name=nats-site-b"
+    networks:
+      loadtest:
+        aliases: [nats-site-b]
+
+  mongo-site-b:
+    image: mongo:7
+    profiles: [federation]
+    networks:
+      loadtest:
+
+networks:
+  loadtest:
+    external: true
