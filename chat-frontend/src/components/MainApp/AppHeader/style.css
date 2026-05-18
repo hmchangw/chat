@@ -11,11 +11,22 @@
 }
 
 .app-header-brand {
+  position: relative;
+  display: inline-flex;
   font-size: var(--text-xl);
   font-weight: var(--font-bold);
   letter-spacing: -0.02em;
   color: var(--accent);
   user-select: none;
+}
+
+/* Superscript notification badge pinned to the wordmark's top-right
+ * corner. Overrides the standalone .unread-badge flow positioning. */
+.app-header-brand .unread-badge {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  transform: translate(-40%, -45%);
 }
 
 .chat-header-title {

@@ -9,11 +9,13 @@ export default function AppHeader({ onSelectRoom, onEnterSearch }) {
 
   return (
     <header className="app-header">
-      <span className="app-header-brand">Chat</span>
+      <span className="app-header-brand">
+        Chat
+        <UnreadBadge />
+      </span>
       <div className="app-header-search">
         <SearchBar onSelectRoom={onSelectRoom} onEnterSearch={onEnterSearch} />
       </div>
-      <UnreadBadge />
       <span className="app-header-user">
         {user?.account} · {user?.siteId}
       </span>
