@@ -70,12 +70,7 @@ export function threadEventsReducer(state, action) {
       return { ...state, messages: [...state.messages, msg] }
     }
     case 'THREAD_REPLY_RECEIVED': {
-      // Live thread-reply broadcast addressed at the currently-open
-      // thread. No-op if the panel is closed or open on a different
-      // parent (the room reducer still bumps tcount on the parent
-      // message regardless, so the badge updates either way). Dedupe
-      // by message ID so the sender's own echo doesn't double-insert
-      // after `REPLY_SENT_LOCAL` already added it.
+      // Append inbound reply if the open thread matches; dedupe by message id.
       if (!state.activeParent) return state
       if (state.activeParent.messageId !== action.parentId) return state
       const msg = action.message

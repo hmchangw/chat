@@ -26,10 +26,7 @@ export function ThreadEventsProvider({ children }) {
     if (!user) dispatch({ type: 'RESET' })
   }, [user])
 
-  // Bridge: every live thread-reply event observed on the room channel
-  // (see `useRoomSubscriptions`) becomes a THREAD_REPLY_RECEIVED dispatch
-  // here. The reducer no-ops if the panel isn't open on the matching
-  // parent, so we can safely receive every event without gating.
+  // Bridge live room-channel thread replies → THREAD_REPLY_RECEIVED.
   useEffect(() => {
     const unsubscribe = registerThreadReplyHandler((evt) => {
       dispatch({
@@ -125,10 +122,7 @@ export function ThreadEventsProvider({ children }) {
       try {
         publishReply(id, content.trim(), opts)
         if (parent) {
-          // Pass `replyId` so the room reducer can record it on the
-          // parent's `threadReplyIds` set — the inbound echo via
-          // MESSAGE_RECEIVED then dedupes off that set instead of
-          // double-bumping `tcount`.
+          // replyId lets the room reducer dedupe the inbound echo on tcount.
           roomDispatch({
             type: 'OWN_THREAD_REPLY_SENT',
             roomId: parent.roomId,

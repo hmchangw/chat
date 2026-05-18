@@ -293,12 +293,8 @@ export function roomEventsReducer(state, action) {
         }
       }
       if (!msg || !msg.id) return state
-      // Thread replies are written to thread tables only, but broadcast-worker
-      // publishes them on the main subject too. We do NOT add them to the
-      // main feed, but we DO need to bump the parent message's tcount so the
-      // "N replies" badge on the parent updates live (otherwise the badge
-      // stays stale until reload). Dedupe by reply message ID to skip
-      // sender's own echo (their OWN_THREAD_REPLY_SENT already bumped).
+      // Thread reply: bump parent's tcount (dedupe via threadReplyIds to skip
+      // sender's own echo), don't insert into main feed.
       if (msg.threadParentMessageId) {
         const tRoomId = evt.roomId
         const tPrev = state.roomState[tRoomId]
@@ -374,21 +370,8 @@ export function roomEventsReducer(state, action) {
           roomState: { ...state.roomState, [roomId]: nextRoomState },
         }
       }
-      // Broadcast echo of our own optimistic send: the optimistic
-      // `createdAt` is the CLIENT clock (set in RoomMessageInput as
-      // `new Date().toISOString()`). The server's broadcast carries the
-      // SERVER clock — and crucially Cassandra stores the parent at the
-      // server's ms. If we keep the optimistic `createdAt`, any later
-      // `threadParentMessageCreatedAt` derived from this row will be
-      // the client's ms — the
-      // `messages_by_id WHERE message_id=? AND created_at=? IF EXISTS`
-      // stamp in message-worker then misses, and every thread reply on
-      // this parent silently fails until the page is refreshed (which
-      // refetches the parent from Cassandra with the server's ms).
-      // Replace the optimistic with the server canonical fields,
-      // preserving only the `_local` / `_status` flags. Then early
-      // return — we don't re-count unread / lastMsgAt because this is
-      // the same message we already accounted for on first arrival.
+      // Replace optimistic createdAt (client clock) with server's — keeping
+      // it stale breaks message-worker's IF EXISTS stamp for thread replies.
       const existingIdx = prev.messages.findIndex((m) => m.id === msg.id)
       if (existingIdx >= 0) {
         const existing = prev.messages[existingIdx]
@@ -611,19 +594,14 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'OWN_THREAD_REPLY_SENT': {
-      // Optimistic bump for the sender; the inbound echo via
-      // MESSAGE_RECEIVED dedupes off `parent.threadReplyIds` to avoid
-      // double-counting. Callers should pass `replyId` so the dedupe
-      // works — legacy callers without it still bump but won't be
-      // protected from the echo (one acceptable extra +1).
+      // Optimistic tcount bump; inbound echo dedupes off threadReplyIds.
       const prev = state.roomState[action.roomId]
       if (!prev) return state
       const idx = prev.messages.findIndex((m) => m.id === action.parentId)
       if (idx < 0) return state
       const parent = prev.messages[idx]
       const seen = parent.threadReplyIds ?? new Set()
-      // Idempotency: if this exact reply ID was already counted (e.g.
-      // duplicate dispatch from a retry), don't re-bump.
+      // Idempotency: don't re-bump if this replyId was already counted.
       if (action.replyId && seen.has(action.replyId)) return state
       const nextSeen =
         action.replyId && !seen.has(action.replyId)

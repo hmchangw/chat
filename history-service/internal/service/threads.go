@@ -40,13 +40,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrForbidden("thread is outside access window")
 	}
 
-	// Empty ThreadRoomID: no replies yet, or message-worker's stamp on
-	// messages_by_id silently failed/was skipped. Log at WARN so the
-	// difference between "thread genuinely empty" and "stamp missing
-	// for a thread that has replies in thread_messages_by_room" is
-	// visible — the latter is a bug, not a normal state. Cross-check
-	// the message-worker logs for "parent row absent" or "stamp
-	// skipped" entries with the same messageID to confirm.
+	// Empty ThreadRoomID = no replies yet OR a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
 		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
 			"request_id", natsutil.RequestIDFromContext(c),

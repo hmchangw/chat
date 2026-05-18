@@ -126,10 +126,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
       }, MARK_READ_DEBOUNCE_MS)
     }
 
-    // Route thread-reply events to the registered handler (ThreadEvents).
-    // The handler returns nothing; if no consumer is registered (e.g.
-    // ThreadEventsProvider not mounted), the event is silently skipped —
-    // the room reducer still bumps the parent's tcount via MESSAGE_RECEIVED.
+    // Fan thread-reply events to ThreadEvents; no-op if no consumer is registered.
     const fanThreadReply = (evt) => {
       const msg = evt?.message
       if (!msg?.threadParentMessageId) return
@@ -143,9 +140,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
           message: msg,
         })
       } catch (err) {
-        // Don't let a handler exception break the subscription callback —
-        // other event consumers (MESSAGE_RECEIVED dispatch above, mark-read
-        // scheduling below) must still run.
+        // Don't let a handler exception break the subscription callback.
         // eslint-disable-next-line no-console
         console.warn(
           'thread-reply handler threw:',
@@ -159,10 +154,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
       if (evt?.type === 'new_message') {
         safeDispatch({ type: 'MESSAGE_RECEIVED', event: evt })
         fanThreadReply(evt)
-        // Thread replies don't appear in the main feed — they shouldn't
-        // advance the main-feed `lastSeenAt`. The thread panel has its
-        // own read semantics (out of scope for now); main-feed
-        // mark-read only fires for top-level messages.
+        // Thread replies don't advance the main-feed lastSeenAt.
         if (!evt.message?.threadParentMessageId) {
           scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
         }

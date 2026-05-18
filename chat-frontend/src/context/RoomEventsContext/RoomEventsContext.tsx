@@ -64,18 +64,11 @@ interface RoomEventsState {
   subscriptions: Record<string, DMSubscription>
 }
 
-/** Payload handed to the optional thread-reply hook — `ThreadEvents`
- *  registers itself here so a live thread reply landing on the room
- *  event channel can be routed into the open thread's reducer without
- *  RoomEvents needing a hard dependency on ThreadEvents. */
+/** Payload for the thread-reply hook ThreadEventsProvider registers. */
 export interface ThreadReplyEvent {
-  /** ID of the parent message this reply belongs to. */
   parentMessageId: string
-  /** Room the reply lives in. */
   roomId: string
-  /** Site of the room (needed by ThreadEvents to scope future fetches). */
   siteId: string
-  /** The reply message payload itself (Message-shaped). */
   message: Message
 }
 
@@ -90,11 +83,7 @@ interface RoomEventsContextValue {
   setActiveRoom: (roomId: string | null) => void
   jumpToMessage: (roomId: string, messageId: string) => Promise<void> | void
   resetToLiveTail: (roomId: string) => void
-  /** Register a callback fired for every inbound thread reply event
-   *  observed on the room event channel. Returns an unsubscribe
-   *  function. Used by `ThreadEventsProvider` to feed live replies
-   *  into the open thread's reducer without RoomEvents needing to
-   *  know about ThreadEvents. */
+  /** Register a thread-reply event handler; returns an unsubscribe fn. */
   registerThreadReplyHandler: (h: ThreadReplyHandler) => () => void
 }
 
@@ -117,15 +106,7 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // Slot for the live thread-reply consumer (ThreadEventsProvider
-  // registers itself here on mount via `registerThreadReplyHandler`).
-  // `useRoomSubscriptions` reads `.current` when a thread reply lands
-  // on the room event channel.
-  //
-  // Single-slot by design — ThreadEventsProvider is the only consumer
-  // today, and last-write-wins is the simplest contract. If a future
-  // feature needs multiple consumers, convert this to a Set of
-  // handlers and fan out in `useRoomSubscriptions`.
+  // Single-slot for ThreadEventsProvider's live-reply handler.
   const threadReplyHandlerRef = useRef<ThreadReplyHandler | null>(null)
   const registerThreadReplyHandler = useCallback((h: ThreadReplyHandler) => {
     threadReplyHandlerRef.current = h
@@ -308,11 +289,7 @@ export function useRoomDispatch(): RoomEventsContextValue['dispatch'] {
   return ctx.dispatch
 }
 
-/** Register a callback that fires when a live thread-reply event lands
- *  on the room event channel. Returns an unsubscribe function — call
- *  in the effect's cleanup. Used by `ThreadEventsProvider` to feed
- *  inbound thread replies into the open thread reducer without
- *  RoomEvents needing to know about ThreadEvents. */
+/** Register a handler for live thread-reply events; returns an unsubscribe fn. */
 export function useRegisterThreadReplyHandler(): RoomEventsContextValue['registerThreadReplyHandler'] {
   const ctx = useContext(RoomEventsContext)
   if (!ctx) throw new Error('useRegisterThreadReplyHandler must be used inside RoomEventsProvider')

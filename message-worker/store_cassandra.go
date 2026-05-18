@@ -211,17 +211,8 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	return nil
 }
 
-// IF EXISTS prevents phantom rows: without it a bare UPDATE on a missing row would
-// materialise a partial Cassandra row containing only thread_room_id.
-//
-// Diagnostic: when `applied=false`, the parent row was not found at the
-// `(message_id, created_at)` / `(room_id, bucket, created_at, message_id)`
-// coordinates we tried. That is the bug pattern history-service observes
-// downstream as "empty ThreadRoomID, no replies" — pair the logs by
-// matching `messageID` across the two services. Logged at ERROR (was
-// WARN) because a missed stamp permanently breaks thread reads for that
-// parent until the column is re-stamped — silent skips were too easy to
-// miss.
+// IF EXISTS prevents phantom rows on missing parents; misses log at ERROR
+// because a silent miss permanently breaks thread reads for that parent.
 func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error {
 	parentBucket := s.bucket.Of(parentCreatedAt)
 
