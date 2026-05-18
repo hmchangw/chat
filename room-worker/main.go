@@ -36,8 +36,8 @@ type config struct {
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
 	// Required: room-worker reads/rotates the room key on every create/add/remove path.
-	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
-	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyAddrs    []string `env:"VALKEY_ADDRS,required" envSeparator:","`
+	ValkeyPassword string   `env:"VALKEY_PASSWORD"           envDefault:""`
 	// TTL on the :prev key slot after a rotation.
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 }
@@ -94,7 +94,7 @@ func main() {
 	}
 
 	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr:        cfg.ValkeyAddr,
+		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
 		GracePeriod: cfg.ValkeyKeyGracePeriod,
 	})

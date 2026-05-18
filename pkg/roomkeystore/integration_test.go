@@ -43,7 +43,7 @@ func setupValkey(t *testing.T, gracePeriod time.Duration) RoomKeyStore {
 	require.NoError(t, err)
 
 	store, err := NewValkeyStore(Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		Addrs:       []string{fmt.Sprintf("%s:%s", host, port.Port())},
 		GracePeriod: gracePeriod,
 	})
 	require.NoError(t, err, "create valkeyStore")

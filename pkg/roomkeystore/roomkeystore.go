@@ -42,8 +42,12 @@ type RoomKeyStore interface {
 }
 
 // Config holds Valkey connection and grace period configuration, parsed via caarlos0/env.
+//
+// Addrs is a seed list. One entry → single Valkey node; two or more →
+// Valkey/Redis cluster. The underlying go-redis UniversalClient picks the
+// mode automatically.
 type Config struct {
-	Addr        string        `env:"VALKEY_ADDR,required"`
+	Addrs       []string      `env:"VALKEY_ADDRS,required" envSeparator:","`
 	Password    string        `env:"VALKEY_PASSWORD" envDefault:""`
 	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 }
@@ -76,13 +80,19 @@ func (s *valkeyStore) Close() error {
 }
 
 // roomkey returns the Valkey hash key for a room's current key pair.
+//
+// The {roomID} hash tag forces both the current-key and previous-key
+// slots for a single room onto the same cluster slot. The Rotate Lua
+// script and Delete pipeline operate on both keys atomically; without
+// the hash tag, a Valkey cluster would reject them with CROSSSLOT.
 func roomkey(roomID string) string {
-	return "room:" + roomID + ":key"
+	return "room:{" + roomID + "}:key"
 }
 
 // roomprevkey returns the Valkey hash key for a room's previous key pair.
+// Shares the same {roomID} hash tag as roomkey — see roomkey doc.
 func roomprevkey(roomID string) string {
-	return "room:" + roomID + ":key:prev"
+	return "room:{" + roomID + "}:key:prev"
 }
 
 // Set stores pair in Valkey as a hash with no TTL, assigning version 0.

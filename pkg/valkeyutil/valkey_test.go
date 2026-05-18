@@ -132,7 +132,15 @@ func TestConnect_ErrorPath(t *testing.T) {
 	// Point at a port that refuses connections (port 1 is well-known to
 	// reject without a listener). The internal Ping must fail fast and
 	// Connect must return a wrapped error — no real Valkey needed.
-	_, err := valkeyutil.Connect(context.Background(), "127.0.0.1:1", "")
+	_, err := valkeyutil.Connect(context.Background(), []string{"127.0.0.1:1"}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "valkey connect")
+}
+
+func TestConnect_NoAddrs(t *testing.T) {
+	// Empty seed list must fail at the call boundary, not after a network
+	// probe — otherwise a misconfigured deploy would silently get a default.
+	_, err := valkeyutil.Connect(context.Background(), nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no addresses provided")
 }

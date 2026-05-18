@@ -104,7 +104,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 
 	t.Logf("CCS fixture: starting valkey")
 	valkeyAddr := startValkey(t)
-	valkeyClient, err := valkeyutil.Connect(ctx, valkeyAddr, "")
+	valkeyClient, err := valkeyutil.Connect(ctx, []string{valkeyAddr}, "")
 	require.NoError(t, err, "connect valkey")
 	t.Cleanup(func() { valkeyutil.Disconnect(valkeyClient) })
 	t.Logf("CCS fixture: valkey at %s", valkeyAddr)
@@ -977,7 +977,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 func newSubsValkeyClient(t *testing.T) valkeyutil.Client {
 	t.Helper()
 	addr := startValkey(t)
-	client, err := valkeyutil.Connect(context.Background(), addr, "")
+	client, err := valkeyutil.Connect(context.Background(), []string{addr}, "")
 	require.NoError(t, err, "connect valkey for subs fixture")
 	t.Cleanup(func() { valkeyutil.Disconnect(client) })
 	return client

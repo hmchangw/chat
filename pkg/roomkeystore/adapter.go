@@ -10,9 +10,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// redisAdapter wraps *redis.Client to satisfy hashCommander.
+// redisAdapter wraps redis.UniversalClient to satisfy hashCommander.
+// UniversalClient transparently backs single-node, cluster, and sentinel
+// deployments — see NewValkeyStore for the mode-selection rule.
 type redisAdapter struct {
-	c *redis.Client
+	c redis.UniversalClient
 }
 
 func (a *redisAdapter) hset(ctx context.Context, key string, pub, priv string) error {
@@ -101,14 +103,23 @@ func (a *redisAdapter) closeClient() error {
 }
 
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
+//
+// cfg.Addrs is a seed list — single-entry → single-node client, multi-entry →
+// cluster client (selected automatically by go-redis's NewUniversalClient).
 func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
-	c := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
+	if len(cfg.Addrs) == 0 {
+		return nil, fmt.Errorf("valkey connect: no addresses provided")
+	}
+	c := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs:    cfg.Addrs,
 		Password: cfg.Password,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.Ping(ctx).Err(); err != nil {
+		if closeErr := c.Close(); closeErr != nil {
+			_ = closeErr // best-effort cleanup; primary error is the ping
+		}
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
 	return &valkeyStore{client: &redisAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil

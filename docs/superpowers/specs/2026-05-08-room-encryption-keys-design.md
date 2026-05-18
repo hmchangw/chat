@@ -88,7 +88,7 @@ The current state of the codebase has the libraries built and tested, but no ser
 
 **Shipped — Sprint 1:** All items in the Scope section below. Additionally:
 - `pkg/roomkeymetrics` OTel instruments (see Operational addendum).
-- `pkg/roomkeystore/doc.go` package documentation covering versioning, concurrency, and single-master topology.
+- `pkg/roomkeystore/doc.go` package documentation covering versioning, concurrency, and Valkey topology (single-node, Sentinel, or Cluster).
 - Operational addendum in this spec (ops guide folded in from a now-deleted separate doc).
 - `otelutil.InitMeter` wired in `room-worker` and `inbox-worker` with shutdown hooks.
 - `ROOM_KEY_RPC_TIMEOUT` configurable via env var (default 5 s), exposed in `inbox-worker/deploy/docker-compose.yml`.
@@ -487,10 +487,17 @@ If Valkey is wiped, the next operation on a previously-keyed room will return
 Recovery requires regenerating keys. There is no recovery tool yet — see the day-2
 ops backlog.
 
-### Single-master Valkey
+### Valkey topology
 
-This system requires a single-master Valkey deployment per site. The atomic rotate
-operation uses a single Lua script and does not function across Redis Cluster slots.
+Single-node, Sentinel, and Valkey/Redis Cluster are all supported per site.
+The roomkeystore connects via go-redis's UniversalClient, which picks the
+mode from `VALKEY_ADDRS` — one address selects the single-node client,
+multiple addresses select the cluster client.
+
+The atomic Lua rotate script and the two-key Delete operate on both
+`room:{<id>}:key` and `room:{<id>}:key:prev`. The `{<id>}` hash tag in
+the key namespace forces both slots for a room onto the same cluster
+shard, so the rotation/delete operations never trip CROSSSLOT.
 See `pkg/roomkeystore/doc.go` for details.
 
 ### Metrics exported by `pkg/roomkeymetrics`
