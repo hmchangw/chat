@@ -977,7 +977,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 func newSubsValkeyClient(t *testing.T) valkeyutil.Client {
 	t.Helper()
 	addr := startValkey(t)
-	client, err := valkeyutil.Connect(context.Background(), addr, "")
+	client, err := valkeyutil.Connect(context.Background(), []string{addr}, "")
 	require.NoError(t, err, "connect valkey for subs fixture")
 	t.Cleanup(func() { valkeyutil.Disconnect(client) })
 	return client

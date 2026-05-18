@@ -54,7 +54,7 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 	port, err := container.MappedPort(ctx, "6379")
 	require.NoError(t, err)
 	return &roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		Addrs:       []string{fmt.Sprintf("%s:%s", host, port.Port())},
 		GracePeriod: time.Hour,
 	}
 }
