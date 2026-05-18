@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require" //nolint:depguard
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollector_MessageIDs_ReturnsAllSeen(t *testing.T) {
