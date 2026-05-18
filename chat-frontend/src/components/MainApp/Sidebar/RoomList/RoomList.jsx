@@ -39,7 +39,6 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
       {error && <div className="room-list-error">{error}</div>}
       <div className="room-list-items">
         {sections.map((section) => {
-          if (section.rooms.length === 0) return null
           const isCollapsed = !!collapsed[section.key]
           const sectionClasses = ['room-list-section']
           if (isCollapsed) sectionClasses.push('room-list-section-collapsed')
@@ -49,9 +48,16 @@ export default function RoomList({ selectedRoomId, onSelectRoom }) {
                 className="room-list-section-header"
                 onClick={() => toggle(section.key)}
               >
+                <span className="room-list-section-chevron" aria-hidden="true">▾</span>
                 {section.title}
               </div>
-              {!isCollapsed &&
+              {!isCollapsed && section.note && (
+                <div className="room-list-section-note">{section.note}</div>
+              )}
+              {!isCollapsed && !section.note && section.rooms.length === 0 && (
+                <div className="room-list-section-empty">No rooms</div>
+              )}
+              {!isCollapsed && !section.note &&
                 section.rooms.map((room) => (
                   <RoomItem
                     key={room.id}

@@ -43,6 +43,14 @@ export interface Subscription {
   hasMention: boolean
   threadUnread?: string[]
   alert: boolean
+  /** Room-level metadata that the real user-service embeds on subscription
+   *  replies (the three `subscription.get*` RPCs return joined Room data
+   *  inline so the frontend doesn't need a separate `rooms.list` call).
+   *  Optional because mock-user-service and live `subscription.update`
+   *  events don't carry them today; default to 0 / null at the consumer. */
+  userCount?: number
+  lastMsgAt?: string | null
+  lastMsgId?: string
 }
 
 /**
@@ -234,6 +242,25 @@ export interface NatsSubscription {
  *  reach the variant fields. Typed `unknown` so call sites can't
  *  bypass the discriminator. */
 export type SubscriptionCallback = (event: unknown) => void
+
+/** Known values of `SubscriptionUpdateEvent.action`. Backend (room-worker
+ *  `handler.go`) emits `"added"` on member-add / room-create / DM-sync,
+ *  `"removed"` on member-remove, and `"role_updated"` on role change.
+ *  Typed as a union ∪ `string` so consumers get autocomplete for the
+ *  known values but forward-compat with any new action the backend
+ *  introduces. */
+export type SubscriptionUpdateAction = 'added' | 'removed' | 'role_updated' | (string & {})
+
+/** Wire shape of `chat.user.{account}.event.subscription.update` events.
+ *  Mirrors `pkg/model.SubscriptionUpdateEvent`. Subscription is typed
+ *  as the DM variant so callers can read `hrInfo` without narrowing
+ *  (channels/groups omit the field; DMs carry it). */
+export interface SubscriptionUpdateEvent {
+  userId: string
+  subscription: DMSubscription
+  action: SubscriptionUpdateAction
+  timestamp: number
+}
 
 /** Two-phase async-job result returned by `requestWithAsyncResult`. */
 export interface AsyncJobResult<S = unknown, A = unknown> {

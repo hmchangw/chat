@@ -24,7 +24,6 @@ export { getRoom } from './getRoom'
 export { leaveRoom } from './leaveRoom'
 export { listOrgMembers } from './listOrgMembers'
 export { listRoomMembers } from './listRoomMembers'
-export { listRooms } from './listRooms'
 export { markRoomRead } from './markRoomRead'
 export { removeMember } from './removeMember'
 export { searchMessages } from './searchMessages'
@@ -51,6 +50,8 @@ export type {
   Nats,
   NatsSubscription,
   SubscriptionCallback,
+  SubscriptionUpdateEvent,
+  SubscriptionUpdateAction,
   AsyncJobOptions,
   AsyncJobResult,
   // Domain types
