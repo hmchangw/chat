@@ -678,6 +678,20 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		metrics.RunQuality.With(prometheus.Labels{"verdict": v}).Set(val)
 	}
 
+	// Task 3.12 Fix 2: populate SentByRoomType from the per-room-type counter
+	// when DMRatio>0. gatheredCounterLabelPair filters on both (preset, room_type)
+	// so runs with different preset names on the same registry don't bleed into
+	// each other. When DMRatio==0 the counter is never incremented; the map is
+	// omitted (nil) so PrintSummary skips the breakdown line.
+	var sentByRoomType map[string]int64
+	if p.DMRatio > 0 {
+		chCount := int64(gatheredCounterLabelPair(mfs,
+			"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "channel"))
+		dmCount := int64(gatheredCounterLabelPair(mfs,
+			"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "dm"))
+		sentByRoomType = map[string]int64{"channel": chCount, "dm": dmCount}
+	}
+
 	summary := Summary{
 		RunID:               runID,
 		Preset:              p.Name,
@@ -706,6 +720,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		OmissionServicedP99: rt.Omission().Quantile(0.99, false),
 		OmissionDroppedP99:  rt.Omission().Quantile(0.99, true),
 		RunQualityVerdict:   verdict,
+		SentByRoomType:      sentByRoomType,
 	}
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)

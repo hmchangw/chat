@@ -44,6 +44,10 @@ type Metrics struct {
 	// (i.e., reply messages targeting a previously-published root). Label "preset"
 	// mirrors the loadgen_published_total label for easy join in Grafana.
 	ThreadMessages *prometheus.CounterVec
+	// PublishedByRoomType counts successful publishes broken down by room type
+	// ("channel" or "dm"). Separate from Published to avoid inflating that
+	// counter's label cardinality. Only incremented when Preset.DMRatio > 0.
+	PublishedByRoomType *prometheus.CounterVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -127,6 +131,13 @@ func NewMetrics() *Metrics {
 			},
 			[]string{"preset"},
 		),
+		PublishedByRoomType: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "loadgen_published_by_room_type_total",
+				Help: "Successful publishes broken down by preset and room type (channel|dm). Only incremented when Preset.DMRatio > 0.",
+			},
+			[]string{"preset", "room_type"},
+		),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -137,6 +148,7 @@ func NewMetrics() *Metrics {
 		m.OmissionDeficit,
 		m.RunQuality,
 		m.ThreadMessages,
+		m.PublishedByRoomType,
 	)
 	return m
 }

@@ -111,7 +111,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 
 	preset, _ := BuiltinPreset("small")
 	fixtures := BuildFixtures(&preset, 42, siteID)
-	require.NoError(t, Seed(ctx, db, fixtures))
+	require.NoError(t, Seed(ctx, db, &fixtures))
 
 	metrics := NewMetrics()
 	collector := NewCollector(metrics, preset.Name)

@@ -77,6 +77,11 @@ type Generator struct {
 	// honor preset config that pre-fix was silently ignored.
 	senders *senderPicker
 	threads *threadPool
+	// rng is a seeded source used exclusively by pickRoomByDMRatio when
+	// Preset.DMRatio > 0. Separate from the math/rand/v2 globals so
+	// DMRatio-weighted room picks are deterministic across runs with the
+	// same seed (reproducibility for capacity-test analysis).
+	rng *rand.Rand
 }
 
 // NewGenerator returns a Generator. The `seed` parameter is retained for
@@ -96,6 +101,10 @@ func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
 		maxBody: strings.Repeat("x", max),
 		senders: newSenderPicker(len(cfg.Fixtures.Subscriptions), cfg.Preset.SenderDist, seed),
 		threads: newThreadPool(threadPoolCapacity),
+		// Use seed+1 so the DMRatio rng is independent from the Zipf sender
+		// picker (same seed would produce the same sequence for both, causing
+		// unexpected correlation between sender selection and room type pick).
+		rng: rand.New(rand.NewSource(seed + 1)),
 	}
 }
 
@@ -218,7 +227,29 @@ func (g *Generator) publishOne(ctx context.Context) {
 	// Bug 4 part A: honor SenderDist (pre-fix every preset got uniform).
 	// senderPicker maps an index in [0, len(subs)) under the preset's
 	// distribution; falls back to uniform when DistZipf isn't set.
-	subIdx := g.senders.pick()
+	//
+	// Task 3.12 Fix 1: when Preset.DMRatio > 0, pick a room by type proportion
+	// first, then select a subscription for that room. This makes the runtime
+	// publish distribution match the configured DM/channel split instead of
+	// being driven by the subscription pool size bias (DM rooms have 2 members
+	// while channel rooms have 2-500, so pool-only picking yields ~10% DM even
+	// at DMRatio=0.6). Falls back to senders.pick() when the chosen room has
+	// no subscriptions in the index or when DMRatio==0.
+	var subIdx int
+	if g.cfg.Preset.DMRatio > 0 && len(g.cfg.Fixtures.RoomSubs) > 0 {
+		room := pickRoomByDMRatio(g.cfg.Preset, &g.cfg.Fixtures, g.rng)
+		if room != nil {
+			if indices, ok := g.cfg.Fixtures.RoomSubs[room.ID]; ok && len(indices) > 0 {
+				subIdx = indices[g.rng.Intn(len(indices))]
+			} else {
+				subIdx = g.senders.pick()
+			}
+		} else {
+			subIdx = g.senders.pick()
+		}
+	} else {
+		subIdx = g.senders.pick()
+	}
 	sub := g.cfg.Fixtures.Subscriptions[subIdx]
 	content := g.content()
 	msgID := idgen.GenerateMessageID()
@@ -292,6 +323,15 @@ func (g *Generator) publishOne(ctx context.Context) {
 	g.cfg.Metrics.Published.WithLabelValues(
 		g.cfg.Preset.Name, phase, connID, rateBucketLabel(int(g.curRate.Load())),
 	).Inc()
+	// Task 3.12 Fix 2: increment PublishedByRoomType when DMRatio>0 so
+	// executeRun can populate Summary.SentByRoomType from the counter.
+	// sub.RoomType is carried directly on the Subscription struct (set at
+	// fixture-build time), so no O(N) lookup is needed here.
+	if g.cfg.Preset.DMRatio > 0 {
+		g.cfg.Metrics.PublishedByRoomType.WithLabelValues(
+			g.cfg.Preset.Name, string(sub.RoomType),
+		).Inc()
+	}
 	if parentID != "" {
 		g.cfg.Metrics.ThreadMessages.WithLabelValues(g.cfg.Preset.Name).Inc()
 	}

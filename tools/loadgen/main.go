@@ -110,7 +110,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	defer mongoutil.Disconnect(ctx, client)
 	db := client.Database(cfg.MongoDB)
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
-	if err := Seed(ctx, db, fixtures); err != nil {
+	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
 		return 1
 	}

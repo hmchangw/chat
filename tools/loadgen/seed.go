@@ -24,7 +24,7 @@ func insertDocs[T any](ctx context.Context, coll *mongo.Collection, items []T) e
 
 // Seed drops and repopulates users/rooms/subscriptions in db from fixtures.
 // Idempotent: safe to rerun.
-func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
+func Seed(ctx context.Context, db *mongo.Database, f *Fixtures) error {
 	if err := db.Collection("users").Drop(ctx); err != nil {
 		return fmt.Errorf("drop users: %w", err)
 	}

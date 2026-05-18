@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -219,4 +221,146 @@ func TestReport_NoBreakdownWhenMapEmpty(t *testing.T) {
 	require.NoError(t, PrintSummary(&buf, s))
 	out := buf.String()
 	assert.NotContains(t, out, "Sent breakdown:")
+}
+
+// TestPublishOne_HonorsDMRatioAtRuntime verifies that publishOne picks rooms
+// in the correct DM/channel proportion when Preset.DMRatio > 0. Pre-fix, the
+// subscription pool bias (DM rooms have 2 members, channel rooms 2-500) caused
+// ~10% DM even at DMRatio=0.6; post-fix, the DMRatio path is wired in and
+// the runtime distribution must fall within ±10% of the configured ratio.
+func TestPublishOne_HonorsDMRatioAtRuntime(t *testing.T) {
+	p := &Preset{
+		Name:         "dm-ratio-runtime",
+		Users:        100,
+		Rooms:        100,
+		DMRatio:      0.6,
+		RoomSizeDist: DistMixed, // mixed: channels can have up to 500 members
+		SenderDist:   DistUniform,
+		ContentBytes: Range{Min: 50, Max: 50},
+	}
+	f := BuildFixtures(p, 42, "site-local")
+
+	// Build a room-ID → type lookup for classifying captured publishes.
+	roomType := make(map[string]model.RoomType, len(f.Rooms))
+	for i := range f.Rooms {
+		roomType[f.Rooms[i].ID] = f.Rooms[i].Type
+	}
+
+	rp := &recordingPublisher{}
+	m := NewMetrics()
+	c := NewCollector(m, p.Name)
+	g := NewGenerator(&GeneratorConfig{
+		Preset:    p,
+		Fixtures:  f,
+		SiteID:    "site-local",
+		Rate:      500,
+		Inject:    InjectFrontdoor,
+		Publisher: rp,
+		Metrics:   m,
+		Collector: c,
+	}, 42)
+
+	const iterations = 1000
+	ctx := context.Background()
+	for i := 0; i < iterations; i++ {
+		g.publishOne(ctx)
+	}
+
+	calls := rp.snapshot()
+	require.Greater(t, len(calls), 800, "publishOne must produce at least 800 identifiable room-type publishes")
+
+	dmCount := 0
+	channelCount := 0
+	for _, call := range calls {
+		// publishOne uses the frontdoor subject: chat.user.{account}.room.{roomID}.{siteID}.msg.send
+		// Extract RoomID by unmarshalling the request body.
+		var req model.SendMessageRequest
+		if err := json.Unmarshal(call.data, &req); err != nil {
+			continue
+		}
+		// The subject contains the roomID: derive room type from the RoomSubs index.
+		// We use the subscription's RoomID captured in the subject tokens.
+		// Simpler: look up which subscription was used via Fixtures.
+		// Since we only have the payload and subject, we classify by roomID in the subject.
+		// Subject format: chat.user.{account}.room.{roomID}.{siteID}.msg.send
+		// Parse roomID from subject:
+		subj := call.subject
+		rt := roomTypeFromSubject(subj, roomType, &f)
+		switch rt {
+		case model.RoomTypeDM:
+			dmCount++
+		case model.RoomTypeChannel:
+			channelCount++
+		default:
+			// BotDM, Discussion, or unclassified — excluded from the ratio check.
+		}
+	}
+
+	total := dmCount + channelCount
+	require.Greater(t, total, 800,
+		"published messages must be classifiable to DM or channel rooms; got dm=%d channel=%d total-calls=%d",
+		dmCount, channelCount, len(calls))
+
+	dmFraction := float64(dmCount) / float64(total)
+	assert.InDelta(t, 0.6, dmFraction, 0.1,
+		"DMRatio=0.6 must produce ~60%% DM publishes at runtime; got dm=%d channel=%d (%.1f%%)",
+		dmCount, channelCount, dmFraction*100)
+
+	// Also verify PublishedByRoomType counter was incremented correctly.
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	counterDM := int64(gatheredCounterLabelPair(mfs,
+		"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "dm"))
+	counterChannel := int64(gatheredCounterLabelPair(mfs,
+		"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "channel"))
+	assert.Equal(t, int64(dmCount), counterDM,
+		"PublishedByRoomType{dm} counter must match classified dm publishes")
+	assert.Equal(t, int64(channelCount), counterChannel,
+		"PublishedByRoomType{channel} counter must match classified channel publishes")
+}
+
+// roomTypeFromSubject extracts the room ID from a frontdoor publish subject and
+// looks up its type in the roomType map. Returns empty string when the subject
+// cannot be parsed or the room is unknown.
+//
+// Subject format: chat.user.{account}.room.{roomID}.{siteID}.msg.send
+// Token indices (0-based): 0=chat 1=user 2={account} 3=room 4={roomID} 5={siteID} 6=msg 7=send
+func roomTypeFromSubject(subj string, byID map[string]model.RoomType, f *Fixtures) model.RoomType {
+	// Check each room's ID to find which one matches the subject.
+	// Use index-based range to avoid a per-element copy of the large Room struct.
+	for i := range f.Rooms {
+		if len(f.Rooms[i].ID) > 0 && containsToken(subj, f.Rooms[i].ID) {
+			return byID[f.Rooms[i].ID]
+		}
+	}
+	return ""
+}
+
+// containsToken reports whether s contains token as a dot-delimited segment.
+func containsToken(s, token string) bool {
+	if len(s) == 0 || len(token) == 0 {
+		return false
+	}
+	// Subject is dot-delimited; token may appear as .{token}. or at start/end.
+	needle := "." + token + "."
+	if indexOfStr(s, needle) >= 0 {
+		return true
+	}
+	// Edge: token at end of subject.
+	suffix := "." + token
+	if len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix {
+		return true
+	}
+	// Edge: token at start of subject (unlikely for our subjects but defensive).
+	prefix := token + "."
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+func indexOfStr(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }

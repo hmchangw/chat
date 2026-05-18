@@ -290,6 +290,11 @@ type Fixtures struct {
 	Users         []model.User
 	Rooms         []model.Room
 	Subscriptions []model.Subscription
+
+	// RoomSubs maps RoomID to indices into Subscriptions[] for fast room-based
+	// subscription picking. Used by publishOne when Preset.DMRatio > 0 to honor
+	// the DM/channel split without an O(N) linear scan per publish.
+	RoomSubs map[string][]int
 }
 
 var (
@@ -363,13 +368,22 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 				ID:       fmt.Sprintf("sub-%s-%s", rooms[i].ID, members[j].ID),
 				User:     model.SubscriptionUser{ID: members[j].ID, Account: members[j].Account},
 				RoomID:   rooms[i].ID,
+				RoomType: rooms[i].Type,
 				SiteID:   siteID,
 				Roles:    []model.Role{model.RoleMember},
 				JoinedAt: now,
 			})
 		}
 	}
-	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs}
+
+	// Build RoomSubs index: RoomID -> []int of subscription indices.
+	// Used by publishOne when DMRatio>0 to pick a sub for a given room in O(1).
+	roomSubs := make(map[string][]int, len(rooms))
+	for i := range subs {
+		roomSubs[subs[i].RoomID] = append(roomSubs[subs[i].RoomID], i)
+	}
+
+	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs, RoomSubs: roomSubs}
 }
 
 func pickMembers(r *rand.Rand, p *Preset, roomIdx, totalRooms int, room *model.Room, users []model.User) []model.User {

@@ -31,7 +31,7 @@ func TestSeedAndTeardown(t *testing.T) {
 	fixtures := BuildFixtures(&preset, 42, "site-test")
 
 	// First Seed populates the collections.
-	require.NoError(t, Seed(ctx, db, fixtures))
+	require.NoError(t, Seed(ctx, db, &fixtures))
 
 	count, err := db.Collection("users").CountDocuments(ctx, bson.M{})
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestSeedAndTeardown(t *testing.T) {
 	assert.Equal(t, int64(len(fixtures.Subscriptions)), count)
 
 	// Second Seed must be idempotent (no duplicate-key errors).
-	require.NoError(t, Seed(ctx, db, fixtures))
+	require.NoError(t, Seed(ctx, db, &fixtures))
 	count, err = db.Collection("rooms").CountDocuments(ctx, bson.M{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(len(fixtures.Rooms)), count, "Seed must be idempotent")
