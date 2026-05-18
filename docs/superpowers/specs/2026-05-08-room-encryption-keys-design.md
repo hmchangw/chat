@@ -499,8 +499,6 @@ See `pkg/roomkeystore/doc.go` for details.
 |---|---|---|---|
 | `room_key_fanout_errors_total` | `FanoutErrors` | `Int64Counter` | Incremented on every `roomkeysender.Send` failure (room-worker fan-out) |
 | `room_key_rpc_duration_seconds` | `RPCDuration` | `Float64Histogram` | Wraps `natsInterSiteKeyClient.GetRoomKey` round-trip latency (inbox-worker) |
-| `room_key_generated_total` | `KeyGenerated` | `Int64Counter` | `room-service` `Set` success (new key generated at create / first remove) |
-| `room_key_rotated_total` | `KeyRotated` | `Int64Counter` | `room-service` `Rotate`/Set-fallback success (remove-member path) |
 | `room_key_valkey_errors_total` | `ValkeyErrors` | `Int64Counter` | Valkey operation failures; tagged by `op` attribute (`Get`/`Set`/`Rotate`/`GetMany`) |
 
 All instruments are initialised in `pkg/roomkeymetrics/metrics.go` and fall back to no-op counters/histograms if the global meter provider is not yet set at init time. `otelutil.InitMeter("<service>")` is wired in `room-worker/main.go` and `inbox-worker/main.go` with shutdown hooks registered before the `shutdown.Wait` call.

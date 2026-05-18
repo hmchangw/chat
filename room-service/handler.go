@@ -356,7 +356,6 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return nil, fmt.Errorf("store room key: %w", err)
 		}
-		roomkeymetrics.KeyGenerated.Add(ctx, 1)
 	}
 
 	payload, err := json.Marshal(req)

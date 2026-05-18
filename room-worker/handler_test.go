@@ -3153,9 +3153,6 @@ func TestProcessCreateRoom_Channel_PublishesCrossSiteMemberAdded(t *testing.T) {
 // publishes a RoomKeyEvent for all members, including remote-site users. NATS supercluster routes
 // user-subjects to home sites.
 func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	keyStore := NewMockRoomKeyStore(ctrl)
-
 	pub := &mockPublisher{}
 	sender := roomkeysender.NewSender(pub)
 
@@ -3166,10 +3163,8 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 			PrivateKey: []byte("priv"),
 		},
 	}
-	keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(keyPair, nil)
 
 	h := &Handler{
-		keyStore:  keyStore,
 		keySender: sender,
 		siteID:    "site-A",
 	}
@@ -3180,7 +3175,7 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 		{Account: "carol", SiteID: "site-B"}, // remote — also receives key
 	}
 
-	err := h.buildAndFanOutRoomKey(context.Background(), "room-1", users)
+	err := h.buildAndFanOutRoomKey(context.Background(), "room-1", keyPair, users)
 	require.NoError(t, err)
 	assert.Equal(t, 3, pub.publishCount(), "all members including remote-site should receive key events")
 }

@@ -300,7 +300,6 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return fmt.Errorf("store room key (no prior): %w", err)
 		}
-		roomkeymetrics.KeyGenerated.Add(ctx, 1)
 		return nil
 	}
 	if _, err := h.keyStore.Rotate(ctx, roomID, newPair); err != nil {
@@ -309,13 +308,11 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 				return fmt.Errorf("store room key (fallback): %w", setErr)
 			}
-			roomkeymetrics.KeyGenerated.Add(ctx, 1)
 			return nil
 		}
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
 		return fmt.Errorf("rotate room key: %w", err)
 	}
-	roomkeymetrics.KeyRotated.Add(ctx, 1)
 	return nil
 }
 
@@ -833,7 +830,16 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, users); err != nil {
+	pair, err := h.keyStore.Get(ctx, req.RoomID)
+	if err != nil {
+		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return fmt.Errorf("get room key: %w", err)
+	}
+	if pair == nil {
+		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
+		return newPermanentAbsent("room key absent for %s", req.RoomID)
+	}
+	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, pair, users); err != nil {
 		return fmt.Errorf("fan out room key: %w", err)
 	}
 
@@ -1066,11 +1072,11 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 
 	switch roomType {
 	case model.RoomTypeDM:
-		return h.processCreateRoomDM(ctx, &req, room, requester, requestID, acceptedAt, now)
+		return h.processCreateRoomDM(ctx, &req, room, pair, requester, requestID, acceptedAt, now)
 	case model.RoomTypeBotDM:
-		return h.processCreateRoomBotDM(ctx, &req, room, requester, requestID, acceptedAt, now)
+		return h.processCreateRoomBotDM(ctx, &req, room, pair, requester, requestID, acceptedAt, now)
 	case model.RoomTypeChannel:
-		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
+		return h.processCreateRoomChannel(ctx, &req, room, pair, requester, requestID, acceptedAt, now)
 	default:
 		return newPermanent("unknown room type %q", roomType)
 	}
@@ -1090,7 +1096,7 @@ func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 	return model.RoomTypeChannel
 }
 
-func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, pair *roomkeystore.VersionedKeyPair, requester *model.User, requestID string, acceptedAt, now time.Time) error {
 	other, err := h.store.GetUser(ctx, req.Users[0])
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
@@ -1103,10 +1109,10 @@ func (h *Handler) processCreateRoomDM(ctx context.Context, req *model.CreateRoom
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
-	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *other}, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, pair, requester, []model.User{*requester, *other}, subs, requestID, now)
 }
 
-func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, pair *roomkeystore.VersionedKeyPair, requester *model.User, requestID string, acceptedAt, now time.Time) error {
 	bot, err := h.store.GetUser(ctx, req.Users[0])
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
@@ -1119,10 +1125,10 @@ func (h *Handler) processCreateRoomBotDM(ctx context.Context, req *model.CreateR
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
-	return h.finishCreateRoom(ctx, req, room, requester, []model.User{*requester, *bot}, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, pair, requester, []model.User{*requester, *bot}, subs, requestID, now)
 }
 
-func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, pair *roomkeystore.VersionedKeyPair, requester *model.User, requestID string, acceptedAt, now time.Time) error {
 	// Pass requester.Account as excludeAccount so org-expansion can't re-
 	// introduce the requester (who joins separately as owner). Mirrors the
 	// room-service capacity-check exclusion exactly.
@@ -1197,10 +1203,10 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	// brings in an org will backfill existing accounts (including the owner)
 	// into `room_members`.
 
-	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, pair, requester, allUsers, subs, requestID, now)
 }
 
-func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []model.User, subs []*model.Subscription, requestID string, now time.Time) error {
+func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, pair *roomkeystore.VersionedKeyPair, requester *model.User, allUsers []model.User, subs []*model.Subscription, requestID string, now time.Time) error {
 	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
@@ -1301,7 +1307,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	// subscriptions are durable but no member received the initial key event;
 	// NAK so JetStream retries the whole handler rather than persisting silent
 	// missing-key state.
-	if err := h.buildAndFanOutRoomKey(ctx, room.ID, allUsers); err != nil {
+	if err := h.buildAndFanOutRoomKey(ctx, room.ID, pair, allUsers); err != nil {
 		return fmt.Errorf("room key fan-out (room %s): %w", room.ID, err)
 	}
 
@@ -1624,19 +1630,9 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 	}
 }
 
-// buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
-// and fans it out to every room member account in users (local + remote).
-// NATS supercluster routes user-subjects to home sites.
-func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []model.User) error {
-	pair, err := h.keyStore.Get(ctx, roomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		return fmt.Errorf("get room key: %w", err)
-	}
-	if pair == nil {
-		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
-		return newPermanentAbsent("room key absent for %s", roomID)
-	}
+// buildAndFanOutRoomKey builds the RoomKeyEvent from a pre-fetched pair and fans it out to every account in users.
+// Caller MUST pre-fetch pair (callers already gate on key existence; avoids a redundant Valkey Get here).
+func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, users []model.User) error {
 	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
