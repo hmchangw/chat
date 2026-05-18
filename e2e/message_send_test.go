@@ -108,6 +108,10 @@ func TestMessage_SendAndBroadcast_SingleSite(t *testing.T) {
 	awaitSubscription(t, ctx, mongoA, alice.Account, roomID)
 	awaitSubscription(t, ctx, mongoA, bob.Account, roomID)
 
+	// New subs default to alert=false; flip bob's so notification-worker's
+	// Alert/IsSubscribed gate lets the test's notification through.
+	enableAlert(t, ctx, mongoA, bob.Account, roomID)
+
 	// 2. bob subscribes to the channel's room-event subject BEFORE alice
 	// sends. subject.RoomEvent(roomID) is the specific subject for this
 	// room; the wildcard RoomEventWildcard() (no args) is for cross-room
