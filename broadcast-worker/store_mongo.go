@@ -7,7 +7,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
@@ -46,30 +45,7 @@ func (m *mongoStore) ListSubscriptions(ctx context.Context, roomID string) ([]mo
 }
 
 func (m *mongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-	filter := bson.M{"_id": roomID}
-	opts := options.FindOne().SetProjection(bson.M{
-		"type":      1,
-		"name":      1,
-		"siteId":    1,
-		"userCount": 1,
-	})
-	var doc struct {
-		ID        string         `bson:"_id"`
-		Type      model.RoomType `bson:"type"`
-		Name      string         `bson:"name"`
-		SiteID    string         `bson:"siteId"`
-		UserCount int            `bson:"userCount"`
-	}
-	if err := m.roomCol.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
-		return roommetacache.Meta{}, fmt.Errorf("get room meta %s: %w", roomID, err)
-	}
-	return roommetacache.Meta{
-		ID:        doc.ID,
-		Type:      doc.Type,
-		Name:      doc.Name,
-		SiteID:    doc.SiteID,
-		UserCount: doc.UserCount,
-	}, nil
+	return roommetacache.FetchFromMongo(ctx, m.roomCol, roomID)
 }
 
 func (m *mongoStore) UpdateRoomLastMessage(ctx context.Context, roomID, msgID string, msgAt time.Time, mentionAll bool) error {

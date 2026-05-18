@@ -19,6 +19,9 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/hmchangw/chat/pkg/model"
@@ -122,4 +125,76 @@ func (c *Cache) Stats() Stats {
 // plugs in without an interface change.
 func (c *Cache) Invalidate(roomID string) {
 	c.lru.Remove(roomID)
+}
+
+// MetaProvider is the minimal interface implemented by any type that
+// can fetch a Meta. WrapStore consumes this constraint.
+type MetaProvider interface {
+	GetRoomMeta(ctx context.Context, roomID string) (Meta, error)
+}
+
+// Wrapper caches GetRoomMeta calls for an underlying MetaProvider. The
+// inner provider is stored in the exported S field so callers can access
+// all other methods of the underlying store via S.
+//
+// Note: Go's type system does not allow embedding a type parameter, so
+// method promotion is not automatic. Callers that need the full service
+// Store interface should compose a local struct that embeds the inner
+// store for its other methods and delegates GetRoomMeta to a *Wrapper.
+// See newCachedMetaStore in broadcast-worker/metacache.go for the pattern.
+type Wrapper[S MetaProvider] struct {
+	// S is the underlying MetaProvider. Exported so service adapters can
+	// embed it alongside the *Wrapper.
+	S     S
+	cache *Cache
+}
+
+// WrapStore builds a Wrapper[S] that caches GetRoomMeta calls. size and
+// ttl are passed directly to the underlying Cache and must be positive.
+func WrapStore[S MetaProvider](inner S, size int, ttl time.Duration) (*Wrapper[S], error) {
+	loader := func(ctx context.Context, roomID string) (Meta, error) {
+		return inner.GetRoomMeta(ctx, roomID)
+	}
+	cache, err := New(size, ttl, loader)
+	if err != nil {
+		return nil, err
+	}
+	return &Wrapper[S]{S: inner, cache: cache}, nil
+}
+
+// GetRoomMeta serves from the cache, falling through to the underlying
+// MetaProvider on miss.
+func (w *Wrapper[S]) GetRoomMeta(ctx context.Context, roomID string) (Meta, error) {
+	return w.cache.Get(ctx, roomID)
+}
+
+// FetchFromMongo runs the canonical projected FindOne against a rooms
+// collection and decodes into Meta. Both gatekeeper and broadcast-worker
+// store implementations call this so the projection key set stays in one
+// place. The returned error wraps mongo.ErrNoDocuments on miss and is
+// safe to errors.Is-check.
+func FetchFromMongo(ctx context.Context, rooms *mongo.Collection, roomID string) (Meta, error) {
+	opts := options.FindOne().SetProjection(bson.M{
+		"type":      1,
+		"name":      1,
+		"siteId":    1,
+		"userCount": 1,
+	})
+	var doc struct {
+		ID        string         `bson:"_id"`
+		Type      model.RoomType `bson:"type"`
+		Name      string         `bson:"name"`
+		SiteID    string         `bson:"siteId"`
+		UserCount int            `bson:"userCount"`
+	}
+	if err := rooms.FindOne(ctx, bson.M{"_id": roomID}, opts).Decode(&doc); err != nil {
+		return Meta{}, fmt.Errorf("fetch room meta %s: %w", roomID, err)
+	}
+	return Meta{
+		ID:        doc.ID,
+		Type:      doc.Type,
+		Name:      doc.Name,
+		SiteID:    doc.SiteID,
+		UserCount: doc.UserCount,
+	}, nil
 }

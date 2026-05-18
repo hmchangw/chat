@@ -7,7 +7,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
@@ -38,27 +37,5 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 }
 
 func (s *MongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-	opts := options.FindOne().SetProjection(bson.M{
-		"type":      1,
-		"name":      1,
-		"siteId":    1,
-		"userCount": 1,
-	})
-	var doc struct {
-		ID        string         `bson:"_id"`
-		Type      model.RoomType `bson:"type"`
-		Name      string         `bson:"name"`
-		SiteID    string         `bson:"siteId"`
-		UserCount int            `bson:"userCount"`
-	}
-	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}, opts).Decode(&doc); err != nil {
-		return roommetacache.Meta{}, fmt.Errorf("get room meta %q: %w", roomID, err)
-	}
-	return roommetacache.Meta{
-		ID:        doc.ID,
-		Type:      doc.Type,
-		Name:      doc.Name,
-		SiteID:    doc.SiteID,
-		UserCount: doc.UserCount,
-	}, nil
+	return roommetacache.FetchFromMongo(ctx, s.rooms, roomID)
 }

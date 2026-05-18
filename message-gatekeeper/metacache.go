@@ -2,30 +2,28 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
-// cachedMetaStore wraps a Store with a roommetacache.Cache for room
-// metadata. GetSubscription passes through to the inner store.
+// cachedMetaStore wraps a Store with a roommetacache.Cache in front of
+// GetRoomMeta. GetSubscription passes through to the inner store via the
+// embedded Store field.
 type cachedMetaStore struct {
 	Store
-	cache *roommetacache.Cache
+	cache *roommetacache.Wrapper[Store]
 }
 
 func newCachedMetaStore(inner Store, size int, ttl time.Duration) (*cachedMetaStore, error) {
-	loader := func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-		return inner.GetRoomMeta(ctx, roomID)
-	}
-	cache, err := roommetacache.New(size, ttl, loader)
+	w, err := roommetacache.WrapStore(inner, size, ttl)
 	if err != nil {
-		return nil, fmt.Errorf("build room meta cache: %w", err)
+		return nil, err
 	}
-	return &cachedMetaStore{Store: inner, cache: cache}, nil
+	return &cachedMetaStore{Store: w.S, cache: w}, nil
 }
 
+// GetRoomMeta serves from the cache, falling through to the inner store on miss.
 func (c *cachedMetaStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-	return c.cache.Get(ctx, roomID)
+	return c.cache.GetRoomMeta(ctx, roomID)
 }

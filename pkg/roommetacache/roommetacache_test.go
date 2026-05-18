@@ -15,6 +15,17 @@ import (
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
+// stubProvider is a minimal MetaProvider used by WrapStore tests.
+type stubProvider struct {
+	calls atomic.Int32
+	meta  roommetacache.Meta
+}
+
+func (s *stubProvider) GetRoomMeta(_ context.Context, _ string) (roommetacache.Meta, error) {
+	s.calls.Add(1)
+	return s.meta, nil
+}
+
 func makeMeta(id string) roommetacache.Meta {
 	return roommetacache.Meta{
 		ID:        id,
@@ -188,4 +199,25 @@ func TestNew_RejectsInvalidArgs(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestWrapStore_CachesGetRoomMeta(t *testing.T) {
+	stub := &stubProvider{meta: makeMeta("r1")}
+	w, err := roommetacache.WrapStore(stub, 10, time.Minute)
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		got, err := w.GetRoomMeta(context.Background(), "r1")
+		require.NoError(t, err)
+		assert.Equal(t, makeMeta("r1"), got)
+	}
+	assert.Equal(t, int32(1), stub.calls.Load(), "wrapper should call inner exactly once across N hits")
+}
+
+func TestWrapStore_RejectsInvalidArgs(t *testing.T) {
+	stub := &stubProvider{}
+	_, err := roommetacache.WrapStore(stub, 0, time.Minute)
+	assert.Error(t, err)
+	_, err = roommetacache.WrapStore(stub, 10, 0)
+	assert.Error(t, err)
 }
