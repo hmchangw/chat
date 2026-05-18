@@ -3,6 +3,7 @@ package roomkeystore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +12,6 @@ import (
 )
 
 // redisAdapter wraps redis.UniversalClient to satisfy hashCommander.
-// UniversalClient transparently backs single-node, cluster, and sentinel
-// deployments — see NewValkeyStore for the mode-selection rule.
 type redisAdapter struct {
 	c redis.UniversalClient
 }
@@ -79,6 +78,9 @@ func (a *redisAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[st
 	if len(keys) == 0 {
 		return nil, nil
 	}
+	// Keys for different rooms hash to different cluster slots. Pipeline (not
+	// TxPipeline) is the right primitive here: ClusterClient.Pipeline fans out
+	// per-shard internally; TxPipeline would CROSSSLOT.
 	pipe := a.c.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(keys))
 	for i, k := range keys {
@@ -103,9 +105,6 @@ func (a *redisAdapter) closeClient() error {
 }
 
 // NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
-//
-// cfg.Addrs is a seed list — single-entry → single-node client, multi-entry →
-// cluster client (selected automatically by go-redis's NewUniversalClient).
 func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	if len(cfg.Addrs) == 0 {
 		return nil, fmt.Errorf("valkey connect: no addresses provided")
@@ -118,7 +117,7 @@ func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	defer cancel()
 	if err := c.Ping(ctx).Err(); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
-			_ = closeErr // best-effort cleanup; primary error is the ping
+			slog.Warn("valkey close after failed connect", "error", closeErr)
 		}
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}

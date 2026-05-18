@@ -37,12 +37,6 @@ type redisClient struct {
 // Connect dials Valkey/Redis, verifies connectivity with PING, and returns
 // a Client. Follows the same `fmt.Errorf("… connect: %w", err)` wrapping
 // style used by pkg/mongoutil so upstream logs are consistent.
-//
-// addrs is a seed list. One entry means a single Valkey/Redis node; two or
-// more means a cluster (go-redis picks the mode automatically via
-// NewUniversalClient). Callers in cluster deployments must ensure any
-// multi-key operation routes to a single slot — see hash-tag usage in
-// pkg/roomkeystore for the pattern.
 func Connect(ctx context.Context, addrs []string, password string) (Client, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("valkey connect: no addresses provided")

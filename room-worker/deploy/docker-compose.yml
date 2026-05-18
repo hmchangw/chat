@@ -13,7 +13,6 @@ services:
       - MONGO_DB=chat
       # Valkey is required (room-worker refuses to start without VALKEY_ADDRS).
       # Provided by docker-local/compose.deps.yaml; production deploys must supply it externally.
-      # Cluster mode: comma-separate seed nodes, e.g. host1:6379,host2:6379,host3:6379.
       - VALKEY_ADDRS=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
       - BOOTSTRAP_STREAMS=true

@@ -90,7 +90,6 @@ func roomkey(roomID string) string {
 }
 
 // roomprevkey returns the Valkey hash key for a room's previous key pair.
-// Shares the same {roomID} hash tag as roomkey — see roomkey doc.
 func roomprevkey(roomID string) string {
 	return "room:{" + roomID + "}:key:prev"
 }
