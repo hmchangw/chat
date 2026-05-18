@@ -291,6 +291,9 @@ func (g *Generator) publishOne(ctx context.Context) {
 	g.cfg.Metrics.Published.WithLabelValues(
 		g.cfg.Preset.Name, phase, connID, rateBucketLabel(int(g.curRate.Load())),
 	).Inc()
+	if parentID != "" {
+		g.cfg.Metrics.ThreadMessages.WithLabelValues(g.cfg.Preset.Name).Inc()
+	}
 }
 
 func (g *Generator) content() string {

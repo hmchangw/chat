@@ -40,6 +40,10 @@ type Metrics struct {
 	// are set to 0 so the metric is always fully populated for Grafana
 	// state panels.
 	RunQuality *prometheus.GaugeVec
+	// ThreadMessages counts published messages that carry a ThreadParentMessageID
+	// (i.e., reply messages targeting a previously-published root). Label "preset"
+	// mirrors the loadgen_published_total label for easy join in Grafana.
+	ThreadMessages *prometheus.CounterVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -116,6 +120,13 @@ func NewMetrics() *Metrics {
 			Name: "loadgen_run_quality",
 			Help: "RUN QUALITY verdict; gauge of 1 for the active verdict, 0 otherwise.",
 		}, []string{"verdict"}),
+		ThreadMessages: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "loadgen_thread_messages_total",
+				Help: "Count of published messages that carry a ThreadParentMessageID (i.e., reply to a previous message).",
+			},
+			[]string{"preset"},
+		),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -125,6 +136,7 @@ func NewMetrics() *Metrics {
 		m.RunInfo, m.LivenessProbes,
 		m.OmissionDeficit,
 		m.RunQuality,
+		m.ThreadMessages,
 	)
 	return m
 }
