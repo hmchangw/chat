@@ -104,7 +104,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 
 	t.Logf("CCS fixture: starting valkey")
 	valkeyAddr := startValkey(t)
-	valkeyClient, err := valkeyutil.Connect(ctx, valkeyAddr, "")
+	valkeyClient, err := valkeyutil.Connect(ctx, []string{valkeyAddr}, "")
 	require.NoError(t, err, "connect valkey")
 	t.Cleanup(func() { valkeyutil.Disconnect(valkeyClient) })
 	t.Logf("CCS fixture: valkey at %s", valkeyAddr)

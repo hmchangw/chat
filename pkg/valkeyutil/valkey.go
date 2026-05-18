@@ -31,15 +31,24 @@ type Client interface {
 var ErrCacheMiss = errors.New("valkey: cache miss")
 
 type redisClient struct {
-	c *redis.Client
+	c redis.UniversalClient
 }
 
 // Connect dials Valkey/Redis, verifies connectivity with PING, and returns
 // a Client. Follows the same `fmt.Errorf("… connect: %w", err)` wrapping
 // style used by pkg/mongoutil so upstream logs are consistent.
-func Connect(ctx context.Context, addr, password string) (Client, error) {
-	c := redis.NewClient(&redis.Options{
-		Addr:     addr,
+//
+// addrs is a seed list. One entry means a single Valkey/Redis node; two or
+// more means a cluster (go-redis picks the mode automatically via
+// NewUniversalClient). Callers in cluster deployments must ensure any
+// multi-key operation routes to a single slot — see hash-tag usage in
+// pkg/roomkeystore for the pattern.
+func Connect(ctx context.Context, addrs []string, password string) (Client, error) {
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("valkey connect: no addresses provided")
+	}
+	c := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs:    addrs,
 		Password: password,
 	})
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -53,7 +62,7 @@ func Connect(ctx context.Context, addr, password string) (Client, error) {
 		}
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
-	slog.Info("connected to Valkey", "addr", addr)
+	slog.Info("connected to Valkey", "addrs", addrs)
 	return &redisClient{c: c}, nil
 }
 

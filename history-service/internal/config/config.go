@@ -28,11 +28,13 @@ type NATSConfig struct {
 }
 
 // ValkeyConfig holds Valkey (Redis-compatible) connection settings.
-// Env vars: VALKEY_ADDR, VALKEY_PASSWORD
-// Addr is validated only when encryption is enabled (see main.go).
+// Env vars: VALKEY_ADDRS, VALKEY_PASSWORD
+// Addrs is validated only when encryption is enabled (see main.go).
+// Multiple comma-separated addresses select cluster mode automatically
+// via go-redis's NewUniversalClient.
 type ValkeyConfig struct {
-	Addr     string `env:"ADDR"`
-	Password string `env:"PASSWORD" envDefault:""`
+	Addrs    []string `env:"ADDRS" envSeparator:","`
+	Password string   `env:"PASSWORD" envDefault:""`
 }
 
 // EncryptionConfig gates the room-key (Valkey) connection and the

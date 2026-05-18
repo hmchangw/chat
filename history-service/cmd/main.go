@@ -84,12 +84,12 @@ func main() {
 
 	var keyStore roomkeystore.RoomKeyStore
 	if cfg.Encryption.Enabled {
-		if cfg.Valkey.Addr == "" {
-			slog.Error("encryption enabled but VALKEY_ADDR is empty")
+		if len(cfg.Valkey.Addrs) == 0 {
+			slog.Error("encryption enabled but VALKEY_ADDRS is empty")
 			os.Exit(1)
 		}
 		keyStore, err = roomkeystore.NewValkeyStore(roomkeystore.Config{
-			Addr:        cfg.Valkey.Addr,
+			Addrs:       cfg.Valkey.Addrs,
 			Password:    cfg.Valkey.Password,
 			GracePeriod: 0, // history-service never rotates keys; grace period is irrelevant
 		})

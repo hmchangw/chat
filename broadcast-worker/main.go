@@ -38,7 +38,7 @@ type config struct {
 	MaxWorkers           int                     `env:"MAX_WORKERS"               envDefault:"100"`
 	UserCacheSize        int                     `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration           `env:"USER_CACHE_TTL"            envDefault:"5m"`
-	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
+	ValkeyAddrs          []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
@@ -80,14 +80,14 @@ func main() {
 
 	var keyStore roomkeystore.RoomKeyStore
 	if cfg.Encryption.Enabled {
-		if cfg.ValkeyAddr == "" || cfg.ValkeyKeyGracePeriod <= 0 {
-			slog.Error("encryption enabled but VALKEY_ADDR is empty or VALKEY_KEY_GRACE_PERIOD is not a positive duration",
-				"valkey_addr_set", cfg.ValkeyAddr != "",
+		if len(cfg.ValkeyAddrs) == 0 || cfg.ValkeyKeyGracePeriod <= 0 {
+			slog.Error("encryption enabled but VALKEY_ADDRS is empty or VALKEY_KEY_GRACE_PERIOD is not a positive duration",
+				"valkey_addrs_set", len(cfg.ValkeyAddrs) > 0,
 				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
 			os.Exit(1)
 		}
 		keyStore, err = roomkeystore.NewValkeyStore(roomkeystore.Config{
-			Addr:        cfg.ValkeyAddr,
+			Addrs:       cfg.ValkeyAddrs,
 			Password:    cfg.ValkeyPassword,
 			GracePeriod: cfg.ValkeyKeyGracePeriod,
 		})
