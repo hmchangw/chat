@@ -2,13 +2,36 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
+	"math"
 	"math/rand"
 	randv2 "math/rand/v2"
 	"sort"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
+
+// pickDMPairs picks n distinct unordered user pairs deterministically by
+// iterating in (i, j) order where i < j. If n exceeds C(len(users), 2), the
+// available pairs are returned and a warning is logged. The rng parameter is
+// accepted for API symmetry with callers that own a seeded source; the pair
+// selection itself is deterministic (first-n in i<j order) so two calls with
+// the same user slice and n always return the same pairs.
+func pickDMPairs(users []model.User, n int, _ *rand.Rand) [][2]model.User {
+	pairs := make([][2]model.User, 0, n)
+	for i := 0; i < len(users) && len(pairs) < n; i++ {
+		for j := i + 1; j < len(users) && len(pairs) < n; j++ {
+			pairs = append(pairs, [2]model.User{users[i], users[j]})
+		}
+	}
+	if len(pairs) < n {
+		slog.Warn("requested more DM rooms than user pairs allow",
+			"requested", n, "available", len(pairs), "users", len(users))
+	}
+	return pairs
+}
 
 // Distribution names the shape of a per-preset random selection.
 type Distribution string
@@ -114,6 +137,12 @@ type Preset struct {
 	// identifiable in forensic checks of the loadgen Mongo database.
 	// Zero value = no prefix.
 	WriteIDPrefix string
+
+	// DMRatio is the fraction of messages published to DM rooms vs channel
+	// rooms by the messaging-pipeline scenario. 0.0 = all channel, 1.0 = all
+	// DM. The seed step provisions DM rooms in proportion: round(Rooms×DMRatio)
+	// DM rooms + remainder channel rooms. Zero value = all channel (no DM rooms).
+	DMRatio float64
 }
 
 var builtinPresets = map[string]Preset{
@@ -138,6 +167,23 @@ var builtinPresets = map[string]Preset{
 		ContentBytes: Range{Min: 50, Max: 2000},
 		MentionRate:  0.10,
 		ThreadRate:   0.05,
+		DMRatio:      0.6,
+	},
+	"channel-heavy": {
+		Name: "channel-heavy", Users: 1000, Rooms: 100,
+		RoomSizeDist: DistMixed, SenderDist: DistZipf,
+		ContentBytes: Range{Min: 50, Max: 2000},
+		MentionRate:  0.10,
+		ThreadRate:   0.05,
+		DMRatio:      0.1,
+	},
+	"dm-heavy": {
+		Name: "dm-heavy", Users: 200, Rooms: 100,
+		RoomSizeDist: DistMixed, SenderDist: DistZipf,
+		ContentBytes: Range{Min: 50, Max: 2000},
+		MentionRate:  0.10,
+		ThreadRate:   0.05,
+		DMRatio:      0.85,
 	},
 	"history-read": {
 		Name: "history-read", Users: 10, Rooms: 5,
@@ -268,31 +314,49 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 		}
 	}
 
-	rooms := make([]model.Room, p.Rooms)
-	// realistic: last 10% of rooms are DMs
-	dmStart := p.Rooms
-	if p.RoomSizeDist == DistMixed {
-		dmStart = p.Rooms - p.Rooms/10
-	}
-	for i := 0; i < p.Rooms; i++ {
-		rtype := model.RoomTypeChannel
-		if i >= dmStart {
-			rtype = model.RoomTypeDM
-		}
-		rooms[i] = model.Room{
+	// Split rooms by DMRatio: dmCount = round(Rooms × DMRatio), channels = remainder.
+	dmCount := int(math.Round(float64(p.Rooms) * p.DMRatio))
+	channelCount := p.Rooms - dmCount
+
+	rooms := make([]model.Room, 0, p.Rooms)
+
+	// Build channel rooms first.
+	for i := 0; i < channelCount; i++ {
+		rooms = append(rooms, model.Room{
 			ID:        fmt.Sprintf("room-%06d", i),
 			Name:      fmt.Sprintf("room-%d", i),
-			Type:      rtype,
+			Type:      model.RoomTypeChannel,
 			SiteID:    siteID,
 			UserCount: 0, // filled after membership
 			CreatedAt: now,
 			UpdatedAt: now,
-		}
+		})
+	}
+
+	// Build DM rooms using deterministic sorted-pair IDs from idgen.
+	dmPairs := pickDMPairs(users, dmCount, r)
+	for k := range dmPairs {
+		rooms = append(rooms, model.Room{
+			ID:        idgen.BuildDMRoomID(dmPairs[k][0].ID, dmPairs[k][1].ID),
+			Name:      fmt.Sprintf("dm-%s-%s", dmPairs[k][0].ID, dmPairs[k][1].ID),
+			Type:      model.RoomTypeDM,
+			SiteID:    siteID,
+			UserCount: 2,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
 	}
 
 	var subs []model.Subscription
 	for i := range rooms {
-		members := pickMembers(r, p, i, p.Rooms, &rooms[i], users)
+		var members []model.User
+		if rooms[i].Type == model.RoomTypeDM {
+			// DM rooms: members are the pair stored in dmPairs; reconstruct from index.
+			pairIdx := i - channelCount
+			members = []model.User{dmPairs[pairIdx][0], dmPairs[pairIdx][1]}
+		} else {
+			members = pickMembers(r, p, i, channelCount, &rooms[i], users)
+		}
 		rooms[i].UserCount = len(members)
 		for j := range members {
 			subs = append(subs, model.Subscription{

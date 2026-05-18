@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -102,6 +103,12 @@ type Summary struct {
 	// EvaluateRunQuality. Printed at the very top of the summary so the
 	// operator sees the verdict before the latency/throughput numbers.
 	RunQualityVerdict RunQualityVerdict
+
+	// SentByRoomType tracks how many messages were published to each room
+	// type (keys: "channel", "dm") during the measured window. Populated by
+	// executeRun from Prometheus counters; nil when no per-type breakdown is
+	// available (e.g. presets with DMRatio=0 and no DM rooms).
+	SentByRoomType map[string]int64
 }
 
 // PrintSummary writes the terminal summary to w using text/tabwriter.
@@ -132,7 +139,17 @@ func PrintSummary(w io.Writer, s *Summary) error {
 	fmt.Fprintf(w, "  missing replies:   %d\n", s.MissingReplies)
 	fmt.Fprintf(w, "  missing broadcasts:%d\n", s.MissingBroadcasts)
 	fmt.Fprintf(w, "  omission p99 (serviced): %v\n", s.OmissionServicedP99)
-	fmt.Fprintf(w, "  omission p99 (dropped):  %v\n\n", s.OmissionDroppedP99)
+	fmt.Fprintf(w, "  omission p99 (dropped):  %v\n", s.OmissionDroppedP99)
+	if len(s.SentByRoomType) > 0 {
+		parts := make([]string, 0, len(s.SentByRoomType))
+		for _, k := range []string{"channel", "dm"} {
+			if v, ok := s.SentByRoomType[k]; ok {
+				parts = append(parts, fmt.Sprintf("%s=%d", k, v))
+			}
+		}
+		fmt.Fprintf(w, "  Sent breakdown: %s\n", strings.Join(parts, ", "))
+	}
+	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "latency (measured window only)")

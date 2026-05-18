@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	randv2 "math/rand/v2"
 	"strings"
 	"sync"
@@ -294,6 +295,30 @@ func (g *Generator) publishOne(ctx context.Context) {
 	if parentID != "" {
 		g.cfg.Metrics.ThreadMessages.WithLabelValues(g.cfg.Preset.Name).Inc()
 	}
+}
+
+// pickRoomByDMRatio selects a room from f.Rooms weighted by DMRatio:
+//   - with probability DMRatio, picks a DM room
+//   - with probability (1-DMRatio), picks a channel room
+//
+// Falls back to any room when the preferred type has no candidates.
+// The rng parameter is a *math/rand.Rand from the caller; call sites that
+// supply nil receive a panic — callers must provide a valid source.
+func pickRoomByDMRatio(p *Preset, f *Fixtures, rng *rand.Rand) *model.Room {
+	wantDM := rng.Float64() < p.DMRatio
+	candidates := make([]*model.Room, 0, len(f.Rooms))
+	for i := range f.Rooms {
+		isDM := f.Rooms[i].Type == model.RoomTypeDM
+		if (wantDM && isDM) || (!wantDM && !isDM) {
+			candidates = append(candidates, &f.Rooms[i])
+		}
+	}
+	if len(candidates) == 0 {
+		// Fallback: return any room to avoid panic when the fixture set has
+		// only one room type (e.g. DMRatio=0.9 but no DM rooms seeded yet).
+		return &f.Rooms[rng.Intn(len(f.Rooms))]
+	}
+	return candidates[rng.Intn(len(candidates))]
 }
 
 func (g *Generator) content() string {
