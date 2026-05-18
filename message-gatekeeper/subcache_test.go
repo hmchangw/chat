@@ -21,7 +21,7 @@ func TestCachedSubStore_HitMiss(t *testing.T) {
 	inner := NewMockStore(ctrl)
 
 	want := &model.Subscription{
-		User:  model.SubscriptionUser{Account: "alice"},
+		User:  model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 		Roles: []model.Role{model.RoleMember},
 	}
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
@@ -31,14 +31,41 @@ func TestCachedSubStore_HitMiss(t *testing.T) {
 
 	got, err := cached.GetSubscription(context.Background(), "alice", "r1")
 	require.NoError(t, err)
+	assert.Equal(t, "u-alice", got.User.ID)
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, []model.Role{model.RoleMember}, got.Roles)
 
 	// Second call: cache hit, inner not called again.
 	got2, err := cached.GetSubscription(context.Background(), "alice", "r1")
 	require.NoError(t, err)
+	assert.Equal(t, "u-alice", got2.User.ID)
 	assert.Equal(t, "alice", got2.User.Account)
 	assert.Equal(t, []model.Role{model.RoleMember}, got2.Roles)
+}
+
+func TestCachedSubStore_PreservesUserID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockStore(ctrl)
+
+	want := &model.Subscription{
+		User:  model.SubscriptionUser{ID: "u-alice-123", Account: "alice"},
+		Roles: []model.Role{model.RoleMember},
+	}
+	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
+
+	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	require.NoError(t, err)
+
+	// Miss path: populates the cache.
+	got, err := cached.GetSubscription(context.Background(), "alice", "r1")
+	require.NoError(t, err)
+	assert.Equal(t, "u-alice-123", got.User.ID, "User.ID must survive cache write")
+	assert.Equal(t, "alice", got.User.Account)
+
+	// Hit path: must also return User.ID, not empty string.
+	got2, err := cached.GetSubscription(context.Background(), "alice", "r1")
+	require.NoError(t, err)
+	assert.Equal(t, "u-alice-123", got2.User.ID, "User.ID must survive cache hit — empty here would corrupt downstream messages")
 }
 
 func TestCachedSubStore_NotSubscribedNotCached(t *testing.T) {

@@ -16,8 +16,10 @@ import (
 // cachedSubscription is the projection of model.Subscription that
 // gatekeeper actually reads on the hot path. Caching only these fields
 // (vs the full doc) keeps the cache tight and makes the contract
-// explicit at the cache boundary.
+// explicit at the cache boundary. ID is the user's entity ID (used by
+// the handler to populate msg.UserID on the canonical message event).
 type cachedSubscription struct {
+	ID      string
 	Account string
 	Roles   []model.Role
 }
@@ -72,6 +74,7 @@ func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID st
 			return nil, err
 		}
 		projected := cachedSubscription{
+			ID:      sub.User.ID,
 			Account: sub.User.Account,
 			Roles:   append([]model.Role(nil), sub.Roles...),
 		}
@@ -88,12 +91,12 @@ func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID st
 }
 
 // fromCached builds a partial *model.Subscription from the cached
-// projection. Only the fields gatekeeper reads (User.Account, Roles)
-// are populated; other fields are zero. This is intentional — the
-// cache contract is the projection, not the full doc.
+// projection. Only the fields gatekeeper reads (User.ID, User.Account,
+// Roles) are populated; other fields are zero. This is intentional —
+// the cache contract is the projection, not the full doc.
 func fromCached(c cachedSubscription) *model.Subscription {
 	return &model.Subscription{
-		User:  model.SubscriptionUser{Account: c.Account},
+		User:  model.SubscriptionUser{ID: c.ID, Account: c.Account},
 		Roles: append([]model.Role(nil), c.Roles...),
 	}
 }
