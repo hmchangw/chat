@@ -76,6 +76,12 @@ type Metrics struct {
 	// the delivery channel: "inapp" (Phase 3.4a, unconditional), "push" and
 	// "email" (Phase 3.4b, gated on notif_routing_ready build tag).
 	NotificationLag *prometheus.HistogramVec
+	// SubsChurn records per-action latency for the subscription-churn scenario
+	// (Phase 3 §3.7). Label "action" is "join" or "leave".
+	SubsChurn *prometheus.HistogramVec
+	// SubsChurnTotal counts subscription churn actions by action+outcome.
+	// Labels: "action" (join|leave), "outcome" (ok|error).
+	SubsChurnTotal *prometheus.CounterVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -205,6 +211,15 @@ func NewMetrics() *Metrics {
 			Help:    "Notification publish→subscriber-receipt lag, by channel (inapp|push|email).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
 		}, []string{"channel"}),
+		SubsChurn: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "loadgen_subs_churn_seconds",
+			Help:    "Per-action latency for subscription-churn scenario.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms … ~16s
+		}, []string{"action"}),
+		SubsChurnTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loadgen_subs_churn_total",
+			Help: "Count of subscription churn actions by action+outcome.",
+		}, []string{"action", "outcome"}),
 	}
 	r.MustRegister(
 		m.Published, m.PublishErrors,
@@ -221,6 +236,7 @@ func NewMetrics() *Metrics {
 		m.MessageRead,
 		m.LargeRoomReceive, m.LargeRoomCompletion,
 		m.NotificationLag,
+		m.SubsChurn, m.SubsChurnTotal,
 	)
 	return m
 }

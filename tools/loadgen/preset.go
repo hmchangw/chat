@@ -13,6 +13,50 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+// churnFixturePrefix is the ID prefix used for the dedicated subscription-churn
+// user/room pool. Using a distinct prefix ensures these fixtures are trivially
+// distinguishable from the main preset pool and are not selected by other
+// scenarios.
+const churnFixturePrefix = "loadgen-churn-"
+
+// churnFixtureUsers is the number of users added to the churn pool.
+const churnFixtureUsers = 50
+
+// churnFixtureRooms is the number of rooms added to the churn pool.
+const churnFixtureRooms = 20
+
+// augmentWithChurnFixtures appends a dedicated user/room pool prefixed with
+// "loadgen-churn-" to f for the subscription-churn scenario. The added users
+// and rooms are append-only — existing fixtures are preserved. No Subscriptions
+// are added; the scenario builds them dynamically via the state machine.
+//
+// The seed and preset parameters are accepted for API symmetry with BuildFixtures
+// callers; the churn pool is fixed-size and does not vary by preset.
+func augmentWithChurnFixtures(f *Fixtures, _ *Preset, _ int64) Fixtures {
+	for i := 0; i < churnFixtureUsers; i++ {
+		id := churnFixturePrefix + "user-" + padInt(i)
+		f.Users = append(f.Users, model.User{
+			ID:      id,
+			Account: id,
+		})
+	}
+	for i := 0; i < churnFixtureRooms; i++ {
+		id := churnFixturePrefix + "room-" + padInt(i)
+		f.Rooms = append(f.Rooms, model.Room{
+			ID:   id,
+			Type: model.RoomTypeChannel,
+		})
+	}
+	// Note: NO Subscriptions added — the scenario builds them dynamically.
+	return *f
+}
+
+// padInt formats i as a zero-padded 7-digit string, matching the fixture ID
+// convention used in BuildFixtures (e.g. "0000001").
+func padInt(i int) string {
+	return fmt.Sprintf("%07d", i)
+}
+
 // pickDMPairs picks n distinct unordered user pairs deterministically by
 // iterating in (i, j) order where i < j. If n exceeds C(len(users), 2), the
 // available pairs are returned and a warning is logged. The rng parameter is

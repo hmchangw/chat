@@ -88,6 +88,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		"mint placeholder JWTs for fixture users into runs/<run_id>/creds/ (Phase 3.8 will replace with real signed JWTs via auth-service admin RPC)")
 	withFederation := fs.Bool("with-federation", false,
 		"provision placeholder federation NKeys into runs/<run_id>/creds/ (Phase 3.9 will replace with real NKey generation)")
+	includeChurn := fs.Bool("include-churn-fixtures", false,
+		"subscription-churn scenario: provision a dedicated loadgen-churn- prefixed user/room pool alongside the main fixtures")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -110,6 +112,9 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	defer mongoutil.Disconnect(ctx, client)
 	db := client.Database(cfg.MongoDB)
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+	if *includeChurn {
+		fixtures = augmentWithChurnFixtures(&fixtures, &p, *seed)
+	}
 	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
 		return 1

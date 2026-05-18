@@ -92,10 +92,10 @@ func TestPublishOne_HonorsThreadRate(t *testing.T) {
 func idgenMessageID(i int) string {
 	// 20-char base62-style placeholder — real IDs are 20-char base62 via
 	// idgen.GenerateMessageID() but we only need non-empty strings here.
-	return "testmsg" + padInt(i, 13)
+	return "testmsg" + padIntWidth(i, 13)
 }
 
-func padInt(n, width int) string {
+func padIntWidth(n, width int) string {
 	s := ""
 	for n > 0 || width > 0 {
 		s = string(rune('0'+n%10)) + s
