@@ -55,6 +55,9 @@ interface RoomEventsState {
   roomState: Record<string, RoomBufferState>
   activeRoomId: string | null
   roomsError: string | null
+  /** Monotonic counter bumped on every accepted MESSAGE_RECEIVED.
+   *  Drives the unread badge's debounced refetch (see useUnreadCount). */
+  msgRecvSeq: number
   favoriteIds: Set<string>
   appIds: Set<string>
   channelDmIds: Set<string>
@@ -238,7 +241,7 @@ export function useRoomSummaries() {
 export function useUnreadCount(): number {
   const nats = useNats() as unknown as Nats
   const { state } = useRoomEventsInternal()
-  return useUnreadCountQuery(nats, state.activeRoomId)
+  return useUnreadCountQuery(nats, state.activeRoomId, state.msgRecvSeq)
 }
 
 export function useRoomDispatch(): RoomEventsContextValue['dispatch'] {

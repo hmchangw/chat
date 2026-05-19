@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useUnreadCount } from './useUnreadCount'
 import { getUnreadCount } from '@/api'
@@ -56,5 +56,54 @@ describe('useUnreadCount', () => {
     // The first (stale) fetch resolves late — must be ignored.
     await act(async () => { resolveFirst({ count: 999 }) })
     expect(result.current).toBe(7)
+  })
+
+  describe('message-driven refetch (msgRecvSeq)', () => {
+    beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
+    afterEach(() => vi.useRealTimers())
+
+    it('refetches 500ms after msgRecvSeq changes', async () => {
+      getUnreadCount.mockResolvedValue({ count: 1 })
+      const { rerender } = renderHook(
+        ({ seq }) => useUnreadCount(nats, 'r1', seq),
+        { initialProps: { seq: 0 } },
+      )
+      await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
+
+      rerender({ seq: 1 })
+      // Not yet — debounce window hasn't elapsed.
+      await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+      expect(getUnreadCount).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(getUnreadCount).toHaveBeenCalledTimes(2)
+    })
+
+    it('collapses a burst of msgRecvSeq bumps into one refetch', async () => {
+      getUnreadCount.mockResolvedValue({ count: 1 })
+      const { rerender } = renderHook(
+        ({ seq }) => useUnreadCount(nats, 'r1', seq),
+        { initialProps: { seq: 0 } },
+      )
+      await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
+
+      rerender({ seq: 1 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      rerender({ seq: 2 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      rerender({ seq: 3 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+
+      // Mount fetch + exactly one debounced refetch for the whole burst.
+      expect(getUnreadCount).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not schedule a refetch when msgRecvSeq stays 0', async () => {
+      getUnreadCount.mockResolvedValue({ count: 1 })
+      renderHook(() => useUnreadCount(nats, 'r1', 0))
+      await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(getUnreadCount).toHaveBeenCalledTimes(1)
+    })
   })
 })
