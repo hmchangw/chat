@@ -25,6 +25,22 @@ client
 - Auth benchmark. Uses shared `backend.creds` like existing loadgen.
 - Cross-machine absolute-number comparisons. Within-machine A/B only.
 
+## v1 scope
+
+The first cut implements `--shape=users` only. The `Shape` enum, flag,
+and validation are in place from the start so adding `orgs` / `channels` /
+`mixed` is a small follow-up plan, but the v1 plan does not seed an org
+pool or a source-channel pool, and the request builder only emits
+user-account lists.
+
+Rationale: E2 correlation by `(roomID, sortedSentAccounts)` works
+trivially for `shape=users` because room-worker's `actualAccounts` matches
+what the tool sent (the candidate pool guarantees no overlap with existing
+members). For `shape=orgs` and `shape=channels`, room-worker re-resolves
+the expansion on its own, so the tool would have to pre-resolve and track
+expected accounts per request — workable but doubles the fixture-builder
+surface area. Defer until users-shape numbers point at a real question.
+
 ## Architecture
 
 Two new subcommands on `tools/loadgen`, sharing the existing NATS connect,
