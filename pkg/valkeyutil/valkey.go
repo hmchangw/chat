@@ -44,6 +44,8 @@ func ConnectCluster(ctx context.Context, addrs []string, password string) (Clien
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := c.Ping(pingCtx).Err(); err != nil {
+		// Close the half-constructed client on the ping-failure path so
+		// unreachable addrs don't leak internal go-redis pool state.
 		if closeErr := c.Close(); closeErr != nil {
 			slog.Warn("valkey cluster close after failed connect", "error", closeErr)
 		}
