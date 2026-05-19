@@ -295,11 +295,11 @@ func TestValkeyStore_Integration_GetMany(t *testing.T) {
 }
 
 // setupValkeyCluster starts a Valkey node in cluster mode, assigns all 16384 hash
-// slots to the single node, and returns a RoomKeyStore backed by clusterAdapter
+// slots to the single node, and returns a RoomKeyStore backed by universalAdapter
 // plus the raw ClusterClient (needed for CLUSTER KEYSLOT assertions).
 //
 // Using valkey/valkey:8 with --cluster-enabled avoids the multi-container discovery
-// problem of bitnami/valkey-cluster while still exercising the full clusterAdapter
+// problem of bitnami/valkey-cluster while still exercising the full universalAdapter
 // code path and Lua rotate script on a cluster-mode Valkey instance.
 // ClusterSlots is overridden to point go-redis at the externally-mapped address
 // rather than the 127.0.0.1:6379 the node announces internally.
@@ -364,7 +364,7 @@ func setupValkeyCluster(t *testing.T, gracePeriod time.Duration) (RoomKeyStore, 
 	require.NoError(t, c.Ping(pingCtx).Err(), "ping valkey cluster")
 
 	store := &valkeyStore{
-		client:      &clusterAdapter{c: c},
+		client:      &universalAdapter{c: c},
 		closer:      c,
 		gracePeriod: gracePeriod,
 	}

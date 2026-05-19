@@ -20,7 +20,7 @@ import (
 )
 
 // setupClusterClient starts a single-node cluster-mode Valkey container and
-// returns a Client backed by clusterRedisClient. ConnectCluster itself cannot
+// returns a Client backed by universalClient. ConnectCluster itself cannot
 // be used here because its default auto-discovery follows CLUSTER SLOTS, which
 // returns the container-internal 127.0.0.1:6379 — unreachable from the host.
 // Instead we apply the ClusterSlots override so go-redis routes all commands
@@ -81,7 +81,7 @@ func setupClusterClient(t *testing.T) Client {
 	defer cancel()
 	require.NoError(t, c.Ping(pingCtx).Err(), "ping valkey cluster")
 
-	return &clusterRedisClient{c: c}
+	return &universalClient{c: c}
 }
 
 func TestClusterRedisClient_Integration_GetSetDel(t *testing.T) {

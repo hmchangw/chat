@@ -30,8 +30,10 @@ type Client interface {
 // ErrCacheMiss is returned by Get and GetJSON when the key does not exist.
 var ErrCacheMiss = errors.New("valkey: cache miss")
 
-type redisClient struct {
-	c *redis.Client
+// universalClient wraps redis.UniversalClient (implemented by both
+// *redis.Client and *redis.ClusterClient) to satisfy Client.
+type universalClient struct {
+	c redis.UniversalClient
 }
 
 // Connect dials Valkey/Redis, verifies connectivity with PING, and returns
@@ -54,7 +56,7 @@ func Connect(ctx context.Context, addr, password string) (Client, error) {
 		return nil, fmt.Errorf("valkey connect: %w", err)
 	}
 	slog.Info("connected to Valkey", "addr", addr)
-	return &redisClient{c: c}, nil
+	return &universalClient{c: c}, nil
 }
 
 // Disconnect closes the client and logs any failure at ERROR.
@@ -67,7 +69,7 @@ func Disconnect(client Client) {
 	}
 }
 
-func (r *redisClient) Get(ctx context.Context, key string) (string, error) {
+func (r *universalClient) Get(ctx context.Context, key string) (string, error) {
 	val, err := r.c.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", ErrCacheMiss
@@ -78,14 +80,14 @@ func (r *redisClient) Get(ctx context.Context, key string) (string, error) {
 	return val, nil
 }
 
-func (r *redisClient) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+func (r *universalClient) Set(ctx context.Context, key, value string, ttl time.Duration) error {
 	if err := r.c.Set(ctx, key, value, ttl).Err(); err != nil {
 		return fmt.Errorf("valkey set: %w", err)
 	}
 	return nil
 }
 
-func (r *redisClient) Del(ctx context.Context, keys ...string) error {
+func (r *universalClient) Del(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -95,13 +97,8 @@ func (r *redisClient) Del(ctx context.Context, keys ...string) error {
 	return nil
 }
 
-func (r *redisClient) Close() error {
+func (r *universalClient) Close() error {
 	return r.c.Close()
-}
-
-// clusterRedisClient wraps *redis.ClusterClient to satisfy Client.
-type clusterRedisClient struct {
-	c *redis.ClusterClient
 }
 
 // ConnectCluster dials a Valkey cluster via the provided seed addresses,
@@ -120,39 +117,7 @@ func ConnectCluster(ctx context.Context, addrs []string, password string) (Clien
 		return nil, fmt.Errorf("valkey cluster connect: %w", err)
 	}
 	slog.Info("connected to Valkey cluster", "addrs", addrs)
-	return &clusterRedisClient{c: c}, nil
-}
-
-func (r *clusterRedisClient) Get(ctx context.Context, key string) (string, error) {
-	val, err := r.c.Get(ctx, key).Result()
-	if errors.Is(err, redis.Nil) {
-		return "", ErrCacheMiss
-	}
-	if err != nil {
-		return "", fmt.Errorf("valkey get: %w", err)
-	}
-	return val, nil
-}
-
-func (r *clusterRedisClient) Set(ctx context.Context, key, value string, ttl time.Duration) error {
-	if err := r.c.Set(ctx, key, value, ttl).Err(); err != nil {
-		return fmt.Errorf("valkey set: %w", err)
-	}
-	return nil
-}
-
-func (r *clusterRedisClient) Del(ctx context.Context, keys ...string) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	if err := r.c.Del(ctx, keys...).Err(); err != nil {
-		return fmt.Errorf("valkey del: %w", err)
-	}
-	return nil
-}
-
-func (r *clusterRedisClient) Close() error {
-	return r.c.Close()
+	return &universalClient{c: c}, nil
 }
 
 // GetJSON reads `key` from Valkey and unmarshals the stored JSON into
