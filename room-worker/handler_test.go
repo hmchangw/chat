@@ -1391,7 +1391,10 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 // TestHandler_ProcessAddMembers_OrgToIndividualUpgrade verifies the bug fix:
 // when an account already has a subscription (e.g. added earlier via org) but
 // no individual room_members row, an explicit add via req.Users must write the
-// missing individual row WITHOUT creating a duplicate subscription.
+// missing individual row WITHOUT creating a duplicate subscription. It also
+// verifies that no MsgCanonicalCreated sys-msg and no MemberEvent are
+// published — the upgrade is a silent backfill, no membership state changed
+// for the room itself.
 func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -1435,7 +1438,6 @@ func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade(t *testing.T) {
 		},
 		keyStore: testKeyStore, keySender: testKeySender,
 	}
-	_ = published // present in case key rotation paths are wired in
 
 	req := model.AddMembersRequest{
 		RoomID: roomID, Users: []string{"alice"}, RequesterAccount: "owner", RequesterID: "u_owner",
@@ -1444,6 +1446,18 @@ func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade(t *testing.T) {
 	data, _ := json.Marshal(req)
 	err := h.processAddMembers(ctx, data)
 	require.NoError(t, err)
+
+	// No membership state changed for the room (only a silent individual-row
+	// backfill); the worker MUST NOT emit a sys-msg or member-add event that
+	// would render "added members to the channel" with an empty member list.
+	memberEventSubj := subject.RoomMemberEvent(roomID)
+	sysMsgSubj := subject.MsgCanonicalCreated("site-a")
+	for _, p := range published {
+		assert.NotEqual(t, memberEventSubj, p.subj,
+			"upgrade-only path must NOT publish MemberAddEvent")
+		assert.NotEqual(t, sysMsgSubj, p.subj,
+			"upgrade-only path must NOT publish a members_added sys-msg")
+	}
 }
 
 // Bug 4: outbox publish failure must propagate (NAK), not be swallowed.
@@ -2767,16 +2781,16 @@ func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
 	cases := []struct {
-		name           string
-		existing       model.Room
-		requesterIsSub bool // if true, store.GetSubscription returns a sub; else ErrSubscriptionNotFound
+		name     string
+		existing model.Room
 	}{
 		// Type and SiteID mismatches still trip the structural-compatibility guard.
-		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: ""}, true},
-		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: ""}, true},
-		// Structurally compatible but the requester is not a member of the
-		// existing room → unrelated DM that happens to share the ID.
-		{"requester not member", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: ""}, false},
+		// The structural check alone is sufficient: subscription writes are
+		// idempotent, so "requester not a member of existing room" is no longer
+		// a collision — it's a legitimate mid-write crash recovery case that
+		// the retry must complete by re-running BulkCreateSubscriptions.
+		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: ""}},
+		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2788,15 +2802,6 @@ func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
 			existing := tc.existing
 			store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&existing, nil)
-			// Only the requester-not-member case reaches GetSubscription
-			// (the structural guard short-circuits on type/site mismatch).
-			if existing.Type == model.RoomTypeDM && existing.SiteID == "site-a" {
-				if tc.requesterIsSub {
-					store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(&model.Subscription{}, nil)
-				} else {
-					store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(nil, model.ErrSubscriptionNotFound)
-				}
-			}
 
 			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 			data := marshalReq(t, req)
@@ -3101,7 +3106,10 @@ func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
 
 // On a CreateRoom dup-key with matching existing room (idempotent re-delivery),
 // the handler must reuse existing.CreatedAt as acceptedAt — sub.JoinedAt and event
-// timestamps reflect the original creation, not retry wall-clock.
+// timestamps reflect the original creation, not retry wall-clock. The structural
+// check (type + site match) is all that's verified — BulkCreateSubscriptions is
+// idempotent under the unique (roomId, u.account) index, so re-running it on
+// retry is safe whether or not the requester already had a sub.
 func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
@@ -3119,9 +3127,6 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 		Name:      "",
 		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
 	}, nil)
-	// Reconcile equivalence: requester already has a sub in the existing room
-	// (alice's worker raced and persisted both subs before bob's redelivery).
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(&model.Subscription{}, nil)
 
 	var captured []*model.Subscription
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).

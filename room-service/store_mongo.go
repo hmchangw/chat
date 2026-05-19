@@ -166,18 +166,29 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 			"pipeline": bson.A{
 				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": bson.A{"$account", "$$acct"}}}},
 				bson.M{"$limit": 1},
-				bson.M{"$project": bson.M{"sectId": 1}},
+				bson.M{"$project": bson.M{"sectId": 1, "deptId": 1}},
 			},
 			"as": "userDoc",
 		}}},
+		// Dept-aware org-membership lookup: a user added via Orgs:["X"] may
+		// match the org by deptId only (no sectId), so the room_members row
+		// has member.id = deptId. Checking only sectId would miss that case
+		// and report HasOrgMembership=false, leading the remove flow to drop
+		// the user's subscription even though they are still org-attached.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
-			"let":  bson.M{"sectId": bson.M{"$arrayElemAt": bson.A{"$userDoc.sectId", 0}}},
+			"let": bson.M{
+				"sectId": bson.M{"$arrayElemAt": bson.A{"$userDoc.sectId", 0}},
+				"deptId": bson.M{"$arrayElemAt": bson.A{"$userDoc.deptId", 0}},
+			},
 			"pipeline": bson.A{
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$rid", roomID}},
 					bson.M{"$eq": bson.A{"$member.type", "org"}},
-					bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+					bson.M{"$or": bson.A{
+						bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+						bson.M{"$eq": bson.A{"$member.id", "$$deptId"}},
+					}},
 				}}}},
 				bson.M{"$limit": 1},
 			},
@@ -395,16 +406,27 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		rm.Member.ChineseName = d.ChineseName
 		rm.Member.IsOwner = d.IsOwner
 		rm.Member.MemberCount = d.MemberCount
-		// Org rows resolve display Go-side: prefer dept on overlap, then
-		// combine localized + traditional via displayfmt with member.id as
-		// the fallback when no users matched the org at all. This keeps the
-		// wire string identical to room-worker's sys-message formatter.
+		// Org rows resolve display Go-side using the two-pass dept-first
+		// tiebreak that mirrors room-worker's processRemoveOrg exactly:
+		//
+		//   1. Prefer dept names when a dept match exists AND has non-empty
+		//      name/tcName.
+		//   2. Otherwise fall back to the sect names (which the aggregation
+		//      now retains alongside the dept names — see the $group stage).
+		//   3. CombineWithFallback handles the both-empty case by emitting
+		//      the member.id, matching the worker's displayOrg/orgID fallback.
+		//
+		// Without the explicit fallback on empty dept names, a row with
+		// IsDept=true but empty deptName + a sibling row with sectName="Eng"
+		// would render the orgID server-side while the worker emits "Eng" —
+		// the spec requires byte-identical output between the two paths.
 		if rm.Member.Type == model.RoomMemberOrg {
 			var name, tcName string
 			if d.OrgRaw != nil {
-				if d.OrgRaw.IsDept {
+				if d.OrgRaw.IsDept && (d.OrgRaw.DeptName != "" || d.OrgRaw.DeptTCName != "") {
 					name, tcName = d.OrgRaw.DeptName, d.OrgRaw.DeptTCName
-				} else {
+				}
+				if name == "" && tcName == "" {
 					name, tcName = d.OrgRaw.SectName, d.OrgRaw.SectTCName
 				}
 			}

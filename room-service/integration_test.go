@@ -183,6 +183,44 @@ func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	})
 }
 
+// TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration pins
+// the dept-aware org-membership lookup: a user added via Orgs:["X"] whose
+// deptId is "X" (with no sectId match) must still report HasOrgMembership=true
+// so the remove flow preserves their subscription. Checking only sectId would
+// miss this case and the dual-membership branch wouldn't fire — the sub would
+// be deleted even though the user remains org-attached via the dept.
+func TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	const roomID = "r-dept-only"
+	const account = "alice"
+
+	// Alice has deptId="X" and NO sectId. The org row in room_members is keyed
+	// by member.id="X" — the dept-blind sectId-only lookup would miss it.
+	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: account},
+		RoomID: roomID, SiteID: "site-a", Roles: []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+	}))
+	_, err := db.Collection("users").InsertOne(ctx, model.User{
+		ID: "u1", Account: account, SiteID: "site-a",
+		DeptID: "X", DeptName: "Engineering",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: "rm-org", RoomID: roomID, Ts: time.Now().UTC(),
+		Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetSubscriptionWithMembership(ctx, roomID, account)
+	require.NoError(t, err)
+	assert.True(t, result.HasOrgMembership,
+		"deptId match must count as org membership — without it, the dual-membership branch wouldn't fire and the sub would be deleted on remove")
+}
+
 func TestMongoStore_CountMembersAndOwners_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -688,6 +726,37 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		require.Len(t, enriched, 1)
 		assert.Equal(t, bare[0].ID, enriched[0].ID)
 		assert.Equal(t, bare[0].Member.Type, enriched[0].Member.Type)
+	})
+
+	// Bug 4 regression: when an org overlaps as both dept and sect, the
+	// service-side enrichment used to pick the dept branch unconditionally and
+	// drop the sect names — so a dept row with empty deptName collapsed to the
+	// orgID fallback while the worker's two-pass tiebreak rendered the sect
+	// name. The spec requires byte-identical output across both paths.
+	t.Run("org dept-first tiebreak falls back to sect names when dept names are empty", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+
+		// One user with deptId="X" + empty deptName; one with sectId="X" +
+		// sectName="Engineering". The worker's dept-first-with-fallback logic
+		// renders "Engineering"; the service must match exactly.
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice",
+			DeptID: "X", DeptName: "", DeptTCName: "",
+		})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob",
+			SectID: "X", SectName: "Engineering", SectTCName: "",
+		})
+		insertRM(t, db, model.RoomMember{
+			ID: "rm-org-X", RoomID: "r1", Ts: base,
+			Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+		})
+
+		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Engineering", got[0].Member.SectName,
+			"empty dept names must fall through to sect names; spec requires room-service output to match room-worker's two-pass tiebreak")
 	})
 }
 

@@ -165,8 +165,15 @@ func sanitizeAsyncJobError(err error) string {
 	return "operation failed"
 }
 
-// reconcileRoomOnDuplicateKey verifies the existing room is structurally compatible and the requester is a member; one source of truth for both create paths.
-func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.Room, requesterAccount string) (*model.Room, error) {
+// reconcileRoomOnDuplicateKey verifies the existing room is structurally compatible with the want spec; one source of truth for both create paths.
+// The structural check (Type + SiteID match) is sufficient: the caller's
+// BulkCreateSubscriptions runs idempotently (unique index dedups racing
+// inserts; missing inserts are completed on retry). Crucially, this means a
+// mid-write crash (CreateRoom succeeded but the worker died before
+// BulkCreateSubscriptions) is recovered by JetStream redelivery — the retry
+// finds the existing room, finishes the subscription writes, and the room
+// is not orphaned.
+func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.Room) (*model.Room, error) {
 	existing, err := h.store.GetRoom(ctx, want.ID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch on duplicate-key: %w", err)
@@ -174,13 +181,6 @@ func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.R
 	if existing.Type != want.Type || existing.SiteID != want.SiteID {
 		return nil, newPermanent("room ID collision (existing type=%s site=%s; want %s/%s)",
 			existing.Type, existing.SiteID, want.Type, want.SiteID)
-	}
-	if _, err := h.store.GetSubscription(ctx, requesterAccount, want.ID); err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
-			return nil, newPermanent("room ID collision (requester %s not a member of existing room %s)",
-				requesterAccount, want.ID)
-		}
-		return nil, fmt.Errorf("check requester sub on duplicate-key: %w", err)
 	}
 	return existing, nil
 }
@@ -999,74 +999,82 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)
+	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs).
+	// Gate on "actual membership change visible to room": new individual subs
+	// (actualAccounts) or new org rows (req.Orgs). The org→individual upgrade
+	// path (only needIRM populated) writes the missing individual room_members
+	// row silently — no membership state changed for the room itself, so
+	// emitting an empty MemberAddEvent and a "added members to the channel"
+	// sys-msg with no actual members listed would mislead end users.
 	historySharedSince := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
-	memberAddEvt := model.MemberAddEvent{
-		Type:               "member_added",
-		RoomID:             req.RoomID,
-		RoomName:           room.Name,
-		RoomType:           room.Type,
-		Accounts:           actualAccounts,
-		SiteID:             room.SiteID,
-		RequesterAccount:   req.RequesterAccount,
-		JoinedAt:           req.Timestamp,
-		HistorySharedSince: historySharedSince,
-		Timestamp:          now.UnixMilli(),
-	}
-	memberAddData, _ := json.Marshal(memberAddEvt)
-	if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData, ""); err != nil {
-		slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
-	}
-
-	if len(actualAccounts) > 0 {
-		inboxOutbox := model.OutboxEvent{
-			Type:       "member_added",
-			SiteID:     room.SiteID,
-			DestSiteID: room.SiteID,
-			Payload:    memberAddData,
-			Timestamp:  now.UnixMilli(),
+	if len(actualAccounts) > 0 || len(req.Orgs) > 0 {
+		memberAddEvt := model.MemberAddEvent{
+			Type:               "member_added",
+			RoomID:             req.RoomID,
+			RoomName:           room.Name,
+			RoomType:           room.Type,
+			Accounts:           actualAccounts,
+			SiteID:             room.SiteID,
+			RequesterAccount:   req.RequesterAccount,
+			JoinedAt:           req.Timestamp,
+			HistorySharedSince: historySharedSince,
+			Timestamp:          now.UnixMilli(),
 		}
-		inboxData, _ := json.Marshal(inboxOutbox)
-		inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
-		if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), inboxData, natsutil.OutboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
-			slog.Error("local inbox member_added publish failed", "error", err, "roomID", req.RoomID)
+		memberAddData, _ := json.Marshal(memberAddEvt)
+		if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData, ""); err != nil {
+			slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
 		}
-	}
 
-	membersAdded := model.MembersAdded{
-		Individuals:     actualAccounts,
-		Orgs:            req.Orgs,
-		Channels:        req.Channels,
-		AddedUsersCount: len(subs),
-	}
-	sysMsgData, _ := json.Marshal(membersAdded)
-	seed := messageDedupSeed(ctx, "processAddMembers", req.RoomID,
-		fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp))
-	// Single form only for direct 1-user adds; org-bearing adds always use multi.
-	content := formatAddedMulti(requester)
-	if len(subs) == 1 && len(req.Orgs) == 0 {
-		onlyUser := userMap[subs[0].User.Account]
-		content = formatAddedSingle(requester, &onlyUser)
-	}
-	sysMsg := model.Message{
-		ID:          idgen.MessageIDFromRequestID(seed, "addmembers"),
-		RoomID:      req.RoomID,
-		UserID:      requester.ID,
-		UserAccount: requester.Account,
-		Type:        model.MessageTypeMembersAdded,
-		Content:     content,
-		SysMsgData:  sysMsgData,
-		CreatedAt:   acceptedAt,
-	}
-	msgEvt := model.MessageEvent{
-		Event:     model.EventCreated,
-		Message:   sysMsg,
-		SiteID:    room.SiteID,
-		Timestamp: now.UnixMilli(),
-	}
-	msgEvtData, _ := json.Marshal(msgEvt)
-	if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, sysMsg.ID); err != nil {
-		return fmt.Errorf("publish add-members system message: %w", err)
+		if len(actualAccounts) > 0 {
+			inboxOutbox := model.OutboxEvent{
+				Type:       "member_added",
+				SiteID:     room.SiteID,
+				DestSiteID: room.SiteID,
+				Payload:    memberAddData,
+				Timestamp:  now.UnixMilli(),
+			}
+			inboxData, _ := json.Marshal(inboxOutbox)
+			inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
+			if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), inboxData, natsutil.OutboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
+				slog.Error("local inbox member_added publish failed", "error", err, "roomID", req.RoomID)
+			}
+		}
+
+		membersAdded := model.MembersAdded{
+			Individuals:     actualAccounts,
+			Orgs:            req.Orgs,
+			Channels:        req.Channels,
+			AddedUsersCount: len(subs),
+		}
+		sysMsgData, _ := json.Marshal(membersAdded)
+		seed := messageDedupSeed(ctx, "processAddMembers", req.RoomID,
+			fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp))
+		// Single form only for direct 1-user adds; org-bearing adds always use multi.
+		content := formatAddedMulti(requester)
+		if len(subs) == 1 && len(req.Orgs) == 0 {
+			onlyUser := userMap[subs[0].User.Account]
+			content = formatAddedSingle(requester, &onlyUser)
+		}
+		sysMsg := model.Message{
+			ID:          idgen.MessageIDFromRequestID(seed, "addmembers"),
+			RoomID:      req.RoomID,
+			UserID:      requester.ID,
+			UserAccount: requester.Account,
+			Type:        model.MessageTypeMembersAdded,
+			Content:     content,
+			SysMsgData:  sysMsgData,
+			CreatedAt:   acceptedAt,
+		}
+		msgEvt := model.MessageEvent{
+			Event:     model.EventCreated,
+			Message:   sysMsg,
+			SiteID:    room.SiteID,
+			Timestamp: now.UnixMilli(),
+		}
+		msgEvtData, _ := json.Marshal(msgEvt)
+		if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, sysMsg.ID); err != nil {
+			return fmt.Errorf("publish add-members system message: %w", err)
+		}
 	}
 
 	// 10. Outbox for cross-site members — batched by destination site
@@ -1233,7 +1241,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		if !mongo.IsDuplicateKeyError(err) {
 			return fmt.Errorf("create room: %w", err)
 		}
-		existing, err := h.reconcileRoomOnDuplicateKey(ctx, room, requester.Account)
+		existing, err := h.reconcileRoomOnDuplicateKey(ctx, room)
 		if err != nil {
 			return err
 		}
@@ -1637,7 +1645,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		if !mongo.IsDuplicateKeyError(err) {
 			return nil, fmt.Errorf("create room: %w", err)
 		}
-		existing, reconcileErr := h.reconcileRoomOnDuplicateKey(ctx, room, requester.Account)
+		existing, reconcileErr := h.reconcileRoomOnDuplicateKey(ctx, room)
 		if reconcileErr != nil {
 			// Permanent errors from reconcile mean an unrecoverable collision; the
 			// sync-DM caller surfaces errRoomIDCollision verbatim, so map any

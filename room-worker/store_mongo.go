@@ -206,14 +206,22 @@ func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, rol
 func (s *MongoStore) GetUserWithMembership(ctx context.Context, roomID, account string) (*UserWithMembership, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"account": account}}},
+		// Dept-aware org-membership lookup: a user added via Orgs:["X"] may
+		// match the org by deptId only (no sectId), so the room_members row
+		// has member.id = deptId. Checking only sectId would miss that case
+		// and report HasOrgMembership=false, causing the remove flow to drop
+		// the user's subscription even though they are still org-attached.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
-			"let":  bson.M{"sectId": "$sectId"},
+			"let":  bson.M{"sectId": "$sectId", "deptId": "$deptId"},
 			"pipeline": bson.A{
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$rid", roomID}},
 					bson.M{"$eq": bson.A{"$member.type", "org"}},
-					bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+					bson.M{"$or": bson.A{
+						bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+						bson.M{"$eq": bson.A{"$member.id", "$$deptId"}},
+					}},
 				}}}},
 				bson.M{"$limit": 1},
 			},

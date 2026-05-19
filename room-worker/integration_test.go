@@ -212,6 +212,36 @@ func TestMongoStore_GetUserWithMembership_Integration(t *testing.T) {
 	})
 }
 
+// TestMongoStore_GetUserWithMembership_DeptOnlyMatch_Integration pins the
+// dept-aware org-membership lookup: a user added via Orgs:["X"] whose deptId
+// is "X" (with no sectId match) must still report HasOrgMembership=true so the
+// remove flow preserves their subscription. Checking only sectId would miss
+// this case and cause the user's sub to be deleted even though they are still
+// org-attached via the dept.
+func TestMongoStore_GetUserWithMembership_DeptOnlyMatch_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Alice has deptId="X" and NO sectId. The org row in room_members is keyed
+	// by member.id="X" — the dept-blind sectId-only lookup would miss it.
+	_, err := db.Collection("users").InsertOne(ctx, model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a",
+		DeptID: "X", DeptName: "Engineering",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: "rm-org", RoomID: "r1", Ts: time.Now().UTC(),
+		Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetUserWithMembership(ctx, "r1", "alice")
+	require.NoError(t, err)
+	assert.True(t, result.HasOrgMembership,
+		"deptId match must count as org membership — without it, removing the user would orphan an org-attached account")
+}
+
 func TestMongoStore_GetOrgMembersWithIndividualStatus_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -1600,4 +1630,64 @@ func TestHandler_ProcessCreateRoom_DMConcurrentByCounterpart_Integration(t *test
 	for _, s := range postSubs {
 		assert.True(t, preIDs[s.ID], "subscription %s was replaced — worker should reuse pre-existing", s.ID)
 	}
+}
+
+// TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash exercises the
+// recovery path when a worker crashed AFTER CreateRoom succeeded but BEFORE
+// BulkCreateSubscriptions wrote any subs. JetStream redelivers the canonical
+// create event; the retry must find the existing room (structural match),
+// skip past the dup-key, and finish the unfinished subscription writes so
+// the room is no longer orphaned. Earlier behavior required the requester
+// to already have a sub — that turned mid-write crashes into permanent
+// failures and orphaned rooms.
+func TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	h := newIntegrationHandler(t, store, "site-A")
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	// Pre-state: worker A wrote the room then crashed before BulkCreateSubscriptions.
+	// Room exists with ZERO subscriptions (the orphan that the previous reconcile
+	// helper turned into a permanent error and an unrecoverable DLQ entry).
+	const roomID = "r_midwrite"
+	const roomName = "deal team"
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: roomName, Type: model.RoomTypeChannel, SiteID: "site-A",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), subCount, "pre-state: orphaned room, no subs")
+
+	// JetStream redelivers; the retry must (a) not fail with a permanent error,
+	// (b) write the missing subs, and (c) leave room.UserCount reconciled.
+	const reqID = "0193abcd-0193-7abc-89ab-aaaa11111111"
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID: roomID, Name: roomName,
+		Users:            []string{"bob"},
+		ResolvedUsers:    []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(natsutil.WithRequestID(ctx, reqID), body),
+		"mid-write crash recovery: retry must complete the unfinished writes, not return permanent")
+
+	subCount, err = db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "owner + invitee subs written on retry")
+
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, room.UserCount, "ReconcileMemberCounts ran on retry")
 }
