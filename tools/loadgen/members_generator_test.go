@@ -125,8 +125,7 @@ func TestSustainedMembersGenerator_AbortsOnPoolExhaustion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	err := gen.Run(ctx)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "candidate pool exhausted")
+	require.ErrorIs(t, err, ErrPoolsExhausted)
 
 	pub.mu.Lock()
 	defer pub.mu.Unlock()
