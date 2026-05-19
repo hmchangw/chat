@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/pipelines"
 )
 
@@ -367,10 +368,7 @@ func (s *MongoStore) BulkUpsertSubscriptions(ctx context.Context, subs []*model.
 				"alert":      false,
 			},
 		}
-		models = append(models, mongo.NewUpdateOneModel().
-			SetFilter(filter).
-			SetUpdate(update).
-			SetUpsert(true))
+		models = append(models, mongoutil.UpsertModel(filter, update))
 	}
 	opts := options.BulkWrite().SetOrdered(false)
 	if _, err := s.subscriptions.BulkWrite(ctx, models, opts); err != nil {
