@@ -188,3 +188,31 @@ func TestMetricsHandler_ContentType(t *testing.T) {
 	// Prometheus text format
 	require.Contains(t, ct, "text/plain")
 }
+
+func TestNewMetrics_RegistersMemberCollectors(t *testing.T) {
+	m := NewMetrics()
+
+	want := []string{
+		"loadgen_member_published_total",
+		"loadgen_member_publish_errors_total",
+		"loadgen_member_e1_latency_seconds",
+		"loadgen_member_e2_latency_seconds",
+		"loadgen_member_room_size",
+	}
+	// Some metrics only appear after first Observe/Inc — force them to surface.
+	m.MemberPublished.WithLabelValues("p", "warmup", "frontdoor", "users").Inc()
+	m.MemberPublishErrors.WithLabelValues("publish").Inc()
+	m.MemberE1Latency.WithLabelValues("p", "frontdoor").Observe(0.001)
+	m.MemberE2Latency.WithLabelValues("p", "frontdoor").Observe(0.001)
+	m.MemberRoomSize.WithLabelValues("room-x").Set(1)
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, mf := range mfs {
+		got[mf.GetName()] = true
+	}
+	for _, name := range want {
+		assert.True(t, got[name], "metric %s not registered", name)
+	}
+}
