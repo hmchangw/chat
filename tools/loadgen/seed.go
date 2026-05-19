@@ -6,7 +6,15 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
+
+// roomKeyStore is the narrow consumer interface for room-key seeding.
+type roomKeyStore interface {
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+	Delete(ctx context.Context, roomID string) error
+}
 
 func insertDocs[T any](ctx context.Context, coll *mongo.Collection, items []T) error {
 	if len(items) == 0 {
@@ -24,7 +32,7 @@ func insertDocs[T any](ctx context.Context, coll *mongo.Collection, items []T) e
 
 // Seed drops and repopulates users/rooms/subscriptions in db from fixtures.
 // Idempotent: safe to rerun.
-func Seed(ctx context.Context, db *mongo.Database, f Fixtures) error {
+func Seed(ctx context.Context, db *mongo.Database, f *Fixtures) error {
 	if err := db.Collection("users").Drop(ctx); err != nil {
 		return fmt.Errorf("drop users: %w", err)
 	}
@@ -70,6 +78,27 @@ func Teardown(ctx context.Context, db *mongo.Database) error {
 	for _, c := range []string{"users", "rooms", "subscriptions"} {
 		if err := db.Collection(c).Drop(ctx); err != nil {
 			return fmt.Errorf("drop %s: %w", c, err)
+		}
+	}
+	return nil
+}
+
+// SeedRoomKeys writes each room keypair into the keystore. Harmless when
+// broadcast-worker runs with ENCRYPTION_ENABLED=false.
+func SeedRoomKeys(ctx context.Context, keys roomKeyStore, roomKeys map[string]roomkeystore.RoomKeyPair) error {
+	for roomID, pair := range roomKeys {
+		if _, err := keys.Set(ctx, roomID, pair); err != nil {
+			return fmt.Errorf("set room key %s: %w", roomID, err)
+		}
+	}
+	return nil
+}
+
+// TeardownRoomKeys deletes the keypairs written by SeedRoomKeys.
+func TeardownRoomKeys(ctx context.Context, keys roomKeyStore, roomIDs []string) error {
+	for _, roomID := range roomIDs {
+		if err := keys.Delete(ctx, roomID); err != nil {
+			return fmt.Errorf("delete room key %s: %w", roomID, err)
 		}
 	}
 	return nil
