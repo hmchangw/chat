@@ -29,6 +29,16 @@ func TestUserJSON(t *testing.T) {
 	roundTrip(t, &u, &model.User{})
 }
 
+func TestUserJSON_WithSectAndDept(t *testing.T) {
+	u := model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a",
+		SectID: "S", SectName: "Sect", SectTCName: "部",
+		DeptID: "D", DeptName: "Dept", DeptTCName: "處",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	}
+	roundTrip(t, &u, &model.User{})
+}
+
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
