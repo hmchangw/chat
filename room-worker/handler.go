@@ -1577,12 +1577,14 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
 		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+		if err := h.store.BulkUpsertSubscriptions(ctx, subs); err != nil {
+			return nil, fmt.Errorf("bulk upsert subs: %w", err)
+		}
 	} else {
 		subs = buildDMSubs(requester, other, room, acceptedAt)
-	}
-
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		return nil, fmt.Errorf("bulk create subs: %w", err)
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return nil, fmt.Errorf("bulk create subs: %w", err)
+		}
 	}
 	// Re-read canonical subs: BulkCreateSubscriptions swallows dup-key races, so the
 	// in-memory subs may carry IDs/JoinedAt that never made it to Mongo. Publish from

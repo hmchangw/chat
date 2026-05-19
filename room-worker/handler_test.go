@@ -2792,7 +2792,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 			insertedRoom = r
 			return nil
 		})
-	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
 		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
 	}, nil)
