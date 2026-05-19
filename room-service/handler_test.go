@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -3086,4 +3087,117 @@ func TestHandler_RemoveMember_StampsBaseKeyVersion(t *testing.T) {
 		"chat.user.alice.request.room.r1.site-a.member.remove", data)
 	require.NoError(t, err)
 	assert.Equal(t, 4, captured.BaseKeyVersion, "BaseKeyVersion must be stamped from the current Valkey version")
+}
+
+// --- TestHandler_EnsureRoomKey ---
+
+func TestHandler_EnsureRoomKey_KeyExists(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	existing := &roomkeystore.VersionedKeyPair{
+		Version: 7,
+		KeyPair: roomkeystore.RoomKeyPair{
+			PublicKey:  bytes.Repeat([]byte{0xAB}, 65),
+			PrivateKey: bytes.Repeat([]byte{0xCD}, 32),
+		},
+	}
+	keyStore.EXPECT().Get(gomock.Any(), "room-abc").Return(existing, nil)
+
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+	req := model.RoomKeyEnsureRequest{RoomID: "room-abc"}
+	data, _ := json.Marshal(req)
+
+	resp, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.NoError(t, err)
+
+	var result model.RoomKeyEnsureResponse
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "room-abc", result.RoomID)
+	assert.Equal(t, 7, result.Version)
+	assert.Equal(t, existing.KeyPair.PublicKey, result.PublicKey)
+	assert.Equal(t, existing.KeyPair.PrivateKey, result.PrivateKey)
+}
+
+func TestHandler_EnsureRoomKey_KeyNotFound_SetsNew(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	keyStore.EXPECT().Get(gomock.Any(), "room-new").Return(nil, nil)
+
+	var capturedPair roomkeystore.RoomKeyPair
+	keyStore.EXPECT().
+		Set(gomock.Any(), "room-new", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, p roomkeystore.RoomKeyPair) (int, error) {
+			capturedPair = p
+			return 0, nil
+		})
+
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+	req := model.RoomKeyEnsureRequest{RoomID: "room-new"}
+	data, _ := json.Marshal(req)
+
+	resp, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.NoError(t, err)
+
+	var result model.RoomKeyEnsureResponse
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "room-new", result.RoomID)
+	assert.Equal(t, 0, result.Version)
+	assert.Equal(t, capturedPair.PublicKey, result.PublicKey)
+	assert.Equal(t, capturedPair.PrivateKey, result.PrivateKey)
+	assert.Len(t, result.PublicKey, 65, "P-256 public key must be 65 bytes (uncompressed)")
+	assert.Len(t, result.PrivateKey, 32, "P-256 private key must be 32 bytes")
+}
+
+func TestHandler_EnsureRoomKey_MalformedRequest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+
+	_, err := h.handleEnsureRoomKey(context.Background(), "", []byte("{not json"))
+	require.Error(t, err)
+}
+
+func TestHandler_EnsureRoomKey_MissingRoomID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+
+	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: ""})
+	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.Error(t, err)
+}
+
+func TestHandler_EnsureRoomKey_GetError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+	keyStore.EXPECT().Get(gomock.Any(), "room-err").Return(nil, errors.New("valkey down"))
+
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-err"})
+
+	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.Error(t, err)
+}
+
+func TestHandler_EnsureRoomKey_SetError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	keyStore := NewMockRoomKeyStore(ctrl)
+	keyStore.EXPECT().Get(gomock.Any(), "room-setfail").Return(nil, nil)
+	keyStore.EXPECT().Set(gomock.Any(), "room-setfail", gomock.Any()).Return(0, errors.New("write failed"))
+
+	h := &Handler{keyStore: keyStore, siteID: "site-local"}
+	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-setfail"})
+
+	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.Error(t, err)
+}
+
+func TestHandler_EnsureRoomKey_NilKeyStore(t *testing.T) {
+	h := &Handler{keyStore: nil, siteID: "site-local"}
+	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-abc"})
+
+	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	require.Error(t, err)
 }

@@ -95,6 +95,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
 		return fmt.Errorf("subscribe org members: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
+		return fmt.Errorf("subscribe room key ensure: %w", err)
+	}
 	return nil
 }
 
@@ -1158,4 +1161,62 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 	}
 
 	return json.Marshal(model.ReadReceiptResponse{Readers: entries})
+}
+
+// NatsHandleEnsureRoomKey handles server-to-server requests to get or generate
+// a room's current encryption key pair (chat.server.request.room.{siteID}.key.ensure).
+// Trusted callers (e.g. connectors syncing oplog data) receive both public and
+// private key bytes so they can perform encryption without accessing Valkey directly.
+func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("ensure room key failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to ensure room key", "error", err)
+	}
+}
+
+func (h *Handler) handleEnsureRoomKey(ctx context.Context, _ string, data []byte) ([]byte, error) {
+	if h.keyStore == nil {
+		return nil, fmt.Errorf("ensure room key: key store not configured")
+	}
+	var req model.RoomKeyEnsureRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("ensure room key: decode request: %w", err)
+	}
+	if req.RoomID == "" {
+		return nil, fmt.Errorf("ensure room key: roomId is required")
+	}
+
+	existing, err := h.keyStore.Get(ctx, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: get: %w", err)
+	}
+	if existing != nil {
+		return json.Marshal(model.RoomKeyEnsureResponse{
+			RoomID:     req.RoomID,
+			Version:    existing.Version,
+			PublicKey:  existing.KeyPair.PublicKey,
+			PrivateKey: existing.KeyPair.PrivateKey,
+		})
+	}
+
+	newPair, err := roomkeystore.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: generate key pair: %w", err)
+	}
+	ver, err := h.keyStore.Set(ctx, req.RoomID, newPair)
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: set: %w", err)
+	}
+	return json.Marshal(model.RoomKeyEnsureResponse{
+		RoomID:     req.RoomID,
+		Version:    ver,
+		PublicKey:  newPair.PublicKey,
+		PrivateKey: newPair.PrivateKey,
+	})
 }
