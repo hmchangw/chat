@@ -1211,3 +1211,38 @@ describe('roomEventsReducer: msgRecvSeq (unread-badge refetch trigger)', () => {
     expect(next.msgRecvSeq).toBe(1)
   })
 })
+
+describe('roomEventsReducer: readSeq (post-mark-read refetch trigger)', () => {
+  it('initial state starts at 0', () => {
+    expect(initialState.readSeq).toBe(0)
+  })
+
+  it('ROOM_READ_SYNCED increments readSeq', () => {
+    const next = roomEventsReducer(initialState, { type: 'ROOM_READ_SYNCED' })
+    expect(next.readSeq).toBe(1)
+    const next2 = roomEventsReducer(next, { type: 'ROOM_READ_SYNCED' })
+    expect(next2.readSeq).toBe(2)
+  })
+
+  it('ROOM_READ_SYNCED does not touch msgRecvSeq', () => {
+    const next = roomEventsReducer(initialState, { type: 'ROOM_READ_SYNCED' })
+    expect(next.msgRecvSeq).toBe(0)
+  })
+
+  it('a received message does not touch readSeq', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(next.readSeq).toBe(0)
+  })
+
+  it('is preserved by other actions (SET_ACTIVE_ROOM)', () => {
+    const synced = roomEventsReducer(initialState, { type: 'ROOM_READ_SYNCED' })
+    const next = roomEventsReducer(synced, {
+      type: 'SET_ACTIVE_ROOM',
+      roomId: 'a',
+    })
+    expect(next.readSeq).toBe(1)
+  })
+})

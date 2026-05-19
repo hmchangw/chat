@@ -58,6 +58,9 @@ interface RoomEventsState {
   /** Monotonic counter bumped on every accepted MESSAGE_RECEIVED.
    *  Drives the unread badge's debounced refetch (see useUnreadCount). */
   msgRecvSeq: number
+  /** Monotonic counter bumped after a markRoomRead RPC resolves.
+   *  Drives the unread badge's post-read refetch (see useUnreadCount). */
+  readSeq: number
   favoriteIds: Set<string>
   appIds: Set<string>
   channelDmIds: Set<string>
@@ -137,13 +140,17 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
   const setActiveRoom = useCallback(
     (roomId: string | null) => {
       dispatch({ type: 'SET_ACTIVE_ROOM', roomId })
-      // Mark-read fire-and-forget when the user opens a room. siteId
-      // comes from the summary if we have one (cross-site DMs etc.);
-      // otherwise fall back to the user's home site.
+      // Mark-read when the user opens a room. siteId comes from the
+      // summary if we have one (cross-site DMs etc.); otherwise fall
+      // back to the user's home site. Bump readSeq once the RPC resolves
+      // (lastSeenAt committed) so the unread badge re-pulls AFTER the
+      // read instead of racing it.
       if (roomId) {
         const summary = stateRef.current.summaries.find((r) => r.id === roomId)
         const siteId = summary?.siteId ?? user.siteId
-        markRoomRead(nats, { roomId, siteId })
+        markRoomRead(nats, { roomId, siteId }).then(() => {
+          dispatch({ type: 'ROOM_READ_SYNCED' })
+        })
       }
     },
     [nats, user],
@@ -241,7 +248,7 @@ export function useRoomSummaries() {
 export function useUnreadCount(): number {
   const nats = useNats() as unknown as Nats
   const { state } = useRoomEventsInternal()
-  return useUnreadCountQuery(nats, state.activeRoomId, state.msgRecvSeq)
+  return useUnreadCountQuery(nats, state.readSeq, state.msgRecvSeq)
 }
 
 export function useRoomDispatch(): RoomEventsContextValue['dispatch'] {

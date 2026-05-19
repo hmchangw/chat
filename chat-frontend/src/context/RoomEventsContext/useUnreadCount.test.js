@@ -12,48 +12,47 @@ describe('useUnreadCount', () => {
 
   it('starts at 0 and resolves to the fetched count on mount', async () => {
     getUnreadCount.mockResolvedValue({ count: 42 })
-    const { result } = renderHook(() => useUnreadCount(nats, null))
+    const { result } = renderHook(() => useUnreadCount(nats, 0, 0))
     expect(result.current).toBe(0)
     await waitFor(() => expect(result.current).toBe(42))
     expect(getUnreadCount).toHaveBeenCalledWith(nats)
   })
 
-  it('re-fetches when the active room changes', async () => {
-    getUnreadCount.mockResolvedValue({ count: 42 })
-    const { rerender } = renderHook(({ room }) => useUnreadCount(nats, room), {
-      initialProps: { room: 'r1' },
-    })
+  it('refetches immediately when readSeq changes (post mark-read)', async () => {
+    getUnreadCount.mockResolvedValue({ count: 1 })
+    const { rerender } = renderHook(
+      ({ r }) => useUnreadCount(nats, r, 0),
+      { initialProps: { r: 0 } },
+    )
     await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
-    rerender({ room: 'r2' })
+    rerender({ r: 1 })
     await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(2))
   })
 
-  it('does not re-fetch when the active room is unchanged', async () => {
-    getUnreadCount.mockResolvedValue({ count: 42 })
-    const { rerender } = renderHook(({ room }) => useUnreadCount(nats, room), {
-      initialProps: { room: 'r1' },
-    })
+  it('does not refetch when readSeq is unchanged', async () => {
+    getUnreadCount.mockResolvedValue({ count: 1 })
+    const { rerender } = renderHook(
+      ({ r }) => useUnreadCount(nats, r, 0),
+      { initialProps: { r: 3 } },
+    )
     await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
-    rerender({ room: 'r1' })
+    rerender({ r: 3 })
     await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
   })
 
-  it('drops a stale in-flight result when the room changed before it resolved', async () => {
+  it('drops a stale in-flight result when readSeq advanced before it resolved', async () => {
     let resolveFirst
     getUnreadCount
-      .mockImplementationOnce(
-        () => new Promise((res) => { resolveFirst = res }),
-      )
+      .mockImplementationOnce(() => new Promise((res) => { resolveFirst = res }))
       .mockResolvedValueOnce({ count: 7 })
 
     const { result, rerender } = renderHook(
-      ({ room }) => useUnreadCount(nats, room),
-      { initialProps: { room: 'r1' } },
+      ({ r }) => useUnreadCount(nats, r, 0),
+      { initialProps: { r: 0 } },
     )
-    rerender({ room: 'r2' })
+    rerender({ r: 1 })
     await waitFor(() => expect(result.current).toBe(7))
 
-    // The first (stale) fetch resolves late — must be ignored.
     await act(async () => { resolveFirst({ count: 999 }) })
     expect(result.current).toBe(7)
   })
@@ -65,13 +64,12 @@ describe('useUnreadCount', () => {
     it('refetches 500ms after msgRecvSeq changes', async () => {
       getUnreadCount.mockResolvedValue({ count: 1 })
       const { rerender } = renderHook(
-        ({ seq }) => useUnreadCount(nats, 'r1', seq),
-        { initialProps: { seq: 0 } },
+        ({ s }) => useUnreadCount(nats, 0, s),
+        { initialProps: { s: 0 } },
       )
       await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
 
-      rerender({ seq: 1 })
-      // Not yet — debounce window hasn't elapsed.
+      rerender({ s: 1 })
       await act(async () => { await vi.advanceTimersByTimeAsync(300) })
       expect(getUnreadCount).toHaveBeenCalledTimes(1)
 
@@ -82,25 +80,24 @@ describe('useUnreadCount', () => {
     it('collapses a burst of msgRecvSeq bumps into one refetch', async () => {
       getUnreadCount.mockResolvedValue({ count: 1 })
       const { rerender } = renderHook(
-        ({ seq }) => useUnreadCount(nats, 'r1', seq),
-        { initialProps: { seq: 0 } },
+        ({ s }) => useUnreadCount(nats, 0, s),
+        { initialProps: { s: 0 } },
       )
       await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
 
-      rerender({ seq: 1 })
+      rerender({ s: 1 })
       await act(async () => { await vi.advanceTimersByTimeAsync(100) })
-      rerender({ seq: 2 })
+      rerender({ s: 2 })
       await act(async () => { await vi.advanceTimersByTimeAsync(100) })
-      rerender({ seq: 3 })
+      rerender({ s: 3 })
       await act(async () => { await vi.advanceTimersByTimeAsync(500) })
 
-      // Mount fetch + exactly one debounced refetch for the whole burst.
       expect(getUnreadCount).toHaveBeenCalledTimes(2)
     })
 
     it('does not schedule a refetch when msgRecvSeq stays 0', async () => {
       getUnreadCount.mockResolvedValue({ count: 1 })
-      renderHook(() => useUnreadCount(nats, 'r1', 0))
+      renderHook(() => useUnreadCount(nats, 0, 0))
       await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
       await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
       expect(getUnreadCount).toHaveBeenCalledTimes(1)
