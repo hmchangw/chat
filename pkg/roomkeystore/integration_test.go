@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -289,4 +292,179 @@ func TestValkeyStore_Integration_GetMany(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, empty)
 	assert.Empty(t, empty)
+}
+
+// setupValkeyCluster starts a Valkey node in cluster mode, assigns all 16384 hash
+// slots to the single node, and returns a RoomKeyStore backed by clusterAdapter
+// plus the raw ClusterClient (needed for CLUSTER KEYSLOT assertions).
+//
+// Using valkey/valkey:8 with --cluster-enabled avoids the multi-container discovery
+// problem of bitnami/valkey-cluster while still exercising the full clusterAdapter
+// code path and Lua rotate script on a cluster-mode Valkey instance.
+// ClusterSlots is overridden to point go-redis at the externally-mapped address
+// rather than the 127.0.0.1:6379 the node announces internally.
+func setupValkeyCluster(t *testing.T, gracePeriod time.Duration) (RoomKeyStore, *redis.ClusterClient) {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        testimages.Valkey,
+			ExposedPorts: []string{"6379/tcp"},
+			Cmd: []string{
+				"valkey-server",
+				"--cluster-enabled", "yes",
+				"--cluster-config-file", "nodes.conf",
+				"--cluster-node-timeout", "5000",
+				"--save", "",
+			},
+			WaitingFor: wait.ForLog("Ready to accept connections"),
+		},
+		Started: true,
+	})
+	require.NoError(t, err, "start valkey cluster container")
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+	addr := fmt.Sprintf("%s:%s", host, port.Port())
+
+	// Assign all 16384 hash slots to this single node to form a valid cluster.
+	exitCode, _, err := container.Exec(ctx, []string{"valkey-cli", "CLUSTER", "ADDSLOTSRANGE", "0", "16383"})
+	require.NoError(t, err, "exec cluster addslotsrange")
+	require.Equal(t, 0, exitCode, "cluster addslotsrange must exit 0")
+
+	// Wait until the cluster reports cluster_state:ok before connecting go-redis.
+	// The state transitions from "fail" to "ok" once all 16384 slots are covered.
+	require.Eventually(t, func() bool {
+		_, out, execErr := container.Exec(ctx, []string{"valkey-cli", "CLUSTER", "INFO"})
+		if execErr != nil {
+			return false
+		}
+		buf, _ := io.ReadAll(out)
+		return strings.Contains(string(buf), "cluster_state:ok")
+	}, 10*time.Second, 100*time.Millisecond, "cluster must reach ok state")
+
+	// Override topology discovery so go-redis uses the externally-mapped address
+	// rather than the 127.0.0.1:6379 the node announces to cluster peers.
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{addr},
+		ClusterSlots: func(ctx context.Context) ([]redis.ClusterSlot, error) {
+			return []redis.ClusterSlot{
+				{Start: 0, End: 16383, Nodes: []redis.ClusterNode{{Addr: addr}}},
+			}, nil
+		},
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, c.Ping(pingCtx).Err(), "ping valkey cluster")
+
+	store := &valkeyStore{
+		client:      &clusterAdapter{c: c},
+		closer:      c,
+		gracePeriod: gracePeriod,
+	}
+	return store, c
+}
+
+func TestValkeyClusterStore_Integration_RoundTrip(t *testing.T) {
+	store, _ := setupValkeyCluster(t, time.Hour)
+	ctx := context.Background()
+
+	pubKey := bytes.Repeat([]byte{0xAB}, 65)
+	privKey := bytes.Repeat([]byte{0xCD}, 32)
+	pair := RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey}
+
+	ver, err := store.Set(ctx, "cluster-room-1", pair)
+	require.NoError(t, err)
+	assert.Equal(t, 0, ver)
+
+	got, err := store.Get(ctx, "cluster-room-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 0, got.Version)
+	assert.Equal(t, pubKey, got.KeyPair.PublicKey)
+	assert.Equal(t, privKey, got.KeyPair.PrivateKey)
+
+	err = store.Delete(ctx, "cluster-room-1")
+	require.NoError(t, err)
+
+	got, err = store.Get(ctx, "cluster-room-1")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestValkeyClusterStore_Integration_RotateRoundTrip(t *testing.T) {
+	store, _ := setupValkeyCluster(t, time.Hour)
+	ctx := context.Background()
+
+	oldPub := bytes.Repeat([]byte{0xAA}, 65)
+	oldPriv := bytes.Repeat([]byte{0xBB}, 32)
+	newPub := bytes.Repeat([]byte{0xCC}, 65)
+	newPriv := bytes.Repeat([]byte{0xDD}, 32)
+
+	ver, err := store.Set(ctx, "cluster-rot", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
+	require.NoError(t, err)
+	assert.Equal(t, 0, ver)
+
+	ver, err = store.Rotate(ctx, "cluster-rot", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
+	require.NoError(t, err)
+	assert.Equal(t, 1, ver)
+
+	got, err := store.Get(ctx, "cluster-rot")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 1, got.Version)
+	assert.Equal(t, newPub, got.KeyPair.PublicKey)
+	assert.Equal(t, newPriv, got.KeyPair.PrivateKey)
+
+	oldPair, err := store.GetByVersion(ctx, "cluster-rot", 0)
+	require.NoError(t, err)
+	require.NotNil(t, oldPair)
+	assert.Equal(t, oldPub, oldPair.PublicKey)
+	assert.Equal(t, oldPriv, oldPair.PrivateKey)
+
+	newPair, err := store.GetByVersion(ctx, "cluster-rot", 1)
+	require.NoError(t, err)
+	require.NotNil(t, newPair)
+	assert.Equal(t, newPub, newPair.PublicKey)
+	assert.Equal(t, newPriv, newPair.PrivateKey)
+}
+
+// TestValkeyClusterStore_Integration_HashTagSlotConsistency verifies that the
+// {roomID} hash tag in both key names forces them onto the same cluster slot.
+// Without hash tags the Lua rotate script would fail with a CROSSSLOT error.
+func TestValkeyClusterStore_Integration_HashTagSlotConsistency(t *testing.T) {
+	store, c := setupValkeyCluster(t, time.Hour)
+	ctx := context.Background()
+
+	const roomID = "test-hash-tag-room"
+
+	currentKey := roomkey(roomID)
+	prevKey := roomprevkey(roomID)
+
+	slotCurrent, err := c.Do(ctx, "CLUSTER", "KEYSLOT", currentKey).Int()
+	require.NoError(t, err, "CLUSTER KEYSLOT current")
+	slotPrev, err := c.Do(ctx, "CLUSTER", "KEYSLOT", prevKey).Int()
+	require.NoError(t, err, "CLUSTER KEYSLOT prev")
+
+	assert.Equal(t, slotCurrent, slotPrev,
+		"current key %q and prev key %q must hash to the same cluster slot", currentKey, prevKey)
+
+	// Confirm the Lua rotate script runs without a CROSSSLOT error.
+	_, err = store.Set(ctx, roomID, RoomKeyPair{
+		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
+		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
+	})
+	require.NoError(t, err)
+
+	_, err = store.Rotate(ctx, roomID, RoomKeyPair{
+		PublicKey:  bytes.Repeat([]byte{0x03}, 65),
+		PrivateKey: bytes.Repeat([]byte{0x04}, 32),
+	})
+	require.NoError(t, err, "rotate must not return CROSSSLOT — hash tags ensure both keys share a slot")
 }
