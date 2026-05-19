@@ -2767,13 +2767,16 @@ func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
 	cases := []struct {
-		name     string
-		existing model.Room
+		name           string
+		existing       model.Room
+		requesterIsSub bool // if true, store.GetSubscription returns a sub; else ErrSubscriptionNotFound
 	}{
-		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "", CreatedBy: "u-alice"}},
-		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: "", CreatedBy: "u-alice"}},
-		{"name mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "leak", CreatedBy: "u-alice"}},
-		{"createdBy mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "", CreatedBy: "u-eve"}},
+		// Type and SiteID mismatches still trip the structural-compatibility guard.
+		{"type mismatch", model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: ""}, true},
+		{"siteID mismatch", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-other", Name: ""}, true},
+		// Structurally compatible but the requester is not a member of the
+		// existing room → unrelated DM that happens to share the ID.
+		{"requester not member", model.Room{ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: ""}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2785,6 +2788,15 @@ func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 			store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
 			existing := tc.existing
 			store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&existing, nil)
+			// Only the requester-not-member case reaches GetSubscription
+			// (the structural guard short-circuits on type/site mismatch).
+			if existing.Type == model.RoomTypeDM && existing.SiteID == "site-a" {
+				if tc.requesterIsSub {
+					store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(&model.Subscription{}, nil)
+				} else {
+					store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(nil, model.ErrSubscriptionNotFound)
+				}
+			}
 
 			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
 			data := marshalReq(t, req)
@@ -3104,9 +3116,12 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
 	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
 		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a",
-		Name: "", CreatedBy: "u-alice",
+		Name:      "",
 		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
 	}, nil)
+	// Reconcile equivalence: requester already has a sub in the existing room
+	// (alice's worker raced and persisted both subs before bob's redelivery).
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", roomID).Return(&model.Subscription{}, nil)
 
 	var captured []*model.Subscription
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).

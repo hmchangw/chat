@@ -165,6 +165,26 @@ func sanitizeAsyncJobError(err error) string {
 	return "operation failed"
 }
 
+// reconcileRoomOnDuplicateKey verifies the existing room is structurally compatible and the requester is a member; one source of truth for both create paths.
+func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.Room, requesterAccount string) (*model.Room, error) {
+	existing, err := h.store.GetRoom(ctx, want.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch on duplicate-key: %w", err)
+	}
+	if existing.Type != want.Type || existing.SiteID != want.SiteID {
+		return nil, newPermanent("room ID collision (existing type=%s site=%s; want %s/%s)",
+			existing.Type, existing.SiteID, want.Type, want.SiteID)
+	}
+	if _, err := h.store.GetSubscription(ctx, requesterAccount, want.ID); err != nil {
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, newPermanent("room ID collision (requester %s not a member of existing room %s)",
+				requesterAccount, want.ID)
+		}
+		return nil, fmt.Errorf("check requester sub on duplicate-key: %w", err)
+	}
+	return existing, nil
+}
+
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	var err error
@@ -1185,7 +1205,6 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		ID:        req.RoomID,
 		Name:      resolveRoomName(&req, roomType),
 		Type:      roomType,
-		CreatedBy: requester.ID,
 		SiteID:    h.siteID,
 		CreatedAt: acceptedAt,
 		UpdatedAt: acceptedAt,
@@ -1209,28 +1228,14 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}
 
 	if err := h.store.CreateRoom(ctx, room); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			existing, fetchErr := h.store.GetRoom(ctx, room.ID)
-			if fetchErr != nil {
-				return fmt.Errorf("fetch on duplicate-key: %w", fetchErr)
-			}
-			// Replay equivalence: only treat the collision as a redelivery
-			// when the existing room is identical on all immutable identity
-			// fields (Type, SiteID, Name, CreatedBy). Any mismatch means the
-			// same ID resolves to a different room — appending subscriptions
-			// or system messages to it would corrupt unrelated state.
-			if existing.Type != room.Type ||
-				existing.SiteID != room.SiteID ||
-				existing.Name != room.Name ||
-				existing.CreatedBy != room.CreatedBy {
-				return newPermanent("room ID collision (existing type=%s site=%s name=%q createdBy=%q; want %s/%s/%q/%q)",
-					existing.Type, existing.SiteID, existing.Name, existing.CreatedBy,
-					room.Type, room.SiteID, room.Name, room.CreatedBy)
-			}
-			room = existing
-		} else {
+		if !mongo.IsDuplicateKeyError(err) {
 			return fmt.Errorf("create room: %w", err)
 		}
+		existing, err := h.reconcileRoomOnDuplicateKey(ctx, room, requester.Account)
+		if err != nil {
+			return err
+		}
+		room = existing
 	}
 
 	switch roomType {
@@ -1618,7 +1623,6 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		ID:        roomID,
 		Name:      "",
 		Type:      req.RoomType,
-		CreatedBy: requester.ID,
 		SiteID:    h.siteID,
 		UserCount: userCount,
 		AppCount:  appCount,
@@ -1631,21 +1635,19 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		if !mongo.IsDuplicateKeyError(err) {
 			return nil, fmt.Errorf("create room: %w", err)
 		}
-		existing, fetchErr := h.store.GetRoom(ctx, room.ID)
-		if fetchErr != nil {
-			return nil, fmt.Errorf("fetch room on duplicate-key: %w", fetchErr)
-		}
-		if existing.Type != room.Type ||
-			existing.SiteID != room.SiteID ||
-			existing.Name != room.Name ||
-			existing.CreatedBy != room.CreatedBy {
-			slog.Error("sync DM: room ID collision",
-				"roomID", room.ID,
-				"existingType", existing.Type, "wantType", room.Type,
-				"existingSiteID", existing.SiteID, "wantSiteID", room.SiteID,
-				"existingCreatedBy", existing.CreatedBy, "wantCreatedBy", room.CreatedBy,
-				"requestID", requestID)
-			return nil, errRoomIDCollision
+		existing, reconcileErr := h.reconcileRoomOnDuplicateKey(ctx, room, requester.Account)
+		if reconcileErr != nil {
+			// Permanent errors from reconcile mean an unrecoverable collision; the
+			// sync-DM caller surfaces errRoomIDCollision verbatim, so map any
+			// permanent error onto that sentinel and keep the rich detail in the log.
+			if errors.Is(reconcileErr, errPermanent) {
+				slog.Error("sync DM: room ID collision",
+					"roomID", room.ID,
+					"requestID", requestID,
+					"error", reconcileErr)
+				return nil, errRoomIDCollision
+			}
+			return nil, reconcileErr
 		}
 		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing

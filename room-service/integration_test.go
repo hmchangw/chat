@@ -97,7 +97,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test CreateRoom and GetRoom
-	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", CreatedBy: "u1", UserCount: 1}
+	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", UserCount: 1}
 	require.NoError(t, store.CreateRoom(ctx, &room))
 	got, err := store.GetRoom(ctx, "r1")
 	require.NoError(t, err)

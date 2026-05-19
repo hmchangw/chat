@@ -196,7 +196,6 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 |--------------------|----------|----------|-------|
 | `name`             | string   | yes      | Room name. |
 | `type`             | string   | yes      | One of `channel`, `dm`, `botDM`, `discussion`. |
-| `createdBy`        | string   | yes      | Internal user ID of the creator. |
 | `createdByAccount` | string   | yes      | Account name of the creator. Used for the owner subscription. |
 | `siteId`           | string   | yes      | The site that will own this room. |
 | `members`          | string[] | no       | Required exactly **one** entry when `type=dm` (the other user's ID); ignored otherwise. |
@@ -205,7 +204,6 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 {
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "createdByAccount": "alice",
   "siteId": "siteA"
 }
@@ -220,7 +218,6 @@ The created `Room` object.
 | `id`                | string  | Room ID. 17-char base62 for channels; sorted concat of two accounts for DMs. |
 | `name`              | string  |       |
 | `type`              | string  | Same values as request. |
-| `createdBy`         | string  |       |
 | `siteId`            | string  |       |
 | `userCount`         | number  | `1` immediately after creation (the owner). |
 | `lastMsgAt`         | string  | Optional. RFC 3339 timestamp; absent until first message. |
@@ -238,7 +235,6 @@ The created `Room` object.
   "id": "01970a4f8c2d7c9aQ",
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "siteId": "siteA",
   "userCount": 1,
   "lastMsgId": "",
@@ -291,7 +287,6 @@ Empty. Send `{}` or no payload.
       "id": "01970a4f8c2d7c9aQ",
       "name": "engineering-announcements",
       "type": "channel",
-      "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
       "siteId": "siteA",
       "userCount": 12,
       "lastMsgAt": "2026-05-06T07:55:00Z",
@@ -341,7 +336,6 @@ A single `Room` object. See [Create Room](#create-room) for the `Room` schema.
   "id": "01970a4f8c2d7c9aQ",
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "siteId": "siteA",
   "userCount": 12,
   "lastMsgAt": "2026-05-06T07:55:00Z",

@@ -593,9 +593,6 @@ func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {
 	room, err := store.GetRoom(ctx, roomID)
 	require.NoError(t, err)
 	assert.Equal(t, model.RoomTypeDM, room.Type)
-	// CreatedBy is the requester's User.ID for every room type, including
-	// DM/botDM (post-v2 cleanup; previously empty for DM/botDM).
-	assert.Equal(t, "u_alice", room.CreatedBy)
 	assert.Equal(t, []string{"u_alice", "u_bob"}, room.UIDs, "DM participant uids persisted, sorted")
 	assert.Equal(t, []string{"alice", "bob"}, room.Accounts, "DM participant accounts persisted, paired by index with uids")
 }
@@ -751,7 +748,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	const roomName = "deal team"
 	mustInsertRoom(t, db, &model.Room{
 		ID: roomID, Name: roomName, Type: model.RoomTypeChannel,
-		SiteID: "site-A", CreatedBy: "u_alice",
+		SiteID:    "site-A",
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	// Owner sub.
@@ -872,7 +869,7 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	const roomName = "federated-room"
 	mustInsertRoom(t, db, &model.Room{
 		ID: roomID, Name: roomName, Type: model.RoomTypeChannel,
-		SiteID: "site-A", CreatedBy: "u_alice",
+		SiteID:    "site-A",
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	mustInsertSub(t, db, &model.Subscription{
@@ -942,7 +939,7 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	roomID := idgen.GenerateID()
 	mustInsertRoom(t, db, &model.Room{
 		ID: roomID, Name: "fed-room", Type: model.RoomTypeChannel, SiteID: "site-A",
-		CreatedBy: "u_alice", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
@@ -1539,4 +1536,68 @@ func TestMongoStore_GetOrgMembersWithIndividualStatus_DeptAndSect_Integration(t 
 		Account: "bob", SiteID: "site-a",
 		Name: "Eng Sect", TCName: "工程組", IsDept: false, HasIndividualMembership: true,
 	}, byAccount["bob"])
+}
+
+func TestHandler_ProcessCreateRoom_DMConcurrentByCounterpart_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	cap := &publishCapture{}
+	h := NewHandler(store, "site-a", cap.fn(), testKeyStore, testKeySender)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", EngName: "Alice", ChineseName: "爱", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob", EngName: "Bob", ChineseName: "鲍", SiteID: "site-a"})
+
+	// Pre-state: alice's worker already raced to create the DM. Room exists + both subs.
+	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a", Name: "",
+		UIDs: []string{"u_alice", "u_bob"}, Accounts: []string{"alice", "bob"},
+	})
+	// Snapshot pre-existing sub IDs so we can verify the worker doesn't double-insert.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User: model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		Name: "bob", RoomType: model.RoomTypeDM,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		Name: "alice", RoomType: model.RoomTypeDM,
+	})
+
+	type subID struct {
+		ID string `bson:"_id"`
+	}
+	var preSubs []subID
+	cursor, err := db.Collection("subscriptions").Find(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	require.NoError(t, cursor.All(ctx, &preSubs))
+	require.Len(t, preSubs, 2)
+	preIDs := map[string]bool{preSubs[0].ID: true, preSubs[1].ID: true}
+
+	// Bob's worker now processes Bob's canonical create event (Bob raced too).
+	req := model.CreateRoomRequest{
+		RoomID: roomID, Users: []string{"alice"},
+		RequesterID: "u_bob", RequesterAccount: "bob",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	data, _ := json.Marshal(req)
+	requestID := idgen.GenerateRequestID()
+	err = h.processCreateRoom(natsutil.WithRequestID(ctx, requestID), data)
+	require.NoError(t, err, "bob's race must NOT fail with collision; alice's worker already wrote both subs")
+
+	// One room, two subs, no replacements.
+	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), roomCount)
+
+	var postSubs []subID
+	cursor, err = db.Collection("subscriptions").Find(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	require.NoError(t, cursor.All(ctx, &postSubs))
+	require.Len(t, postSubs, 2, "no extra subscription docs")
+	for _, s := range postSubs {
+		assert.True(t, preIDs[s.ID], "subscription %s was replaced — worker should reuse pre-existing", s.ID)
+	}
 }

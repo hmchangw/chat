@@ -45,7 +45,7 @@ func TestRoomJSON(t *testing.T) {
 	minSeen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
+		SiteID: "site-a", UserCount: 5,
 		LastMsgAt:         &lastMsg,
 		LastMsgID:         "m1",
 		LastMentionAllAt:  &lastMention,
@@ -59,7 +59,7 @@ func TestRoomJSON(t *testing.T) {
 func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		SiteID: "site-a", UserCount: 1,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -88,7 +88,7 @@ func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 func TestRoomJSON_WithDMParticipants(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "dm", Type: model.RoomTypeDM,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 2,
+		SiteID: "site-a", UserCount: 2,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UIDs:      []string{"u1", "u2"},
@@ -100,7 +100,7 @@ func TestRoomJSON_WithDMParticipants(t *testing.T) {
 func TestRoomJSON_NilDMParticipantsOmitted(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		SiteID: "site-a", UserCount: 1,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
