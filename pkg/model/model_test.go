@@ -884,32 +884,12 @@ func TestRoomKeyEventJSON(t *testing.T) {
 
 func TestRoomKeyEnsureRequestJSON(t *testing.T) {
 	src := model.RoomKeyEnsureRequest{RoomID: "room-abc"}
-	data, err := json.Marshal(src)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var dst model.RoomKeyEnsureRequest
-	if err := json.Unmarshal(data, &dst); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !reflect.DeepEqual(src, dst) {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
-	}
+	roundTrip(t, &src, &model.RoomKeyEnsureRequest{})
 }
 
 func TestRoomKeyEnsureResponseJSON(t *testing.T) {
 	src := model.RoomKeyEnsureResponse{RoomID: "room-abc", Version: 3}
-	data, err := json.Marshal(src)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var dst model.RoomKeyEnsureResponse
-	if err := json.Unmarshal(data, &dst); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !reflect.DeepEqual(src, dst) {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
-	}
+	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
 }
 
 func TestNotificationEventJSON(t *testing.T) {
