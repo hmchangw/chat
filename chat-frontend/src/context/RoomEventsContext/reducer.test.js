@@ -1307,3 +1307,67 @@ describe('roomEventsReducer: bucket Sets', () => {
     expect(next.summaries.find((s) => s.id === 'c1').hasMention).toBe(true)
   })
 })
+
+describe('roomEventsReducer: msgRecvSeq (unread-badge refetch trigger)', () => {
+  it('initial state starts at 0', () => {
+    expect(initialState.msgRecvSeq).toBe(0)
+  })
+
+  it('increments on a received message in a non-active room', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(next.msgRecvSeq).toBe(1)
+  })
+
+  it('increments on a received message in the active room too (any message)', () => {
+    const state = { ...initialState, activeRoomId: 'a' }
+    const next = roomEventsReducer(state, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(next.msgRecvSeq).toBe(1)
+  })
+
+  it('does not increment on a duplicate (no-op) message', () => {
+    const s1 = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    const s2 = roomEventsReducer(s1, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    expect(s1.msgRecvSeq).toBe(1)
+    expect(s2.msgRecvSeq).toBe(1)
+  })
+
+  it('does not increment on a thread-reply message (filtered, no-op)', () => {
+    const next = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent({
+        message: {
+          id: 'tr1',
+          roomId: 'a',
+          content: 'reply',
+          createdAt: '2026-04-17T12:00:00Z',
+          threadParentMessageId: 'p1',
+        },
+      }),
+    })
+    expect(next.msgRecvSeq).toBe(0)
+  })
+
+  it('is preserved by non-message actions (SET_ACTIVE_ROOM)', () => {
+    const afterMsg = roomEventsReducer(initialState, {
+      type: 'MESSAGE_RECEIVED',
+      event: newMessageEvent(),
+    })
+    const next = roomEventsReducer(afterMsg, {
+      type: 'SET_ACTIVE_ROOM',
+      roomId: 'a',
+    })
+    expect(next.msgRecvSeq).toBe(1)
+  })
+})

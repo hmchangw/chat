@@ -51,21 +51,33 @@ frontend, served by a new `subscription.count` route on
    → `request<UnreadCountResponse>(userSubscriptionCount(user.account,
    user.siteId), { unread: true })`. No hardcoded value in the frontend.
 
-6. **Hook** — `src/context/RoomEventsContext/useUnreadCount.js`
-   (context-local per frontend conventions).
-   - Fetches `getUnreadCount(nats)` on mount and re-fetches when the
-     active room changes (`state.activeRoomId`) — the same moment the
-     old summaries count used to decrement on read.
-   - Returns a plain `number` (the unread count; `0` until the first
-     fetch resolves). Stale in-flight results dropped via effect cleanup.
+6. **Reducer trigger** — `reducer.js` / `RoomEventsState`: a monotonic
+   `msgRecvSeq` (init `0`) incremented on every accepted
+   `MESSAGE_RECEIVED` (any room; no-op paths — dup, thread reply,
+   undecryptable — don't bump). Pure trigger, not derived data.
 
-7. **`UnreadBadge.jsx`** — consume `useUnreadCount()` instead of
+7. **Hook** — `src/context/RoomEventsContext/useUnreadCount.js`
+   (context-local per frontend conventions). Signature
+   `useUnreadCount(nats, activeRoomId, msgRecvSeq)`; the public
+   `useUnreadCount()` wrapper feeds it `state.activeRoomId` /
+   `state.msgRecvSeq`.
+   - **Immediate** fetch on mount/reconnect (`nats` identity) and
+     active-room change.
+   - **Debounced** refetch (trailing `500ms`) whenever `msgRecvSeq`
+     bumps — a burst of incoming messages collapses to one
+     `subscription.count` RPC (mirrors the `markRoomRead` debounce). The
+     seed value (`0`) is skipped so it doesn't double-fire on mount.
+   - A monotonic request id makes the latest fetch win (slow earlier
+     request, or one resolving post-unmount, is dropped).
+   - Returns a plain `number` (`0` until the first fetch resolves).
+
+8. **`UnreadBadge.jsx`** — consume `useUnreadCount()` instead of
    `useUnreadTotal()`. Drop `hasMention` and the `unread-badge--mention`
    variant (the RPC carries no mention info). Keep: hide when `<= 0`,
    `99+` cap, `aria-label`/`title`. `.chat-header-badge:empty` collapses
    the superscript wrapper at zero unread.
 
-8. **Delete dead code** — `useUnreadTotal` (RoomEventsContext.tsx) and
+9. **Delete dead code** — `useUnreadTotal` (RoomEventsContext.tsx) and
    `selectUnreadTotal` (reducer.js), plus their tests.
 
 ## Testing
@@ -75,8 +87,13 @@ frontend, served by a new `subscription.count` route on
   site mismatch.
 - `api/getUnreadCount`: requests the `subscription.count` subject with
   `{ unread: true }` and returns the reply; propagates transport errors.
+- `reducer`: `msgRecvSeq` starts at 0; bumps on any accepted message
+  (active or not); no-op on dup / thread-reply; preserved by
+  non-message actions.
 - `useUnreadCount`: fetches on mount; re-fetches on `activeRoomId`
-  change; stale cycles dropped.
+  change; debounced 500ms refetch on `msgRecvSeq` bumps with bursts
+  collapsed to one RPC; no refetch while `msgRecvSeq` stays 0; stale
+  results dropped.
 - `UnreadBadge.test.jsx`: hides at 0, renders count, caps at `99+`; no
   mention variant.
 - Removed `selectUnreadTotal` reducer tests.

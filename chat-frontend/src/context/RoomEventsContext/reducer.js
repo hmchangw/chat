@@ -12,6 +12,13 @@ export const initialState = {
   roomState: {},
   activeRoomId: null,
   roomsError: null,
+  /**
+   * Monotonic counter bumped on every accepted MESSAGE_RECEIVED (any
+   * room). Pure trigger, not derived data — `useUnreadCount` keys a
+   * debounced `subscription.count` refetch off it so the badge tracks
+   * incoming messages without re-deriving from `summaries`.
+   */
+  msgRecvSeq: 0,
   favoriteIds: new Set(),
   appIds: new Set(),
   channelDmIds: new Set(),
@@ -368,6 +375,7 @@ export function roomEventsReducer(state, action) {
           ...state,
           summaries,
           roomState: { ...state.roomState, [roomId]: nextRoomState },
+          msgRecvSeq: state.msgRecvSeq + 1,
         }
       }
       // Replace optimistic createdAt (client clock) with server's — keeping
@@ -418,6 +426,7 @@ export function roomEventsReducer(state, action) {
         ...state,
         summaries,
         roomState: { ...state.roomState, [roomId]: nextRoomState },
+        msgRecvSeq: state.msgRecvSeq + 1,
       }
     }
     case 'HISTORY_LOADED': {
