@@ -154,7 +154,8 @@ func (g *authLoadGenerator) Run(ctx context.Context) error {
 // STUB for Phase 3.8 initial landing. Real wire-up creates a dedicated
 // ConnPool of M connections, calls Close on each, then re-dials and
 // observes via loadgen_auth_reconnect_seconds + loadgen_auth_reconnects_completed_total.
-func (g *authLoadGenerator) runReconnectStorm(_ context.Context) error {
+func (g *authLoadGenerator) runReconnectStorm(ctx context.Context) error {
+	_ = ctx    // consumed by real implementation in Phase 3.8 follow-up
 	return nil // PLACEHOLDER — full implementation in Phase 3.8 follow-up
 }
 
@@ -179,13 +180,13 @@ func (s *reconnectStormSim) SimulateDrop() {
 }
 
 // SimulateReconnects pretends each of the n connections re-handshakes in
-// perConnDelay time (sequentially, for deterministic test behaviour).
+// perConnDelay time. Recovery time is computed deterministically as
+// dropAt + n*perConnDelay to avoid time.Sleep (CLAUDE.md §3 forbids Sleep
+// for goroutine synchronisation). The test calls RecoveryDuration after
+// SimulateReconnects returns to verify the computed gap.
 func (s *reconnectStormSim) SimulateReconnects(perConnDelay time.Duration) {
-	for i := 0; i < s.n; i++ {
-		time.Sleep(perConnDelay)
-	}
 	s.mu.Lock()
-	s.recovered = time.Now()
+	s.recovered = s.dropAt.Add(time.Duration(s.n) * perConnDelay)
 	s.mu.Unlock()
 }
 

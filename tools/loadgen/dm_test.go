@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,9 +40,8 @@ func TestPreset_DMRatioPicksProportionally(t *testing.T) {
 		Rooms: makeMixedRooms(50, 50),
 	}
 	counts := map[model.RoomType]int{model.RoomTypeChannel: 0, model.RoomTypeDM: 0}
-	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 10000; i++ {
-		room := pickRoomByDMRatio(p, f, rng)
+		room := pickRoomByDMRatio(p, f)
 		counts[room.Type]++
 	}
 	assert.InDelta(t, 6000, counts[model.RoomTypeDM], 200,
@@ -58,9 +56,8 @@ func TestPreset_DMRatio_AllChannel(t *testing.T) {
 	f := &Fixtures{
 		Rooms: makeMixedRooms(50, 50),
 	}
-	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 1000; i++ {
-		room := pickRoomByDMRatio(p, f, rng)
+		room := pickRoomByDMRatio(p, f)
 		assert.Equal(t, model.RoomTypeChannel, room.Type, "DMRatio=0 must always pick channel")
 	}
 }
@@ -73,9 +70,8 @@ func TestPreset_DMRatio_AllDM(t *testing.T) {
 	f := &Fixtures{
 		Rooms: makeMixedRooms(50, 50),
 	}
-	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 1000; i++ {
-		room := pickRoomByDMRatio(p, f, rng)
+		room := pickRoomByDMRatio(p, f)
 		assert.Equal(t, model.RoomTypeDM, room.Type, "DMRatio=1 must always pick DM")
 	}
 }
@@ -89,8 +85,7 @@ func TestPreset_DMRatio_FallsBackWhenNoDMRooms(t *testing.T) {
 	f := &Fixtures{
 		Rooms: makeMixedRooms(10, 0),
 	}
-	rng := rand.New(rand.NewSource(1))
-	room := pickRoomByDMRatio(p, f, rng)
+	room := pickRoomByDMRatio(p, f)
 	require.NotNil(t, room)
 	assert.Equal(t, model.RoomTypeChannel, room.Type, "fallback must return a channel room")
 }

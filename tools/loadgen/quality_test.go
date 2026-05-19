@@ -93,6 +93,22 @@ func TestRunQuality_UntrustedWithConcurrentDegraded_IssuesContainBoth(t *testing
 	assert.Contains(t, joined, "liveness probe failed 2 times")
 }
 
+// TestRunQuality_DegradedOmissionAtSubMillisecondP99 is a regression test for
+// Fix 6: when MeasuredP99 < 4ms, the old integer-ms division truncated to 0,
+// silently disabling the omission check. With nanosecond arithmetic, a
+// MeasuredP99=2ms and OmissionP99Serviced=1.5ms (75% of budget, above 25%
+// threshold) must trigger DEGRADED.
+func TestRunQuality_DegradedOmissionAtSubMillisecondP99(t *testing.T) {
+	rq := baseGoodInputs()
+	rq.MeasuredP99 = 2 * time.Millisecond
+	rq.OmissionP99Serviced = 1500 * time.Microsecond // 1.5ms > 25% of 2ms (0.5ms)
+	v := EvaluateRunQuality(rq)
+	assert.Equal(t, "DEGRADED", v.Verdict, "sub-millisecond p99 omission check must not be silently disabled")
+	assert.NotEmpty(t, v.Issues)
+	joined := strings.Join(v.Issues, " ")
+	assert.Contains(t, joined, "omission p99")
+}
+
 func baseGoodInputs() *RunQualityInputs {
 	return &RunQualityInputs{
 		MeasuredDuration:    60 * time.Second,

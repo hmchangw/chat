@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -110,7 +111,7 @@ func isValidChaosAction(action string) bool {
 //
 // TOXIPROXY_URL env var (default http://localhost:8474) selects the
 // toxiproxy admin endpoint.
-func runChaos(_ context.Context, _ *config, args []string) int {
+func runChaos(_ context.Context, cfg *config, args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: loadgen chaos <add|remove|list> ...")
 		return 2
@@ -121,10 +122,7 @@ func runChaos(_ context.Context, _ *config, args []string) int {
 		return 2
 	}
 
-	baseURL := os.Getenv("TOXIPROXY_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8474"
-	}
+	baseURL := cfg.ToxiproxyURL
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -140,7 +138,7 @@ func runChaos(_ context.Context, _ *config, args []string) int {
 			return 1
 		}
 		for _, t := range toxics {
-			fmt.Printf("  %s (type=%s) attrs=%v\n", t.Name, t.Type, t.Attributes)
+			slog.Info("chaos toxic", "name", t.Name, "type", t.Type, "attrs", t.Attributes)
 		}
 		return 0
 	case "remove":
@@ -152,7 +150,7 @@ func runChaos(_ context.Context, _ *config, args []string) int {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
-		fmt.Printf("removed toxic %s/%s\n", args[1], args[2])
+		slog.Info("chaos toxic removed", "proxy", args[1], "name", args[2])
 		return 0
 	case "add":
 		if len(args) < 4 {
@@ -174,7 +172,7 @@ func runChaos(_ context.Context, _ *config, args []string) int {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
-		fmt.Printf("added toxic %s/%s (type=%s, attrs=%v)\n", proxy, name, toxicType, attrs)
+		slog.Info("chaos toxic added", "proxy", proxy, "name", name, "type", toxicType, "attrs", attrs)
 		return 0
 	}
 	return 0

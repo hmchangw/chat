@@ -57,6 +57,8 @@ func Settle(ctx context.Context, sf SettleFlags, sampleIDs []string, probe Probe
 		}
 		select {
 		case <-ctx.Done():
+			out.Succeeded = len(ok)
+			out.Failed = len(sampleIDs) - len(ok)
 			return out, fmt.Errorf("settle aborted: %w", ctx.Err())
 		case <-time.After(sf.Interval):
 		}

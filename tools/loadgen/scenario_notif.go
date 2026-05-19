@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -112,7 +113,7 @@ func (g *notificationFanoutGenerator) Run(ctx context.Context) error {
 
 	inapp, err := g.deps.Metrics().NotificationLag.CurryWith(prometheus.Labels{"channel": "inapp"})
 	if err != nil {
-		return err
+		return fmt.Errorf("curry notification lag histogram: %w", err)
 	}
 	_ = inapp // wired when subscriber goroutine is implemented
 

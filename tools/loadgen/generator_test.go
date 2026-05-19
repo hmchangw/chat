@@ -603,3 +603,41 @@ func TestGenerator_RejectsZeroRateAndNoRamp(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidRate)
 }
+
+// TestGenerator_NoDMRatioRaceWithMaxInFlight is a race-detector regression for
+// Fix 1: g.rng was accessed concurrently from publishOne goroutines when
+// DMRatio > 0 AND MaxInFlight > 0. With -race this would fail before the fix.
+// After the fix (randv2 package-level globals), it must pass cleanly.
+func TestGenerator_NoDMRatioRaceWithMaxInFlight(t *testing.T) {
+	p := &Preset{
+		Name:         "race-test",
+		Users:        20,
+		Rooms:        20,
+		DMRatio:      0.6,
+		RoomSizeDist: DistUniform,
+		SenderDist:   DistUniform,
+		ContentBytes: Range{Min: 50, Max: 50},
+	}
+	f := BuildFixtures(p, 1, "site-local")
+	rp := &recordingPublisher{}
+	m := NewMetrics()
+	c := NewCollector(m, p.Name)
+	g := NewGenerator(&GeneratorConfig{
+		Preset:      p,
+		Fixtures:    f,
+		SiteID:      "site-local",
+		Rate:        500,
+		Inject:      InjectFrontdoor,
+		Publisher:   rp,
+		Metrics:     m,
+		Collector:   c,
+		MaxInFlight: 8,
+	}, 42)
+
+	// Run for 1000 ticks' worth of time — the race detector will catch any
+	// concurrent access to a shared rand source if the fix was reverted.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	require.NoError(t, g.Run(ctx))
+	assert.Greater(t, rp.count(), 0, "should have published at least one message")
+}

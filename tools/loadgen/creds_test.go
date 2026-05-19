@@ -15,13 +15,15 @@ import (
 func TestRedactEnv_Comprehensive(t *testing.T) {
 	in := map[string]string{
 		// Exact key matches.
-		"AUTH_TOKEN":    "secret",
-		"MONGO_URI":     "mongodb://user:pass@h",
-		"DATABASE_URL":  "postgres://...",
-		"REDIS_URL":     "redis://...",
-		"KAFKA_BROKERS": "broker1:9092",
-		"API_KEY":       "apikey123",
-		"NATS_CREDS":    "/path/to/creds",
+		"AUTH_TOKEN":      "secret",
+		"MONGO_URI":       "mongodb://user:pass@h",
+		"DATABASE_URL":    "postgres://...",
+		"REDIS_URL":       "redis://...",
+		"KAFKA_BROKERS":   "broker1:9092",
+		"API_KEY":         "apikey123",
+		"NATS_CREDS":      "/path/to/creds",
+		"SEARCH_URL":      "https://user:pass@elasticsearch:9200",
+		"OIDC_ISSUER_URL": "https://sso.example.com",
 
 		// Suffix matches.
 		"MY_API_KEY":       "k",
@@ -53,7 +55,7 @@ func TestRedactEnv_Comprehensive(t *testing.T) {
 	redacted := []string{
 		// Exact matches.
 		"AUTH_TOKEN", "MONGO_URI", "DATABASE_URL", "REDIS_URL", "KAFKA_BROKERS",
-		"API_KEY", "NATS_CREDS",
+		"API_KEY", "NATS_CREDS", "SEARCH_URL", "OIDC_ISSUER_URL",
 		// Suffix matches.
 		"MY_API_KEY", "USER_PRIVATE_KEY", "DB_PASSWORD", "SERVICE_SECRET",
 		"APP_TOKEN", "CONN_DSN", "SOME_NKEY", "AUTH_JWT",

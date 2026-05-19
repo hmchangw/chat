@@ -47,6 +47,7 @@ type readReceiptFn func(ctx context.Context, msgID, roomType string) error
 
 // fireReadReceipts iterates recents and invokes fn for the configured coverage
 // fraction (random pick per message). Returns the first error.
+// When rng is nil, uses math/rand/v2 package-level globals (goroutine-safe).
 func fireReadReceipts(ctx context.Context, recents []RecentMessage, coverage float64, fn readReceiptFn, rng *randv2.Rand) error {
 	if coverage <= 0 {
 		return nil
@@ -54,8 +55,12 @@ func fireReadReceipts(ctx context.Context, recents []RecentMessage, coverage flo
 	if coverage > 1 {
 		coverage = 1
 	}
+	float64Fn := randv2.Float64
+	if rng != nil {
+		float64Fn = rng.Float64
+	}
 	for _, msg := range recents {
-		if rng.Float64() > coverage {
+		if float64Fn() > coverage {
 			continue
 		}
 		if err := fn(ctx, msg.MessageID, msg.RoomType); err != nil {
@@ -82,12 +87,11 @@ func (g *readReceiptsGenerator) Run(ctx context.Context) error {
 	}
 
 	hist := g.deps.Metrics().MessageRead
-	rng := randv2.New(randv2.NewPCG(uint64(time.Now().UnixNano()), 0))
 
 	fn := func(ctx context.Context, msgID, roomType string) error {
 		start := time.Now()
 		if err := g.publishReadEvent(ctx, msgID); err != nil {
-			return err
+			return fmt.Errorf("publish read receipt for %s: %w", msgID, err)
 		}
 		hist.WithLabelValues(roomType).Observe(time.Since(start).Seconds())
 		return nil
@@ -106,11 +110,16 @@ func (g *readReceiptsGenerator) Run(ctx context.Context) error {
 				// Co-run with messaging-pipeline; wait for it to publish.
 				continue
 			}
+			// Take a per-tick snapshot of the coverage so goroutines capture
+			// the value, not a reference that could race with future updates.
+			tickCoverage := coverage
 			wg.Add(1)
 			go func(snap []RecentMessage) {
 				defer wg.Done()
+				// Use math/rand/v2 package-level globals (goroutine-safe ChaCha8).
+				// Passing nil signals fireReadReceipts to use package-level calls.
 				// Errors logged inside fn; outer-loop continues.
-				_ = fireReadReceipts(ctx, snap, coverage, fn, rng)
+				_ = fireReadReceipts(ctx, snap, tickCoverage, fn, nil)
 			}(recents)
 		}
 	}

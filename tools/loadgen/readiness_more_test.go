@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -143,11 +144,11 @@ func TestBuildLivenessProbeFromScenario_DispatchBranches(t *testing.T) {
 	err = fallbackProbe(context.Background())
 	require.NoError(t, err, "RTT check should succeed with healthy fake conn")
 
-	// Branch 2b: RTT conn reports error → probe reflects it.
+	// Branch 2b: RTT conn reports error → probe wraps and propagates it.
 	failConn := &fakeRTTConn{rtt: 0, err: context.Canceled}
 	failProbe := buildLivenessProbeFromScenario(messagingScenario, nil, failConn)
 	err = failProbe(context.Background())
-	assert.Equal(t, context.Canceled, err, "probe must propagate RTT error")
+	assert.True(t, errors.Is(err, context.Canceled), "probe must propagate RTT error (got: %v)", err)
 
 	// Branch 2c: nil conn in fallback → probe succeeds (no-op).
 	nilConnProbe := buildLivenessProbeFromScenario(messagingScenario, nil, nil)

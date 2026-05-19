@@ -41,12 +41,12 @@ type ArtifactBundle struct {
 // always written — empty fields produce zero-byte (or valid-JSON-empty) files.
 func WriteBundle(rootDir string, b *ArtifactBundle) error {
 	dir := filepath.Join(rootDir, b.RunID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create run dir %s: %w", dir, err)
 	}
 
 	if err := writeJSON(filepath.Join(dir, "summary.json"), b.Summary); err != nil {
-		return err
+		return fmt.Errorf("write summary artifact: %w", err)
 	}
 	// histograms.hlog: HDR snapshots serialized as indented JSON.
 	// NOTE: hdr.Snapshot.Counts is a dense ~11k-bucket array; expect ~80KB per histogram cell,
@@ -55,28 +55,28 @@ func WriteBundle(rootDir string, b *ArtifactBundle) error {
 	// Interpretation requires the library. A more debuggable format (compressed or HDR native log)
 	// is a follow-up — see CHANGES.md notes. Nil map serializes to JSON "null"; that's acceptable.
 	if err := writeJSON(filepath.Join(dir, "histograms.hlog"), b.Histograms); err != nil {
-		return err
+		return fmt.Errorf("write histograms artifact: %w", err)
 	}
 	if err := writeJSON(filepath.Join(dir, "settle.json"), b.Settle); err != nil {
-		return err
+		return fmt.Errorf("write settle artifact: %w", err)
 	}
 	if err := writeFlags(filepath.Join(dir, "flags.txt"), b.FlagsRaw); err != nil {
-		return err
+		return fmt.Errorf("write flags artifact: %w", err)
 	}
 	if err := writeEnv(filepath.Join(dir, "env.txt"), b.EnvRedacted); err != nil {
-		return err
+		return fmt.Errorf("write env artifact: %w", err)
 	}
 	if err := writeFile(filepath.Join(dir, "stdout.log"), b.StdoutLog); err != nil {
-		return err
+		return fmt.Errorf("write stdout log: %w", err)
 	}
 	if err := writeFile(filepath.Join(dir, "stderr.log"), b.StderrLog); err != nil {
-		return err
+		return fmt.Errorf("write stderr log: %w", err)
 	}
 	if err := writeFile(filepath.Join(dir, "metrics.prom"), b.MetricsProm); err != nil {
-		return err
+		return fmt.Errorf("write metrics artifact: %w", err)
 	}
 	if err := writeFile(filepath.Join(dir, "timeseries.jsonl"), b.TimeseriesJSONL); err != nil {
-		return err
+		return fmt.Errorf("write timeseries artifact: %w", err)
 	}
 	return nil
 }

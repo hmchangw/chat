@@ -40,6 +40,9 @@ type config struct {
 	// --federation-secondary-nats-url (mirrors the run flag).
 	// Env: FEDERATION_SECONDARY_NATS_URL (optional, default disabled).
 	FederationSecondaryNATSURL string `env:"FEDERATION_SECONDARY_NATS_URL" envDefault:""`
+	// ToxiproxyURL is the toxiproxy admin endpoint for the chaos subcommand.
+	// Env: TOXIPROXY_URL (optional, default http://localhost:8474).
+	ToxiproxyURL string `env:"TOXIPROXY_URL" envDefault:"http://localhost:8474"`
 }
 
 func main() {
@@ -175,7 +178,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		rid := *runID
 		if rid == "" {
 			rid = idgen.GenerateUUIDv7()
-			fmt.Printf("run-id: %s\n", rid)
+			slog.Info("seed complete", "run_id", rid)
 		}
 
 		if *withJWTs {
@@ -280,9 +283,10 @@ func dispatchTeardownForce(ctx context.Context, cfg *config, olderThan time.Dura
 		return 1
 	}
 
-	skipped := len(rep.SkippedDBs) + len(rep.SkippedConsumers)
-	fmt.Printf("teardown --force: dropped %d Mongo DBs, %d JetStream consumers (skipped %d active)\n",
-		len(rep.DroppedMongoDBs), len(rep.DroppedConsumers), skipped)
+	slog.Info("teardown --force complete",
+		"dropped_dbs", len(rep.DroppedMongoDBs),
+		"dropped_consumers", len(rep.DroppedConsumers),
+		"skipped", len(rep.SkippedDBs)+len(rep.SkippedConsumers))
 	return 0
 }
 

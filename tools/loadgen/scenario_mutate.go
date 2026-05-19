@@ -44,12 +44,19 @@ type messageMutateGenerator struct {
 
 // pickMutationKind returns "edit" or "delete" weighted by Preset.EditRate
 // vs DeleteRate. If both are zero, defaults to "edit" (treat as edit-only).
+// When rng is nil, uses math/rand/v2 package-level globals (goroutine-safe).
 func pickMutationKind(p *Preset, rng *rand.Rand) string {
 	total := p.EditRate + p.DeleteRate
 	if total <= 0 {
 		return "edit"
 	}
-	if rng.Float64() < p.EditRate/total {
+	var f float64
+	if rng != nil {
+		f = rng.Float64()
+	} else {
+		f = rand.Float64()
+	}
+	if f < p.EditRate/total {
 		return "edit"
 	}
 	return "delete"
@@ -58,17 +65,24 @@ func pickMutationKind(p *Preset, rng *rand.Rand) string {
 // pickEditTargetByAge picks a message ID weighted by the edit-age distribution.
 // Returns (messageID, ringName) where ringName is "typo" or "correction".
 // Falls back to the non-empty ring when the preferred ring is empty.
+// When rng is nil, uses math/rand/v2 package-level globals (goroutine-safe).
 func pickEditTargetByAge(typoRing, correctionRing []string, typoFraction float64, rng *rand.Rand) (string, string) {
-	if rng.Float64() < typoFraction {
+	float64Fn := rand.Float64
+	intNFn := rand.IntN
+	if rng != nil {
+		float64Fn = rng.Float64
+		intNFn = rng.IntN
+	}
+	if float64Fn() < typoFraction {
 		if len(typoRing) > 0 {
-			return typoRing[rng.IntN(len(typoRing))], "typo"
+			return typoRing[intNFn(len(typoRing))], "typo"
 		}
 	}
 	if len(correctionRing) > 0 {
-		return correctionRing[rng.IntN(len(correctionRing))], "correction"
+		return correctionRing[intNFn(len(correctionRing))], "correction"
 	}
 	if len(typoRing) > 0 {
-		return typoRing[rng.IntN(len(typoRing))], "typo"
+		return typoRing[intNFn(len(typoRing))], "typo"
 	}
 	return "", "" // no candidates
 }
@@ -119,7 +133,6 @@ func (g *messageMutateGenerator) Run(ctx context.Context) error {
 	ticker := time.NewTicker(time.Second / time.Duration(rate))
 	defer ticker.Stop()
 
-	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
@@ -135,8 +148,12 @@ func (g *messageMutateGenerator) Run(ctx context.Context) error {
 			if len(recents) == 0 {
 				continue
 			}
-			kind := pickMutationKind(g.deps.Preset(), rng)
-			target := recents[rng.IntN(len(recents))]
+			// Use math/rand/v2 package-level globals (goroutine-safe ChaCha8)
+			// directly — do NOT create a per-tick *rand.Rand which is not
+			// goroutine-safe and would race when goroutines from consecutive
+			// ticks overlap.
+			kind := pickMutationKind(g.deps.Preset(), nil)
+			target := recents[rand.IntN(len(recents))]
 
 			wg.Add(1)
 			go func(msgID string, k string) {

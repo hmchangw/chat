@@ -36,13 +36,13 @@ func Seed(ctx context.Context, db *mongo.Database, f *Fixtures) error {
 	}
 
 	if err := insertDocs(ctx, db.Collection("users"), f.Users); err != nil {
-		return err
+		return fmt.Errorf("seed users: %w", err)
 	}
 	if err := insertDocs(ctx, db.Collection("rooms"), f.Rooms); err != nil {
-		return err
+		return fmt.Errorf("seed rooms: %w", err)
 	}
 	if err := insertDocs(ctx, db.Collection("subscriptions"), f.Subscriptions); err != nil {
-		return err
+		return fmt.Errorf("seed subscriptions: %w", err)
 	}
 
 	subsIdx := db.Collection("subscriptions")

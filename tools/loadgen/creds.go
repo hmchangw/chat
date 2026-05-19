@@ -24,6 +24,8 @@ var secretExactKeys = map[string]struct{}{
 	"REDIS_URL":       {},
 	"KAFKA_BROKERS":   {},
 	"API_KEY":         {},
+	"SEARCH_URL":      {},
+	"OIDC_ISSUER_URL": {},
 }
 
 // secretSuffixes: suffix substring matches (upper-cased). A key whose suffix

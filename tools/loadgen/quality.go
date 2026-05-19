@@ -144,14 +144,17 @@ func EvaluateRunQuality(in *RunQualityInputs) RunQualityVerdict {
 			"abort watcher deafened by sample cap (partial)")
 	}
 
-	budgetMs := in.OmissionBudgetMs
-	if budgetMs == 0 && in.MeasuredP99 > 0 {
-		budgetMs = int(in.MeasuredP99.Milliseconds() / 4) // 25% of measured p99
+	// Use nanosecond arithmetic to avoid truncation to 0 when MeasuredP99 < 4ms
+	// (Fix 6: integer division in ms domain silently disabled the check for
+	// sub-4ms p99 latencies because Milliseconds()/4 truncated to 0).
+	budgetNs := int64(in.OmissionBudgetMs) * int64(time.Millisecond)
+	if in.OmissionBudgetMs == 0 && in.MeasuredP99 > 0 {
+		budgetNs = int64(in.MeasuredP99) / 4 // 25% of MeasuredP99 in nanoseconds
 	}
-	if budgetMs > 0 && in.OmissionP99Serviced > time.Duration(budgetMs)*time.Millisecond {
+	if budgetNs > 0 && int64(in.OmissionP99Serviced) > budgetNs {
 		degraded = append(degraded,
-			fmt.Sprintf("omission p99 %v exceeds budget %dms → see USAGE.md#omission-budget",
-				in.OmissionP99Serviced, budgetMs))
+			fmt.Sprintf("omission p99 %v exceeds budget %v → see USAGE.md#omission-budget",
+				in.OmissionP99Serviced, time.Duration(budgetNs)))
 	}
 
 	if in.LivenessFailures > 0 && !in.LivenessWatcherTripped {

@@ -113,14 +113,12 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	latencyWindow := NewLatencyWindow(windowRetain).WithMaxSamples(resolvedAbortCap)
 	collector.AttachWindow(latencyWindow)
 
-	// warmupDeadline is declared here (before E1 subscription) so the E1
-	// closure below can capture the variable by reference and read the correct
-	// deadline once it is set further below (at the generator construction
-	// site). Zero value is safe: time.Now().Before(zero) is always false, so
-	// before the assignment every reply is labelled "measured" — which is
-	// correct because the E1 subscription only fires when the generator is
-	// running, and the generator isn't started until after the assignment.
-	var warmupDeadline time.Time
+	// warmupDeadlineNs stores the warmup deadline as Unix nanoseconds using
+	// atomic.Int64 so the E1 NATS-dispatch goroutine can read it safely while
+	// executeRun writes it (Fix 4: was a plain time.Time causing a data race).
+	// Zero value is safe: time.Now().UnixNano() > 0, so Before(zero) is always
+	// false and every reply is labelled "measured" until the deadline is set.
+	var warmupDeadlineNs atomic.Int64
 
 	// E1 subscription: gatekeeper replies.
 	e1Sub, err := rt.NC().NatsConn().Subscribe(subject.UserResponseWildcard(), func(msg *nats.Msg) {
@@ -135,7 +133,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			Error string `json:"error"`
 		}
 		e1Phase := "measured"
-		if time.Now().Before(warmupDeadline) {
+		if dl := warmupDeadlineNs.Load(); dl > 0 && time.Now().UnixNano() < dl {
 			e1Phase = "warmup"
 		}
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
@@ -340,7 +338,8 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		}
 	}
 
-	warmupDeadline = time.Now().Add(rf.Warmup)
+	warmupDeadline := time.Now().Add(rf.Warmup)
+	warmupDeadlineNs.Store(warmupDeadline.UnixNano())
 
 	// Auto-warmup: let the scenario declare whether it needs a brief
 	// messaging-pipeline phase to populate the message-ID pool.
@@ -373,6 +372,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 			// Reset warmup deadline now that the warm-up phase has elapsed:
 			// the read generator's measured window starts fresh.
 			warmupDeadline = time.Now()
+			warmupDeadlineNs.Store(warmupDeadline.UnixNano())
 		}
 	}
 	// Pass harvested message IDs and the (possibly-reset) warmupDeadline to
@@ -1045,7 +1045,10 @@ func buildLivenessProbeFromScenario(sc Scenario, deps ScenarioDeps, conn natsCon
 			return nil
 		}
 		_, err := conn.RTT()
-		return err
+		if err != nil {
+			return fmt.Errorf("liveness check (NATS RTT): %w", err)
+		}
+		return nil
 	}
 }
 

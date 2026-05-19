@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	randv2 "math/rand/v2"
 	"strings"
 	"sync"
@@ -77,11 +76,6 @@ type Generator struct {
 	// honor preset config that pre-fix was silently ignored.
 	senders *senderPicker
 	threads *threadPool
-	// rng is a seeded source used exclusively by pickRoomByDMRatio when
-	// Preset.DMRatio > 0. Separate from the math/rand/v2 globals so
-	// DMRatio-weighted room picks are deterministic across runs with the
-	// same seed (reproducibility for capacity-test analysis).
-	rng *rand.Rand
 }
 
 // NewGenerator returns a Generator. The `seed` parameter is retained for
@@ -101,10 +95,6 @@ func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
 		maxBody: strings.Repeat("x", max),
 		senders: newSenderPicker(len(cfg.Fixtures.Subscriptions), cfg.Preset.SenderDist, seed),
 		threads: newThreadPool(threadPoolCapacity),
-		// Use seed+1 so the DMRatio rng is independent from the Zipf sender
-		// picker (same seed would produce the same sequence for both, causing
-		// unexpected correlation between sender selection and room type pick).
-		rng: rand.New(rand.NewSource(seed + 1)),
 	}
 }
 
@@ -237,10 +227,10 @@ func (g *Generator) publishOne(ctx context.Context) {
 	// no subscriptions in the index or when DMRatio==0.
 	var subIdx int
 	if g.cfg.Preset.DMRatio > 0 && len(g.cfg.Fixtures.RoomSubs) > 0 {
-		room := pickRoomByDMRatio(g.cfg.Preset, &g.cfg.Fixtures, g.rng)
+		room := pickRoomByDMRatio(g.cfg.Preset, &g.cfg.Fixtures)
 		if room != nil {
 			if indices, ok := g.cfg.Fixtures.RoomSubs[room.ID]; ok && len(indices) > 0 {
-				subIdx = indices[g.rng.Intn(len(indices))]
+				subIdx = indices[randv2.IntN(len(indices))]
 			} else {
 				subIdx = g.senders.pick()
 			}
@@ -349,10 +339,9 @@ func (g *Generator) publishOne(ctx context.Context) {
 //   - with probability (1-DMRatio), picks a channel room
 //
 // Falls back to any room when the preferred type has no candidates.
-// The rng parameter is a *math/rand.Rand from the caller; call sites that
-// supply nil receive a panic — callers must provide a valid source.
-func pickRoomByDMRatio(p *Preset, f *Fixtures, rng *rand.Rand) *model.Room {
-	wantDM := rng.Float64() < p.DMRatio
+// Uses math/rand/v2 package-level globals which are goroutine-safe.
+func pickRoomByDMRatio(p *Preset, f *Fixtures) *model.Room {
+	wantDM := randv2.Float64() < p.DMRatio
 	candidates := make([]*model.Room, 0, len(f.Rooms))
 	for i := range f.Rooms {
 		isDM := f.Rooms[i].Type == model.RoomTypeDM
@@ -363,9 +352,9 @@ func pickRoomByDMRatio(p *Preset, f *Fixtures, rng *rand.Rand) *model.Room {
 	if len(candidates) == 0 {
 		// Fallback: return any room to avoid panic when the fixture set has
 		// only one room type (e.g. DMRatio=0.9 but no DM rooms seeded yet).
-		return &f.Rooms[rng.Intn(len(f.Rooms))]
+		return &f.Rooms[randv2.IntN(len(f.Rooms))]
 	}
-	return candidates[rng.Intn(len(candidates))]
+	return candidates[randv2.IntN(len(candidates))]
 }
 
 func (g *Generator) content() string {
