@@ -1164,12 +1164,11 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 }
 
 // NatsHandleEnsureRoomKey handles server-to-server requests to get or generate
-// a room's current encryption key pair (chat.server.request.room.{siteID}.key.ensure).
-// Trusted callers (e.g. connectors syncing oplog data) receive both public and
-// private key bytes so they can perform encryption without accessing Valkey directly.
+// a room's current encryption key pair. Trusted server-side callers receive
+// both public and private key bytes.
 func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
 	ctx := wrappedCtx(m)
-	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Subject, m.Msg.Data)
+	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Data)
 	if err != nil {
 		slog.Error("ensure room key failed", "error", err)
 		natsutil.ReplyError(m.Msg, sanitizeError(err))
@@ -1180,7 +1179,7 @@ func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
 	}
 }
 
-func (h *Handler) handleEnsureRoomKey(ctx context.Context, _ string, data []byte) ([]byte, error) {
+func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte, error) {
 	if h.keyStore == nil {
 		return nil, fmt.Errorf("ensure room key: key store not configured")
 	}
@@ -1197,11 +1196,12 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, _ string, data []byte
 		return nil, fmt.Errorf("ensure room key: get: %w", err)
 	}
 	if existing != nil {
-		return json.Marshal(model.RoomKeyEnsureResponse{
+		return json.Marshal(model.RoomKeyEvent{
 			RoomID:     req.RoomID,
 			Version:    existing.Version,
 			PublicKey:  existing.KeyPair.PublicKey,
 			PrivateKey: existing.KeyPair.PrivateKey,
+			Timestamp:  time.Now().UTC().UnixMilli(),
 		})
 	}
 
@@ -1213,10 +1213,11 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, _ string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("ensure room key: set: %w", err)
 	}
-	return json.Marshal(model.RoomKeyEnsureResponse{
+	return json.Marshal(model.RoomKeyEvent{
 		RoomID:     req.RoomID,
 		Version:    ver,
 		PublicKey:  newPair.PublicKey,
 		PrivateKey: newPair.PrivateKey,
+		Timestamp:  time.Now().UTC().UnixMilli(),
 	})
 }

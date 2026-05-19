@@ -3108,10 +3108,10 @@ func TestHandler_EnsureRoomKey_KeyExists(t *testing.T) {
 	req := model.RoomKeyEnsureRequest{RoomID: "room-abc"}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	resp, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.NoError(t, err)
 
-	var result model.RoomKeyEnsureResponse
+	var result model.RoomKeyEvent
 	require.NoError(t, json.Unmarshal(resp, &result))
 	assert.Equal(t, "room-abc", result.RoomID)
 	assert.Equal(t, 7, result.Version)
@@ -3137,10 +3137,10 @@ func TestHandler_EnsureRoomKey_KeyNotFound_SetsNew(t *testing.T) {
 	req := model.RoomKeyEnsureRequest{RoomID: "room-new"}
 	data, _ := json.Marshal(req)
 
-	resp, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	resp, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.NoError(t, err)
 
-	var result model.RoomKeyEnsureResponse
+	var result model.RoomKeyEvent
 	require.NoError(t, json.Unmarshal(resp, &result))
 	assert.Equal(t, "room-new", result.RoomID)
 	assert.Equal(t, 0, result.Version)
@@ -3155,7 +3155,7 @@ func TestHandler_EnsureRoomKey_MalformedRequest(t *testing.T) {
 	keyStore := NewMockRoomKeyStore(ctrl)
 	h := &Handler{keyStore: keyStore, siteID: "site-local"}
 
-	_, err := h.handleEnsureRoomKey(context.Background(), "", []byte("{not json"))
+	_, err := h.handleEnsureRoomKey(context.Background(), []byte("{not json"))
 	require.Error(t, err)
 }
 
@@ -3165,7 +3165,7 @@ func TestHandler_EnsureRoomKey_MissingRoomID(t *testing.T) {
 	h := &Handler{keyStore: keyStore, siteID: "site-local"}
 
 	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: ""})
-	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
 }
 
@@ -3177,7 +3177,7 @@ func TestHandler_EnsureRoomKey_GetError(t *testing.T) {
 	h := &Handler{keyStore: keyStore, siteID: "site-local"}
 	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-err"})
 
-	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
 }
 
@@ -3190,7 +3190,7 @@ func TestHandler_EnsureRoomKey_SetError(t *testing.T) {
 	h := &Handler{keyStore: keyStore, siteID: "site-local"}
 	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-setfail"})
 
-	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
 }
 
@@ -3198,6 +3198,6 @@ func TestHandler_EnsureRoomKey_NilKeyStore(t *testing.T) {
 	h := &Handler{keyStore: nil, siteID: "site-local"}
 	data, _ := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "room-abc"})
 
-	_, err := h.handleEnsureRoomKey(context.Background(), "", data)
+	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
 }
