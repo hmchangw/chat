@@ -27,8 +27,6 @@ type NATSConfig struct {
 	CredsFile string `env:"CREDS_FILE" envDefault:""`
 }
 
-
-
 // Config is the top-level configuration for history-service.
 type Config struct {
 	SiteID                  string          `env:"SITE_ID"                    envDefault:"site-local"`

@@ -3089,8 +3089,6 @@ func TestHandler_RemoveMember_StampsBaseKeyVersion(t *testing.T) {
 	assert.Equal(t, 4, captured.BaseKeyVersion, "BaseKeyVersion must be stamped from the current Valkey version")
 }
 
-// --- TestHandler_EnsureRoomKey ---
-
 func TestHandler_EnsureRoomKey_KeyExists(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	keyStore := NewMockRoomKeyStore(ctrl)
