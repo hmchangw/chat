@@ -148,10 +148,11 @@ tools:
 # (no fail-fast) so every category is reported in one pass; exits non-zero
 # if any scan finds an issue. This is the exact command CI enforces.
 sast:
-	@rc=0; \
-	$(MAKE) --no-print-directory sast-gosec   || rc=1; \
-	$(MAKE) --no-print-directory sast-vuln    || rc=1; \
-	$(MAKE) --no-print-directory sast-semgrep || rc=1; \
+	@rc=0; g=PASS; v=PASS; s=PASS; \
+	$(MAKE) --no-print-directory sast-gosec   || { rc=1; g=FAIL; }; \
+	$(MAKE) --no-print-directory sast-vuln    || { rc=1; v=FAIL; }; \
+	$(MAKE) --no-print-directory sast-semgrep || { rc=1; s=FAIL; }; \
+	echo "==> SAST summary: gosec=$$g govulncheck=$$v semgrep=$$s"; \
 	exit $$rc
 
 # gosec: Go security static analysis (injection, weak crypto, unsafe code).

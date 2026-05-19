@@ -247,8 +247,44 @@ jobs:
         run: |
           make tools
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Explicit `set -o pipefail` so make's exit status (not tee's)
+      # drives the step outcome.
       - name: SAST (gosec + govulncheck + semgrep, fail on medium+)
-        run: make sast
+        run: |
+          set -o pipefail
+          make sast 2>&1 | tee /tmp/sast.log
+
+      - name: Write SAST log to step summary
+        if: always()
+        run: |
+          f=/tmp/sast.log
+          [ -f "$f" ] || exit 0
+          {
+            echo "## SAST scan log"
+            echo ""
+            echo '<details><summary>Full output</summary>'
+            echo ''
+            echo '```'
+            tail -c 400000 "$f"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On failure, surface the last 60 KB of the log as a single
+      # annotation (64 KB cap per body) so the failing scanner and its
+      # findings are visible on the job page without signing in.
+      - name: Surface SAST failure tail
+        if: failure()
+        run: |
+          f=/tmp/sast.log
+          [ -f "$f" ] || exit 0
+          echo "::group::tail of $f"
+          tail -n 800 "$f"
+          echo "::endgroup::"
+          body="$(tail -c 60000 "$f" | sed '/^$/d' \
+            | sed 's/::/\xE2\x80\xA7\xE2\x80\xA7/g' \
+            | awk 'BEGIN{ORS=""} {print $0"%0A"}')"
+          printf '::error file=%s::%s\n' "$(basename "$f")" "$body"
 
   test-integration:
     needs: prewarm
