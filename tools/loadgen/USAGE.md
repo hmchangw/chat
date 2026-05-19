@@ -68,6 +68,55 @@ After auto-warmup and before the measured window, loadgen polls `--settle-probes
 
 `--inject=frontdoor` (default) publishes via the normal MESSAGES JetStream subject — exercises the full pipeline (gatekeeper, worker). `--inject=canonical` bypasses gatekeeper and publishes directly to MESSAGES_CANONICAL — useful for isolating downstream workers.
 
+### RUN QUALITY verdict state diagram
+
+The verdict accumulates evidence across the run. Each rule contributes to either the UNTRUSTED tier (numbers cannot be defended) or the DEGRADED tier (numbers can be reported with caveats). The final verdict is the highest tier triggered.
+
+```mermaid
+stateDiagram-v2
+    [*] --> TRUSTED: clean run
+    TRUSTED --> DEGRADED: warmup error 5-20%<br/>OR omission > budget<br/>OR liveness failed (watcher didn't trip)<br/>OR RAW poll too coarse<br/>OR abort watcher deafened (partial)
+    TRUSTED --> UNTRUSTED: drain timed out<br/>OR measured < abort-p99-sustain<br/>OR warmup error > 20%<br/>OR settle phase incomplete<br/>OR abort watcher deafened (severe)
+    DEGRADED --> UNTRUSTED: any UNTRUSTED rule fires after DEGRADED already set
+    UNTRUSTED --> [*]: exit 4
+    TRUSTED --> [*]: exit 0
+    DEGRADED --> [*]: exit 0
+```
+
+A verdict can only be reached once per run (terminal). The Issues list includes ALL fired rules — even DEGRADED-tier issues are listed in an UNTRUSTED verdict for visibility.
+
+### Settle phase sequence
+
+When `--settle-probes > 0`, the harness pauses between auto-warmup and the measured window to verify N recent message-IDs are visible in the downstream system.
+
+```mermaid
+sequenceDiagram
+    participant Harness
+    participant SUT as Downstream SUT (e.g., history-service)
+
+    Note over Harness: auto-warmup complete
+    Harness->>Harness: collect N recent message IDs
+
+    loop until all-OK or timeout
+        par probe each
+            Harness->>SUT: lookup(msg-1)
+            SUT-->>Harness: NotFound | OK
+        and
+            Harness->>SUT: lookup(msg-2)
+            SUT-->>Harness: NotFound | OK
+        end
+        Harness->>Harness: sleep --settle-interval (default 500ms)
+    end
+
+    alt all N succeeded
+        Harness->>Harness: SettleOutcome{AllSucceeded=true}
+        Note over Harness: proceed to measured window
+    else timeout
+        Harness->>Harness: SettleOutcome{AllSucceeded=false}
+        Note over Harness: RUN QUALITY: UNTRUSTED (settle incomplete)
+    end
+```
+
 ---
 
 ## 5-Minute Tour

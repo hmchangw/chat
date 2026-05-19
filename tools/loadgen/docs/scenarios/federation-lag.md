@@ -7,6 +7,39 @@ JetStream), Mongo, Cassandra, and service stack. Cross-site events flow via
 the OUTBOX→INBOX pattern: site-a's OUTBOX is sourced into site-b's INBOX
 (and vice versa) via JetStream `Sources` + `SubjectTransforms`.
 
+## Cross-site flow diagram
+
+```mermaid
+sequenceDiagram
+    participant UserA as User on site-A
+    participant SiteA_NATS as site-A NATS<br/>(OUTBOX)
+    participant SiteB_NATS as site-B NATS<br/>(INBOX, sourced from site-A OUTBOX)
+    participant SiteB_Worker as site-B inbox-worker
+    participant SiteB_Cass as site-B Cassandra
+    participant SiteB_History as site-B history-service
+
+    UserA->>SiteA_NATS: publish (chat.user.alice.room.r1.site-a.msg.send)
+    Note over UserA,SiteA_NATS: t = publishedAt
+
+    SiteA_NATS->>SiteA_NATS: gatekeeper validates → canonical
+    Note over SiteA_NATS: stage=outbox: loadgen observes here
+
+    SiteA_NATS-->>SiteB_NATS: cross-site source (Sources + SubjectTransforms)
+    Note over SiteA_NATS,SiteB_NATS: stage=inbox: loadgen observes on site-B INBOX
+
+    SiteB_NATS->>SiteB_Worker: deliver inbox event
+    SiteB_Worker->>SiteB_Cass: persist canonical message
+    Note over SiteB_Worker,SiteB_Cass: stage=persist: loadgen sees siteB canonical-msg subject
+
+    SiteB_History->>SiteB_Cass: LoadHistory poll
+    SiteB_Cass-->>SiteB_History: returns msg
+    Note over SiteB_History: stage=visible: loadgen siteB.Requester() success
+```
+
+The 4 stages map to `loadgen_federation_lag_seconds{stage}` histogram labels.
+E2E ≈ visible (it's the cumulative). Per-stage isolation lets ops pinpoint
+the slow link.
+
 ## Four lag stages
 
 | Stage   | From → To                                          |
