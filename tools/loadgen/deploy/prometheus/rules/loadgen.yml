@@ -86,7 +86,7 @@ groups:
       # rate >1 drop/s over 1m means the goroutine pool is full and the tick loop is
       # shedding work: the generator cannot keep up with the configured tick rate.
       - alert: LoadgenSelfSaturation
-        expr: rate(loadgen_request_errors_total{reason="saturated"}[1m]) > 1
+        expr: rate(loadgen_request_errors_total{phase="measured",reason="saturated"}[1m]) > 1
         for: 1m
         labels:
           severity: warning

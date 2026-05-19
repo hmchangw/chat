@@ -529,10 +529,10 @@ Dashboards:
 
 Alert rules are in `deploy/prometheus/rules/loadgen.yml`. Five alerts are defined:
 
-1. `LoadgenUntrustedRun` — any run with verdict=UNTRUSTED → see [untrusted-run](#untrusted-run)
+1. `LoadgenUntrustedRunActive` — any run with verdict=UNTRUSTED → see [untrusted-run](#untrusted-run)
 2. `LoadgenOmissionBudgetExceeded` — omission > 25% of measured latency → see [omission-budget](#omission-budget)
 3. `LoadgenAsyncAckBacklog` — async-ack errors >1/s for 5m → see [async-ack-backlog](#async-ack-backlog)
-4. `LoadgenRAWLag` — RAW visibility lag degraded → see [raw-poll-bias](#raw-poll-bias)
+4. `LoadgenRAWHistoryP99High` — RAW visibility lag degraded → see [raw-poll-bias](#raw-poll-bias)
 5. `LoadgenSelfSaturation` — tick loop dropping >1 send/s → see [self-saturation](#self-saturation)
 
 ---
@@ -673,7 +673,7 @@ Fix: drain the stream (`nats stream purge`), increase retention, or reduce `--js
 
 ### raw-poll-bias
 
-Alert: `LoadgenRAWLag` / warning in summary.
+Alert: `LoadgenRAWHistoryP99High` / warning in summary.
 
 ```
 RAW poll-interval too coarse vs measured p50 → see USAGE.md#raw-poll-bias

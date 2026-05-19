@@ -16,7 +16,7 @@
       "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
       "options": {
         "mode": "markdown",
-        "content": "## Phase 3.9 Federation Scenario Required\n\nThis dashboard depends on metrics produced by the **Phase 3.9 federation scenario**. The following metrics do not exist yet:\n- `loadgen_federation_stage_latency_seconds_bucket` (4 stages: publish→outbox, outbox→inbox, inbox→canonical, canonical→visible)\n- `loadgen_federation_e2e_latency_seconds_bucket` (end-to-end cross-site latency)\n- `loadgen_federation_flap_drain_seconds` (time for a flap event to drain)\n\nAll panels below will show **'No data'** until Phase 3.9 ships."
+        "content": "## Phase 3.9 Federation Scenario Required\n\nThis dashboard depends on metrics produced by the **Phase 3.9 federation scenario**. The following metrics do not exist yet:\n- `loadgen_federation_lag_seconds` (histogram with `stage` label; stages: outbox, inbox, persist, visible)\n- `loadgen_federation_flap_drain_seconds` (time for a flap event to drain)\n- `loadgen_federation_cross_read_seconds` (cross-site read latency)\n\nAll panels below will show **'No data'** until Phase 3.9 ships."
       }
     },
     {
@@ -39,12 +39,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"publish_to_outbox\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"outbox\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"publish_to_outbox\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"outbox\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "B"
         }
@@ -70,12 +70,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"outbox_to_inbox\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"inbox\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"outbox_to_inbox\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"inbox\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "B"
         }
@@ -101,12 +101,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"inbox_to_canonical\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"persist\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"inbox_to_canonical\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"persist\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "B"
         }
@@ -132,12 +132,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"canonical_to_visible\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"visible\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_stage_latency_seconds_bucket{stage=\"canonical_to_visible\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"visible\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "B"
         }
@@ -163,12 +163,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_e2e_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"visible\"}[5m])) by (le))",
           "legendFormat": "e2e p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_e2e_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_federation_lag_seconds_bucket{stage=\"visible\"}[5m])) by (le))",
           "legendFormat": "e2e p50",
           "refId": "B"
         },
