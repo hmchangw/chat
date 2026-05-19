@@ -1,0 +1,118 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync/atomic"
+	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	"golang.org/x/sync/singleflight"
+
+	"github.com/hmchangw/chat/pkg/model"
+)
+
+// cachedSubscription is the projection of model.Subscription that
+// gatekeeper actually reads on the hot path. Caching only these fields
+// (vs the full doc) keeps the cache tight and makes the contract
+// explicit at the cache boundary. ID is the user's entity ID (used by
+// the handler to populate msg.UserID on the canonical message event).
+type cachedSubscription struct {
+	ID      string
+	Account string
+	Roles   []model.Role
+}
+
+type subKey struct {
+	roomID  string
+	account string
+}
+
+// cachedSubStore wraps a Store with an LRU+TTL cache of subscription
+// lookups. Negative results (errNotSubscribed) and transient errors
+// are NOT cached — see the spec for rationale. GetRoomMeta passes
+// through unchanged.
+type cachedSubStore struct {
+	Store
+	lru *lru.LRU[subKey, cachedSubscription]
+	sf  singleflight.Group
+
+	hits   atomic.Uint64
+	misses atomic.Uint64
+}
+
+func newCachedSubStore(inner Store, size int, ttl time.Duration) (*cachedSubStore, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("subcache: size must be positive, got %d", size)
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("subcache: ttl must be positive, got %v", ttl)
+	}
+	return &cachedSubStore{
+		Store: inner,
+		lru:   lru.NewLRU[subKey, cachedSubscription](size, nil, ttl),
+	}, nil
+}
+
+func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+	key := subKey{roomID: roomID, account: account}
+	if v, ok := c.lru.Get(key); ok {
+		c.hits.Add(1)
+		return fromCached(v), nil
+	}
+	c.misses.Add(1)
+
+	// roomIDs and accounts are validated as UUID/base62/email-style strings that
+	// cannot contain NUL bytes; the \x00 separator therefore makes the key
+	// collision-free across any (roomID, account) split.
+	sfKey := roomID + "\x00" + account
+	v, err, _ := c.sf.Do(sfKey, func() (interface{}, error) {
+		if cached, ok := c.lru.Get(key); ok {
+			return cached, nil
+		}
+		sub, err := c.Store.GetSubscription(ctx, account, roomID)
+		if err != nil {
+			// Do not cache errNotSubscribed or transient errors — see spec.
+			return nil, err
+		}
+		projected := cachedSubscription{
+			ID:      sub.User.ID,
+			Account: sub.User.Account,
+			Roles:   append([]model.Role(nil), sub.Roles...),
+		}
+		c.lru.Add(key, projected)
+		return projected, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return fromCached(v.(cachedSubscription)), nil
+}
+
+// fromCached builds a partial *model.Subscription from the cached
+// projection. Only the fields gatekeeper reads (User.ID, User.Account,
+// Roles) are populated; other fields are zero. This is intentional —
+// the cache contract is the projection, not the full doc.
+//
+// The Roles slice is not defensively copied: the slice is already owned
+// by the cache (copied at cache-write in GetSubscription), and the only
+// consumer (canBypassLargeRoomCap) range-reads without mutation.
+func fromCached(c cachedSubscription) *model.Subscription {
+	return &model.Subscription{
+		User:  model.SubscriptionUser{ID: c.ID, Account: c.Account},
+		Roles: c.Roles,
+	}
+}
+
+// SubStats is a snapshot of the subscription cache's hit/miss counters.
+type SubStats struct {
+	Hits, Misses uint64
+}
+
+// Stats returns a snapshot of the cache counters.
+func (c *cachedSubStore) Stats() SubStats {
+	return SubStats{
+		Hits:   c.hits.Load(),
+		Misses: c.misses.Load(),
+	}
+}

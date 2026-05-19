@@ -6,6 +6,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . Store,ParentMessageFetcher
@@ -37,7 +38,7 @@ var errLargeRoomPostRestricted = &codedError{
 
 type Store interface {
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
-	GetRoomUserCount(ctx context.Context, roomID string) (int, error)
+	GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error)
 }
 
 // ParentMessageFetcher resolves a quoted parent message into a snapshot

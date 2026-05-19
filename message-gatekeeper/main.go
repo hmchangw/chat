@@ -32,6 +32,10 @@ type config struct {
 	MaxWorkers         int                     `env:"MAX_WORKERS"     envDefault:"100"`
 	LargeRoomThreshold int                     `env:"LARGE_ROOM_THRESHOLD" envDefault:"500"`
 	ChatBaseURL        string                  `env:"CHAT_BASE_URL"   envDefault:"http://localhost:3000"`
+	SubCacheSize       int                     `env:"GATEKEEPER_SUB_CACHE_SIZE"  envDefault:"100000"`
+	SubCacheTTL        time.Duration           `env:"GATEKEEPER_SUB_CACHE_TTL"   envDefault:"2m"`
+	RoomMetaCacheSize  int                     `env:"ROOM_META_CACHE_SIZE"       envDefault:"10000"`
+	RoomMetaCacheTTL   time.Duration           `env:"ROOM_META_CACHE_TTL"        envDefault:"2m"`
 	Consumer           stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap          bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
@@ -71,7 +75,21 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	store := NewMongoStore(db)
+	mongoStore := NewMongoStore(db)
+	withMeta, err := newCachedMetaStore(mongoStore, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
+	if err != nil {
+		slog.Error("init room meta cache failed", "error", err)
+		os.Exit(1)
+	}
+	store, err := newCachedSubStore(withMeta, cfg.SubCacheSize, cfg.SubCacheTTL)
+	if err != nil {
+		slog.Error("init subscription cache failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("gatekeeper caches enabled",
+		"sub_cache_size", cfg.SubCacheSize, "sub_cache_ttl", cfg.SubCacheTTL,
+		"room_meta_cache_size", cfg.RoomMetaCacheSize, "room_meta_cache_ttl", cfg.RoomMetaCacheTTL,
+	)
 	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		ack, err := js.PublishMsg(ctx, msg, opts...)
 		if err != nil {

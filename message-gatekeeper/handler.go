@@ -172,16 +172,16 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// owner fast-path generalized).
 	isThreadReply := req.ThreadParentMessageID != ""
 	if !isThreadReply && !canBypassLargeRoomCap(sub) {
-		userCount, err := h.store.GetRoomUserCount(ctx, roomID)
+		meta, err := h.store.GetRoomMeta(ctx, roomID)
 		if err != nil {
-			return nil, &infraError{cause: fmt.Errorf("get user count for room %s: %w", roomID, err)}
+			return nil, &infraError{cause: fmt.Errorf("get room meta for %s: %w", roomID, err)}
 		}
-		if userCount > h.largeRoomThreshold {
+		if meta.UserCount > h.largeRoomThreshold {
 			slog.Info("send blocked",
 				"reason", codeLargeRoomPostRestricted,
 				"account", account,
 				"roomID", roomID,
-				"userCount", userCount,
+				"userCount", meta.UserCount,
 				"threshold", h.largeRoomThreshold,
 			)
 			return nil, errLargeRoomPostRestricted

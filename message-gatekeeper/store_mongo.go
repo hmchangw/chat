@@ -7,9 +7,9 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
 type MongoStore struct {
@@ -36,19 +36,6 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	return &sub, nil
 }
 
-// GetRoomUserCount returns the room's userCount via a projected findOne. The
-// admission rule is the only consumer and only needs the count, so we avoid
-// pulling the rest of the Room document over the wire. Any error (including
-// mongo.ErrNoDocuments) is wrapped and returned — the handler treats every
-// failure here as an infrastructure error, since reaching this call already
-// implies a subscription for the room exists.
-func (s *MongoStore) GetRoomUserCount(ctx context.Context, roomID string) (int, error) {
-	var doc struct {
-		UserCount int `bson:"userCount"`
-	}
-	opts := options.FindOne().SetProjection(bson.M{"userCount": 1})
-	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}, opts).Decode(&doc); err != nil {
-		return 0, fmt.Errorf("find user count for room %q: %w", roomID, err)
-	}
-	return doc.UserCount, nil
+func (s *MongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+	return roommetacache.FetchFromMongo(ctx, s.rooms, roomID)
 }
