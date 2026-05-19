@@ -52,7 +52,13 @@ const MARK_READ_DEBOUNCE_MS = 500
  * inside long-lived subscription callbacks to decide whether to fire
  * a `markRoomRead` RPC on incoming messages.
  */
-export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandlerRef) {
+export function useRoomSubscriptions(
+  nats,
+  dispatch,
+  stateRef,
+  threadReplyHandlerRef,
+  threadMessageMutationHandlerRef,
+) {
   const { user } = nats
   // Keep a live ref to `nats` so long-lived subscription callbacks
   // (subUpdate's getRoom call, listRooms inside the effect body) see
@@ -131,6 +137,48 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
       }, MARK_READ_DEBOUNCE_MS)
     }
 
+    // Fan an edit/delete mutation into ThreadEvents (so the open thread, if any,
+    // updates the message too). Room reducer dispatch happens separately below.
+    const fanThreadMutation = (mut) => {
+      const handler = threadMessageMutationHandlerRef?.current
+      if (!handler) return
+      try {
+        handler(mut)
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('thread-mutation handler threw:', err?.message ?? err, mut)
+      }
+    }
+
+    // Translate a wire-level event to room+thread dispatches for edit/delete.
+    const handleMutationEvent = (evt) => {
+      if (evt?.type === 'message_edited' && evt.messageEdited?.messageId) {
+        const { messageId, newContent, editedAt } = evt.messageEdited
+        // Drop edits without a plaintext body. Encrypted channel rooms emit
+        // `encryptedNewContent` instead; blanking the existing content to ''
+        // would silently wipe the message until decryption is implemented.
+        if (typeof newContent !== 'string') return true
+        const editedAtIso =
+          typeof editedAt === 'string' ? editedAt : new Date(editedAt ?? Date.now()).toISOString()
+        safeDispatch({
+          type: 'MESSAGE_EDITED',
+          roomId: evt.roomId,
+          messageId,
+          content: newContent,
+          editedAt: editedAtIso,
+        })
+        fanThreadMutation({ kind: 'edited', messageId, content: newContent, editedAt: editedAtIso })
+        return true
+      }
+      if (evt?.type === 'message_deleted' && evt.messageDeleted?.messageId) {
+        const { messageId } = evt.messageDeleted
+        safeDispatch({ type: 'MESSAGE_DELETED', roomId: evt.roomId, messageId })
+        fanThreadMutation({ kind: 'deleted', messageId })
+        return true
+      }
+      return false
+    }
+
     // Fan thread-reply events to ThreadEvents; no-op if no consumer is registered.
     const fanThreadReply = (evt) => {
       const msg = evt?.message
@@ -163,7 +211,9 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
         if (!evt.message?.threadParentMessageId) {
           scheduleMarkActiveRead(evt.roomId)
         }
+        return
       }
+      handleMutationEvent(evt)
     })
 
     const openChannelSub = (roomId) => {
@@ -180,7 +230,9 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
           if (!evt.message?.threadParentMessageId) {
             scheduleMarkActiveRead(evt.roomId ?? roomId)
           }
+          return
         }
+        handleMutationEvent(evt)
       })
       channelSubs.current.set(roomId, sub)
     }

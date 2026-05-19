@@ -80,6 +80,13 @@ export interface ThreadReplyEvent {
 
 type ThreadReplyHandler = (evt: ThreadReplyEvent) => void
 
+/** Payload for the thread-message-mutation hook (live edit + delete events). */
+export type ThreadMessageMutation =
+  | { kind: 'edited'; messageId: string; content?: string; editedAt: string }
+  | { kind: 'deleted'; messageId: string }
+
+type ThreadMessageMutationHandler = (mut: ThreadMessageMutation) => void
+
 /** Surface exposed via React context. Components consume via
  *  `useRoomEvents` / `useRoomSummaries` / `useSubscription` / etc. */
 interface RoomEventsContextValue {
@@ -91,6 +98,8 @@ interface RoomEventsContextValue {
   resetToLiveTail: (roomId: string) => void
   /** Register a thread-reply event handler; returns an unsubscribe fn. */
   registerThreadReplyHandler: (h: ThreadReplyHandler) => () => void
+  /** Register a handler for thread-message edit/delete; returns an unsubscribe fn. */
+  registerThreadMessageMutationHandler: (h: ThreadMessageMutationHandler) => () => void
 }
 
 const RoomEventsContext = createContext<RoomEventsContextValue | null>(null)
@@ -121,16 +130,23 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // The hook owns the generation counter that gates stale dispatches
-  // from this provider's async callbacks below. It also reads
-  // `stateRef.current.activeRoomId` / `.summaries` from inside the
-  // long-lived subscription callbacks to fire `markRoomRead` when
-  // messages arrive in the currently-active room.
+  // Single-slot for ThreadEventsProvider's live edit/delete handler.
+  const threadMessageMutationHandlerRef = useRef<ThreadMessageMutationHandler | null>(null)
+  const registerThreadMessageMutationHandler = useCallback((h: ThreadMessageMutationHandler) => {
+    threadMessageMutationHandlerRef.current = h
+    return () => {
+      if (threadMessageMutationHandlerRef.current === h) threadMessageMutationHandlerRef.current = null
+    }
+  }, [])
+
+  // useRoomSubscriptions reads `.current` on the ref slots when room-channel
+  // events arrive, fanning them to ThreadEvents.
   const { currentGeneration } = useRoomSubscriptions(
     nats,
     dispatch,
     stateRef,
     threadReplyHandlerRef,
+    threadMessageMutationHandlerRef,
   )
 
   const loadHistory = useCallback(
@@ -222,6 +238,7 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
       jumpToMessage,
       resetToLiveTail,
       registerThreadReplyHandler,
+      registerThreadMessageMutationHandler,
     }),
     [
       state,
@@ -231,6 +248,7 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
       jumpToMessage,
       resetToLiveTail,
       registerThreadReplyHandler,
+      registerThreadMessageMutationHandler,
     ],
   )
 
@@ -304,6 +322,13 @@ export function useRegisterThreadReplyHandler(): RoomEventsContextValue['registe
   const ctx = useContext(RoomEventsContext)
   if (!ctx) throw new Error('useRegisterThreadReplyHandler must be used inside RoomEventsProvider')
   return ctx.registerThreadReplyHandler
+}
+
+/** Register a handler for live thread-message edits/deletes; returns an unsubscribe fn. */
+export function useRegisterThreadMessageMutationHandler(): RoomEventsContextValue['registerThreadMessageMutationHandler'] {
+  const ctx = useContext(RoomEventsContext)
+  if (!ctx) throw new Error('useRegisterThreadMessageMutationHandler must be used inside RoomEventsProvider')
+  return ctx.registerThreadMessageMutationHandler
 }
 
 /** Section descriptor returned by `useSidebarSections`. */

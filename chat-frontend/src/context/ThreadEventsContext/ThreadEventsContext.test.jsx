@@ -21,9 +21,17 @@ const registerThreadReplyHandler = vi.fn((handler) => {
     if (registeredThreadReplyHandler === handler) registeredThreadReplyHandler = null
   }
 })
+let registeredThreadMessageMutationHandler = null
+const registerThreadMessageMutationHandler = vi.fn((handler) => {
+  registeredThreadMessageMutationHandler = handler
+  return () => {
+    if (registeredThreadMessageMutationHandler === handler) registeredThreadMessageMutationHandler = null
+  }
+})
 vi.mock('../RoomEventsContext/RoomEventsContext', () => ({
   useRoomDispatch: () => roomDispatch,
   useRegisterThreadReplyHandler: () => registerThreadReplyHandler,
+  useRegisterThreadMessageMutationHandler: () => registerThreadMessageMutationHandler,
 }))
 
 function Probe() {
@@ -32,6 +40,9 @@ function Probe() {
     <div>
       <span>active:{t.activeParent?.messageId ?? 'none'}</span>
       <span>count:{t.messages.length}</span>
+      <span>firstContent:{t.messages[0]?.content ?? 'none'}</span>
+      <span>firstDeleted:{String(Boolean(t.messages[0]?.deleted))}</span>
+      <span>firstEditedAt:{t.messages[0]?.editedAt ?? 'none'}</span>
       <span>loaded:{String(t.hasLoadedHistory)}</span>
       <span>loading:{String(t.historyLoading)}</span>
       <span>error:{t.historyError ?? 'none'}</span>
@@ -243,5 +254,58 @@ describe('ThreadEventsContext — live THREAD_REPLY_RECEIVED bridge', () => {
       })
     })
     expect(screen.getByText('count:0')).toBeInTheDocument()
+  })
+})
+
+describe('ThreadEventsContext — live thread-message mutation bridge', () => {
+  beforeEach(() => {
+    request.mockReset()
+    publish.mockReset()
+    registerThreadMessageMutationHandler.mockClear()
+    registeredThreadMessageMutationHandler = null
+  })
+
+  it('registers a mutation handler on mount and unregisters on unmount', () => {
+    const { unmount } = setup()
+    expect(registerThreadMessageMutationHandler).toHaveBeenCalledTimes(1)
+    expect(typeof registeredThreadMessageMutationHandler).toBe('function')
+    unmount()
+    expect(registeredThreadMessageMutationHandler).toBe(null)
+  })
+
+  it("applies an inbound 'edited' mutation to the open thread message", async () => {
+    request.mockResolvedValue({
+      messages: [{ id: 'r1', content: 'old', sender: { account: 'bob' } }],
+      hasNext: false,
+      nextCursor: null,
+    })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    expect(screen.getByText('firstContent:old')).toBeInTheDocument()
+    await act(async () => {
+      registeredThreadMessageMutationHandler({
+        kind: 'edited',
+        messageId: 'r1',
+        content: 'edited!',
+        editedAt: '2026-05-19T10:00:00Z',
+      })
+    })
+    expect(screen.getByText('firstContent:edited!')).toBeInTheDocument()
+    expect(screen.getByText('firstEditedAt:2026-05-19T10:00:00Z')).toBeInTheDocument()
+  })
+
+  it("applies an inbound 'deleted' mutation to the open thread message", async () => {
+    request.mockResolvedValue({
+      messages: [{ id: 'r1', content: 'x', sender: { account: 'bob' } }],
+      hasNext: false,
+      nextCursor: null,
+    })
+    setup()
+    await act(async () => { screen.getByText('open').click() })
+    expect(screen.getByText('firstDeleted:false')).toBeInTheDocument()
+    await act(async () => {
+      registeredThreadMessageMutationHandler({ kind: 'deleted', messageId: 'r1' })
+    })
+    expect(screen.getByText('firstDeleted:true')).toBeInTheDocument()
   })
 })

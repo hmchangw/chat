@@ -4,6 +4,7 @@ import { useNats } from '../NatsContext/NatsContext'
 import {
   useRoomDispatch,
   useRegisterThreadReplyHandler,
+  useRegisterThreadMessageMutationHandler,
 } from '../RoomEventsContext/RoomEventsContext'
 import { generateMessageID } from '@/lib/idgen'
 import { fetchThreadMessages, sendMessage } from '@/api'
@@ -16,6 +17,7 @@ export function ThreadEventsProvider({ children }) {
   const { user } = nats
   const roomDispatch = useRoomDispatch()
   const registerThreadReplyHandler = useRegisterThreadReplyHandler()
+  const registerThreadMessageMutationHandler = useRegisterThreadMessageMutationHandler()
   const [state, dispatch] = useReducer(threadEventsReducer, initialState)
   const generationRef = useRef(0)
   const stateRef = useRef(state)
@@ -37,6 +39,23 @@ export function ThreadEventsProvider({ children }) {
     })
     return unsubscribe
   }, [registerThreadReplyHandler])
+
+  // Bridge live edit/delete mutations → REPLY_EDITED / REPLY_DELETED.
+  useEffect(() => {
+    const unsubscribe = registerThreadMessageMutationHandler((mut) => {
+      if (mut.kind === 'edited') {
+        dispatch({
+          type: 'REPLY_EDITED',
+          messageId: mut.messageId,
+          content: mut.content ?? '',
+          editedAt: mut.editedAt,
+        })
+      } else if (mut.kind === 'deleted') {
+        dispatch({ type: 'REPLY_DELETED', messageId: mut.messageId })
+      }
+    })
+    return unsubscribe
+  }, [registerThreadMessageMutationHandler])
 
   const openThread = useCallback(
     (parent) => {
