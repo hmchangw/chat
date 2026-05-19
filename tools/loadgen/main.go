@@ -79,6 +79,10 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runRun(ctx, cfg, os.Args[2:])
 	case "teardown":
 		return runTeardown(ctx, cfg, os.Args[2:])
+	case "members-sustained":
+		return runMembersSustained(ctx, cfg, os.Args[2:])
+	case "members-capacity":
+		return runMembersCapacity(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
@@ -238,6 +242,217 @@ func runTeardownMembers(ctx context.Context, cfg *config, preset string, seed in
 	}
 	slog.Info("teardown complete (members)")
 	return 0
+}
+
+func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
+	fs := flag.NewFlagSet("members-sustained", flag.ExitOnError)
+	preset := fs.String("preset", "", "members preset name")
+	seed := fs.Int64("seed", 42, "RNG seed")
+	duration := fs.Duration("duration", 60*time.Second, "run duration")
+	rate := fs.Int("rate", 100, "target req/sec")
+	warmup := fs.Duration("warmup", 10*time.Second, "warmup window (samples discarded)")
+	inject := fs.String("inject", "frontdoor", "frontdoor|canonical")
+	shapeFlag := fs.String("shape", "users", "users|orgs|channels|mixed (v1: users only)")
+	usersPerAdd := fs.Int("users-per-add", 10, "users per add request")
+	csvPath := fs.String("csv", "", "optional CSV output path")
+	_ = fs.Parse(args)
+
+	if *preset == "" {
+		fmt.Fprintln(os.Stderr, "--preset required")
+		return 2
+	}
+	p, ok := BuiltinMembersPreset(*preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown members preset: %s\n", *preset)
+		return 2
+	}
+	var injectMode InjectMode
+	switch *inject {
+	case "frontdoor":
+		injectMode = InjectFrontdoor
+	case "canonical":
+		injectMode = InjectCanonical
+	default:
+		fmt.Fprintf(os.Stderr, "unknown inject: %s\n", *inject)
+		return 2
+	}
+	shape, err := ParseShape(*shapeFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+	if err := ValidateInjectShape(injectMode, shape); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+	if *usersPerAdd <= 0 {
+		fmt.Fprintln(os.Stderr, "--users-per-add must be > 0")
+		return 2
+	}
+
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
+	if err != nil {
+		slog.Error("nats connect", "error", err)
+		return 1
+	}
+	js, err := jetstream.New(nc.NatsConn())
+	if err != nil {
+		slog.Error("jetstream init", "error", err)
+		return 1
+	}
+
+	metrics := NewMetrics()
+	metricsSrv := &http.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metrics.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("metrics server stopped", "error", err)
+		}
+	}()
+
+	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
+	owners := OwnersByRoom(&fixtures)
+	collector := NewMemberCollector(metrics, p.Name, *inject)
+
+	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomMemberEventWildcard(), func(m *nats.Msg) {
+		roomID, accounts, ok := ParseMemberAddBroadcast(m.Data)
+		if !ok {
+			return
+		}
+		collector.RecordBroadcast(roomID, accounts, time.Now())
+	})
+	if err != nil {
+		slog.Error("subscribe e2", "error", err)
+		return 1
+	}
+	defer func() { _ = e2Sub.Unsubscribe() }()
+
+	var publisher MemberPublisher
+	var frontdoor *frontdoorMemberPublisher
+	switch injectMode {
+	case InjectFrontdoor:
+		frontdoor, err = newFrontdoorMemberPublisher(nc.NatsConn(), cfg.SiteID, func(corrID string, body []byte, at time.Time) {
+			collector.RecordReply(corrID, string(body), at)
+		})
+		if err != nil {
+			slog.Error("frontdoor publisher", "error", err)
+			return 1
+		}
+		defer frontdoor.Close()
+		publisher = frontdoor
+	case InjectCanonical:
+		publisher = newCanonicalMemberPublisher(js, cfg.SiteID)
+	}
+
+	samplerCtx, cancelSamplers := context.WithCancel(ctx)
+	defer cancelSamplers()
+	sampler := NewConsumerSampler(js, stream.Rooms(cfg.SiteID).Name, "room-worker", metrics, time.Second)
+	var samplerWG sync.WaitGroup
+	samplerWG.Add(1)
+	go func() {
+		defer samplerWG.Done()
+		sampler.Run(samplerCtx)
+	}()
+
+	warmupDeadline := time.Now().Add(*warmup)
+	genCfg := SustainedMembersConfig{
+		Preset:         &p,
+		Fixtures:       &fixtures,
+		Pools:          pools,
+		Owners:         owners,
+		SiteID:         cfg.SiteID,
+		Rate:           *rate,
+		UsersPerAdd:    *usersPerAdd,
+		Inject:         injectMode,
+		Shape:          shape,
+		Publisher:      publisher,
+		Metrics:        metrics,
+		Collector:      collector,
+		WarmupDeadline: warmupDeadline,
+		MaxInFlight:    cfg.MaxInFlight,
+	}
+	gen := NewSustainedMembersGenerator(&genCfg, *seed)
+
+	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
+	defer cancelRun()
+	genErr := gen.Run(runCtx)
+	time.Sleep(2 * time.Second) // drain trailing replies/broadcasts
+	collector.DiscardBefore(warmupDeadline)
+	missingReplies, missingBroadcasts := collector.Finalize()
+
+	cancelSamplers()
+	samplerWG.Wait()
+
+	shutCtx, cancelShut := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = metricsSrv.Shutdown(shutCtx)
+	cancelShut()
+	_ = nc.Drain()
+
+	if genErr != nil && !errors.Is(genErr, ErrPoolsExhausted) {
+		slog.Error("generator error", "error", genErr)
+	} else if errors.Is(genErr, ErrPoolsExhausted) {
+		slog.Warn("aborted early", "reason", "pools exhausted")
+	}
+
+	mfs, _ := metrics.Registry.Gather()
+	pubErrs := int(gatheredCounterValue(mfs, "loadgen_member_publish_errors_total", "reason", "publish"))
+	rsErrs := collector.RoomServiceErrorCount()
+	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_member_published_total", "phase", "warmup"))
+	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_member_published_total", "phase", "measured"))
+	sent := sentWarmup + sentMeasured
+	measured := *duration - *warmup
+	var actualRate float64
+	if measured > 0 {
+		actualRate = float64(sentMeasured) / measured.Seconds()
+	}
+
+	summary := MembersSummary{
+		Preset: p.Name, Site: cfg.SiteID, Inject: *inject, Shape: string(shape),
+		Seed: *seed, TargetRate: *rate, ActualRate: actualRate,
+		Duration: *duration, Warmup: *warmup, UsersPerAdd: *usersPerAdd,
+		Sent: sent, SentMeasured: sentMeasured,
+		PublishErrors: pubErrs, RoomServiceErrors: rsErrs,
+		MissingReplies: missingReplies, MissingBroadcasts: missingBroadcasts,
+		E1:      ComputePercentiles(collector.E1Samples()),
+		E2:      ComputePercentiles(collector.E2Samples()),
+		E1Count: collector.E1Count(), E2Count: collector.E2Count(),
+		Consumers: []ConsumerStat{sampler.Snapshot()},
+	}
+	if err := PrintMembersSummary(os.Stdout, &summary); err != nil {
+		slog.Warn("print summary", "error", err)
+	}
+	if *csvPath != "" {
+		if err := writeMembersCSV(*csvPath, collector); err != nil {
+			slog.Error("csv export", "error", err)
+		}
+	}
+	totalErrs := summary.PublishErrors + summary.RoomServiceErrors + summary.MissingReplies + summary.MissingBroadcasts
+	return DetermineExitCode(summary.SentMeasured, totalErrs)
+}
+
+func writeMembersCSV(path string, c *MemberCollector) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create csv: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	var rows []CSVSample
+	for i, d := range c.E1Samples() {
+		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E1", LatencyNs: d.Nanoseconds()})
+	}
+	for i, d := range c.E2Samples() {
+		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
+	}
+	return WriteCSV(f, rows)
+}
+
+func runMembersCapacity(_ context.Context, _ *config, _ []string) int {
+	// Implemented in Task 15.
+	fmt.Fprintln(os.Stderr, "members-capacity not yet implemented")
+	return 1
 }
 
 func roomIDsOf(rooms []model.Room) []string {
