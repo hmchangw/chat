@@ -1310,3 +1310,97 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 		"key fan-out must reach every local-site member",
 	)
 }
+
+func TestMongoStore_BulkUpsertSubscriptions_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	oldJoinedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newJoinedAt := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	lastSeen := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("update branch refreshes re-activation fields and preserves runtime state", func(t *testing.T) {
+		mustInsertSub(t, db, &model.Subscription{
+			ID:                  "existing-id-1",
+			User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+			RoomID:              "room-update-1",
+			SiteID:              "site-A",
+			RoomType:            model.RoomTypeBotDM,
+			Name:                "helper.bot",
+			IsSubscribed:        false,
+			DisableNotification: true,
+			JoinedAt:            oldJoinedAt,
+			LastSeenAt:          &lastSeen,
+			HasMention:          true,
+			Alert:               true,
+			ThreadUnread:        []string{"parent-1"},
+		})
+
+		// Caller-supplied sub uses a different _id; upsert MUST keep the existing _id.
+		newSub := &model.Subscription{
+			ID:           "caller-supplied-id-DIFFERENT",
+			User:         model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+			RoomID:       "room-update-1",
+			SiteID:       "site-A",
+			RoomType:     model.RoomTypeBotDM,
+			Name:         "helper.bot",
+			IsSubscribed: true,
+			JoinedAt:     newJoinedAt,
+		}
+		require.NoError(t, store.BulkUpsertSubscriptions(ctx, []*model.Subscription{newSub}))
+
+		got, err := store.GetSubscription(ctx, "alice", "room-update-1")
+		require.NoError(t, err)
+
+		// Identity preserved.
+		assert.Equal(t, "existing-id-1", got.ID, "_id must be preserved on update")
+
+		// Re-activation fields refreshed.
+		assert.False(t, got.DisableNotification, "DisableNotification must be cleared")
+		assert.True(t, got.IsSubscribed, "IsSubscribed must be refreshed")
+		assert.True(t, got.JoinedAt.Equal(newJoinedAt), "JoinedAt must be updated; got %v want %v", got.JoinedAt, newJoinedAt)
+
+		// Runtime state preserved.
+		assert.True(t, got.HasMention, "HasMention must be preserved")
+		assert.True(t, got.Alert, "Alert must be preserved")
+		require.NotNil(t, got.LastSeenAt)
+		assert.True(t, got.LastSeenAt.Equal(lastSeen), "LastSeenAt must be preserved")
+		assert.Equal(t, []string{"parent-1"}, got.ThreadUnread, "ThreadUnread must be preserved")
+	})
+
+	t.Run("insert branch initialises identity and zero-value runtime defaults", func(t *testing.T) {
+		newSub := &model.Subscription{
+			ID:           "fresh-insert-id",
+			User:         model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+			RoomID:       "room-insert-1",
+			SiteID:       "site-A",
+			RoomType:     model.RoomTypeBotDM,
+			Name:         "helper.bot",
+			IsSubscribed: true,
+			JoinedAt:     newJoinedAt,
+		}
+		require.NoError(t, store.BulkUpsertSubscriptions(ctx, []*model.Subscription{newSub}))
+
+		got, err := store.GetSubscription(ctx, "bob", "room-insert-1")
+		require.NoError(t, err)
+
+		assert.Equal(t, "fresh-insert-id", got.ID)
+		assert.Equal(t, "u_bob", got.User.ID)
+		assert.Equal(t, "site-A", got.SiteID)
+		assert.Equal(t, model.RoomTypeBotDM, got.RoomType)
+		assert.Equal(t, "helper.bot", got.Name)
+		assert.True(t, got.IsSubscribed)
+		assert.False(t, got.DisableNotification)
+		assert.True(t, got.JoinedAt.Equal(newJoinedAt))
+		assert.False(t, got.HasMention)
+		assert.False(t, got.Alert)
+		assert.Nil(t, got.LastSeenAt)
+		assert.Empty(t, got.ThreadUnread)
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		require.NoError(t, store.BulkUpsertSubscriptions(ctx, nil))
+		require.NoError(t, store.BulkUpsertSubscriptions(ctx, []*model.Subscription{}))
+	})
+}

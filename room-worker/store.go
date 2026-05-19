@@ -36,6 +36,14 @@ type SubscriptionStore interface {
 	// --- existing methods (invite flow) ---
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	// BulkUpsertSubscriptions inserts each sub and, on a (roomId, u.account)
+	// collision with an existing document, refreshes the re-activation fields
+	// (DisableNotification → false, IsSubscribed, JoinedAt) while preserving
+	// the existing document's runtime state (LastSeenAt, HasMention,
+	// ThreadUnread, Alert) and identity (_id, u). Intended for botDM
+	// re-creation paths only; channel/DM/add-member paths must continue to
+	// use BulkCreateSubscriptions for safe redelivery idempotency.
+	BulkUpsertSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	// ListByRoom returns all subscriptions for roomID across every site.
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and

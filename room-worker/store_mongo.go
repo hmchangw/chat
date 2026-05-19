@@ -334,6 +334,51 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 	return nil
 }
 
+// BulkUpsertSubscriptions upserts each sub keyed on (roomId, u.account).
+// On collision with an existing document, $set refreshes the three
+// re-activation fields (disableNotification → false, isSubscribed,
+// joinedAt) and leaves runtime fields (lastSeenAt, hasMention,
+// threadUnread, alert) untouched. On insert, $setOnInsert initialises
+// identity (_id, u, roomId, siteId, roomType, name, roles) plus
+// hasMention/alert zero values. Used exclusively by botDM creation
+// paths — see store.go for the interface comment.
+func (s *MongoStore) BulkUpsertSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(subs))
+	for _, sub := range subs {
+		filter := bson.M{"roomId": sub.RoomID, "u.account": sub.User.Account}
+		update := bson.M{
+			"$set": bson.M{
+				"disableNotification": false,
+				"isSubscribed":        sub.IsSubscribed,
+				"joinedAt":            sub.JoinedAt,
+			},
+			"$setOnInsert": bson.M{
+				"_id":        sub.ID,
+				"u":          sub.User,
+				"roomId":     sub.RoomID,
+				"siteId":     sub.SiteID,
+				"roomType":   sub.RoomType,
+				"name":       sub.Name,
+				"roles":      sub.Roles,
+				"hasMention": false,
+				"alert":      false,
+			},
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(filter).
+			SetUpdate(update).
+			SetUpsert(true))
+	}
+	opts := options.BulkWrite().SetOrdered(false)
+	if _, err := s.subscriptions.BulkWrite(ctx, models, opts); err != nil {
+		return fmt.Errorf("bulk upsert %d subscriptions: %w", len(subs), err)
+	}
+	return nil
+}
+
 func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
 	if _, err := s.roomMembers.InsertOne(ctx, member); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
