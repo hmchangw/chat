@@ -428,53 +428,6 @@ func mustInsertRoom(t *testing.T, db *mongo.Database, r *model.Room) {
 	require.NoError(t, err)
 }
 
-func TestMongoStore_ListNewMembers_Integration(t *testing.T) {
-	db := setupMongo(t)
-	store := NewMongoStore(db)
-	ctx := context.Background()
-
-	users := []interface{}{
-		model.User{ID: "u1", Account: "alice", SectID: "org1"},
-		model.User{ID: "u2", Account: "bob", SectID: "org1"},
-		model.User{ID: "u3", Account: "carol", SectID: "org2"},
-		model.User{ID: "u4", Account: "dave"},
-		model.User{ID: "u5", Account: "helper.bot", SectID: "org1"},
-	}
-	_, err := db.Collection("users").InsertMany(ctx, users)
-	require.NoError(t, err)
-
-	_, err = db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
-		ID:     "s1",
-		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1",
-	})
-	require.NoError(t, err)
-
-	t.Run("merges org members and direct accounts, excludes already-subscribed and bots", func(t *testing.T) {
-		got, err := store.ListNewMembers(ctx, []string{"org1"}, []string{"carol", "dave"}, "r1")
-		require.NoError(t, err)
-		assert.ElementsMatch(t, []string{"bob", "carol", "dave"}, got)
-	})
-
-	t.Run("empty inputs return nil", func(t *testing.T) {
-		got, err := store.ListNewMembers(ctx, nil, nil, "r1")
-		require.NoError(t, err)
-		assert.Nil(t, got)
-	})
-
-	t.Run("orgIDs only", func(t *testing.T) {
-		got, err := store.ListNewMembers(ctx, []string{"org2"}, nil, "r1")
-		require.NoError(t, err)
-		assert.ElementsMatch(t, []string{"carol"}, got)
-	})
-
-	t.Run("directAccounts only", func(t *testing.T) {
-		got, err := store.ListNewMembers(ctx, nil, []string{"dave"}, "r1")
-		require.NoError(t, err)
-		assert.ElementsMatch(t, []string{"dave"}, got)
-	})
-}
-
 func TestReconcileMemberCountsSplitsBots(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -1490,4 +1443,55 @@ func TestProcessCreateRoom_DM_DoesNotUpsert_Integration(t *testing.T) {
 		"regular-DM path must NOT clear DisableNotification on re-create (insert-only contract)")
 	assert.True(t, got.JoinedAt.Equal(oldJoinedAt),
 		"regular-DM path must NOT refresh JoinedAt on re-create (insert-only contract)")
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "no duplicate subs after re-create")
+}
+
+// TestHandler_ProcessAddMembers_OrgToIndividualUpgrade_Integration verifies
+// the end-to-end bug fix: alice was previously added via an org expansion
+// (so she has a subscription and an org room_members row, but no individual
+// row). An explicit re-add via req.Users must (a) NOT create a duplicate
+// subscription and (b) DO write the missing individual row.
+func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	cap := &publishCapture{}
+	h := NewHandler(store, "site-a", cap.fn(), testKeyStore, testKeySender)
+
+	const roomID = "room-1"
+	mustInsertRoom(t, db, &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "Room 1"})
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", EngName: "Alice", ChineseName: "爱丽丝", SectID: "org-eng", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_owner", Account: "owner", EngName: "Owner", ChineseName: "拥有者", SiteID: "site-a"})
+	// Pre-state: alice in via org-eng. Sub exists, org room_members row exists, no individual row.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomType: model.RoomTypeChannel, Roles: []model.Role{model.RoleMember},
+	})
+	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+		Member: model.RoomMemberEntry{ID: "org-eng", Type: model.RoomMemberOrg},
+	})
+	require.NoError(t, err)
+
+	req := model.AddMembersRequest{
+		RoomID: roomID, Users: []string{"alice"}, RequesterAccount: "owner", RequesterID: "u_owner",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	data, _ := json.Marshal(req)
+	requestID := idgen.GenerateRequestID()
+	require.NoError(t, h.processAddMembers(natsutil.WithRequestID(ctx, requestID), data))
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID, "u.account": "alice"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), subCount, "no duplicate sub")
+
+	indivCount, err := db.Collection("room_members").CountDocuments(ctx, bson.M{
+		"rid": roomID, "member.type": "individual", "member.account": "alice",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), indivCount, "individual room_members row written via upgrade path")
 }

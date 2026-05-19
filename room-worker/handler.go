@@ -733,31 +733,78 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		return newPermanent("add-member only valid on channel rooms, got %s", room.Type)
 	}
 
-	// Expand org IDs + direct accounts to actual account list, excluding already-subscribed
-	accounts, err := h.store.ListNewMembers(ctx, req.Orgs, req.Users, req.RoomID)
+	// Resolve candidates and per-candidate flags (has-sub / has-individual-row).
+	// Splits the writes into needSub (no subscription yet) and needIRM (no
+	// individual room_members row yet, writeIndividuals-gated): this is what
+	// makes the org→individual upgrade path work — alice already has a sub
+	// from an earlier org expansion, but no individual row, so an explicit
+	// re-add via req.Users only needs to write the missing IRM row.
+	candidates, err := h.store.ListAddMemberCandidates(ctx, req.Orgs, req.Users, req.RoomID)
 	if err != nil {
-		return fmt.Errorf("list new members: %w", err)
+		return fmt.Errorf("list add-member candidates: %w", err)
 	}
-	if len(accounts) == 0 {
+
+	// Fail closed: defaulting hadOrgsBefore=false on error would trigger spurious first-org backfill.
+	hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("check existing org room members: %w", err)
+	}
+	writeIndividuals := len(req.Orgs) > 0 || hadOrgsBefore
+
+	allowedIndividual := make(map[string]struct{}, len(req.Users))
+	for _, acc := range req.Users {
+		allowedIndividual[acc] = struct{}{}
+	}
+
+	// needSub = no sub yet; needIRM = no individual row yet (writeIndividuals-gated, req.Users only).
+	var needSub []AddMemberCandidate
+	var needIRM []AddMemberCandidate
+	for _, c := range candidates {
+		if !c.HasSubscription {
+			needSub = append(needSub, c)
+		}
+		if writeIndividuals && !c.HasIndividualRoomMember {
+			if _, ok := allowedIndividual[c.Account]; ok {
+				needIRM = append(needIRM, c)
+			}
+		}
+	}
+
+	// Nothing to write: no new subs, no individual upgrades, no org rows.
+	if len(needSub) == 0 && len(needIRM) == 0 && len(req.Orgs) == 0 {
 		return nil
 	}
 
-	users, err := h.store.FindUsersByAccounts(ctx, accounts)
-	if err != nil {
-		return fmt.Errorf("find users by accounts: %w", err)
+	// Lookup-account set: anyone whose sub or individual row we'll write.
+	lookupAccounts := make([]string, 0, len(needSub)+len(needIRM))
+	seen := make(map[string]struct{}, len(needSub)+len(needIRM))
+	for _, c := range needSub {
+		if _, ok := seen[c.Account]; !ok {
+			lookupAccounts = append(lookupAccounts, c.Account)
+			seen[c.Account] = struct{}{}
+		}
 	}
-	userMap := make(map[string]model.User, len(users))
-	for i := range users {
-		userMap[users[i].Account] = users[i]
+	for _, c := range needIRM {
+		if _, ok := seen[c.Account]; !ok {
+			lookupAccounts = append(lookupAccounts, c.Account)
+			seen[c.Account] = struct{}{}
+		}
 	}
-	// `accounts` is the resolved set from ListNewMembers (which queries the
-	// users collection), so a missing entry here means the user was deleted
-	// between resolution and lookup — a hard data inconsistency that won't
-	// resolve via JetStream redelivery. Mirror the create-room contract and
-	// fail permanently rather than silently materializing partial membership.
-	for _, account := range accounts {
-		if _, ok := userMap[account]; !ok {
-			return newPermanent("user %s not found in room.member.add (room %s)", account, req.RoomID)
+
+	var userMap map[string]model.User
+	if len(lookupAccounts) > 0 {
+		users, err := h.store.FindUsersByAccounts(ctx, lookupAccounts)
+		if err != nil {
+			return fmt.Errorf("find users by accounts: %w", err)
+		}
+		userMap = make(map[string]model.User, len(users))
+		for i := range users {
+			userMap[users[i].Account] = users[i]
+		}
+		for _, acc := range lookupAccounts {
+			if _, ok := userMap[acc]; !ok {
+				return newPermanent("user %s not found in room.member.add (room %s)", acc, req.RoomID)
+			}
 		}
 	}
 
@@ -778,17 +825,14 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	acceptedAt := time.UnixMilli(req.Timestamp).UTC()
 	now := time.Now().UTC()
 
-	// Build subscriptions and collect the resolved accounts in a single pass
-	// so we don't re-iterate `subs` later to build an account set or an
-	// actualAccounts slice.
-	subs := make([]*model.Subscription, 0, len(accounts))
-	actualAccounts := make([]string, 0, len(accounts))
-	resolvedAccountSet := make(map[string]struct{}, len(accounts))
-	for _, account := range accounts {
-		// Presence guaranteed by the userMap completeness check above.
-		user := userMap[account]
-		// RoomType is fixed to channel: room-service rejects member.add for
-		// any other room kind.
+	// Build subscriptions for accounts that don't yet have one. RoomType is
+	// fixed to channel: room-service rejects member.add for any other room
+	// kind. actualAccounts mirrors needSub for downstream event payloads
+	// (MemberAddEvent, sys-msg multi/single content).
+	subs := make([]*model.Subscription, 0, len(needSub))
+	actualAccounts := make([]string, 0, len(needSub))
+	for _, c := range needSub {
+		user := userMap[c.Account]
 		sub := &model.Subscription{
 			ID:       idgen.GenerateUUIDv7(),
 			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
@@ -808,53 +852,45 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 		subs = append(subs, sub)
 		actualAccounts = append(actualAccounts, user.Account)
-		resolvedAccountSet[user.Account] = struct{}{}
 	}
 
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		return fmt.Errorf("bulk create subscriptions: %w", err)
+	if len(subs) > 0 {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subscriptions: %w", err)
+		}
 	}
-
-	// Fail closed: defaulting hadOrgsBefore=false on error would trigger spurious first-org backfill.
-	hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
-	if err != nil {
-		return fmt.Errorf("check existing org room members: %w", err)
-	}
-	writeIndividuals := len(req.Orgs) > 0 || hadOrgsBefore
 
 	// Collect all room_member docs to write in a single bulk insert:
-	// new individuals + new orgs + (optional) backfill of existing subscribers.
-	roomMembers := make([]*model.RoomMember, 0, len(subs)+len(req.Orgs))
-	allowedIndividual := make(map[string]struct{}, len(req.Users))
-	for _, acc := range req.Users {
-		allowedIndividual[acc] = struct{}{}
+	// new individuals (from needSub ∩ req.Users) + individual upgrades
+	// (needIRM = req.Users with existing sub but no IRM row) + new orgs +
+	// (optional) backfill of existing subscribers. processedAccounts tracks
+	// every account we've already issued a sub or individual row for, so the
+	// backfill step below can skip them.
+	roomMembers := make([]*model.RoomMember, 0, len(needIRM)+len(req.Orgs))
+	processedAccounts := make(map[string]struct{}, len(needSub)+len(needIRM))
+	for _, c := range needSub {
+		processedAccounts[c.Account] = struct{}{}
 	}
-	if writeIndividuals {
-		for _, sub := range subs {
-			if _, ok := allowedIndividual[sub.User.Account]; !ok {
-				continue
-			}
-			roomMembers = append(roomMembers, &model.RoomMember{
-				ID:     idgen.GenerateUUIDv7(),
-				RoomID: req.RoomID,
-				Ts:     acceptedAt,
-				Member: model.RoomMemberEntry{
-					ID:      sub.User.ID,
-					Type:    model.RoomMemberIndividual,
-					Account: sub.User.Account,
-				},
-			})
-		}
+	for _, c := range needIRM {
+		processedAccounts[c.Account] = struct{}{}
+		user := userMap[c.Account]
+		roomMembers = append(roomMembers, &model.RoomMember{
+			ID:     idgen.GenerateUUIDv7(),
+			RoomID: req.RoomID,
+			Ts:     acceptedAt,
+			Member: model.RoomMemberEntry{
+				ID:      user.ID,
+				Type:    model.RoomMemberIndividual,
+				Account: user.Account,
+			},
+		})
 	}
 	for _, org := range req.Orgs {
 		roomMembers = append(roomMembers, &model.RoomMember{
 			ID:     idgen.GenerateUUIDv7(),
 			RoomID: req.RoomID,
 			Ts:     acceptedAt,
-			Member: model.RoomMemberEntry{
-				ID:   org,
-				Type: model.RoomMemberOrg,
-			},
+			Member: model.RoomMemberEntry{ID: org, Type: model.RoomMemberOrg},
 		})
 	}
 
@@ -867,7 +903,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		} else {
 			var backfillAccounts []string
 			for _, account := range existingAccounts {
-				if _, isNew := resolvedAccountSet[account]; !isNew {
+				if _, processed := processedAccounts[account]; !processed {
 					backfillAccounts = append(backfillAccounts, account)
 				}
 			}
@@ -920,8 +956,17 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, users); err != nil {
-		return fmt.Errorf("fan out room key: %w", err)
+	// Fan out the room key only to newly-subscribed accounts. Accounts in
+	// needIRM already had a subscription (and thus already received the key
+	// on their original add), so they don't need a fresh delivery here.
+	newSubUsers := make([]model.User, 0, len(needSub))
+	for _, c := range needSub {
+		newSubUsers = append(newSubUsers, userMap[c.Account])
+	}
+	if len(newSubUsers) > 0 {
+		if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, newSubUsers); err != nil {
+			return fmt.Errorf("fan out room key: %w", err)
+		}
 	}
 
 	// 8. Publish MemberAddEvent (actualAccounts was built above alongside subs)

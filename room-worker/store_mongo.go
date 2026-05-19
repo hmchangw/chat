@@ -390,32 +390,6 @@ func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool
 	return count > 0, nil
 }
 
-func (s *MongoStore) ListNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error) {
-	if len(orgIDs) == 0 && len(directAccounts) == 0 {
-		return nil, nil
-	}
-
-	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID, "")
-	pipeline = append(pipeline, bson.M{
-		"$group": bson.M{"_id": nil, "accounts": bson.M{"$addToSet": "$account"}},
-	})
-
-	cursor, err := s.users.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("list new members: %w", err)
-	}
-	var results []struct {
-		Accounts []string `bson:"accounts"`
-	}
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("decode list new members: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, nil
-	}
-	return results[0].Accounts, nil
-}
-
 func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]AddMemberCandidate, error) {
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return nil, nil
