@@ -178,3 +178,126 @@ func (g *SustainedMembersGenerator) publishOne(ctx context.Context, roomID strin
 	}
 	g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, phase, string(g.cfg.Inject), string(g.cfg.Shape)).Inc()
 }
+
+// CapacityMembersConfig parameterizes the per-room sequential growth generator.
+type CapacityMembersConfig struct {
+	Preset      *MembersPreset
+	Fixtures    *Fixtures
+	Pools       CandidatePools
+	Owners      map[string]string
+	SiteID      string
+	UsersPerAdd int
+	Inject      InjectMode
+	Shape       Shape
+	TargetSize  int
+	MaxRate     int
+	Publisher   MemberPublisher
+	Metrics     *Metrics
+	Collector   *MemberCollector
+	E2Timeout   time.Duration
+}
+
+// CapacityMembersGenerator drives each room to TargetSize sequentially. Per-
+// room loops run concurrently so a slow room does not gate the others.
+type CapacityMembersGenerator struct {
+	cfg CapacityMembersConfig
+}
+
+// NewCapacityMembersGenerator creates a new capacity-mode generator.
+func NewCapacityMembersGenerator(cfg *CapacityMembersConfig) *CapacityMembersGenerator {
+	return &CapacityMembersGenerator{cfg: *cfg}
+}
+
+// Run runs each room until TargetSize or pool exhaustion. Returns nil when
+// every room has finished (or ctx cancelled).
+func (g *CapacityMembersGenerator) Run(ctx context.Context) error {
+	if g.cfg.UsersPerAdd <= 0 {
+		return fmt.Errorf("usersPerAdd must be > 0")
+	}
+	if g.cfg.TargetSize <= 0 {
+		return fmt.Errorf("targetSize must be > 0")
+	}
+
+	perRoom := make(map[string]chan struct{}, len(g.cfg.Fixtures.Rooms))
+	for i := range g.cfg.Fixtures.Rooms {
+		perRoom[g.cfg.Fixtures.Rooms[i].ID] = make(chan struct{}, 1)
+	}
+	g.cfg.Collector.OnBroadcast(func(roomID string, _ []string) {
+		if ch, ok := perRoom[roomID]; ok {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	var wg sync.WaitGroup
+	for i := range g.cfg.Fixtures.Rooms {
+		wg.Add(1)
+		room := g.cfg.Fixtures.Rooms[i]
+		go func() {
+			defer wg.Done()
+			g.runRoom(ctx, &room, perRoom[room.ID])
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+func (g *CapacityMembersGenerator) runRoom(ctx context.Context, room *model.Room, ack <-chan struct{}) {
+	size := g.cfg.Preset.BaselineSize
+	pool := append([]string(nil), g.cfg.Pools[room.ID]...)
+	owner := g.cfg.Owners[room.ID]
+
+	var interval time.Duration
+	if g.cfg.MaxRate > 0 {
+		interval = time.Second / time.Duration(g.cfg.MaxRate)
+	}
+	var lastSent time.Time
+
+	for size < g.cfg.TargetSize {
+		if len(pool) < g.cfg.UsersPerAdd {
+			return
+		}
+		if interval > 0 {
+			if delay := interval - time.Since(lastSent); delay > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+			}
+		}
+		accounts := pool[:g.cfg.UsersPerAdd]
+		pool = pool[g.cfg.UsersPerAdd:]
+
+		req := &model.AddMembersRequest{
+			RoomID:           room.ID,
+			Users:            accounts,
+			RequesterAccount: owner,
+			Timestamp:        time.Now().UTC().UnixMilli(),
+		}
+		corrID := idgen.GenerateRequestID()
+		publishTime := time.Now()
+		lastSent = publishTime
+		g.cfg.Collector.RecordPublish(corrID, room.ID, accounts, publishTime)
+
+		if err := g.cfg.Publisher.Publish(ctx, owner, room.ID, req, corrID); err != nil {
+			g.cfg.Collector.RecordPublishFailed(corrID, room.ID, accounts)
+			g.cfg.Metrics.MemberPublishErrors.WithLabelValues("publish").Inc()
+			return
+		}
+		g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, "measured", string(g.cfg.Inject), string(g.cfg.Shape)).Inc()
+
+		select {
+		case <-ack:
+			size += g.cfg.UsersPerAdd
+			g.cfg.Metrics.MemberRoomSize.WithLabelValues(room.ID).Set(float64(size))
+		case <-time.After(g.cfg.E2Timeout):
+			g.cfg.Metrics.MemberPublishErrors.WithLabelValues("timeout").Inc()
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}

@@ -21,24 +21,29 @@ type recordedPublish struct {
 }
 
 type stubMemberPublisher struct {
-	mu    sync.Mutex
-	calls []recordedPublish
-	fail  bool
+	mu           sync.Mutex
+	calls        []recordedPublish
+	fail         bool
+	afterPublish func(recordedPublish)
 }
 
 func (s *stubMemberPublisher) Publish(_ context.Context, requester, roomID string,
 	req *model.AddMembersRequest, corrID string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.fail {
+		s.mu.Unlock()
 		return errStubPublish
 	}
-	s.calls = append(s.calls, recordedPublish{
-		requester: requester,
-		roomID:    roomID,
-		accounts:  append([]string(nil), req.Users...),
-		corrID:    corrID,
-	})
+	call := recordedPublish{
+		requester: requester, roomID: roomID,
+		accounts: append([]string(nil), req.Users...), corrID: corrID,
+	}
+	s.calls = append(s.calls, call)
+	after := s.afterPublish
+	s.mu.Unlock()
+	if after != nil {
+		after(call)
+	}
 	return nil
 }
 
@@ -126,6 +131,53 @@ func TestSustainedMembersGenerator_AbortsOnPoolExhaustion(t *testing.T) {
 	pub.mu.Lock()
 	defer pub.mu.Unlock()
 	assert.Equal(t, 1, len(pub.calls), "only one request fits before exhaustion")
+}
+
+func TestCapacityMembersGenerator_StopsAtTargetSize(t *testing.T) {
+	f := Fixtures{
+		Users: nil,
+		Rooms: []model.Room{
+			{ID: "r1", Name: "r1", Type: model.RoomTypeChannel, SiteID: "site-A"},
+		},
+		Subscriptions: []model.Subscription{
+			{ID: "s1", User: model.SubscriptionUser{ID: "u0", Account: "u-0"},
+				RoomID: "r1", SiteID: "site-A", Roles: []model.Role{model.RoleOwner}},
+		},
+	}
+	pool := make([]string, 10)
+	for i := range pool {
+		pool[i] = fmt.Sprintf("u-%d", i+1)
+	}
+	pools := CandidatePools{"r1": pool}
+
+	metrics := NewMetrics()
+	collector := NewMemberCollector(metrics, "test", "frontdoor")
+	pub := &stubMemberPublisher{}
+
+	pubCh := make(chan struct{}, 100)
+	pub.afterPublish = func(call recordedPublish) {
+		collector.RecordBroadcast(call.roomID, call.accounts, time.Now())
+		pubCh <- struct{}{}
+	}
+
+	cfg := CapacityMembersConfig{
+		Preset:   &MembersPreset{Name: "test", Users: 11, Rooms: 1, BaselineSize: 1, CandidatePool: 10},
+		Fixtures: &f, Pools: pools, Owners: OwnersByRoom(&f),
+		SiteID:      "site-A",
+		UsersPerAdd: 2,
+		Inject:      InjectFrontdoor, Shape: ShapeUsers,
+		TargetSize: 7,
+		Publisher:  pub, Metrics: metrics, Collector: collector,
+		E2Timeout: 2 * time.Second,
+	}
+	gen := NewCapacityMembersGenerator(&cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	assert.Equal(t, 3, len(pub.calls), "stopped after 3 adds (size 1 + 2*3 = 7)")
 }
 
 var _ = fmt.Sprintf // ensure fmt is used if any subtests need formatting later

@@ -19,15 +19,16 @@ import (
 // E2 keying works because the candidate-pool fixture guarantees that
 // concurrent requests against the same room never share user accounts.
 type MemberCollector struct {
-	m       *Metrics
-	preset  string
-	inject  string
-	mu      sync.Mutex
-	byCorr  map[string]memberPubEntry
-	byE2Key map[string]memberPubEntry
-	e1      []sample
-	e2      []sample
-	rsErrs  int
+	m           *Metrics
+	preset      string
+	inject      string
+	mu          sync.Mutex
+	byCorr      map[string]memberPubEntry
+	byE2Key     map[string]memberPubEntry
+	e1          []sample
+	e2          []sample
+	rsErrs      int
+	onBroadcast func(roomID string, accounts []string)
 }
 
 type memberPubEntry struct {
@@ -93,16 +94,21 @@ func (c *MemberCollector) RecordReply(corrID, body string, at time.Time) {
 // RecordBroadcast matches a member_added broadcast by (roomID, sortedAccounts).
 func (c *MemberCollector) RecordBroadcast(roomID string, accounts []string, at time.Time) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	k := e2Key(roomID, accounts)
 	e, ok := c.byE2Key[k]
 	if !ok {
+		c.mu.Unlock()
 		return
 	}
 	delete(c.byE2Key, k)
 	d := at.Sub(e.publishedAt)
 	c.e2 = append(c.e2, sample{publishedAt: e.publishedAt, latency: d})
 	c.m.MemberE2Latency.WithLabelValues(c.preset, c.inject).Observe(d.Seconds())
+	cb := c.onBroadcast
+	c.mu.Unlock()
+	if cb != nil {
+		cb(roomID, accounts)
+	}
 }
 
 // Finalize returns counts of unmatched publishes — replies and broadcasts.
@@ -131,6 +137,14 @@ func (c *MemberCollector) RoomServiceErrorCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rsErrs
+}
+
+// OnBroadcast registers a callback fired after every matched broadcast,
+// allowing the capacity generator to step its per-room loop.
+func (c *MemberCollector) OnBroadcast(fn func(roomID string, accounts []string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onBroadcast = fn
 }
 
 // DiscardBefore drops samples with publishedAt < cutoff (warmup pruning).

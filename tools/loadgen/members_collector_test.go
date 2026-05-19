@@ -103,3 +103,20 @@ func TestParseMemberAddBroadcast(t *testing.T) {
 	_, _, ok = ParseMemberAddBroadcast(bad)
 	assert.False(t, ok, "non-added events must be filtered")
 }
+
+func TestMemberCollector_OnBroadcastCallback(t *testing.T) {
+	m := NewMetrics()
+	c := NewMemberCollector(m, "p", "frontdoor")
+	seen := make(chan string, 4)
+	c.OnBroadcast(func(roomID string, accounts []string) {
+		seen <- roomID
+	})
+	c.RecordPublish("c1", "room-1", []string{"a"}, time.Unix(0, 0))
+	c.RecordBroadcast("room-1", []string{"a"}, time.Unix(0, time.Millisecond.Nanoseconds()))
+	select {
+	case got := <-seen:
+		assert.Equal(t, "room-1", got)
+	case <-time.After(time.Second):
+		t.Fatal("callback never fired")
+	}
+}
