@@ -68,7 +68,22 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) error {
 	msg := evt.Message
 
-	resolved, err := mention.Resolve(ctx, msg.Content, h.userStore.FindUsersByAccounts)
+	// Single user-store round-trip for sender + mentioned accounts. The
+	// resulting map serves both mention.Resolve (via a memoized lookup
+	// closure) and the sender enrichment below, eliminating the second
+	// FindUsersByAccounts call that this path used to make per message.
+	parsed := mention.Parse(msg.Content)
+	lookupAccounts := dedupedAccounts(msg.UserAccount, parsed.Accounts)
+	users, lookupErr := h.userStore.FindUsersByAccounts(ctx, lookupAccounts)
+	if lookupErr != nil {
+		slog.Warn("user lookup failed, falling back to account", "error", lookupErr)
+	}
+	userByAccount := make(map[string]model.User, len(users))
+	for i := range users {
+		userByAccount[users[i].Account] = users[i]
+	}
+
+	resolved, err := mention.Resolve(ctx, msg.Content, memoLookup(userByAccount))
 	if err != nil {
 		slog.Warn("mention resolve failed", "error", err)
 	}
@@ -87,17 +102,7 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		}
 	}
 
-	senderMap := make(map[string]model.User)
-	senderUsers, err := h.userStore.FindUsersByAccounts(ctx, []string{msg.UserAccount})
-	if err != nil {
-		slog.Warn("sender lookup failed, falling back to account", "error", err)
-	} else {
-		for i := range senderUsers {
-			senderMap[senderUsers[i].Account] = senderUsers[i]
-		}
-	}
-
-	clientMsg := buildClientMessage(&msg, senderMap)
+	clientMsg := buildClientMessage(&msg, userByAccount)
 
 	switch meta.Type {
 	case model.RoomTypeChannel:
