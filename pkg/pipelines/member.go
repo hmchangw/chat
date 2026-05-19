@@ -85,6 +85,7 @@ func matchCandidates(orgIDs, directAccounts []string, excludeAccount string) bso
 }
 
 // GetCapacityCheckPipeline counts net-new subscriptions for (orgIDs, directAccounts) in roomID; caller appends $count.
+// Panics if roomID is empty.
 func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
 	if roomID == "" {
 		panic("GetCapacityCheckPipeline: roomID required")
@@ -108,6 +109,7 @@ func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAc
 }
 
 // GetAddMemberCandidatesPipeline returns per-candidate {account, hasSubscription, hasIndividualRoomMember} for the worker.
+// Panics if roomID is empty.
 func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
 	if roomID == "" {
 		panic("GetAddMemberCandidatesPipeline: roomID required")

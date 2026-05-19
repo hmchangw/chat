@@ -574,7 +574,9 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 	}
 	if name == "" && tcName == "" {
-		slog.Warn("org-remove: no name resolved from any member; falling back to orgID", "roomID", req.RoomID, "orgID", req.OrgID)
+		slog.Warn("org-remove: no name resolved from any member; falling back to orgID",
+			"requestID", natsutil.RequestIDFromContext(ctx),
+			"roomID", req.RoomID, "orgID", req.OrgID)
 	}
 
 	var toRemove []OrgMemberStatus
@@ -785,8 +787,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	// needSub = no sub yet; needIRM = no individual row yet (writeIndividuals-gated, req.Users only).
-	var needSub []AddMemberCandidate
-	var needIRM []AddMemberCandidate
+	needSub := make([]AddMemberCandidate, 0, len(candidates))
+	needIRM := make([]AddMemberCandidate, 0, len(candidates))
 	for _, c := range candidates {
 		if !c.HasSubscription {
 			needSub = append(needSub, c)
