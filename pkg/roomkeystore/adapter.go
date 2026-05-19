@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -61,10 +60,18 @@ func (a *clusterAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey
 		graceSec = 1
 	}
 	result, err := rotateScript.Run(ctx, a.c, []string{currentKey, prevKey}, pub, priv, graceSec).Int()
-	if err != nil && strings.Contains(err.Error(), "no current key") {
+	if isLuaNoCurrentKeyErr(err) {
 		return 0, ErrNoCurrentKey
 	}
 	return result, err
+}
+
+// isLuaNoCurrentKeyErr reports whether err is the sentinel the rotate Lua
+// script emits via redis.error_reply('no current key'). go-redis surfaces
+// Lua error_reply values as untyped errors whose message equals the Lua
+// string verbatim — typed error wrapping is not available at this boundary.
+func isLuaNoCurrentKeyErr(err error) bool {
+	return err != nil && err.Error() == "no current key"
 }
 
 func (a *clusterAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {

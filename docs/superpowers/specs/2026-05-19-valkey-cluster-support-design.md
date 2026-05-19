@@ -26,7 +26,7 @@ The search subscription cache (`search-service` via `pkg/valkeyutil`) is less cr
 
 Each site runs **one Valkey cluster** shared by all services on that site. The cluster has a minimum of 3 master nodes (the Valkey cluster protocol requires at least 3 masters to elect a new primary after a failure). Replicas per master are a deployment decision; 0 replicas is acceptable for non-production sites.
 
-```
+```text
 site: ftest
   ├── valkey-cluster (3 masters, 0 replicas)
   │     node-1:6379
@@ -49,7 +49,7 @@ Sites are fully independent — no cross-site Valkey connection exists or is int
 
 The Lua rotate script in `adapter.go` operates on two keys per room in a single atomic call:
 
-```
+```text
 room:abc123:key
 room:abc123:key:prev
 ```
@@ -311,7 +311,7 @@ A new NATS request/reply handler in `room-service`:
 
 **Idempotent by design:** if a key already exists in Valkey for the room, it is returned immediately without generating a new one. If no key exists (backfill case), a new key pair is generated, stored in Valkey via `keyStore.Set`, and then returned.
 
-```
+```text
 external connector
   │  NATS request: chat.server.request.room.{siteID}.key.ensure
   │  payload: { roomId: "abc123" }
@@ -341,7 +341,7 @@ This RPC only ensures the key is in Valkey and returns it to the caller. It does
 ```go
 // RoomKeyEnsureRequest is the payload for the room key ensure RPC.
 type RoomKeyEnsureRequest struct {
-    RoomID string `json:"roomId"`
+    RoomID string `json:"roomId" bson:"roomId"`
 }
 ```
 
