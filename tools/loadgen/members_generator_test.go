@@ -60,14 +60,13 @@ func TestSustainedMembersGenerator_PublishesAtRateRoundRobin(t *testing.T) {
 
 	pub := &stubMemberPublisher{}
 	metrics := NewMetrics()
-	collector := NewMemberCollector(metrics, p.Name, "frontdoor")
+	collector := NewMemberCollector(metrics, p.Name, InjectFrontdoor)
 
 	cfg := SustainedMembersConfig{
 		Preset:         &p,
 		Fixtures:       &f,
 		Pools:          pools,
 		Owners:         owners,
-		SiteID:         "site-A",
 		Rate:           50,
 		UsersPerAdd:    2,
 		Inject:         InjectFrontdoor,
@@ -112,11 +111,11 @@ func TestSustainedMembersGenerator_AbortsOnPoolExhaustion(t *testing.T) {
 
 	pub := &stubMemberPublisher{}
 	metrics := NewMetrics()
-	collector := NewMemberCollector(metrics, "test", "frontdoor")
+	collector := NewMemberCollector(metrics, "test", InjectFrontdoor)
 	cfg := SustainedMembersConfig{
 		Preset:   &MembersPreset{Name: "test", Users: 3, Rooms: 1, BaselineSize: 1, CandidatePool: 2},
 		Fixtures: &f, Pools: pools, Owners: OwnersByRoom(&f),
-		SiteID: "site-A", Rate: 100, UsersPerAdd: 2,
+		Rate: 100, UsersPerAdd: 2,
 		Inject: InjectFrontdoor, Shape: ShapeUsers,
 		Publisher: pub, Metrics: metrics, Collector: collector,
 		WarmupDeadline: time.Now(), MaxInFlight: 10,
@@ -150,7 +149,7 @@ func TestCapacityMembersGenerator_StopsAtTargetSize(t *testing.T) {
 	pools := CandidatePools{"r1": pool}
 
 	metrics := NewMetrics()
-	collector := NewMemberCollector(metrics, "test", "frontdoor")
+	collector := NewMemberCollector(metrics, "test", InjectFrontdoor)
 	pub := &stubMemberPublisher{}
 
 	pubCh := make(chan struct{}, 100)
@@ -162,7 +161,6 @@ func TestCapacityMembersGenerator_StopsAtTargetSize(t *testing.T) {
 	cfg := CapacityMembersConfig{
 		Preset:   &MembersPreset{Name: "test", Users: 11, Rooms: 1, BaselineSize: 1, CandidatePool: 10},
 		Fixtures: &f, Pools: pools, Owners: OwnersByRoom(&f),
-		SiteID:      "site-A",
 		UsersPerAdd: 2,
 		Inject:      InjectFrontdoor, Shape: ShapeUsers,
 		TargetSize: 7,

@@ -13,7 +13,7 @@ import (
 
 func TestMemberCollector_E1Roundtrip(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	t0 := time.Unix(0, 0)
 	c.RecordPublish("corr-1", "room-1", []string{"a", "b"}, t0)
 	c.RecordReply("corr-1", "", t0.Add(5*time.Millisecond))
@@ -26,7 +26,7 @@ func TestMemberCollector_E1Roundtrip(t *testing.T) {
 
 func TestMemberCollector_E1RoomServiceError(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	body, _ := json.Marshal(map[string]string{"error": "room is at maximum capacity"})
 	t0 := time.Unix(0, 0)
 	c.RecordPublish("corr-2", "room-1", []string{"a"}, t0)
@@ -38,7 +38,7 @@ func TestMemberCollector_E1RoomServiceError(t *testing.T) {
 
 func TestMemberCollector_E2MatchByRoomAndAccounts(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	t0 := time.Unix(0, 0)
 	c.RecordPublish("corr-1", "room-1", []string{"b", "a"}, t0) // unsorted input
 	c.RecordBroadcast("room-1", []string{"a", "b"}, t0.Add(20*time.Millisecond))
@@ -51,7 +51,7 @@ func TestMemberCollector_E2MatchByRoomAndAccounts(t *testing.T) {
 
 func TestMemberCollector_E2NoMatchDropped(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	c.RecordPublish("corr-1", "room-1", []string{"a"}, time.Unix(0, 0))
 	c.RecordBroadcast("room-2", []string{"a"}, time.Unix(0, 0)) // wrong room
 	assert.Equal(t, 0, c.E2Count())
@@ -59,7 +59,7 @@ func TestMemberCollector_E2NoMatchDropped(t *testing.T) {
 
 func TestMemberCollector_Finalize(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	t0 := time.Unix(0, 0)
 	c.RecordPublish("corr-1", "room-1", []string{"a"}, t0)
 	c.RecordPublish("corr-2", "room-2", []string{"b"}, t0)
@@ -73,7 +73,7 @@ func TestMemberCollector_Finalize(t *testing.T) {
 
 func TestMemberCollector_DiscardBefore(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	t0 := time.Unix(0, 0)
 	c.RecordPublish("c1", "room-1", []string{"a"}, t0)
 	c.RecordReply("c1", "", t0.Add(time.Millisecond))
@@ -106,7 +106,7 @@ func TestParseMemberAddBroadcast(t *testing.T) {
 
 func TestMemberCollector_OnBroadcastCallback(t *testing.T) {
 	m := NewMetrics()
-	c := NewMemberCollector(m, "p", "frontdoor")
+	c := NewMemberCollector(m, "p", InjectFrontdoor)
 	seen := make(chan string, 4)
 	c.OnBroadcast(func(roomID string, accounts []string) {
 		seen <- roomID

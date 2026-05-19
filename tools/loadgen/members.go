@@ -170,7 +170,7 @@ func ValidateInjectShape(inject InjectMode, shape Shape) error {
 		return fmt.Errorf("--shape=channels incompatible with --inject=canonical (channel expansion lives in room-service)")
 	}
 	if shape != ShapeUsers {
-		return fmt.Errorf("--shape=%s not supported in v1 (only shape=users is implemented; see docs/superpowers/specs/2026-05-19-load-test-room-members-design.md)", shape)
+		return fmt.Errorf("--shape=%s not supported (only shape=users is implemented)", shape)
 	}
 	return nil
 }

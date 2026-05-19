@@ -47,9 +47,9 @@ func TestValidateInjectShape(t *testing.T) {
 	}{
 		{InjectFrontdoor, ShapeUsers, ""},
 		{InjectCanonical, ShapeUsers, ""},
-		{InjectFrontdoor, ShapeOrgs, "shape=orgs not supported in v1"},
-		{InjectFrontdoor, ShapeChannels, "shape=channels not supported in v1"},
-		{InjectFrontdoor, ShapeMixed, "shape=mixed not supported in v1"},
+		{InjectFrontdoor, ShapeOrgs, "shape=orgs not supported"},
+		{InjectFrontdoor, ShapeChannels, "shape=channels not supported"},
+		{InjectFrontdoor, ShapeMixed, "shape=mixed not supported"},
 		{InjectCanonical, ShapeChannels, "incompatible with --inject=canonical"},
 	}
 	for _, tc := range cases {

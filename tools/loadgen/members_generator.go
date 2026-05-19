@@ -19,7 +19,6 @@ type SustainedMembersConfig struct {
 	Fixtures       *Fixtures
 	Pools          CandidatePools
 	Owners         map[string]string
-	SiteID         string
 	Rate           int
 	UsersPerAdd    int
 	Inject         InjectMode
@@ -35,17 +34,19 @@ type SustainedMembersConfig struct {
 // round-robin across the preset's rooms until ctx is cancelled or the pools
 // run dry.
 type SustainedMembersGenerator struct {
-	cfg     SustainedMembersConfig
-	mu      sync.Mutex
-	pools   map[string][]string
-	cursor  int
-	roomIDs []string
-	rng     *rand.Rand
+	cfg         SustainedMembersConfig
+	injectLabel string
+	shapeLabel  string
+	mu          sync.Mutex
+	pools       map[string][]string
+	cursor      int
+	roomIDs     []string
+	rng         *rand.Rand
 }
 
 // ErrPoolsExhausted is returned by Run when every room's candidate pool has
 // fewer than UsersPerAdd accounts remaining.
-var ErrPoolsExhausted = errors.New("candidate pool exhausted on every room — preset's CandidatePool too small for rate * duration * usersPerAdd; re-seed with a larger pool")
+var ErrPoolsExhausted = errors.New("candidate pool exhausted on every room: rate * duration * usersPerAdd exceeded preset CandidatePool")
 
 // NewSustainedMembersGenerator clones the candidate pools so the input is
 // not mutated.
@@ -58,10 +59,12 @@ func NewSustainedMembersGenerator(cfg *SustainedMembersConfig, seed int64) *Sust
 		roomIDs = append(roomIDs, r.ID)
 	}
 	return &SustainedMembersGenerator{
-		cfg:     *cfg,
-		pools:   pools,
-		roomIDs: roomIDs,
-		rng:     rand.New(rand.NewSource(seed)),
+		cfg:         *cfg,
+		injectLabel: string(cfg.Inject),
+		shapeLabel:  string(cfg.Shape),
+		pools:       pools,
+		roomIDs:     roomIDs,
+		rng:         rand.New(rand.NewSource(seed)),
 	}
 }
 
@@ -156,15 +159,15 @@ func (g *SustainedMembersGenerator) giveBack(roomID string, accounts []string) {
 
 func (g *SustainedMembersGenerator) publishOne(ctx context.Context, roomID string, accounts []string) {
 	owner := g.cfg.Owners[roomID]
+	now := time.Now()
 	req := &model.AddMembersRequest{
 		RoomID:           roomID,
 		Users:            accounts,
 		RequesterAccount: owner,
-		Timestamp:        time.Now().UTC().UnixMilli(),
+		Timestamp:        now.UTC().UnixMilli(),
 	}
 	corrID := idgen.GenerateRequestID()
-	publishTime := time.Now()
-	g.cfg.Collector.RecordPublish(corrID, roomID, accounts, publishTime)
+	g.cfg.Collector.RecordPublish(corrID, roomID, accounts, now)
 
 	if err := g.cfg.Publisher.Publish(ctx, owner, roomID, req, corrID); err != nil {
 		g.cfg.Collector.RecordPublishFailed(corrID, roomID, accounts)
@@ -173,10 +176,10 @@ func (g *SustainedMembersGenerator) publishOne(ctx context.Context, roomID strin
 		return
 	}
 	phase := "measured"
-	if publishTime.Before(g.cfg.WarmupDeadline) {
+	if now.Before(g.cfg.WarmupDeadline) {
 		phase = "warmup"
 	}
-	g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, phase, string(g.cfg.Inject), string(g.cfg.Shape)).Inc()
+	g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, phase, g.injectLabel, g.shapeLabel).Inc()
 }
 
 // CapacityMembersConfig parameterizes the per-room sequential growth generator.
@@ -185,7 +188,6 @@ type CapacityMembersConfig struct {
 	Fixtures    *Fixtures
 	Pools       CandidatePools
 	Owners      map[string]string
-	SiteID      string
 	UsersPerAdd int
 	Inject      InjectMode
 	Shape       Shape
@@ -200,12 +202,18 @@ type CapacityMembersConfig struct {
 // CapacityMembersGenerator drives each room to TargetSize sequentially. Per-
 // room loops run concurrently so a slow room does not gate the others.
 type CapacityMembersGenerator struct {
-	cfg CapacityMembersConfig
+	cfg         CapacityMembersConfig
+	injectLabel string
+	shapeLabel  string
 }
 
 // NewCapacityMembersGenerator creates a new capacity-mode generator.
 func NewCapacityMembersGenerator(cfg *CapacityMembersConfig) *CapacityMembersGenerator {
-	return &CapacityMembersGenerator{cfg: *cfg}
+	return &CapacityMembersGenerator{
+		cfg:         *cfg,
+		injectLabel: string(cfg.Inject),
+		shapeLabel:  string(cfg.Shape),
+	}
 }
 
 // Run runs each room until TargetSize or pool exhaustion. Returns nil when
@@ -271,23 +279,23 @@ func (g *CapacityMembersGenerator) runRoom(ctx context.Context, room *model.Room
 		accounts := pool[:g.cfg.UsersPerAdd]
 		pool = pool[g.cfg.UsersPerAdd:]
 
+		now := time.Now()
+		lastSent = now
 		req := &model.AddMembersRequest{
 			RoomID:           room.ID,
 			Users:            accounts,
 			RequesterAccount: owner,
-			Timestamp:        time.Now().UTC().UnixMilli(),
+			Timestamp:        now.UTC().UnixMilli(),
 		}
 		corrID := idgen.GenerateRequestID()
-		publishTime := time.Now()
-		lastSent = publishTime
-		g.cfg.Collector.RecordPublish(corrID, room.ID, accounts, publishTime)
+		g.cfg.Collector.RecordPublish(corrID, room.ID, accounts, now)
 
 		if err := g.cfg.Publisher.Publish(ctx, owner, room.ID, req, corrID); err != nil {
 			g.cfg.Collector.RecordPublishFailed(corrID, room.ID, accounts)
 			g.cfg.Metrics.MemberPublishErrors.WithLabelValues("publish").Inc()
 			return
 		}
-		g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, "measured", string(g.cfg.Inject), string(g.cfg.Shape)).Inc()
+		g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, "measured", g.injectLabel, g.shapeLabel).Inc()
 
 		select {
 		case <-ack:

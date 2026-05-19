@@ -21,7 +21,7 @@ import (
 type MemberCollector struct {
 	m           *Metrics
 	preset      string
-	inject      string
+	inject      InjectMode
 	mu          sync.Mutex
 	byCorr      map[string]memberPubEntry
 	byE2Key     map[string]memberPubEntry
@@ -36,7 +36,7 @@ type memberPubEntry struct {
 }
 
 // NewMemberCollector returns a ready-to-use MemberCollector.
-func NewMemberCollector(m *Metrics, preset, inject string) *MemberCollector {
+func NewMemberCollector(m *Metrics, preset string, inject InjectMode) *MemberCollector {
 	return &MemberCollector{
 		m: m, preset: preset, inject: inject,
 		byCorr:  make(map[string]memberPubEntry),
@@ -78,7 +78,7 @@ func (c *MemberCollector) RecordReply(corrID, body string, at time.Time) {
 	delete(c.byCorr, corrID)
 	d := at.Sub(e.publishedAt)
 	c.e1 = append(c.e1, sample{publishedAt: e.publishedAt, latency: d})
-	c.m.MemberE1Latency.WithLabelValues(c.preset, c.inject).Observe(d.Seconds())
+	c.m.MemberE1Latency.WithLabelValues(c.preset, string(c.inject)).Observe(d.Seconds())
 
 	if body != "" {
 		var parsed struct {
@@ -103,7 +103,7 @@ func (c *MemberCollector) RecordBroadcast(roomID string, accounts []string, at t
 	delete(c.byE2Key, k)
 	d := at.Sub(e.publishedAt)
 	c.e2 = append(c.e2, sample{publishedAt: e.publishedAt, latency: d})
-	c.m.MemberE2Latency.WithLabelValues(c.preset, c.inject).Observe(d.Seconds())
+	c.m.MemberE2Latency.WithLabelValues(c.preset, string(c.inject)).Observe(d.Seconds())
 	cb := c.onBroadcast
 	c.mu.Unlock()
 	if cb != nil {

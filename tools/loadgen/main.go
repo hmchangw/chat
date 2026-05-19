@@ -266,14 +266,9 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown members preset: %s\n", *preset)
 		return 2
 	}
-	var injectMode InjectMode
-	switch *inject {
-	case "frontdoor":
-		injectMode = InjectFrontdoor
-	case "canonical":
-		injectMode = InjectCanonical
-	default:
-		fmt.Fprintf(os.Stderr, "unknown inject: %s\n", *inject)
+	injectMode, err := ParseInjectMode(*inject)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 	shape, err := ParseShape(*shapeFlag)
@@ -315,7 +310,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 
 	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
-	collector := NewMemberCollector(metrics, p.Name, *inject)
+	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomMemberEventWildcard(), func(m *nats.Msg) {
 		roomID, accounts, ok := ParseMemberAddBroadcast(m.Data)
@@ -363,7 +358,6 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		Fixtures:       &fixtures,
 		Pools:          pools,
 		Owners:         owners,
-		SiteID:         cfg.SiteID,
 		Rate:           *rate,
 		UsersPerAdd:    *usersPerAdd,
 		Inject:         injectMode,
@@ -410,7 +404,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 	}
 
 	summary := MembersSummary{
-		Preset: p.Name, Site: cfg.SiteID, Inject: *inject, Shape: string(shape),
+		Preset: p.Name, Site: cfg.SiteID, Inject: string(injectMode), Shape: string(shape),
 		Seed: *seed, TargetRate: *rate, ActualRate: actualRate,
 		Duration: *duration, Warmup: *warmup, UsersPerAdd: *usersPerAdd,
 		Sent: sent, SentMeasured: sentMeasured,
@@ -475,14 +469,9 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown members preset: %s\n", *preset)
 		return 2
 	}
-	var injectMode InjectMode
-	switch *inject {
-	case "frontdoor":
-		injectMode = InjectFrontdoor
-	case "canonical":
-		injectMode = InjectCanonical
-	default:
-		fmt.Fprintf(os.Stderr, "unknown inject: %s\n", *inject)
+	injectMode, err := ParseInjectMode(*inject)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 	shape, err := ParseShape(*shapeFlag)
@@ -524,7 +513,7 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 
 	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
-	collector := NewMemberCollector(metrics, p.Name, *inject)
+	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomMemberEventWildcard(), func(m *nats.Msg) {
 		roomID, accounts, ok := ParseMemberAddBroadcast(m.Data)
@@ -561,7 +550,6 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		Fixtures:    &fixtures,
 		Pools:       pools,
 		Owners:      owners,
-		SiteID:      cfg.SiteID,
 		UsersPerAdd: *usersPerAdd,
 		Inject:      injectMode,
 		Shape:       shape,
@@ -607,7 +595,7 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 	buckets := computeSizeBuckets(collector, finals, edges)
 
 	summary := CapacitySummary{
-		Preset: p.Name, Site: cfg.SiteID, Inject: *inject, Shape: string(shape),
+		Preset: p.Name, Site: cfg.SiteID, Inject: string(injectMode), Shape: string(shape),
 		Seed: *seed, UsersPerAdd: *usersPerAdd, TargetSize: *targetSize,
 		PublishErrors: pubErrs, Timeouts: timeouts,
 		Buckets: buckets, FinalSizes: finals,
@@ -707,14 +695,9 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
 		return 2
 	}
-	var injectMode InjectMode
-	switch *inject {
-	case "frontdoor":
-		injectMode = InjectFrontdoor
-	case "canonical":
-		injectMode = InjectCanonical
-	default:
-		fmt.Fprintf(os.Stderr, "unknown inject mode: %s\n", *inject)
+	injectMode, err := ParseInjectMode(*inject)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
 
