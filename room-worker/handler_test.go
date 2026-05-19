@@ -3057,6 +3057,71 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 	}
 }
 
+// On a CreateRoom dup-key for a botDM, the upsert must refresh JoinedAt to the
+// fresh wall-clock time (re-subscribe semantics) rather than reusing the old
+// existing.CreatedAt. The regular-DM idempotency rule (preserve existing time)
+// must NOT apply to botDM, which is the whole point of the upsert path.
+func TestHandleSyncCreateDM_BotDM_Recreate_RefreshesJoinedAt(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-b"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *bot}, nil)
+
+	originalCreatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bot")
+	dupErr := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000}}}
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
+	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
+		ID: roomID, Type: model.RoomTypeBotDM, SiteID: "site-a",
+		Name: "", CreatedBy: "u-alice",
+		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
+	}, nil)
+
+	var captured []*model.Subscription
+	store.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			captured = subs
+			return nil
+		})
+	// Mock the canonical re-read to return a fresh JoinedAt — this is what the
+	// outbox event field must reflect (canonical persisted state).
+	freshJoinedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: freshJoinedAt,
+	}, nil)
+	store.EXPECT().FindDMSubscription(gomock.Any(), "helper.bot", "alice").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"}, JoinedAt: freshJoinedAt,
+	}, nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
+	data := marshalReq(t, req)
+	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+
+	require.Len(t, captured, 2)
+	for _, s := range captured {
+		assert.False(t, s.JoinedAt.Equal(originalCreatedAt),
+			"botDM sub.JoinedAt must NOT be reset to existing.CreatedAt on re-subscribe — that defeats the upsert refresh")
+	}
+
+	// Outbox carries the canonical post-write JoinedAt (the re-read value).
+	var outbox *dmCapturedPublish
+	for i := range capture.captured {
+		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxMemberAdded) {
+			outbox = &capture.captured[i]
+			break
+		}
+	}
+	require.NotNil(t, outbox, "expected a member_added outbox publish to site-b")
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outbox.data, &env))
+	var payload model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, freshJoinedAt.UnixMilli(), payload.JoinedAt,
+		"outbox event JoinedAt must reflect the canonical re-read sub, not existing.CreatedAt")
+}
+
 type inboxCapturedPublish struct {
 	subj  string
 	data  []byte

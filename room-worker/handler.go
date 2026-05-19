@@ -1535,7 +1535,13 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		return nil, errUserLookupFailed
 	}
 
-	acceptedAt := time.Now().UTC()
+	// roomCreatedAt drives the room doc and the outbox dedup seed (must stay
+	// stable across NATS retries). joinedAt drives the subscription's JoinedAt
+	// field — for regular DM it tracks the room's original creation time on a
+	// dup-key retry (idempotency), but for botDM it stays fresh so the upsert
+	// actually refreshes the sub's JoinedAt on re-subscribe.
+	roomCreatedAt := time.Now().UTC()
+	joinedAt := roomCreatedAt
 	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
 
 	uids, accounts := model.BuildDMParticipants(requester, other)
@@ -1556,8 +1562,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		AppCount:  appCount,
 		UIDs:      uids,
 		Accounts:  accounts,
-		CreatedAt: acceptedAt,
-		UpdatedAt: acceptedAt,
+		CreatedAt: roomCreatedAt,
+		UpdatedAt: roomCreatedAt,
 	}
 	if err := h.store.CreateRoom(ctx, room); err != nil {
 		if !mongo.IsDuplicateKeyError(err) {
@@ -1581,18 +1587,20 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		}
 		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing
-		acceptedAt = existing.CreatedAt
+		if req.RoomType == model.RoomTypeDM {
+			joinedAt = existing.CreatedAt
+		}
 	}
 
 	// validateSyncCreateDMShape already gated this to {dm, botDM}.
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
-		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+		subs = buildBotDMSubs(requester, other, room, joinedAt)
 		if err := h.store.BulkUpsertSubscriptions(ctx, subs); err != nil {
 			return nil, fmt.Errorf("bulk upsert subs: %w", err)
 		}
 	} else {
-		subs = buildDMSubs(requester, other, room, acceptedAt)
+		subs = buildDMSubs(requester, other, room, joinedAt)
 		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 			return nil, fmt.Errorf("bulk create subs: %w", err)
 		}
@@ -1607,7 +1615,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	h.publishSubscriptionUpdates(ctx, []*model.Subscription{requesterSub, otherSub}, requestID)
 
 	// Outbox failure means the remote site won't learn about the room; fail the request.
-	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, requesterSub.JoinedAt); err != nil {
 		return nil, fmt.Errorf("publish room_created outbox: %w", err)
 	}
 
@@ -1650,7 +1658,7 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 	}
 }
 
-func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time) error {
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, joinedAt time.Time) error {
 	if other.SiteID == "" || other.SiteID == h.siteID {
 		return nil
 	}
@@ -1664,7 +1672,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 		Accounts:         []string{other.Account},
 		SiteID:           room.SiteID,
 		RequesterAccount: requester.Account,
-		JoinedAt:         acceptedAt.UnixMilli(),
+		JoinedAt:         joinedAt.UnixMilli(),
 		Timestamp:        now,
 	}
 	pData, err := json.Marshal(memberEvt)
@@ -1682,7 +1690,10 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	if err != nil {
 		return fmt.Errorf("marshal outbox envelope: %w", err)
 	}
-	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, acceptedAt.UnixMilli())
+	// Dedup seed keys on room.CreatedAt (stable across retries and re-subscribes)
+	// rather than joinedAt — botDM re-subscribes carry a fresh joinedAt that
+	// would otherwise defeat JetStream dedup on a NATS request retry.
+	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, room.CreatedAt.UnixMilli())
 	return h.publish(ctx,
 		subject.Outbox(room.SiteID, other.SiteID, model.OutboxMemberAdded),
 		eData,
