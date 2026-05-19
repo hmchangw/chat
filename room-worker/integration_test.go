@@ -477,12 +477,12 @@ func TestMongoStore_ListAddMemberCandidates_Integration(t *testing.T) {
 	const roomID = "room-1"
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
-		User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		User:     model.SubscriptionUser{ID: "u_bob", Account: "bob"},
 		RoomType: model.RoomTypeChannel, Roles: []model.Role{model.RoleMember},
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
-		User: model.SubscriptionUser{ID: "u_carol", Account: "carol"},
+		User:     model.SubscriptionUser{ID: "u_carol", Account: "carol"},
 		RoomType: model.RoomTypeChannel, Roles: []model.Role{model.RoleMember},
 	})
 	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
@@ -1494,4 +1494,49 @@ func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade_Integration(t *testing
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), indivCount, "individual room_members row written via upgrade path")
+}
+
+func TestMongoStore_GetOrgMembersWithIndividualStatus_DeptAndSect_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a",
+		DeptID: "X", DeptName: "Engineering", DeptTCName: "工程部",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-a",
+		SectID: "X", SectName: "Eng Sect", SectTCName: "工程組",
+	})
+
+	const roomID = "room-1"
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomType: model.RoomTypeChannel,
+	})
+	// Bob has an individual room_members row (member.id = user._id).
+	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+		Member: model.RoomMemberEntry{ID: "u_bob", Type: model.RoomMemberIndividual, Account: "bob"},
+	})
+	require.NoError(t, err)
+
+	got, err := store.GetOrgMembersWithIndividualStatus(ctx, roomID, "X")
+	require.NoError(t, err)
+
+	byAccount := map[string]OrgMemberStatus{}
+	for _, m := range got {
+		byAccount[m.Account] = m
+	}
+	require.Len(t, byAccount, 2)
+	assert.Equal(t, OrgMemberStatus{
+		Account: "alice", SiteID: "site-a",
+		Name: "Engineering", TCName: "工程部", IsDept: true, HasIndividualMembership: false,
+	}, byAccount["alice"])
+	assert.Equal(t, OrgMemberStatus{
+		Account: "bob", SiteID: "site-a",
+		Name: "Eng Sect", TCName: "工程組", IsDept: false, HasIndividualMembership: true,
+	}, byAccount["bob"])
 }

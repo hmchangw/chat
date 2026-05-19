@@ -261,24 +261,37 @@ func (s *MongoStore) GetUserWithMembership(ctx context.Context, roomID, account 
 
 func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, roomID, orgID string) ([]OrgMemberStatus, error) {
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"sectId": orgID}}},
+		{{Key: "$match", Value: bson.M{"$or": bson.A{
+			bson.M{"sectId": orgID},
+			bson.M{"deptId": orgID},
+		}}}},
+		{{Key: "$addFields", Value: bson.M{
+			"isDept": bson.M{"$eq": bson.A{"$deptId", orgID}},
+			"name": bson.M{"$cond": bson.A{
+				bson.M{"$eq": bson.A{"$deptId", orgID}}, "$deptName", "$sectName"}},
+			"tcName": bson.M{"$cond": bson.A{
+				bson.M{"$eq": bson.A{"$deptId", orgID}}, "$deptTCName", "$sectTCName"}},
+		}}},
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
-			"let":  bson.M{"acct": "$account"},
+			"let":  bson.M{"uid": "$_id"},
 			"pipeline": bson.A{
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$rid", roomID}},
 					bson.M{"$eq": bson.A{"$member.type", "individual"}},
-					bson.M{"$eq": bson.A{"$member.account", "$$acct"}},
+					bson.M{"$eq": bson.A{"$member.id", "$$uid"}},
 				}}}},
 				bson.M{"$limit": 1},
 			},
 			"as": "individualMembership",
 		}}},
 		{{Key: "$project", Value: bson.M{
+			"_id":                     0,
 			"account":                 1,
 			"siteId":                  1,
-			"sectName":                1,
+			"name":                    1,
+			"tcName":                  1,
+			"isDept":                  1,
 			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
 		}}},
 	}

@@ -1104,9 +1104,9 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 
 	// 3 org members: carol and dave have no individual membership, eve does
 	orgMembers := []OrgMemberStatus{
-		{Account: "carol", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: false},
-		{Account: "dave", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: false},
-		{Account: "eve", SiteID: siteID, SectName: "Engineering", HasIndividualMembership: true},
+		{Account: "carol", SiteID: siteID, Name: "Engineering", HasIndividualMembership: false},
+		{Account: "dave", SiteID: siteID, Name: "Engineering", HasIndividualMembership: false},
+		{Account: "eve", SiteID: siteID, Name: "Engineering", HasIndividualMembership: true},
 	}
 
 	store.EXPECT().
@@ -1505,7 +1505,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	)
 
 	orgMembers := []OrgMemberStatus{
-		{Account: "carol", SiteID: remoteSite, SectName: "Eng", HasIndividualMembership: false},
+		{Account: "carol", SiteID: remoteSite, Name: "Eng", HasIndividualMembership: false},
 	}
 
 	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, orgID).Return(orgMembers, nil)
@@ -4066,8 +4066,8 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 	roomID := "r1"
 	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, "o1").
 		Return([]OrgMemberStatus{
-			{Account: "u1", SiteID: "site-a", SectName: "Engineering", HasIndividualMembership: true},
-			{Account: "u2", SiteID: "site-a", SectName: "Engineering", HasIndividualMembership: true},
+			{Account: "u1", SiteID: "site-a", Name: "Engineering", HasIndividualMembership: true},
+			{Account: "u2", SiteID: "site-a", Name: "Engineering", HasIndividualMembership: true},
 		}, nil)
 	// toRemove is empty → no DeleteSubscriptionsByAccounts call expected.
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "o1").Return(nil)
@@ -4099,7 +4099,7 @@ func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 
 	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), "r1", "o1").
 		Return([]OrgMemberStatus{
-			{Account: "u1", SiteID: "site-a", SectName: "", HasIndividualMembership: false},
+			{Account: "u1", SiteID: "site-a", Name: "", HasIndividualMembership: false},
 		}, nil)
 	// No other mocks — permanent error must short-circuit before deletes/publishes.
 

@@ -540,8 +540,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// sys-message.
 	sectName := ""
 	for _, m := range members {
-		if m.SectName != "" {
-			sectName = m.SectName
+		if m.Name != "" {
+			sectName = m.Name
 			break
 		}
 	}

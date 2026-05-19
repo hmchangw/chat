@@ -28,7 +28,9 @@ type UserWithMembership struct {
 type OrgMemberStatus struct {
 	Account                 string `bson:"account"`
 	SiteID                  string `bson:"siteId"`
-	SectName                string `bson:"sectName"`
+	Name                    string `bson:"name"`
+	TCName                  string `bson:"tcName"`
+	IsDept                  bool   `bson:"isDept"`
 	HasIndividualMembership bool   `bson:"hasIndividualMembership"`
 }
 
