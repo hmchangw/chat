@@ -8,9 +8,9 @@
 
 ## Overview
 
-Replace the single-node Valkey instance used by each site with a Valkey cluster (3-node minimum). Every site (`ftest`, `f18-dev`, production, etc.) runs its own independent Valkey cluster. All services on a site point at that site's cluster.
+Replace the single-node Valkey instance used by each site with a Valkey cluster (3-node minimum). Every site (`ftest`, `f18-dev`, production, etc.) runs its own independent Valkey cluster. All services on a site point at that site's cluster. The single-node Valkey instance is fully retired — cluster mode is the only supported deployment going forward.
 
-This spec covers the code changes required to make `pkg/roomkeystore` and `pkg/valkeyutil` work against a Valkey cluster, the service-level config changes to switch from a single address to a cluster address list, and the per-site docker-compose changes to run a cluster instead of a single node.
+This spec covers the code changes required to make `pkg/roomkeystore` and `pkg/valkeyutil` work against a Valkey cluster, the service-level config changes to replace `VALKEY_ADDR` (single address) with `VALKEY_ADDRS` (cluster seed addresses), and the per-site docker-compose changes to run a cluster instead of a single node.
 
 ---
 
@@ -147,7 +147,22 @@ func NewValkeyClusterStore(cfg ClusterConfig) (RoomKeyStore, error) {
 
 ## Change 3: `pkg/valkeyutil` Cluster Support
 
-`search-service` connects via `valkeyutil.Connect` which uses `redis.NewClient` (standalone only). A parallel `ConnectCluster` function is added:
+`search-service` connects via `valkeyutil.Connect` which internally uses `redis.NewClient` (single-node only). A replacement `ConnectCluster` function is added that uses `redis.NewClusterClient`.
+
+`redis.ClusterClient` and `redis.Client` are distinct types in `go-redis/v9` — they cannot share the same wrapper struct. A new unexported `clusterRedisClient` wrapper is introduced alongside the existing `redisClient`, both satisfying the same `Client` interface:
+
+```go
+type clusterRedisClient struct {
+    c *redis.ClusterClient
+}
+
+func (r *clusterRedisClient) Get(ctx context.Context, key string) (string, error)
+func (r *clusterRedisClient) Set(ctx context.Context, key, value string, ttl time.Duration) error
+func (r *clusterRedisClient) Del(ctx context.Context, keys ...string) error
+func (r *clusterRedisClient) Close() error
+```
+
+`ConnectCluster` constructs a `clusterRedisClient`:
 
 ```go
 func ConnectCluster(ctx context.Context, addrs []string, password string) (Client, error) {
@@ -164,13 +179,11 @@ func ConnectCluster(ctx context.Context, addrs []string, password string) (Clien
         return nil, fmt.Errorf("valkey cluster connect: %w", err)
     }
     slog.Info("connected to Valkey cluster", "addrs", addrs)
-    return &redisClient{c: c.(*redis.Client)}, nil
+    return &clusterRedisClient{c: c}, nil
 }
 ```
 
-Wait — `redis.ClusterClient` and `redis.Client` are different types. The existing `redisClient` wrapper in `valkeyutil` wraps `*redis.Client`. A second wrapper `clusterRedisClient` is introduced for `*redis.ClusterClient`, satisfying the same `Client` interface. Both wrappers implement `Get`, `Set`, `Del`, `Close`.
-
-The existing `Connect` (standalone) is retained unchanged.
+`valkeyutil.Connect` (standalone) is removed from all service call sites. `ConnectCluster` is the only connection path going forward.
 
 ---
 
@@ -233,9 +246,9 @@ No new error types are introduced. Existing error wrapping conventions apply:
 
 `VALKEY_PASSWORD` and `VALKEY_KEY_GRACE_PERIOD` are unchanged.
 
-### Backward compatibility
+### Replacing `VALKEY_ADDR`
 
-`VALKEY_ADDR` (standalone) is removed from service configs when cluster mode is adopted. There is no fallback — a service is either standalone or cluster, not both. Deployments that do not need cluster mode continue using the existing `NewValkeyStore` + `VALKEY_ADDR` path; only sites adopting cluster mode switch to `NewValkeyClusterStore` + `VALKEY_ADDRS`.
+`VALKEY_ADDR` is removed from all service configs and all service `main.go` files. It is not kept as a fallback. `VALKEY_ADDRS` is the only Valkey configuration going forward. The standalone `NewValkeyStore` and `valkeyutil.Connect` constructors remain in the codebase (they are valid library functions) but are no longer called by any service.
 
 ---
 
@@ -287,7 +300,7 @@ ValkeyCluster = "bitnami/valkey-cluster:8"
 | `pkg/roomkeystore/adapter.go` | Add `clusterAdapter`, `ClusterConfig`, `NewValkeyClusterStore` |
 | `pkg/roomkeystore/integration_test.go` | Add `setupValkeyCluster` + 3 cluster integration tests |
 | `pkg/roomkeystore/roomkeystore_test.go` | Update key name assertions to expect hash-tagged format |
-| `pkg/valkeyutil/valkey.go` | Add `clusterRedisClient`, `ConnectCluster` |
+| `pkg/valkeyutil/valkey.go` | Add `clusterRedisClient`, `ConnectCluster`; `Connect` retained but no longer called by services |
 | `pkg/valkeyutil/valkey_test.go` | Add `TestConnectCluster_Integration` |
 | `pkg/testutil/testimages/testimages.go` | Add `ValkeyCluster` constant |
 | `room-service/main.go` | `ValkeyAddr` → `ValkeyAddrs`, `NewValkeyStore` → `NewValkeyClusterStore` |
