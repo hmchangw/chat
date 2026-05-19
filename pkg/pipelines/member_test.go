@@ -20,9 +20,11 @@ func TestGetNewMembersPipeline(t *testing.T) {
 		match := stage0["$match"].(bson.M)
 		orFilter := match["$or"].(bson.A)
 
-		assert.Len(t, orFilter, 2)
+		// sectId + deptId for the one orgID group, plus account = 3 clauses.
+		assert.Len(t, orFilter, 3)
 		assert.NotNil(t, orFilter[0])
 		assert.NotNil(t, orFilter[1])
+		assert.NotNil(t, orFilter[2])
 	})
 
 	t.Run("bot exclusion via $not regex", func(t *testing.T) {
@@ -40,9 +42,12 @@ func TestGetNewMembersPipeline(t *testing.T) {
 		match := stage0["$match"].(bson.M)
 		orFilter := match["$or"].(bson.A)
 
-		assert.Len(t, orFilter, 1)
+		// sectId + deptId clauses for the org group.
+		assert.Len(t, orFilter, 2)
 		sectIdFilter := orFilter[0].(bson.M)
 		assert.Contains(t, sectIdFilter, "sectId")
+		deptIdFilter := orFilter[1].(bson.M)
+		assert.Contains(t, deptIdFilter, "deptId")
 	})
 
 	t.Run("$or filter contains directAccounts when provided", func(t *testing.T) {

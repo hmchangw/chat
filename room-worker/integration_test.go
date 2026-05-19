@@ -1204,6 +1204,26 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
 }
 
+func TestMongoStore_ListAddMemberCandidates_DeptMatching_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", DeptID: "dept-X", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob", SectID: "dept-X", SiteID: "site-a"})
+
+	got, err := store.ListAddMemberCandidates(ctx, []string{"dept-X"}, nil, "room-1")
+	require.NoError(t, err)
+
+	accounts := map[string]bool{}
+	for _, c := range got {
+		accounts[c.Account] = true
+	}
+	assert.True(t, accounts["alice"], "alice matches by deptId")
+	assert.True(t, accounts["bob"], "bob matches by sectId (orgID coincides)")
+	assert.Len(t, got, 2)
+}
+
 func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
 	t.Helper()
 	return roomkeystore.NewValkeyClusterStoreFromClient(testutil.StartValkeyCluster(t), time.Hour)

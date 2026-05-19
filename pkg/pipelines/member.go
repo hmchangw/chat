@@ -28,7 +28,7 @@ import "go.mongodb.org/mongo-driver/v2/bson"
 func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
 	orFilter := bson.A{}
 	if len(orgIDs) > 0 {
-		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
+		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}}, bson.M{"deptId": bson.M{"$in": orgIDs}})
 	}
 	if len(directAccounts) > 0 {
 		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
@@ -72,7 +72,7 @@ func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccou
 func matchCandidates(orgIDs, directAccounts []string, excludeAccount string) bson.M {
 	orFilter := bson.A{}
 	if len(orgIDs) > 0 {
-		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
+		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}}, bson.M{"deptId": bson.M{"$in": orgIDs}})
 	}
 	if len(directAccounts) > 0 {
 		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
