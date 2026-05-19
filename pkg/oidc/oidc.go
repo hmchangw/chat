@@ -63,6 +63,7 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 			TLSClientConfig: &tls.Config{
 				// #nosec G402 -- InsecureSkipVerify is opt-in via TLSSkipVerify config for dev environments
 				InsecureSkipVerify: true, //nolint:gosec // intentional for dev environments
+				MinVersion:         tls.VersionTLS12,
 			},
 		}
 		httpClient = &http.Client{
