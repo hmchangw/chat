@@ -935,7 +935,6 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `messageId` | string | 17- or 20-char base62. |
 | `sender` | object | A `Participant` — see below. |
 | `msg` | string | The message body. |
-| `targetUser` | object | Optional. `Participant` — set for direct/system messages addressed to a specific user. |
 | `mentions` | array<Participant> | Optional. |
 | `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
 | `file` | object | Optional. `{id, name, type}`. |
