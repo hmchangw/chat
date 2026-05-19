@@ -29,7 +29,7 @@ import (
 
 type Handler struct {
 	store RoomStore
-	// keyStore is set when VALKEY_ADDR is configured (always in production; tests may pass nil).
+	// keyStore is set when VALKEY_ADDRS is configured (always in production; tests may pass nil).
 	keyStore          RoomKeyStore
 	memberListClient  MemberListClient
 	msgReader         MessageReader
