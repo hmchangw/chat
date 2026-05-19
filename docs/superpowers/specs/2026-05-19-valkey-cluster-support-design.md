@@ -292,6 +292,101 @@ ValkeyCluster = "bitnami/valkey-cluster:8"
 
 ---
 
+## Change 6: Room Key Ensure RPC — `room-service`
+
+### Background
+
+The existing key system is entirely push-based. Keys are generated inside `room-service` at room creation time and fanned out to clients via `room-worker`. No external service can ask for a key — there is no NATS subject that accepts a room ID and returns its key.
+
+This works for the normal room lifecycle but leaves a gap for external services that operate outside that lifecycle. Specifically, a connector syncing room data from an external MongoDB collection into this system needs the public key for a room to encrypt data it is writing. That connector is not part of this repo but it needs a standard entry point in `room-service` to request a key.
+
+### What the RPC Does
+
+A new NATS request/reply handler in `room-service`:
+
+- **Subject:** `chat.server.request.room.{siteID}.key.ensure`
+- **Request payload:** `RoomKeyEnsureRequest{ RoomID string }`
+- **Reply payload (success):** `model.RoomKeyEvent{ RoomID, Version, PublicKey, PrivateKey, Timestamp }`
+- **Reply payload (error):** `model.ErrorResponse` via `natsutil.ReplyError`
+
+**Idempotent by design:** if a key already exists in Valkey for the room, it is returned immediately without generating a new one. If no key exists (backfill case), a new key pair is generated, stored in Valkey via `keyStore.Set`, and then returned.
+
+```
+external connector
+  │  NATS request: chat.server.request.room.{siteID}.key.ensure
+  │  payload: { roomId: "abc123" }
+  ▼
+room-service (NatsHandleEnsureRoomKey)
+  1. keyStore.Get(roomID)
+     → key exists: reply RoomKeyEvent immediately
+     → nil: GenerateKeyPair() + keyStore.Set() + reply RoomKeyEvent
+  ▼
+connector receives: { roomId, version, publicKey, privateKey, timestamp }
+```
+
+### Why `room-service` and not `room-worker`
+
+Key generation must stay in `room-service` to preserve the single-rotator invariant — only `room-service` calls `GenerateKeyPair` and `keyStore.Set`. `room-worker` only reads keys (via `Get`) and fans them out. Putting this handler in `room-service` is consistent with how `handleCreateRoom` and `handleRemoveMember` already manage key generation.
+
+### Important: PublicKey is included in the RPC reply
+
+The normal `buildAndFanOutRoomKey` in `room-worker` intentionally omits `PublicKey` from the `RoomKeyEvent` sent to clients — the public key is server-side only, used by `broadcast-worker` for encryption. However, this RPC is **server-to-server**, not server-to-client. The external connector needs the public key to encrypt data it is writing. The full key pair is therefore returned in the reply.
+
+### No fan-out from this RPC
+
+This RPC only ensures the key is in Valkey and returns it to the caller. It does not publish to the ROOMS stream and does not trigger `room-worker` to fan out `RoomKeyEvent` to room members. Fan-out is a room lifecycle concern handled by the existing create/add-member/remove-member flows. The connector uses the key for its own encryption purposes independently.
+
+### New model type — `pkg/model/room.go`
+
+```go
+// RoomKeyEnsureRequest is the payload for the room key ensure RPC.
+type RoomKeyEnsureRequest struct {
+    RoomID string `json:"roomId"`
+}
+```
+
+Reply reuses the existing `model.RoomKeyEvent` (already has `RoomID`, `Version`, `PublicKey`, `PrivateKey`, `Timestamp`).
+
+### New subject — `pkg/subject/subject.go`
+
+```go
+func RoomKeyEnsure(siteID string) string {
+    return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
+}
+```
+
+### Handler — `room-service/handler.go`
+
+New exported method `NatsHandleEnsureRoomKey` registered in `RegisterCRUD`. The handler:
+
+1. Decodes `RoomKeyEnsureRequest` from the NATS message
+2. Calls `keyStore.Get(roomID)`
+3. If key exists: builds and replies `model.RoomKeyEvent` immediately
+4. If nil: calls `roomkeystore.GenerateKeyPair()` + `keyStore.Set(roomID, pair)`, then replies
+5. On any error: replies via `natsutil.ReplyError`
+
+The handler extracts request ID from NATS headers via `natsutil.ContextWithRequestIDFromHeaders` before processing, consistent with all other handlers.
+
+### `room-service/store.go` — RoomKeyStore interface
+
+The consumer-side `RoomKeyStore` interface in `room-service/store.go` already includes `Get` and `Set`. No changes needed.
+
+### Testing
+
+`room-service/handler_test.go` — new table-driven test cases for `NatsHandleEnsureRoomKey`:
+
+| Scenario | Expected |
+|---|---|
+| Key exists in Valkey | returns existing `RoomKeyEvent`, no `Set` called |
+| Key missing — happy path | `GenerateKeyPair` + `Set` called, returns new `RoomKeyEvent` |
+| `keyStore.Get` error | replies with error, no `Set` called |
+| `keyStore.Set` error on generation | replies with error |
+| Malformed request payload | replies with error |
+
+Mock expectations updated via `make generate` after any interface change.
+
+---
+
 ## Files Changed
 
 | File | Change |
@@ -313,6 +408,11 @@ ValkeyCluster = "bitnami/valkey-cluster:8"
 | `broadcast-worker/deploy/docker-compose.yml` | Same |
 | `history-service/deploy/docker-compose.yml` | Same |
 | `search-service/deploy/docker-compose.yml` | Same |
+| `pkg/model/room.go` | Add `RoomKeyEnsureRequest` |
+| `pkg/subject/subject.go` | Add `RoomKeyEnsure(siteID string) string` |
+| `room-service/handler.go` | Add `NatsHandleEnsureRoomKey`, register in `RegisterCRUD` |
+| `room-service/handler_test.go` | TDD tests for `NatsHandleEnsureRoomKey` |
+| `room-service/mock_store_test.go` | Regenerated via `make generate` if interface changes |
 
 ---
 
@@ -323,3 +423,6 @@ ValkeyCluster = "bitnami/valkey-cluster:8"
 - Per-purpose Valkey separation (keys vs cache on separate clusters)
 - Production Kubernetes manifests — docker-compose covers local and ftest; production infra is managed separately
 - Valkey persistence configuration (AOF/RDB) — required for production but an ops/infra concern, not a code concern
+- Fan-out of `RoomKeyEvent` to room members from the ensure RPC — that is the room lifecycle's responsibility, not the connector's
+- The connector implementation itself — it lives outside this repo and calls the RPC as a black box
+- Client-side pull RPC for missed key events — deferred, noted in the existing room encryption keys spec
