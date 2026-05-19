@@ -1,4 +1,4 @@
-FROM golang:1.25.8-alpine AS builder
+FROM golang:1.25.10-alpine AS builder
 
 WORKDIR /app
 
@@ -12,8 +12,9 @@ RUN CGO_ENABLED=0 go build -o /inbox-worker ./inbox-worker/
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 
 COPY --from=builder /inbox-worker /inbox-worker
 
+USER app
 ENTRYPOINT ["/inbox-worker"]
