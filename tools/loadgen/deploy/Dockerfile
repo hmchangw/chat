@@ -11,6 +11,7 @@ COPY tools/loadgen/ tools/loadgen/
 RUN CGO_ENABLED=0 go build -o /loadgen ./tools/loadgen/
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 COPY --from=builder /loadgen /loadgen
+USER app
 ENTRYPOINT ["/loadgen"]

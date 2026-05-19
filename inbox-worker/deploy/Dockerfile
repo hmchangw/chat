@@ -12,8 +12,9 @@ RUN CGO_ENABLED=0 go build -o /inbox-worker ./inbox-worker/
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 
 COPY --from=builder /inbox-worker /inbox-worker
 
+USER app
 ENTRYPOINT ["/inbox-worker"]

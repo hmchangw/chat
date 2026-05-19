@@ -12,8 +12,9 @@ RUN CGO_ENABLED=0 go build -o /mock-user-service ./mock-user-service/
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 
 COPY --from=builder /mock-user-service /mock-user-service
 
+USER app
 ENTRYPOINT ["/mock-user-service"]

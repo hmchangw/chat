@@ -7,6 +7,7 @@ COPY message-gatekeeper/ message-gatekeeper/
 RUN CGO_ENABLED=0 go build -o /message-gatekeeper ./message-gatekeeper/
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 COPY --from=builder /message-gatekeeper /message-gatekeeper
+USER app
 ENTRYPOINT ["/message-gatekeeper"]

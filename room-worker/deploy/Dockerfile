@@ -7,6 +7,7 @@ COPY room-worker/ room-worker/
 RUN CGO_ENABLED=0 go build -o /room-worker ./room-worker/
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 COPY --from=builder /room-worker /room-worker
+USER app
 ENTRYPOINT ["/room-worker"]
