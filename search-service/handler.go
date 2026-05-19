@@ -164,10 +164,6 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 		slog.Error("parse spotlight rooms failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("unexpected search response")
 	}
-
-	if rooms == nil {
-		rooms = []model.SearchRoom{}
-	}
 	return &model.SearchRoomsResponse{Rooms: rooms}, nil
 }
 

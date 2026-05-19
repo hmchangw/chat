@@ -1776,7 +1776,7 @@ func TestSearchRoomsResponseJSON(t *testing.T) {
 	roundTrip(t, &resp, &model.SearchRoomsResponse{})
 }
 
-func TestSearchRoomsResponseJSON_EmptySubscriptions(t *testing.T) {
+func TestSearchRoomsResponseJSON_EmptyRooms(t *testing.T) {
 	resp := model.SearchRoomsResponse{Rooms: []model.SearchRoom{}}
 	data, err := json.Marshal(&resp)
 	require.NoError(t, err)
