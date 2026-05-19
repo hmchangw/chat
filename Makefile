@@ -26,7 +26,7 @@ TOOLS_GO_TOOLCHAIN    := go1.25.10
 GOLANGCI_LINT_VERSION := v2.11.4
 GOSEC_VERSION         := v2.26.1
 GOVULNCHECK_VERSION   := v1.3.0
-SEMGREP_VERSION       := 1.86.0
+SEMGREP_VERSION       := 1.163.0
 
 GOSEC       := $(GOBIN_DIR)/gosec
 GOVULNCHECK := $(GOBIN_DIR)/govulncheck
@@ -131,12 +131,16 @@ endif
 # --- SAST -------------------------------------------------------------------
 # Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
 # no go.mod impact; semgrep installs via pipx. Idempotent — safe to re-run.
+# setuptools is injected into semgrep's venv because semgrep imports
+# pkg_resources, which setuptools-less Python 3.12+ (e.g. ubuntu-latest)
+# no longer ships by default.
 tools:
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@if command -v pipx >/dev/null 2>&1; then \
-	  pipx install --force semgrep==$(SEMGREP_VERSION); \
+	  pipx install --force semgrep==$(SEMGREP_VERSION) \
+	    && pipx inject semgrep setuptools; \
 	elif command -v semgrep >/dev/null 2>&1; then \
 	  echo "pipx not found, but semgrep is already on PATH — skipping semgrep install"; \
 	else \
