@@ -99,6 +99,62 @@ func (r *redisClient) Close() error {
 	return r.c.Close()
 }
 
+// clusterRedisClient wraps *redis.ClusterClient to satisfy Client.
+type clusterRedisClient struct {
+	c *redis.ClusterClient
+}
+
+// ConnectCluster dials a Valkey cluster via the provided seed addresses,
+// verifies connectivity with PING, and returns a Client.
+func ConnectCluster(ctx context.Context, addrs []string, password string) (Client, error) {
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:    addrs,
+		Password: password,
+	})
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := c.Ping(pingCtx).Err(); err != nil {
+		if closeErr := c.Close(); closeErr != nil {
+			slog.Warn("valkey cluster close after failed connect", "error", closeErr)
+		}
+		return nil, fmt.Errorf("valkey cluster connect: %w", err)
+	}
+	slog.Info("connected to Valkey cluster", "addrs", addrs)
+	return &clusterRedisClient{c: c}, nil
+}
+
+func (r *clusterRedisClient) Get(ctx context.Context, key string) (string, error) {
+	val, err := r.c.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrCacheMiss
+	}
+	if err != nil {
+		return "", fmt.Errorf("valkey get: %w", err)
+	}
+	return val, nil
+}
+
+func (r *clusterRedisClient) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	if err := r.c.Set(ctx, key, value, ttl).Err(); err != nil {
+		return fmt.Errorf("valkey set: %w", err)
+	}
+	return nil
+}
+
+func (r *clusterRedisClient) Del(ctx context.Context, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if err := r.c.Del(ctx, keys...).Err(); err != nil {
+		return fmt.Errorf("valkey del: %w", err)
+	}
+	return nil
+}
+
+func (r *clusterRedisClient) Close() error {
+	return r.c.Close()
+}
+
 // GetJSON reads `key` from Valkey and unmarshals the stored JSON into
 // `out`. Returns ErrCacheMiss (wrapped) if the key is not set so callers
 // can `errors.Is` it; all other failures (transport, malformed JSON) wrap

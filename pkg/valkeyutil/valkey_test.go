@@ -136,3 +136,9 @@ func TestConnect_ErrorPath(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "valkey connect")
 }
+
+func TestConnectCluster_ErrorPath(t *testing.T) {
+	_, err := valkeyutil.ConnectCluster(context.Background(), []string{"127.0.0.1:1"}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valkey cluster connect")
+}
