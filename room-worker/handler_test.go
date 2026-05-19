@@ -4090,38 +4090,40 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 	assert.Equal(t, `"Engineering" has been removed from the channel`, sysMsg.Content)
 }
 
-// D5: every member SectName empty → permanent error. The deferred
-// publishAsyncJobResult must also surface a sanitized error to the requester
-// so the client doesn't hang waiting for a reply.
+// D5: every member SectName empty → no permanent error. The orgID fallback
+// in displayOrg/CombineWithFallback guarantees a non-empty rendered string,
+// so the org-doc deletion and sys-message still go through. A slog.Warn is
+// emitted for visibility but the operation succeeds.
 func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 
-	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), "r1", "o1").
+	roomID := "r1"
+	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, "o1").
 		Return([]OrgMemberStatus{
-			{Account: "u1", SiteID: "site-a", Name: "", HasIndividualMembership: false},
+			{Account: "u1", SiteID: "site-a", Name: "", TCName: "", IsDept: false, HasIndividualMembership: true},
 		}, nil)
-	// No other mocks — permanent error must short-circuit before deletes/publishes.
+	// toRemove is empty (the member has individual membership) → no DeleteSubscriptionsByAccounts expected.
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "o1").Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").
+		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
 		published = append(published, publishedMsg{subj: subj, data: data})
 		return nil
 	}, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", OrgID: "o1", Timestamp: 1}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
-	err := h.processRemoveOrg(ctx, &req, nil, false)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
+	require.NoError(t, h.processRemoveOrg(ctx, &req, nil, false))
 
-	responses := userResponseFor(published, "alice")
-	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
-	var result model.AsyncJobResult
-	require.NoError(t, json.Unmarshal(responses[0].data, &result))
-	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "missing SectName")
-	assert.NotContains(t, result.Error, ": permanent")
+	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
+	assert.Equal(t, `"o1" has been removed from the channel`, sysMsg.Content)
+	var payload model.MemberRemoved
+	require.NoError(t, json.Unmarshal(sysMsg.SysMsgData, &payload))
+	assert.Equal(t, "o1", payload.SectName)
 }
 
 // F1: async DM create sets UIDs/Accounts sorted by UID, paired by index, on
@@ -4430,4 +4432,82 @@ func TestHandler_RotateAndFanOut_ErrNoCurrentKey_UsesPredictedVersion(t *testing
 	// Pass an empty survivors slice: no fan-out side effects needed for this test.
 	err := h.rotateAndFanOut(context.Background(), "test-room", currentPair, nil)
 	require.NoError(t, err)
+}
+
+// Dept-first tiebreak: on overlap (org membership reachable via both sect and
+// dept matches), the dept row wins the (Name, TCName) pick. When no dept row
+// matches, the first sect row wins. When members carry no names at all, the
+// orgID fallback in displayOrg keeps the sys-message non-empty (no permanent
+// error).
+func TestHandler_ProcessRemoveOrg_DeptFirstTiebreak(t *testing.T) {
+	cases := []struct {
+		name        string
+		members     []OrgMemberStatus
+		wantSect    string // MemberRemoved.SectName
+		wantContent string // Message.Content
+	}{
+		{
+			name: "all sect users",
+			members: []OrgMemberStatus{
+				{Account: "u1", SiteID: "site-a", Name: "Sect", TCName: "組", IsDept: false, HasIndividualMembership: true},
+				{Account: "u2", SiteID: "site-a", Name: "Sect", TCName: "組", IsDept: false, HasIndividualMembership: true},
+			},
+			wantSect: "Sect 組", wantContent: `"Sect 組" has been removed from the channel`,
+		},
+		{
+			name: "all dept users",
+			members: []OrgMemberStatus{
+				{Account: "u1", SiteID: "site-a", Name: "Dept", TCName: "部", IsDept: true, HasIndividualMembership: true},
+			},
+			wantSect: "Dept 部", wantContent: `"Dept 部" has been removed from the channel`,
+		},
+		{
+			name: "mixed — dept wins",
+			members: []OrgMemberStatus{
+				{Account: "u1", SiteID: "site-a", Name: "Sect", TCName: "組", IsDept: false, HasIndividualMembership: true},
+				{Account: "u2", SiteID: "site-a", Name: "Dept", TCName: "部", IsDept: true, HasIndividualMembership: true},
+			},
+			wantSect: "Dept 部", wantContent: `"Dept 部" has been removed from the channel`,
+		},
+		{
+			name: "all names empty — fall back to orgID",
+			members: []OrgMemberStatus{
+				{Account: "u1", SiteID: "site-a", Name: "", TCName: "", IsDept: false, HasIndividualMembership: true},
+			},
+			wantSect: "o1", wantContent: `"o1" has been removed from the channel`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockSubscriptionStore(ctrl)
+
+			roomID := "r1"
+			store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, "o1").Return(tc.members, nil)
+			// toRemove is empty (all members have individual membership) → no DeleteSubscriptionsByAccounts expected.
+			store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "o1").Return(nil)
+			store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+			store.EXPECT().GetUser(gomock.Any(), "alice").
+				Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
+
+			var published []publishedMsg
+			h := &Handler{
+				store: store, siteID: "site-a",
+				publish: func(_ context.Context, subj string, data []byte, _ string) error {
+					published = append(published, publishedMsg{subj: subj, data: data})
+					return nil
+				},
+				keyStore: testKeyStore, keySender: testKeySender,
+			}
+
+			req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
+			require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil, false))
+
+			sysMsg := findSysMsg(t, published, "site-a", "member_removed")
+			assert.Equal(t, tc.wantContent, sysMsg.Content)
+			var payload model.MemberRemoved
+			require.NoError(t, json.Unmarshal(sysMsg.SysMsgData, &payload))
+			assert.Equal(t, tc.wantSect, payload.SectName)
+		})
+	}
 }

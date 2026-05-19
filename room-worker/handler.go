@@ -532,21 +532,29 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("get org members with individual status: %w", err)
 	}
 
-	// SectName is harvested from the UNFILTERED members slice (not toRemove) so
-	// it remains correct when every org member also has an individual sub and
-	// toRemove ends up empty. Pick the first non-empty SectName; an all-empty
-	// result is a data inconsistency upstream and must short-circuit before any
-	// mutating store call so the org-doc deletion is not lost to a malformed
-	// sys-message.
-	sectName := ""
+	// Two-pass: dept-matching rows win on overlap; otherwise first row.
+	// Name/TCName harvested from the UNFILTERED members slice so they remain
+	// correct when every org member also has an individual sub and toRemove
+	// ends up empty. The orgID fallback in displayOrg/CombineWithFallback
+	// guarantees a non-empty rendered string even when all names are empty,
+	// so an all-empty result is no longer a permanent error.
+	var name, tcName string
 	for _, m := range members {
-		if m.Name != "" {
-			sectName = m.Name
+		if m.IsDept {
+			name, tcName = m.Name, m.TCName
 			break
 		}
 	}
-	if sectName == "" {
-		return newPermanent("org %s missing SectName on all members (room %s)", req.OrgID, req.RoomID)
+	if name == "" && tcName == "" {
+		for _, m := range members {
+			if !m.IsDept {
+				name, tcName = m.Name, m.TCName
+				break
+			}
+		}
+	}
+	if name == "" && tcName == "" {
+		slog.Warn("org-remove: no name resolved from any member; falling back to orgID", "roomID", req.RoomID, "orgID", req.OrgID)
 	}
 
 	var toRemove []OrgMemberStatus
@@ -644,7 +652,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	sysMsgPayload, _ := json.Marshal(model.MemberRemoved{
 		OrgID:             req.OrgID,
-		SectName:          sectName,
+		SectName:          displayOrg(name, tcName, req.OrgID),
 		RemovedUsersCount: len(toRemove),
 	})
 	seed := messageDedupSeed(ctx, "processRemoveOrg", req.RoomID,
@@ -655,7 +663,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		UserID:      requester.ID,
 		UserAccount: requester.Account,
 		Type:        model.MessageTypeMemberRemoved,
-		Content:     formatRemovedOrg(sectName, "", req.OrgID),
+		Content:     formatRemovedOrg(name, tcName, req.OrgID),
 		SysMsgData:  sysMsgPayload,
 		CreatedAt:   now,
 	}
