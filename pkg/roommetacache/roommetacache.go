@@ -104,7 +104,7 @@ func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error) {
 	})
 	if err != nil {
 		c.loadErrs.Add(1)
-		return Meta{}, err
+		return Meta{}, fmt.Errorf("get room meta for %q: %w", roomID, err)
 	}
 	return v.(Meta), nil
 }

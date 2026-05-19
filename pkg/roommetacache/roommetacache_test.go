@@ -94,12 +94,15 @@ func TestCache_TTLExpires(t *testing.T) {
 	c, err := roommetacache.New(10, 50*time.Millisecond, loader)
 	require.NoError(t, err)
 
-	_, _ = c.Get(context.Background(), "r1")
-	_, _ = c.Get(context.Background(), "r1")
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
 	require.Equal(t, int32(1), calls.Load(), "second call within TTL should be a hit")
 
 	time.Sleep(75 * time.Millisecond)
-	_, _ = c.Get(context.Background(), "r1")
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
 	assert.Equal(t, int32(2), calls.Load(), "after TTL expiry, loader runs again")
 }
 
@@ -112,17 +115,22 @@ func TestCache_CapacityEviction(t *testing.T) {
 	c, err := roommetacache.New(2, time.Minute, loader)
 	require.NoError(t, err)
 
-	_, _ = c.Get(context.Background(), "r1") // miss
-	_, _ = c.Get(context.Background(), "r2") // miss
-	_, _ = c.Get(context.Background(), "r3") // miss; evicts r1 (LRU)
+	_, err = c.Get(context.Background(), "r1") // miss
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r2") // miss
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r3") // miss; evicts r1 (LRU)
+	require.NoError(t, err)
 	require.Equal(t, int32(3), calls.Load())
 
 	// r1 should be evicted; re-loading produces another miss.
-	_, _ = c.Get(context.Background(), "r1")
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
 	assert.Equal(t, int32(4), calls.Load(), "r1 should have been evicted by capacity")
 
 	// r3 should still be cached.
-	_, _ = c.Get(context.Background(), "r3")
+	_, err = c.Get(context.Background(), "r3")
+	require.NoError(t, err)
 	assert.Equal(t, int32(4), calls.Load(), "r3 should still be a hit")
 }
 
@@ -135,13 +143,16 @@ func TestCache_Invalidate(t *testing.T) {
 	c, err := roommetacache.New(10, time.Minute, loader)
 	require.NoError(t, err)
 
-	_, _ = c.Get(context.Background(), "r1")
-	_, _ = c.Get(context.Background(), "r1")
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
 	require.Equal(t, int32(1), calls.Load())
 
 	c.Invalidate("r1")
 
-	_, _ = c.Get(context.Background(), "r1")
+	_, err = c.Get(context.Background(), "r1")
+	require.NoError(t, err)
 	assert.Equal(t, int32(2), calls.Load(), "Invalidate should cause next Get to miss")
 }
 

@@ -308,16 +308,27 @@ instantiated by both services without code duplication. The package
 exposes:
 
 ```go
-type Cache struct { ... }
-func New(size int, ttl time.Duration) *Cache
-func (c *Cache) Get(roomID string) (meta cachedRoomMeta, hit bool)
-func (c *Cache) Put(roomID string, meta cachedRoomMeta)
-func (c *Cache) Invalidate(roomID string)   // for future use
+type Meta struct {
+    ID        string
+    Type      model.RoomType
+    Name      string
+    SiteID    string
+    UserCount int
+}
+
+type Loader func(ctx context.Context, roomID string) (Meta, error)
+
+func New(size int, ttl time.Duration, loader Loader) (*Cache, error)
+func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error)
+func (c *Cache) Invalidate(roomID string)
+func (c *Cache) Stats() Stats
 ```
 
 `Invalidate` is included from v1 even though no caller uses it; a
 future NATS-driven invalidation feature plugs straight in without
-needing a package interface change.
+needing a package interface change. The `Loader` function is supplied
+at construction time and called on cache miss; errors from the loader
+are returned to the caller and not cached.
 
 ### Concurrent-miss handling (singleflight)
 
@@ -337,12 +348,14 @@ Replace `FetchAndUpdateRoom` with two store methods:
 
 ```go
 type Store interface {
-    GetRoomMeta(ctx context.Context, roomID string) (*cachedRoomMeta, error)
+    GetRoomMeta(ctx context.Context, roomID string) (Meta, error)
     UpdateRoomLastMessage(ctx context.Context, roomID, msgID string,
                           msgAt time.Time, mentionAll bool) error
     // ...existing methods
 }
 ```
+
+The `Meta` type is defined in `pkg/roommetacache` and shared by both services.
 
 `UpdateRoomLastMessage`:
 
@@ -382,15 +395,15 @@ room, err := h.store.FetchAndUpdateRoom(ctx, msg.RoomID, msg.ID, msg.CreatedAt, 
 if err := h.store.UpdateRoomLastMessage(ctx, msg.RoomID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
     return fmt.Errorf("update room last message: %w", err)
 }
-room, err := h.roomMeta.GetOrLoad(ctx, msg.RoomID)
+room, err := h.roomMeta.Get(ctx, msg.RoomID)
 if err != nil {
     return fmt.Errorf("get room meta: %w", err)
 }
 ```
 
-`buildRoomEvent` is updated to take `*cachedRoomMeta` rather than
+`buildRoomEvent` is updated to take `Meta` (a value type from `pkg/roommetacache`) rather than
 `*model.Room`. The fields it consumes (`Type`, `Name`, `SiteID`,
-`UserCount`) are a strict subset.
+`UserCount`) are a strict subset of what `Meta` provides.
 
 ### Changes to `message-gatekeeper`
 
