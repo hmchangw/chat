@@ -1,6 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math/rand"
+	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
+)
 
 // Shape selects what an add-member request carries: individual users, orgs,
 // channel-refs, or a mix. v1 implements ShapeUsers; the other values exist so
@@ -52,6 +59,89 @@ var builtinMembersPresets = map[string]MembersPreset{
 func BuiltinMembersPreset(name string) (MembersPreset, bool) {
 	p, ok := builtinMembersPresets[name]
 	return p, ok
+}
+
+// CandidatePools maps roomID to the list of accounts eligible to be added to
+// that room (i.e., users not already seeded as members). Each generator pops
+// from this list to build add-member requests.
+type CandidatePools map[string][]string
+
+// BuildMembersFixtures is a pure function of (preset, seed, siteID) producing
+// the full members-workload fixture set plus per-room candidate pools.
+// Two calls with equal inputs produce equal outputs.
+func BuildMembersFixtures(p *MembersPreset, seed int64, siteID string) (Fixtures, CandidatePools) {
+	r := rand.New(rand.NewSource(seed))
+	now := time.Unix(0, 0).UTC()
+
+	users := make([]model.User, p.Users)
+	for i := 0; i < p.Users; i++ {
+		users[i] = model.User{
+			ID:          fmt.Sprintf("u-%06d", i),
+			Account:     fmt.Sprintf("user-%d", i),
+			SiteID:      siteID,
+			EngName:     engNameBank[i%len(engNameBank)],
+			ChineseName: chineseNameBank[i%len(chineseNameBank)],
+		}
+	}
+
+	rooms := make([]model.Room, p.Rooms)
+	for i := 0; i < p.Rooms; i++ {
+		rooms[i] = model.Room{
+			ID:        fmt.Sprintf("mroom-%06d", i),
+			Name:      fmt.Sprintf("mroom-%d", i),
+			Type:      model.RoomTypeChannel,
+			SiteID:    siteID,
+			UserCount: p.BaselineSize,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+
+	var subs []model.Subscription
+	pools := make(CandidatePools, len(rooms))
+	for i := range rooms {
+		perm := r.Perm(len(users))
+		need := p.BaselineSize + p.CandidatePool
+		if need > len(perm) {
+			need = len(perm)
+		}
+		chosen := perm[:need]
+		memberSlice := chosen[:p.BaselineSize]
+		candidateSlice := chosen[p.BaselineSize:need]
+
+		for j, idx := range memberSlice {
+			roles := []model.Role{model.RoleMember}
+			if j == 0 {
+				roles = []model.Role{model.RoleOwner}
+			}
+			subs = append(subs, model.Subscription{
+				ID:       fmt.Sprintf("sub-%s-%s", rooms[i].ID, users[idx].ID),
+				User:     model.SubscriptionUser{ID: users[idx].ID, Account: users[idx].Account},
+				RoomID:   rooms[i].ID,
+				SiteID:   siteID,
+				Roles:    roles,
+				JoinedAt: now,
+			})
+		}
+
+		candidates := make([]string, len(candidateSlice))
+		for k, idx := range candidateSlice {
+			candidates[k] = users[idx].Account
+		}
+		pools[rooms[i].ID] = candidates
+	}
+
+	roomKeys := make(map[string]roomkeystore.RoomKeyPair, len(rooms))
+	for i := range rooms {
+		roomKeys[rooms[i].ID] = deterministicRoomKeyPair(r)
+	}
+
+	return Fixtures{
+		Users:         users,
+		Rooms:         rooms,
+		Subscriptions: subs,
+		RoomKeys:      roomKeys,
+	}, pools
 }
 
 // ValidateInjectShape enforces compatibility between --inject and --shape.

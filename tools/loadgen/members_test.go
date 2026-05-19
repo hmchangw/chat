@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestParseShape(t *testing.T) {
@@ -85,4 +87,68 @@ func TestBuiltinMembersPreset(t *testing.T) {
 func TestBuiltinMembersPreset_Unknown(t *testing.T) {
 	_, ok := BuiltinMembersPreset("nope")
 	assert.False(t, ok)
+}
+
+func TestBuildMembersFixtures_Deterministic(t *testing.T) {
+	p, _ := BuiltinMembersPreset("members-small")
+	a, poolsA := BuildMembersFixtures(&p, 42, "site-A")
+	b, poolsB := BuildMembersFixtures(&p, 42, "site-A")
+	assert.Equal(t, a.Users, b.Users)
+	assert.Equal(t, a.Rooms, b.Rooms)
+	assert.Equal(t, a.Subscriptions, b.Subscriptions)
+	assert.Equal(t, poolsA, poolsB)
+}
+
+func TestBuildMembersFixtures_Shape(t *testing.T) {
+	p, _ := BuiltinMembersPreset("members-small")
+	f, pools := BuildMembersFixtures(&p, 42, "site-A")
+
+	require.Len(t, f.Users, p.Users)
+	require.Len(t, f.Rooms, p.Rooms)
+
+	bySub := map[string]int{}
+	for _, s := range f.Subscriptions {
+		bySub[s.RoomID]++
+	}
+	for _, r := range f.Rooms {
+		assert.Equal(t, p.BaselineSize, bySub[r.ID], "room %s should have BaselineSize subs", r.ID)
+		assert.Equal(t, model.RoomTypeChannel, r.Type)
+		assert.Equal(t, p.BaselineSize, r.UserCount)
+	}
+
+	ownerCount := map[string]int{}
+	for _, s := range f.Subscriptions {
+		for _, role := range s.Roles {
+			if role == model.RoleOwner {
+				ownerCount[s.RoomID]++
+			}
+		}
+	}
+	for _, r := range f.Rooms {
+		assert.Equal(t, 1, ownerCount[r.ID], "room %s should have exactly one owner", r.ID)
+	}
+
+	for _, r := range f.Rooms {
+		pool := pools[r.ID]
+		require.Len(t, pool, p.CandidatePool, "room %s candidate pool", r.ID)
+		seeded := map[string]bool{}
+		for _, s := range f.Subscriptions {
+			if s.RoomID == r.ID {
+				seeded[s.User.Account] = true
+			}
+		}
+		for _, cand := range pool {
+			assert.False(t, seeded[cand], "candidate %s already in room %s", cand, r.ID)
+		}
+	}
+}
+
+func TestBuildMembersFixtures_RoomKeys(t *testing.T) {
+	p, _ := BuiltinMembersPreset("members-small")
+	f, _ := BuildMembersFixtures(&p, 42, "site-A")
+	assert.Len(t, f.RoomKeys, p.Rooms)
+	for _, r := range f.Rooms {
+		_, ok := f.RoomKeys[r.ID]
+		assert.True(t, ok, "missing key for room %s", r.ID)
+	}
 }
