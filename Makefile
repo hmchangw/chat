@@ -12,9 +12,18 @@ NATS_CONTAINER   := chat-local-nats
 # .github/workflows/ci.yml. golangci-lint/gosec/govulncheck install via
 # `go install` into $(GOBIN_DIR) (no go.mod impact); semgrep is a Python
 # tool installed via pipx.
+#
+# TOOLS_GO_TOOLCHAIN pins the toolchain used to *source-build* the Go
+# tools (via GOTOOLCHAIN) so installs are reproducible regardless of the
+# runner's Go. Tool versions must themselves be Go 1.25-compatible:
+# gosec < v2.26 pins golang.org/x/tools@v0.25.0, which fails to compile
+# under any Go 1.25.x ("invalid array length -delta * delta"), so
+# GOSEC_VERSION is held at a release whose dependency tree builds on
+# Go 1.25. Go fetches the pinned toolchain on demand.
 GOBIN_DIR             := $(shell go env GOPATH)/bin
+TOOLS_GO_TOOLCHAIN    := go1.25.8
 GOLANGCI_LINT_VERSION := v2.11.4
-GOSEC_VERSION         := v2.21.4
+GOSEC_VERSION         := v2.26.1
 GOVULNCHECK_VERSION   := v1.3.0
 SEMGREP_VERSION       := 1.86.0
 
@@ -122,12 +131,17 @@ endif
 # Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
 # no go.mod impact; semgrep installs via pipx. Idempotent — safe to re-run.
 tools:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-	@command -v pipx >/dev/null 2>&1 \
-	  && pipx install --force semgrep==$(SEMGREP_VERSION) \
-	  || echo "pipx not found — install semgrep manually: pipx install semgrep==$(SEMGREP_VERSION) (or: pip install --user semgrep==$(SEMGREP_VERSION))"
+	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@if command -v pipx >/dev/null 2>&1; then \
+	  pipx install --force semgrep==$(SEMGREP_VERSION); \
+	elif command -v semgrep >/dev/null 2>&1; then \
+	  echo "pipx not found, but semgrep is already on PATH — skipping semgrep install"; \
+	else \
+	  echo "pipx not found and semgrep not on PATH — install pipx, or: pip install --user semgrep==$(SEMGREP_VERSION)" >&2; \
+	  exit 1; \
+	fi
 
 # Run all SAST scans (gosec, govulncheck, semgrep). All three always run
 # (no fail-fast) so every category is reported in one pass; exits non-zero

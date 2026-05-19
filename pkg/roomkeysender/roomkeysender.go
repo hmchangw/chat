@@ -32,6 +32,7 @@ func NewSender(pub Publisher) *Sender {
 //nolint:gocritic // hugeParam: by-value is intentional for immutability; the copy cost is acceptable.
 func (s *Sender) Send(account string, evt model.RoomKeyEvent) error {
 	evt.Timestamp = time.Now().UTC().UnixMilli()
+	// #nosec G117 -- RoomKeyEvent.PrivateKey is the intended payload: room-key distribution to the authorized account over its auth-callout-gated per-user subject, not a leak
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal room key event: %w", err)
