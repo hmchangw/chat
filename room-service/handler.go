@@ -1163,9 +1163,11 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 	return json.Marshal(model.ReadReceiptResponse{Readers: entries})
 }
 
-// NatsHandleEnsureRoomKey handles server-to-server requests to get or generate
-// a room's current encryption key pair. Trusted server-side callers receive
-// both public and private key bytes.
+// NatsHandleEnsureRoomKey handles server-to-server requests to ensure a room
+// has an encryption key pair in Valkey. Generates and stores a new pair if
+// missing. The reply confirms the room and version but does not return key
+// bytes — encryption/decryption is performed by broadcast-worker and clients,
+// which read keys from Valkey directly.
 func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
 	ctx := wrappedCtx(m)
 	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Data)
@@ -1196,12 +1198,9 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 		return nil, fmt.Errorf("ensure room key: get: %w", err)
 	}
 	if existing != nil {
-		return json.Marshal(model.RoomKeyEvent{
-			RoomID:     req.RoomID,
-			Version:    existing.Version,
-			PublicKey:  existing.KeyPair.PublicKey,
-			PrivateKey: existing.KeyPair.PrivateKey,
-			Timestamp:  time.Now().UTC().UnixMilli(),
+		return json.Marshal(model.RoomKeyEnsureResponse{
+			RoomID:  req.RoomID,
+			Version: existing.Version,
 		})
 	}
 
@@ -1213,11 +1212,8 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("ensure room key: set: %w", err)
 	}
-	return json.Marshal(model.RoomKeyEvent{
-		RoomID:     req.RoomID,
-		Version:    ver,
-		PublicKey:  newPair.PublicKey,
-		PrivateKey: newPair.PrivateKey,
-		Timestamp:  time.Now().UTC().UnixMilli(),
+	return json.Marshal(model.RoomKeyEnsureResponse{
+		RoomID:  req.RoomID,
+		Version: ver,
 	})
 }

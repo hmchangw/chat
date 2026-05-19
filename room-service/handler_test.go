@@ -3109,12 +3109,13 @@ func TestHandler_EnsureRoomKey_KeyExists(t *testing.T) {
 	resp, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.NoError(t, err)
 
-	var result model.RoomKeyEvent
+	var result model.RoomKeyEnsureResponse
 	require.NoError(t, json.Unmarshal(resp, &result))
 	assert.Equal(t, "room-abc", result.RoomID)
 	assert.Equal(t, 7, result.Version)
-	assert.Equal(t, existing.KeyPair.PublicKey, result.PublicKey)
-	assert.Equal(t, existing.KeyPair.PrivateKey, result.PrivateKey)
+
+	assert.NotContains(t, string(resp), "publicKey", "response must not include public key bytes")
+	assert.NotContains(t, string(resp), "privateKey", "response must not include private key bytes")
 }
 
 func TestHandler_EnsureRoomKey_KeyNotFound_SetsNew(t *testing.T) {
@@ -3138,14 +3139,15 @@ func TestHandler_EnsureRoomKey_KeyNotFound_SetsNew(t *testing.T) {
 	resp, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.NoError(t, err)
 
-	var result model.RoomKeyEvent
+	var result model.RoomKeyEnsureResponse
 	require.NoError(t, json.Unmarshal(resp, &result))
 	assert.Equal(t, "room-new", result.RoomID)
 	assert.Equal(t, 0, result.Version)
-	assert.Equal(t, capturedPair.PublicKey, result.PublicKey)
-	assert.Equal(t, capturedPair.PrivateKey, result.PrivateKey)
-	assert.Len(t, result.PublicKey, 65, "P-256 public key must be 65 bytes (uncompressed)")
-	assert.Len(t, result.PrivateKey, 32, "P-256 private key must be 32 bytes")
+
+	assert.Len(t, capturedPair.PublicKey, 65, "P-256 public key must be 65 bytes (uncompressed) — stored in Valkey")
+	assert.Len(t, capturedPair.PrivateKey, 32, "P-256 private key must be 32 bytes — stored in Valkey")
+	assert.NotContains(t, string(resp), "publicKey", "response must not include public key bytes")
+	assert.NotContains(t, string(resp), "privateKey", "response must not include private key bytes")
 }
 
 func TestHandler_EnsureRoomKey_MalformedRequest(t *testing.T) {
