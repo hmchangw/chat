@@ -62,3 +62,27 @@ func TestValidateInjectShape(t *testing.T) {
 		})
 	}
 }
+
+func TestBuiltinMembersPreset(t *testing.T) {
+	cases := []string{"members-small", "members-medium", "members-capacity"}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			p, ok := BuiltinMembersPreset(name)
+			require.True(t, ok, "preset %s not registered", name)
+			assert.Equal(t, name, p.Name)
+			assert.Greater(t, p.Users, 0)
+			assert.Greater(t, p.Rooms, 0)
+			assert.GreaterOrEqual(t, p.CandidatePool, 1)
+			// Sanity: each individual room's baseline+candidate slice must fit
+			// in the user pool (some overlap across rooms is fine).
+			assert.GreaterOrEqual(t, p.Users, p.BaselineSize+p.CandidatePool,
+				"preset %s: Users (%d) < BaselineSize (%d) + CandidatePool (%d)",
+				name, p.Users, p.BaselineSize, p.CandidatePool)
+		})
+	}
+}
+
+func TestBuiltinMembersPreset_Unknown(t *testing.T) {
+	_, ok := BuiltinMembersPreset("nope")
+	assert.False(t, ok)
+}

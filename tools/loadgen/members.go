@@ -24,6 +24,36 @@ func ParseShape(s string) (Shape, error) {
 	}
 }
 
+// MembersPreset is a fully-deterministic spec for the members workload.
+type MembersPreset struct {
+	Name          string
+	Users         int // global user pool
+	Rooms         int // rooms to seed
+	BaselineSize  int // members per room at seed time (incl. owner)
+	CandidatePool int // unused-but-eligible users tagged per room
+}
+
+var builtinMembersPresets = map[string]MembersPreset{
+	"members-small": {
+		Name: "members-small", Users: 200, Rooms: 5,
+		BaselineSize: 10, CandidatePool: 50,
+	},
+	"members-medium": {
+		Name: "members-medium", Users: 5000, Rooms: 100,
+		BaselineSize: 100, CandidatePool: 500,
+	},
+	"members-capacity": {
+		Name: "members-capacity", Users: 12000, Rooms: 5,
+		BaselineSize: 1, CandidatePool: 990, // fits under MAX_ROOM_SIZE=1000
+	},
+}
+
+// BuiltinMembersPreset looks up a preset by name.
+func BuiltinMembersPreset(name string) (MembersPreset, bool) {
+	p, ok := builtinMembersPresets[name]
+	return p, ok
+}
+
 // ValidateInjectShape enforces compatibility between --inject and --shape.
 // canonical+channels is explicitly rejected (room-service owns channel
 // expansion); v1 also rejects everything except shape=users until the
