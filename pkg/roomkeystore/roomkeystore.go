@@ -76,13 +76,16 @@ func (s *valkeyStore) Close() error {
 }
 
 // roomkey returns the Valkey hash key for a room's current key pair.
+// The {roomID} hash tag ensures both roomkey and roomprevkey for the same
+// room always land on the same cluster slot, which is required for the Lua
+// rotate script and DEL pipeline to execute without a CROSSSLOT error.
 func roomkey(roomID string) string {
-	return "room:" + roomID + ":key"
+	return "room:{" + roomID + "}:key"
 }
 
 // roomprevkey returns the Valkey hash key for a room's previous key pair.
 func roomprevkey(roomID string) string {
-	return "room:" + roomID + ":key:prev"
+	return "room:{" + roomID + "}:key:prev"
 }
 
 // Set stores pair in Valkey as a hash with no TTL, assigning version 0.
