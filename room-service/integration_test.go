@@ -1500,6 +1500,26 @@ func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
 	assert.Nil(t, r.MinUserLastSeenAt)
 }
 
+func TestMongoStore_CountNewMembers_OrgOnlyUserCountsZero_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	const roomID = "room-1"
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", SectID: "org-eng", SiteID: "site-a"})
+	// Alice already has a subscription via org-eng — adding her individually should add 0 new subs.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomType: model.RoomTypeChannel,
+	})
+
+	n, err := store.CountNewMembers(ctx, nil, []string{"alice"}, roomID, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "alice already has a sub via org — capacity unchanged")
+}
+
 func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)

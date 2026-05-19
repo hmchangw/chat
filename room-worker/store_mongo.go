@@ -416,6 +416,23 @@ func (s *MongoStore) ListNewMembers(ctx context.Context, orgIDs, directAccounts 
 	return results[0].Accounts, nil
 }
 
+func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]AddMemberCandidate, error) {
+	if len(orgIDs) == 0 && len(directAccounts) == 0 {
+		return nil, nil
+	}
+	pipeline := pipelines.GetAddMemberCandidatesPipeline(orgIDs, directAccounts, roomID, "")
+	cursor, err := s.users.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate add-member candidates: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var out []AddMemberCandidate
+	if err := cursor.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("decode add-member candidates: %w", err)
+	}
+	return out, nil
+}
+
 func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
 	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
 	if err != nil {

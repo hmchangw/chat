@@ -510,6 +510,47 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 	require.NoError(t, err)
 }
 
+func TestMongoStore_ListAddMemberCandidates_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	// Seed: alice (new), bob (sub only — bug scenario), carol (sub+IRM), dave (bot, excluded).
+	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice", SectID: "org-eng", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob", SectID: "org-eng", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_carol", Account: "carol", SectID: "org-eng", SiteID: "site-a"})
+	mustInsertUser(t, db, &model.User{ID: "u_dave", Account: "dave.bot", SectID: "org-eng", SiteID: "site-a"})
+
+	const roomID = "room-1"
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User: model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		RoomType: model.RoomTypeChannel, Roles: []model.Role{model.RoleMember},
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User: model.SubscriptionUser{ID: "u_carol", Account: "carol"},
+		RoomType: model.RoomTypeChannel, Roles: []model.Role{model.RoleMember},
+	})
+	_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+		Member: model.RoomMemberEntry{ID: "u_carol", Type: model.RoomMemberIndividual, Account: "carol"},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListAddMemberCandidates(ctx, []string{"org-eng"}, nil, roomID)
+	require.NoError(t, err)
+
+	byAccount := map[string]AddMemberCandidate{}
+	for _, c := range got {
+		byAccount[c.Account] = c
+	}
+	require.Len(t, byAccount, 3, "bot dave.bot must be excluded")
+	assert.Equal(t, AddMemberCandidate{Account: "alice", HasSubscription: false, HasIndividualRoomMember: false}, byAccount["alice"])
+	assert.Equal(t, AddMemberCandidate{Account: "bob", HasSubscription: true, HasIndividualRoomMember: false}, byAccount["bob"], "bug scenario: sub exists, IRM does not")
+	assert.Equal(t, AddMemberCandidate{Account: "carol", HasSubscription: true, HasIndividualRoomMember: true}, byAccount["carol"])
+}
+
 // newIntegrationHandler creates a Handler wired to the given store and siteID with a no-op publish function.
 func newIntegrationHandler(t *testing.T, store *MongoStore, siteID string) *Handler {
 	t.Helper()

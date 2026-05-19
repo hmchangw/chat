@@ -32,6 +32,13 @@ type OrgMemberStatus struct {
 	HasIndividualMembership bool   `bson:"hasIndividualMembership"`
 }
 
+// AddMemberCandidate is one element returned by ListAddMemberCandidates.
+type AddMemberCandidate struct {
+	Account                 string `bson:"account"`
+	HasSubscription         bool   `bson:"hasSubscription"`
+	HasIndividualRoomMember bool   `bson:"hasIndividualRoomMember"`
+}
+
 type SubscriptionStore interface {
 	// --- existing methods (invite flow) ---
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
@@ -81,6 +88,9 @@ type SubscriptionStore interface {
 	// Delegates to pkg/pipelines.GetNewMembersPipeline + a $group/$addToSet
 	// terminal stage.
 	ListNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]string, error)
+
+	// ListAddMemberCandidates: per-user {hasSub, hasIndividualRow} flags so the worker splits into needSub vs needIRM (org→individual upgrade).
+	ListAddMemberCandidates(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]AddMemberCandidate, error)
 
 	// CreateRoom inserts the room doc. Returns mongo.ErrDuplicateKey
 	// when the _id collides; the handler's idempotency logic handles
