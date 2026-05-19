@@ -67,3 +67,83 @@ func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccou
 
 	return stages
 }
+
+// matchCandidates: $match users by (sectId|deptId IN orgIDs) OR (account IN directAccounts), bot/excludeAccount filtered.
+func matchCandidates(orgIDs, directAccounts []string, excludeAccount string) bson.M {
+	orFilter := bson.A{}
+	if len(orgIDs) > 0 {
+		orFilter = append(orFilter, bson.M{"sectId": bson.M{"$in": orgIDs}})
+	}
+	if len(directAccounts) > 0 {
+		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
+	}
+	accountFilter := bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}}
+	if excludeAccount != "" {
+		accountFilter["$ne"] = excludeAccount
+	}
+	return bson.M{"$match": bson.M{"$or": orFilter, "account": accountFilter}}
+}
+
+// GetCapacityCheckPipeline counts net-new subscriptions for (orgIDs, directAccounts) in roomID; caller appends $count.
+func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
+	if roomID == "" {
+		panic("GetCapacityCheckPipeline: roomID required")
+	}
+	return bson.A{
+		matchCandidates(orgIDs, directAccounts, excludeAccount),
+		bson.M{"$lookup": bson.M{
+			"from": "subscriptions",
+			"let":  bson.M{"acct": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$roomId", roomID}},
+					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "_sub",
+		}},
+		bson.M{"$match": bson.M{"_sub": bson.M{"$eq": bson.A{}}}},
+	}
+}
+
+// GetAddMemberCandidatesPipeline returns per-candidate {account, hasSubscription, hasIndividualRoomMember} for the worker.
+func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
+	if roomID == "" {
+		panic("GetAddMemberCandidatesPipeline: roomID required")
+	}
+	return bson.A{
+		matchCandidates(orgIDs, directAccounts, excludeAccount),
+		bson.M{"$lookup": bson.M{
+			"from": "subscriptions",
+			"let":  bson.M{"acct": "$account"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$roomId", roomID}},
+					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "_sub",
+		}},
+		bson.M{"$lookup": bson.M{
+			"from": "room_members",
+			"let":  bson.M{"uid": "$_id"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "individual"}},
+					bson.M{"$eq": bson.A{"$member.id", "$$uid"}},
+				}}}},
+				bson.M{"$limit": 1},
+			},
+			"as": "_irm",
+		}},
+		bson.M{"$project": bson.M{
+			"_id":                     0,
+			"account":                 "$account",
+			"hasSubscription":         bson.M{"$gt": bson.A{bson.M{"$size": "$_sub"}, 0}},
+			"hasIndividualRoomMember": bson.M{"$gt": bson.A{bson.M{"$size": "$_irm"}, 0}},
+		}},
+	}
+}
