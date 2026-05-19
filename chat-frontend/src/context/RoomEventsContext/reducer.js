@@ -2,6 +2,16 @@ import { appendBounded, mergeById, MAX_CACHED } from '@/lib/messageBuffer'
 
 export { MAX_CACHED }
 
+// Returns a new array with the matching row patched, or null if no match.
+// Null signals "skip" so callers can fall back to `prev` and avoid touching
+// untouched arrays.
+function patchMessageById(list, messageId, patch) {
+  if (!list || list.length === 0) return null
+  const idx = list.findIndex((m) => m.id === messageId)
+  if (idx < 0) return null
+  return [...list.slice(0, idx), { ...list[idx], ...patch }, ...list.slice(idx + 1)]
+}
+
 export const BUFFER_MODE = {
   LIVE: 'live',
   HISTORICAL: 'historical',
@@ -594,29 +604,47 @@ export function roomEventsReducer(state, action) {
       }
     }
     case 'MESSAGE_EDITED': {
-      // Live broadcast `message_edited`. Same shape as the optimistic _LOCAL.
+      // Live broadcast `message_edited`. Mirrors `_LOCAL` but must also patch
+      // pendingLiveMessages — when the user is in historical mode, recent
+      // messages live there until RESET_TO_LIVE_TAIL merges them back. An
+      // edit arriving while in that mode would otherwise be lost on merge.
       const prev = state.roomState[action.roomId]
       if (!prev) return state
-      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
-      if (idx < 0) return state
-      const updatedMsg = { ...prev.messages[idx], content: action.content, editedAt: action.editedAt }
-      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      const patch = { content: action.content, editedAt: action.editedAt }
+      const messages = patchMessageById(prev.messages, action.messageId, patch)
+      const pendingLiveMessages = patchMessageById(prev.pendingLiveMessages, action.messageId, patch)
+      if (!messages && !pendingLiveMessages) return state
       return {
         ...state,
-        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: {
+            ...prev,
+            messages: messages ?? prev.messages,
+            pendingLiveMessages: pendingLiveMessages ?? prev.pendingLiveMessages,
+          },
+        },
       }
     }
     case 'MESSAGE_DELETED': {
-      // Live broadcast `message_deleted`. Same shape as the optimistic _LOCAL.
+      // Live broadcast `message_deleted`. See MESSAGE_EDITED for the
+      // pendingLiveMessages rationale.
       const prev = state.roomState[action.roomId]
       if (!prev) return state
-      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
-      if (idx < 0) return state
-      const updatedMsg = { ...prev.messages[idx], deleted: true }
-      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      const patch = { deleted: true }
+      const messages = patchMessageById(prev.messages, action.messageId, patch)
+      const pendingLiveMessages = patchMessageById(prev.pendingLiveMessages, action.messageId, patch)
+      if (!messages && !pendingLiveMessages) return state
       return {
         ...state,
-        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+        roomState: {
+          ...state.roomState,
+          [action.roomId]: {
+            ...prev,
+            messages: messages ?? prev.messages,
+            pendingLiveMessages: pendingLiveMessages ?? prev.pendingLiveMessages,
+          },
+        },
       }
     }
     case 'OWN_THREAD_REPLY_SENT': {

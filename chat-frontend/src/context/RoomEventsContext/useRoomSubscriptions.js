@@ -149,17 +149,20 @@ export function useRoomSubscriptions(
     const handleMutationEvent = (evt) => {
       if (evt?.type === 'message_edited' && evt.messageEdited?.messageId) {
         const { messageId, newContent, editedAt } = evt.messageEdited
-        const content = typeof newContent === 'string' ? newContent : undefined
+        // Drop edits without a plaintext body. Encrypted channel rooms emit
+        // `encryptedNewContent` instead; blanking the existing content to ''
+        // would silently wipe the message until decryption is implemented.
+        if (typeof newContent !== 'string') return true
         const editedAtIso =
           typeof editedAt === 'string' ? editedAt : new Date(editedAt ?? Date.now()).toISOString()
         safeDispatch({
           type: 'MESSAGE_EDITED',
           roomId: evt.roomId,
           messageId,
-          content: content ?? '',
+          content: newContent,
           editedAt: editedAtIso,
         })
-        fanThreadMutation({ kind: 'edited', messageId, content, editedAt: editedAtIso })
+        fanThreadMutation({ kind: 'edited', messageId, content: newContent, editedAt: editedAtIso })
         return true
       }
       if (evt?.type === 'message_deleted' && evt.messageDeleted?.messageId) {

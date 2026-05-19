@@ -631,6 +631,59 @@ describe('MESSAGE_EDITED / MESSAGE_DELETED — live broadcast', () => {
     })
     expect(out).toBe(seed)
   })
+
+  // In historical mode (jumped to old message), recent live messages sit in
+  // pendingLiveMessages until RESET_TO_LIVE_TAIL merges them back. Edits and
+  // deletes arriving in that window MUST patch both buffers or the change is
+  // lost on merge.
+  const seedHistorical = (msgs, pending) => ({
+    ...initialState,
+    roomState: {
+      r1: {
+        messages: msgs,
+        hasLoadedHistory: true, historyError: null,
+        unreadCount: 0, hasMention: false, mentionAll: false,
+        lastMsgAt: null, lastMsgId: null,
+        bufferMode: 'historical', pendingLiveMessages: pending, focusMessageId: 'a',
+      },
+    },
+  })
+
+  it('MESSAGE_EDITED patches pendingLiveMessages when the target lives there', () => {
+    const seed = seedHistorical(
+      [{ id: 'a', content: 'old-a' }],
+      [{ id: 'p1', content: 'old-p' }],
+    )
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED', roomId: 'r1', messageId: 'p1',
+      content: 'new-p', editedAt: '2026-05-19T10:00:00.000Z',
+    })
+    expect(out.roomState.r1.pendingLiveMessages[0]).toEqual({
+      id: 'p1', content: 'new-p', editedAt: '2026-05-19T10:00:00.000Z',
+    })
+    expect(out.roomState.r1.messages).toBe(seed.roomState.r1.messages)
+  })
+
+  it('MESSAGE_DELETED patches pendingLiveMessages when the target lives there', () => {
+    const seed = seedHistorical(
+      [{ id: 'a', content: 'x' }],
+      [{ id: 'p1', content: 'y' }],
+    )
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED', roomId: 'r1', messageId: 'p1',
+    })
+    expect(out.roomState.r1.pendingLiveMessages[0].deleted).toBe(true)
+    expect(out.roomState.r1.messages).toBe(seed.roomState.r1.messages)
+  })
+
+  it('MESSAGE_EDITED no-ops when id is absent from both buffers', () => {
+    const seed = seedHistorical([{ id: 'a' }], [{ id: 'p1' }])
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED', roomId: 'r1', messageId: 'ghost',
+      content: 'n', editedAt: 't',
+    })
+    expect(out).toBe(seed)
+  })
 })
 
 describe('MESSAGE_RECEIVED — server echo overwrites optimistic createdAt', () => {
