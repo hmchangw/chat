@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,7 +14,11 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
+
+// errPermanent signals a non-retryable error; HandleJetStreamMsg Term's the message.
+var errPermanent = errors.New("permanent")
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {

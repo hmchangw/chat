@@ -688,7 +688,8 @@ func TestHandler_EncryptedMessage_VersionMismatchRejected(t *testing.T) {
 	keyStore := NewMockRoomKeyProvider(ctrl)
 	keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(currentKey, nil)
 
-	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 	h := NewHandler(store, us, pub, keyStore, true)

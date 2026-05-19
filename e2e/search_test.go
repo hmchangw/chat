@@ -111,11 +111,11 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 		err := requestReply(
 			sender.Conn(),
 			subject.SearchMessages(sender.Account),
-			model.SearchMessagesRequest{SearchText: "pumpernickel", Size: 25},
+			model.SearchMessagesRequest{Query: "pumpernickel", Size: 25},
 			3*time.Second,
 			&resp,
 		)
-		if err == nil && len(resp.Results) > 0 {
+		if err == nil && len(resp.Messages) > 0 {
 			break
 		}
 		select {
@@ -124,16 +124,16 @@ func TestSearch_MessageVisibleAfterIndex(t *testing.T) {
 			t.Fatalf("ctx canceled waiting for search hit")
 		}
 	}
-	require.NotEmpty(t, resp.Results, "search-sync-worker did not index the message within 15s")
+	require.NotEmpty(t, resp.Messages, "search-sync-worker did not index the message within 15s")
 
 	// Per amendment R2.C item 4: assert exact message ID match, not just "any hit".
 	var foundIDs []string
-	for _, h := range resp.Results {
+	for _, h := range resp.Messages {
 		foundIDs = append(foundIDs, h.MessageID)
 	}
 	assert.Contains(t, foundIDs, msgID,
 		"search must return the exact message ID for the unique query; got hits=%s",
-		mustJSON(t, resp.Results))
+		mustJSON(t, resp.Messages))
 }
 
 func mustJSON(t *testing.T, v any) string {

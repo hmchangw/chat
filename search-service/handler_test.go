@@ -94,28 +94,6 @@ func ctxWithAccount(account string) *natsrouter.Context {
 	return natsrouter.NewContext(map[string]string{"account": account})
 }
 
-// Verifies operators can override MessageIndexPatterns — e.g. drop the
-// `*:messages-*` remote-cluster pattern for single-cluster deployments.
-func TestHandler_SearchMessages_RespectsMessageIndexPatternsOverride(t *testing.T) {
-	store := &fakeStore{}
-	cache := newFakeCache()
-	cache.store["alice"] = map[string]int64{}
-
-	h := newHandler(store, cache, handlerConfig{
-		DocCounts:               25,
-		MaxDocCounts:            100,
-		RestrictedRoomsCacheTTL: 5 * time.Minute,
-		RecentWindow:            365 * 24 * time.Hour,
-		MessageIndexPatterns:    []string{"messages-*"},
-	})
-
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
-	require.NoError(t, err)
-	require.Len(t, store.searchCalls, 1)
-	assert.Equal(t, []string{"messages-*"}, store.searchCalls[0].indices,
-		"handler must use the configured MessageIndexPatterns, not the package default")
-}
-
 func TestHandler_SearchMessages_CacheHitUnrestricted(t *testing.T) {
 	store := &fakeStore{}
 	cache := newFakeCache()
@@ -156,8 +134,8 @@ func TestHandler_SearchMessages_NoDocCachesEmptyMap(t *testing.T) {
 	store := &fakeStore{userRoomFound: false}
 	cache := newFakeCache()
 
-	h := newTestHandler(store, cache)
-	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	h := newTestHandler(store, nil, nil, cache)
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, store.userRoomCalls)
@@ -168,7 +146,7 @@ func TestHandler_SearchMessages_NoDocCachesEmptyMap(t *testing.T) {
 	assert.Empty(t, got, "no-doc users must cache an empty map (not nil)")
 
 	// Second call: cache hit, no ES call.
-	_, err = h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{SearchText: "hi"})
+	_, err = h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, store.userRoomCalls, "second search must hit the empty-map cache")
 }

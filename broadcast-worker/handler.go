@@ -305,7 +305,7 @@ func (h *Handler) publishDMEvents(ctx context.Context, meta roommetacache.Meta, 
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("publish DM event failed for %d subscribers (%v) in room %s",
-			len(failures), failures, room.ID)
+			len(failures), failures, meta.ID)
 	}
 	return nil
 }

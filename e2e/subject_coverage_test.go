@@ -317,7 +317,7 @@ func TestSubject_SearchRooms(t *testing.T) {
 	err := requestReply(
 		alice.Conn(),
 		subject.SearchRooms(alice.Account),
-		model.SearchRoomsRequest{SearchText: "anything", Size: 10},
+		model.SearchRoomsRequest{Query: "anything", Size: 10},
 		5*time.Second, &resp,
 	)
 	if err != nil {
