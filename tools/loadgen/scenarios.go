@@ -12,6 +12,26 @@ import (
 	"text/tabwriter"
 )
 
+// scenarioDescriptions provides one-line operator-facing descriptions for
+// the built-in scenarios. Scenarios that implement ScenarioDescription
+// override this table.
+var scenarioDescriptions = map[string]string{
+	"messaging-pipeline":   "default broad-spectrum write load via gatekeeper",
+	"history-read":         "history-service read benchmark; needs pre-seeded msgs",
+	"search-read":          "search-service query benchmark",
+	"room-rpc":             "room-service request/reply benchmark",
+	"raw-consistency":      "publish→read-path RAW lag (skeleton: history poll only)",
+	"large-room-broadcast": "10k-member fanout; preset shapes: announce/firehose/bot",
+	"notification-fanout":  "in-app notification publish→subscriber lag",
+	"message-mutate":       "edit/delete on recently-published messages",
+	"subscription-churn":   "join/leave churn on dedicated fixture pool",
+	"auth-load":            "auth-service POST /auth HTTP benchmark + reconnect-storm",
+	"federation-lag":       "2-site OUTBOX→INBOX lag across 4 stages (skeleton)",
+	"first-dm":             "lazy DM-room create path with 4-stage lag (skeleton)",
+	"room-open":            "composite: 4-5 legs fired in parallel via errgroup",
+	"read-receipts":        "MessageRead emission for a fraction of recipients",
+}
+
 // ScenarioDescription is an optional extension to the Scenario interface.
 // Scenarios that implement it can provide richer info for `loadgen scenarios`.
 type ScenarioDescription interface {
@@ -42,6 +62,9 @@ func runScenariosTo(w io.Writer, _ []string) int {
 		if d, ok := sc.(ScenarioDescription); ok {
 			description, _ := d.Describe()
 			desc = description
+		}
+		if desc == "" {
+			desc = scenarioDescriptions[sc.Name()]
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", sc.Name(), sc.DefaultPreset(), desc)
 	}

@@ -34,6 +34,8 @@ type ConcurrentRunError struct {
 	SUTURL            string
 }
 
+// Error satisfies the error interface and returns a human-readable description
+// of the conflicting run including its ID, host, scenario, and SUT URL.
 func (e *ConcurrentRunError) Error() string {
 	return fmt.Sprintf("another loadgen run %s is already active for SUT %q (host=%s scenario=%s started=%s)",
 		e.ExistingRunID, e.SUTURL, e.ExistingHost, e.ExistingScenario, e.ExistingStartedAt.Format(time.RFC3339))

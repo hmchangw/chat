@@ -16,6 +16,8 @@ func NewCellHistogram() *CellHistogram {
 	return &CellHistogram{h: hdr.New(int64(100*time.Microsecond), int64(60*time.Second), 3)}
 }
 
+// Record adds d to the histogram. Values exceeding the 60s ceiling are silently
+// clipped; the design treats clipping as acceptable for this metric.
 func (c *CellHistogram) Record(d time.Duration) {
 	_ = c.h.RecordValue(int64(d)) // out-of-range values (>60s ceiling) are silently dropped; clipping is acceptable for this metric
 }
@@ -30,8 +32,11 @@ func (c *CellHistogram) Quantile(q float64) time.Duration {
 	return time.Duration(c.h.ValueAtQuantile(q * 100))
 }
 
+// Count returns the total number of recorded values.
 func (c *CellHistogram) Count() int64 { return c.h.TotalCount() }
 
+// Merge folds other into c. Returns an error if any of other's recorded
+// values were out of c's tracking range.
 func (c *CellHistogram) Merge(other *CellHistogram) error {
 	if dropped := c.h.Merge(other.h); dropped > 0 {
 		return fmt.Errorf("merging histograms: %d values dropped (out of range)", dropped)
@@ -61,6 +66,8 @@ func NewWindowHistogram() *WindowHistogram {
 	return &WindowHistogram{h: hdr.New(int64(10*time.Microsecond), int64(60*time.Second), 3)}
 }
 
+// Record adds d to the histogram. Values exceeding the 60s ceiling are silently
+// clipped; the design treats clipping as acceptable for this metric.
 func (w *WindowHistogram) Record(d time.Duration) {
 	_ = w.h.RecordValue(int64(d)) // out-of-range values (>60s ceiling) are silently dropped; clipping is acceptable for this metric
 }
@@ -75,5 +82,8 @@ func (w *WindowHistogram) Quantile(q float64) time.Duration {
 	return time.Duration(w.h.ValueAtQuantile(q * 100))
 }
 
+// Count returns the total number of recorded values.
 func (w *WindowHistogram) Count() int64 { return w.h.TotalCount() }
-func (w *WindowHistogram) Reset()       { w.h.Reset() }
+
+// Reset clears the rolling window histogram between abort-watcher intervals.
+func (w *WindowHistogram) Reset() { w.h.Reset() }

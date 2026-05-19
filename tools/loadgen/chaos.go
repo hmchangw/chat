@@ -12,6 +12,23 @@ import (
 	"time"
 )
 
+// chaosUsage writes the chaos subcommand usage to w.
+func chaosUsage(w io.Writer) {
+	fmt.Fprint(w, `Usage:
+  loadgen chaos add <proxy> <name> <type> [k=v ...]
+  loadgen chaos remove <proxy> <name>
+  loadgen chaos list <proxy>
+
+Environment:
+  TOXIPROXY_URL  toxiproxy admin endpoint (default: http://localhost:8474)
+
+Examples:
+  loadgen chaos add nats_inbound my-latency latency latency=200 jitter=50
+  loadgen chaos remove nats_inbound my-latency
+  loadgen chaos list nats_inbound
+`)
+}
+
 // chaosToxic is the toxiproxy API representation of an installed fault.
 type chaosToxic struct {
 	Name       string                 `json:"name"`
@@ -116,9 +133,14 @@ func runChaos(_ context.Context, cfg *config, args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: loadgen chaos <add|remove|list> ...")
 		return 2
 	}
+	if args[0] == "--help" || args[0] == "-h" {
+		chaosUsage(os.Stdout)
+		return 0
+	}
 	action := args[0]
 	if !isValidChaosAction(action) {
 		fmt.Fprintf(os.Stderr, "unknown chaos action %q (want: add | remove | list)\n", action)
+		chaosUsage(os.Stderr)
 		return 2
 	}
 

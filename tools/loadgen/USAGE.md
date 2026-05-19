@@ -499,6 +499,16 @@ Key fields:
 | `--flap-period` | federation-lag | 60s | Interval between flap events |
 | `--flap-down` | federation-lag | 30s | Site-b downtime per flap |
 
+### Environment variables
+
+These settings have no CLI flag equivalent. Set them in the shell before invoking `loadgen`.
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `RUNS_DIR` | `runs/` | Directory where per-run artifact bundles (`summary.json`, `histogram.bin`, etc.) are written. |
+| `FEDERATION_SECONDARY_NATS_URL` | `""` | NATS URL for site-b used by the `federation-lag` scenario when the `--federation-secondary-nats-url` flag is not passed. |
+| `TOXIPROXY_URL` | `http://localhost:8474` | Toxiproxy admin endpoint for the `loadgen chaos` subcommand. |
+
 ### Use `loadgen recommend`
 
 ```bash

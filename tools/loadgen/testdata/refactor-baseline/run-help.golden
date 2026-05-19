@@ -54,7 +54,7 @@ Usage of run:
   -nats-creds-dir string
     	directory of *.creds files; data conns rotate through them (C2 prep — auth-service must be in compose stack for SUT-side validation)
   -preset string
-    	preset name
+    	preset name (required; see 'loadgen presets' for available)
   -progress-interval duration
     	live progress log interval; 0 disables (default 10s)
   -ramp-duration duration

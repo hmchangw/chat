@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,4 +78,12 @@ func TestChaosSubcommand_DispatchesAddRemoveList(t *testing.T) {
 		})
 	}
 	assert.False(t, isValidChaosAction("destroy"), "destroy should NOT be a valid action")
+}
+
+func TestRunChaos_HelpPrintsUsage(t *testing.T) {
+	var buf bytes.Buffer
+	chaosUsage(&buf)
+	out := buf.String()
+	assert.True(t, strings.Contains(out, "Usage:"), "output should contain 'Usage:'")
+	assert.True(t, strings.Contains(out, "TOXIPROXY_URL"), "output should contain 'TOXIPROXY_URL'")
 }

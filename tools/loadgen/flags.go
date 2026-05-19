@@ -56,7 +56,7 @@ func parseScenarioFlag(s string) error {
 	if _, ok := LookupScenario(s); ok {
 		return nil
 	}
-	return fmt.Errorf("unknown scenario: %s", s)
+	return fmt.Errorf("unknown scenario %q; run 'loadgen scenarios' to list registered scenarios", s)
 }
 
 // ErrMissingRampFields is returned when only some --ramp-* fields are
@@ -245,7 +245,7 @@ func ParseRunFlags(args []string) (runFlags, error) {
 // Defaults and help strings exactly match the original inline flag.*Var
 // block in runRun to preserve the --help output.
 func (rf *runFlags) registerOn(fs *flag.FlagSet) {
-	fs.StringVar(&rf.Preset, "preset", "", "preset name")
+	fs.StringVar(&rf.Preset, "preset", "", "preset name (required; see 'loadgen presets' for available)")
 	fs.Int64Var(&rf.Seed, "seed", 42, "RNG seed")
 	fs.DurationVar(&rf.Duration, "duration", 60*time.Second, "run duration")
 	fs.IntVar(&rf.Rate, "rate", 500, "target msgs/sec")
