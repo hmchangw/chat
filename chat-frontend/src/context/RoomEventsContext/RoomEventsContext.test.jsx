@@ -724,10 +724,12 @@ describe('RoomEventsProvider message.read wiring', () => {
     expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
   })
 
-  it('does NOT fire message.read when the active-room message was sent by self (even after the debounce window)', async () => {
-    // Self-sender path must short-circuit BEFORE scheduling. Advancing
-    // fake timers past the window catches any regression that moved the
-    // self-check after the schedule call.
+  it('DOES fire message.read when the active-room message was sent by self (after the debounce window)', async () => {
+    // Unread is derived server-side as lastMsgAt > lastSeenAt. Sending
+    // advances Room.lastMsgAt but NOT the sender's lastSeenAt, so the
+    // sender's own active room would count as unread until a mark-read
+    // advances lastSeenAt. The self-sender skip is therefore removed:
+    // an own message in the active room must still schedule the read.
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const rooms = [
@@ -754,13 +756,14 @@ describe('RoomEventsProvider message.read wiring', () => {
         })
       })
 
-      // Advance past the debounce window — if the self-check is wrongly
-      // placed AFTER scheduleMarkActiveRead's setTimeout, this would
-      // fire the trailing RPC.
-      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+      // Before the debounce window: not yet.
+      await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+      expect(request.mock.calls.some((c) => c[0].endsWith('.message.read'))).toBe(false)
 
+      // After the trailing window: the read fires for the own message.
+      await act(async () => { await vi.advanceTimersByTimeAsync(300) })
       const subjects = request.mock.calls.map((c) => c[0])
-      expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(false)
+      expect(subjects.some((s) => s.endsWith('.message.read'))).toBe(true)
     } finally {
       vi.useRealTimers()
     }

@@ -12,6 +12,20 @@ export const initialState = {
   roomState: {},
   activeRoomId: null,
   roomsError: null,
+  /**
+   * Monotonic counter bumped on every accepted MESSAGE_RECEIVED (any
+   * room). Pure trigger, not derived data — `useUnreadCount` keys a
+   * debounced `subscription.count` refetch off it so the badge tracks
+   * incoming messages without re-deriving from `summaries`.
+   */
+  msgRecvSeq: 0,
+  /**
+   * Monotonic counter bumped after a `markRoomRead` RPC resolves (the
+   * server-side `lastSeenAt` write has committed). `useUnreadCount`
+   * refetches on it so the badge is pulled AFTER the read lands rather
+   * than racing it.
+   */
+  readSeq: 0,
   favoriteIds: new Set(),
   appIds: new Set(),
   channelDmIds: new Set(),
@@ -368,6 +382,7 @@ export function roomEventsReducer(state, action) {
           ...state,
           summaries,
           roomState: { ...state.roomState, [roomId]: nextRoomState },
+          msgRecvSeq: state.msgRecvSeq + 1,
         }
       }
       // Replace optimistic createdAt (client clock) with server's — keeping
@@ -418,6 +433,7 @@ export function roomEventsReducer(state, action) {
         ...state,
         summaries,
         roomState: { ...state.roomState, [roomId]: nextRoomState },
+        msgRecvSeq: state.msgRecvSeq + 1,
       }
     }
     case 'HISTORY_LOADED': {
@@ -550,6 +566,9 @@ export function roomEventsReducer(state, action) {
     }
     case 'ROOMS_FAILED': {
       return { ...state, roomsError: action.error }
+    }
+    case 'ROOM_READ_SYNCED': {
+      return { ...state, readSeq: state.readSeq + 1 }
     }
     case 'MESSAGE_SENT_LOCAL': {
       // Optimistic append for the local user's own send. Dedupes by id so a
