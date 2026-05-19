@@ -51,34 +51,72 @@ frontend, served by a new `subscription.count` route on
    → `request<UnreadCountResponse>(userSubscriptionCount(user.account,
    user.siteId), { unread: true })`. No hardcoded value in the frontend.
 
-6. **Reducer trigger** — `reducer.js` / `RoomEventsState`: a monotonic
-   `msgRecvSeq` (init `0`) incremented on every accepted
-   `MESSAGE_RECEIVED` (any room; no-op paths — dup, thread reply,
-   undecryptable — don't bump). Pure trigger, not derived data.
+   `markRoomRead` now **returns a `Promise<void>`** that resolves once
+   the `message.read` reply lands (errors swallowed into a resolve), so
+   callers can sequence work after `lastSeenAt` is committed. Still
+   safe to ignore for fire-and-forget callers.
 
-7. **Hook** — `src/context/RoomEventsContext/useUnreadCount.js`
+6. **Reducer triggers** — `reducer.js` / `RoomEventsState`, two
+   monotonic counters (init `0`), pure triggers, not derived data:
+   - `msgRecvSeq` — incremented on every accepted `MESSAGE_RECEIVED`
+     (any room; no-op paths — dup, thread reply, undecryptable —
+     don't bump).
+   - `readSeq` — incremented by a new `ROOM_READ_SYNCED` action,
+     dispatched **after** a `markRoomRead` RPC resolves (so the
+     server-side `lastSeenAt` write has committed). Bumped from both
+     `setActiveRoom` (open-room read) and the active-room trailing
+     mark-read in `useRoomSubscriptions`.
+
+7. **Self-send no longer skipped** — `scheduleMarkActiveRead` used to
+   `return` when the active-room message was sent by the current user.
+   Removed: unread is server-derived as `lastMsgAt > lastSeenAt`, and
+   sending advances `Room.lastMsgAt` but not the sender's `lastSeenAt`,
+   so an own message in the active room must still mark it read or the
+   badge counts the room you're sitting in. (Still trailing-debounced,
+   so a chatty self-send is one RPC per burst.)
+
+8. **Hook** — `src/context/RoomEventsContext/useUnreadCount.js`
    (context-local per frontend conventions). Signature
-   `useUnreadCount(nats, activeRoomId, msgRecvSeq)`; the public
-   `useUnreadCount()` wrapper feeds it `state.activeRoomId` /
+   `useUnreadCount(nats, readSeq, msgRecvSeq)`; the public
+   `useUnreadCount()` wrapper feeds it `state.readSeq` /
    `state.msgRecvSeq`.
-   - **Immediate** fetch on mount/reconnect (`nats` identity) and
-     active-room change.
+   - **Immediate** fetch on mount/reconnect (`nats` identity) and on
+     `readSeq` bumps — i.e. **after** a read commits, not racing it.
    - **Debounced** refetch (trailing `500ms`) whenever `msgRecvSeq`
      bumps — a burst of incoming messages collapses to one
-     `subscription.count` RPC (mirrors the `markRoomRead` debounce). The
-     seed value (`0`) is skipped so it doesn't double-fire on mount.
+     `subscription.count` RPC. The seed value (`0`) is skipped so it
+     doesn't double-fire on mount.
    - A monotonic request id makes the latest fetch win (slow earlier
      request, or one resolving post-unmount, is dropped).
    - Returns a plain `number` (`0` until the first fetch resolves).
 
-8. **`UnreadBadge.jsx`** — consume `useUnreadCount()` instead of
+9. **`UnreadBadge.jsx`** — consume `useUnreadCount()` instead of
    `useUnreadTotal()`. Drop `hasMention` and the `unread-badge--mention`
    variant (the RPC carries no mention info). Keep: hide when `<= 0`,
    `99+` cap, `aria-label`/`title`. `.chat-header-badge:empty` collapses
    the superscript wrapper at zero unread.
 
-9. **Delete dead code** — `useUnreadTotal` (RoomEventsContext.tsx) and
-   `selectUnreadTotal` (reducer.js), plus their tests.
+10. **Delete dead code** — `useUnreadTotal` (RoomEventsContext.tsx) and
+    `selectUnreadTotal` (reducer.js), plus their tests.
+
+## Bugs fixed (vs. the `lastMsgAt > lastSeenAt` rule)
+
+- **Read-race / no resync.** The refetch used to fire on `activeRoomId`
+  change, concurrently with `markRoomRead` — it could read the count
+  before `lastSeenAt` committed and never re-pull. Now the refetch is
+  keyed off `readSeq`, bumped only **after** the `markRoomRead` reply,
+  so it's sequenced after the read.
+- **Self-send inflation.** An own message in the active room never
+  advanced `lastSeenAt` (backend doesn't on send; frontend skipped
+  self-sender), so the badge counted the room you're in. Self-skip
+  removed.
+- **Residual (accepted):** an active-room message still bumps
+  `msgRecvSeq` (debounced refetch) which may briefly show the count
+  before that room's trailing mark-read lands; the subsequent `readSeq`
+  refetch corrects it within ~the same second. Sub-second flicker, not
+  persistent. The clean elimination is server-side (count handler
+  treats the caller's open room as read, or send advances sender
+  `lastSeenAt`) — out of repo.
 
 ## Testing
 
@@ -87,13 +125,18 @@ frontend, served by a new `subscription.count` route on
   site mismatch.
 - `api/getUnreadCount`: requests the `subscription.count` subject with
   `{ unread: true }` and returns the reply; propagates transport errors.
-- `reducer`: `msgRecvSeq` starts at 0; bumps on any accepted message
-  (active or not); no-op on dup / thread-reply; preserved by
-  non-message actions.
-- `useUnreadCount`: fetches on mount; re-fetches on `activeRoomId`
-  change; debounced 500ms refetch on `msgRecvSeq` bumps with bursts
-  collapsed to one RPC; no refetch while `msgRecvSeq` stays 0; stale
-  results dropped.
+- `api/markRoomRead`: requests the `message.read` subject; resolves
+  (never rejects) on success and on transport error.
+- `reducer`: `msgRecvSeq` starts at 0; bumps on any accepted message;
+  no-op on dup / thread-reply; preserved by non-message actions.
+  `readSeq` starts at 0; `ROOM_READ_SYNCED` increments it; untouched by
+  messages; preserved by other actions.
+- `useUnreadCount`: fetches on mount; re-fetches on `readSeq` change;
+  debounced 500ms refetch on `msgRecvSeq` bumps with bursts collapsed
+  to one RPC; no refetch while `msgRecvSeq` stays 0; stale results
+  dropped.
+- `RoomEventsContext`: self-sent active-room message **does** fire
+  `message.read` after the trailing debounce.
 - `UnreadBadge.test.jsx`: hides at 0, renders count, caps at `99+`; no
   mention variant.
 - Removed `selectUnreadTotal` reducer tests.

@@ -22,9 +22,15 @@ export interface MarkRoomReadArgs {
 export function markRoomRead(
   { user, request }: Nats,
   { roomId, siteId }: MarkRoomReadArgs,
-): void {
-  // Don't await — fire-and-forget, swallow errors. The promise is dropped
-  // intentionally; the .catch keeps unhandled-rejection warnings off the
-  // console when the server takes a moment to reply.
-  request(messageRead(user.account, roomId, siteId), {}).catch(() => {})
+): Promise<void> {
+  // Resolves once the server has replied (the message.read RPC is
+  // request/reply — by then the `lastSeenAt` write has committed). Errors
+  // are swallowed into a resolve: callers chain a refetch off this and a
+  // failed mark-read just means the next read will reconcile. Callers may
+  // ignore the promise (fire-and-forget) or await it to sequence work
+  // after the read lands.
+  return request(messageRead(user.account, roomId, siteId), {}).then(
+    () => {},
+    () => {},
+  )
 }

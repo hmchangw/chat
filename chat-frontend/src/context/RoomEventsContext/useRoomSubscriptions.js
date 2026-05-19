@@ -100,10 +100,13 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
     // ONE RPC at the end of the burst instead of N. If the user
     // switches rooms before the timer fires, the active-room check at
     // fire time skips the stale entry.
-    const scheduleMarkActiveRead = (evtRoomId, senderAccount) => {
+    // NOTE: own messages are NOT skipped. Unread is derived server-side
+    // as lastMsgAt > lastSeenAt; sending advances Room.lastMsgAt but not
+    // the sender's lastSeenAt, so an own message in the active room must
+    // still mark the room read or the badge counts the room you're in.
+    const scheduleMarkActiveRead = (evtRoomId) => {
       if (!evtRoomId) return
       if (stateRef.current.activeRoomId !== evtRoomId) return
-      if (senderAccount && senderAccount === user.account) return
       const summary = stateRef.current.summaries.find((r) => r.id === evtRoomId)
       const siteId = summary?.siteId ?? user.siteId
       // Clear any prior pending timer FIRST, then write the new pending
@@ -122,7 +125,9 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
         // mark-read for a room the user has already left.
         if (cancelledRef.current) return
         if (stateRef.current.activeRoomId !== pending.roomId) return
-        markRoomRead(natsRef.current, pending)
+        markRoomRead(natsRef.current, pending).then(() => {
+          safeDispatch({ type: 'ROOM_READ_SYNCED' })
+        })
       }, MARK_READ_DEBOUNCE_MS)
     }
 
@@ -156,7 +161,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
         fanThreadReply(evt)
         // Thread replies don't advance the main-feed lastSeenAt.
         if (!evt.message?.threadParentMessageId) {
-          scheduleMarkActiveRead(evt.roomId, evt.message?.sender?.account)
+          scheduleMarkActiveRead(evt.roomId)
         }
       }
     })
@@ -173,7 +178,7 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
           fanThreadReply(normalized)
           // See dm path above — skip main-feed mark-read for thread replies.
           if (!evt.message?.threadParentMessageId) {
-            scheduleMarkActiveRead(evt.roomId ?? roomId, evt.message?.sender?.account)
+            scheduleMarkActiveRead(evt.roomId ?? roomId)
           }
         }
       })

@@ -19,6 +19,13 @@ export const initialState = {
    * incoming messages without re-deriving from `summaries`.
    */
   msgRecvSeq: 0,
+  /**
+   * Monotonic counter bumped after a `markRoomRead` RPC resolves (the
+   * server-side `lastSeenAt` write has committed). `useUnreadCount`
+   * refetches on it so the badge is pulled AFTER the read lands rather
+   * than racing it.
+   */
+  readSeq: 0,
   favoriteIds: new Set(),
   appIds: new Set(),
   channelDmIds: new Set(),
@@ -559,6 +566,9 @@ export function roomEventsReducer(state, action) {
     }
     case 'ROOMS_FAILED': {
       return { ...state, roomsError: action.error }
+    }
+    case 'ROOM_READ_SYNCED': {
+      return { ...state, readSeq: state.readSeq + 1 }
     }
     case 'MESSAGE_SENT_LOCAL': {
       // Optimistic append for the local user's own send. Dedupes by id so a
