@@ -368,6 +368,12 @@ func RoomMemberEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event.member", roomID)
 }
 
+// RoomMemberEventWildcard is the subscription pattern matching member events
+// (member_added / member_removed) across all rooms on this site.
+func RoomMemberEventWildcard() string {
+	return "chat.room.*.event.member"
+}
+
 func MsgThreadParentPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread.parent", siteID)
 }
