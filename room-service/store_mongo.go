@@ -70,6 +70,11 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure users (sectId,account) index: %w", err)
 	}
+	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "deptId", Value: 1}, {Key: "account", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure users (deptId,account) index: %w", err)
+	}
 	// Lookup index for botDM creation: GetApp filters by assistant.name.
 	appsIndex := mongo.IndexModel{
 		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
