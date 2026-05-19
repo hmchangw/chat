@@ -1554,3 +1554,66 @@ func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
 	require.Empty(t, rows)
 }
 
+// TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration verifies that
+// when an org member's id matches both a user's deptId and another user's
+// sectId, the dept branch wins and the combined "name tcName" string is
+// surfaced via Member.SectName (the existing wire field for org display).
+func TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	const roomID = "room-1"
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "R",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("users").InsertOne(ctx, model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a",
+		DeptID: "X", DeptName: "Engineering", DeptTCName: "工程部",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("users").InsertOne(ctx, model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-a",
+		SectID: "X", SectName: "Sect", SectTCName: "組",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+		Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "Engineering 工程部", got[0].Member.SectName, "dept wins on overlap; name+tcName combined")
+}
+
+// TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration verifies
+// that when no users match the org id at all (neither deptId nor sectId), the
+// display string falls back to the raw member.id rather than emitting an empty
+// string — matching displayfmt.CombineWithFallback's third-argument semantics.
+func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	const roomID = "room-1"
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "R",
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+		Member: model.RoomMemberEntry{ID: "Y", Type: model.RoomMemberOrg},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "Y", got[0].Member.SectName, "no matching users → falls back to member.id")
+}
