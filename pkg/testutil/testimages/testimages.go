@@ -40,11 +40,6 @@ const (
 	// pkg/roomkeystore.
 	Valkey = "valkey/valkey:8"
 
-	// ValkeyCluster is the image for cluster-mode Valkey integration tests.
-	// bitnami/valkey-cluster initialises a full 3-master cluster internally,
-	// removing the need to wire up individual nodes manually.
-	ValkeyCluster = "bitnami/valkey-cluster:8"
-
 	// MinIO is the image for every MinIO-backed integration test.
 	MinIO = "minio/minio:RELEASE.2025-01-20T14-49-07Z"
 )

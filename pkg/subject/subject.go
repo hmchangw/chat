@@ -193,8 +193,8 @@ func RoomsInfoBatch(siteID string) string {
 }
 
 // RoomKeyEnsure is the server-to-server request subject for the room key ensure
-// RPC. Callers (e.g. connectors) send a RoomKeyEnsureRequest and receive a
-// RoomKeyEnsureResponse with the current or freshly-generated key pair.
+// RPC. Callers send a RoomKeyEnsureRequest and receive a RoomKeyEvent with the
+// current or freshly-generated key pair.
 func RoomKeyEnsure(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
 }
