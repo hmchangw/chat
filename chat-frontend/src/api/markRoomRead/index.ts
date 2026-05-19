@@ -10,27 +10,26 @@ export interface MarkRoomReadArgs {
 
 /**
  * Advance the current user's `lastSeenAt` on the server for one room.
- * Fire-and-forget — UI doesn't need to wait, and errors are swallowed
- * because a failed mark-as-read just means the next read-receipt RPC
- * will reflect slightly stale state.
+ *
+ * Never rejects (safe to ignore for fire-and-forget callers). Resolves
+ * to a commit flag so callers can sequence work *only* when the write
+ * actually landed:
+ *  - `true`  — the `message.read` reply was received; the server-side
+ *              `lastSeenAt` write has committed.
+ *  - `false` — transport error; nothing committed. Callers must NOT
+ *              treat this as a read (e.g. don't bump `readSeq`); the
+ *              next successful read reconciles.
  *
  * Called in two contexts (both in RoomEventsContext / useRoomSubscriptions):
  *  - When the user opens a room (`setActiveRoom`)
- *  - When a new message arrives in the currently-active room from a
- *    different sender
+ *  - When a new message arrives in the currently-active room
  */
 export function markRoomRead(
   { user, request }: Nats,
   { roomId, siteId }: MarkRoomReadArgs,
-): Promise<void> {
-  // Resolves once the server has replied (the message.read RPC is
-  // request/reply — by then the `lastSeenAt` write has committed). Errors
-  // are swallowed into a resolve: callers chain a refetch off this and a
-  // failed mark-read just means the next read will reconcile. Callers may
-  // ignore the promise (fire-and-forget) or await it to sequence work
-  // after the read lands.
-  return request(messageRead(user.account, roomId, siteId), {}).then(
-    () => {},
-    () => {},
+): Promise<boolean> {
+  return request<void>(messageRead(user.account, roomId, siteId), {}).then(
+    () => true,
+    () => false,
   )
 }

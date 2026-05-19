@@ -51,10 +51,12 @@ frontend, served by a new `subscription.count` route on
    → `request<UnreadCountResponse>(userSubscriptionCount(user.account,
    user.siteId), { unread: true })`. No hardcoded value in the frontend.
 
-   `markRoomRead` now **returns a `Promise<void>`** that resolves once
-   the `message.read` reply lands (errors swallowed into a resolve), so
-   callers can sequence work after `lastSeenAt` is committed. Still
-   safe to ignore for fire-and-forget callers.
+   `markRoomRead` now **returns a `Promise<boolean>`** and never
+   rejects: `true` when the `message.read` reply was received (so the
+   server-side `lastSeenAt` write has committed), `false` on transport
+   error (nothing committed). Callers sequence post-read work only on
+   `true`; `false` must NOT be treated as a read. Still safe to ignore
+   for fire-and-forget callers.
 
 6. **Reducer triggers** — `reducer.js` / `RoomEventsState`, two
    monotonic counters (init `0`), pure triggers, not derived data:
@@ -62,8 +64,10 @@ frontend, served by a new `subscription.count` route on
      (any room; no-op paths — dup, thread reply, undecryptable —
      don't bump).
    - `readSeq` — incremented by a new `ROOM_READ_SYNCED` action,
-     dispatched **after** a `markRoomRead` RPC resolves (so the
-     server-side `lastSeenAt` write has committed). Bumped from both
+     dispatched **only after a successful** `markRoomRead`
+     (`resolve(true)` — server reply received, `lastSeenAt`
+     committed). A failed mark-read (`false`) does not bump it.
+     Bumped from both
      `setActiveRoom` (open-room read) and the active-room trailing
      mark-read in `useRoomSubscriptions`.
 
@@ -126,14 +130,15 @@ frontend, served by a new `subscription.count` route on
 - `api/getUnreadCount`: requests the `subscription.count` subject with
   `{ unread: true }` and returns the reply; propagates transport errors.
 - `api/markRoomRead`: requests the `message.read` subject; resolves
-  (never rejects) on success and on transport error.
+  `true` on success and `false` (never rejects) on transport error.
 - `reducer`: `msgRecvSeq` starts at 0; bumps on any accepted message;
   no-op on dup / thread-reply; preserved by non-message actions.
   `readSeq` starts at 0; `ROOM_READ_SYNCED` increments it; untouched by
   messages; preserved by other actions.
 - `useUnreadCount`: fetches on mount; re-fetches on `readSeq` change;
   debounced 500ms refetch on `msgRecvSeq` bumps with bursts collapsed
-  to one RPC; no refetch while `msgRecvSeq` stays 0; stale results
+  to one RPC; no refetch while `msgRecvSeq` stays 0; the debounce does
+  not re-arm on reconnect when `msgRecvSeq` is unchanged; stale results
   dropped.
 - `RoomEventsContext`: self-sent active-room message **does** fire
   `message.read` after the trailing debounce.

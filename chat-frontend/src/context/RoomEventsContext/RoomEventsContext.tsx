@@ -174,8 +174,8 @@ export function RoomEventsProvider({ children }: { children: ReactNode }) {
       if (roomId) {
         const summary = stateRef.current.summaries.find((r) => r.id === roomId)
         const siteId = summary?.siteId ?? user.siteId
-        markRoomRead(nats, { roomId, siteId }).then(() => {
-          dispatch({ type: 'ROOM_READ_SYNCED' })
+        markRoomRead(nats, { roomId, siteId }).then((ok) => {
+          if (ok) dispatch({ type: 'ROOM_READ_SYNCED' })
         })
       }
     },

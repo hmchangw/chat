@@ -7,21 +7,21 @@ function fakeNats(request: unknown) {
 }
 
 describe('markRoomRead', () => {
-  it('requests the message.read subject and resolves on success', async () => {
+  it('requests the message.read subject and resolves true on success', async () => {
     const request = vi.fn().mockResolvedValue({})
     await expect(
       markRoomRead(fakeNats(request), { roomId: 'r1', siteId: 'site-A' }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe(true)
     expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.room.r1.site-A.message.read',
       {},
     )
   })
 
-  it('resolves (does not reject) even when the transport errors', async () => {
+  it('resolves false (does not reject) when the transport errors', async () => {
     const request = vi.fn().mockRejectedValue(new Error('boom'))
     await expect(
       markRoomRead(fakeNats(request), { roomId: 'r1', siteId: 'site-A' }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe(false)
   })
 })

@@ -125,8 +125,8 @@ export function useRoomSubscriptions(nats, dispatch, stateRef, threadReplyHandle
         // mark-read for a room the user has already left.
         if (cancelledRef.current) return
         if (stateRef.current.activeRoomId !== pending.roomId) return
-        markRoomRead(natsRef.current, pending).then(() => {
-          safeDispatch({ type: 'ROOM_READ_SYNCED' })
+        markRoomRead(natsRef.current, pending).then((ok) => {
+          if (ok) safeDispatch({ type: 'ROOM_READ_SYNCED' })
         })
       }, MARK_READ_DEBOUNCE_MS)
     }

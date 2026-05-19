@@ -102,5 +102,29 @@ describe('useUnreadCount', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
       expect(getUnreadCount).toHaveBeenCalledTimes(1)
     })
+
+    it('does not re-arm the debounce on reconnect when msgRecvSeq is unchanged', async () => {
+      getUnreadCount.mockResolvedValue({ count: 1 })
+      const nats1 = { user: { account: 'alice', siteId: 'site-A' } }
+      const nats2 = { user: { account: 'alice', siteId: 'site-A' } }
+      const { rerender } = renderHook(
+        ({ n, s }) => useUnreadCount(n, 0, s),
+        { initialProps: { n: nats1, s: 0 } },
+      )
+      await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(1))
+
+      // A message → one debounced refetch.
+      rerender({ n: nats1, s: 1 })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(getUnreadCount).toHaveBeenCalledTimes(2)
+
+      // Reconnect: nats identity flips, msgRecvSeq unchanged. The
+      // immediate (nats/readSeq) effect refetches once — but the
+      // debounced effect must NOT re-arm off the recreated fetchNow.
+      rerender({ n: nats2, s: 1 })
+      await waitFor(() => expect(getUnreadCount).toHaveBeenCalledTimes(3))
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(getUnreadCount).toHaveBeenCalledTimes(3)
+    })
   })
 })

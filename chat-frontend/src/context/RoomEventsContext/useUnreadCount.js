@@ -50,8 +50,14 @@ export function useUnreadCount(nats, readSeq, msgRecvSeq) {
 
   // Debounced: a received message moved the (possibly remote) unread
   // total. Skip the seed value so this doesn't double-fire on mount.
+  // Gate on an actual msgRecvSeq change: `fetchNow` is also a dep (so
+  // the timeout calls the current one), but it's recreated on reconnect
+  // — without this guard a reconnect would re-arm a redundant debounced
+  // fetch on top of the immediate reconnect refetch.
+  const lastMsgRecvSeqRef = useRef(msgRecvSeq)
   useEffect(() => {
-    if (!msgRecvSeq) return undefined
+    if (!msgRecvSeq || msgRecvSeq === lastMsgRecvSeqRef.current) return undefined
+    lastMsgRecvSeqRef.current = msgRecvSeq
     const t = setTimeout(fetchNow, MSG_REFETCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [fetchNow, msgRecvSeq])
