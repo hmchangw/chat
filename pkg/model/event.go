@@ -197,6 +197,24 @@ type RoomKeyEvent struct {
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 
+// RoomKeyEnsureRequest is the payload for the room key ensure RPC
+// (chat.server.request.room.{siteID}.key.ensure). External callers (e.g.
+// connectors that need a room key for encryption) send this to get or generate
+// the current key pair for a room.
+type RoomKeyEnsureRequest struct {
+	RoomID string `json:"roomId"`
+}
+
+// RoomKeyEnsureResponse is the reply from the room key ensure RPC.
+// Both PublicKey and PrivateKey are returned because the caller is a trusted
+// server-side component — clients never receive PrivateKey directly.
+type RoomKeyEnsureResponse struct {
+	RoomID     string `json:"roomId"`
+	Version    int    `json:"version"`
+	PublicKey  []byte `json:"publicKey"`
+	PrivateKey []byte `json:"privateKey"`
+}
+
 type MemberRemoveEvent struct {
 	Type      string   `json:"type"            bson:"type"`
 	RoomID    string   `json:"roomId"          bson:"roomId"`

@@ -192,6 +192,13 @@ func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
+// RoomKeyEnsure is the server-to-server request subject for the room key ensure
+// RPC. Callers (e.g. connectors) send a RoomKeyEnsureRequest and receive a
+// RoomKeyEnsureResponse with the current or freshly-generated key pair.
+func RoomKeyEnsure(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
+}
+
 // RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
 func RoomCreateDMSync(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
