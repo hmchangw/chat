@@ -1157,11 +1157,27 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		var subs []*model.Subscription
 		if roomType == model.RoomTypeBotDM {
 			subs = buildBotDMSubs(requester, counterpart, room, acceptedAt)
+			if err := h.store.BulkUpsertSubscriptions(ctx, subs); err != nil {
+				return fmt.Errorf("bulk upsert subs: %w", err)
+			}
+			// Upsert may have hit an existing row whose _id/JoinedAt differ
+			// from the in-memory pair. Re-read so finishCreateRoom's
+			// subscription.update / MemberAddEvent fan-out carries persisted
+			// values. Mirrors the sync DM path.
+			requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, counterpart.Account)
+			if err != nil {
+				return fmt.Errorf("find requester sub after upsert: %w", err)
+			}
+			counterpartSub, err := h.store.FindDMSubscription(ctx, counterpart.Account, requester.Account)
+			if err != nil {
+				return fmt.Errorf("find counterpart sub after upsert: %w", err)
+			}
+			subs = []*model.Subscription{requesterSub, counterpartSub}
 		} else {
 			subs = buildDMSubs(requester, counterpart, room, acceptedAt)
-		}
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-			return fmt.Errorf("bulk create subs: %w", err)
+			if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+				return fmt.Errorf("bulk create subs: %w", err)
+			}
 		}
 		return h.finishCreateRoom(ctx, &req, room, requester, []model.User{*requester, *counterpart}, subs, requestID, now)
 	case model.RoomTypeChannel:

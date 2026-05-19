@@ -2082,11 +2082,23 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 
 	var capturedSubs []*model.Subscription
-	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+	mockStore.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
 			capturedSubs = subs
 			return nil
 		})
+
+	// After upsert, handler re-reads canonical sub pair via FindDMSubscription.
+	// Return the same in-memory subs (no dup-key collision in this happy path).
+	mockStore.EXPECT().FindDMSubscription(gomock.Any(), "alice", "helper.bot").
+		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, error) {
+			return capturedSubs[0], nil
+		})
+	mockStore.EXPECT().FindDMSubscription(gomock.Any(), "helper.bot", "alice").
+		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, error) {
+			return capturedSubs[1], nil
+		})
+
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-bot-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -4043,7 +4055,11 @@ func TestProcessCreateRoom_BotDM_SetsParticipantFields(t *testing.T) {
 			captured = r
 			return nil
 		})
-	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().FindDMSubscription(gomock.Any(), "alice", "supportbot.bot").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u_zzz", Account: "alice"}}, nil)
+	mockStore.EXPECT().FindDMSubscription(gomock.Any(), "supportbot.bot", "alice").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u_aaa", Account: "supportbot.bot"}}, nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-botdm-fields").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
