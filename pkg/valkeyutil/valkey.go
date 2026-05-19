@@ -30,7 +30,6 @@ type Client interface {
 // ErrCacheMiss is returned by Get and GetJSON when the key does not exist.
 var ErrCacheMiss = errors.New("valkey: cache miss")
 
-// clusterClient wraps *redis.ClusterClient to satisfy Client.
 type clusterClient struct {
 	c *redis.ClusterClient
 }

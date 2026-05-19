@@ -113,7 +113,6 @@ type ClusterConfig struct {
 
 // NewValkeyClusterStore creates a valkeyStore backed by a Valkey cluster,
 // pings the cluster to verify connectivity, and returns it.
-// The cluster is discovered automatically from the seed addresses in cfg.Addrs.
 func NewValkeyClusterStore(cfg ClusterConfig) (RoomKeyStore, error) {
 	c := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:    cfg.Addrs,
