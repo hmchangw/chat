@@ -88,9 +88,12 @@ func main() {
 
 	var keyStore roomkeystore.RoomKeyStore
 	if cfg.Encryption.Enabled {
-		if len(cfg.ValkeyAddrs) == 0 || cfg.ValkeyKeyGracePeriod <= 0 {
-			slog.Error("encryption enabled but VALKEY_ADDRS is empty or VALKEY_KEY_GRACE_PERIOD is not a positive duration",
-				"valkey_addrs", cfg.ValkeyAddrs,
+		if len(cfg.ValkeyAddrs) == 0 {
+			slog.Error("encryption enabled but VALKEY_ADDRS is empty")
+			os.Exit(1)
+		}
+		if cfg.ValkeyKeyGracePeriod <= 0 {
+			slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
 				"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
 			os.Exit(1)
 		}
