@@ -12,10 +12,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
-
-cd "$DEPLOY_DIR"
+. "$SCRIPT_DIR/lib/compose.sh"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
 
 echo "==> Tearing down loadgen stack"
-docker compose -f docker-compose.loadtest.yml --profile dashboards down -v
+$COMPOSE --profile dashboards down -v
 
 echo "==> Done."

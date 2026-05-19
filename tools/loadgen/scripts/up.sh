@@ -15,10 +15,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
-COMPOSE="docker compose -f docker-compose.loadtest.yml"
+. "$SCRIPT_DIR/lib/compose.sh"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
 
 echo "==> Bringing up loadgen stack from $DEPLOY_DIR"
-cd "$DEPLOY_DIR"
 $COMPOSE up -d --build
 
 # Helper: poll until a docker container reports "running" + healthy.

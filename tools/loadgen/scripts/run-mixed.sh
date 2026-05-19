@@ -52,7 +52,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
-COMPOSE="docker compose -f docker-compose.loadtest.yml"
+. "$SCRIPT_DIR/lib/compose.sh"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
 
 WRITE_RATE="${WRITE_RATE:-500}"
 READ_RATE="${READ_RATE:-100}"
@@ -82,7 +83,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-cd "$DEPLOY_DIR"
 if [ "$(docker inspect -f '{{.State.Status}}' loadgen-loadgen-1 2>/dev/null || echo missing)" != "running" ]; then
   echo "ERROR: loadgen container is not running. Run ./up.sh first." >&2
   exit 1

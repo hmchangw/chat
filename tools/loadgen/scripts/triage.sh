@@ -13,6 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+. "$SCRIPT_DIR/lib/compose.sh"
 
 usage() {
     cat <<EOF
@@ -41,7 +42,7 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 DEPLOY_DIR="$ROOT_DIR/tools/loadgen/deploy"
-COMPOSE="docker compose -f $DEPLOY_DIR/docker-compose.loadtest.yml"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
 
 echo "[triage] gathering docker logs..."
 for svc in nats mongo cassandra message-gatekeeper message-worker broadcast-worker history-service search-service room-service; do

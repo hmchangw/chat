@@ -21,14 +21,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
-COMPOSE="docker compose -f docker-compose.loadtest.yml"
+. "$SCRIPT_DIR/lib/compose.sh"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
 
 RATE="${RATE:-200}"
 DURATION="${DURATION:-60s}"
 WARMUP="${WARMUP:-5s}"
 PRESET="${PRESET:-room-rpc}"
 
-cd "$DEPLOY_DIR"
 if [ "$(docker inspect -f '{{.State.Status}}' loadgen-loadgen-1 2>/dev/null || echo missing)" != "running" ]; then
   echo "ERROR: loadgen container is not running. Run ./up.sh first." >&2
   exit 1

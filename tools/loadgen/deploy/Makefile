@@ -1,6 +1,7 @@
-COMPOSE ?= docker compose -f docker-compose.loadtest.yml
+DC ?= $(shell ../scripts/lib/compose.sh print-cmd)
+COMPOSE = $(DC) -f docker-compose.loadtest.yml
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts validate-chaos
+.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts validate-chaos validate-compose smoke
 
 up:
 	$(COMPOSE) up -d --build
@@ -77,6 +78,20 @@ shellcheck-scripts:
 # valid and that run-chaos.sh passes shellcheck (if shellcheck is installed).
 .PHONY: validate-chaos
 validate-chaos:
-	@docker compose -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos config -q
+	@$(COMPOSE) -f docker-compose.chaos.yml --profile chaos config -q
 	@which shellcheck >/dev/null || { echo "shellcheck not installed; skipping script lint"; exit 0; }
 	@shellcheck $(CURDIR)/../scripts/run-chaos.sh
+
+# validate-compose checks the primary compose file parses cleanly with the
+# detected compose command, and optionally runs a v1 cross-check.
+validate-compose:
+	$(COMPOSE) config -q
+	@if command -v docker-compose >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then \
+	  docker-compose -f docker-compose.loadtest.yml config -q || echo "WARN: v1 rejected config"; \
+	fi
+
+# smoke brings the stack up, waits for health, then tears it down.
+# Requires Docker to be running.
+smoke:
+	$(COMPOSE) up -d --wait
+	$(COMPOSE) down

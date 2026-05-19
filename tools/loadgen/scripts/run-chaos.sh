@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
+. "$SCRIPT_DIR/lib/compose.sh"
 
 usage() {
     cat <<EOF
@@ -44,7 +45,7 @@ TOXIPROXY_URL="${TOXIPROXY_URL:-http://localhost:8474}"
 
 cd "$DEPLOY_DIR"
 echo "[chaos] $(date -u +'%Y-%m-%dT%H:%M:%SZ') bringing up chaos overlay..."
-docker compose -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos up -d toxiproxy toxiproxy-init
+$DC -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos up -d toxiproxy toxiproxy-init
 
 # Wait for toxiproxy-init to finish creating the proxies.
 sleep 8
@@ -53,7 +54,7 @@ cd "$SCRIPT_DIR"
 echo "[chaos] $(date -u +'%Y-%m-%dT%H:%M:%SZ') starting loadgen baseline..."
 go build -o /tmp/loadgen-chaos ../
 LOADGEN=/tmp/loadgen-chaos
-trap 'rm -f /tmp/loadgen-chaos; cd "$DEPLOY_DIR" && docker compose --profile chaos stop toxiproxy toxiproxy-init' EXIT
+trap 'rm -f /tmp/loadgen-chaos; cd "$DEPLOY_DIR" && $DC --profile chaos stop toxiproxy toxiproxy-init' EXIT
 
 "$LOADGEN" run \
     --scenario=messaging-pipeline \
