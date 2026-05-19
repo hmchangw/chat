@@ -58,8 +58,10 @@ permissions:
   contents: read
 
 env:
-  # Bumped to 1.25.9 for the April 7, 2026 security release.
-  GO_VERSION: "1.25.9"
+  # Bumped to 1.25.10 for the May 2026 security release (govulncheck
+  # flagged reachable net / net/mail / html/template stdlib advisories
+  # fixed in 1.25.10).
+  GO_VERSION: "1.25.10"
   GOLANGCI_LINT_VERSION: "v2.11.4"
 
 jobs:

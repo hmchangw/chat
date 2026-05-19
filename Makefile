@@ -19,9 +19,10 @@ NATS_CONTAINER   := chat-local-nats
 # gosec < v2.26 pins golang.org/x/tools@v0.25.0, which fails to compile
 # under any Go 1.25.x ("invalid array length -delta * delta"), so
 # GOSEC_VERSION is held at a release whose dependency tree builds on
-# Go 1.25. Go fetches the pinned toolchain on demand.
+# Go 1.25. Tracks the repo-wide Go (go.mod / ci.yml); Go fetches the
+# pinned toolchain on demand.
 GOBIN_DIR             := $(shell go env GOPATH)/bin
-TOOLS_GO_TOOLCHAIN    := go1.25.8
+TOOLS_GO_TOOLCHAIN    := go1.25.10
 GOLANGCI_LINT_VERSION := v2.11.4
 GOSEC_VERSION         := v2.26.1
 GOVULNCHECK_VERSION   := v1.3.0
