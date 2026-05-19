@@ -62,6 +62,7 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 		transport := &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // intentional for dev environments
+				MinVersion:         tls.VersionTLS12,
 			},
 		}
 		httpClient = &http.Client{
