@@ -39,7 +39,7 @@ describe('SearchResultsPane', () => {
 
     expect(request).toHaveBeenCalledWith(
       'chat.user.alice.request.search.rooms',
-      expect.objectContaining({ query: 'gen' })
+      { query: 'gen', roomType: 'all', size: 50 }
     )
   })
 

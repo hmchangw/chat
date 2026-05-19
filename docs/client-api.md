@@ -1624,12 +1624,12 @@ Full-text search across rooms the requester is subscribed to. Results are served
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 | Code          | Reason |
 |---------------|--------|
 | `bad_request` | `query` is missing, empty, or whitespace-only; or `roomType` is `"app"` or an unrecognized value; or `size`/`offset` is negative. |
-| `internal`    | ES or MongoDB backend failure (transient or permanent). The raw error is never leaked to the client. |
+| `internal`    | Elasticsearch backend failure (transient or permanent). The raw error is never leaked to the client. |
 
 ##### Triggered events — success path
 

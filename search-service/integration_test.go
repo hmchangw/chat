@@ -1038,6 +1038,17 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 		"siteId":      "site-local",
 		"joinedAt":    now.Add(-24 * time.Hour).Format(time.RFC3339),
 	})
+	// A matching room owned by a different account. With the Mongo
+	// hydration removed, the spotlight userAccount term filter is the
+	// sole access boundary — this must not leak into alice's results.
+	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-r3", map[string]any{
+		"roomId":      "r3",
+		"roomName":    "engineering-secret",
+		"roomType":    "channel",
+		"userAccount": "mallory",
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-12 * time.Hour).Format(time.RFC3339),
+	})
 
 	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "engineering"})
 	require.NoError(t, err)
@@ -1055,6 +1066,8 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 	}
 	assert.Equal(t, model.SearchRoom{RoomID: "r1", Name: "engineering-announcements", RoomType: "channel", SiteID: "site-local"}, byID["r1"])
 	assert.Equal(t, model.SearchRoom{RoomID: "r2", Name: "engineering-random", RoomType: "channel", SiteID: "site-local"}, byID["r2"])
+	_, leaked := byID["r3"]
+	assert.False(t, leaked, "rooms owned by another account must not leak")
 }
 
 func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
