@@ -75,3 +75,67 @@ func TestCanonicalMemberPublisher_PublishesToRoomCanonical(t *testing.T) {
 		t.Fatal("did not receive canonical publish within 2s")
 	}
 }
+
+func TestFrontdoorMemberPublisher_RequestReply(t *testing.T) {
+	nc, _ := startEmbeddedJetStream(t)
+	siteID := "site-A"
+
+	sub, err := nc.Subscribe(subject.MemberAddWildcard(siteID), func(m *nats.Msg) {
+		_ = m.Respond([]byte(`{"status":"accepted"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	type replyEvt struct {
+		corrID string
+		body   []byte
+	}
+	replies := make(chan replyEvt, 1)
+	p, err := newFrontdoorMemberPublisher(nc, siteID, func(corrID string, body []byte, _ time.Time) {
+		replies <- replyEvt{corrID: corrID, body: body}
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	req := &model.AddMembersRequest{
+		RoomID: "room-1", Users: []string{"u1"},
+		RequesterAccount: "owner-1",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	}
+	require.NoError(t, p.Publish(context.Background(), "owner-1", "room-1", req, "corr-7"))
+
+	select {
+	case got := <-replies:
+		assert.Equal(t, "corr-7", got.corrID)
+		assert.Contains(t, string(got.body), "accepted")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply within 2s")
+	}
+}
+
+func TestFrontdoorMemberPublisher_PublishesToMemberAddSubject(t *testing.T) {
+	nc, _ := startEmbeddedJetStream(t)
+	siteID := "site-A"
+
+	got := make(chan string, 1)
+	sub, err := nc.Subscribe(subject.MemberAddWildcard(siteID), func(m *nats.Msg) {
+		got <- m.Subject
+		_ = m.Respond([]byte(`{"status":"accepted"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	p, err := newFrontdoorMemberPublisher(nc, siteID, func(string, []byte, time.Time) {})
+	require.NoError(t, err)
+	defer p.Close()
+
+	req := &model.AddMembersRequest{RoomID: "room-X", Users: []string{"u1"}}
+	require.NoError(t, p.Publish(context.Background(), "owner-9", "room-X", req, "c"))
+
+	select {
+	case subj := <-got:
+		assert.Equal(t, subject.MemberAdd("owner-9", "room-X", siteID), subj)
+	case <-time.After(2 * time.Second):
+		t.Fatal("never received request")
+	}
+}
