@@ -144,6 +144,23 @@ func BuildMembersFixtures(p *MembersPreset, seed int64, siteID string) (Fixtures
 	}, pools
 }
 
+// OwnersByRoom returns a roomID -> owner account map from the fixture's
+// subscription set. Used by the publisher to address frontdoor requests as
+// "the owner asking room-service to add new members".
+func OwnersByRoom(f *Fixtures) map[string]string {
+	owners := make(map[string]string, len(f.Rooms))
+	for i := range f.Subscriptions {
+		s := &f.Subscriptions[i]
+		for _, r := range s.Roles {
+			if r == model.RoleOwner {
+				owners[s.RoomID] = s.User.Account
+				break
+			}
+		}
+	}
+	return owners
+}
+
 // ValidateInjectShape enforces compatibility between --inject and --shape.
 // canonical+channels is explicitly rejected (room-service owns channel
 // expansion); v1 also rejects everything except shape=users until the

@@ -152,3 +152,16 @@ func TestBuildMembersFixtures_RoomKeys(t *testing.T) {
 		assert.True(t, ok, "missing key for room %s", r.ID)
 	}
 }
+
+func TestOwnersByRoom(t *testing.T) {
+	p, _ := BuiltinMembersPreset("members-small")
+	f, _ := BuildMembersFixtures(&p, 42, "site-A")
+
+	owners := OwnersByRoom(&f)
+	require.Len(t, owners, p.Rooms)
+	for _, r := range f.Rooms {
+		owner, ok := owners[r.ID]
+		require.True(t, ok, "room %s missing owner", r.ID)
+		assert.NotEmpty(t, owner)
+	}
+}
