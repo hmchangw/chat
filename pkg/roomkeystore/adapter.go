@@ -113,3 +113,91 @@ func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
 	}
 	return &valkeyStore{client: &redisAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
 }
+
+// ClusterConfig holds connection config for a Valkey cluster deployment.
+// Addrs is a list of seed node addresses; go-redis ClusterClient discovers
+// all nodes automatically via CLUSTER SLOTS. One address is sufficient but
+// listing all masters is more robust against seed-node downtime at connect time.
+type ClusterConfig struct {
+	Addrs       []string      `env:"VALKEY_ADDRS,required" envSeparator:","`
+	Password    string        `env:"VALKEY_PASSWORD"       envDefault:""`
+	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+}
+
+// clusterAdapter wraps *redis.ClusterClient to satisfy hashCommander.
+// All methods are structurally identical to redisAdapter; the only difference
+// is the underlying client type.
+type clusterAdapter struct {
+	c *redis.ClusterClient
+}
+
+func (a *clusterAdapter) hset(ctx context.Context, key string, pub, priv string) error {
+	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", "0").Err()
+}
+
+func (a *clusterAdapter) hsetWithVersion(ctx context.Context, key string, pub, priv string, version int) error {
+	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", strconv.Itoa(version)).Err()
+}
+
+func (a *clusterAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
+	return a.c.HGetAll(ctx, key).Result()
+}
+
+func (a *clusterAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	pipe := a.c.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(keys))
+	for i, k := range keys {
+		cmds[i] = pipe.HGetAll(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]map[string]string, len(keys))
+	for i, c := range cmds {
+		m, err := c.Result()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = m
+	}
+	return out, nil
+}
+
+func (a *clusterAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error) {
+	graceSec := int(gracePeriod.Seconds())
+	if graceSec < 1 {
+		graceSec = 1
+	}
+	result, err := rotateScript.Run(ctx, a.c, []string{currentKey, prevKey}, pub, priv, graceSec).Int()
+	if err != nil && strings.Contains(err.Error(), "no current key") {
+		return 0, ErrNoCurrentKey
+	}
+	return result, err
+}
+
+func (a *clusterAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
+	return a.c.Del(ctx, currentKey, prevKey).Err()
+}
+
+func (a *clusterAdapter) closeClient() error {
+	return a.c.Close()
+}
+
+// NewValkeyClusterStore creates a valkeyStore backed by a Valkey cluster,
+// pings the cluster to verify connectivity, and returns it.
+// The cluster is discovered automatically from the seed addresses in cfg.Addrs.
+func NewValkeyClusterStore(cfg ClusterConfig) (RoomKeyStore, error) {
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:    cfg.Addrs,
+		Password: cfg.Password,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("valkey cluster connect: %w", err)
+	}
+	return &valkeyStore{client: &clusterAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
+}
