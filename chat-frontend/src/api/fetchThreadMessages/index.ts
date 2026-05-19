@@ -36,8 +36,11 @@ export async function fetchThreadMessages(
     msgThread(user.account, roomId, siteId),
     { threadMessageId, limit },
   )
+  // history-service returns thread messages newest-first (DESC); the thread
+  // panel renders ASC (oldest on top). Mirrors `fetchMessageHistory`'s reverse.
+  const asc = [...(resp.messages ?? [])].reverse()
   return {
-    messages: normalizeHistoricalMessages(resp.messages),
+    messages: normalizeHistoricalMessages(asc),
     nextCursor: resp.nextCursor,
     hasNext: resp.hasNext ?? false,
   }

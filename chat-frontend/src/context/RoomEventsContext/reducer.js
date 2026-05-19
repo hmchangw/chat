@@ -593,6 +593,32 @@ export function roomEventsReducer(state, action) {
         roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
       }
     }
+    case 'MESSAGE_EDITED': {
+      // Live broadcast `message_edited`. Same shape as the optimistic _LOCAL.
+      const prev = state.roomState[action.roomId]
+      if (!prev) return state
+      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updatedMsg = { ...prev.messages[idx], content: action.content, editedAt: action.editedAt }
+      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      return {
+        ...state,
+        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+      }
+    }
+    case 'MESSAGE_DELETED': {
+      // Live broadcast `message_deleted`. Same shape as the optimistic _LOCAL.
+      const prev = state.roomState[action.roomId]
+      if (!prev) return state
+      const idx = prev.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updatedMsg = { ...prev.messages[idx], deleted: true }
+      const messages = [...prev.messages.slice(0, idx), updatedMsg, ...prev.messages.slice(idx + 1)]
+      return {
+        ...state,
+        roomState: { ...state.roomState, [action.roomId]: { ...prev, messages } },
+      }
+    }
     case 'OWN_THREAD_REPLY_SENT': {
       // Optimistic tcount bump; inbound echo dedupes off threadReplyIds.
       const prev = state.roomState[action.roomId]

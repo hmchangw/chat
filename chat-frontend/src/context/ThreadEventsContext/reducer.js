@@ -98,6 +98,22 @@ export function threadEventsReducer(state, action) {
       const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
       return { ...state, messages }
     }
+    case 'REPLY_EDITED': {
+      // Live broadcast edit applied to the open thread, if it matches.
+      const idx = state.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updated = { ...state.messages[idx], content: action.content, editedAt: action.editedAt }
+      const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+      return { ...state, messages }
+    }
+    case 'REPLY_DELETED': {
+      // Live broadcast delete applied to the open thread, if it matches.
+      const idx = state.messages.findIndex((m) => m.id === action.messageId)
+      if (idx < 0) return state
+      const updated = { ...state.messages[idx], deleted: true }
+      const messages = [...state.messages.slice(0, idx), updated, ...state.messages.slice(idx + 1)]
+      return { ...state, messages }
+    }
     case 'RESET':
       return initialState
     default:

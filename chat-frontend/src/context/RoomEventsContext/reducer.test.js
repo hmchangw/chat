@@ -574,6 +574,65 @@ describe('MESSAGE_DELETED_LOCAL', () => {
   })
 })
 
+describe('MESSAGE_EDITED / MESSAGE_DELETED — live broadcast', () => {
+  const seedRoom = (msgs) => ({
+    ...initialState,
+    roomState: {
+      r1: {
+        messages: msgs,
+        hasLoadedHistory: true, historyError: null,
+        unreadCount: 0, hasMention: false, mentionAll: false,
+        lastMsgAt: null, lastMsgId: null,
+        bufferMode: 'live', pendingLiveMessages: [], focusMessageId: null,
+      },
+    },
+  })
+
+  it('MESSAGE_EDITED updates content + editedAt for the matching message', () => {
+    const seed = seedRoom([{ id: 'a', content: 'old' }, { id: 'b', content: 'untouched' }])
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED',
+      roomId: 'r1',
+      messageId: 'a',
+      content: 'new',
+      editedAt: '2026-05-19T10:00:00.000Z',
+    })
+    expect(out.roomState.r1.messages[0]).toEqual({
+      id: 'a', content: 'new', editedAt: '2026-05-19T10:00:00.000Z',
+    })
+    expect(out.roomState.r1.messages[1]).toEqual({ id: 'b', content: 'untouched' })
+  })
+
+  it('MESSAGE_EDITED is a no-op when room or message is unknown', () => {
+    const seed = seedRoom([{ id: 'a', content: 'x' }])
+    const out1 = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED', roomId: 'unknown', messageId: 'a', content: 'n', editedAt: 't',
+    })
+    expect(out1).toBe(seed)
+    const out2 = roomEventsReducer(seed, {
+      type: 'MESSAGE_EDITED', roomId: 'r1', messageId: 'unknown', content: 'n', editedAt: 't',
+    })
+    expect(out2).toBe(seed)
+  })
+
+  it('MESSAGE_DELETED flags the matching message as deleted', () => {
+    const seed = seedRoom([{ id: 'a', content: 'x' }, { id: 'b', content: 'y' }])
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED', roomId: 'r1', messageId: 'a',
+    })
+    expect(out.roomState.r1.messages[0].deleted).toBe(true)
+    expect(out.roomState.r1.messages[1].deleted).toBeUndefined()
+  })
+
+  it('MESSAGE_DELETED is a no-op when message is unknown', () => {
+    const seed = seedRoom([{ id: 'a' }])
+    const out = roomEventsReducer(seed, {
+      type: 'MESSAGE_DELETED', roomId: 'r1', messageId: 'unknown',
+    })
+    expect(out).toBe(seed)
+  })
+})
+
 describe('MESSAGE_RECEIVED — server echo overwrites optimistic createdAt', () => {
   // Regression for: every thread reply silently failing message-worker's
   // IF EXISTS stamp on messages_by_id because the parent message in

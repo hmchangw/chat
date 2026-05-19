@@ -237,3 +237,33 @@ describe('threadEventsReducer — REPLY_DELETED_LOCAL', () => {
     expect(out).toBe(open)
   })
 })
+
+describe('threadEventsReducer — REPLY_EDITED / REPLY_DELETED live broadcast', () => {
+  it('REPLY_EDITED updates the matching reply', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'old' }] }
+    const out = threadEventsReducer(seeded, {
+      type: 'REPLY_EDITED', messageId: 'r1', content: 'new', editedAt: '2026-05-19T10:00:00Z',
+    })
+    expect(out.messages[0]).toEqual({
+      id: 'r1', content: 'new', editedAt: '2026-05-19T10:00:00Z',
+    })
+  })
+
+  it('REPLY_DELETED flags the matching reply as deleted', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const seeded = { ...open, messages: [{ id: 'r1', content: 'x' }] }
+    const out = threadEventsReducer(seeded, { type: 'REPLY_DELETED', messageId: 'r1' })
+    expect(out.messages[0]).toEqual({ id: 'r1', content: 'x', deleted: true })
+  })
+
+  it('both are no-ops when messageId is not buffered', () => {
+    const open = threadEventsReducer(initialState, { type: 'OPEN_THREAD', parent })
+    const e = threadEventsReducer(open, {
+      type: 'REPLY_EDITED', messageId: 'unknown', content: 'n', editedAt: 't',
+    })
+    expect(e).toBe(open)
+    const d = threadEventsReducer(open, { type: 'REPLY_DELETED', messageId: 'unknown' })
+    expect(d).toBe(open)
+  })
+})
