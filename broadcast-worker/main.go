@@ -40,8 +40,6 @@ type config struct {
 	UserCacheTTL         time.Duration           `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	RoomMetaCacheSize    int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
 	RoomMetaCacheTTL     time.Duration           `env:"ROOM_META_CACHE_TTL"       envDefault:"2m"`
-	RoomKeyCacheSize     int                     `env:"ROOM_KEY_CACHE_SIZE"       envDefault:"10000"`
-	RoomKeyCacheTTL      time.Duration           `env:"ROOM_KEY_CACHE_TTL"        envDefault:"30s"`
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
@@ -89,7 +87,6 @@ func main() {
 	}
 
 	var keyStore roomkeystore.RoomKeyStore
-	var keyProvider RoomKeyProvider
 	if cfg.Encryption.Enabled {
 		if cfg.ValkeyAddr == "" || cfg.ValkeyKeyGracePeriod <= 0 {
 			slog.Error("encryption enabled but VALKEY_ADDR is empty or VALKEY_KEY_GRACE_PERIOD is not a positive duration",
@@ -105,13 +102,6 @@ func main() {
 		if err != nil {
 			slog.Error("valkey connect failed", "error", err)
 			os.Exit(1)
-		}
-		keyProvider = keyStore
-		if cfg.RoomKeyCacheSize > 0 && cfg.RoomKeyCacheTTL > 0 {
-			keyProvider = NewCachedRoomKeyProvider(keyStore, cfg.RoomKeyCacheSize, cfg.RoomKeyCacheTTL)
-			slog.Info("room-key-cache enabled", "size", cfg.RoomKeyCacheSize, "ttl", cfg.RoomKeyCacheTTL)
-		} else {
-			slog.Info("room-key-cache disabled")
 		}
 	}
 
@@ -141,7 +131,7 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(cachedStore, us, publisher, keyProvider, cfg.Encryption.Enabled)
+	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
