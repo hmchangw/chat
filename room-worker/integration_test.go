@@ -1404,3 +1404,96 @@ func TestMongoStore_BulkUpsertSubscriptions_Integration(t *testing.T) {
 		require.NoError(t, store.BulkUpsertSubscriptions(ctx, []*model.Subscription{}))
 	})
 }
+
+// TestProcessCreateRoom_BotDM_ReSubscribe_Integration verifies the
+// end-to-end re-join refresh: pre-seed a muted/inactive botDM
+// subscription, then run processCreateRoom for the same (room, user)
+// pair and assert the canonical row's mute/active state was refreshed
+// and runtime fields were preserved.
+func TestProcessCreateRoom_BotDM_ReSubscribe_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_helper_bot", Account: "helper.bot", SiteID: "site-A",
+	})
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_helper_bot")
+	oldJoinedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	lastSeen := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+
+	// Pre-seed: muted, inactive, with unread mention + runtime state.
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Type: model.RoomTypeBotDM, SiteID: "site-A",
+		CreatedBy: "u_alice", CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
+		UIDs:     []string{"u_alice", "u_helper_bot"},
+		Accounts: []string{"alice", "helper.bot"},
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:                  "existing-human-sub",
+		User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:              roomID,
+		SiteID:              "site-A",
+		RoomType:            model.RoomTypeBotDM,
+		Name:                "helper.bot",
+		IsSubscribed:        false,
+		DisableNotification: true,
+		JoinedAt:            oldJoinedAt,
+		LastSeenAt:          &lastSeen,
+		HasMention:          true,
+		Alert:               true,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:           "existing-bot-sub",
+		User:         model.SubscriptionUser{ID: "u_helper_bot", Account: "helper.bot"},
+		RoomID:       roomID,
+		SiteID:       "site-A",
+		RoomType:     model.RoomTypeBotDM,
+		Name:         "alice",
+		IsSubscribed: false,
+		JoinedAt:     oldJoinedAt,
+	})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID:           roomID,
+		Users:            []string{"helper.bot"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// Human sub: identity preserved, re-activation refreshed, runtime preserved.
+	human, err := store.GetSubscription(ctx, "alice", roomID)
+	require.NoError(t, err)
+	assert.Equal(t, "existing-human-sub", human.ID, "_id preserved")
+	assert.False(t, human.DisableNotification, "DisableNotification cleared")
+	assert.True(t, human.IsSubscribed, "IsSubscribed refreshed")
+	assert.False(t, human.JoinedAt.Equal(oldJoinedAt), "JoinedAt updated to acceptedAt")
+	assert.True(t, human.HasMention, "HasMention preserved")
+	assert.True(t, human.Alert, "Alert preserved")
+	require.NotNil(t, human.LastSeenAt)
+	assert.True(t, human.LastSeenAt.Equal(lastSeen), "LastSeenAt preserved")
+
+	// Bot sub: identity preserved, IsSubscribed stays false (bot-side semantics).
+	botSub, err := store.GetSubscription(ctx, "helper.bot", roomID)
+	require.NoError(t, err)
+	assert.Equal(t, "existing-bot-sub", botSub.ID, "_id preserved")
+	assert.False(t, botSub.IsSubscribed, "bot side stays IsSubscribed=false")
+	assert.False(t, botSub.DisableNotification, "bot side DisableNotification cleared (idempotent no-op)")
+
+	// Only 2 subs total — no duplicates created.
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "no duplicate subs after re-create")
+}
