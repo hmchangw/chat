@@ -22,6 +22,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -86,6 +87,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
+	workload := fs.String("workload", "messages", "messages|members")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	_ = fs.Parse(args)
@@ -93,9 +95,21 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintln(os.Stderr, "--preset required")
 		return 2
 	}
-	p, ok := BuiltinPreset(*preset)
+	switch *workload {
+	case "messages":
+		return runSeedMessages(ctx, cfg, *preset, *seed)
+	case "members":
+		return runSeedMembers(ctx, cfg, *preset, *seed)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
+		return 2
+	}
+}
+
+func runSeedMessages(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinPreset(preset)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
 		return 2
 	}
 	db, keyStore, cleanup, err := connectStores(ctx, cfg)
@@ -103,7 +117,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	defer cleanup()
-	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+	fixtures := BuildFixtures(&p, seed, cfg.SiteID)
 	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
 		return 1
@@ -112,7 +126,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("seed room keys", "error", err)
 		return 1
 	}
-	slog.Info("seed complete",
+	slog.Info("seed complete (messages)",
 		"preset", p.Name,
 		"users", len(fixtures.Users),
 		"rooms", len(fixtures.Rooms),
@@ -121,18 +135,10 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-func runTeardown(ctx context.Context, cfg *config, args []string) int {
-	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
-	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
-	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
-	_ = fs.Parse(args)
-	if *preset == "" {
-		fmt.Fprintln(os.Stderr, "--preset required")
-		return 2
-	}
-	p, ok := BuiltinPreset(*preset)
+func runSeedMembers(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinMembersPreset(preset)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+		fmt.Fprintf(os.Stderr, "unknown members preset: %s\n", preset)
 		return 2
 	}
 	db, keyStore, cleanup, err := connectStores(ctx, cfg)
@@ -140,11 +146,63 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	defer cleanup()
-	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
-	roomIDs := make([]string, len(fixtures.Rooms))
-	for i := range fixtures.Rooms {
-		roomIDs[i] = fixtures.Rooms[i].ID
+	fixtures, pools := BuildMembersFixtures(&p, seed, cfg.SiteID)
+	if err := Seed(ctx, db, &fixtures); err != nil {
+		slog.Error("seed", "error", err)
+		return 1
 	}
+	if err := SeedRoomKeys(ctx, keyStore, fixtures.RoomKeys); err != nil {
+		slog.Error("seed room keys", "error", err)
+		return 1
+	}
+	candCount := 0
+	for _, ids := range pools {
+		candCount += len(ids)
+	}
+	slog.Info("seed complete (members)",
+		"preset", p.Name,
+		"users", len(fixtures.Users),
+		"rooms", len(fixtures.Rooms),
+		"subs", len(fixtures.Subscriptions),
+		"roomKeys", len(fixtures.RoomKeys),
+		"candidatePoolTotal", candCount)
+	return 0
+}
+
+func runTeardown(ctx context.Context, cfg *config, args []string) int {
+	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
+	workload := fs.String("workload", "messages", "messages|members")
+	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
+	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
+	_ = fs.Parse(args)
+	if *preset == "" {
+		fmt.Fprintln(os.Stderr, "--preset required")
+		return 2
+	}
+	switch *workload {
+	case "messages":
+		return runTeardownMessages(ctx, cfg, *preset, *seed)
+	case "members":
+		return runTeardownMembers(ctx, cfg, *preset, *seed)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
+		return 2
+	}
+}
+
+func runTeardownMessages(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
+		return 2
+	}
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	fixtures := BuildFixtures(&p, seed, cfg.SiteID)
+	roomIDs := roomIDsOf(fixtures.Rooms)
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
@@ -153,8 +211,41 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("teardown room keys", "error", err)
 		return 1
 	}
-	slog.Info("teardown complete")
+	slog.Info("teardown complete (messages)")
 	return 0
+}
+
+func runTeardownMembers(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinMembersPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown members preset: %s\n", preset)
+		return 2
+	}
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	fixtures, _ := BuildMembersFixtures(&p, seed, cfg.SiteID)
+	roomIDs := roomIDsOf(fixtures.Rooms)
+	if err := Teardown(ctx, db); err != nil {
+		slog.Error("teardown", "error", err)
+		return 1
+	}
+	if err := TeardownRoomKeys(ctx, keyStore, roomIDs); err != nil {
+		slog.Error("teardown room keys", "error", err)
+		return 1
+	}
+	slog.Info("teardown complete (members)")
+	return 0
+}
+
+func roomIDsOf(rooms []model.Room) []string {
+	out := make([]string, len(rooms))
+	for i := range rooms {
+		out[i] = rooms[i].ID
+	}
+	return out
 }
 
 // connectStores opens Mongo and Valkey. cleanup disconnects both; the caller

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -215,4 +216,16 @@ func TestNewMetrics_RegistersMemberCollectors(t *testing.T) {
 	for _, name := range want {
 		assert.True(t, got[name], "metric %s not registered", name)
 	}
+}
+
+func TestRunSeed_RejectsUnknownWorkload(t *testing.T) {
+	cfg := &config{}
+	code := runSeed(context.Background(), cfg, []string{"--workload=widgets", "--preset=members-small"})
+	assert.Equal(t, 2, code)
+}
+
+func TestRunSeed_RejectsUnknownMembersPreset(t *testing.T) {
+	cfg := &config{}
+	code := runSeed(context.Background(), cfg, []string{"--workload=members", "--preset=nope"})
+	assert.Equal(t, 2, code)
 }
