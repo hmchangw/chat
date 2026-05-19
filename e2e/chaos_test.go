@@ -98,10 +98,6 @@ func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 	// THE assertion: post-blip, a fresh send must complete end-to-end.
 	// This proves the service-layer reconnected to mongo and isn't
 	// stuck in a backoff loop.
-	postInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	postBlipPreSeq := postInfo.CachedInfo().State.LastSeq
-
 	msgIDPost := idgen.GenerateMessageID()
 	reqIDPost := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -112,7 +108,10 @@ func TestChaos_MongoMidWriteRecovers(t *testing.T) {
 		},
 		15*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", postBlipPreSeq+1)
+	// Use msgID-based wait, not preSeq+1: the NAK'd during-blip canonical
+	// message gets re-delivered after Mongo recovers and may take that
+	// next seq slot before our post-blip lands.
+	awaitMessageOnSite(t, ctx, site, msgIDPost)
 
 	// Spot-check: msgIDPre and msgIDPost should be in Cassandra (the
 	// mid-blip message may or may not be -- we don't assert).
@@ -190,12 +189,6 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 	}, 60*time.Second, 2*time.Second, "cass-a never healthy after restart")
 
 	// Post-blip: a new send must complete and land in cassandra.
-	js := site.JetStream(t)
-	canonical := stream.MessagesCanonical(site.SiteID).Name
-	postInfo, err := js.Stream(ctx, canonical)
-	require.NoError(t, err)
-	postBlipPreSeq := postInfo.CachedInfo().State.LastSeq
-
 	msgIDPost := idgen.GenerateMessageID()
 	reqIDPost := idgen.GenerateRequestID()
 	require.NoError(t, sendAndAwaitReply(
@@ -206,7 +199,10 @@ func TestChaos_CassandraMidWriteRecovers(t *testing.T) {
 		},
 		20*time.Second,
 	))
-	awaitCanonicalAcked(t, ctx, js, canonical, "message-worker", postBlipPreSeq+1)
+	// Use msgID-based wait, not preSeq+1: the NAK'd during-blip canonical
+	// message gets re-delivered after Cassandra recovers and may take
+	// that next seq slot before our post-blip lands.
+	awaitMessageOnSite(t, ctx, site, msgIDPost)
 
 	sess := site.CassandraSession(t)
 	defer sess.Close()
