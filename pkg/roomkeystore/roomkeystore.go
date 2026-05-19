@@ -41,13 +41,6 @@ type RoomKeyStore interface {
 	Close() error
 }
 
-// Config holds Valkey connection and grace period configuration, parsed via caarlos0/env.
-type Config struct {
-	Addr        string        `env:"VALKEY_ADDR,required"`
-	Password    string        `env:"VALKEY_PASSWORD" envDefault:""`
-	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-}
-
 // hashCommander is a minimal internal interface over the Valkey hash commands used by valkeyStore.
 // Unexported and command-specific so unit tests can inject a fake without a live Valkey connection.
 type hashCommander interface {

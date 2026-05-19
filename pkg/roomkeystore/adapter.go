@@ -11,21 +11,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// universalAdapter wraps redis.UniversalClient (implemented by both
-// *redis.Client and *redis.ClusterClient) to satisfy hashCommander.
-type universalAdapter struct {
-	c redis.UniversalClient
+// clusterAdapter wraps *redis.ClusterClient to satisfy hashCommander.
+type clusterAdapter struct {
+	c *redis.ClusterClient
 }
 
-func (a *universalAdapter) hset(ctx context.Context, key string, pub, priv string) error {
+func (a *clusterAdapter) hset(ctx context.Context, key string, pub, priv string) error {
 	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", "0").Err()
 }
 
-func (a *universalAdapter) hsetWithVersion(ctx context.Context, key string, pub, priv string, version int) error {
+func (a *clusterAdapter) hsetWithVersion(ctx context.Context, key string, pub, priv string, version int) error {
 	return a.c.HSet(ctx, key, "pub", pub, "priv", priv, "ver", strconv.Itoa(version)).Err()
 }
 
-func (a *universalAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
+func (a *clusterAdapter) hgetall(ctx context.Context, key string) (map[string]string, error) {
 	return a.c.HGetAll(ctx, key).Result()
 }
 
@@ -56,7 +55,7 @@ redis.call('HSET', currentKey, 'pub', newPub, 'priv', newPriv, 'ver', tostring(n
 return newVer
 `)
 
-func (a *universalAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error) {
+func (a *clusterAdapter) rotatePipeline(ctx context.Context, currentKey, prevKey string, pub, priv string, gracePeriod time.Duration) (int, error) {
 	graceSec := int(gracePeriod.Seconds())
 	if graceSec < 1 {
 		graceSec = 1
@@ -68,14 +67,14 @@ func (a *universalAdapter) rotatePipeline(ctx context.Context, currentKey, prevK
 	return result, err
 }
 
-func (a *universalAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
+func (a *clusterAdapter) deletePipeline(ctx context.Context, currentKey, prevKey string) error {
 	return a.c.Del(ctx, currentKey, prevKey).Err()
 }
 
 // hgetallMany issues HGETALL for every key in a single pipeline and returns
 // one map per input key (in the same order). A missing hash yields an empty
 // map rather than an error, matching go-redis v9 HGetAll semantics.
-func (a *universalAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error) {
+func (a *clusterAdapter) hgetallMany(ctx context.Context, keys []string) ([]map[string]string, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -98,25 +97,8 @@ func (a *universalAdapter) hgetallMany(ctx context.Context, keys []string) ([]ma
 	return out, nil
 }
 
-func (a *universalAdapter) closeClient() error {
+func (a *clusterAdapter) closeClient() error {
 	return a.c.Close()
-}
-
-// NewValkeyStore creates a valkeyStore, pings Valkey to verify connectivity, and returns it.
-func NewValkeyStore(cfg Config) (RoomKeyStore, error) {
-	c := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.Ping(ctx).Err(); err != nil {
-		if closeErr := c.Close(); closeErr != nil {
-			slog.Warn("valkey close after failed connect", "error", closeErr)
-		}
-		return nil, fmt.Errorf("valkey connect: %w", err)
-	}
-	return &valkeyStore{client: &universalAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
 }
 
 // ClusterConfig holds connection config for a Valkey cluster deployment.
@@ -145,5 +127,12 @@ func NewValkeyClusterStore(cfg ClusterConfig) (RoomKeyStore, error) {
 		}
 		return nil, fmt.Errorf("valkey cluster connect: %w", err)
 	}
-	return &valkeyStore{client: &universalAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
+	return &valkeyStore{client: &clusterAdapter{c: c}, closer: c, gracePeriod: cfg.GracePeriod}, nil
+}
+
+// NewValkeyClusterStoreFromClient wraps a pre-built *redis.ClusterClient as a
+// RoomKeyStore. Intended for tests that inject a client configured with a
+// ClusterSlots override (testcontainer port-mapping workaround).
+func NewValkeyClusterStoreFromClient(c *redis.ClusterClient, gracePeriod time.Duration) RoomKeyStore {
+	return &valkeyStore{client: &clusterAdapter{c: c}, closer: c, gracePeriod: gracePeriod}
 }
