@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,11 +137,7 @@ func TestStartLogger_StopFunctionCancelsGoroutine(t *testing.T) {
 
 	// Let it tick at least once.
 	time.Sleep(30 * time.Millisecond)
-	stop()
-
-	// Give the goroutine time to observe the cancellation and exit
-	// before we take the baseline count.
-	time.Sleep(20 * time.Millisecond)
+	stop() // synchronous: blocks until goroutine exits
 
 	// Record count after cancellation.
 	before := len(cap.snapshot())
@@ -182,6 +177,5 @@ func TestStartLogger_ZeroDenominatorYieldsZeroRate(t *testing.T) {
 	lines := cap.snapshot()
 	require.NotEmpty(t, lines)
 	last := lines[len(lines)-1]
-	assert.Contains(t, []any{0, float64(0), int64(0)}, last["hit_rate"], "rate should be 0 when no traffic")
-	_ = strings.TrimSpace // keep imports honest
+	assert.EqualValues(t, 0, last["hit_rate"], "rate should be 0 when no traffic")
 }

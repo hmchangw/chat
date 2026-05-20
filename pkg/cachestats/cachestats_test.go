@@ -91,11 +91,13 @@ func TestRegister_PanicsOnDuplicateName(t *testing.T) {
 }
 
 func TestNew_NilRegistererFallsBackToDefault(t *testing.T) {
-	// Construct with nil; should not panic, and the returned Stats
-	// must accept Register calls. Use a unique cache name so this
-	// test does not collide with the default registry across runs.
 	s := New(nil)
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer.Unregister(s.hits)
+		prometheus.DefaultRegisterer.Unregister(s.misses)
+	})
 	require.NotNil(t, s)
+
 	name := "test_default_registerer_" + t.Name()
 	r := s.Register(name, nil)
 	r.Hit()

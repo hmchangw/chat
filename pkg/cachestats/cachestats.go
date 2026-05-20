@@ -166,8 +166,16 @@ func (s *Stats) StartLogger(ctx context.Context, interval time.Duration, logger 
 		logger = slog.Default()
 	}
 	loggerCtx, cancel := context.WithCancel(ctx)
-	go s.runLogger(loggerCtx, interval, logger)
-	return cancel
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.runLogger(loggerCtx, interval, logger)
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}
 }
 
 func (s *Stats) runLogger(ctx context.Context, interval time.Duration, logger *slog.Logger) {
