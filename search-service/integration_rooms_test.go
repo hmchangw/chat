@@ -1,0 +1,243 @@
+//go:build integration
+
+package main
+
+// search.rooms integration tests. Uses the process-shared ES, NATS, and
+// Valkey from setup_shared_test.go; per-test isolation comes from a
+// unique spotlight index name (deleted on cleanup) plus a Valkey
+// FLUSHDB on cleanup.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/searchengine"
+	"github.com/hmchangw/chat/pkg/subject"
+)
+
+// roomsFixture wires a real ES container (for the spotlight index) and
+// NATS. search.rooms is served directly from the spotlight index, so no
+// Mongo is involved. The ES container is process-shared; per-test
+// isolation comes from a unique spotlight index name (deleted on
+// cleanup) plus a Valkey FLUSHDB on cleanup.
+type roomsFixture struct {
+	clientNATS     *nats.Conn
+	esURL          string
+	spotlightIndex string
+}
+
+// setupRoomsFixture wires the search-service router against the
+// process-shared ES, Valkey and NATS containers. The spotlight index
+// name is unique per test so leftovers from a sibling test can't leak
+// into this one's hit set.
+func setupRoomsFixture(t *testing.T) *roomsFixture {
+	t.Helper()
+	ctx := context.Background()
+
+	esURL := sharedSingleNodeES(t)
+	spotlightIndex := uniqueESIndex(t, "spotlight")
+	putTestSpotlightIndex(t, esURL, spotlightIndex)
+
+	natsURL := sharedNATS(t)
+	serverNC, err := natsutil.Connect(natsURL, "")
+	require.NoError(t, err, "connect nats (server side)")
+	t.Cleanup(func() { _ = serverNC.Drain() })
+
+	clientNC, err := nats.Connect(natsURL)
+	require.NoError(t, err, "connect nats (client side)")
+	t.Cleanup(func() { clientNC.Close() })
+
+	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
+	require.NoError(t, err, "build searchengine for subs fixture")
+
+	esStore := newESStore(engine, testUserRoomIndex)
+	cache := newValkeyCache(freshValkeyClient(t))
+	h := newHandler(esStore, nil, nil, cache, handlerConfig{
+		DocCounts:               25,
+		MaxDocCounts:            100,
+		RestrictedRoomsCacheTTL: 5 * time.Minute,
+		RecentWindow:            365 * 24 * time.Hour,
+		RequestTimeout:          5 * time.Second,
+		SpotlightReadPattern:    spotlightIndex,
+	})
+
+	router := natsrouter.New(serverNC, "search-service-test-subs")
+	router.Use(natsrouter.RequestID())
+	h.Register(router)
+	// Flush — see setupAppsFixture for the rationale.
+	require.NoError(t, serverNC.NatsConn().Flush())
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+
+	return &roomsFixture{clientNATS: clientNC, esURL: esURL, spotlightIndex: spotlightIndex}
+}
+
+// putTestSpotlightIndex creates a minimal spotlight index in ES with the
+// fields needed by the subscription search query.
+func putTestSpotlightIndex(t *testing.T, esURL, index string) {
+	t.Helper()
+	body := map[string]any{
+		"settings": map[string]any{
+			"number_of_shards":   1,
+			"number_of_replicas": 0,
+			"refresh_interval":   "1s",
+		},
+		"mappings": map[string]any{
+			"dynamic": false,
+			"properties": map[string]any{
+				"roomId": map[string]any{"type": "keyword"},
+				"roomName": map[string]any{
+					"type": "search_as_you_type",
+				},
+				"roomType":    map[string]any{"type": "keyword"},
+				"userAccount": map[string]any{"type": "keyword"},
+				"siteId":      map[string]any{"type": "keyword"},
+				"joinedAt":    map[string]any{"type": "date"},
+			},
+		},
+	}
+	data, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPut, esURL+"/"+index, bytes.NewReader(data))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := testHTTPClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	require.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated,
+		"create spotlight index: status=%d body=%s", resp.StatusCode, b)
+}
+
+func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
+	f := setupRoomsFixture(t)
+
+	const account = "alice"
+	now := time.Now().UTC()
+
+	// Seed spotlight docs for two rooms alice is in.
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r1", map[string]any{
+		"roomId":      "r1",
+		"roomName":    "engineering-announcements",
+		"roomType":    "channel",
+		"userAccount": account,
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-48 * time.Hour).Format(time.RFC3339),
+	})
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r2", map[string]any{
+		"roomId":      "r2",
+		"roomName":    "engineering-random",
+		"roomType":    "channel",
+		"userAccount": account,
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-24 * time.Hour).Format(time.RFC3339),
+	})
+	// A matching room owned by a different account. With the Mongo
+	// hydration removed, the spotlight userAccount term filter is the
+	// sole access boundary — this must not leak into alice's results.
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r3", map[string]any{
+		"roomId":      "r3",
+		"roomName":    "engineering-secret",
+		"roomType":    "channel",
+		"userAccount": "mallory",
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-12 * time.Hour).Format(time.RFC3339),
+	})
+
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "engineering"})
+	require.NoError(t, err)
+
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
+	require.NoError(t, err)
+
+	var resp model.SearchRoomsResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	require.Len(t, resp.Rooms, 2, "both rooms matching 'engineering' must be returned")
+	byID := map[string]model.SearchRoom{}
+	for _, r := range resp.Rooms {
+		byID[r.RoomID] = r
+	}
+	assert.Equal(t, model.SearchRoom{RoomID: "r1", Name: "engineering-announcements", RoomType: "channel", SiteID: "site-local"}, byID["r1"])
+	assert.Equal(t, model.SearchRoom{RoomID: "r2", Name: "engineering-random", RoomType: "channel", SiteID: "site-local"}, byID["r2"])
+	_, leaked := byID["r3"]
+	assert.False(t, leaked, "rooms owned by another account must not leak")
+}
+
+func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
+	f := setupRoomsFixture(t)
+
+	const account = "bob"
+	now := time.Now().UTC()
+
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-b-r1", map[string]any{
+		"roomId":      "b-r1",
+		"roomName":    "bob-alice",
+		"roomType":    "dm",
+		"userAccount": account,
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-1 * time.Hour).Format(time.RFC3339),
+	})
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-b-r2", map[string]any{
+		"roomId":      "b-r2",
+		"roomName":    "bob-channel",
+		"roomType":    "channel",
+		"userAccount": account,
+		"siteId":      "site-local",
+		"joinedAt":    now.Add(-2 * time.Hour).Format(time.RFC3339),
+	})
+
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "bob", RoomType: "channel"})
+	require.NoError(t, err)
+
+	msg, err := f.clientNATS.Request(subject.SearchRooms(account), reqBytes, 10*time.Second)
+	require.NoError(t, err)
+
+	var resp model.SearchRoomsResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, model.SearchRoom{RoomID: "b-r2", Name: "bob-channel", RoomType: "channel", SiteID: "site-local"}, resp.Rooms[0],
+		"only the channel room must match roomType=channel filter")
+}
+
+func TestIntegration_SearchRooms_EmptyQueryReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
+
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: ""})
+	require.NoError(t, err)
+
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
+	require.NoError(t, err)
+
+	var envelope model.ErrorResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
+	require.NotEmpty(t, envelope.Error)
+	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+}
+
+func TestIntegration_SearchRooms_RoomTypeAppReturnsBadRequest(t *testing.T) {
+	f := setupRoomsFixture(t)
+
+	reqBytes, err := json.Marshal(model.SearchRoomsRequest{Query: "x", RoomType: "app"})
+	require.NoError(t, err)
+
+	msg, err := f.clientNATS.Request(subject.SearchRooms("alice"), reqBytes, 5*time.Second)
+	require.NoError(t, err)
+
+	var envelope model.ErrorResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
+	require.NotEmpty(t, envelope.Error)
+	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+	assert.Contains(t, envelope.Error, "invalid roomType")
+}

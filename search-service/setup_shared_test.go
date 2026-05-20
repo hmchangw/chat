@@ -3,16 +3,16 @@
 package main
 
 // This file owns the process-shared test infrastructure used by every
-// fixture in integration_test.go. Each container is started exactly once
-// via sync.Once and lives for the entire `go test` run; Ryuk (from
-// testcontainers-go) reaps it after the process exits.
+// per-endpoint integration_*_test.go file. Each container is started
+// exactly once via sync.Once and lives for the entire `go test` run;
+// Ryuk (from testcontainers-go) reaps it after the process exits.
 //
 // Sharing is safe because tests within this package run sequentially and
 // each fixture isolates state per-test:
 //
 //   - Elasticsearch: unique index name per test (uniqueESIndex), DELETEd
 //     on cleanup.
-//   - Valkey:        flushSharedValkey wipes the keyspace on cleanup.
+//   - Valkey:        flushValkey wipes the keyspace on cleanup.
 //   - NATS:          each test creates its own *nats.Conn pair and
 //     router.Shutdown / nc.Close remove subscriptions before the next
 //     test starts. Each fixture also uses a distinct queue group name.
@@ -20,11 +20,17 @@ package main
 // CCS tests are the one exception — they need two networked ES nodes and
 // stand up their own pair inside setupCCSFixture. They still piggyback on
 // the shared Valkey and NATS, since those don't care about the topology.
+//
+// This file also owns the test-wide constants and helpers that all
+// integration files share: testUserRoomIndex, testHTTPClient, and seedDoc.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"sync"
 	"testing"
@@ -39,6 +45,32 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
+
+const testUserRoomIndex = "user-room"
+
+// testHTTPClient is a bounded HTTP client for ES control-plane calls —
+// stalled containers shouldn't be able to hang the integration job past
+// the per-call deadline. Kept small on purpose: these calls hit localhost
+// (docker-mapped port) and are cheap when they succeed.
+var testHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// seedDoc PUTs a JSON document into ES, synchronously refreshing the index
+// so the next search sees it.
+func seedDoc(t *testing.T, esURL, index, id string, doc any) {
+	t.Helper()
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	url := fmt.Sprintf("%s/%s/_doc/%s?refresh=true", esURL, index, id)
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(data))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := testHTTPClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	require.Truef(t, resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK,
+		"seedDoc %s/%s: status=%d body=%s", index, id, resp.StatusCode, body)
+}
 
 var (
 	sharedESOnce sync.Once
