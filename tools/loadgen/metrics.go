@@ -17,6 +17,12 @@ type Metrics struct {
 	ConsumerPending     *prometheus.GaugeVec
 	ConsumerAckPending  *prometheus.GaugeVec
 	ConsumerRedelivered *prometheus.GaugeVec
+
+	MemberPublished     *prometheus.CounterVec
+	MemberPublishErrors *prometheus.CounterVec
+	MemberE1Latency     *prometheus.HistogramVec
+	MemberE2Latency     *prometheus.HistogramVec
+	MemberRoomSize      *prometheus.GaugeVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -58,10 +64,32 @@ func NewMetrics() *Metrics {
 			[]string{"stream", "durable"},
 		),
 	}
+	m.MemberPublished = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "loadgen_member_published_total", Help: "Member-add requests published by preset/phase/inject/shape."},
+		[]string{"preset", "phase", "inject", "shape"},
+	)
+	m.MemberPublishErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "loadgen_member_publish_errors_total", Help: "Member-add publish-side errors by reason (publish|room_service|timeout|marshal|saturated)."},
+		[]string{"reason"},
+	)
+	m.MemberE1Latency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "loadgen_member_e1_latency_seconds", Help: "Member-add room-service reply latency.", Buckets: buckets},
+		[]string{"preset", "inject"},
+	)
+	m.MemberE2Latency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "loadgen_member_e2_latency_seconds", Help: "Member-add broadcast-visible latency.", Buckets: buckets},
+		[]string{"preset", "inject"},
+	)
+	m.MemberRoomSize = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "loadgen_member_room_size", Help: "Current member count per room (capacity mode only)."},
+		[]string{"room_id"},
+	)
 	r.MustRegister(
 		m.Published, m.PublishErrors,
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
+		m.MemberPublished, m.MemberPublishErrors,
+		m.MemberE1Latency, m.MemberE2Latency, m.MemberRoomSize,
 	)
 	return m
 }
