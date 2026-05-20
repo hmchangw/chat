@@ -174,7 +174,7 @@ func startESForCCS(t *testing.T, nw *testcontainers.DockerNetwork, alias, cluste
 				"network.host":           "0.0.0.0",
 				"transport.host":         "0.0.0.0",
 				"cluster.routing.allocation.disk.threshold_enabled": "false",
-				"ES_JAVA_OPTS": "-Xms512m -Xmx512m",
+				"ES_JAVA_OPTS": "-Xms256m -Xmx256m",
 			},
 			WaitingFor: wait.ForAll(
 				wait.ForHTTP("/").WithPort("9200/tcp").WithStartupTimeout(120*time.Second),

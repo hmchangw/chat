@@ -17,6 +17,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -68,9 +69,31 @@ var (
 	sharedNATSErr  error
 )
 
+// TestMain pre-warms the shared containers concurrently so the first
+// test doesn't pay their startup serially. Total wall-clock for cold
+// start drops to max(ES, NATS, Valkey) ≈ ES alone (~30-60s) instead of
+// the sum.
+func TestMain(m *testing.M) {
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); ensureSharedES() }()
+	go func() { defer wg.Done(); ensureSharedValkey() }()
+	go func() { defer wg.Done(); ensureSharedNATS() }()
+	wg.Wait()
+	os.Exit(m.Run())
+}
+
 // sharedSingleNodeES returns the URL of the process-shared single-node ES.
 func sharedSingleNodeES(t *testing.T) string {
 	t.Helper()
+	ensureSharedES()
+	if sharedESErr != nil {
+		t.Fatalf("shared elasticsearch: %v", sharedESErr)
+	}
+	return sharedESURL
+}
+
+func ensureSharedES() {
 	sharedESOnce.Do(func() {
 		ctx := context.Background()
 		container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -80,7 +103,7 @@ func sharedSingleNodeES(t *testing.T) string {
 				Env: map[string]string{
 					"discovery.type":         "single-node",
 					"xpack.security.enabled": "false",
-					"ES_JAVA_OPTS":           "-Xms512m -Xmx512m",
+					"ES_JAVA_OPTS":           "-Xms256m -Xmx256m",
 					"cluster.routing.allocation.disk.threshold_enabled": "false",
 				},
 				WaitingFor: wait.ForAll(
@@ -110,10 +133,6 @@ func sharedSingleNodeES(t *testing.T) string {
 		}
 		sharedESURL = fmt.Sprintf("http://%s:%s", host, port.Port())
 	})
-	if sharedESErr != nil {
-		t.Fatalf("shared elasticsearch: %v", sharedESErr)
-	}
-	return sharedESURL
 }
 
 // sharedValkey returns the addr of a process-shared Valkey container.
@@ -121,6 +140,14 @@ func sharedSingleNodeES(t *testing.T) string {
 // keyspace is wiped on test cleanup.
 func sharedValkey(t *testing.T) string {
 	t.Helper()
+	ensureSharedValkey()
+	if sharedValkeyErr != nil {
+		t.Fatalf("shared valkey: %v", sharedValkeyErr)
+	}
+	return sharedValkeyAddr
+}
+
+func ensureSharedValkey() {
 	sharedValkeyOnce.Do(func() {
 		ctx := context.Background()
 		container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -150,15 +177,19 @@ func sharedValkey(t *testing.T) string {
 		}
 		sharedValkeyAddr = fmt.Sprintf("%s:%s", host, port.Port())
 	})
-	if sharedValkeyErr != nil {
-		t.Fatalf("shared valkey: %v", sharedValkeyErr)
-	}
-	return sharedValkeyAddr
 }
 
 // sharedNATS returns the URL of a process-shared NATS container.
 func sharedNATS(t *testing.T) string {
 	t.Helper()
+	ensureSharedNATS()
+	if sharedNATSErr != nil {
+		t.Fatalf("shared nats: %v", sharedNATSErr)
+	}
+	return sharedNATSURL
+}
+
+func ensureSharedNATS() {
 	sharedNATSOnce.Do(func() {
 		ctx := context.Background()
 		c, err := natsmod.Run(ctx, testimages.NATS,
@@ -176,10 +207,6 @@ func sharedNATS(t *testing.T) string {
 		}
 		sharedNATSURL = url
 	})
-	if sharedNATSErr != nil {
-		t.Fatalf("shared nats: %v", sharedNATSErr)
-	}
-	return sharedNATSURL
 }
 
 // uniqueESIndex returns a per-test ES index name derived from t.Name()
