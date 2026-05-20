@@ -51,8 +51,8 @@ func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 
 // TestMain pre-warms the shared containers concurrently so the first test
 // doesn't pay their startup serially, then explicitly terminates them on
-// clean exit (required for CI runs with TESTCONTAINERS_RYUK_DISABLED=true;
-// harmless when Ryuk is enabled — explicit cleanup just runs first).
+// clean exit. Ryuk is disabled repo-wide via pkg/testutil's init(), so
+// TerminateAll is the primary cleanup mechanism.
 func TestMain(m *testing.M) {
 	var wg sync.WaitGroup
 	for _, fn := range []func() error{
