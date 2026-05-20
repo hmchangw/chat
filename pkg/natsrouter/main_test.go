@@ -1,6 +1,6 @@
 //go:build integration
 
-package natsrouter_test
+package natsrouter
 
 import (
 	"testing"
