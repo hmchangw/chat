@@ -34,6 +34,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
@@ -107,7 +108,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 
 	valkeyClient := freshValkeyClient(t)
 
-	natsURL := sharedNATS(t)
+	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })

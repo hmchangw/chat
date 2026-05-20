@@ -21,6 +21,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/restyutil"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 type usersFixture struct {
@@ -34,7 +35,7 @@ func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixtu
 	stub := httptest.NewServer(thirdPartyHandler)
 	t.Cleanup(stub.Close)
 
-	natsURL := sharedNATS(t)
+	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })

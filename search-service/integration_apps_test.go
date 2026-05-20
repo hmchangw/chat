@@ -33,7 +33,7 @@ func setupAppsFixture(t *testing.T) *appsFixture {
 
 	mongoDB := testutil.MongoDB(t, "search_service_test")
 
-	natsURL := sharedNATS(t)
+	natsURL := testutil.NATS(t)
 
 	serverNATS, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err)

@@ -70,6 +70,10 @@ func TerminateMongo() {
 	}
 }
 
+// EnsureMongo starts the shared Mongo container if not already started.
+// No-t variant intended for TestMain pre-warming.
+func EnsureMongo() error { _, err := ensureMongoClient(); return err }
+
 // MongoDB returns an isolated Mongo database for the current test; dropped on t.Cleanup.
 func MongoDB(t *testing.T, prefix string) *mongo.Database {
 	t.Helper()

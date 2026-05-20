@@ -22,6 +22,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 type messagesV2Fixture struct {
@@ -50,7 +51,7 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	fakeValkey := newFakeCache()
 	fakeValkey.store["alice"] = map[string]int64{} // empty restricted map, cache hit
 
-	natsURL := sharedNATS(t)
+	natsURL := testutil.NATS(t)
 
 	serverNATS, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err)

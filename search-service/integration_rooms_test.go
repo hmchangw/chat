@@ -22,6 +22,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 // roomsFixture uses a per-test spotlight index against the shared ES so
@@ -36,11 +37,11 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	esURL := sharedSingleNodeES(t)
+	esURL := testutil.Elasticsearch(t)
 	spotlightIndex := uniqueESIndex(t, "spotlight")
 	putTestSpotlightIndex(t, esURL, spotlightIndex)
 
-	natsURL := sharedNATS(t)
+	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })
