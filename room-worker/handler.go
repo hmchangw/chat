@@ -1750,19 +1750,20 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 
 // fanOutKey distributes evt to every account via h.keySender.Send using up to
 // h.keyFanoutWorkers concurrent goroutines. Per-account errors are logged and
-// counted via roomkeymetrics; the function does not return an error because a
-// partial fan-out is acceptable — JetStream redelivers on permanent failure
-// and recipients are idempotent on key version.
+// counted via roomkeymetrics; partial fan-out is acceptable because JetStream
+// redelivers on permanent failure and recipients are idempotent on key version.
 //
-// evt is taken by pointer to avoid copying the 80-byte struct per fanout call;
-// goroutines deref it for the (by-value) call into keySender.Send. Callers
-// must not mutate evt after passing it in.
+// evt is taken by pointer so the 80-byte struct isn't copied per fan-out call;
+// callers must not mutate it after passing it in.
 func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []string, evt *model.RoomKeyEvent) {
 	if len(accounts) == 0 {
 		return
 	}
 	workers := h.keyFanoutWorkers
 	if workers <= 0 {
+		// Defensive default for tests and any future construction path that
+		// bypasses NewHandler with a zero-value Handler — without this an
+		// unbuffered semaphore deadlocks the first publish.
 		workers = defaultKeyFanoutWorkers
 	}
 	if workers > len(accounts) {

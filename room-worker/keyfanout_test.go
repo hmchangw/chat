@@ -15,6 +15,17 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 )
 
+// newFanoutTestHandler builds a Handler via NewHandler so future field
+// additions don't silently leave the test exercising a partially-initialized
+// struct. Only fanOutKey is exercised here; the store/publish/keyStore stubs
+// are unused by it.
+func newFanoutTestHandler(t *testing.T, keySender *roomkeysender.Sender, workers int) *Handler {
+	t.Helper()
+	h := NewHandler(nil, "test-site", nil, testKeyStore, keySender)
+	h.SetKeyFanoutWorkers(workers)
+	return h
+}
+
 // barrierPublisher blocks every Publish call on a shared barrier so a test can
 // observe how many goroutines reach Publish concurrently before any are
 // allowed to finish.
@@ -43,10 +54,7 @@ func TestFanOutKey_RespectsWorkerCap(t *testing.T) {
 	const workers = 3
 
 	bp := newBarrierPublisher(accounts)
-	h := &Handler{
-		keySender:        roomkeysender.NewSender(bp),
-		keyFanoutWorkers: workers,
-	}
+	h := newFanoutTestHandler(t, roomkeysender.NewSender(bp), workers)
 
 	accts := make([]string, accounts)
 	for i := range accts {
@@ -111,10 +119,8 @@ func TestFanOutKey_PublishesEveryAccount(t *testing.T) {
 	const accounts = 100
 
 	rp := &recordingPublisher{}
-	h := &Handler{
-		keySender:        roomkeysender.NewSender(rp),
-		keyFanoutWorkers: 16,
-	}
+	h := newFanoutTestHandler(t, roomkeysender.NewSender(rp), 16)
+
 	accts := make([]string, accounts)
 	for i := range accts {
 		accts[i] = fmt.Sprintf("acct-%03d", i)
@@ -128,19 +134,20 @@ func TestFanOutKey_PublishesEveryAccount(t *testing.T) {
 
 func TestFanOutKey_NoAccountsIsNoOp(t *testing.T) {
 	rp := &recordingPublisher{}
-	h := &Handler{
-		keySender:        roomkeysender.NewSender(rp),
-		keyFanoutWorkers: 16,
-	}
+	h := newFanoutTestHandler(t, roomkeysender.NewSender(rp), 16)
 	h.fanOutKey(context.Background(), "r", nil, &model.RoomKeyEvent{})
 	assert.Empty(t, rp.snapshot())
 }
 
+// TestFanOutKey_WorkersDefaultWhenZero guards the defensive default inside
+// fanOutKey. Existing tests in handler_test.go construct &Handler{...}
+// directly with keyFanoutWorkers left at zero; the defensive default keeps
+// those paths from deadlocking on an unbuffered semaphore.
 func TestFanOutKey_WorkersDefaultWhenZero(t *testing.T) {
 	rp := &recordingPublisher{}
 	h := &Handler{
 		keySender:        roomkeysender.NewSender(rp),
-		keyFanoutWorkers: 0, // unset → must fall back to default, not deadlock
+		keyFanoutWorkers: 0,
 	}
 	h.fanOutKey(context.Background(), "r", []string{"a", "b", "c"}, &model.RoomKeyEvent{})
 	assert.Len(t, rp.snapshot(), 3)
