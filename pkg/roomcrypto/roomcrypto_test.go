@@ -234,3 +234,27 @@ func TestEncoder_Encode_HappyPath(t *testing.T) {
 	// EphemeralPublicKey field must be empty/unset on the new scheme output.
 	assert.Empty(t, got.EphemeralPublicKey)
 }
+
+func TestEncoder_Encode_CacheHit(t *testing.T) {
+	priv := bytes.Repeat([]byte{0xAB}, 32)
+	enc := NewEncoder()
+
+	_, err := enc.Encode("room-1", "msg1", priv, 1)
+	require.NoError(t, err)
+	_, err = enc.Encode("room-1", "msg2", priv, 1)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, enc.cacheLen(), "same (roomID, version) must not re-derive the AES key")
+}
+
+func TestEncoder_Encode_DistinctVersionsCacheSeparately(t *testing.T) {
+	priv := bytes.Repeat([]byte{0xAB}, 32)
+	enc := NewEncoder()
+
+	_, err := enc.Encode("room-1", "msg1", priv, 1)
+	require.NoError(t, err)
+	_, err = enc.Encode("room-1", "msg2", priv, 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, enc.cacheLen(), "different versions must occupy distinct cache entries")
+}

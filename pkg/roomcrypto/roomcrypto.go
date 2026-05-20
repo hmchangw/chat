@@ -225,3 +225,10 @@ func (e *Encoder) evictLowestVersionLocked() {
 		delete(e.cache, victim)
 	}
 }
+
+// cacheLen is exported only for tests in the same package.
+func (e *Encoder) cacheLen() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.cache)
+}
