@@ -183,6 +183,13 @@ func RoomsList(account string) string {
 	return fmt.Sprintf("chat.user.%s.request.rooms.list", account)
 }
 
+// RoomsKeysBootstrap is the per-user request subject for fetching all
+// room private keys the user is currently subscribed to. Used by clients
+// on (re)connect to bootstrap their key cache.
+func RoomsKeysBootstrap(account string) string {
+	return fmt.Sprintf("chat.user.%s.request.rooms.keys", account)
+}
+
 func RoomsGet(account, roomID string) string {
 	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", account, roomID)
 }
@@ -267,6 +274,11 @@ func RoomsCreateWildcard() string {
 
 func RoomsListWildcard() string {
 	return "chat.user.*.request.rooms.list"
+}
+
+// RoomsKeysBootstrapWildcard is the subscribe pattern used by room-service.
+func RoomsKeysBootstrapWildcard() string {
+	return "chat.user.*.request.rooms.keys"
 }
 
 func RoomsGetWildcard() string {
