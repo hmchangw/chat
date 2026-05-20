@@ -123,6 +123,20 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	return &sub, nil
 }
 
+func (s *MongoStore) ListSubscriptionsByAccount(ctx context.Context, account string) ([]model.Subscription, error) {
+	filter := bson.M{"u.account": account, "isSubscribed": true}
+	cursor, err := s.subscriptions.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("find subscriptions for account %q: %w", account, err)
+	}
+	defer cursor.Close(ctx)
+	var subs []model.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode subscriptions for account %q: %w", account, err)
+	}
+	return subs, nil
+}
+
 func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
 	_, err := s.subscriptions.InsertOne(ctx, sub)
 	return err
