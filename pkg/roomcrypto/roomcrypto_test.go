@@ -282,3 +282,21 @@ func TestEncoder_Encode_EvictsLowestVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, enc.cacheLen(), "after re-inserting v=1, cache stays at max (now v=2 should have been evicted as lowest)")
 }
+
+func TestEncoder_Encode_NonceReaderError(t *testing.T) {
+	priv := bytes.Repeat([]byte{0xAA}, 32)
+	enc := NewEncoder(WithRand(&failReader{}))
+
+	got, err := enc.Encode("room-1", "hello", priv, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "generating nonce")
+	assert.Nil(t, got)
+}
+
+func TestEncoder_Encode_InvalidKeyLength(t *testing.T) {
+	enc := NewEncoder()
+	got, err := enc.Encode("room-1", "hello", make([]byte, 31), 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be 32 bytes")
+	assert.Nil(t, got)
+}
