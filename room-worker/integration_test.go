@@ -255,7 +255,7 @@ func TestMongoStore_GetOrgMembersWithIndividualStatus_Integration(t *testing.T) 
 
 	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
 		ID: "rm1", RoomID: "r1", Ts: time.Now().UTC(),
-		Member: model.RoomMemberEntry{ID: "alice", Type: model.RoomMemberIndividual, Account: "alice"},
+		Member: model.RoomMemberEntry{ID: "u1", Type: model.RoomMemberIndividual, Account: "alice"},
 	})
 	require.NoError(t, err)
 

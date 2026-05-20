@@ -115,9 +115,9 @@ up:
 	  echo "Missing $(NATS_CREDS) or $(NATS_CONF). Run './docker-local/setup.sh'."; exit 1; \
 	}
 ifdef SERVICE
-	docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
+	COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=1 docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
 else
-	docker compose -f $(SERVICES_COMPOSE) up --build
+	COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=1 docker compose -f $(SERVICES_COMPOSE) up --build
 endif
 
 # Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
@@ -168,7 +168,7 @@ sast-gosec:
 # Requires outbound network access to https://vuln.go.dev.
 sast-vuln:
 	@test -x "$(GOVULNCHECK)" || { echo "govulncheck not installed — run 'make tools'"; exit 1; }
-	$(GOVULNCHECK) ./...
+	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) $(GOVULNCHECK) ./...
 
 # semgrep: rule-based SAST (Go security + security-audit rulesets).
 # Requires outbound network access to the Semgrep registry on first run.

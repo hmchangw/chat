@@ -20,10 +20,9 @@ const (
 	Cassandra = "cassandra:4.1.3"
 
 	// Mongo is the image for every Mongo-backed integration test.
-	// Pinned to 4.4.15 to match production; catches operator-allow-list
-	// regressions like $in in partialFilterExpression that newer Mongo
-	// silently accepts.
-	Mongo = "mongo:4.4.15"
+	// Tracks the deploy stack (docker-local/compose.deps.yaml) so tests
+	// exercise the same major version we ship.
+	Mongo = "mongo:8"
 
 	// NATS is the image for every NATS-backed integration test
 	// (core NATS + JetStream + WebSocket).
@@ -37,8 +36,8 @@ const (
 	Elasticsearch = "elasticsearch:8.17.0"
 
 	// Valkey is the Redis-compatible cache used by room-service and
-	// pkg/roomkeystore.
-	Valkey = "valkey/valkey:8"
+	// pkg/roomkeystore. Tracks docker-local/compose.deps.yaml.
+	Valkey = "valkey/valkey:8-alpine"
 
 	// MinIO is the image for every MinIO-backed integration test.
 	MinIO = "minio/minio:RELEASE.2025-01-20T14-49-07Z"
