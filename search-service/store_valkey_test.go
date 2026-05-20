@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
@@ -58,7 +60,7 @@ func (s *stubValkey) Close() error { return nil }
 
 func TestValkeyCache_SetThenGet(t *testing.T) {
 	ctx := context.Background()
-	c := newValkeyCache(newStubValkey())
+	c := newValkeyCache(newStubValkey(), nil)
 
 	require.NoError(t, c.SetRestricted(ctx, "alice", map[string]int64{"r1": 100}, time.Minute))
 	got, hit, err := c.GetRestricted(ctx, "alice")
@@ -68,7 +70,7 @@ func TestValkeyCache_SetThenGet(t *testing.T) {
 }
 
 func TestValkeyCache_GetMiss(t *testing.T) {
-	c := newValkeyCache(newStubValkey())
+	c := newValkeyCache(newStubValkey(), nil)
 	got, hit, err := c.GetRestricted(context.Background(), "nobody")
 	require.NoError(t, err)
 	assert.False(t, hit)
@@ -78,7 +80,7 @@ func TestValkeyCache_GetMiss(t *testing.T) {
 func TestValkeyCache_GetTransportError(t *testing.T) {
 	stub := newStubValkey()
 	stub.getErr = errors.New("conn refused")
-	c := newValkeyCache(stub)
+	c := newValkeyCache(stub, nil)
 
 	_, hit, err := c.GetRestricted(context.Background(), "alice")
 	assert.False(t, hit)
@@ -88,7 +90,7 @@ func TestValkeyCache_GetTransportError(t *testing.T) {
 func TestValkeyCache_SetError(t *testing.T) {
 	stub := newStubValkey()
 	stub.setErr = errors.New("disk full")
-	c := newValkeyCache(stub)
+	c := newValkeyCache(stub, nil)
 
 	err := c.SetRestricted(context.Background(), "alice", map[string]int64{}, time.Minute)
 	assert.Error(t, err)
@@ -96,7 +98,7 @@ func TestValkeyCache_SetError(t *testing.T) {
 
 func TestValkeyCache_SetNilMapBecomesEmpty(t *testing.T) {
 	stub := newStubValkey()
-	c := newValkeyCache(stub)
+	c := newValkeyCache(stub, nil)
 
 	require.NoError(t, c.SetRestricted(context.Background(), "alice", nil, time.Minute))
 	// Read back the stored value — should be `{}` (marshalled empty map),
@@ -108,7 +110,7 @@ func TestValkeyCache_SetNilMapBecomesEmpty(t *testing.T) {
 func TestValkeyCache_GetJSONNullYieldsEmptyMap(t *testing.T) {
 	stub := newStubValkey()
 	stub.store[restrictedKey("alice")] = "null"
-	c := newValkeyCache(stub)
+	c := newValkeyCache(stub, nil)
 
 	got, hit, err := c.GetRestricted(context.Background(), "alice")
 	require.NoError(t, err)
@@ -119,4 +121,51 @@ func TestValkeyCache_GetJSONNullYieldsEmptyMap(t *testing.T) {
 
 func TestRestrictedKey_Format(t *testing.T) {
 	assert.Equal(t, "searchservice:restrictedrooms:alice", restrictedKey("alice"))
+}
+
+func TestValkeyCache_GetRestricted_RecordsHitOnReturn(t *testing.T) {
+	ctx := context.Background()
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("restricted_rooms", nil)
+	c := newValkeyCache(newStubValkey(), rec)
+
+	require.NoError(t, c.SetRestricted(ctx, "alice", map[string]int64{"r1": 1}, time.Minute))
+	_, hit, err := c.GetRestricted(ctx, "alice")
+	require.NoError(t, err)
+	require.True(t, hit)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(1), hits)
+	assert.Equal(t, uint64(0), misses)
+}
+
+func TestValkeyCache_GetRestricted_RecordsMissOnCacheMiss(t *testing.T) {
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("restricted_rooms", nil)
+	c := newValkeyCache(newStubValkey(), rec)
+
+	_, hit, err := c.GetRestricted(context.Background(), "nobody")
+	require.NoError(t, err)
+	require.False(t, hit)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(0), hits)
+	assert.Equal(t, uint64(1), misses)
+}
+
+func TestValkeyCache_GetRestricted_TransportErrorRecordsNothing(t *testing.T) {
+	stub := newStubValkey()
+	stub.getErr = errors.New("conn refused")
+
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("restricted_rooms", nil)
+	c := newValkeyCache(stub, rec)
+
+	_, hit, err := c.GetRestricted(context.Background(), "alice")
+	require.Error(t, err)
+	require.False(t, hit)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(0), hits, "transport errors do not count as hits")
+	assert.Equal(t, uint64(0), misses, "transport errors do not count as misses")
 }

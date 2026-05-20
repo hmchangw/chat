@@ -122,7 +122,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 
 	userRoomIndex := testUserRoomIndex
 	store := newESStore(localEngine, userRoomIndex)
-	cache := newValkeyCache(valkeyClient)
+	cache := newValkeyCache(valkeyClient, nil)
 	handler := newHandler(store, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
@@ -948,7 +948,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, err, "build searchengine for subs fixture")
 
 	esStore := newESStore(engine, testUserRoomIndex)
-	cache := newValkeyCache(newSubsValkeyClient(t))
+	cache := newValkeyCache(newSubsValkeyClient(t), nil)
 	h := newHandler(esStore, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,

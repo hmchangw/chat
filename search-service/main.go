@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -71,6 +73,8 @@ type SearchConfig struct {
 	UserRoomIndex           string        `env:"USER_ROOM_INDEX,required"`
 	SpotlightIndex          string        `env:"SPOTLIGHT_INDEX,required"`
 	MetricsAddr             string        `env:"METRICS_ADDR"               envDefault:":9090"`
+	CacheStatsLogEnabled    bool          `env:"CACHE_STATS_LOG_ENABLED"    envDefault:"false"`
+	CacheStatsLogInterval   time.Duration `env:"CACHE_STATS_LOG_INTERVAL"   envDefault:"60s"`
 }
 
 // Config is the root service config. Note that ES and Search share the
@@ -150,8 +154,11 @@ func main() {
 	)
 	usersClient := newHTTPUsersClient(usersRC, cfg.UsersAPI.Token)
 
+	stats := cachestats.New(prometheus.DefaultRegisterer)
+	restrictedRec := stats.Register("restricted_rooms", nil)
+
 	store := newESStore(engine, cfg.Search.UserRoomIndex)
-	cache := newValkeyCache(valkey)
+	cache := newValkeyCache(valkey, restrictedRec)
 	mongoStore := newMongoStore(mongoDB)
 	handler := newHandler(store, mongoStore, usersClient, cache, handlerConfig{
 		DocCounts:               cfg.Search.DocCounts,
@@ -168,6 +175,14 @@ func main() {
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
 	handler.Register(router)
+
+	var stopCacheLogger func()
+	if cfg.Search.CacheStatsLogEnabled {
+		stopCacheLogger = stats.StartLogger(ctx, cfg.Search.CacheStatsLogInterval, slog.Default())
+		slog.Info("cache stats logger enabled", "interval", cfg.Search.CacheStatsLogInterval)
+	} else {
+		stopCacheLogger = func() {}
+	}
 
 	// /metrics-only listener. All four timeouts guard against hung
 	// scrapers tying up a goroutine indefinitely on an operator-exposed
@@ -206,6 +221,7 @@ func main() {
 	)
 
 	shutdown.Wait(ctx, 25*time.Second,
+		func(_ context.Context) error { stopCacheLogger(); return nil },
 		// Wait for in-flight handlers BEFORE nc.Drain so they can't touch torn-down deps.
 		func(ctx context.Context) error { return router.Shutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
