@@ -5,6 +5,73 @@ All notable changes to loadgen are documented here. Format follows
 
 ---
 
+## Post-v2 merge with origin/main (broadcast encryption + compose refactor)
+
+A large merge from `origin/main` introduced cross-cutting changes loadgen had
+to adapt to. None changes loadgen's flag surface, but every operator-facing
+script and compose file is affected.
+
+### Broadcast-worker encryption is now the default
+
+`broadcast-worker` ships with `ENCRYPTION_ENABLED=true` by default. Loadgen
+must provision per-room keypairs into Valkey so the worker can decrypt the
+canonical events it fans out — otherwise every event errors and broadcasts
+appear silently missing in the verdict.
+
+- `seed` and `teardown` connect to Valkey via `connectKeyStore` and persist
+  per-room keypairs through `pkg/roomkeystore`.
+- `VALKEY_ADDR` is read from the environment. It is NOT marked `,required`
+  so chaos / discoverability subcommands (which do not touch the keystore)
+  still parse the config; the seed and teardown handlers emit an actionable
+  "set VALKEY_ADDR" error and exit 2 if the address is missing.
+- New exported helpers in `pkg/`-facing surface: `Fixtures.RoomKeys`,
+  `SeedRoomKeys`, `TeardownRoomKeys` (see `seed.go`).
+- The Makefile `run` target now depends on `seed` so a fresh stack never
+  hits the "no Valkey keys present → every event errors" failure mode on
+  the default `messaging-pipeline` scenario.
+
+### Compose layout refactor: `docker-compose.loadtest.yml` is gone
+
+The single self-contained `docker-compose.loadtest.yml` was deleted in
+favour of a thin overlay (`tools/loadgen/deploy/docker-compose.yml`) that
+rides ON TOP of the shared `docker-local` stack:
+
+- `make -C ../../.. deps-up` brings up third-party deps
+  (NATS / Mongo / Cassandra / Valkey / Elasticsearch / Keycloak).
+- `docker-local/compose.services.yaml` brings up the microservices.
+- `tools/loadgen/deploy/docker-compose.yml` adds the load-test-specific
+  containers (loadgen, prometheus, grafana) on the external `chat-local`
+  network exposed by docker-local.
+
+The Makefile `up` target orchestrates all three. Every script under
+`tools/loadgen/scripts/` was updated to point at the new compose file
+(or to delegate to `make up` / `make down`). The chaos / federation /
+auth overlay scripts now compose with `-f docker-compose.yml
+-f docker-compose.{chaos,federation,auth}.yml`. The chaos / federation
+/ auth overlay files were re-homed onto the shared `chat-local` network
+(previously declared a dangling `loadtest` network that never existed).
+
+### Search-sync scenario field rename
+
+The search-sync-lag scenario's field/flag surface was renamed during merge
+resolution. See `scenario_searchsync.go` for the current names; operator
+scripts and presets reference the new names directly.
+
+### Misc
+
+- `MONGO_DB` default in the loadgen container's compose env is now
+  `loadgen` (the prefix `guardMongoDB` requires), not `chat` (which the
+  guard refuses for `seed` and `teardown` and which would silently write
+  into the production DB for `run`).
+- `prometheus.yml` no longer scrapes `cadvisor:8080` — no cadvisor service
+  exists in the post-refactor overlay; the previous scrape produced noise
+  but no signal. A commented-out block carries the TODO for re-adding it.
+- `newE2Handler` filters incoming events by `X-Loadgen-Run-ID` so
+  concurrent runs against the same NATS no longer credit each other's
+  broadcasts. Test coverage added for the runID-filter branch.
+
+---
+
 ## Flag changes (v1 → v2)
 
 | Old (v1) | New (v2) | Behavior change |
@@ -69,7 +136,7 @@ sum(rate(loadgen_publish_errors_total{phase="measured"}[1m])) by (preset, reason
 
 - Existing counters now carry a `phase={warmup,measured}` label. Dashboards must sum across `phase=` to preserve pre-v2 semantics (see "Dashboard-breaking changes" above).
 - Summary block layout adds a RUN QUALITY header, omission lines, and a queued/acked breakdown.
-- Docker Compose top-level `name:` directive removed from `docker-compose.loadtest.yml` (v1 doesn't support it). Project naming now comes from `COMPOSE_PROJECT_NAME=loadgen` exported by `scripts/lib/compose.sh`.
+- Docker Compose top-level `name:` directive: project naming comes from `COMPOSE_PROJECT_NAME=loadgen` exported by `scripts/lib/compose.sh` for v1 callers; the post-merge `docker-compose.yml` overlay does declare `name: loadgen` for v2 callers. (Originally introduced when the `name:` directive was removed from the now-deleted `docker-compose.loadtest.yml` for v1 compatibility — see "Post-v2 merge with origin/main" section above for the compose refactor that obsoleted that file.)
 - `Collector.RecordRequest` signature: added `phase` parameter, removed `publishedAt time.Time` parameter (phase label supersedes timestamp-based filtering).
 - `executeRun` return type: `int` → `(int, Summary)` so artifact bundle writer can persist the full summary.
 
