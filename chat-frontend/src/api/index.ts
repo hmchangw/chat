@@ -72,4 +72,7 @@ export type {
   ChannelRef,
   HistoryConfig,
   HistoryMode,
+  RoomKeyEvent,
+  RoomKeysEntry,
+  RoomKeysResponse,
 } from './types'
