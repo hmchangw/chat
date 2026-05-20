@@ -300,3 +300,39 @@ func TestEncoder_Encode_InvalidKeyLength(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be 32 bytes")
 	assert.Nil(t, got)
 }
+
+func TestEncoder_Encode_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "non-empty", content: "hello, world"},
+		{name: "empty", content: ""},
+		{name: "unicode", content: "héllo 🌎"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			priv := bytes.Repeat([]byte{0x55}, 32)
+			enc := NewEncoder()
+			msg, err := enc.Encode("room-1", tc.content, priv, 3)
+			require.NoError(t, err)
+			require.NotNil(t, msg)
+
+			// Re-derive the AES key with the same HKDF parameters and decrypt.
+			aesKey := make([]byte, 32)
+			r := hkdf.New(sha256.New, priv, nil, []byte("room-message-encryption-v2"))
+			_, err = io.ReadFull(r, aesKey)
+			require.NoError(t, err)
+
+			block, err := aes.NewCipher(aesKey)
+			require.NoError(t, err)
+			gcm, err := cipher.NewGCM(block)
+			require.NoError(t, err)
+
+			plaintext, err := gcm.Open(nil, msg.Nonce, msg.Ciphertext, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.content, string(plaintext))
+		})
+	}
+}
