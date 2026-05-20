@@ -56,6 +56,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -165,15 +166,23 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 	// package-level "ACL precondition" doc block. If the bootstrap publish
 	// fails we surface the error rather than running blind — the scenario
 	// would otherwise produce zero observations.
-	if err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs); err != nil {
+	pairCount, err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
+	if err != nil {
 		return fmt.Errorf("bootstrap search-sync ACL: %w", err)
 	}
+	slog.Info("search-sync-lag ACL bootstrap complete",
+		"pairs", pairCount,
+		"acl_wait", aclWait.String())
 	// Wait for search-sync-worker to consume the events, bulk-index, and the
 	// ES refresh to expose them. Cancellation during the wait is a clean exit.
+	// Use NewTimer + Stop so a mid-wait cancel doesn't leak the timer for up
+	// to aclWait (default 35s).
+	aclTimer := time.NewTimer(aclWait)
 	select {
 	case <-ctx.Done():
+		aclTimer.Stop()
 		return nil
-	case <-time.After(aclWait):
+	case <-aclTimer.C:
 	}
 
 	maxInFlight := g.deps.MaxInFlight()
@@ -252,17 +261,27 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 // "normal" join path. RoomName/RoomType come from the subscription; missing
 // values fall back to safe defaults (the user-room collection doesn't index
 // roomName/roomType, only `rooms[]` membership).
+// bootstrapSearchSyncACL publishes one synthetic OutboxMemberAdded event per
+// unique (account, roomID) tuple. Returns the number of unique pairs published
+// so the caller can log positive confirmation. Honors ctx cancellation between
+// publishes so a shutdown during a large-fixture bootstrap doesn't sit
+// publishing into a dying connection.
 func bootstrapSearchSyncACL(
 	ctx context.Context,
 	publisher Publisher,
 	siteID string,
 	subs []model.Subscription,
-) error {
+) (int, error) {
 	type pair struct{ account, room string }
 	seen := make(map[pair]struct{}, len(subs))
 	subj := subject.InboxMemberAdded(siteID)
 	now := time.Now().UTC().UnixMilli()
 	for i := range subs {
+		// Bail out promptly on shutdown so a 10k-fixture bootstrap doesn't
+		// keep firing publishes after ctx cancellation.
+		if err := ctx.Err(); err != nil {
+			return len(seen), fmt.Errorf("bootstrap cancelled: %w", err)
+		}
 		s := subs[i]
 		key := pair{account: s.User.Account, room: s.RoomID}
 		if _, ok := seen[key]; ok {
@@ -279,7 +298,7 @@ func bootstrapSearchSyncACL(
 		}
 		innerData, err := json.Marshal(inner)
 		if err != nil {
-			return fmt.Errorf("marshal InboxMemberEvent for %s/%s: %w", s.User.Account, s.RoomID, err)
+			return len(seen), fmt.Errorf("marshal InboxMemberEvent for %s/%s: %w", s.User.Account, s.RoomID, err)
 		}
 		evt := model.OutboxEvent{
 			Type:      model.OutboxMemberAdded,
@@ -289,13 +308,13 @@ func bootstrapSearchSyncACL(
 		}
 		data, err := json.Marshal(evt)
 		if err != nil {
-			return fmt.Errorf("marshal OutboxEvent for %s/%s: %w", s.User.Account, s.RoomID, err)
+			return len(seen), fmt.Errorf("marshal OutboxEvent for %s/%s: %w", s.User.Account, s.RoomID, err)
 		}
 		if err := publisher.Publish(ctx, subj, data); err != nil {
-			return fmt.Errorf("publish ACL member_added for %s/%s: %w", s.User.Account, s.RoomID, err)
+			return len(seen), fmt.Errorf("publish ACL member_added for %s/%s: %w", s.User.Account, s.RoomID, err)
 		}
 	}
-	return nil
+	return len(seen), nil
 }
 
 // publishCanonicalForSearchSync publishes a MessageEvent on the

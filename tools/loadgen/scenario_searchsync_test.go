@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -250,8 +251,9 @@ func TestBootstrapSearchSyncACL_OneEventPerUniquePair(t *testing.T) {
 		{RoomID: "room-2", User: model.SubscriptionUser{Account: "alice"}, RoomType: model.RoomTypeChannel},
 		{RoomID: "room-1", User: model.SubscriptionUser{Account: "bob"}, RoomType: model.RoomTypeChannel},
 	}
-	err := bootstrapSearchSyncACL(context.Background(), pub, "site-local", subs)
+	pairs, err := bootstrapSearchSyncACL(context.Background(), pub, "site-local", subs)
 	require.NoError(t, err)
+	assert.Equal(t, 3, pairs, "return value must reflect the number of unique (account, room) pairs actually published")
 
 	calls := pub.snapshot()
 	assert.Len(t, calls, 3, "duplicate (account, room) pair must collapse to a single ACL publish")
@@ -279,7 +281,7 @@ func TestBootstrapSearchSyncACL_PropagatesPublishError(t *testing.T) {
 	subs := []model.Subscription{
 		{RoomID: "room-1", User: model.SubscriptionUser{Account: "alice"}, RoomType: model.RoomTypeChannel},
 	}
-	err := bootstrapSearchSyncACL(context.Background(), pub, "site-local", subs)
+	_, err := bootstrapSearchSyncACL(context.Background(), pub, "site-local", subs)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nats down")
 }
@@ -287,6 +289,30 @@ func TestBootstrapSearchSyncACL_PropagatesPublishError(t *testing.T) {
 type erroringPublisher struct{ err error }
 
 func (e *erroringPublisher) Publish(_ context.Context, _ string, _ []byte) error { return e.err }
+
+func TestBootstrapSearchSyncACL_HonorsCtxCancellation(t *testing.T) {
+	// With a large fixture set and slow NATS, the bootstrap could spend
+	// minutes publishing. A mid-bootstrap cancel must bail promptly rather
+	// than continue iterating over the remaining subs.
+	pub := &recordingPublisher{}
+	subs := make([]model.Subscription, 5000)
+	for i := range subs {
+		subs[i] = model.Subscription{
+			RoomID:   fmt.Sprintf("room-%d", i),
+			User:     model.SubscriptionUser{Account: fmt.Sprintf("user-%d", i)},
+			RoomType: model.RoomTypeChannel,
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel; the loop must observe this on the very first iteration
+
+	_, err := bootstrapSearchSyncACL(ctx, pub, "site-local", subs)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled,
+		"a pre-cancelled context must surface as context.Canceled, not be silently absorbed")
+	assert.Less(t, len(pub.snapshot()), 100,
+		"cancel must short-circuit the loop; publishing all 5000 entries means the ctx check is missing")
+}
 
 // ---------------------------------------------- Run integration
 
