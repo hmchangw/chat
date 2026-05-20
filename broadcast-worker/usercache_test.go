@@ -335,11 +335,17 @@ func TestCachedUserStore_RecorderCountsAllMiss_StaleEntries(t *testing.T) {
 
 	stats := cachestats.New(prometheus.NewRegistry())
 	rec := stats.Register("user", nil)
-	c := NewCachedUserStore(inner, 10, time.Millisecond, rec)
+	c := NewCachedUserStore(inner, 10, time.Minute, rec)
+
+	// Freeze "now" at a known value so the test never relies on wall-clock timing.
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return base }
 
 	_, err := c.FindUsersByAccounts(context.Background(), []string{"bob"})
 	require.NoError(t, err)
-	time.Sleep(5 * time.Millisecond) // expire bob
+
+	// Advance past the TTL to make bob's entry stale.
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
 
 	_, err = c.FindUsersByAccounts(context.Background(), []string{"bob"})
 	require.NoError(t, err)

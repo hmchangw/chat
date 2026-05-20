@@ -127,9 +127,10 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 	return append(hits, fresh...), nil
 }
 
-// Len returns the number of entries currently in the cache. It acquires
-// the cache mutex, but contention is irrelevant because this is called
-// only at Prometheus scrape time.
+// Len lets the owning service register a chat_cache_size gauge in
+// main.go via cachestats. See cachestats.Stats.Register. Takes the
+// same mutex as the hot path; called only on Prometheus scrape, so
+// contention is irrelevant.
 func (c *CachedUserStore) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
