@@ -2,10 +2,7 @@
 
 package main
 
-// search.rooms integration tests. Uses the process-shared ES, NATS, and
-// Valkey from setup_shared_test.go; per-test isolation comes from a
-// unique spotlight index name (deleted on cleanup) plus a Valkey
-// FLUSHDB on cleanup.
+// Integration tests for search.rooms (real ES + shared NATS + Valkey).
 
 import (
 	"bytes"
@@ -27,21 +24,14 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// roomsFixture wires a real ES container (for the spotlight index) and
-// NATS. search.rooms is served directly from the spotlight index, so no
-// Mongo is involved. The ES container is process-shared; per-test
-// isolation comes from a unique spotlight index name (deleted on
-// cleanup) plus a Valkey FLUSHDB on cleanup.
+// roomsFixture uses a per-test spotlight index against the shared ES so
+// sibling tests can't leak hits into each other.
 type roomsFixture struct {
 	clientNATS     *nats.Conn
 	esURL          string
 	spotlightIndex string
 }
 
-// setupRoomsFixture wires the search-service router against the
-// process-shared ES, Valkey and NATS containers. The spotlight index
-// name is unique per test so leftovers from a sibling test can't leak
-// into this one's hit set.
 func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -125,7 +115,6 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 	const account = "alice"
 	now := time.Now().UTC()
 
-	// Seed spotlight docs for two rooms alice is in.
 	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r1", map[string]any{
 		"roomId":      "r1",
 		"roomName":    "engineering-announcements",

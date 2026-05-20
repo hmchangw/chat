@@ -2,27 +2,12 @@
 
 package main
 
-// This file owns the process-shared test infrastructure used by every
-// per-endpoint integration_*_test.go file. Each container is started
-// exactly once via sync.Once and lives for the entire `go test` run;
-// Ryuk (from testcontainers-go) reaps it after the process exits.
-//
-// Sharing is safe because tests within this package run sequentially and
-// each fixture isolates state per-test:
-//
-//   - Elasticsearch: unique index name per test (uniqueESIndex), DELETEd
-//     on cleanup.
-//   - Valkey:        flushValkey wipes the keyspace on cleanup.
-//   - NATS:          each test creates its own *nats.Conn pair and
-//     router.Shutdown / nc.Close remove subscriptions before the next
-//     test starts. Each fixture also uses a distinct queue group name.
-//
-// CCS tests are the one exception — they need two networked ES nodes and
-// stand up their own pair inside setupCCSFixture. They still piggyback on
-// the shared Valkey and NATS, since those don't care about the topology.
-//
-// This file also owns the test-wide constants and helpers that all
-// integration files share: testUserRoomIndex, testHTTPClient, and seedDoc.
+// Process-shared ES, Valkey, and NATS containers used by every
+// integration_*_test.go file. Each starts once via sync.Once and is
+// reaped by Ryuk at process exit. Tests run sequentially and isolate
+// per-test via uniqueESIndex (DELETE on cleanup), Valkey FLUSHDB on
+// cleanup, and a fresh *nats.Conn pair per test. CCS tests bring their
+// own ES pair.
 
 import (
 	"bytes"
@@ -48,10 +33,7 @@ import (
 
 const testUserRoomIndex = "user-room"
 
-// testHTTPClient is a bounded HTTP client for ES control-plane calls —
-// stalled containers shouldn't be able to hang the integration job past
-// the per-call deadline. Kept small on purpose: these calls hit localhost
-// (docker-mapped port) and are cheap when they succeed.
+// testHTTPClient bounds ES control-plane calls so a stalled container can't hang the job.
 var testHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // seedDoc PUTs a JSON document into ES, synchronously refreshing the index
@@ -86,9 +68,7 @@ var (
 	sharedNATSErr  error
 )
 
-// sharedSingleNodeES returns the URL of a process-shared single-node ES
-// container. CCS tests do NOT use this — they need a pair of networked
-// clusters and stand up their own.
+// sharedSingleNodeES returns the URL of the process-shared single-node ES.
 func sharedSingleNodeES(t *testing.T) string {
 	t.Helper()
 	sharedESOnce.Do(func() {

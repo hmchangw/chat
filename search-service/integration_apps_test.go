@@ -2,9 +2,7 @@
 
 package main
 
-// search.apps integration tests. Uses the process-shared Mongo
-// (testutil.MongoDB) and NATS (sharedNATS in setup_shared_test.go); ES
-// and Valkey are stubbed because the apps path doesn't touch them.
+// Integration tests for search.apps (Mongo + NATS; ES/Valkey stubbed).
 
 import (
 	"context"
@@ -25,10 +23,6 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// setupAppsFixture starts an isolated Mongo container (via pkg/testutil) and
-// a single search-service router bound to that DB. ES/Valkey are not used by
-// search.apps, so we wire fakes (the existing `fakeStore` / `fakeCache`
-// satisfy the interfaces but never get called on the apps path).
 type appsFixture struct {
 	clientNATS *nats.Conn
 	mongoDB    *mongo.Database
@@ -49,7 +43,6 @@ func setupAppsFixture(t *testing.T) *appsFixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { clientNATS.Close() })
 
-	// Wire the handler with a real mongoStore and stub ES/cache.
 	mongoStore := newMongoStore(mongoDB)
 	store := &fakeStore{}
 	cache := newFakeCache()
@@ -65,12 +58,9 @@ func setupAppsFixture(t *testing.T) *appsFixture {
 	router := natsrouter.New(serverNATS, "search-service-test")
 	router.Use(natsrouter.RequestID())
 	h.Register(router)
-	// Flush ensures subscriptions are registered on the server before the
-	// fixture returns. Without this, fast tests that fire a request
-	// immediately can hit "no responders available" while subscriptions
-	// are still propagating. natsutil.Connect returns an otelnats.Conn
-	// wrapper that doesn't expose Flush; reach through to the underlying
-	// *nats.Conn.
+	// Flush before returning so a fast test doesn't hit "no responders"
+	// while subscriptions propagate. otelnats wraps the conn — reach
+	// through to *nats.Conn.
 	require.NoError(t, serverNATS.NatsConn().Flush())
 	t.Cleanup(func() {
 		_ = router.Shutdown(context.Background())
@@ -83,9 +73,8 @@ func TestIntegration_SearchApps_PrototypePipeline(t *testing.T) {
 	f := setupAppsFixture(t)
 	ctx := context.Background()
 
-	// Seed 3 apps in Mongo. The prototype pipeline matches by `name` regex
-	// (case-insensitive) and applies $limit; the full $lookup access-guard
-	// pipeline is implemented in a follow-up.
+	// Prototype pipeline matches by `name` regex + $limit; $lookup
+	// access-guard is a follow-up.
 	_, err := f.mongoDB.Collection("apps").InsertMany(ctx, []any{
 		map[string]any{"_id": "a1", "name": "Weather Alpha", "assistant": map[string]any{"enabled": true, "name": "weather.bot"}},
 		map[string]any{"_id": "a2", "name": "Weatherly", "assistant": map[string]any{"enabled": false, "name": "weatherly.bot"}},

@@ -134,6 +134,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	handler.Register(router)
 	// Flush — see setupAppsFixture for the rationale.
 	require.NoError(t, serverNC.NatsConn().Flush())
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 
 	return &ccsFixture{
 		localURL:   localURL,

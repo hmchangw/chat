@@ -2,9 +2,7 @@
 
 package main
 
-// search.users integration tests. The path needs only NATS plus an
-// httptest stub for the third-party HR endpoint — no ES, Mongo, or
-// Valkey.
+// Integration tests for search.users (NATS + httptest stub for HR endpoint).
 
 import (
 	"context"
@@ -25,9 +23,6 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// usersFixture is a minimal fixture for the search.users path: NATS for the
-// request/reply layer, and an httptest.Server standing in for the third-party
-// HR endpoint. No Mongo or ES containers are needed.
 type usersFixture struct {
 	clientNATS *nats.Conn
 	thirdParty *httptest.Server // controls the stub response
@@ -36,7 +31,6 @@ type usersFixture struct {
 func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixture {
 	t.Helper()
 
-	// Start the stub third-party server.
 	stub := httptest.NewServer(thirdPartyHandler)
 	t.Cleanup(stub.Close)
 
@@ -49,7 +43,6 @@ func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixtu
 	require.NoError(t, err, "connect nats (client side)")
 	t.Cleanup(func() { clientNC.Close() })
 
-	// Wire the handler with a real httpUsersClient pointing at the stub.
 	usersRC := restyutil.New(stub.URL, restyutil.WithTimeout(5*time.Second))
 	usersClient := newHTTPUsersClient(usersRC, "")
 
@@ -70,7 +63,6 @@ func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixtu
 }
 
 func TestIntegration_SearchUsers_Happy(t *testing.T) {
-	// Stub returns two users matching the query.
 	stubResp := `[{"account":"alice","engName":"Alice Wang"},{"account":"alice2","engName":"Alice Chen"}]`
 
 	f := setupUsersFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +105,6 @@ func TestIntegration_SearchUsers_EmptyQueryReturnsBadRequest(t *testing.T) {
 }
 
 func TestIntegration_SearchUsers_ThirdPartyErrorReturnsInternal(t *testing.T) {
-	// Stub returns a 503 to simulate a backend outage.
 	f := setupUsersFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))

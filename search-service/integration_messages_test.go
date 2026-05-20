@@ -2,9 +2,7 @@
 
 package main
 
-// search.messages v2 integration tests. Stubs ES with an httptest
-// server because the messages path is pure ES — no Mongo round-trip —
-// and uses the process-shared NATS from setup_shared_test.go.
+// Integration tests for search.messages v2 (ES stubbed via httptest, shared NATS).
 
 import (
 	"context"
@@ -26,9 +24,6 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// messagesV2Fixture stubs ES with a fake HTTP server (httptest). The
-// messages path is pure ES — no Mongo round-trip — so no Mongo fixture
-// is wired.
 type messagesV2Fixture struct {
 	clientNATS *nats.Conn
 }
@@ -37,7 +32,6 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	t.Helper()
 	ctx := context.Background()
 
-	// Stub ES: always return a canned response containing one hit.
 	esStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Drain the body so the HTTP/1.1 connection stays open.
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -53,7 +47,6 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	}))
 	t.Cleanup(esStub.Close)
 
-	// Valkey stub — use the fakeCache wired in-process via handler injection.
 	fakeValkey := newFakeCache()
 	fakeValkey.store["alice"] = map[string]int64{} // empty restricted map, cache hit
 
@@ -67,8 +60,6 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { clientNATS.Close() })
 
-	// Wire search-service with the stub ES engine. No Mongo store needed
-	// for the messages path.
 	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esStub.URL})
 	require.NoError(t, err)
 	esStore := newESStore(engine, testUserRoomIndex)
