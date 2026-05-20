@@ -26,6 +26,8 @@ async function main() {
   const aesKey = Buffer.from(hkdfSync('sha256', privateKey, Buffer.alloc(0), 'room-message-encryption-v2', 32))
   const nonce = Buffer.from(p.message.nonce, 'base64')
   const ciphertext = Buffer.from(p.message.ciphertext, 'base64')
+  if (nonce.length !== 12) throw new Error(`expected 12-byte nonce, got ${nonce.length}`)
+  if (ciphertext.length < 16) throw new Error('ciphertext must include a 16-byte GCM tag')
 
   // Node's createDecipheriv expects ciphertext and auth tag separately.
   const tag = ciphertext.subarray(ciphertext.length - 16)
