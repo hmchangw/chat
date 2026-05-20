@@ -15,7 +15,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -461,35 +460,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	var abortTripped atomic.Bool
 	var abortReason atomic.Value // string
 	var abortWG sync.WaitGroup
-	if rf.Abort.P99Ms > 0 || rf.Abort.ErrorPct > 0 {
-		abortWG.Add(1)
-		go func() {
-			defer abortWG.Done()
-			abortCfg := &abortConfig{
-				Window:       latencyWindow,
-				P99Limit:     time.Duration(rf.Abort.P99Ms) * time.Millisecond,
-				P99Sustain:   rf.Abort.P99Sustain,
-				ErrorPct:     rf.Abort.ErrorPct,
-				ErrorSustain: rf.Abort.ErrorSustain,
-			}
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-runCtx.Done():
-					return
-				case t := <-ticker.C:
-					if tripped, reason := abortShouldFire(abortCfg, t); tripped {
-						slog.Warn("abort fired", "reason", reason)
-						abortTripped.Store(true)
-						abortReason.Store(reason)
-						cancelRun()
-						return
-					}
-				}
-			}
-		}()
-	}
+	startAbortWatcher(runCtx, rf, latencyWindow, cancelRun, &abortTripped, &abortReason, &abortWG)
 
 	// C5 + F1: mid-run liveness watcher. Probes the SUT periodically.
 	// For messaging-pipeline (no RPC target), falls back to a NATS RTT
@@ -500,33 +471,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	var livenessFailed atomic.Bool
 	var livenessReason atomic.Value
 	var livenessWG sync.WaitGroup
-	if rf.Liveness.Interval > 0 && len(fixtures.Subscriptions) > 0 {
-		// Observer-routed requester so the probe uses the global creds
-		// (cfg.NatsCredsFile) regardless of pool fan-out and rotation.
-		observerPool := &ConnPool{observer: pool.Observer()}
-		observerReq := &natsRequester{pool: observerPool, runID: runID}
-		// Build a ScenarioDeps view restricted to the observer connection
-		// so per-user creds rotation can't cause permission-denied false-positives (F3 fix).
-		observerDeps := deps.withRequester(observerReq)
-		liveProbe := buildLivenessProbeFromScenario(sc, observerDeps, pool.Observer())
-		livenessWG.Add(1)
-		go func() {
-			defer livenessWG.Done()
-			runLiveness(runCtx, &livenessConfig{
-				Probe:            liveProbe,
-				Interval:         rf.Liveness.Interval,
-				ConsecutiveFails: rf.Liveness.Failures,
-				Timeout:          rf.Liveness.Timeout,
-				Counter: func(result string) {
-					metrics.LivenessProbes.WithLabelValues(p.Name, result).Inc()
-				},
-			}, &livenessFailed, func(reason string) {
-				slog.Warn("liveness watcher fired", "reason", reason)
-				livenessReason.Store(reason)
-				cancelRun()
-			})
-		}()
-	}
+	startLivenessWatcher(runCtx, rf, sc, deps, pool, metrics, p, runID, &livenessFailed, &livenessReason, &livenessWG, cancelRun)
 
 	genErr := gen.Run(runCtx)
 	progressWG.Wait()
@@ -586,141 +531,23 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 		slog.Error("generator error", "error", genErr)
 	}
 
-	mfs, gerr := metrics.Registry.Gather()
-	if gerr != nil {
-		slog.Warn("metrics gather", "error", gerr)
-		mfs = nil
-	}
-	// Headline summary filters to phase="measured" so warmup errors don't
-	// inflate the reported publish-error count shown to the operator.
-	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "phase", "measured")
-	gkErrs := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "gatekeeper")
-	asyncAckErrs := gatheredCounterLabelPair(mfs, "loadgen_publish_errors_total", "phase", "measured", "reason", "async_ack")
-	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
-	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
-	sent := sentWarmup + sentMeasured
-	// sentQueued is the total number of messages queued for publish (async or
-	// sync). For the async path, sentQueued > sentAcked when async_ack errors
-	// occurred (acks never received before drain timeout or during the run).
-	sentQueued := int64(sent)
-	sentAcked := sentQueued - int64(asyncAckErrs)
-	// Bug 2: per-scenario measured-window math.
-	//   - messaging-pipeline: warmup is carved out of the run window, so
-	//     measured = duration - warmup.
-	//   - read scenarios with auto-warmup: warmup ran BEFORE runCtx, then
-	//     warmupDeadline was reset (line ~496) and the read scenario used
-	//     the full rf.Duration. Use time.Since(warmupDeadline) clamped to
-	//     [0, rf.Duration] so an early-abort run still reports the fraction
-	//     of the window that actually elapsed.
-	//   - read scenarios without auto-warmup: warmupDeadline is still in
-	//     the future relative to runStart, so the same Since(warmupDeadline)
-	//     formula collapses to the post-warmup measured window.
-	measured := time.Since(warmupDeadline)
-	if measured > rf.Duration {
-		measured = rf.Duration
-	}
-	requestStats := collector.RequestStats()
-	actualRate := computeActualRate(rf.Scenario, injectMode, measured,
-		collector.E1Count(), missingReplies, sentMeasured, requestStats)
-
-	// Compute MeasuredP99 from E1 samples (messaging-pipeline) or from
-	// request stats (read scenarios). Use the E1 p99 as the primary source;
-	// fall back to the first read-scenario p99 when E1 is empty.
-	measuredP99 := ComputePercentiles(collector.E1Samples()).P99
-	if measuredP99 == 0 && len(requestStats) > 0 {
-		measuredP99 = requestStats[0].Latency.P99
-	}
-
-	// WarmupErrorRate: publish errors during the warmup phase / warmup sends.
-	// Now that loadgen_publish_errors_total has a "phase" label, this is exact.
-	warmupPublishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "phase", "warmup")
-	var warmupErrorRate float64
-	if sentWarmup > 0 {
-		warmupErrorRate = warmupPublishErrs / float64(sentWarmup)
-		if warmupErrorRate > 1.0 {
-			warmupErrorRate = 1.0
-		}
-	}
-
-	// LivenessFailures: gather from the liveness probe counter.
-	livenessFailCount := int(gatheredCounterValue(mfs, "loadgen_liveness_probes_total", "result", "fail"))
-
-	rqi := &RunQualityInputs{
-		DrainTimedOut:          drainTimedOut,
-		MeasuredDuration:       measured,
-		AbortP99Sustain:        rf.Abort.P99Sustain,
-		WarmupErrorRate:        warmupErrorRate,
-		SettleOutcome:          settleOutcome,
-		OmissionP99Serviced:    rt.Omission().Quantile(0.99, false),
-		MeasuredP99:            measuredP99,
-		LivenessFailures:       livenessFailCount,
-		LivenessWatcherTripped: livenessFailed.Load(),
-		// TODO Phase 1b: wire AbortWatcherDeafened from abort-watcher
-		// saturation signal when that tracking is added.
-		AbortWatcherDeafened: false,
-		// TODO Phase 1b: wire PeakRPSTimesSustain from
-		// resolveAbortPeakRPS × abortMaxSustain.
-		PeakRPSTimesSustain: 0,
-		// TODO Phase 1b: wire AbortWindowCap from resolvedAbortCap.
-		AbortWindowCap: 0,
-		// TODO Phase 3.1: wire RAWPollIntervalCoarse from RAW scenario config.
-		RAWPollIntervalCoarse: false,
-	}
-	verdict := EvaluateRunQuality(rqi)
-
-	// Set the loadgen_run_quality gauge: exactly one label value is 1.
-	for _, v := range []string{"TRUSTED", "DEGRADED", "UNTRUSTED"} {
-		val := 0.0
-		if v == verdict.Verdict {
-			val = 1.0
-		}
-		metrics.RunQuality.With(prometheus.Labels{"verdict": v}).Set(val)
-	}
-
-	// Task 3.12 Fix 2: populate SentByRoomType from the per-room-type counter
-	// when DMRatio>0. gatheredCounterLabelPair filters on both (preset, room_type)
-	// so runs with different preset names on the same registry don't bleed into
-	// each other. When DMRatio==0 the counter is never incremented; the map is
-	// omitted (nil) so PrintSummary skips the breakdown line.
-	var sentByRoomType map[string]int64
-	if p.DMRatio > 0 {
-		chCount := int64(gatheredCounterLabelPair(mfs,
-			"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "channel"))
-		dmCount := int64(gatheredCounterLabelPair(mfs,
-			"loadgen_published_by_room_type_total", "preset", p.Name, "room_type", "dm"))
-		sentByRoomType = map[string]int64{"channel": chCount, "dm": dmCount}
-	}
-
-	summary := Summary{
-		RunID:               runID,
-		Preset:              p.Name,
-		Seed:                rf.Seed,
-		Site:                cfg.SiteID,
-		TargetRate:          rf.Rate,
-		ActualRate:          actualRate,
-		Duration:            rf.Duration,
-		Warmup:              rf.Warmup,
-		Inject:              rf.Inject,
-		Sent:                sent,
-		SentMeasured:        sentMeasured,
-		SentQueued:          sentQueued,
-		SentAcked:           sentAcked,
-		DrainTimedOut:       drainTimedOut,
-		PublishErrors:       int(publishErrs - gkErrs),
-		GatekeeperErrors:    int(gkErrs),
-		MissingReplies:      missingReplies,
-		MissingBroadcasts:   missingBroadcasts,
-		E1:                  ComputePercentiles(collector.E1Samples()),
-		E2:                  ComputePercentiles(collector.E2Samples()),
-		E1Count:             collector.E1Count(),
-		E2Count:             collector.E2Count(),
-		Consumers:           consumerSnapshots(samplers),
-		Requests:            requestStats,
-		OmissionServicedP99: rt.Omission().Quantile(0.99, false),
-		OmissionDroppedP99:  rt.Omission().Quantile(0.99, true),
-		RunQualityVerdict:   verdict,
-		SentByRoomType:      sentByRoomType,
-	}
+	summary := buildSummary(&summaryInputs{
+		rt:                rt,
+		rf:                rf,
+		p:                 p,
+		siteID:            cfg.SiteID,
+		runID:             runID,
+		injectMode:        injectMode,
+		warmupDeadline:    warmupDeadline,
+		drainTimedOut:     drainTimedOut,
+		settleOutcome:     settleOutcome,
+		livenessFailed:    livenessFailed.Load(),
+		missingReplies:    missingReplies,
+		missingBroadcasts: missingBroadcasts,
+		collector:         collector,
+		samplers:          samplers,
+		metrics:           metrics,
+	})
 	if err := PrintSummary(os.Stdout, &summary); err != nil {
 		slog.Warn("print summary", "error", err)
 	}
@@ -747,7 +574,7 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	// Exit code 4: UNTRUSTED verdict only when the base code would be 0
 	// (clean pass). Higher-priority codes (1=clean-fail, 2=saturation,
 	// 3=liveness) already indicate a problem and take precedence.
-	if baseCode == 0 && verdict.Verdict == "UNTRUSTED" {
+	if baseCode == 0 && summary.RunQualityVerdict.Verdict == "UNTRUSTED" {
 		return 4, summary
 	}
 	return baseCode, summary
