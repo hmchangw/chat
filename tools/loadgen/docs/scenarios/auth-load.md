@@ -1,5 +1,25 @@
 # auth-load scenario endpoints
 
+## Status
+
+**SKELETON — Phase 3.8 follow-up.** Both code paths are placeholders today:
+
+- **Normal mode** (`scenario_auth.go:122-148`): the tick loop has no inner
+  work. The `doAuthLogin` / `doAuthValidate` / `doAuthRefresh` helpers are
+  defined and tested but not yet called from `Run`.
+- **`auth-reconnect-storm` preset** (`scenario_auth.go:157-160`): the
+  `runReconnectStorm` function is a `return nil` placeholder. Real wire-up
+  needs a dedicated `ConnPool` of M connections, a drop-and-rehandshake
+  cycle, and observation into `loadgen_auth_reconnect_seconds` +
+  `loadgen_auth_reconnects_completed_total`.
+
+Runs against `--scenario=auth-load` therefore produce no measurements — if
+the dashboard is silent, that is the current implementation status, not a
+SUT problem. The endpoint audit below documents what the scenario WILL
+exercise once the follow-up lands.
+
+## Endpoint audit
+
 Audit result for auth-service (commit dbde60b15bc6035d562422d9f9335474475e8ee7, run 2026-05-18):
 
 | Method | Path      | Body                                                              | Purpose                    |

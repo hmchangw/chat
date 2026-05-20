@@ -260,7 +260,7 @@ What do you want to measure?
 │     → large-room-broadcast
 │
 ├─ Notification delivery to offline users
-│     → notification-fanout
+│     → notification-fanout  (SKELETON — see scenario_notif.go)
 │
 ├─ Message edit/delete throughput
 │     → message-mutate
@@ -269,10 +269,10 @@ What do you want to measure?
 │     → subscription-churn
 │
 ├─ First-DM room provisioning
-│     → first-dm
+│     → first-dm  (SKELETON — see scenario_firstdm.go)
 │
 ├─ Auth reconnect storms
-│     → auth-load
+│     → auth-load  (SKELETON — see scenario_auth.go)
 │
 ├─ Cross-site federation INBOX drain
 │     → federation-lag
@@ -357,6 +357,8 @@ Presets: `announce-room`, `firehose-room`, `bot-room`.
 
 ### notification-fanout
 
+**Status: SKELETON — see `scenario_notif.go` header for what's stubbed.** The tick loop has no real publish + subscriber wire-up; runs against this scenario today produce zero observations. See [docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md) for activation steps.
+
 Publishes messages to rooms with offline members and measures notification delivery latency.
 
 Deep dive: [docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md).
@@ -371,9 +373,15 @@ Rapidly creates and deletes subscriptions. Flags: `--churn-rate`.
 
 ### first-dm
 
+**Status: SKELETON — see `scenario_firstdm.go` header for what's stubbed.** `sendFirstDM` returns an empty map; the scenario records no observations. See [docs/scenarios/first-dm.md](docs/scenarios/first-dm.md) for what the eventual real implementation will measure and the fixture shape it needs.
+
 Provisions new DM room pairs end-to-end. Flags: `--first-dm-recycle`.
 
+Deep dive: [docs/scenarios/first-dm.md](docs/scenarios/first-dm.md).
+
 ### auth-load
+
+**Status: SKELETON — see `scenario_auth.go` header for what's stubbed.** The normal-mode tick loop has no inner work; the `auth-reconnect-storm` preset path (`runReconnectStorm`) is a placeholder. Runs against this scenario today produce no measurements. See [docs/scenarios/auth-load.md](docs/scenarios/auth-load.md) for the actual endpoint surface and the follow-up wire-up.
 
 Simulates reconnect storms (bulk connection drops + rejoin). Flags: `--auth-storm-period`.
 
