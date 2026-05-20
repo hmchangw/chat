@@ -415,7 +415,10 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return nil, nil
 	}
-	pipeline := pipelines.GetAddMemberCandidatesPipeline(orgIDs, directAccounts, roomID, "")
+	pipeline, err := pipelines.GetAddMemberCandidatesPipeline(orgIDs, directAccounts, roomID, "")
+	if err != nil {
+		return nil, fmt.Errorf("build add-member candidates pipeline: %w", err)
+	}
 	cursor, err := s.users.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate add-member candidates: %w", err)
@@ -429,7 +432,8 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 }
 
 func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
-	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID},
+		options.Find().SetProjection(bson.M{"u.account": 1, "_id": 0}))
 	if err != nil {
 		return nil, fmt.Errorf("get subscription accounts for room %q: %w", roomID, err)
 	}

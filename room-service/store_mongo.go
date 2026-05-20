@@ -307,7 +307,11 @@ func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts
 	if roomID == "" {
 		pipeline = pipelines.GetNewMembersPipeline(orgIDs, directAccounts, "", excludeAccount)
 	} else {
-		pipeline = pipelines.GetCapacityCheckPipeline(orgIDs, directAccounts, roomID, excludeAccount)
+		p, err := pipelines.GetCapacityCheckPipeline(orgIDs, directAccounts, roomID, excludeAccount)
+		if err != nil {
+			return 0, fmt.Errorf("build capacity-check pipeline: %w", err)
+		}
+		pipeline = p
 	}
 	pipeline = append(pipeline, bson.M{"$count": "n"})
 
@@ -454,7 +458,7 @@ type roomMemberEnrichedDisplay struct {
 	ChineseName string         `bson:"chineseName,omitempty"`
 	IsOwner     bool           `bson:"isOwner,omitempty"`
 	MemberCount int            `bson:"memberCount,omitempty"`
-	OrgRaw      *orgRawDisplay `bson:"_orgRaw,omitempty"`
+	OrgRaw      *orgRawDisplay `bson:"orgRaw,omitempty"`
 }
 
 // orgRawDisplay carries the unresolved org-lookup result (one element of the
@@ -464,11 +468,11 @@ type roomMemberEnrichedDisplay struct {
 // room-worker. A nil pointer means no user matched the org id at all, in
 // which case the loop falls back to the raw member.id.
 type orgRawDisplay struct {
-	IsDept     bool   `bson:"isDept"`
-	DeptName   string `bson:"deptName"`
-	DeptTCName string `bson:"deptTCName"`
-	SectName   string `bson:"sectName"`
-	SectTCName string `bson:"sectTCName"`
+	IsDept     bool   `bson:"isDept,omitempty"`
+	DeptName   string `bson:"deptName,omitempty"`
+	DeptTCName string `bson:"deptTCName,omitempty"`
+	SectName   string `bson:"sectName,omitempty"`
+	SectTCName string `bson:"sectTCName,omitempty"`
 }
 
 // enrichRoomMembersStages returns the $lookup + $set stages appended to the
@@ -556,7 +560,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			"as": "_orgMatch",
 		}}},
 		// Fold the three matches into a single `display` sub-document.
-		// `_orgRaw` surfaces the raw org-lookup pair for Go-side combine —
+		// `orgRaw` surfaces the raw org-lookup pair for Go-side combine —
 		// nil when no users matched, triggering the orgId fallback below.
 		{{Key: "$set", Value: bson.M{
 			"display": bson.M{
@@ -569,7 +573,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 						bson.A{},
 					}},
 				}},
-				"_orgRaw":     bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
+				"orgRaw":      bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
 				"memberCount": bson.M{"$arrayElemAt": bson.A{"$_orgMatch.memberCount", 0}},
 			},
 		}}},

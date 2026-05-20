@@ -176,7 +176,7 @@ func sanitizeAsyncJobError(err error) string {
 func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.Room) (*model.Room, error) {
 	existing, err := h.store.GetRoom(ctx, want.ID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch on duplicate-key: %w", err)
+		return nil, fmt.Errorf("fetch existing room on duplicate-key: %w", err)
 	}
 	if existing.Type != want.Type || existing.SiteID != want.SiteID {
 		return nil, newPermanent("room ID collision (existing type=%s site=%s; want %s/%s)",
@@ -410,7 +410,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 		}
 		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
-			return err
+			return fmt.Errorf("rotate and fan-out room key after remove-individual: %w", err)
 		}
 	}
 
@@ -610,7 +610,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 		}
 		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
-			return err
+			return fmt.Errorf("rotate and fan-out room key after remove-org: %w", err)
 		}
 	}
 
@@ -924,35 +924,37 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 
 	// Backfill existing subscribers into room_members only when orgs are
 	// joining for the first time and we're starting to track individuals.
+	// Backfill errors propagate: log-and-continue would silently corrupt
+	// room_members (existing subs would never get IRM rows). Retry is safe —
+	// subs are already written so needSub is empty, hadOrgsBefore stays false
+	// until BulkCreateRoomMembers commits, and the backfill re-runs cleanly.
 	if len(req.Orgs) > 0 && !hadOrgsBefore {
 		existingAccounts, err := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
 		if err != nil {
-			slog.Warn("get subscription accounts for backfill failed", "error", err)
-		} else {
-			var backfillAccounts []string
-			for _, account := range existingAccounts {
-				if _, processed := processedAccounts[account]; !processed {
-					backfillAccounts = append(backfillAccounts, account)
-				}
+			return fmt.Errorf("get subscription accounts for backfill: %w", err)
+		}
+		var backfillAccounts []string
+		for _, account := range existingAccounts {
+			if _, processed := processedAccounts[account]; !processed {
+				backfillAccounts = append(backfillAccounts, account)
 			}
-			if len(backfillAccounts) > 0 {
-				backfillUsers, err := h.store.FindUsersByAccounts(ctx, backfillAccounts)
-				if err != nil {
-					slog.Warn("find users for backfill failed", "error", err)
-				} else {
-					for i := range backfillUsers {
-						roomMembers = append(roomMembers, &model.RoomMember{
-							ID:     idgen.GenerateUUIDv7(),
-							RoomID: req.RoomID,
-							Ts:     acceptedAt,
-							Member: model.RoomMemberEntry{
-								ID:      backfillUsers[i].ID,
-								Type:    model.RoomMemberIndividual,
-								Account: backfillUsers[i].Account,
-							},
-						})
-					}
-				}
+		}
+		if len(backfillAccounts) > 0 {
+			backfillUsers, err := h.store.FindUsersByAccounts(ctx, backfillAccounts)
+			if err != nil {
+				return fmt.Errorf("find users for backfill: %w", err)
+			}
+			for i := range backfillUsers {
+				roomMembers = append(roomMembers, &model.RoomMember{
+					ID:     idgen.GenerateUUIDv7(),
+					RoomID: req.RoomID,
+					Ts:     acceptedAt,
+					Member: model.RoomMemberEntry{
+						ID:      backfillUsers[i].ID,
+						Type:    model.RoomMemberIndividual,
+						Account: backfillUsers[i].Account,
+					},
+				})
 			}
 		}
 	}
@@ -987,6 +989,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	// Fan out the room key only to newly-subscribed accounts. Accounts in
 	// needIRM already had a subscription (and thus already received the key
 	// on their original add), so they don't need a fresh delivery here.
+	// Get is intentionally post-Mongo: the key was created at room-create
+	// time and is not re-rotated for adds, so we just fetch the current pair.
 	newSubUsers := make([]model.User, 0, len(needSub))
 	for _, c := range needSub {
 		newSubUsers = append(newSubUsers, userMap[c.Account])
@@ -1025,7 +1029,11 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 		memberAddData, _ := json.Marshal(memberAddEvt)
 		if err := h.publish(ctx, subject.RoomMemberEvent(req.RoomID), memberAddData, ""); err != nil {
-			slog.Error("member add event publish failed", "error", err, "roomID", req.RoomID)
+			slog.Error("member add event publish failed",
+				"error", err,
+				"roomID", req.RoomID,
+				"requestID", natsutil.RequestIDFromContext(ctx),
+			)
 		}
 
 		if len(actualAccounts) > 0 {
@@ -1039,7 +1047,11 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			inboxData, _ := json.Marshal(inboxOutbox)
 			inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
 			if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), inboxData, natsutil.OutboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
-				slog.Error("local inbox member_added publish failed", "error", err, "roomID", req.RoomID)
+				slog.Error("local inbox member_added publish failed",
+					"error", err,
+					"roomID", req.RoomID,
+					"requestID", natsutil.RequestIDFromContext(ctx),
+				)
 			}
 		}
 
@@ -1246,7 +1258,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		}
 		existing, err := h.reconcileRoomOnDuplicateKey(ctx, room)
 		if err != nil {
-			return err
+			return fmt.Errorf("reconcile room on duplicate-key: %w", err)
 		}
 		room = existing
 	}

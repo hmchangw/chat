@@ -4,7 +4,16 @@
 // stages.
 package pipelines
 
-import "go.mongodb.org/mongo-driver/v2/bson"
+import (
+	"errors"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+const botOrPseudoAccountRegex = `(\.bot$|^p_)`
+
+// ErrRoomIDRequired is returned by pipeline builders that require a non-empty roomID.
+var ErrRoomIDRequired = errors.New("roomID required")
 
 // GetNewMembersPipeline returns the common stages for finding the unique,
 // non-bot, not-already-subscribed users that an add-members request would
@@ -35,7 +44,7 @@ func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccou
 	}
 
 	accountFilter := bson.M{
-		"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""},
+		"$not": bson.Regex{Pattern: botOrPseudoAccountRegex, Options: ""},
 	}
 	if excludeAccount != "" {
 		accountFilter["$ne"] = excludeAccount
@@ -77,7 +86,7 @@ func matchCandidates(orgIDs, directAccounts []string, excludeAccount string) bso
 	if len(directAccounts) > 0 {
 		orFilter = append(orFilter, bson.M{"account": bson.M{"$in": directAccounts}})
 	}
-	accountFilter := bson.M{"$not": bson.Regex{Pattern: `(\.bot$|^p_)`, Options: ""}}
+	accountFilter := bson.M{"$not": bson.Regex{Pattern: botOrPseudoAccountRegex, Options: ""}}
 	if excludeAccount != "" {
 		accountFilter["$ne"] = excludeAccount
 	}
@@ -85,10 +94,10 @@ func matchCandidates(orgIDs, directAccounts []string, excludeAccount string) bso
 }
 
 // GetCapacityCheckPipeline counts net-new subscriptions for (orgIDs, directAccounts) in roomID; caller appends $count.
-// Panics if roomID is empty.
-func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
+// Returns ErrRoomIDRequired if roomID is empty.
+func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) (bson.A, error) {
 	if roomID == "" {
-		panic("GetCapacityCheckPipeline: roomID required")
+		return nil, ErrRoomIDRequired
 	}
 	return bson.A{
 		matchCandidates(orgIDs, directAccounts, excludeAccount),
@@ -105,14 +114,14 @@ func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAc
 			"as": "_sub",
 		}},
 		bson.M{"$match": bson.M{"_sub": bson.M{"$eq": bson.A{}}}},
-	}
+	}, nil
 }
 
 // GetAddMemberCandidatesPipeline returns per-candidate {account, hasSubscription, hasIndividualRoomMember} for the worker.
-// Panics if roomID is empty.
-func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A {
+// Returns ErrRoomIDRequired if roomID is empty.
+func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) (bson.A, error) {
 	if roomID == "" {
-		panic("GetAddMemberCandidatesPipeline: roomID required")
+		return nil, ErrRoomIDRequired
 	}
 	return bson.A{
 		matchCandidates(orgIDs, directAccounts, excludeAccount),
@@ -147,5 +156,5 @@ func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, exc
 			"hasSubscription":         bson.M{"$gt": bson.A{bson.M{"$size": "$_sub"}, 0}},
 			"hasIndividualRoomMember": bson.M{"$gt": bson.A{bson.M{"$size": "$_irm"}, 0}},
 		}},
-	}
+	}, nil
 }

@@ -768,11 +768,10 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
-// validateAccountsExist returns errUserNotFound when any account has no
-// matching user document. Same shape as validateOrgIDs at the user
-// dimension — without it, a typo'd or fake account is silently dropped by
-// the candidates pipeline and the async job reports success despite never
-// adding the user.
+// validateAccountsExist wraps errUserNotFound with the first phantom account
+// (via fmt.Errorf("user %q: %w", …)) when any account has no matching user
+// document; errors.Is(err, errUserNotFound) holds. Without this gate a typo'd
+// account is silently dropped and the async job reports success.
 func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) error {
 	if len(accounts) == 0 {
 		return nil
@@ -796,9 +795,10 @@ func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) 
 	return nil
 }
 
-// validateOrgIDs returns errInvalidOrg when any orgID has zero backing
-// users (no user with sectId==orgID or deptId==orgID). No-op when orgIDs
-// is empty so the round trip is skipped for user-only requests.
+// validateOrgIDs wraps errInvalidOrg with the first phantom orgID (via
+// fmt.Errorf("org %q: %w", …)) when any orgID has zero backing users
+// (no user with sectId==orgID or deptId==orgID); errors.Is(err, errInvalidOrg)
+// holds. No-op when orgIDs is empty.
 func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
 	if len(orgIDs) == 0 {
 		return nil
