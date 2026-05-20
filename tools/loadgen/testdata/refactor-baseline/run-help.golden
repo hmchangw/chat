@@ -49,6 +49,8 @@ Usage of run:
     	mid-run SUT liveness probe interval; 0 disables. Default 10s × 3 failures = 30s detection so the watcher can fire on the default 60s --duration. (default 10s)
   -liveness-timeout duration
     	per-probe timeout. Aligned with --request-timeout default so a slow-but-up SUT trips the saturation watcher (exit 2) before the liveness watcher (exit 3). (default 5s)
+  -max-in-flight int
+    	override MAX_IN_FLIGHT env (>0 takes effect; 0 = use env default 200). Caps concurrent publishes/pollers; lower it when search-sync-lag dashboards show dropped_inflight dominance.
   -mutate-rate int
     	message-mutate scenario: mutations per second; 0 uses scenario default (5)
   -nats-creds-dir string
@@ -85,6 +87,8 @@ Usage of run:
     	search-sync-lag scenario: wait after the one-shot user-room ACL bootstrap before the main publish/poll loop starts (covers ES refresh_interval + bulk-flush slack) (default 35s)
   -search-sync-poll-interval duration
     	search-sync-lag scenario: interval between search.messages visibility polls (ES refresh_interval default is 30s, so sub-100ms polls burn RPCs without resolution gain) (default 250ms)
+  -search-sync-skip-acl-bootstrap loadgen seed
+    	search-sync-lag scenario: skip the one-shot user-room ACL bootstrap + 35s wait at Run start. Use only when the ACL doc is already populated from a prior run; leave off for the first run after loadgen seed
   -search-sync-timeout duration
     	search-sync-lag scenario: per-message poll timeout before declaring not-visible (3x default ES refresh_interval to cover the long tail) (default 1m30s)
   -seed int

@@ -381,6 +381,11 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	if rf.FederationSecondaryNATSURL != "" {
 		cfg.FederationSecondaryNATSURL = rf.FederationSecondaryNATSURL
 	}
+	// Same precedence rule for --max-in-flight: only the >0 value overrides
+	// the env default. NewRuntime reads cfg.MaxInFlight when building runDeps.
+	if rf.MaxInFlight > 0 {
+		cfg.MaxInFlight = rf.MaxInFlight
+	}
 
 	rt, err := NewRuntime(ctx, cfg, runID, lp)
 	if err != nil {

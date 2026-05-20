@@ -333,6 +333,8 @@ Scenario-specific flags:
 - `--search-sync-poll-interval` (default `250ms`) — interval between `search.messages` polls. Polling much faster than ES refreshes wastes RPCs without resolving the lag better.
 - `--search-sync-timeout` (default `90s`) — per-message poll deadline. ~3× the default refresh covers the long tail (compaction, GC pauses, bulk-flush slack).
 - `--search-sync-acl-wait` (default `35s`) — one-shot wait after the user-room ACL bootstrap, before the per-tick publish/poll loop starts. Covers ES `refresh_interval` plus bulk-flush slack so the very first search request actually has the ACL doc to terms-lookup against.
+- `--search-sync-skip-acl-bootstrap` (default off) — skip the bootstrap publishes AND the `--search-sync-acl-wait` entirely. Use only when iterating fast against a warm cluster where the user-room ACL doc is already populated from a prior run. Leave OFF for the first run after `loadgen seed`.
+- `--max-in-flight=N` (overrides the `MAX_IN_FLIGHT` env var when set > 0) — caps concurrent in-flight pollers. Lower it when the dashboard shows `dropped_inflight` dominance; raise it when the SUT has headroom but rate × timeout exceeds 200.
 
 Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}`:
 
@@ -340,7 +342,8 @@ Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}
 - `timeout` — poll deadline hit. Raise `--search-sync-timeout`, or look at ES and search-sync-worker — refresh interval misconfigured, sync-worker behind, or ACL bootstrap missed.
 - `transport_error` — NATS request itself failed. search-service down or NATS partitioned.
 - `publish_error` — canonical publish failed. JetStream not configured (verify `--inject=canonical` and that `MESSAGES_CANONICAL_{siteID}` exists).
-- `dropped_inflight` — concurrent-poll cap (`MaxInFlight`) was full; the poll was skipped instead of amplifying open-loop pressure on search-service. If you see these consistently the SUT is slower than the scenario rate × timeout product can absorb.
+- `dropped_inflight` — concurrent-poll cap (`MaxInFlight`) was full; the poll was skipped instead of amplifying open-loop pressure on search-service. If you see these consistently the SUT is slower than the scenario rate × timeout product can absorb. Lower `--rate`, raise `--max-in-flight`, or shorten `--search-sync-timeout`.
+- `bootstrap_error` — the ACL bootstrap publishes themselves failed (e.g., NATS unreachable). Fires once per failed run. Disambiguates "scenario never ran" from "scenario ran with zero observations" on a silent dashboard.
 
 **Sizing the run.** The in-flight poll count grows as `rate × timeout` until either visibility or timeout. With defaults (`MaxInFlight=200`, `--search-sync-timeout=90s`), sustaining `dropped_inflight=0` requires `rate ≲ 2/s`. The default `--rate=500` is intended for the high-volume `messaging-pipeline`; for search-sync-lag start at `--rate=1` and raise gradually while watching the `dropped_inflight` counter. Run for longer (`--duration=10m+`) rather than faster — ES refresh dominates the signal and short runs don't fill the histogram.
 
@@ -520,6 +523,8 @@ Key fields:
 | `--search-sync-poll-interval` | search-sync-lag | 250ms | Poll interval for `search.messages` visibility |
 | `--search-sync-timeout` | search-sync-lag | 90s | Per-message poll timeout (≈ 3× ES refresh_interval) |
 | `--search-sync-acl-wait` | search-sync-lag | 35s | One-shot wait after ACL bootstrap before the publish/poll loop starts |
+| `--search-sync-skip-acl-bootstrap` | search-sync-lag | false | Skip bootstrap + ACL wait (warm-cluster fast iteration) |
+| `--max-in-flight` | run, members-sustained, members-capacity | 0 (env) | Override `MAX_IN_FLIGHT` env when > 0; caps concurrent publishers/pollers |
 | `--receipt-coverage` | read-receipts | 0.6 | Fraction of recipients to fire MessageRead for |
 | `--mutate-rate` | message-mutate | 5 | Mutations/sec |
 | `--edit-age-distribution` | message-mutate | `0.7,0.3` | Typo vs correction age fractions |

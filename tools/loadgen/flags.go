@@ -108,9 +108,14 @@ type runFlags struct {
 	CSV             string
 	NATSCredsDir    string
 	AllowConcurrent bool
-	RunTTL          time.Duration
-	Abort           abortFlags
-	Ramp            rampFlags
+	// MaxInFlight, when > 0, overrides the MAX_IN_FLIGHT env var for this
+	// run. Zero or negative means "use the env default". Exposed as a flag
+	// so operators can sweep the concurrency cap without touching the
+	// container's environment.
+	MaxInFlight int
+	RunTTL      time.Duration
+	Abort       abortFlags
+	Ramp        rampFlags
 	// BuiltRamp is the pre-validated *Ramp built from Ramp fields by ParseRunFlags.
 	// Nil means no ramp is configured. executeRun reads this directly instead of
 	// rebuilding the Ramp from Ramp.From/To/Duration/Shape (Phase 2 pre-condition).
@@ -202,6 +207,13 @@ type SearchSyncFlags struct {
 	// publishes before the per-tick publish/poll loop starts; covers ES
 	// refresh_interval plus bulk-flush slack.
 	ACLWait time.Duration
+	// SkipACLBootstrap skips the one-shot ACL bootstrap + 35s wait at Run
+	// start. Set when running multiple back-to-back search-sync-lag runs
+	// against a warm cluster where the user-room ACL doc is already
+	// populated from a prior seed/run. Saves 35s per iteration during
+	// fast-feedback tuning loops. Operators should leave this off for
+	// the first run after a fresh `loadgen seed`.
+	SkipACLBootstrap bool
 }
 
 // PrintRunHelp writes the run-subcommand flag usage to w in the same
@@ -299,12 +311,15 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"search-sync-lag scenario: per-message poll timeout before declaring not-visible (3x default ES refresh_interval to cover the long tail)")
 	fs.DurationVar(&rf.SearchSync.ACLWait, "search-sync-acl-wait", 35*time.Second,
 		"search-sync-lag scenario: wait after the one-shot user-room ACL bootstrap before the main publish/poll loop starts (covers ES refresh_interval + bulk-flush slack)")
+	fs.BoolVar(&rf.SearchSync.SkipACLBootstrap, "search-sync-skip-acl-bootstrap", false,
+		"search-sync-lag scenario: skip the one-shot user-room ACL bootstrap + 35s wait at Run start. Use only when the ACL doc is already populated from a prior run; leave off for the first run after `loadgen seed`")
 	fs.Float64Var(&rf.ReceiptCoverage, "receipt-coverage", 0.6,
 		"read-receipts scenario: fraction of recipients to fire MessageRead for per published message")
 	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
 	fs.DurationVar(&rf.Settle.Interval, "settle-interval", 500*time.Millisecond, "settle phase: poll interval between probe rounds")
 	fs.IntVar(&rf.Settle.Probes, "settle-probes", 20, "settle phase: number of recent message IDs to probe (0 disables)")
 	fs.BoolVar(&rf.AllowConcurrent, "allow-concurrent", false, "allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)")
+	fs.IntVar(&rf.MaxInFlight, "max-in-flight", 0, "override MAX_IN_FLIGHT env (>0 takes effect; 0 = use env default 200). Caps concurrent publishes/pollers; lower it when search-sync-lag dashboards show dropped_inflight dominance.")
 	fs.DurationVar(&rf.RunTTL, "run-ttl", 2*time.Hour, "max age for an active runlock entry before it is considered orphaned and ignored")
 	fs.IntVar(&rf.MutateRate, "mutate-rate", 0,
 		"message-mutate scenario: mutations per second; 0 uses scenario default (5)")

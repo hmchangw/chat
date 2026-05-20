@@ -144,6 +144,40 @@ func TestParseRunFlags_AllExistingFlags(t *testing.T) {
 	assert.Equal(t, 4, rf.Conn.Connections)
 }
 
+// --max-in-flight overrides cfg.MaxInFlight when set > 0; 0 leaves the env
+// default intact. The override is consumed in dispatch.go before NewRuntime
+// builds runDeps, so this test pins only the flag-parse half of the contract.
+func TestParseRunFlags_MaxInFlight(t *testing.T) {
+	// Unset: zero value.
+	rf, err := ParseRunFlags([]string{"--preset=small", "--scenario=messaging-pipeline"})
+	require.NoError(t, err)
+	assert.Equal(t, 0, rf.MaxInFlight, "unset --max-in-flight must read as 0 so dispatch keeps the env default")
+
+	// Set: passes through.
+	rf, err = ParseRunFlags([]string{"--preset=small", "--scenario=messaging-pipeline", "--max-in-flight=42"})
+	require.NoError(t, err)
+	assert.Equal(t, 42, rf.MaxInFlight)
+}
+
+// pickMaxInFlight (dispatch_members.go) and the identical override logic
+// in dispatch.go must agree on precedence: positive flag wins, otherwise env.
+func TestPickMaxInFlight_PrecedenceRule(t *testing.T) {
+	assert.Equal(t, 200, pickMaxInFlight(0, 200), "0 flag must fall back to env default")
+	assert.Equal(t, 50, pickMaxInFlight(50, 200), "positive flag must override env default")
+	assert.Equal(t, 200, pickMaxInFlight(-1, 200), "negative flag must fall back; only >0 counts as set")
+}
+
+// --search-sync-skip-acl-bootstrap defaults off and is set when passed.
+func TestParseRunFlags_SearchSyncSkipACLBootstrap(t *testing.T) {
+	rf, err := ParseRunFlags([]string{"--preset=search-read", "--scenario=search-sync-lag"})
+	require.NoError(t, err)
+	assert.False(t, rf.SearchSync.SkipACLBootstrap, "default must be off — first-run-after-seed needs the bootstrap")
+
+	rf, err = ParseRunFlags([]string{"--preset=search-read", "--scenario=search-sync-lag", "--search-sync-skip-acl-bootstrap"})
+	require.NoError(t, err)
+	assert.True(t, rf.SearchSync.SkipACLBootstrap)
+}
+
 func TestPrintRunHelp_MatchesGolden(t *testing.T) {
 	var buf bytes.Buffer
 	PrintRunHelp(&buf)

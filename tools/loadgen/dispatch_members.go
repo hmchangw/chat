@@ -134,6 +134,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 	inject := fs.String("inject", "frontdoor", "frontdoor|canonical")
 	shapeFlag := fs.String("shape", "users", "users|orgs|channels|mixed (v1: users only)")
 	usersPerAdd := fs.Int("users-per-add", 10, "users per add request")
+	maxInFlight := fs.Int("max-in-flight", 0, "override MAX_IN_FLIGHT env (>0 takes effect; 0 = use env default)")
 	csvPath := fs.String("csv", "", "optional CSV output path")
 	_ = fs.Parse(args)
 
@@ -248,7 +249,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		Metrics:        metrics,
 		Collector:      collector,
 		WarmupDeadline: warmupDeadline,
-		MaxInFlight:    cfg.MaxInFlight,
+		MaxInFlight:    pickMaxInFlight(*maxInFlight, cfg.MaxInFlight),
 	}
 	gen := NewSustainedMembersGenerator(&genCfg, *seed)
 
@@ -531,4 +532,14 @@ func computeSizeBuckets(c *MemberCollector, finals map[string]int, edges []int) 
 		}
 	}
 	return out
+}
+
+// pickMaxInFlight returns the flag value when > 0, otherwise falls back to
+// the env-derived default. Mirrors the precedence rule the messages-workload
+// runRun uses via dispatch.go's --max-in-flight override.
+func pickMaxInFlight(flagVal, envVal int) int {
+	if flagVal > 0 {
+		return flagVal
+	}
+	return envVal
 }

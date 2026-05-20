@@ -164,25 +164,36 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 	// Pre-flight: bootstrap the user-room ES ACL by publishing one synthetic
 	// member_added event per unique (account, room) fixture tuple. See the
 	// package-level "ACL precondition" doc block. If the bootstrap publish
-	// fails we surface the error rather than running blind — the scenario
-	// would otherwise produce zero observations.
-	pairCount, err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
-	if err != nil {
-		return fmt.Errorf("bootstrap search-sync ACL: %w", err)
-	}
-	slog.Info("search-sync-lag ACL bootstrap complete",
-		"pairs", pairCount,
-		"acl_wait", aclWait.String())
-	// Wait for search-sync-worker to consume the events, bulk-index, and the
-	// ES refresh to expose them. Cancellation during the wait is a clean exit.
-	// Use NewTimer + Stop so a mid-wait cancel doesn't leak the timer for up
-	// to aclWait (default 35s).
-	aclTimer := time.NewTimer(aclWait)
-	select {
-	case <-ctx.Done():
-		aclTimer.Stop()
-		return nil
-	case <-aclTimer.C:
+	// fails we increment outcome=bootstrap_error (so the dashboard distinguishes
+	// "scenario tried but failed" from "scenario never ran") AND surface the
+	// error rather than running blind — the scenario would otherwise produce
+	// zero observations.
+	//
+	// SkipACLBootstrap short-circuits both the publishes and the wait. Set
+	// when iterating fast against a warm cluster where the ACL doc is known
+	// to already exist from a prior run.
+	if g.rf.SearchSync.SkipACLBootstrap {
+		slog.Info("search-sync-lag ACL bootstrap skipped (--search-sync-skip-acl-bootstrap)")
+	} else {
+		pairCount, err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
+		if err != nil {
+			metrics.SearchIndexVisible.WithLabelValues("bootstrap_error").Inc()
+			return fmt.Errorf("bootstrap search-sync ACL: %w", err)
+		}
+		slog.Info("search-sync-lag ACL bootstrap complete",
+			"pairs", pairCount,
+			"acl_wait", aclWait.String())
+		// Wait for search-sync-worker to consume the events, bulk-index, and the
+		// ES refresh to expose them. Cancellation during the wait is a clean exit.
+		// Use NewTimer + Stop so a mid-wait cancel doesn't leak the timer for up
+		// to aclWait (default 35s).
+		aclTimer := time.NewTimer(aclWait)
+		select {
+		case <-ctx.Done():
+			aclTimer.Stop()
+			return nil
+		case <-aclTimer.C:
+		}
 	}
 
 	maxInFlight := g.deps.MaxInFlight()

@@ -408,6 +408,81 @@ func TestSearchSyncRun_ObservesLagOnVisibleResponse(t *testing.T) {
 	assert.Greater(t, visibleCount, 0.0, "Run must increment outcome=visible at least once")
 }
 
+// --search-sync-skip-acl-bootstrap must short-circuit the bootstrap publishes
+// AND the 35s ACL wait. With SkipACLBootstrap=true and ACLWait deliberately
+// large, the publish/poll loop must reach a publish quickly — otherwise the
+// skip is broken.
+func TestSearchSyncRun_SkipACLBootstrap_PreventsPublishesAndShortensStartup(t *testing.T) {
+	pub := &recordingPublisher{}
+	req := &fakeSearchRequester{hits: map[string][]model.SearchMessagesResponse{}}
+	deps := buildSearchSyncDeps(t, pub, req)
+	rf := &runFlags{
+		Rate:           20,
+		RequestTimeout: 5 * time.Millisecond,
+		SearchSync: SearchSyncFlags{
+			PollInterval:     1 * time.Millisecond,
+			Timeout:          20 * time.Millisecond,
+			ACLWait:          10 * time.Second, // would dominate the run if not skipped
+			SkipACLBootstrap: true,
+		},
+	}
+	sc, _ := LookupScenario("search-sync-lag")
+	gen, err := sc.(GeneratorFactory).NewGenerator(deps, rf)
+	require.NoError(t, err)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+	elapsed := time.Since(start)
+
+	// The ACL bootstrap publishes one event per unique (account, room) pair.
+	// search-read preset has 50 subscriptions covering distinct pairs, so a
+	// non-skipped bootstrap would record N publishes to the InboxMemberAdded
+	// subject. With skip enabled, the only publishes are the canonical message
+	// events from the per-tick loop, which target MsgCanonicalCreated.
+	calls := pub.snapshot()
+	for _, c := range calls {
+		assert.NotContains(t, c.subject, "inbox",
+			"skip must suppress all ACL publishes; saw bootstrap publish to %s", c.subject)
+	}
+	// Without skip, the 10s ACL wait would dominate. With skip, the run
+	// returns close to the 300ms timeout. Use a generous bound to absorb
+	// CI variance, but tight enough to detect a missed skip (would be ~10s).
+	assert.Less(t, elapsed, 2*time.Second,
+		"skip must short-circuit the ACL wait; elapsed %v suggests the bootstrap still ran", elapsed)
+}
+
+// outcome=bootstrap_error must fire when the bootstrap publishes themselves
+// fail. The dashboard uses this to disambiguate "scenario never started"
+// from "scenario ran with zero visible observations".
+func TestSearchSyncRun_BootstrapErrorOutcomeFiresOnPublishFailure(t *testing.T) {
+	pub := &erroringPublisher{err: errors.New("nats refused")}
+	req := &fakeSearchRequester{hits: map[string][]model.SearchMessagesResponse{}}
+	deps := buildSearchSyncDeps(t, pub, req)
+	rf := &runFlags{
+		Rate: 10,
+		SearchSync: SearchSyncFlags{
+			PollInterval: 1 * time.Millisecond,
+			Timeout:      10 * time.Millisecond,
+			ACLWait:      1 * time.Millisecond,
+		},
+	}
+	sc, _ := LookupScenario("search-sync-lag")
+	gen, err := sc.(GeneratorFactory).NewGenerator(deps, rf)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	runErr := gen.Run(ctx)
+	require.Error(t, runErr, "Run must surface the bootstrap failure")
+	assert.Contains(t, runErr.Error(), "bootstrap")
+
+	bootstrapErrCount := getCounterValue(t, deps.metrics.SearchIndexVisible.WithLabelValues("bootstrap_error"))
+	assert.Equal(t, 1.0, bootstrapErrCount,
+		"bootstrap_error must fire exactly once per failed bootstrap so dashboards see the attempt")
+}
+
 func TestSearchSyncRun_CountsTimeoutsAsOutcome(t *testing.T) {
 	pub := &recordingPublisher{}
 	// Empty responses → every poll observes ErrRAWNotVisible → terminates as timeout.
