@@ -149,10 +149,32 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Every exported function in `pkg/` must have corresponding test cases
 
 ### Integration Tests
-- All integration tests use `//go:build integration` build tag
-- Use `testcontainers-go` with official modules (`mongodb`, `cassandra`, `nats`) for real dependencies
-- Write `setup<Dep>(t *testing.T)` helpers that start a container, register `t.Cleanup`, and return a connected client
-- Use `<service>_test` as database name to avoid collisions
+- All integration tests use the `//go:build integration` build tag
+- Test files live in the same package as the code under test (`package main` for services, `package <pkg>` for libraries) — never external `*_test` packages
+- **Containers come from `pkg/testutil`** — do not start your own with `testcontainers.GenericContainer` / `natsmod.Run` / `mongodb.Run` etc. Each helper is `sync.Once`-shared per test process:
+  - `testutil.MongoDB(t, prefix) *mongo.Database` — isolated DB per test
+  - `testutil.CassandraKeyspace(t, prefix) (keyspace, *gocql.Session, host)` — isolated keyspace per test
+  - `testutil.MinIO(t, prefix) (*minio.Client, bucket)` — isolated bucket per test
+  - `testutil.Elasticsearch(t) string` — shared ES URL; use a per-test unique index name (fnv hash of `t.Name()`)
+  - `testutil.NATS(t) string` — shared NATS URL with JetStream enabled
+  - `testutil.Valkey(t) string` — shared Valkey addr; call `testutil.FlushValkey(t)` in cleanup
+- **Every integration test package must have a `TestMain` that drives cleanup**:
+  ```go
+  //go:build integration
+  package mypkg
+
+  import (
+      "testing"
+      "github.com/hmchangw/chat/pkg/testutil"
+  )
+
+  func TestMain(m *testing.M) { testutil.RunTests(m) }
+  ```
+  `testutil.RunTests` wraps `m.Run()` + `testutil.TerminateAll()` + `os.Exit(code)`. For packages that want concurrent pre-warming, wrap manually instead — see `search-service/setup_shared_test.go` for the reference pattern (`EnsureXxx` goroutines + error channel + fail-fast).
+- **Ryuk is disabled repo-wide** (via `pkg/testutil/init.go`) because our CI runner can't run the reaper sidecar. `testutil.TerminateAll` is the only cleanup mechanism on clean exits. SIGKILL / Ctrl+C will leak containers locally — acceptable trade-off; flip Ryuk back on with `TESTCONTAINERS_RYUK_DISABLED=false go test ...` if debugging a leak.
+- Per-test isolation is the caller's responsibility: the `MongoDB`/`Cassandra`/`MinIO` helpers already hash `t.Name()`; for ES use a per-test unique index name and DELETE on cleanup; for Valkey call `FlushValkey` on cleanup; for NATS use a per-test `*nats.Conn` pair with `Drain`/`Shutdown` cleanups.
+- Inline `testcontainers.GenericContainer` is only acceptable when a shared testutil container can't accommodate the test (e.g. search-service CCS needs two ES nodes on a shared docker network; `pkg/roomkeysender` needs NATS with WebSocket transport; `pkg/roomcrypto` needs a Node container with bundled scripts). Each inline container must store its reference and register `t.Cleanup(container.Terminate)`.
+- New shared dependencies (a container type used by ≥2 packages) belong in `pkg/testutil` with the same shape: `Xxx(t)` + `EnsureXxx()` + `TerminateXxx()`, container ref stored at package level, and `TerminateXxx` wired into `TerminateAll`.
 
 ### Model Tests
 - `pkg/model/model_test.go` verifies all domain types marshal/unmarshal correctly via a generic `roundTrip` helper
