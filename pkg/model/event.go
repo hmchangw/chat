@@ -197,6 +197,21 @@ type RoomKeyEvent struct {
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
 
+// RoomsKeysEntry is one entry in the RoomsKeysResponse — a single (roomId,
+// version, privateKey) tuple for a room the caller is subscribed to.
+type RoomsKeysEntry struct {
+	RoomID     string `json:"roomId"     bson:"roomId"`
+	Version    int    `json:"version"    bson:"version"`
+	PrivateKey []byte `json:"privateKey" bson:"privateKey"`
+}
+
+// RoomsKeysResponse is the response to RoomsKeysBootstrap — the full
+// snapshot of (roomId, version, privateKey) tuples for every room the
+// caller is currently subscribed to that has a key in Valkey.
+type RoomsKeysResponse struct {
+	Keys []RoomsKeysEntry `json:"keys" bson:"keys"`
+}
+
 type MemberRemoveEvent struct {
 	Type      string   `json:"type"            bson:"type"`
 	RoomID    string   `json:"roomId"          bson:"roomId"`
