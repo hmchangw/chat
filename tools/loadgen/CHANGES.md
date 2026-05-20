@@ -196,3 +196,32 @@ None (v1's flag set is preserved; v2 only adds).
 
 - Per-fixture-user JWTs and federation peer NKeys live in `runs/<run_id>/creds/` (mode 0600, gitignored).
 - 26-pattern redaction allow-list applied to `env.txt` before bundling (9 exact + 11 suffix + 6 prefix patterns covering AUTH_TOKEN, MONGO_URI, NATS_URL, *_TOKEN, *_KEY, *_SECRET, etc.).
+
+---
+
+## Known follow-ups for v2.x
+
+Tracked here so future operators / contributors know what's deliberately
+deferred rather than missed:
+
+- **Build-tag-gated scenarios** (`presence-typing`, `notif_routing` for
+  push/email). Both wait for the SUT to expose subjects that don't exist
+  yet (`subject.PresenceWildcard`, `subject.NotificationPushPattern`).
+  When the SUT adds those builders, removing the build tag and finishing
+  the scenarios is the work.
+- **ACL doc auto-detection in `search-sync-lag` Run**. Currently the
+  Run-time bootstrap publishes its events regardless of whether the seed
+  step already populated the ACL doc; operators are expected to pass
+  `--search-sync-skip-acl-bootstrap` after a `--with-search-sync-acl`
+  seed. A probe against `search.messages` at Run start could
+  auto-detect the doc and skip the redundant publishes. Marginal value
+  vs. operator awareness; not implemented.
+- **Painless-guard wording in commit `a7e74d2`**. The commit message
+  said equal-timestamp writes are a no-op; the actual guard is strictly
+  `>`, so equal-timestamp writes ARE applied (idempotent in practice
+  because the doc content is identical). Wording is slightly wrong;
+  history not rewritten to avoid force-push churn.
+- **bootstrap_error observability**. On bootstrap failure the scenario
+  now holds the process open for 20s (one Prometheus scrape cycle) so
+  the metric is observable before exit. A more robust pattern (write
+  the failure to `runs/<run_id>/` for offline triage) is a follow-up.
