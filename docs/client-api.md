@@ -245,7 +245,7 @@ The created `Room` object.
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference). Channel creates also reject any `orgs` entry that matches zero users with `"invalid org"` and any `users` entry without a matching user document with `"user not found"` (same gates as Add Members — phantom org IDs or accounts do not create a room).
 
 ```json
 { "error": "DM requires exactly one other member, got 0" }
@@ -405,7 +405,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner).
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `"invalid org"`, and any `users` entry that has no matching user document is rejected with `"user not found"` — in both cases the request is not queued and no members are added.
 
 ```json
 { "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }

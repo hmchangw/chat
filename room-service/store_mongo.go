@@ -745,6 +745,51 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 	return members, nil
 }
 
+// FindExistingOrgIDs returns the subset of orgIDs that match at least one
+// user via sectId or deptId. Two parallel distinct calls — one on each
+// indexed field — keep the query covered by the (sectId, account) and
+// (deptId, account) compound indexes; the result of each distinct is
+// bounded by len(orgIDs) since the filter is an $in on the same field.
+func (s *MongoStore) FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([]string, error) {
+	if len(orgIDs) == 0 {
+		return nil, nil
+	}
+	var sectIDs []string
+	if err := s.users.Distinct(ctx, "sectId", bson.M{"sectId": bson.M{"$in": orgIDs}}).Decode(&sectIDs); err != nil {
+		return nil, fmt.Errorf("distinct sectIds for org validation: %w", err)
+	}
+	var deptIDs []string
+	if err := s.users.Distinct(ctx, "deptId", bson.M{"deptId": bson.M{"$in": orgIDs}}).Decode(&deptIDs); err != nil {
+		return nil, fmt.Errorf("distinct deptIds for org validation: %w", err)
+	}
+	found := make(map[string]struct{}, len(sectIDs)+len(deptIDs))
+	for _, id := range sectIDs {
+		found[id] = struct{}{}
+	}
+	for _, id := range deptIDs {
+		found[id] = struct{}{}
+	}
+	out := make([]string, 0, len(found))
+	for id := range found {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// FindExistingAccounts returns the subset of accounts that have a matching
+// user document. Distinct on the indexed `account` field keeps the result
+// bounded by len(accounts) regardless of how many users share an org.
+func (s *MongoStore) FindExistingAccounts(ctx context.Context, accounts []string) ([]string, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	var out []string
+	if err := s.users.Distinct(ctx, "account", bson.M{"account": bson.M{"$in": accounts}}).Decode(&out); err != nil {
+		return nil, fmt.Errorf("distinct accounts for user validation: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
 // keyed by (roomID, account). Returns model.ErrSubscriptionNotFound when no
 // subscription matches.

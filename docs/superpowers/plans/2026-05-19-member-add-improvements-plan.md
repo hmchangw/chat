@@ -2099,3 +2099,120 @@ All green. Integration tests start fresh Cassandra containers with the updated i
 git add pkg/model/cassandra/ docker-local/cassandra/init/ history-service/internal/cassrepo/ history-service/docker-local/docker-compose.yml docs/cassandra_message_model.md docs/client-api.md
 git commit -m "refactor(cassandra): drop unused target_user column from message schema"
 ```
+
+# Part 6 — Phantom Org / User Request-Time Validation
+
+Spec: see `2026-05-19-org-to-individual-membership-upgrade-design.md` Part 6.
+
+## Task 15: Reject phantom org IDs and account names at the room-service boundary
+
+Both `member.add` and channel-`create` accepted phantom inputs and silently dropped them at the candidates pipeline — the worker then wrote a `room_members` row and fired a sys-msg for a zero-user org, and async-job results reported `success: true` for a typo'd account. Gate at request time with two new store methods so the synchronous RPC reply carries the error.
+
+- [ ] **Step 1: Extend `RoomStore` in `room-service/store.go`**
+
+```go
+// FindExistingOrgIDs returns the subset of orgIDs that match at least
+// one user via sectId or deptId. ...
+FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([]string, error)
+
+// FindExistingAccounts returns the subset of accounts that have a
+// matching user document. ...
+FindExistingAccounts(ctx context.Context, accounts []string) ([]string, error)
+```
+
+Both no-op (`return nil, nil`) when input is empty so handlers can call them unconditionally without an empty-slice round trip.
+
+Run `make generate SERVICE=room-service` to regenerate `mock_store_test.go`.
+
+- [ ] **Step 2: Implement in `room-service/store_mongo.go`**
+
+`FindExistingOrgIDs` runs two parallel `Distinct` calls (one on `sectId`, one on `deptId`, each filtered by `$in: orgIDs`), unions the results into a set, returns the slice. Both queries ride the existing `(sectId, account)` / `(deptId, account)` compound indexes.
+
+`FindExistingAccounts` is a single `Distinct` on `account` with `$in: accounts`.
+
+- [ ] **Step 3: Add validation helpers in `room-service/handler.go`**
+
+Two methods on `*Handler`:
+
+```go
+func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error
+func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) error
+```
+
+Each:
+1. No-op on empty input.
+2. Call the store method.
+3. If `len(existing) == len(input)` — done.
+4. Otherwise build a set of `existing`, iterate `input`, and return `fmt.Errorf("org %q: %w", id, errInvalidOrg)` or `fmt.Errorf("user %q: %w", a, errUserNotFound)` for the first missing entry.
+
+`errInvalidOrg` and `errUserNotFound` are already in `sanitizeError`'s allow-list — no helper changes needed.
+
+- [ ] **Step 4: Wire into `handleAddMembers` and `handleCreateRoomChannel`**
+
+Insert the calls immediately after the `allOrgs`/`allUsers` dedup step, before `CountNewMembers` and `publishToStream`:
+
+```go
+if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
+    return nil, err
+}
+if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+    return nil, err
+}
+```
+
+Order matters only for which sentinel surfaces first when both dimensions have phantom entries — orgs first by convention. Cheaper checks (bot rejection, restricted-channel, capacity) stay ahead so phantom validation only runs once the request has cleared the no-DB-needed guards.
+
+- [ ] **Step 5: Tests**
+
+Unit (`room-service/handler_test.go`):
+- `TestHandler_AddMembers_PhantomOrgRejected` — `Orgs: ["org-nope"]`, store returns empty, assert `errors.Is(err, errInvalidOrg)` and no publish.
+- `TestHandler_AddMembers_PartiallyInvalidOrgRejected` — mixed; whole request rejects.
+- `TestHandler_AddMembers_NoOrgsSkipsOrgValidation` — gomock controller fails if `FindExistingOrgIDs` is called for a users-only request.
+- `TestHandler_AddMembers_PhantomUserRejected` — `errUserNotFound`.
+- `TestHandler_AddMembers_NoUsersSkipsUserValidation` — symmetric guard.
+
+Add a shared helper at the top of `handler_test.go`:
+
+```go
+func expectAllAccountsExist(store *MockRoomStore) *gomock.Call {
+    return store.EXPECT().FindExistingAccounts(gomock.Any(), gomock.Any()).
+        DoAndReturn(func(_ context.Context, accs []string) ([]string, error) { return accs, nil })
+}
+```
+
+12 existing happy-path tests that reach `CountNewMembers` (5 in member.add, 7 in create-channel/create-room) need an `expectAllAccountsExist(store)` line inserted between `GetRoom` / `GetUser` and `CountNewMembers`. Tests that fail earlier (DM-rejected, restricted-non-owner, name-required, direct-bot-rejected) do not.
+
+Integration (`room-service/integration_test.go`):
+- `TestMongoStore_FindExistingOrgIDs_Integration` — sectId+deptId set union, all-phantom, empty input, dept-only invariant.
+- `TestMongoStore_FindExistingAccounts_Integration` — matching subset, all-phantom, empty input.
+
+- [ ] **Step 6: Update `docs/client-api.md`**
+
+Add Members → Error response: note `"invalid org"` for phantom orgs and `"user not found"` for phantom accounts.
+
+Create Room → Error response: same note (channel branch only — DM/botDM paths don't go through these gates).
+
+- [ ] **Step 7: Verify**
+
+```
+make generate SERVICE=room-service
+make lint
+make test
+go vet -tags integration ./room-service/...
+```
+
+Rebuild `room-service` only — no other service has runtime code changes:
+
+```
+docker compose -f docker-local/compose.services.yaml up -d --build --no-deps room-service
+```
+
+Frontend has no hardcoded references to either error string; the existing error envelope renderer surfaces both `"invalid org"` and `"user not found"` to the user without changes.
+
+- [ ] **Step 8: Commit**
+
+```
+git add room-service/ docs/client-api.md docs/superpowers/specs/2026-05-19-org-to-individual-membership-upgrade-design.md docs/superpowers/plans/2026-05-19-member-add-improvements-plan.md
+git commit -m "feat(room-service): reject phantom org IDs and accounts at request time"
+```
+

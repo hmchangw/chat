@@ -310,6 +310,16 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 		return nil, errEmptyCreateRequest
 	}
 
+	// Reject phantom orgs before sizing/publishing, same reason as
+	// handleAddMembers: the worker writes room_members + sys-msg without
+	// rechecking org validity.
+	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
+		return nil, err
+	}
+	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+		return nil, err
+	}
+
 	// Pass requesterAccount as excludeAccount: the requester was stripped from
 	// allUsers but can still be re-added by org expansion (when their account
 	// is in any of the resolved orgs). Excluding them from the count lets us
@@ -713,6 +723,19 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
 	allUsers := dedup(append(req.Users, channelAccounts...))
 
+	// 6a. Reject phantom orgs up front. Without this, room-worker writes a
+	// room_members row for the bogus orgId and fans out a "members added"
+	// sys-msg even though no user matches the org.
+	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
+		return nil, err
+	}
+	// 6b. Reject phantom users symmetrically — a typo'd account would be
+	// silently dropped by the candidates pipeline and the async job would
+	// still report success.
+	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+		return nil, err
+	}
+
 	// 7. Count net-new members (count-only — actual list materialized in room-worker)
 	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID, "")
 	if err != nil {
@@ -744,6 +767,60 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 
 	// 10. Reply accepted
 	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+// validateAccountsExist returns errUserNotFound when any account has no
+// matching user document. Same shape as validateOrgIDs at the user
+// dimension — without it, a typo'd or fake account is silently dropped by
+// the candidates pipeline and the async job reports success despite never
+// adding the user.
+func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	existing, err := h.store.FindExistingAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("validate accounts: %w", err)
+	}
+	if len(existing) == len(accounts) {
+		return nil
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, a := range existing {
+		have[a] = struct{}{}
+	}
+	for _, a := range accounts {
+		if _, ok := have[a]; !ok {
+			return fmt.Errorf("user %q: %w", a, errUserNotFound)
+		}
+	}
+	return nil
+}
+
+// validateOrgIDs returns errInvalidOrg when any orgID has zero backing
+// users (no user with sectId==orgID or deptId==orgID). No-op when orgIDs
+// is empty so the round trip is skipped for user-only requests.
+func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
+	if len(orgIDs) == 0 {
+		return nil
+	}
+	existing, err := h.store.FindExistingOrgIDs(ctx, orgIDs)
+	if err != nil {
+		return fmt.Errorf("validate org ids: %w", err)
+	}
+	if len(existing) == len(orgIDs) {
+		return nil
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, id := range existing {
+		have[id] = struct{}{}
+	}
+	for _, id := range orgIDs {
+		if _, ok := have[id]; !ok {
+			return fmt.Errorf("org %q: %w", id, errInvalidOrg)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {

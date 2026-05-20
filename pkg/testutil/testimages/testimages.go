@@ -22,6 +22,13 @@ const (
 	// Mongo is the image for every Mongo-backed integration test.
 	// Tracks the deploy stack (docker-local/compose.deps.yaml) so tests
 	// exercise the same major version we ship.
+	//
+	// Previously pinned to 4.4.15 to catch operator-allow-list regressions
+	// that newer Mongo silently accepts (e.g. $in inside
+	// partialFilterExpression). That guard is retired here because prod
+	// has moved to Mongo 8; if a regression of that shape recurs, the
+	// replacement guard is whatever lint/validation the deploy stack
+	// enforces — not an integration-test version pin.
 	Mongo = "mongo:8"
 
 	// NATS is the image for every NATS-backed integration test

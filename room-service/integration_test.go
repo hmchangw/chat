@@ -810,6 +810,21 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
 	})
 
+	t.Run("returns errInvalidOrg when neither sectId nor deptId matches", func(t *testing.T) {
+		// Users carry both sectId and deptId, but neither field equals the
+		// queried orgID — guards against an accidental match on the wrong
+		// branch of the $or (e.g. a future query rewrite that collapses to
+		// $or:[{sectId:...},{deptId:...}] with the wrong field).
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SectID: "sect-eng", DeptID: "dept-fe"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SectID: "sect-ops", DeptID: "dept-be"})
+
+		_, err := store.ListOrgMembers(ctx, "sect-nope")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+	})
+
 	t.Run("returns expected OrgMember shape", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
@@ -862,6 +877,97 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "alice", got[0].Account)
+	})
+}
+
+func TestMongoStore_FindExistingOrgIDs_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	insertUser := func(t *testing.T, db *mongo.Database, u model.User) {
+		t.Helper()
+		_, err := db.Collection("users").InsertOne(ctx, u)
+		require.NoError(t, err)
+	}
+
+	t.Run("returns sectId and deptId matches as a set", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-fe"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", SectID: "sect-ops", DeptID: "dept-be"})
+
+		got, err := store.FindExistingOrgIDs(ctx, []string{"sect-eng", "dept-be", "missing"})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"sect-eng", "dept-be"}, got)
+	})
+
+	t.Run("returns empty when no org matches", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-fe"})
+
+		got, err := store.FindExistingOrgIDs(ctx, []string{"phantom-1", "phantom-2"})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("empty input is a no-op", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		got, err := store.FindExistingOrgIDs(ctx, nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("orgId equal to deptId only (no parent sect) still resolves", func(t *testing.T) {
+		// Dept-only invariant: a dept user carries sectId == deptId. The
+		// existence check must find them via the deptId branch even when
+		// no user happens to carry the orgID as a pure sectId.
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "dept-x", DeptID: "dept-x"})
+
+		got, err := store.FindExistingOrgIDs(ctx, []string{"dept-x"})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"dept-x"}, got)
+	})
+}
+
+func TestMongoStore_FindExistingAccounts_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	insertUser := func(t *testing.T, db *mongo.Database, u model.User) {
+		t.Helper()
+		_, err := db.Collection("users").InsertOne(ctx, u)
+		require.NoError(t, err)
+	}
+
+	t.Run("returns the matching subset", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SiteID: "site-a"})
+
+		got, err := store.FindExistingAccounts(ctx, []string{"alice", "bob", "ghost"})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"alice", "bob"}, got)
+	})
+
+	t.Run("returns empty when no account matches", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"})
+
+		got, err := store.FindExistingAccounts(ctx, []string{"ghost-1", "ghost-2"})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("empty input is a no-op", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		got, err := store.FindExistingAccounts(ctx, nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
 	})
 }
 

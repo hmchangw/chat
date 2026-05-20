@@ -664,3 +664,59 @@ Remove the column and all references:
 - `docs/client-api.md:939` — drop the row.
 
 Production schema migration (`ALTER TABLE … DROP target_user`) is owned by ops/IaC; the dev init scripts ship the new schema for fresh setups. Reads against existing production tables continue to work — gocql ignores columns not declared in the struct.
+
+# Part 6 — Phantom Org / User Request-Time Validation
+
+## Problem
+
+Both `chat.user.{account}.request.room.{roomID}.{siteID}.member.add` and `chat.user.{account}.request.rooms.create` (channel branch) accepted requests carrying org IDs or account names with no backing user document. The candidates aggregation (`GetAddMemberCandidatesPipeline` / `GetNewMembersPipeline`) is a join on `users`, so phantom inputs silently produced an empty candidate set — `CountNewMembers` returned 0 for those entries, the request published to the canonical stream, and the room-worker's `req.Orgs` loop (`room-worker/handler.go:891-898` and `:1319-1325`) wrote a `room_members` row plus fired a `members_added` system message for an org with zero backing users. Phantom user accounts were silently dropped at the candidates pipeline; the async-job reply still reported `success: true`.
+
+## Design
+
+Reject at the room-service request boundary so the synchronous RPC reply carries the error and nothing reaches the canonical stream. Two new store methods on `RoomStore`:
+
+- `FindExistingOrgIDs(ctx, orgIDs []string) ([]string, error)` — returns the subset of `orgIDs` that match at least one user via `sectId` or `deptId`. Two parallel `Distinct` calls — one on each indexed field — keep the result bounded by `len(orgIDs)` and ride the existing `(sectId, account)` / `(deptId, account)` compound indexes.
+- `FindExistingAccounts(ctx, accounts []string) ([]string, error)` — returns the subset of `accounts` that have a matching user document. Single `Distinct` on the indexed `account` field.
+
+Both methods no-op (return `nil, nil`) on empty input, so the round trip is skipped when the request carries only the other dimension.
+
+Two handler helpers (`validateOrgIDs`, `validateAccountsExist` in `room-service/handler.go`) call into the store and return wrapped sentinels:
+
+- `validateOrgIDs` → `errInvalidOrg` (already in `sanitizeError`'s allow-list).
+- `validateAccountsExist` → `errUserNotFound` (already in the allow-list).
+
+The wrap includes the offending id (`fmt.Errorf("org %q: %w", id, errInvalidOrg)`) so logs identify the missing entry; the wire envelope still sanitizes down to the sentinel's `Error()`.
+
+Both helpers are called immediately after the dedup step in `handleAddMembers` (after channel-ref expansion) and `handleCreateRoomChannel`, before `CountNewMembers` and `publishToStream`. Capacity / restricted-channel / bot-rejection checks remain ahead of these (cheaper, no DB call).
+
+## Why the gate lives at the room-service boundary
+
+The room-worker can't return a synchronous error to the client — by the time it sees the event, the room-service has already replied `accepted`. Async-job results (`chat.user.{requesterAccount}.response.{requestID}`) deliver the error, but only when the client opted in by setting `X-Request-ID` and only after the worker reaches the validation point. Pushing the check upstream gives every client an immediate, in-line error envelope and prevents the worker from ever writing the bogus `room_members` row.
+
+## Callers / paths touched
+
+- `room-service/store.go` — two new interface methods, generated mock regenerated.
+- `room-service/store_mongo.go` — `Distinct`-based implementations.
+- `room-service/handler.go` — `validateOrgIDs` + `validateAccountsExist` helpers, called from `handleAddMembers:709` and `handleCreateRoomChannel:296` after `allOrgs`/`allUsers` dedup.
+- `docs/client-api.md` — Add Members and Create Room error-response sections updated to document `"invalid org"` and `"user not found"` synchronous rejections.
+
+## Testing
+
+Unit (`room-service/handler_test.go`):
+- `TestHandler_AddMembers_PhantomOrgRejected` — single phantom org, no publish, `errInvalidOrg`.
+- `TestHandler_AddMembers_PartiallyInvalidOrgRejected` — mixed valid + phantom; the whole request rejects.
+- `TestHandler_AddMembers_NoOrgsSkipsOrgValidation` — gomock fails if `FindExistingOrgIDs` is called for a users-only request.
+- `TestHandler_AddMembers_PhantomUserRejected` — `errUserNotFound`.
+- `TestHandler_AddMembers_NoUsersSkipsUserValidation` — symmetric guard against the unnecessary round trip.
+- 12 existing happy-path tests gain an `expectAllAccountsExist(store)` helper expectation so the validation gate is satisfied.
+
+Integration (`room-service/integration_test.go`):
+- `TestMongoStore_FindExistingOrgIDs_Integration` — sectId + deptId set union, all-phantom, empty-input, dept-only invariant.
+- `TestMongoStore_FindExistingAccounts_Integration` — matching subset, all-phantom, empty-input.
+
+## Out of scope
+
+- Worker-side defense-in-depth (a second validation pass in `room-worker` once the event arrives). The single request-time gate is sufficient; the worker trusts validated canonical events, as it does everywhere else.
+- Org/user existence checks for the `Channels` ref (cross-site bulk-source). Channel expansion already pulls members from `room_members`, which can only carry rows for users that previously existed. The validation gate runs on the resulting `allUsers` set anyway, so a malformed remote source would still surface as `errUserNotFound`.
+- Cross-site federation behavior: an account that exists on a remote site but not locally will reject with `errUserNotFound`. This is intentional under the current single-site `users` collection model; multi-site user replication is a separate problem.
+

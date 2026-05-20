@@ -131,6 +131,36 @@ func (mr *MockRoomStoreMockRecorder) FindDMSubscription(ctx, account, targetName
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindDMSubscription", reflect.TypeOf((*MockRoomStore)(nil).FindDMSubscription), ctx, account, targetName)
 }
 
+// FindExistingAccounts mocks base method.
+func (m *MockRoomStore) FindExistingAccounts(ctx context.Context, accounts []string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindExistingAccounts", ctx, accounts)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindExistingAccounts indicates an expected call of FindExistingAccounts.
+func (mr *MockRoomStoreMockRecorder) FindExistingAccounts(ctx, accounts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindExistingAccounts", reflect.TypeOf((*MockRoomStore)(nil).FindExistingAccounts), ctx, accounts)
+}
+
+// FindExistingOrgIDs mocks base method.
+func (m *MockRoomStore) FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindExistingOrgIDs", ctx, orgIDs)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindExistingOrgIDs indicates an expected call of FindExistingOrgIDs.
+func (mr *MockRoomStoreMockRecorder) FindExistingOrgIDs(ctx, orgIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindExistingOrgIDs", reflect.TypeOf((*MockRoomStore)(nil).FindExistingOrgIDs), ctx, orgIDs)
+}
+
 // GetApp mocks base method.
 func (m *MockRoomStore) GetApp(ctx context.Context, botAccount string) (*model.App, error) {
 	m.ctrl.T.Helper()
