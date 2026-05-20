@@ -58,8 +58,10 @@ permissions:
   contents: read
 
 env:
-  # Bumped to 1.25.9 for the April 7, 2026 security release.
-  GO_VERSION: "1.25.9"
+  # Bumped to 1.25.10 for the May 2026 security release (govulncheck
+  # flagged reachable net / net/mail / html/template stdlib advisories
+  # fixed in 1.25.10).
+  GO_VERSION: "1.25.10"
   GOLANGCI_LINT_VERSION: "v2.11.4"
 
 jobs:
@@ -141,7 +143,10 @@ jobs:
             full_scope=true
             files=""
           else
-            git fetch --quiet --depth=1 origin "$GITHUB_BASE_REF"
+            # Full base history (no --depth) so the three-dot
+            # origin/<base>...HEAD diff can resolve a merge base;
+            # a shallow depth-1 base fetch fails with "no merge base".
+            git fetch --quiet origin "$GITHUB_BASE_REF"
             files="$(git diff --name-only "origin/$GITHUB_BASE_REF"...HEAD)"
             echo "---changed files---"
             echo "$files"
@@ -214,6 +219,75 @@ jobs:
           key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
       - name: Unit tests
         run: make test
+
+  # Static Application Security Testing. Blocking gate: fails the run on
+  # any medium+ gosec finding, any reachable govulncheck vulnerability, or
+  # any semgrep WARNING/ERROR. Runs `make sast` so it is byte-identical to
+  # what developers run locally. To make this a required check, add `sast`
+  # to the branch protection rules for the protected branch.
+  sast:
+    needs: prewarm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+      # Installs the pinned SAST toolchain (gosec, govulncheck, semgrep)
+      # via the Makefile so CI and local `make sast` stay in lockstep.
+      # govulncheck needs network to https://vuln.go.dev; semgrep fetches
+      # its rulesets from the Semgrep registry on first run (both reachable
+      # from GitHub-hosted runners). pipx is preinstalled on ubuntu-latest;
+      # add its bin dir to PATH for the semgrep scan step.
+      - name: Install SAST tools
+        run: |
+          make tools
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Explicit `set -o pipefail` so make's exit status (not tee's)
+      # drives the step outcome.
+      - name: SAST (gosec + govulncheck + semgrep, fail on medium+)
+        run: |
+          set -o pipefail
+          make sast 2>&1 | tee /tmp/sast.log
+
+      - name: Write SAST log to step summary
+        if: always()
+        run: |
+          f=/tmp/sast.log
+          [ -f "$f" ] || exit 0
+          {
+            echo "## SAST scan log"
+            echo ""
+            echo '<details><summary>Full output</summary>'
+            echo ''
+            echo '```'
+            tail -c 400000 "$f"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On failure, surface the last 60 KB of the log as a single
+      # annotation (64 KB cap per body) so the failing scanner and its
+      # findings are visible on the job page without signing in.
+      - name: Surface SAST failure tail
+        if: failure()
+        run: |
+          f=/tmp/sast.log
+          [ -f "$f" ] || exit 0
+          echo "::group::tail of $f"
+          tail -n 800 "$f"
+          echo "::endgroup::"
+          body="$(tail -c 60000 "$f" | sed '/^$/d' \
+            | sed 's/::/\xE2\x80\xA7\xE2\x80\xA7/g' \
+            | awk 'BEGIN{ORS=""} {print $0"%0A"}')"
+          printf '::error file=%s::%s\n' "$(basename "$f")" "$body"
 
   test-integration:
     needs: prewarm

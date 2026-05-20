@@ -110,8 +110,10 @@ type MemberAddEvent struct {
 	Type               string   `json:"type"               bson:"type"`
 	RoomID             string   `json:"roomId"             bson:"roomId"`
 	RoomName           string   `json:"roomName"           bson:"roomName"`
+	RoomType           RoomType `json:"roomType,omitempty" bson:"roomType,omitempty"`
 	Accounts           []string `json:"accounts"           bson:"accounts"`
 	SiteID             string   `json:"siteId"             bson:"siteId"`
+	RequesterAccount   string   `json:"requesterAccount,omitempty" bson:"requesterAccount,omitempty"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
 	HistorySharedSince *int64   `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
 	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
@@ -135,8 +137,32 @@ type ClientMessage struct {
 type RoomEventType string
 
 const (
-	RoomEventNewMessage RoomEventType = "new_message"
+	RoomEventNewMessage     RoomEventType = "new_message"
+	RoomEventMessageEdited  RoomEventType = "message_edited"
+	RoomEventMessageDeleted RoomEventType = "message_deleted"
 )
+
+// MessageEditedPayload carries the per-edit fields on a RoomEvent of type
+// RoomEventMessageEdited. For encrypted channel rooms NewContent is empty and
+// EncryptedNewContent carries the ciphertext; otherwise NewContent is the
+// plaintext edit content.
+type MessageEditedPayload struct {
+	MessageID           string          `json:"messageId"`
+	NewContent          string          `json:"newContent,omitempty"`
+	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty"`
+	EditedBy            string          `json:"editedBy"`
+	EditedAt            time.Time       `json:"editedAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
+}
+
+// MessageDeletedPayload carries the per-delete fields on a RoomEvent of type
+// RoomEventMessageDeleted.
+type MessageDeletedPayload struct {
+	MessageID string    `json:"messageId"`
+	DeletedBy string    `json:"deletedBy"`
+	DeletedAt time.Time `json:"deletedAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
 
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
@@ -157,12 +183,16 @@ type RoomEvent struct {
 
 	Message          *ClientMessage  `json:"message,omitempty"`
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
+
+	MessageEdited  *MessageEditedPayload  `json:"messageEdited,omitempty"`
+	MessageDeleted *MessageDeletedPayload `json:"messageDeleted,omitempty"`
 }
 
 type RoomKeyEvent struct {
-	RoomID     string `json:"roomId"`
-	Version    int    `json:"version"`
-	PublicKey  []byte `json:"publicKey"`
+	RoomID  string `json:"roomId"`
+	Version int    `json:"version"`
+	// PublicKey is server-side only; omitted from the client wire payload (clients only need PrivateKey).
+	PublicKey  []byte `json:"publicKey,omitempty"`
 	PrivateKey []byte `json:"privateKey"`
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
 }
@@ -199,13 +229,10 @@ const (
 	MessageTypeRoomCreated = "room_created"
 	// MessageTypeMembersAdded is the system-message type emitted when members are added.
 	MessageTypeMembersAdded = "members_added"
-)
-
-const (
-	// OutboxTypeRoomCreated is the cross-site outbox event type emitted when a room is created.
-	// Distinct from MessageTypeRoomCreated (system-message type) so destination sites can
-	// route on event semantics without collision.
-	OutboxTypeRoomCreated = "room_created"
+	// MessageTypeMemberRemoved is the system-message type emitted when a member is removed.
+	MessageTypeMemberRemoved = "member_removed"
+	// MessageTypeMemberLeft is the system-message type emitted when a member self-leaves.
+	MessageTypeMemberLeft = "member_left"
 )
 
 const (
@@ -224,14 +251,3 @@ type CreateRoomReply struct {
 
 // CreateRoomReplyAccepted means validated + queued; persistence happens later in room-worker.
 const CreateRoomReplyAccepted = "accepted"
-
-// RoomCreatedOutbox is the cross-site payload (wrapped in OutboxEvent) when a remote member exists.
-type RoomCreatedOutbox struct {
-	RoomID           string   `json:"roomId"`
-	RoomType         RoomType `json:"roomType"`
-	RoomName         string   `json:"roomName"`
-	HomeSiteID       string   `json:"homeSiteId"`
-	Accounts         []string `json:"accounts"`
-	RequesterAccount string   `json:"requesterAccount"`
-	Timestamp        int64    `json:"timestamp"`
-}

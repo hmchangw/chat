@@ -25,8 +25,11 @@ paths.
    - [3.1 room-service](#31-room-service)
    - [3.2 history-service](#32-history-service)
    - [3.3 search-service](#33-search-service)
+   - [3.4 user-service (mock)](#34-user-service-mock)
 4. [Message Send](#4-message-send)
-5. [Error envelope reference](#5-error-envelope-reference)
+5. [Server-Pushed Events](#5-server-pushed-events)
+   - [5.1 Room Encryption Keys](#51-room-encryption-keys)
+6. [Error envelope reference](#6-error-envelope-reference)
 
 ---
 
@@ -37,8 +40,9 @@ This doc covers the public client-facing API surface only.
 **Out of scope (documented elsewhere or backend-internal):**
 
 - Backend-only JetStream subjects (MESSAGES, MESSAGES_CANONICAL, FANOUT, OUTBOX, INBOX, ROOMS streams). See [`docs/nats-subject-naming.md`](./nats-subject-naming.md).
-- Server-pushed events not triggered by a specific client RPC (federation arrivals, presence, room-key rotation, cross-site member events).
 - Server-to-server subjects (`chat.server.request.…`).
+
+Server-pushed events that clients consume (room-key generation/rotation, etc.) are documented in [§5](#5-server-pushed-events). Federation arrivals, presence, and cross-site member events remain backend-internal.
 
 ### Subject placeholders
 
@@ -156,7 +160,7 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 
 #### Error response
 
-See [Error envelope](#5-error-envelope-reference). HTTP statuses:
+See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 | Status | Meaning | Example body |
 |--------|---------|--------------|
@@ -227,6 +231,8 @@ The created `Room` object.
 | `createdAt`         | string  | RFC 3339 timestamp. |
 | `updatedAt`         | string  | RFC 3339 timestamp. |
 | `restricted`        | boolean | Optional. |
+| `uids`              | string[] | Optional. `dm`/`botDM` only. Sorted ascending; paired by index with `accounts` so `uids[i]` and `accounts[i]` describe the same user. Absent on channels and on legacy DMs created before this field was introduced. |
+| `accounts`          | string[] | Optional. `dm`/`botDM` only. Permuted to mirror `uids` order. Absent on channels and legacy DMs. |
 
 ```json
 {
@@ -244,7 +250,7 @@ The created `Room` object.
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ```json
 { "error": "DM requires exactly one other member, got 0" }
@@ -300,7 +306,7 @@ Empty. Send `{}` or no payload.
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
@@ -348,7 +354,7 @@ A single `Room` object. See [Create Room](#create-room) for the `Room` schema.
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ```json
 { "error": "room not found" }
@@ -406,7 +412,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner).
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner).
 
 ```json
 { "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
@@ -504,7 +510,7 @@ Exactly one of `account` or `orgId` must be set. The fields `requester` and `tim
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. neither or both of `account`/`orgId` set, requester is not an owner, target is the last member, or org member cannot leave individually).
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. neither or both of `account`/`orgId` set, requester is not an owner, target is the last member, or org member cannot leave individually).
 
 ```json
 { "error": "exactly one of account or orgId must be set" }
@@ -598,7 +604,7 @@ The `timestamp` field on the Go `UpdateRoleRequest` is server-set — the client
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors include:
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors include:
 
 - Requester is not an owner of the room.
 - Target account is not a member of the room.
@@ -715,7 +721,7 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Common errors: `"not a member of this room"`, `"limit must be > 0"`, `"offset must be >= 0"`.
+See [Error envelope](#6-error-envelope-reference). Common errors: `"not a member of this room"`, `"limit must be > 0"`, `"offset must be >= 0"`.
 
 ##### Triggered events — success path
 
@@ -750,7 +756,7 @@ The subject already carries `account` and `roomID`, so no body fields are requir
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Common errors:
+See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
 - `"invalid message-read subject: …"` — the subject is malformed.
@@ -770,6 +776,83 @@ See [Error envelope](#5-error-envelope-reference). Common errors:
 ##### Triggered events — success path
 
 `None — reply only.` (Cross-site users may observe a delayed `subscription.update` on their home site driven by the outbox/inbox flow above; this is treated as cache convergence rather than a client-visible event for this RPC.)
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Read Message Receipts
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+A **synchronous, sender-only** RPC. Returns the list of users on the local site whose `subscription.lastSeenAt` is at or after the target message's `createdAt`. Only the message author may call it. The author is excluded from the result.
+
+##### Request body
+
+| Field       | Type   | Notes |
+|-------------|--------|-------|
+| `messageId` | string | Required. The message whose readers to enumerate. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Success response
+
+| Field     | Type                    | Notes |
+|-----------|-------------------------|-------|
+| `readers` | array<ReadReceiptEntry> | Empty array when no subscription has read past `message.createdAt`. |
+
+`ReadReceiptEntry`:
+
+| Field         | Type   | Notes |
+|---------------|--------|-------|
+| `userId`      | string | Internal user ID (`users._id`). |
+| `account`     | string | Account name. |
+| `chineseName` | string |       |
+| `engName`     | string |       |
+
+```json
+{
+  "readers": [
+    {
+      "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "account": "bob",
+      "chineseName": "鮑勃",
+      "engName": "Bob"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the requester has no subscription in the room.
+- `"message not found"` — no message matches `messageId`.
+- `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
+- `"only the message sender can view read receipts"` — requester is not the author of `messageId`.
+- `"invalid message-read-receipt subject: …"` — the subject is malformed.
+- `"invalid request: messageId is required"` — empty `messageId`.
+
+```json
+{ "error": "only the message sender can view read receipts" }
+```
+
+##### Behaviour notes
+
+- **Local-site only.** The query reads same-site `subscriptions`; cross-site read state is not surfaced by this RPC.
+- **Sender excluded.** The author is filtered out at the database layer regardless of their own `lastSeenAt`.
+- **Cap.** Result is capped at `MAX_ROOM_SIZE`; rooms larger than this cap will truncate silently.
+- **No writes.** This RPC does not mutate any subscription, room, or message. Use the `message.read` RPC to advance `lastSeenAt`.
+
+##### Triggered events — success path
+
+`None — reply only.`
 
 ##### Triggered events — error path
 
@@ -824,7 +907,7 @@ Empty. Send `{}` or no payload.
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ```json
 { "error": "invalid org" }
@@ -867,7 +950,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `visibleTo` | string | Optional. Visibility scope. |
 | `reactions` | object | Optional. Map of `emoji → Participant[]`. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
-| `type` | string | Optional. System-message type when set (e.g. `"member_added"`); regular messages omit it. |
+| `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
 | `siteId` | string | Optional. The site that owns the message. |
 | `editedAt` | string | Optional. RFC 3339. Set after an edit. |
@@ -950,7 +1033,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ```json
 { "error": "not subscribed to room" }
@@ -1015,7 +1098,7 @@ Fetches messages newer than a cursor — the forward-pagination counterpart to L
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
@@ -1074,7 +1157,7 @@ Fetches messages around a target message — useful for "jump to this message" n
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
@@ -1117,7 +1200,7 @@ A single `Message` object. See [Message schema](#message-schema).
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ```json
 { "error": "message not found" }
@@ -1170,7 +1253,7 @@ Only the original sender may edit a message.
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sender can edit"`, `"message not found"`, `"newMsg must not be empty"`, `"newMsg exceeds maximum size"`, `"failed to edit message"`.
+See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sender can edit"`, `"message not found"`, `"newMsg must not be empty"`, `"newMsg exceeds maximum size"`, `"failed to edit message"`.
 
 ##### Triggered events — success path
 
@@ -1238,7 +1321,7 @@ Soft-deletes a message (sets `deleted=true` on the row; row is preserved for aud
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Common errors: `"only the sender can delete"`, `"message not found"`, `"failed to delete message"`.
+See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sender can delete"`, `"message not found"`, `"failed to delete message"`.
 
 ##### Triggered events — success path
 
@@ -1319,7 +1402,7 @@ Returns the replies in a thread. The thread parent's `messageId` is supplied in 
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
@@ -1379,7 +1462,7 @@ Lists the parent messages of threads the user has subscribed to (or all threads,
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
@@ -1393,70 +1476,89 @@ See [Error envelope](#5-error-envelope-reference).
 
 ### 3.3 search-service
 
-#### Search Messages
+#### `search.messages` — full-text message search
+
+> **Breaking change (v2):** The response shape has changed from `{total, results}` to `{messages, total}`. The `results` field no longer exists. The per-hit type is now `SearchMessage` (an enriched projection) instead of the former `MessageSearchHit`. Update all clients before deploying this version.
 
 **Subject:** `chat.user.{account}.request.search.messages`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-Full-text search across messages the requester has access to. When `roomIds` is omitted (or empty), the search runs across all rooms the user can see; when set, it scopes to those rooms (the service still enforces per-user access).
+**Auth:** the `{account}` in the subject is the authenticated identity. The search is automatically scoped to rooms the user is a member of — results never include messages from rooms the user cannot access.
 
 ##### Request body
 
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `searchText` | string   | yes | The query. |
-| `roomIds`    | string[] | no  | Optional scope. Empty means "search every room the user has access to". |
-| `size`       | number   | no  | Page size. |
-| `offset`     | number   | no  | Pagination offset. |
-
 ```json
 {
-  "searchText": "rollout plan",
-  "size": 20
+  "query": "hello world",
+  "roomIds": ["r1", "r2"],
+  "size": 25,
+  "offset": 0
 }
 ```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Full-text query. Empty string is rejected. |
+| `roomIds` | string[] | no | Scope the search to these rooms. Omit for global search across all accessible rooms. Unknown room IDs and rooms the user cannot access are silently excluded (enforced by the ES terms-lookup + restricted-rooms floor). |
+| `size` | integer | no | Page size. Default `25`, capped at `100`. |
+| `offset` | integer | no | Page offset. Default `0`. |
 
 ##### Success response
 
-| Field   | Type                    | Notes |
-|---------|-------------------------|-------|
-| `total` | number                  | Total hits matching the query. |
-| `results` | array<MessageSearchHit> | Page of message hits. |
-
-`MessageSearchHit`:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `messageId` | string |       |
-| `roomId` | string |       |
-| `siteId` | string |       |
-| `userId` | string | Sender's internal user ID. |
-| `userAccount` | string | Sender's account. |
-| `content` | string | The message body. |
-| `createdAt` | string | RFC 3339. |
-| `threadParentMessageId` | string | Optional. |
-| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
-
 ```json
 {
-  "total": 42,
-  "results": [
+  "messages": [
     {
-      "messageId": "01970a4f8c2d7c9aQRST",
-      "roomId": "01970a4f8c2d7c9aQ",
-      "siteId": "siteA",
-      "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "messageId": "m1",
+      "roomId": "r1",
+      "siteId": "site-a",
       "userAccount": "alice",
-      "content": "let's discuss the rollout plan tomorrow",
-      "createdAt": "2026-05-06T07:55:00Z"
+      "content": "hello world (edited)",
+      "createdAt": "2026-04-01T12:00:00Z",
+      "editedAt": "2026-04-01T12:05:00Z",
+      "updatedAt": "2026-04-01T12:06:00Z",
+      "threadParentMessageId": "p0",
+      "threadParentMessageCreatedAt": "2026-04-01T11:58:00Z"
     }
-  ]
+  ],
+  "total": 42
 }
 ```
 
+| Field | Type | Notes |
+|---|---|---|
+| `messages` | SearchMessage[] | Per-hit projection. Always an array (empty `[]` when no results). |
+| `total` | integer | Total matching hits (may exceed `messages.length` when paginating). |
+
+**`SearchMessage` fields** (all sourced directly from the ES message index — no Mongo round-trip):
+
+| Field | Type | Omitted when |
+|---|---|---|
+| `messageId` | string | — |
+| `roomId` | string | — |
+| `siteId` | string | — |
+| `userAccount` | string | — |
+| `content` | string | — |
+| `createdAt` | RFC3339 timestamp | — |
+| `editedAt` | RFC3339 timestamp (nullable) | omitted when the message has never been edited |
+| `updatedAt` | RFC3339 timestamp (nullable) | omitted when the message has never been mutated server-side (edit, soft-delete, etc.) |
+| `threadParentMessageId` | string | omitted when not a thread reply |
+| `threadParentMessageCreatedAt` | RFC3339 timestamp (nullable) | omitted when not a thread reply |
+
+Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via the `user-service` lookups (`user.{siteID}.profile.getByName`) or their own subscription cache.
+
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference).
+
+| Code | Reason |
+|---|---|
+| `bad_request` | `query` is empty; or `size`/`offset` is negative. |
+| `internal` | ES backend failure or cache failure with no ES fallback. Raw errors are never leaked to the client. |
+
+**Access control for `roomIds`:**
+- Rooms in neither the user's subscription set nor the restricted-rooms map are silently excluded.
+- Restricted rooms (those with an HSS floor) are included only for messages posted after the user's `historySharedSince` boundary.
 
 ##### Triggered events — success path
 
@@ -1473,54 +1575,48 @@ See [Error envelope](#5-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.search.rooms`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-Full-text search across rooms the requester is a member of (spotlight search).
+Full-text search across rooms the requester is subscribed to. Results are served directly from the spotlight ES index (one document per `(account, room)` pair), in ES relevance order.
 
 ##### Request body
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `searchText` | string | yes | The query. |
-| `scope`      | string | no  | `"all"` (default), `"channel"`, or `"dm"`. The value `"app"` is reserved and currently rejected. |
-| `size`       | number | no  | Page size. |
-| `offset`     | number | no  | Pagination offset. |
+| `query`    | string | **yes** | Case-insensitive prefix/substring match on room name. Whitespace-only is rejected. |
+| `roomType` | string | no      | `"all"` (default), `"channel"`, or `"dm"`. The value `"app"` and any other value are rejected with `bad_request`. |
+| `size`     | number | no      | Page size. Default `25`, capped at `100`. |
+| `offset`   | number | no      | Pagination offset. Default `0`. |
 
 ```json
 {
-  "searchText": "engineering",
-  "scope": "channel",
+  "query": "engineering",
+  "roomType": "channel",
   "size": 20
 }
 ```
 
 ##### Success response
 
-| Field   | Type                  | Notes |
-|---------|-----------------------|-------|
-| `total` | number                | Total hits. |
-| `results` | array<RoomSearchHit> | Page of room hits. |
+| Field   | Type              | Notes |
+|---------|-------------------|-------|
+| `rooms` | array<SearchRoom> | Page of room results. Empty slice when no matches, never null. |
 
-`RoomSearchHit`:
+`SearchRoom` (projection of the spotlight ES document):
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `roomId` | string |       |
-| `roomName` | string |       |
-| `roomType` | string | The internal letter code: `p` (channel), `d` (DM), etc. — different from the request `scope` values. |
-| `userAccount` | string | The requester's account (echoed). |
-| `siteId` | string |       |
-| `joinedAt` | string | RFC 3339. When the requester joined this room. |
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `roomId`   | string | The room's ID. |
+| `name`     | string | The room's display name. |
+| `roomType` | string | `"channel"`, `"dm"`, or omitted for other types. |
+| `siteId`   | string | The room's home site. |
 
 ```json
 {
-  "total": 3,
-  "results": [
+  "rooms": [
     {
       "roomId": "01970a4f8c2d7c9aQ",
-      "roomName": "engineering-announcements",
-      "roomType": "p",
-      "userAccount": "alice",
-      "siteId": "siteA",
-      "joinedAt": "2026-05-01T10:00:00Z"
+      "name": "engineering-announcements",
+      "roomType": "channel",
+      "siteId": "site-a"
     }
   ]
 }
@@ -1528,7 +1624,12 @@ Full-text search across rooms the requester is a member of (spotlight search).
 
 ##### Error response
 
-See [Error envelope](#5-error-envelope-reference). Returns an error when `scope=app` is used.
+See [Error envelope](#6-error-envelope-reference).
+
+| Code          | Reason |
+|---------------|--------|
+| `bad_request` | `query` is missing, empty, or whitespace-only; or `roomType` is `"app"` or an unrecognized value; or `size`/`offset` is negative. |
+| `internal`    | Elasticsearch backend failure (transient or permanent). The raw error is never leaked to the client. |
 
 ##### Triggered events — success path
 
@@ -1537,6 +1638,139 @@ See [Error envelope](#5-error-envelope-reference). Returns an error when `scope=
 ##### Triggered events — error path
 
 `None — error returned only via the reply subject.`
+
+---
+
+#### Search Apps
+
+**Subject:** `chat.user.{account}.request.search.apps`
+
+**Auth:** the `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout).
+
+**Current behavior (prototype):** results are matched by `query` (and optional `assistantEnabled`) only. The response is **not** yet subscription-scoped — every app whose name matches the query is returned.
+
+**Planned behavior:** the response will be scoped to apps the caller has subscribed to once the pipeline's `$lookup` access guard against the `subscriptions` collection is enabled. See `TODO(searchApps-pipeline)` in `search-service/query_apps.go`.
+
+**Request body:**
+```json
+{
+  "query": "weather",
+  "assistantEnabled": true,
+  "size": 25,
+  "offset": 0
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
+| `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
+| `size` | integer | no | Page size. Default `25`, capped at `100`. |
+| `offset` | integer | no | Page offset. Default `0`. |
+
+**Response body:**
+```json
+{
+  "apps": [
+    {
+      "id": "a1",
+      "name": "Weather",
+      "description": "...",
+      "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "..." },
+      "sponsors": [{ "name": "...", "phone": "..." }]
+    }
+  ]
+}
+```
+
+**Errors:**
+
+| Category | Reason |
+|---|---|
+| `bad_request` | Validation failures (`query` missing/blank, negative `size`/`offset`). |
+| `internal` | Backend failure (transient or permanent). The raw error is never leaked to the client. |
+
+These are documentation categories. The wire error envelope is `{ "error": "<human-readable reason>", "code": "<category>" }` per `pkg/model.ErrorResponse` (see §5).
+
+---
+
+#### Search Users
+
+**Subject:** `chat.user.{account}.request.search.users`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Proxy search for users via the third-party HR endpoint. The `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout) and is used for logging/metrics only — company-scoping is enforced by the third-party endpoint.
+
+No pagination parameters — the third-party endpoint hardcodes offset=0, limit=25.
+
+**Request body:**
+```json
+{
+  "query": "alice"
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
+
+**Response body — raw JSON array (no envelope):**
+```json
+[
+  {
+    "account": "alice",
+    "engName": "Alice Wang",
+    "chineseName": "愛麗絲王"
+  }
+]
+```
+
+The response is a top-level JSON array of `SearchUser` objects (no wrapping object). The full field set mirrors the legacy `GET /api/v3/users` response shape — see `pkg/model.SearchUser` for the authoritative list.
+
+**Errors:**
+
+| Code | Reason |
+|---|---|
+| `bad_request` | `query` is missing, empty, or whitespace-only. |
+| `internal` | Third-party HR endpoint unavailable or returned a non-2xx status. The raw third-party error is never forwarded to the caller. |
+
+---
+
+### 3.4 user-service (mock)
+
+> **Dev-only.** Implemented by `mock-user-service` with hardcoded
+> responses. Subjects and shapes are stable; switch to a real
+> implementation later by swapping the handler bodies.
+
+All subjects share the prefix `chat.user.{account}.request.user.{siteID}.`
+unless noted. siteID must match the deployed mock's `SITE_ID`; otherwise
+the reply is `{"error":"unknown site","code":"not_found"}`.
+
+| # | Suffix | Builder | Request | Response |
+|---|---|---|---|---|
+| 1 | `status.getByName` | `subject.UserStatusGetByName(account, siteID)` | `{"name": "<string>"}` | `{"name": "<echoed>", "statusText": "available", "statusIsShow": true}` |
+| 2 | `status.set` | `subject.UserStatusSet(account, siteID)` | `{"statusText": "<string>", "statusIsShow": <bool>}` | `{"success": true}` |
+| 3 | `profile.getByName` | `subject.UserProfileGetByName(account, siteID)` | `{"name": "<string>"}` | `{"name": "<echoed>", "displayName": "Mock User", "email": "mock@example.test"}` |
+| 4 | `subscription.getCurrent` | `subject.UserSubscriptionGetCurrent(account, siteID)` | `{"favorite": <bool?>, "membersContain": <string[]?>, "accountNames": <string[]?>}` | `{"subscriptions": [<Subscription>, <Subscription>], "total": 2}` |
+| 5 | `subscription.getRooms` | `subject.UserSubscriptionGetRooms(account, siteID)` | same as #4 | same as #4 |
+| 6 | `subscription.getChannels` | `subject.UserSubscriptionGetChannels(account, siteID)` | same as #4 | same as #4 |
+| 7 | `subscription.getDM` | `subject.UserSubscriptionGetDM(account, siteID)` | `{"targetAccount": "<string>"}` | `{"subscription": <Subscription with User.Account == targetAccount>}` |
+| 8 | `subscription.getApps` | `subject.UserSubscriptionGetApps(account, siteID)` | `{"favorite": <bool?>}` | `{"subscriptions": [<Subscription>, <Subscription>], "total": 2}` |
+| 9 | `subscription.subscribeApp` | `subject.UserSubscriptionSubscribeApp(account, siteID)` | `{"appId": "<string>"}` | `{"success": true}` |
+| 10 | `subscription.unsubscribeApp` | `subject.UserSubscriptionUnsubscribeApp(account, siteID)` | `{"appId": "<string>"}` | `{"success": true}` |
+| 11 | `room.{roomID}.subscription.get` | `subject.UserRoomSubscriptionGet(account, siteID, roomID)` | _no body_ | `{"subscription": <Subscription with RoomID == roomID>}` |
+| 12 | `apps.list` | `subject.UserAppsList(account, siteID)` | _no body_ | `{"apps": [<App>, <App>], "total": 2}` |
+| 13 | `subscription.count` | `subject.UserSubscriptionCount(account, siteID)` | `{"unread": <bool>}` | `{"count": 42}` |
+
+`<Subscription>` and `<App>` are the standard `pkg/model.Subscription`
+and `pkg/model.App` JSON shapes. Filter fields on request bodies (`favorite`,
+`membersContain`, `accountNames`, `unread`) are accepted and ignored by the
+mock — every list endpoint returns the same two mock entries regardless of
+input, and `subscription.count` always returns `42`.
+
+**Error envelope:** all routes return the standard `{"error": "...", "code": "..."}`
+shape on failure. The only error returned by the mock is `unknown site`
+(`code: not_found`).
 
 ---
 
@@ -1628,7 +1862,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 
 #### Error response
 
-Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#5-error-envelope-reference). Common errors: `"invalid message ID \"…\": must be a 20-char base62 string"`, `"content must not be empty"`, `"content exceeds maximum size of 20480 bytes"`, `"user alice is not subscribed to room …"`, `"validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set"`.
+Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6-error-envelope-reference). Common errors: `"invalid message ID \"…\": must be a 20-char base62 string"`, `"content must not be empty"`, `"content exceeds maximum size of 20480 bytes"`, `"user alice is not subscribed to room …"`, `"validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set"`.
 
 ```json
 { "error": "content must not be empty" }
@@ -1747,20 +1981,66 @@ When validation fails, the gatekeeper publishes the error envelope to `chat.user
 
 ---
 
-## 5. Error envelope reference
+## 5. Server-Pushed Events
+
+Server-pushed events are delivered to clients on NATS subjects the client is already authorized for, without a corresponding client RPC. They are distinct from the "Triggered events" sections in §3 and §4, which document events that arise as a side-effect of a specific RPC.
+
+### 5.1 Room Encryption Keys
+
+Each room has a P-256 keypair generated server-side at create time. Channel rooms use the key for end-to-end message encryption: `broadcast-worker` populates `encryptedMessage` on channel events (§4.1) and clients use the private key to decrypt. DM and botDM rooms still receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+
+#### Subject
+
+```text
+chat.user.{account}.event.room.key
+```
+
+Clients are already authorized for `chat.user.{theirAccount}.>` and receive key events on this subject without additional setup.
+
+#### Payload (`RoomKeyEvent`)
+
+```json
+{
+  "roomId": "<room id>",
+  "version": 0,
+  "privateKey": "<base64-encoded 32-byte P-256 scalar>",
+  "timestamp": 1747000000000
+}
+```
+
+`[]byte` fields marshal to standard base64 in JSON. The room's public key is server-side only (used by `broadcast-worker` to encrypt outgoing messages) and is not transmitted to clients — clients only need the private key to decrypt incoming ciphertext.
+
+#### Client behavior
+
+1. On every `RoomKeyEvent`, store the key under `(roomId, version) → privateKey`.
+2. When decrypting an incoming message, use the `version` stamped in the encrypted payload to look up the corresponding private key.
+3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
+
+#### When clients receive `RoomKeyEvent`s
+
+- **Room creation (all room types):** sent to every initial member.
+- **Add member (channels only):** sent to each newly-added account; existing members do not receive a duplicate event.
+- **Remove member (channels only):** the server rotates the room key. Surviving members receive a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving events for the room.
+
+Removed members keep prior keys for decrypting historical messages but cannot decrypt anything published after the rotation.
+
+---
+
+## 6. Error envelope reference
 
 Every error response — over NATS reply subjects and HTTP — uses the same envelope:
 
 ```json
-{ "error": "<human-readable reason>" }
+{ "error": "<human-readable reason>", "code": "<optional machine-readable code>" }
 ```
 
 | Field   | Type   | Notes |
 |---------|--------|-------|
 | `error` | string | Human-readable, sanitized at the service boundary. Do not parse or pattern-match against the text. |
+| `code`  | string | Optional. Machine-readable category emitted by services using `natsrouter`'s typed `RouteError` (e.g. `bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, `unavailable`). Absent for plain `natsutil.ReplyError` responses. |
 
-**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError`. The reply body is the JSON object above.
+**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError` (no `code`) or `natsrouter`'s typed error replies (with `code`).
 
 **HTTP errors** (auth-service §2.2) use the same shape with an HTTP status code in the response line.
 
-Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text.
+Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text. When `code` is present, prefer matching against the documented constant rather than the human-readable message.

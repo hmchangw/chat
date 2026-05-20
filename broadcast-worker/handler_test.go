@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomcrypto"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -57,8 +59,19 @@ var (
 	}
 )
 
+func metaOf(r *model.Room) roommetacache.Meta {
+	return roommetacache.Meta{
+		ID:        r.ID,
+		Type:      r.Type,
+		Name:      r.Name,
+		SiteID:    r.SiteID,
+		UserCount: r.UserCount,
+	}
+}
+
 func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: roomID, UserID: "user-1", UserAccount: "sender",
@@ -67,6 +80,81 @@ func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	}
 	data, _ := json.Marshal(evt)
 	return data
+}
+
+func TestHandleMessage_DispatchesByEvent(t *testing.T) {
+	msgTime := time.Date(2026, 3, 26, 9, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		event       model.EventType
+		wantErr     bool
+		wantErrText string
+	}{
+		{
+			name:    "created event",
+			event:   model.EventCreated,
+			wantErr: false,
+		},
+		{
+			name:        "updated event without timestamps fails missing-timestamp guard",
+			event:       model.EventUpdated,
+			wantErr:     true,
+			wantErrText: "missing EditedAt",
+		},
+		{
+			name:        "deleted event without timestamp fails missing-timestamp guard",
+			event:       model.EventDeleted,
+			wantErr:     true,
+			wantErrText: "missing UpdatedAt",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			us := NewMockUserStore(ctrl)
+			pub := &mockPublisher{}
+			keyStore := NewMockRoomKeyProvider(ctrl)
+
+			evt := model.MessageEvent{
+				Event:  tc.event,
+				SiteID: "site-a",
+				Message: model.Message{
+					ID: "msg-1", RoomID: "room-1", UserID: "user-1", UserAccount: "sender",
+					Content: "hello", CreatedAt: msgTime,
+				},
+			}
+			data, err := json.Marshal(evt)
+			require.NoError(t, err)
+
+			if !tc.wantErr {
+				// Created path: expect the full created-flow mock calls.
+				key := testRoomKey(t)
+				keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
+				store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+				store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
+			}
+
+			h := NewHandler(store, us, pub, keyStore, true)
+			err = h.HandleMessage(context.Background(), data)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrText)
+				assert.Empty(t, pub.records, "stub handlers must not publish")
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, pub.records, 1)
+			gotEvt := model.RoomEvent{}
+			require.NoError(t, json.Unmarshal(pub.records[0].data, &gotEvt))
+			assert.Equal(t, model.RoomEventNewMessage, gotEvt.Type)
+		})
+	}
 }
 
 func TestHandler_HandleMessage_ChannelRoom(t *testing.T) {
@@ -117,7 +205,8 @@ func TestHandler_HandleMessage_ChannelRoom(t *testing.T) {
 			keyStore := NewMockRoomKeyProvider(ctrl)
 			keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-			store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(testChannelRoom, nil)
+			store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
+			store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 
 			if tc.wantSetMentions != nil {
 				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantSetMentions)).Return(nil)
@@ -207,6 +296,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			pub := &mockPublisher{}
 
 			evt := model.MessageEvent{
+				Event:  model.EventCreated,
 				SiteID: "site-a",
 				Message: model.Message{
 					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
@@ -215,7 +305,8 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			}
 			data, _ := json.Marshal(evt)
 
-			store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
+			store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+			store.EXPECT().GetRoomMeta(gomock.Any(), "dm-1").Return(metaOf(testDMRoom), nil)
 			store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 
 			if tc.wantSetMentions {
@@ -283,7 +374,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil, errors.New("not found"))
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("not found"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -298,7 +389,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil, errors.New("db error"))
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -314,7 +405,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		pub := &mockPublisher{}
 
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return(testUsers[:1], nil) // inside Resolve
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
@@ -335,7 +427,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 			ID: "room-1", Name: "general", Type: "unknown",
 			SiteID: "site-a", UserCount: 5,
 		}
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(unknownRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(unknownRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
@@ -351,13 +444,15 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "dm-1").Return(metaOf(testDMRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		h := NewHandler(store, us, pub, keyStore, true)
 		evt := model.MessageEvent{
+			Event:  model.EventCreated,
 			SiteID: "site-a",
 			Message: model.Message{
 				ID: "msg-1", RoomID: "dm-1", UserID: "user-1", UserAccount: "sender",
@@ -382,7 +477,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", []string{"sender"}).Return(nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // mention lookup
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // sender lookup
@@ -409,7 +505,8 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, errors.New("db error")) // sender lookup
 
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -448,13 +545,15 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	pub := &failingPublisher{failAfter: 0}
 
 	us := NewMockUserStore(ctrl)
-	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(testDMRoom, nil)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "dm-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "dm-1").Return(metaOf(testDMRoom), nil)
 	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
 	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil) // sender lookup
 
 	keyStore := NewMockRoomKeyProvider(ctrl)
 	h := NewHandler(store, us, pub, keyStore, true)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
@@ -480,7 +579,8 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, nil)
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -499,7 +599,8 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(nil, errors.New("valkey down"))
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -520,7 +621,8 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		keyStore := NewMockRoomKeyProvider(ctrl)
 		keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(key, nil)
 
-		store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(testChannelRoom, nil)
+		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}}, nil)
 
 		h := NewHandler(store, us, pub, keyStore, true)
@@ -600,7 +702,8 @@ func TestHandler_FetchAndUpdateRoom_Missing(t *testing.T) {
 	us := NewMockUserStore(ctrl)
 	pub := &mockPublisher{}
 
-	store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "ghost-room", "msg-1", msgTime, false).Return(nil, mongo.ErrNoDocuments)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "ghost-room", "msg-1", msgTime, false).
+		Return(fmt.Errorf("update room last message ghost-room: %w", mongo.ErrNoDocuments))
 
 	keyStore := NewMockRoomKeyProvider(ctrl)
 	h := NewHandler(store, us, pub, keyStore, true)
@@ -609,6 +712,352 @@ func TestHandler_FetchAndUpdateRoom_Missing(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, mongo.ErrNoDocuments)
 	assert.Empty(t, pub.records)
+}
+
+func TestHandleUpdated_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	edited := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: edited.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			Content:     "updated content",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			EditedAt:    &edited,
+			UpdatedAt:   &edited,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.RoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
+	assert.Equal(t, roomID, roomEvt.RoomID)
+	assert.Equal(t, "site-a", roomEvt.SiteID)
+	require.NotNil(t, roomEvt.MessageEdited)
+	assert.Equal(t, "msg-1", roomEvt.MessageEdited.MessageID)
+	assert.Equal(t, "updated content", roomEvt.MessageEdited.NewContent)
+	assert.Empty(t, roomEvt.MessageEdited.EncryptedNewContent)
+	assert.Equal(t, "alice", roomEvt.MessageEdited.EditedBy)
+	assert.True(t, roomEvt.MessageEdited.EditedAt.Equal(edited))
+	assert.True(t, roomEvt.MessageEdited.UpdatedAt.Equal(edited))
+}
+
+func TestHandleUpdated_EncryptedChannel_EncryptsContent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	key := testRoomKey(t)
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+	keyStore.EXPECT().Get(gomock.Any(), roomID).Return(key, nil)
+
+	edited := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: edited.UnixMilli(),
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserID: "u-alice", UserAccount: "alice",
+			Content:   "secret edit",
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			EditedAt:  &edited, UpdatedAt: &edited,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.RoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	require.NotNil(t, roomEvt.MessageEdited)
+	assert.Empty(t, roomEvt.MessageEdited.NewContent, "plaintext must be cleared when encrypted")
+	require.NotEmpty(t, roomEvt.MessageEdited.EncryptedNewContent)
+	var env roomcrypto.EncryptedMessage
+	require.NoError(t, json.Unmarshal(roomEvt.MessageEdited.EncryptedNewContent, &env))
+	assert.Equal(t, key.Version, env.Version)
+	plaintext, err := decryptForTest(&env, key.KeyPair.PrivateKey)
+	require.NoError(t, err)
+	assert.Equal(t, "secret edit", plaintext)
+}
+
+func TestHandleUpdated_MissingEditedAt_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event: model.EventUpdated,
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserAccount: "alice", Content: "x",
+		},
+		// EditedAt / UpdatedAt deliberately nil
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err = h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing EditedAt")
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleDeleted_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	deletedAt := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    "site-a",
+		Timestamp: deletedAt.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:   &deletedAt,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.RoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
+	assert.Equal(t, roomID, roomEvt.RoomID)
+	assert.Equal(t, "site-a", roomEvt.SiteID)
+	require.NotNil(t, roomEvt.MessageDeleted)
+	assert.Equal(t, "msg-1", roomEvt.MessageDeleted.MessageID)
+	assert.Equal(t, "alice", roomEvt.MessageDeleted.DeletedBy)
+	assert.True(t, roomEvt.MessageDeleted.DeletedAt.Equal(deletedAt))
+	assert.True(t, roomEvt.MessageDeleted.UpdatedAt.Equal(deletedAt))
+}
+
+func TestHandleDeleted_MissingUpdatedAt_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event: model.EventDeleted,
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserAccount: "alice",
+		},
+		// UpdatedAt deliberately nil
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err = h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing UpdatedAt")
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleUpdated_DMRoom_FansOutToBothMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-alice-bob"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	edited := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: edited.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			Content:     "updated content",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			EditedAt:    &edited,
+			UpdatedAt:   &edited,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2, "per-user fan-out: one publish per DM member")
+	subjects := map[string]bool{}
+	for _, c := range pub.records {
+		subjects[c.subject] = true
+		var roomEvt model.RoomEvent
+		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
+		assert.Equal(t, roomID, roomEvt.RoomID)
+		assert.Equal(t, "site-a", roomEvt.SiteID)
+		require.NotNil(t, roomEvt.MessageEdited)
+		assert.Equal(t, "msg-1", roomEvt.MessageEdited.MessageID)
+		assert.Equal(t, "updated content", roomEvt.MessageEdited.NewContent)
+		assert.Equal(t, "alice", roomEvt.MessageEdited.EditedBy)
+		assert.True(t, roomEvt.MessageEdited.EditedAt.Equal(edited))
+		assert.True(t, roomEvt.MessageEdited.UpdatedAt.Equal(edited))
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestHandleDeleted_DMRoom_FansOutToBothMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-alice-bob"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	deletedAt := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    "site-a",
+		Timestamp: deletedAt.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:   &deletedAt,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2, "per-user fan-out: one publish per DM member")
+	subjects := map[string]bool{}
+	for _, c := range pub.records {
+		subjects[c.subject] = true
+		var roomEvt model.RoomEvent
+		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
+		assert.Equal(t, roomID, roomEvt.RoomID)
+		assert.Equal(t, "site-a", roomEvt.SiteID)
+		require.NotNil(t, roomEvt.MessageDeleted)
+		assert.Equal(t, "msg-1", roomEvt.MessageDeleted.MessageID)
+		assert.Equal(t, "alice", roomEvt.MessageDeleted.DeletedBy)
+		assert.True(t, roomEvt.MessageDeleted.DeletedAt.Equal(deletedAt))
+		assert.True(t, roomEvt.MessageDeleted.UpdatedAt.Equal(deletedAt))
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestHandleUpdated_BotDMRoom_SkipsBotAccount(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "botdm-alice-helper.bot"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeBotDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "helper.bot"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	edited := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: edited.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			Content:     "updated content",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			EditedAt:    &edited,
+			UpdatedAt:   &edited,
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "botDM: only the human recipient gets the live event")
+	assert.Equal(t, subject.UserRoomEvent("alice"), pub.records[0].subject)
 }
 
 func TestHandler_HandleMessage_ChannelEncryptionDisabled(t *testing.T) {
@@ -648,7 +1097,8 @@ func TestHandler_HandleMessage_ChannelEncryptionDisabled(t *testing.T) {
 			us := NewMockUserStore(ctrl)
 			pub := &mockPublisher{}
 
-			store.EXPECT().FetchAndUpdateRoom(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(testChannelRoom, nil)
+			store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, tc.wantMentionAll).Return(nil)
+			store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 			if tc.wantSetMentions != nil {
 				store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.InAnyOrder(tc.wantSetMentions)).Return(nil)
 			}

@@ -25,14 +25,15 @@ import (
 )
 
 type config struct {
-	NatsURL       string          `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string          `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string          `env:"SITE_ID"         envDefault:"default"`
-	MongoURI      string          `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string          `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string          `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string          `env:"MONGO_PASSWORD"  envDefault:""`
-	Bootstrap     bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL       string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string                  `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string                  `env:"SITE_ID"         envDefault:"default"`
+	MongoURI      string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string                  `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername string                  `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
+	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -92,18 +93,24 @@ func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []st
 	return users, nil
 }
 
+// BulkCreateSubscriptions inserts the supplied subs idempotently. Each is
+// keyed by (roomId, u.account) and written via $setOnInsert so an existing
+// sub (from a previous delivery, or with read-state already accumulated) is
+// preserved. Redelivered cross-site events become no-ops on Mongo.
 func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
 	if len(subs) == 0 {
 		return nil
 	}
-	docs := make([]interface{}, len(subs))
+	models := make([]mongo.WriteModel, len(subs))
 	for i, sub := range subs {
-		docs[i] = sub
+		models[i] = mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"roomId": sub.RoomID, "u.account": sub.User.Account}).
+			SetUpdate(bson.M{"$setOnInsert": sub}).
+			SetUpsert(true)
 	}
-	opts := options.InsertMany().SetOrdered(false)
-	_, err := s.subCol.InsertMany(ctx, docs, opts)
-	if err != nil && !mongo.IsDuplicateKeyError(err) {
-		return fmt.Errorf("bulk create subscriptions: %w", err)
+	opts := options.BulkWrite().SetOrdered(false)
+	if _, err := s.subCol.BulkWrite(ctx, models, opts); err != nil {
+		return fmt.Errorf("bulk upsert subscriptions: %w", err)
 	}
 	return nil
 }
@@ -228,11 +235,7 @@ func main() {
 	inboxCfg := stream.Inbox(cfg.SiteID)
 
 	// Local lane is reserved for search-sync-worker; scope to aggregate.> only.
-	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, jetstream.ConsumerConfig{
-		Durable:        "inbox-worker",
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{subject.InboxAggregateAll(cfg.SiteID)},
-	})
+	cons, err := js.CreateOrUpdateConsumer(ctx, inboxCfg.Name, buildConsumerConfig(cfg.Consumer, cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -269,4 +272,15 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 	)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// inbox-worker. The site-scoped FilterSubjects keeps inbox-worker on the
+// federated `aggregate.>` lane only; same-site direct publishes are
+// reserved for search-sync-worker.
+func buildConsumerConfig(s stream.ConsumerSettings, siteID string) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
+	cc.Durable = "inbox-worker"
+	cc.FilterSubjects = []string{subject.InboxAggregateAll(siteID)}
+	return cc
 }

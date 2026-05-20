@@ -269,6 +269,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 			msg.ThreadParentMessageCreatedAt = &pc
 		}
 		evt := model.MessageEvent{
+			Event:     model.EventCreated,
 			Message:   msg,
 			SiteID:    g.cfg.SiteID,
 			Timestamp: now.UnixMilli(),

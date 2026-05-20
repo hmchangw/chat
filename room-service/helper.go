@@ -41,6 +41,10 @@ var (
 	errChannelNameRequired = errors.New("channel name is required")
 	errChannelNameTooLong  = errors.New("channel name must be at most 100 characters")
 	errUserNotFound        = errors.New("user not found")
+
+	errMessageNotFound     = errors.New("message not found")
+	errMessageRoomMismatch = errors.New("message does not belong to this room")
+	errNotMessageSender    = errors.New("only the message sender can view read receipts")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -188,6 +192,9 @@ func sanitizeError(err error) string {
 		errors.Is(err, errChannelNameRequired),
 		errors.Is(err, errChannelNameTooLong),
 		errors.Is(err, errUserNotFound),
+		errors.Is(err, errMessageNotFound),
+		errors.Is(err, errMessageRoomMismatch),
+		errors.Is(err, errNotMessageSender),
 		errors.Is(err, &dmExistsError{}),
 		errors.Is(err, &channelExpandTimeoutError{}):
 		return err.Error()

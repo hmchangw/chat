@@ -10,19 +10,18 @@ import (
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,RoomKeyProvider
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository
 
 type MessageReader interface {
-	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesBetweenDesc(ctx context.Context, roomID string, since, before time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
-	GetAllMessagesAsc(ctx context.Context, roomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetMessagesAfter(ctx context.Context, roomID string, after time.Time, ceiling time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllMessagesAsc(ctx context.Context, roomID string, floor, ceiling time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
-	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, before, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error)
 }
 
@@ -45,8 +44,12 @@ type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
 }
 
+// RoomRepository reads room metadata required by history handlers:
+// MinUserLastSeenAt as a per-user read-receipt floor surfaced to clients, and
+// GetRoomTimes (lastMsgAt, createdAt) for bucket-walk bounds.
 type RoomRepository interface {
 	GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error)
+	GetRoomTimes(ctx context.Context, roomID string) (lastMsgAt, createdAt time.Time, err error)
 }
 
 // EventPublisher publishes live events to a NATS subject. Implemented by a
@@ -61,13 +64,6 @@ type ThreadRoomRepository interface {
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 }
 
-// RoomKeyProvider fetches the current encryption key for a room.
-// Defined here (not imported from pkg/roomkeystore directly) to keep the
-// dependency contract narrow — only Get is used by history-service.
-type RoomKeyProvider interface {
-	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
-}
-
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
 	msgReader     MessageReader
@@ -76,12 +72,17 @@ type HistoryService struct {
 	rooms         RoomRepository
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
-	keyProvider   RoomKeyProvider
-	encrypt       bool
+	historyFloor  time.Duration // from MESSAGE_HISTORY_FLOOR_DAYS
 }
 
-// New creates a HistoryService with the given repositories and event publisher.
-func New(msgs MessageRepository, subs SubscriptionRepository, rooms RoomRepository, pub EventPublisher, threadRooms ThreadRoomRepository, keyProvider RoomKeyProvider, encrypt bool) *HistoryService {
+func New(
+	msgs MessageRepository,
+	subs SubscriptionRepository,
+	rooms RoomRepository,
+	pub EventPublisher,
+	threadRooms ThreadRoomRepository,
+	historyFloor time.Duration,
+) *HistoryService {
 	return &HistoryService{
 		msgReader:     msgs,
 		msgWriter:     msgs,
@@ -89,8 +90,7 @@ func New(msgs MessageRepository, subs SubscriptionRepository, rooms RoomReposito
 		rooms:         rooms,
 		publisher:     pub,
 		threadRooms:   threadRooms,
-		keyProvider:   keyProvider,
-		encrypt:       encrypt,
+		historyFloor:  historyFloor,
 	}
 }
 
@@ -100,8 +100,12 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
 	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
 	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
-	natsrouter.Register(r, subject.MsgEditPattern(siteID), s.EditMessage)
-	natsrouter.Register(r, subject.MsgDeletePattern(siteID), s.DeleteMessage)
+	natsrouter.Register(r, subject.MsgEditPattern(siteID), func(c *natsrouter.Context, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
+		return s.EditMessage(c, siteID, req)
+	})
+	natsrouter.Register(r, subject.MsgDeletePattern(siteID), func(c *natsrouter.Context, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
+		return s.DeleteMessage(c, siteID, req)
+	})
 	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
 }

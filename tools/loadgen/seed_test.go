@@ -1,61 +1,92 @@
-//go:build integration
-
 package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
 
-	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
-// TestSeedAndTeardown exercises seed.go end-to-end against a real
-// MongoDB via testcontainers. Verifies (1) Seed inserts the expected
-// documents in users/rooms/subscriptions, (2) Seed is idempotent, and
-// (3) Teardown drops the seeded collections.
-func TestSeedAndTeardown(t *testing.T) {
-	ctx := context.Background()
-	mongoURI, stop := setupMongo(t)
-	defer stop()
+type fakeRoomKeyStore struct {
+	sets    map[string]roomkeystore.RoomKeyPair
+	deletes []string
+	setErr  error
+	delErr  error
+}
 
-	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
-	require.NoError(t, err)
-	defer mongoutil.Disconnect(ctx, client)
-	db := client.Database("chat_test")
+func newFakeRoomKeyStore() *fakeRoomKeyStore {
+	return &fakeRoomKeyStore{sets: map[string]roomkeystore.RoomKeyPair{}}
+}
 
-	preset, _ := BuiltinPreset("small")
-	fixtures := BuildFixtures(&preset, 42, "site-test")
-
-	// First Seed populates the collections.
-	require.NoError(t, Seed(ctx, db, &fixtures))
-
-	count, err := db.Collection("users").CountDocuments(ctx, bson.M{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(fixtures.Users)), count)
-
-	count, err = db.Collection("rooms").CountDocuments(ctx, bson.M{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(fixtures.Rooms)), count)
-
-	count, err = db.Collection("subscriptions").CountDocuments(ctx, bson.M{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(fixtures.Subscriptions)), count)
-
-	// Second Seed must be idempotent (no duplicate-key errors).
-	require.NoError(t, Seed(ctx, db, &fixtures))
-	count, err = db.Collection("rooms").CountDocuments(ctx, bson.M{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(fixtures.Rooms)), count, "Seed must be idempotent")
-
-	// Teardown drops the seeded collections.
-	require.NoError(t, Teardown(ctx, db))
-	for _, coll := range []string{"users", "rooms", "subscriptions"} {
-		count, err := db.Collection(coll).CountDocuments(ctx, bson.M{})
-		require.NoError(t, err)
-		assert.Zero(t, count, "Teardown must empty %s", coll)
+func (f *fakeRoomKeyStore) Set(_ context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error) {
+	if f.setErr != nil {
+		return 0, f.setErr
 	}
+	f.sets[roomID] = pair
+	return 0, nil
+}
+
+func (f *fakeRoomKeyStore) Delete(_ context.Context, roomID string) error {
+	if f.delErr != nil {
+		return f.delErr
+	}
+	f.deletes = append(f.deletes, roomID)
+	return nil
+}
+
+func TestSeedRoomKeys_WritesOnePerRoom(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	keys := map[string]roomkeystore.RoomKeyPair{
+		"room-a": {PublicKey: []byte("pubA"), PrivateKey: []byte("privA")},
+		"room-b": {PublicKey: []byte("pubB"), PrivateKey: []byte("privB")},
+		"room-c": {PublicKey: []byte("pubC"), PrivateKey: []byte("privC")},
+	}
+
+	require.NoError(t, SeedRoomKeys(context.Background(), ks, keys))
+
+	assert.Len(t, ks.sets, 3)
+	assert.Equal(t, []byte("pubA"), ks.sets["room-a"].PublicKey)
+	assert.Equal(t, []byte("privB"), ks.sets["room-b"].PrivateKey)
+	assert.Equal(t, []byte("pubC"), ks.sets["room-c"].PublicKey)
+}
+
+func TestSeedRoomKeys_KeystoreError(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	ks.setErr = errors.New("boom")
+	keys := map[string]roomkeystore.RoomKeyPair{"room-a": {PublicKey: []byte("p"), PrivateKey: []byte("k")}}
+
+	err := SeedRoomKeys(context.Background(), ks, keys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestSeedRoomKeys_NoRooms(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	require.NoError(t, SeedRoomKeys(context.Background(), ks, nil))
+	assert.Empty(t, ks.sets)
+}
+
+func TestTeardownRoomKeys_DeletesEachRoom(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	require.NoError(t, TeardownRoomKeys(context.Background(), ks, []string{"room-a", "room-b"}))
+	assert.Equal(t, []string{"room-a", "room-b"}, ks.deletes)
+}
+
+func TestTeardownRoomKeys_KeystoreError(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	ks.delErr = errors.New("nope")
+
+	err := TeardownRoomKeys(context.Background(), ks, []string{"room-a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope")
+}
+
+func TestTeardownRoomKeys_NoRooms(t *testing.T) {
+	ks := newFakeRoomKeyStore()
+	require.NoError(t, TeardownRoomKeys(context.Background(), ks, nil))
+	assert.Empty(t, ks.deletes)
 }

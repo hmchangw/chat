@@ -476,6 +476,7 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 		HistorySharedSince: &hss, JoinedAt: hss,
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
@@ -483,7 +484,7 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 
 	var publishedSubj string
 	var publishedData []byte
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
@@ -503,6 +504,7 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 	var published model.RemoveMemberRequest
 	require.NoError(t, json.Unmarshal(publishedData, &published))
 	assert.Equal(t, "alice", published.Requester)
+	assert.Equal(t, model.RoomTypeChannel, published.RoomType, "RoomType must be carried to room-worker")
 }
 
 func TestHandler_RemoveMember_OrgOnly_Rejected(t *testing.T) {
@@ -524,9 +526,10 @@ func TestHandler_RemoveMember_OrgOnly_Rejected(t *testing.T) {
 				ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 				RoomID: "r1", Roles: []model.Role{model.RoleMember},
 			}
+			store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 			store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 				Return(&SubscriptionWithMembership{Subscription: sub, HasOrgMembership: true}, nil)
-			handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
 			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: tc.target})
 			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -543,13 +546,14 @@ func TestHandler_RemoveMember_SelfLeave_NoOrgs_Allowed(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(&SubscriptionWithMembership{Subscription: sub}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(&RoomCounts{MemberCount: 2, OwnerCount: 1}, nil)
 
 	var publishedData []byte
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, _ string, data []byte) error {
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, _ string, data []byte) error {
 		publishedData = data
 		return nil
 	})
@@ -576,6 +580,7 @@ func TestHandler_RemoveMember_LastOwner_Rejected(t *testing.T) {
 				ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 				RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 			}
+			store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 			store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 				Return(&SubscriptionWithMembership{Subscription: target, HasIndividualMembership: true}, nil)
 			if tc.requester != "alice" {
@@ -587,7 +592,7 @@ func TestHandler_RemoveMember_LastOwner_Rejected(t *testing.T) {
 			}
 			store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 				Return(&RoomCounts{MemberCount: 3, OwnerCount: 1}, nil)
-			handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
 			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -604,11 +609,12 @@ func TestHandler_RemoveMember_LastMember_Rejected(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(&RoomCounts{MemberCount: 1, OwnerCount: 0}, nil)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -627,13 +633,14 @@ func TestHandler_RemoveMember_OwnerRemovesOther_Success(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
 		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(&RoomCounts{MemberCount: 3, OwnerCount: 1}, nil)
 	var publishedData []byte
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
 		return nil
 	})
@@ -656,10 +663,11 @@ func TestHandler_RemoveMember_NonOwnerRemovesOther_Rejected(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
 		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(requesterSub, nil)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -674,9 +682,10 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleOwner},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(ownerSub, nil)
 	var publishedData []byte
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
 		return nil
 	})
@@ -693,7 +702,8 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob", OrgID: "eng-org"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -704,7 +714,8 @@ func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
 func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -715,7 +726,7 @@ func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 func TestHandler_RemoveMember_InvalidSubject(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	_, err := handler.handleRemoveMember(context.Background(), "bogus", []byte("{}"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid remove-member subject")
@@ -724,7 +735,7 @@ func TestHandler_RemoveMember_InvalidSubject(t *testing.T) {
 func TestHandler_RemoveMember_InvalidJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, []byte("{not json"))
 	require.Error(t, err)
@@ -734,7 +745,7 @@ func TestHandler_RemoveMember_InvalidJSON(t *testing.T) {
 func TestHandler_RemoveMember_RoomIDMismatch(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r2", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -745,9 +756,10 @@ func TestHandler_RemoveMember_RoomIDMismatch(t *testing.T) {
 func TestHandler_RemoveMember_GetTargetError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -761,11 +773,12 @@ func TestHandler_RemoveMember_OwnerRemoves_RequesterLookupError(t *testing.T) {
 	targetSub := &model.Subscription{
 		User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
 		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -779,11 +792,12 @@ func TestHandler_RemoveMember_CountsError(t *testing.T) {
 	sub := &model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -794,9 +808,10 @@ func TestHandler_RemoveMember_CountsError(t *testing.T) {
 func TestHandler_RemoveMember_OrgPath_RequesterLookupError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -810,11 +825,12 @@ func TestHandler_RemoveMember_PublishError(t *testing.T) {
 	sub := &model.Subscription{
 		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember},
 	}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(&RoomCounts{MemberCount: 3, OwnerCount: 2}, nil)
-	handler := NewHandler(store, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
 		return fmt.Errorf("nats down")
 	})
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
@@ -822,6 +838,27 @@ func TestHandler_RemoveMember_PublishError(t *testing.T) {
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "publish to stream")
+}
+
+func TestHandler_RemoveMember_RejectsNonChannelRoom(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Type: model.RoomTypeDM,
+	}, nil)
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called")
+			return nil
+		},
+	}
+	req := model.RemoveMemberRequest{Account: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleRemoveMember(context.Background(),
+		"chat.user.alice.request.room.r1.site-a.member.remove", data)
+	if err == nil || !strings.Contains(err.Error(), "channel") {
+		t.Fatalf("expected channel-type error, got %v", err)
+	}
 }
 
 // --- Add Members tests ---
@@ -906,7 +943,7 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
-	h := NewHandler(store, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
+	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
 
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		Roles: []model.Role{model.RoleOwner},
@@ -933,7 +970,7 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
-	h := NewHandler(store, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
+	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
 
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		Roles: []model.Role{model.RoleMember},
@@ -2757,4 +2794,296 @@ func TestHandler_MessageRead_UpdateRoomMinError(t *testing.T) {
 	subj := subject.MessageRead("alice", "r1", "site-a")
 	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
 	require.Error(t, err)
+}
+
+func TestHandler_handleMessageReadReceipt(t *testing.T) {
+	const (
+		siteID    = "site-a"
+		account   = "alice"
+		roomID    = "r1"
+		messageID = "m1"
+	)
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	subj := subject.MessageReadReceipt(account, roomID, siteID)
+	body := mustJSON(t, model.ReadReceiptRequest{MessageID: messageID})
+
+	type setup struct {
+		store  *MockRoomStore
+		reader *MockMessageReader
+	}
+	type tc struct {
+		name      string
+		subject   string
+		body      []byte
+		prep      func(s setup)
+		wantErr   error
+		wantSubst string
+		wantReply *model.ReadReceiptResponse
+	}
+
+	tests := []tc{
+		{
+			name:    "happy path",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil)
+				s.store.EXPECT().ListReadReceipts(gomock.Any(), roomID, createdAt, account, gomock.Any()).
+					Return([]ReadReceiptRow{
+						{UserID: "uB", Account: "bob", ChineseName: "鮑勃", EngName: "Bob"},
+					}, nil)
+			},
+			wantReply: &model.ReadReceiptResponse{
+				Readers: []model.ReadReceiptEntry{
+					{UserID: "uB", Account: "bob", ChineseName: "鮑勃", EngName: "Bob"},
+				},
+			},
+		},
+		{
+			name:    "empty readers",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil)
+				s.store.EXPECT().ListReadReceipts(gomock.Any(), roomID, createdAt, account, gomock.Any()).
+					Return([]ReadReceiptRow{}, nil)
+			},
+			wantReply: &model.ReadReceiptResponse{Readers: []model.ReadReceiptEntry{}},
+		},
+		{
+			name:      "invalid subject",
+			subject:   "garbage",
+			body:      body,
+			wantSubst: "invalid",
+		},
+		{
+			name:      "empty messageID",
+			subject:   subj,
+			body:      mustJSON(t, model.ReadReceiptRequest{}),
+			wantSubst: "messageId",
+		},
+		{
+			name:    "not a room member",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(nil, model.ErrSubscriptionNotFound)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil).AnyTimes()
+			},
+			wantErr: errNotRoomMember,
+		},
+		{
+			name:    "message not found",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return("", time.Time{}, "", false, nil)
+			},
+			wantErr: errMessageNotFound,
+		},
+		{
+			name:    "message in another room",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return("other-room", createdAt, account, true, nil)
+			},
+			wantErr: errMessageRoomMismatch,
+		},
+		{
+			name:    "not the sender",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, "bob", true, nil)
+			},
+			wantErr: errNotMessageSender,
+		},
+		{
+			name:    "store error on subscription",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(nil, fmt.Errorf("db down"))
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil).AnyTimes()
+			},
+			wantSubst: "db down",
+		},
+		{
+			name:    "store error on message lookup",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return("", time.Time{}, "", false, fmt.Errorf("cass down"))
+			},
+			wantSubst: "cass down",
+		},
+		{
+			name:    "store error on aggregation",
+			subject: subj,
+			body:    body,
+			prep: func(s setup) {
+				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
+					Return(roomID, createdAt, account, true, nil)
+				s.store.EXPECT().ListReadReceipts(gomock.Any(), roomID, createdAt, account, gomock.Any()).
+					Return(nil, fmt.Errorf("agg failed"))
+			},
+			wantSubst: "agg failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			store := NewMockRoomStore(ctrl)
+			reader := NewMockMessageReader(ctrl)
+			if tt.prep != nil {
+				tt.prep(setup{store: store, reader: reader})
+			}
+
+			h := NewHandler(store, nil, nil, reader, siteID, 1000, 1000, time.Second, nil)
+			gotBytes, err := h.handleMessageReadReceipt(context.Background(), tt.subject, tt.body)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			if tt.wantSubst != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantSubst)
+				return
+			}
+			require.NoError(t, err)
+			var got model.ReadReceiptResponse
+			require.NoError(t, json.Unmarshal(gotBytes, &got))
+			require.Equal(t, *tt.wantReply, got)
+		})
+	}
+}
+
+func TestHandler_CreateRoom_WritesKeyBeforePublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", "alice").
+		Return(1, nil)
+
+	var keyStored bool
+	var publishCalls int
+	keyStore.EXPECT().Set(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error) {
+			assert.NotEmpty(t, roomID)
+			assert.Len(t, pair.PublicKey, 65)
+			assert.Len(t, pair.PrivateKey, 32)
+			keyStored = true
+			return 0, nil
+		})
+
+	publish := func(_ context.Context, subj string, _ []byte) error {
+		// Write-before-publish invariant: room-worker reads the key on canonical
+		// arrival, so Set must complete before the create event is published.
+		assert.True(t, keyStored, "keyStore.Set must run before publishToStream")
+		publishCalls++
+		assert.Equal(t, "chat.room.canonical.site-a.create", subj)
+		return nil
+	}
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: publish}
+
+	req := model.CreateRoomRequest{Name: "general", Users: []string{"bob"}}
+	data, _ := json.Marshal(req)
+	_, err := h.handleCreateRoom(ctxWithReqID(),
+		"chat.user.alice.request.room.site-a.create", data)
+	require.NoError(t, err)
+	assert.Equal(t, 1, publishCalls)
+}
+
+func TestHandler_CreateRoom_AbortsOnKeyStoreSetError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
+	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "", "alice").
+		Return(1, nil)
+	keyStore.EXPECT().Set(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(0, fmt.Errorf("valkey down"))
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called when Set fails")
+			return nil
+		},
+	}
+
+	req := model.CreateRoomRequest{Name: "general", Users: []string{"bob"}}
+	data, _ := json.Marshal(req)
+	_, err := h.handleCreateRoom(ctxWithReqID(),
+		"chat.user.alice.request.room.site-a.create", data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "store room key")
+}
+
+func TestHandler_RemoveMember_StampsBaseKeyVersion(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").Return(
+		&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+		&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1",
+			Roles: []model.Role{model.RoleOwner, model.RoleMember}}, nil)
+	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").Return(
+		&RoomCounts{MemberCount: 5, OwnerCount: 2}, nil)
+	// Read current version; room-worker uses this as the skip-rotation baseline.
+	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(&roomkeystore.VersionedKeyPair{Version: 4}, nil)
+
+	var captured model.RemoveMemberRequest
+	publish := func(_ context.Context, _ string, data []byte) error {
+		require.NoError(t, json.Unmarshal(data, &captured))
+		return nil
+	}
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000, publishToStream: publish}
+
+	req := model.RemoveMemberRequest{Account: "bob"}
+	data, _ := json.Marshal(req)
+	_, err := h.handleRemoveMember(ctxWithReqID(),
+		"chat.user.alice.request.room.r1.site-a.member.remove", data)
+	require.NoError(t, err)
+	assert.Equal(t, 4, captured.BaseKeyVersion, "BaseKeyVersion must be stamped from the current Valkey version")
 }

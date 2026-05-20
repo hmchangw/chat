@@ -35,6 +35,10 @@ type config struct {
 	// ToxiproxyURL is the toxiproxy admin endpoint for the chaos subcommand.
 	// Env: TOXIPROXY_URL (optional, default http://localhost:8474).
 	ToxiproxyURL string `env:"TOXIPROXY_URL" envDefault:"http://localhost:8474"`
+	// Valkey backs the room-key store. Required so loadgen can seed per-room
+	// keypairs that broadcast-worker decrypts when ENCRYPTION_ENABLED=true.
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
 }
 
 func main() {

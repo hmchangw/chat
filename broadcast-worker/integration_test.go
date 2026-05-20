@@ -86,6 +86,7 @@ func TestBroadcastWorker_ChannelRoom_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", Content: "hello", CreatedAt: msgTime,
@@ -131,6 +132,7 @@ func TestBroadcastWorker_ChannelRoom_MentionAll_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m2", RoomID: "r2", UserID: "u1", UserAccount: "alice", Content: "hello @All", CreatedAt: msgTime,
@@ -170,6 +172,7 @@ func TestBroadcastWorker_ChannelRoom_IndividualMention_Integration(t *testing.T)
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m3", RoomID: "r3", UserID: "u1", UserAccount: "alice", Content: "hey @bob", CreatedAt: msgTime,
@@ -219,6 +222,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "m4", RoomID: "dm-1", UserID: "u1", UserAccount: "alice", Content: "hey", CreatedAt: msgTime,
@@ -280,6 +284,7 @@ func TestBroadcastWorker_ChannelRoom_EncryptionDisabled_Integration(t *testing.T
 
 	msgTime := time.Now().UTC().Truncate(time.Millisecond)
 	evt := model.MessageEvent{
+		Event:  model.EventCreated,
 		SiteID: "site-a",
 		Message: model.Message{
 			ID: "mNoEnc", RoomID: "rNoEnc", UserID: "u1", UserAccount: "alice", Content: "plaintext please", CreatedAt: msgTime,
@@ -309,4 +314,49 @@ func TestBroadcastWorker_ChannelRoom_EncryptionDisabled_Integration(t *testing.T
 	assert.Equal(t, "mNoEnc", room.LastMsgID)
 	require.NotNil(t, room.LastMsgAt)
 	assert.WithinDuration(t, msgTime, *room.LastMsgAt, time.Millisecond)
+}
+
+func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-last", Name: "general", Type: model.RoomTypeChannel, UserCount: 2, SiteID: "site-a",
+	})
+	require.NoError(t, err)
+	seedUsers(t, db)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	cached, err := newCachedMetaStore(store, 10, time.Minute)
+	require.NoError(t, err)
+
+	pub := &recordingPublisher{}
+	h := NewHandler(cached, userstore.NewMongoStore(db.Collection("users")), pub, &fakeRoomKeyProvider{}, false)
+
+	msgTime := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Timestamp: msgTime.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-last",
+			RoomID:      "r-last",
+			UserID:      "u-alice",
+			UserAccount: "alice",
+			Content:     "hi",
+			CreatedAt:   msgTime,
+		},
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	require.NoError(t, h.HandleMessage(ctx, data))
+
+	// Verify the room doc now has lastMsgAt/lastMsgId persisted.
+	var got struct {
+		LastMsgAt time.Time `bson:"lastMsgAt"`
+		LastMsgID string    `bson:"lastMsgId"`
+	}
+	err = db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r-last"}).Decode(&got)
+	require.NoError(t, err)
+	assert.Equal(t, "msg-last", got.LastMsgID)
+	assert.WithinDuration(t, msgTime, got.LastMsgAt, time.Millisecond)
 }

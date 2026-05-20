@@ -5,14 +5,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -20,8 +25,11 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeysender"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 // capturedPublish records a single publish call for later assertion.
@@ -509,7 +517,7 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 func newIntegrationHandler(t *testing.T, store *MongoStore, siteID string) *Handler {
 	t.Helper()
 	noopPublish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
-	return NewHandler(store, siteID, noopPublish)
+	return NewHandler(store, siteID, noopPublish, testKeyStore, testKeySender)
 }
 
 func TestProcessCreateRoomChannelPersistsAllState(t *testing.T) {
@@ -597,6 +605,8 @@ func TestProcessCreateRoomDMPersistsTwoSubsAndZeroMembers(t *testing.T) {
 	// CreatedBy is the requester's User.ID for every room type, including
 	// DM/botDM (post-v2 cleanup; previously empty for DM/botDM).
 	assert.Equal(t, "u_alice", room.CreatedBy)
+	assert.Equal(t, []string{"u_alice", "u_bob"}, room.UIDs, "DM participant uids persisted, sorted")
+	assert.Equal(t, []string{"alice", "bob"}, room.Accounts, "DM participant accounts persisted, paired by index with uids")
 }
 
 func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
@@ -613,7 +623,7 @@ func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
 		EngName: "Ian", ChineseName: "伊恩"})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn())
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -642,37 +652,39 @@ func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
 		assert.Equal(t, "site-A", s.SiteID, "sub %s siteID", s.User.Account)
 	}
 
-	// Filter outbox publishes per destination site.
-	pubsB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", ""))
-	pubsC := cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", ""))
-	pubsA := cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", ""))
-	require.Len(t, pubsB, 1, "exactly one outbox to site-B")
-	require.Len(t, pubsC, 1, "exactly one outbox to site-C")
-	assert.Empty(t, pubsA, "no outbox to home site-A")
+	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", "")),
+		"no outbox to home site-A")
 
-	// Site-B payload assertions.
-	var envB model.OutboxEvent
-	require.NoError(t, json.Unmarshal(pubsB[0].data, &envB))
-	var payloadB model.RoomCreatedOutbox
-	require.NoError(t, json.Unmarshal(envB.Payload, &payloadB))
-	assert.ElementsMatch(t, []string{"bob", "carol"}, payloadB.Accounts)
-	assert.Equal(t, model.RoomTypeChannel, payloadB.RoomType)
-	assert.Equal(t, "deal team", payloadB.RoomName)
-	assert.Equal(t, "site-A", payloadB.HomeSiteID)
-	assert.Equal(t, "alice", payloadB.RequesterAccount)
-	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
+	// One member_added outbox per remote site — carries all the info
+	// inbox-worker needs for sub creation AND search-sync-worker for MV update.
+	memberB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", model.OutboxMemberAdded))
+	memberC := cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", model.OutboxMemberAdded))
+	require.Len(t, memberB, 1, "exactly one member_added outbox to site-B")
+	require.Len(t, memberC, 1, "exactly one member_added outbox to site-C")
 
-	// Site-C payload assertions.
-	var envC model.OutboxEvent
-	require.NoError(t, json.Unmarshal(pubsC[0].data, &envC))
-	var payloadC model.RoomCreatedOutbox
-	require.NoError(t, json.Unmarshal(envC.Payload, &payloadC))
-	assert.ElementsMatch(t, []string{"ian"}, payloadC.Accounts)
-	assert.Equal(t, model.RoomTypeChannel, payloadC.RoomType)
-	assert.Equal(t, "deal team", payloadC.RoomName)
-	assert.Equal(t, "site-A", payloadC.HomeSiteID)
-	assert.Equal(t, "alice", payloadC.RequesterAccount)
-	assert.Equal(t, reqID+":site-C", pubsC[0].msgID)
+	var memberEnvB model.OutboxEvent
+	require.NoError(t, json.Unmarshal(memberB[0].data, &memberEnvB))
+	var memberPayloadB model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(memberEnvB.Payload, &memberPayloadB))
+	assert.ElementsMatch(t, []string{"bob", "carol"}, memberPayloadB.Accounts)
+	assert.Equal(t, model.RoomTypeChannel, memberPayloadB.RoomType)
+	assert.Equal(t, "deal team", memberPayloadB.RoomName)
+	assert.Equal(t, "site-A", memberPayloadB.SiteID)
+	assert.Equal(t, "alice", memberPayloadB.RequesterAccount)
+	assert.Nil(t, memberPayloadB.HistorySharedSince)
+	assert.Equal(t, reqID+":site-B", memberB[0].msgID)
+
+	var memberEnvC model.OutboxEvent
+	require.NoError(t, json.Unmarshal(memberC[0].data, &memberEnvC))
+	var memberPayloadC model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(memberEnvC.Payload, &memberPayloadC))
+	assert.ElementsMatch(t, []string{"ian"}, memberPayloadC.Accounts)
+	assert.Equal(t, model.RoomTypeChannel, memberPayloadC.RoomType)
+	assert.Equal(t, "deal team", memberPayloadC.RoomName)
+	assert.Equal(t, "site-A", memberPayloadC.SiteID)
+	assert.Equal(t, "alice", memberPayloadC.RequesterAccount)
+	assert.Nil(t, memberPayloadC.HistorySharedSince)
+	assert.Equal(t, reqID+":site-C", memberC[0].msgID)
 }
 
 func TestProcessCreateRoomDM_OutboxToCounterpartSite(t *testing.T) {
@@ -685,7 +697,7 @@ func TestProcessCreateRoomDM_OutboxToCounterpartSite(t *testing.T) {
 		EngName: "Bob", ChineseName: "鲍勃"})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn())
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -712,22 +724,23 @@ func TestProcessCreateRoomDM_OutboxToCounterpartSite(t *testing.T) {
 		assert.Equal(t, "site-A", s.SiteID, "sub %s siteID", s.User.Account)
 	}
 
-	// Only one outbox publish, to site-B.
-	pubsB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", ""))
-	require.Len(t, pubsB, 1)
 	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", "")))
 	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", "")))
 
-	var env model.OutboxEvent
-	require.NoError(t, json.Unmarshal(pubsB[0].data, &env))
-	var payload model.RoomCreatedOutbox
-	require.NoError(t, json.Unmarshal(env.Payload, &payload))
-	assert.Equal(t, model.RoomTypeDM, payload.RoomType)
-	assert.Equal(t, "", payload.RoomName, "DM RoomName empty per v2 cleanup")
-	assert.ElementsMatch(t, []string{"bob"}, payload.Accounts)
-	assert.Equal(t, "alice", payload.RequesterAccount)
-	assert.Equal(t, "site-A", payload.HomeSiteID)
-	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
+	// One member_added outbox to the recipient's site — carries everything
+	// inbox-worker needs to build the DM recipient's sub with the right shape.
+	memberB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", model.OutboxMemberAdded))
+	require.Len(t, memberB, 1)
+	var memberEnv model.OutboxEvent
+	require.NoError(t, json.Unmarshal(memberB[0].data, &memberEnv))
+	var memberPayload model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(memberEnv.Payload, &memberPayload))
+	assert.Equal(t, model.RoomTypeDM, memberPayload.RoomType)
+	assert.Equal(t, "", memberPayload.RoomName, "DM RoomName empty per v2 cleanup")
+	assert.ElementsMatch(t, []string{"bob"}, memberPayload.Accounts)
+	assert.Equal(t, "alice", memberPayload.RequesterAccount, "DM counterpart resolution depends on this")
+	assert.Equal(t, "site-A", memberPayload.SiteID)
+	assert.Equal(t, reqID+":site-B", memberB[0].msgID)
 }
 
 func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
@@ -772,7 +785,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.NoError(t, err)
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn())
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -880,7 +893,7 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	})
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn())
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000001"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -913,7 +926,17 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	assert.ElementsMatch(t, []string{"charlie", "bob"}, inner.Accounts,
 		"local INBOX must carry full add set — same-site (charlie) + remote (bob)")
 	assert.Equal(t, reqID+":site-A", pubs[0].msgID,
-		"Nats-Msg-Id must be outboxDedupID(ctx, originSite, payloadSeed) so JetStream dedups self-loop replays")
+		"Nats-Msg-Id must be natsutil.OutboxDedupID(ctx, originSite, payloadSeed) so JetStream dedups self-loop replays")
+
+	// members_added sys-message: requester is the sender, Content is server-rendered.
+	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated("site-A"))
+	require.Len(t, sysPubs, 1, "exactly one members_added sys-message per add-members call")
+	var sysEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
+	assert.Equal(t, model.MessageTypeMembersAdded, sysEvt.Message.Type)
+	assert.Equal(t, "alice", sysEvt.Message.UserAccount, "sender is the requester")
+	assert.Equal(t, `"Alice 爱丽丝" added members to the channel`, sysEvt.Message.Content,
+		"multi-add Content uses formatAddedMulti(requester)")
 }
 
 func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
@@ -942,7 +965,7 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	cap := &publishCapture{}
-	h := NewHandler(store, "site-A", cap.fn())
+	h := NewHandler(store, "site-A", cap.fn(), testKeyStore, testKeySender)
 	const reqID = "0193abcd-0193-7abc-89ab-aaaa00000002"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
@@ -970,4 +993,320 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	assert.Equal(t, roomID, inner.RoomID)
 	assert.Equal(t, []string{"bob"}, inner.Accounts)
 	assert.Equal(t, reqID+":site-A", pubs[0].msgID)
+
+	// member_removed sys-message: requester is the sender, Content is server-rendered.
+	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated("site-A"))
+	require.Len(t, sysPubs, 1, "exactly one member_removed sys-message per remove-member call")
+	var sysEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
+	assert.Equal(t, model.MessageTypeMemberRemoved, sysEvt.Message.Type)
+	assert.Equal(t, "alice", sysEvt.Message.UserAccount, "sender is the requester, not the removed user")
+	assert.Equal(t, `"Bob 鲍勃" has been removed from the channel`, sysEvt.Message.Content,
+		"forced-remove Content uses formatRemovedUser(user)")
+}
+
+// --- Sync DM endpoint integration tests ---
+
+const integSyncDMRequestID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+func newIntegSyncDMCtx() context.Context {
+	return natsutil.WithRequestID(context.Background(), integSyncDMRequestID)
+}
+
+func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+	got, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Success)
+	assert.Equal(t, "alice", got.Subscription.User.Account)
+
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, model.RoomTypeDM, room.Type)
+	assert.Equal(t, siteID, room.SiteID)
+	assert.Equal(t, 2, room.UserCount, "DM room.UserCount set at creation; no Reconcile pass")
+	assert.Equal(t, 0, room.AppCount)
+	assert.Equal(t, []string{"u-alice", "u-bob"}, room.UIDs, "DM participant uids persisted, sorted")
+	assert.Equal(t, []string{"alice", "bob"}, room.Accounts, "DM participant accounts persisted, paired by index with uids")
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount)
+
+	// Two subscription.update publishes — one per user.
+	subjects := map[string]int{}
+	cap.mu.Lock()
+	for _, p := range cap.captured {
+		subjects[p.subject]++
+	}
+	cap.mu.Unlock()
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("bob")])
+}
+
+func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-B", EngName: "Helper", ChineseName: "助手"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
+	data, _ := json.Marshal(req)
+	_, err := handler.handleSyncCreateDM(newIntegSyncDMCtx(), data)
+	require.NoError(t, err)
+
+	pubs := cap.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	assert.Len(t, pubs, 1, "exactly one outbox to site-B")
+}
+
+func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, _ := json.Marshal(req)
+
+	r1, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	r2, err := handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.NotNil(t, r1)
+	require.NotNil(t, r2)
+	assert.Equal(t, r1.Subscription.RoomID, r2.Subscription.RoomID)
+
+	roomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, roomID, room.ID)
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
+}
+
+// Federation convergence: the cross-site OUTBOX payload carries the deterministic
+// BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
+// room ID as the home site. Same X-Request-ID across replays produces the same
+// Nats-Msg-Id so JetStream dedup blocks duplicates.
+func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+	mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鮑勃"})
+
+	cap1 := &publishCapture{}
+	handler := NewHandler(store, siteID, cap1.fn(), testKeyStore, testKeySender)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	_, err = handler.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+
+	// 1. Local Mongo room.ID equals the deterministic BuildDMRoomID.
+	wantRoomID := idgen.BuildDMRoomID("u-alice", "u-bob")
+	persisted, err := store.GetRoom(ctx, wantRoomID)
+	require.NoError(t, err)
+	assert.Equal(t, wantRoomID, persisted.ID)
+
+	// 2. OUTBOX payload carries the same RoomID + the dedup key includes destSiteID.
+	pubs := cap1.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	require.Len(t, pubs, 1)
+	var env model.OutboxEvent
+	require.NoError(t, json.Unmarshal(pubs[0].data, &env))
+	var payload model.MemberAddEvent
+	require.NoError(t, json.Unmarshal(env.Payload, &payload))
+	assert.Equal(t, wantRoomID, payload.RoomID,
+		"outbox RoomID must match local room.ID so remote site converges")
+	assert.Equal(t, model.RoomTypeDM, payload.RoomType)
+	assert.Equal(t, "alice", payload.RequesterAccount)
+	assert.Equal(t, []string{"bob"}, payload.Accounts)
+	assert.Contains(t, pubs[0].msgID, "site-B",
+		"Nats-Msg-Id must include destSiteID for JetStream stream dedup")
+
+	// 3. Replay with the same X-Request-ID produces the same Nats-Msg-Id —
+	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
+	cap2 := &publishCapture{}
+	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
+	_, err = handler2.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	require.Len(t, pubs2, 1)
+	assert.Equal(t, pubs[0].msgID, pubs2[0].msgID,
+		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
+}
+
+// setupValkey starts a Valkey testcontainer and returns a connected full key store.
+// The returned store satisfies both roomkeystore.RoomKeyStore (for seeding) and the
+// local RoomKeyStore interface accepted by NewHandler (Get-only subset).
+func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
+	t.Helper()
+	ctx := context.Background()
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        testimages.Valkey,
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForLog("Ready to accept connections"),
+		},
+		Started: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+	cfg := roomkeystore.Config{
+		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		GracePeriod: time.Hour,
+	}
+	ks, err := roomkeystore.NewValkeyStore(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ks.Close() })
+	return ks
+}
+
+// startEmbeddedNATS starts an in-process NATS server and returns a connected client.
+func startEmbeddedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	opts := &natsserver.Options{Port: -1}
+	ns, err := natsserver.NewServer(opts)
+	require.NoError(t, err)
+	ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second), "nats server did not become ready")
+	t.Cleanup(ns.Shutdown)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+// TestIntegration_CreateRoom_FansOutRoomKeyEvent verifies that processCreateRoom
+// fans out the room key via NATS to every local-site member after a successful create.
+//
+// Setup: pre-seed key in Valkey (simulating room-service having stored it), seed
+// users and the canonical CreateRoomRequest, then drive processCreateRoom and assert
+// that RoomKeyEvent publishes arrive on chat.user.{account}.event.room.key for each
+// local-site member.
+func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	// Seed users — all on the same site so fanOutRoomKey includes both.
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	// Pre-seed room key in Valkey (simulating room-service having run Set before the
+	// canonical event was published).
+	keyStore := setupValkey(t)
+	const roomID = "test-fan-out-room"
+	seedPair := roomkeystore.RoomKeyPair{
+		PublicKey:  []byte("public-key-bytes"),
+		PrivateKey: []byte("private-key-bytes"),
+	}
+	_, err := keyStore.Set(ctx, roomID, seedPair)
+	require.NoError(t, err)
+
+	// Embedded NATS for key fan-out; subscribe to both accounts' key subjects.
+	nc := startEmbeddedNATS(t)
+
+	type received struct {
+		subject string
+		data    []byte
+	}
+	var mu sync.Mutex
+	var keyMsgs []received
+
+	for _, account := range []string{"alice", "bob"} {
+		subj := subject.RoomKeyUpdate(account)
+		_, err := nc.Subscribe(subj, func(m *nats.Msg) {
+			mu.Lock()
+			keyMsgs = append(keyMsgs, received{subject: m.Subject, data: append([]byte(nil), m.Data...)})
+			mu.Unlock()
+		})
+		require.NoError(t, err)
+	}
+	require.NoError(t, nc.Flush())
+
+	// Wire up the handler with real keyStore and keySender backed by embedded NATS.
+	keySender := roomkeysender.NewSender(nc)
+	noopPublish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
+	h := NewHandler(store, "site-A", noopPublish, keyStore, keySender)
+
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0001"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID:           roomID,
+		Name:             "crypto room",
+		Users:            []string{"bob"},
+		ResolvedUsers:    []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// Allow a brief window for async NATS delivery.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(keyMsgs) >= 2
+	}, 2*time.Second, 20*time.Millisecond, "expected RoomKeyEvent on both member subjects")
+
+	mu.Lock()
+	defer mu.Unlock()
+	gotSubjects := make([]string, 0, len(keyMsgs))
+	for _, m := range keyMsgs {
+		gotSubjects = append(gotSubjects, m.subject)
+		var evt model.RoomKeyEvent
+		require.NoError(t, json.Unmarshal(m.data, &evt))
+		assert.Equal(t, roomID, evt.RoomID, "RoomKeyEvent must carry the correct roomID")
+		assert.Empty(t, evt.PublicKey, "PublicKey must be omitted from the client wire payload")
+		assert.NotEmpty(t, evt.PrivateKey, "PrivateKey must be populated")
+	}
+	assert.ElementsMatch(t,
+		[]string{subject.RoomKeyUpdate("alice"), subject.RoomKeyUpdate("bob")},
+		gotSubjects,
+		"key fan-out must reach every local-site member",
+	)
 }

@@ -236,6 +236,21 @@ func (mr *MockRoomStoreMockRecorder) ListOrgMembers(ctx, orgID any) *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListOrgMembers", reflect.TypeOf((*MockRoomStore)(nil).ListOrgMembers), ctx, orgID)
 }
 
+// ListReadReceipts mocks base method.
+func (m *MockRoomStore) ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListReadReceipts", ctx, roomID, since, excludeAccount, limit)
+	ret0, _ := ret[0].([]ReadReceiptRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListReadReceipts indicates an expected call of ListReadReceipts.
+func (mr *MockRoomStoreMockRecorder) ListReadReceipts(ctx, roomID, since, excludeAccount, limit any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListReadReceipts", reflect.TypeOf((*MockRoomStore)(nil).ListReadReceipts), ctx, roomID, since, excludeAccount, limit)
+}
+
 // ListRoomMembers mocks base method.
 func (m *MockRoomStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
 	m.ctrl.T.Helper()
@@ -348,6 +363,21 @@ func (m *MockRoomKeyStore) EXPECT() *MockRoomKeyStoreMockRecorder {
 	return m.recorder
 }
 
+// Get mocks base method.
+func (m *MockRoomKeyStore) Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Get", ctx, roomID)
+	ret0, _ := ret[0].(*roomkeystore.VersionedKeyPair)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Get indicates an expected call of Get.
+func (mr *MockRoomKeyStoreMockRecorder) Get(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockRoomKeyStore)(nil).Get), ctx, roomID)
+}
+
 // GetMany mocks base method.
 func (m *MockRoomKeyStore) GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error) {
 	m.ctrl.T.Helper()
@@ -361,4 +391,61 @@ func (m *MockRoomKeyStore) GetMany(ctx context.Context, roomIDs []string) (map[s
 func (mr *MockRoomKeyStoreMockRecorder) GetMany(ctx, roomIDs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMany", reflect.TypeOf((*MockRoomKeyStore)(nil).GetMany), ctx, roomIDs)
+}
+
+// Set mocks base method.
+func (m *MockRoomKeyStore) Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Set", ctx, roomID, pair)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Set indicates an expected call of Set.
+func (mr *MockRoomKeyStoreMockRecorder) Set(ctx, roomID, pair any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockRoomKeyStore)(nil).Set), ctx, roomID, pair)
+}
+
+// MockMessageReader is a mock of MessageReader interface.
+type MockMessageReader struct {
+	ctrl     *gomock.Controller
+	recorder *MockMessageReaderMockRecorder
+	isgomock struct{}
+}
+
+// MockMessageReaderMockRecorder is the mock recorder for MockMessageReader.
+type MockMessageReaderMockRecorder struct {
+	mock *MockMessageReader
+}
+
+// NewMockMessageReader creates a new mock instance.
+func NewMockMessageReader(ctrl *gomock.Controller) *MockMessageReader {
+	mock := &MockMessageReader{ctrl: ctrl}
+	mock.recorder = &MockMessageReaderMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockMessageReader) EXPECT() *MockMessageReaderMockRecorder {
+	return m.recorder
+}
+
+// GetMessageRoomAndCreatedAt mocks base method.
+func (m *MockMessageReader) GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (string, time.Time, string, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMessageRoomAndCreatedAt", ctx, messageID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(time.Time)
+	ret2, _ := ret[2].(string)
+	ret3, _ := ret[3].(bool)
+	ret4, _ := ret[4].(error)
+	return ret0, ret1, ret2, ret3, ret4
+}
+
+// GetMessageRoomAndCreatedAt indicates an expected call of GetMessageRoomAndCreatedAt.
+func (mr *MockMessageReaderMockRecorder) GetMessageRoomAndCreatedAt(ctx, messageID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageRoomAndCreatedAt", reflect.TypeOf((*MockMessageReader)(nil).GetMessageRoomAndCreatedAt), ctx, messageID)
 }

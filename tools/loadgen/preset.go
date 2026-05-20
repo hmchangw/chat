@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/ecdh"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // churnFixturePrefix is the ID prefix used for the dedicated subscription-churn
@@ -486,11 +489,13 @@ func pickRoomKind(weights map[roomRequestKind]int) roomRequestKind {
 	return pickWeighted(weights)
 }
 
-// Fixtures is the full seed data for a preset run.
+// Fixtures is the full seed data for a preset run. RoomKeys are load-test
+// fixtures derived deterministically from `seed`, not real secrets.
 type Fixtures struct {
 	Users         []model.User
 	Rooms         []model.Room
 	Subscriptions []model.Subscription
+	RoomKeys      map[string]roomkeystore.RoomKeyPair
 
 	// RoomSubs maps RoomID to indices into Subscriptions[] for fast room-based
 	// subscription picking. Used by publishOne when Preset.DMRatio > 0 to honor
@@ -584,7 +589,42 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 		roomSubs[subs[i].RoomID] = append(roomSubs[subs[i].RoomID], i)
 	}
 
-	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs, RoomSubs: roomSubs}
+	roomKeys := make(map[string]roomkeystore.RoomKeyPair, len(rooms))
+	for i := range rooms {
+		roomKeys[rooms[i].ID] = deterministicRoomKeyPair(r)
+	}
+
+	return Fixtures{
+		Users:         users,
+		Rooms:         rooms,
+		Subscriptions: subs,
+		RoomSubs:      roomSubs,
+		RoomKeys:      roomKeys,
+	}
+}
+
+// deterministicRoomKeyPair builds a P-256 keypair from bytes drawn from r.
+// Reads 32-byte scalars directly via NewPrivateKey instead of GenerateKey
+// because the stdlib's GenerateKey calls randutil.MaybeReadByte, which draws
+// 0 or 1 byte from its internal non-deterministic source and breaks
+// reproducibility across calls with the same math/rand seed. The retry loop
+// covers the astronomically rare case of a zero or out-of-range scalar; it
+// consumes only deterministic bytes from r so the output stays a function of
+// the seed alone.
+func deterministicRoomKeyPair(r io.Reader) roomkeystore.RoomKeyPair {
+	buf := make([]byte, 32)
+	for {
+		if _, err := io.ReadFull(r, buf); err != nil {
+			panic(fmt.Errorf("read deterministic key bytes: %w", err))
+		}
+		priv, err := ecdh.P256().NewPrivateKey(buf)
+		if err == nil {
+			return roomkeystore.RoomKeyPair{
+				PublicKey:  priv.PublicKey().Bytes(),
+				PrivateKey: priv.Bytes(),
+			}
+		}
+	}
 }
 
 func pickMembers(r *rand.Rand, p *Preset, roomIdx, totalRooms int, room *model.Room, users []model.User) []model.User {

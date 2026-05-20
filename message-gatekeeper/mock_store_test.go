@@ -15,6 +15,7 @@ import (
 
 	model "github.com/hmchangw/chat/pkg/model"
 	cassandra "github.com/hmchangw/chat/pkg/model/cassandra"
+	roommetacache "github.com/hmchangw/chat/pkg/roommetacache"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -40,6 +41,21 @@ func NewMockStore(ctrl *gomock.Controller) *MockStore {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockStore) EXPECT() *MockStoreMockRecorder {
 	return m.recorder
+}
+
+// GetRoomMeta mocks base method.
+func (m *MockStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRoomMeta", ctx, roomID)
+	ret0, _ := ret[0].(roommetacache.Meta)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetRoomMeta indicates an expected call of GetRoomMeta.
+func (mr *MockStoreMockRecorder) GetRoomMeta(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoomMeta", reflect.TypeOf((*MockStore)(nil).GetRoomMeta), ctx, roomID)
 }
 
 // GetSubscription mocks base method.

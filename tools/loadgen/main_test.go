@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestLastToken(t *testing.T) {
@@ -198,6 +201,63 @@ func TestNewAsyncErrHandler_MalformedPayloadDoesNotPanic(t *testing.T) {
 	})
 	got := counterValueLabeled(m, "loadgen_publish_errors_total", "reason", "async_ack")
 	assert.Equal(t, 3.0, got, "metric bumps on every invocation regardless of payload shape")
+}
+
+// newE2Handler must record the broadcast solely from the cleartext envelope's
+// LastMsgID so that encrypted broadcasts (Message=nil) are not silently dropped.
+func TestNewE2Handler_RecordsWhenMessageNil(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-1", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "")
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-1"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 1, c.E2Count())
+}
+
+func TestNewE2Handler_RecordsWhenMessagePopulated(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-2", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "")
+	evt := model.RoomEvent{
+		Type:      model.RoomEventNewMessage,
+		RoomID:    "r",
+		LastMsgID: "m-2",
+		Message:   &model.ClientMessage{Message: model.Message{ID: "m-2"}},
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 1, c.E2Count())
+}
+
+func TestNewE2Handler_SkipsEventWithoutLastMsgID(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-3", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "")
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 0, c.E2Count())
+}
+
+func TestNewE2Handler_SkipsMalformedJSON(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	handler := newE2Handler(c, "")
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: []byte("not json")})
+	assert.Equal(t, 0, c.E2Count())
 }
 
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {

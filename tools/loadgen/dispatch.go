@@ -19,7 +19,20 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
+
+// connectKeyStore opens the Valkey-backed room-key store used by seed and
+// teardown. The grace period mirrors broadcast-worker's default; it does
+// not affect loadgen's seed/teardown logic but keeps keystore behaviour
+// uniform across processes.
+func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
+	return roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: time.Hour,
+	})
+}
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
@@ -59,6 +72,12 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return 1
 	}
 	defer mongoutil.Disconnect(ctx, client)
+	keyStore, err := connectKeyStore(cfg)
+	if err != nil {
+		slog.Error("valkey connect", "error", err)
+		return 1
+	}
+	defer func() { _ = keyStore.Close() }()
 	db := client.Database(cfg.MongoDB)
 	fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
 	if *includeChurn {
@@ -71,11 +90,16 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		slog.Error("seed", "error", err)
 		return 1
 	}
+	if err := SeedRoomKeys(ctx, keyStore, fixtures.RoomKeys); err != nil {
+		slog.Error("seed room keys", "error", err)
+		return 1
+	}
 	slog.Info("seed complete",
 		"preset", p.Name,
 		"users", len(fixtures.Users),
 		"rooms", len(fixtures.Rooms),
-		"subs", len(fixtures.Subscriptions))
+		"subs", len(fixtures.Subscriptions),
+		"roomKeys", len(fixtures.RoomKeys))
 
 	// Credential provisioning is opt-in and only active when RUNS_DIR is set
 	// (otherwise there's no artifact root to write under).
@@ -124,6 +148,9 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		"with --force, only drop runs whose lock row startedAt is older than this duration (0 = any orphan)")
 	runID := fs.String("run-id", "",
 		"with --force, target only this specific run ID")
+	preset := fs.String("preset", "",
+		"preset name (when set, also deletes the room keys seeded for that preset/seed pair)")
+	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
 	_ = fs.Parse(args)
 
 	if *forceFlag {
@@ -148,6 +175,33 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
+	}
+
+	// When --preset is supplied, also drop the room keys seeded for that
+	// preset/seed pair so Valkey doesn't accumulate orphaned keypairs across
+	// runs. Skipped when --preset is empty so the simple "wipe Mongo" use
+	// case stays cheap and doesn't require Valkey connectivity.
+	if *preset != "" {
+		p, ok := BuiltinPreset(*preset)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+			return 2
+		}
+		keyStore, err := connectKeyStore(cfg)
+		if err != nil {
+			slog.Error("valkey connect", "error", err)
+			return 1
+		}
+		defer func() { _ = keyStore.Close() }()
+		fixtures := BuildFixtures(&p, *seed, cfg.SiteID)
+		roomIDs := make([]string, len(fixtures.Rooms))
+		for i := range fixtures.Rooms {
+			roomIDs[i] = fixtures.Rooms[i].ID
+		}
+		if err := TeardownRoomKeys(ctx, keyStore, roomIDs); err != nil {
+			slog.Error("teardown room keys", "error", err)
+			return 1
+		}
 	}
 
 	// Clean up the per-run creds directory when a run ID is known and RUNS_DIR

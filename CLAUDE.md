@@ -53,6 +53,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate` | Regenerate all mocks |
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
+| `make tools` | Install pinned dev/SAST tooling (`golangci-lint`, `gosec`, `govulncheck`, `semgrep`) |
+| `make sast` | Run all SAST scans (`gosec`, `govulncheck`, `semgrep`); fails on medium+ |
+| `make sast-gosec` / `make sast-vuln` / `make sast-semgrep` | Run a single SAST scan |
 
 ## Section 3: Coding Rules
 
@@ -163,6 +166,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 ### Before Committing
 - Run `make generate` first if store interfaces were changed
 - Lint and tests are enforced by a pre-commit hook — fix failures before retrying
+- SAST (`gosec`, `govulncheck`, `semgrep`) is a **blocking CI gate** (the `sast` job, fail on medium+). Run `make sast` locally before pushing. Suppress only genuine false positives with a justified gosec-native comment — `// #nosec <RULE> -- reason` on the line **directly above** the statement. Note: golangci-lint's `//nolint:gosec` directive does NOT suppress standalone `gosec`; the two mechanisms are independent and a knowingly-unsafe `InsecureSkipVerify`/conversion needs both.
 - Never commit `.env` files
 - Never merge code directly into `master` or `main` — always create a PR for review first
 - If your changes touch a client-facing handler (any handler registered with `nc.QueueSubscribe` or `natsrouter.Register` whose subject begins with `chat.user.{account}.request.…` or `chat.user.{account}.room.{roomID}.{siteID}.msg.send`, or any HTTP route in `auth-service`), update `docs/client-api.md` in the same PR to reflect the new request/response schema, error cases, and triggered events.
@@ -241,6 +245,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - `docs/cassandra_message_model.md` is the single source of truth for the message schema. Any PR that touches it MUST, in the same PR, update both downstream mirrors:
   1. The Go UDT/row structs in `pkg/model/cassandra/` (keep `cql:"…"` tags aligned with the columns).
   2. The init DDL under `docker-local/cassandra/init/*.cql` that creates the types and tables.
+- **Bucketed message tables.** `messages_by_room` and `thread_messages_by_room` use a composite partition key `(room_id, bucket)`. The bucket is `floor(created_at_unix_ms / windowMs) * windowMs`. The window is configured per service via `MESSAGE_BUCKET_HOURS` (default 24). All services that read or write these tables MUST be configured with the same `MESSAGE_BUCKET_HOURS`; mismatches will cause writes and reads to target different partitions and silently lose data. Bucket math lives in `pkg/msgbucket`.
 
 ### HTTP (Gin + Resty)
 - Use Gin for all HTTP servers — never `net/http` mux directly
@@ -258,7 +263,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always provide `envDefault` for non-critical config (port, database name, log level); never default secrets or connection strings — mark them `required`
 
 ### Docker
-- Multi-stage Dockerfiles: `golang:1.25.8-alpine` builder, `alpine:3.21` runtime
+- Multi-stage Dockerfiles: `golang:1.25.10-alpine` builder, `alpine:3.21` runtime
 - Location: `<service>/deploy/Dockerfile`
 - Build context: repo root so `pkg/` and `go.mod` are accessible
 - Docker Compose for local dev only — include only the dependencies the service needs

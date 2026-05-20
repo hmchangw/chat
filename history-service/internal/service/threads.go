@@ -3,11 +3,13 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
@@ -38,8 +40,15 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrForbidden("thread is outside access window")
 	}
 
-	// Empty ThreadRoomID: no replies yet, or stamp skipped due to missing event fields.
+	// Empty ThreadRoomID = no replies yet OR a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
+		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
+			"request_id", natsutil.RequestIDFromContext(c),
+			"roomID", roomID,
+			"messageID", req.ThreadMessageID,
+			"messageCreatedAt", msg.CreatedAt,
+			"account", account,
+		)
 		return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}, nil
 	}
 
@@ -55,7 +64,37 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, pageReq)
+	now := time.Now().UTC()
+	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.
+	ceiling := lastMsgAt
+	if ceiling.IsZero() {
+		ceiling = now.Add(clockSkewTolerance)
+	} else {
+		ceiling = ceiling.Add(time.Millisecond)
+	}
+
+	// Floor: max(createdAt, accessSince) for restricted access, clamped up to
+	// historyFloor so an ancient createdAt can't push the walk further back
+	// than configured. Mirrors walkBounds in room_times.go.
+	historyFloor := now.Add(-s.historyFloor)
+	floor := createdAt
+	if accessSince != nil && accessSince.After(floor) {
+		floor = *accessSince
+	}
+	if floor.IsZero() || floor.Before(historyFloor) {
+		floor = historyFloor
+	}
+	// Guard against inverted range: collapsed thread on a room older than historyFloor.
+	if ceiling.Before(floor) {
+		ceiling = floor
+	}
+
+	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, ceiling, floor, pageReq)
 	if err != nil {
 		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")

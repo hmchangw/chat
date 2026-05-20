@@ -53,8 +53,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure room_members (rid,member.type,member.id) unique index: %w", err)
 	}
-	// Unique logical key for subscriptions. Same retry-idempotency rationale
-	// as room_members above.
+	// Unique logical key for subscriptions. Same retry-idempotency rationale as room_members above.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -79,27 +78,10 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
-
-	// Partial UNIQUE index for FindDMSubscription, restricted to DM/botDM subs.
-	// Uniqueness is the database-layer enforcement of the create-room contract:
-	// concurrent CreateRoom requests racing to insert the same DM/botDM pair
-	// will see one succeed and the others receive a duplicate-key error, which
-	// the worker treats as "open existing" via the GetRoom lookup branch.
-	dmDedupIndex := mongo.IndexModel{
-		Keys: bson.D{
-			{Key: "u.account", Value: 1},
-			{Key: "name", Value: 1},
-			{Key: "roomType", Value: 1},
-		},
-		Options: options.Index().
-			SetName("u_account_name_roomtype_dm_idx").
-			SetUnique(true).
-			SetPartialFilterExpression(bson.M{
-				"roomType": bson.M{"$in": bson.A{model.RoomTypeDM, model.RoomTypeBotDM}},
-			}),
-	}
-	if _, err := s.subscriptions.Indexes().CreateOne(ctx, dmDedupIndex); err != nil {
-		return fmt.Errorf("ensure dm-dedup subscription index: %w", err)
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "lastSeenAt", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
 	return nil
 }
@@ -758,4 +740,53 @@ func (s *MongoStore) UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID str
 		return fmt.Errorf("update minUserLastSeenAt for room %q: %w", roomID, err)
 	}
 	return nil
+}
+
+func (s *MongoStore) ListReadReceipts(
+	ctx context.Context,
+	roomID string,
+	since time.Time,
+	excludeAccount string,
+	limit int,
+) ([]ReadReceiptRow, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"roomId":     roomID,
+			"lastSeenAt": bson.M{"$gte": since},
+			"u.account":  bson.M{"$ne": excludeAccount},
+		}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from": "users",
+			"let":  bson.M{"uid": "$u._id"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": []any{"$_id", "$$uid"}}}},
+				bson.M{"$project": bson.M{"_id": 1, "account": 1, "chineseName": 1, "engName": 1}},
+			},
+			"as": "user",
+		}}},
+		{{Key: "$unwind", Value: bson.M{
+			"path":                       "$user",
+			"preserveNullAndEmptyArrays": false,
+		}}},
+		{{Key: "$replaceWith", Value: "$user"}},
+		{{Key: "$limit", Value: int64(limit)}},
+	}
+	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate read receipts for room %q: %w", roomID, err)
+	}
+	defer cursor.Close(ctx)
+
+	rows := make([]ReadReceiptRow, 0)
+	for cursor.Next(ctx) {
+		var r ReadReceiptRow
+		if err := cursor.Decode(&r); err != nil {
+			return nil, fmt.Errorf("decode read-receipt row for room %q: %w", roomID, err)
+		}
+		rows = append(rows, r)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate read receipts for room %q: %w", roomID, err)
+	}
+	return rows, nil
 }

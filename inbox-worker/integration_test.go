@@ -18,7 +18,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -159,6 +158,69 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 
 	// No SubscriptionUpdateEvent is published — room-worker already handles
 	// user notification via NATS supercluster routing.
+}
+
+// TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert exercises the
+// upsert contract: a redelivered BulkCreateSubscriptions for an already-existing
+// (roomId, account) must be a no-op on Mongo — neither create a duplicate nor
+// overwrite read-state that accumulated since the first delivery.
+func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+
+	originalSeenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	original := &model.Subscription{
+		ID:         "sub-existing",
+		User:       model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:     "r1",
+		SiteID:     "site-origin",
+		Roles:      []model.Role{model.RoleMember},
+		LastSeenAt: &originalSeenAt,
+		Alert:      true,
+		JoinedAt:   originalSeenAt,
+	}
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}))
+
+	// Re-issue with a "fresher" copy that has no LastSeenAt — simulates a
+	// redelivered outbox event materializing the same sub.
+	redelivered := &model.Subscription{
+		ID:       "sub-redelivered",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-origin",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	newOne := &model.Subscription{
+		ID:       "sub-new",
+		User:     model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID:   "r1",
+		SiteID:   "site-origin",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{redelivered, newOne}))
+
+	// Exactly two subs in the room: alice (preserved) + bob (newly inserted).
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"roomId": "r1"})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, count, "redelivery must not duplicate")
+
+	var existing model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&existing))
+	assert.Equal(t, "sub-existing", existing.ID, "existing _id must not change")
+	require.NotNil(t, existing.LastSeenAt, "LastSeenAt must be preserved on upsert no-op")
+	assert.WithinDuration(t, originalSeenAt, *existing.LastSeenAt, time.Second)
+	assert.True(t, existing.Alert, "Alert flag must be preserved")
+
+	var fresh model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"roomId": "r1", "u.account": "bob"}).Decode(&fresh))
+	assert.Equal(t, "sub-new", fresh.ID, "new sub must be inserted with its caller-supplied _id")
 }
 
 func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
@@ -417,7 +479,7 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 }
 
 // newIntegrationHandler creates a Handler wired to the given database for integration tests.
-func newIntegrationHandler(t *testing.T, db *mongo.Database, _ string) *Handler {
+func newIntegrationHandler(t *testing.T, db *mongo.Database) *Handler {
 	t.Helper()
 	store := &mongoInboxStore{
 		subCol:  db.Collection("subscriptions"),
@@ -427,7 +489,7 @@ func newIntegrationHandler(t *testing.T, db *mongo.Database, _ string) *Handler 
 	return NewHandler(store)
 }
 
-func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
+func TestHandleMemberAdded_Channel_PersistsRemoteSubs(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
 	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
@@ -435,27 +497,32 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 	mustInsertUser(t, db, &model.User{ID: "u_ian", Account: "ian",
 		SiteID: "site-B", EngName: "Ian", ChineseName: "伊恩"})
 
-	h := newIntegrationHandler(t, db, "site-B")
-	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
-	ctx = natsutil.WithRequestID(ctx, reqID)
+	h := newIntegrationHandler(t, db)
 
-	payload, err := json.Marshal(model.RoomCreatedOutbox{
-		RoomID: "r_xyz", RoomType: model.RoomTypeChannel,
-		RoomName: "deal team", HomeSiteID: "site-A",
+	payload, err := json.Marshal(model.MemberAddEvent{
+		Type:             "member_added",
+		RoomID:           "r_xyz",
+		RoomName:         "deal team",
+		RoomType:         model.RoomTypeChannel,
 		Accounts:         []string{"bob", "ian"},
+		SiteID:           "site-A",
 		RequesterAccount: "alice",
+		JoinedAt:         time.Now().UTC().UnixMilli(),
 		Timestamp:        time.Now().UTC().UnixMilli(),
 	})
 	require.NoError(t, err)
-	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type:       "member_added",
+		SiteID:     "site-A",
+		DestSiteID: "site-B",
+		Payload:    payload,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.HandleEvent(ctx, evt))
 
 	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": "r_xyz"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), subCount)
-
-	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": "r_xyz"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), roomCount, "inbox-worker must not create room mirror")
 
 	var bobSub model.Subscription
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx,
@@ -465,42 +532,45 @@ func TestHandleRoomCreatedPersistsRemoteSubs(t *testing.T) {
 	assert.Equal(t, model.RoomTypeChannel, bobSub.RoomType)
 }
 
-func TestHandleRoomCreatedDM_PersistsRemoteCounterpartSub(t *testing.T) {
+func TestHandleMemberAdded_DM_PersistsRemoteCounterpartSub(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
 	mustInsertUser(t, db, &model.User{ID: "u_bob", Account: "bob",
 		SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"})
 
-	h := newIntegrationHandler(t, db, "site-B")
-	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
-	ctx = natsutil.WithRequestID(ctx, reqID)
+	h := newIntegrationHandler(t, db)
 
 	const roomID = "u_aliceu_bob"
-	payload, err := json.Marshal(model.RoomCreatedOutbox{
+	payload, err := json.Marshal(model.MemberAddEvent{
+		Type:             "member_added",
 		RoomID:           roomID,
-		RoomType:         model.RoomTypeDM,
 		RoomName:         "",
-		HomeSiteID:       "site-A",
+		RoomType:         model.RoomTypeDM,
 		Accounts:         []string{"bob"},
+		SiteID:           "site-A",
 		RequesterAccount: "alice",
+		JoinedAt:         time.Now().UTC().UnixMilli(),
 		Timestamp:        time.Now().UTC().UnixMilli(),
 	})
 	require.NoError(t, err)
-	require.NoError(t, h.handleRoomCreated(ctx, &model.OutboxEvent{Payload: payload}))
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type:       "member_added",
+		SiteID:     "site-A",
+		DestSiteID: "site-B",
+		Payload:    payload,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.HandleEvent(ctx, evt))
 
 	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), subCount)
 
-	roomCount, err := db.Collection("rooms").CountDocuments(ctx, bson.M{"_id": roomID})
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), roomCount, "inbox-worker must not create room mirror")
-
 	var bobSub model.Subscription
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx,
 		bson.M{"roomId": roomID, "u.account": "bob"}).Decode(&bobSub))
 	assert.Equal(t, "bob", bobSub.User.Account)
-	assert.Equal(t, "alice", bobSub.Name, "DM Subscription.Name = counterpart account")
+	assert.Equal(t, "alice", bobSub.Name, "DM Subscription.Name = counterpart account (the requester)")
 	assert.Equal(t, "site-A", bobSub.SiteID, "sub SiteID is room's home, not this site")
 	assert.Equal(t, model.RoomTypeDM, bobSub.RoomType)
 	assert.Nil(t, bobSub.Roles, "DMs have no roles")

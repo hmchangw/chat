@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
 
@@ -58,6 +59,38 @@ func TestBuildFixtures_DeterministicAcrossCalls(t *testing.T) {
 	assert.Equal(t, a.Users, b.Users)
 	assert.Equal(t, a.Rooms, b.Rooms)
 	assert.Equal(t, a.Subscriptions, b.Subscriptions)
+	assert.Equal(t, a.RoomKeys, b.RoomKeys)
+}
+
+func TestBuildFixtures_RoomKeysOnePerRoom(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	f := BuildFixtures(&p, 42, "site-local")
+	require.Len(t, f.RoomKeys, len(f.Rooms))
+	for _, r := range f.Rooms {
+		pair, ok := f.RoomKeys[r.ID]
+		require.True(t, ok, "missing key for room %s", r.ID)
+		// P-256 uncompressed public key is 65 bytes; scalar is 32 bytes.
+		assert.Len(t, pair.PublicKey, 65)
+		assert.Len(t, pair.PrivateKey, 32)
+	}
+}
+
+func TestBuildFixtures_RoomKeysDifferAcrossSeeds(t *testing.T) {
+	p, _ := BuiltinPreset("small")
+	a := BuildFixtures(&p, 42, "site-local")
+	b := BuildFixtures(&p, 43, "site-local")
+	require.Len(t, a.RoomKeys, len(a.Rooms))
+	require.Equal(t, len(a.RoomKeys), len(b.RoomKeys))
+	// At least one room should have a different key.
+	differ := false
+	for id, pa := range a.RoomKeys {
+		pb := b.RoomKeys[id]
+		if !bytes.Equal(pa.PrivateKey, pb.PrivateKey) {
+			differ = true
+			break
+		}
+	}
+	assert.True(t, differ, "seeds 42 and 43 must produce different keys")
 }
 
 func TestBuildFixtures_SmallCountsAndShape(t *testing.T) {

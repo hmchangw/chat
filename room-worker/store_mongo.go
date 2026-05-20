@@ -38,11 +38,11 @@ func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscrip
 func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
 	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list subscriptions for room %q: find: %w", roomID, err)
 	}
 	var subs []model.Subscription
 	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list subscriptions for room %q: decode: %w", roomID, err)
 	}
 	return subs, nil
 }
@@ -428,4 +428,21 @@ func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string)
 		accounts[i] = s.User.Account
 	}
 	return accounts, nil
+}
+
+// FindDMSubscription returns the requester's dm/botDM sub by Name; ErrSubscriptionNotFound on miss.
+func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
+	var sub model.Subscription
+	err := s.subscriptions.FindOne(ctx, bson.M{
+		"u.account": account,
+		"name":      targetName,
+		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
+	}).Decode(&sub)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, model.ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find dm subscription: %w", err)
+	}
+	return &sub, nil
 }

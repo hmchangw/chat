@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -55,6 +57,55 @@ func setupValkey(t *testing.T) *roomkeystore.Config {
 		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
 		GracePeriod: time.Hour,
 	}
+}
+
+func setupCassandra(t *testing.T) *gocql.Session {
+	t.Helper()
+	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "room_service_test")
+	cql := func(format string) string { return fmt.Sprintf(format, keyspace) }
+
+	require.NoError(t, adminSession.Query(cql(`CREATE TYPE IF NOT EXISTS %s."Participant" (id TEXT, eng_name TEXT, company_name TEXT, app_id TEXT, app_name TEXT, is_bot BOOLEAN, account TEXT)`)).Exec())
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
+		message_id TEXT,
+		room_id TEXT,
+		sender FROZEN<"Participant">,
+		created_at TIMESTAMP,
+		PRIMARY KEY (message_id, created_at)
+	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
+
+	cluster := gocql.NewCluster(host)
+	cluster.Consistency = gocql.One
+	cluster.DisableInitialHostLookup = true
+	cluster.Keyspace = keyspace
+	ksSession, err := cluster.CreateSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { ksSession.Close() })
+	return ksSession
+}
+
+func TestCassMessageReader_GetMessageRoomAndCreatedAt_Integration(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender) VALUES (?, ?, ?, ?)`,
+		"m1", "r1", createdAt,
+		map[string]interface{}{"account": "alice", "id": "uA", "eng_name": "Alice"},
+	).WithContext(ctx).Exec())
+
+	reader := NewCassMessageReader(session)
+
+	roomID, ts, sender, found, err := reader.GetMessageRoomAndCreatedAt(ctx, "m1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "r1", roomID)
+	require.True(t, ts.Equal(createdAt), "createdAt mismatch: got %v, want %v", ts, createdAt)
+	require.Equal(t, "alice", sender)
+
+	_, _, _, found, err = reader.GetMessageRoomAndCreatedAt(ctx, "missing")
+	require.NoError(t, err)
+	require.False(t, found)
 }
 
 func setupNATS(t *testing.T) string {
@@ -848,7 +899,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, publish)
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -915,7 +966,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, publish)
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -960,7 +1011,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1018,7 +1069,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
-	handlerB := NewHandler(storeB, keyStore, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
+	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
@@ -1038,7 +1089,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		publishedData = data
 		return nil
 	}
-	handlerA := NewHandler(storeA, keyStore, memberListClient, "site-a", 1000, 500, 5*time.Second, publish)
+	handlerA := NewHandler(storeA, keyStore, memberListClient, nil, "site-a", 1000, 500, 5*time.Second, publish)
 
 	// Call add-members on site-A with a site-B source channel
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
@@ -1101,7 +1152,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -1152,7 +1203,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
@@ -1198,6 +1249,61 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }
 
+// TestIntegration_CreateRoom_PersistsKeyInValkey verifies that handleCreateRoom
+// generates and stores a room keypair in Valkey before publishing the canonical
+// event. This ensures room-worker's "key MUST exist" gate will always succeed
+// on the first delivery.
+func TestIntegration_CreateRoom_PersistsKeyInValkey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	valCfg := setupValkey(t)
+	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
+	require.NoError(t, err)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	h, _ := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	reqID := idgen.GenerateRequestID()
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		Name:  "crypto team",
+		Users: []string{"bob"},
+	})
+	require.NoError(t, err)
+
+	resp, err := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.NoError(t, err)
+
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomReplyAccepted, reply.Status)
+	assert.NotEmpty(t, reply.RoomID)
+
+	// Assert the keypair was persisted to Valkey before the canonical event was published.
+	pair, err := keyStore.Get(ctx, reply.RoomID)
+	require.NoError(t, err)
+	require.NotNil(t, pair, "room key must be stored in Valkey immediately after create")
+	assert.NotEmpty(t, pair.KeyPair.PublicKey, "public key must be non-empty")
+	assert.NotEmpty(t, pair.KeyPair.PrivateKey, "private key must be non-empty")
+	assert.Equal(t, 0, pair.Version, "freshly created room key must have version 0")
+}
+
 // mustInsertUser inserts a user document directly into the users collection.
 func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 	t.Helper()
@@ -1230,7 +1336,7 @@ func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStor
 		lastData = data
 		return nil
 	}
-	h := NewHandler(store, keyStore, nil, siteID, 1000, 500, 5*time.Second, publish)
+	h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, publish)
 	return h, func() (string, []byte) { return lastSubj, lastData }
 }
 
@@ -1446,4 +1552,38 @@ func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
 	r, err = store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Nil(t, r.MinUserLastSeenAt)
+}
+
+func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "uA", "account": "alice", "chineseName": "愛麗絲", "engName": "Alice"},
+		bson.M{"_id": "uB", "account": "bob", "chineseName": "鮑勃", "engName": "Bob"},
+		bson.M{"_id": "uC", "account": "carol", "chineseName": "卡羅", "engName": "Carol"},
+	})
+	require.NoError(t, err)
+
+	msgTime := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
+		bson.M{"_id": "sA", "roomId": "r1", "u": bson.M{"_id": "uA", "account": "alice"}, "lastSeenAt": msgTime.Add(time.Hour)},
+		bson.M{"_id": "sB", "roomId": "r1", "u": bson.M{"_id": "uB", "account": "bob"}, "lastSeenAt": msgTime.Add(time.Minute)},
+		bson.M{"_id": "sC", "roomId": "r1", "u": bson.M{"_id": "uC", "account": "carol"}, "lastSeenAt": msgTime.Add(-time.Minute)},
+	})
+	require.NoError(t, err)
+
+	rows, err := store.ListReadReceipts(ctx, "r1", msgTime, "alice", 100)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "uB", rows[0].UserID)
+	require.Equal(t, "bob", rows[0].Account)
+	require.Equal(t, "鮑勃", rows[0].ChineseName)
+	require.Equal(t, "Bob", rows[0].EngName)
+
+	rows, err = store.ListReadReceipts(ctx, "r1", msgTime.Add(2*time.Hour), "alice", 100)
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }

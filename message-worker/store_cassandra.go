@@ -10,6 +10,8 @@ import (
 	"github.com/gocql/gocql"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/msgbucket"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // errMessageNotFound is returned by GetMessageSender when the message row is
@@ -53,20 +55,25 @@ func toMentionSet(mentions []model.Participant) []*cassParticipant {
 // CassandraStore implements Store using a Cassandra session.
 type CassandraStore struct {
 	cassSession *gocql.Session
+	bucket      msgbucket.Sizer
 }
 
-func NewCassandraStore(session *gocql.Session) *CassandraStore {
-	return &CassandraStore{cassSession: session}
+func NewCassandraStore(session *gocql.Session, bucket msgbucket.Sizer) *CassandraStore {
+	return &CassandraStore{cassSession: session, bucket: bucket}
 }
 
 // SaveMessage inserts msg into both messages_by_room and messages_by_id.
 // updated_at is set to msg.CreatedAt (equals created_at on first insert — not yet edited).
 // If either insert fails the error is returned immediately; JetStream will redeliver the message.
 func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error {
+	b := s.bucket.Of(msg.CreatedAt)
 	if err := s.cassSession.Query(
-		`INSERT INTO messages_by_room (room_id, created_at, message_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+		`INSERT INTO messages_by_room
+		   (room_id, bucket, created_at, message_id, sender, msg, site_id, updated_at,
+		    mentions, type, sys_msg_data, tshow, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, b, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
+		toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert messages_by_room %s: %w", msg.ID, err)
 	}
@@ -94,12 +101,15 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		return fmt.Errorf("insert messages_by_id %s: %w", msg.ID, err)
 	}
 
+	b := s.bucket.Of(msg.CreatedAt)
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_room
-		 (room_id, thread_room_id, created_at, message_id, thread_parent_id, sender, msg, site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.RoomID, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
-		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions), msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+		 (room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id, sender, msg,
+		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.RoomID, b, threadRoomID, msg.CreatedAt, msg.ID, msg.ThreadParentMessageID,
+		sender, msg.Content, siteID, msg.CreatedAt, toMentionSet(msg.Mentions),
+		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert thread_messages_by_room %s: %w", msg.ID, err)
 	}
@@ -154,8 +164,9 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	}
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
+	parentBucket := s.bucket.Of(parentCreatedAt)
 
-	// CAS increment on messages_by_id.
+	// CAS increment on messages_by_id (no bucket — table unchanged).
 	var tcount *int
 	if err := s.cassSession.Query(
 		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
@@ -177,10 +188,9 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
 	}
 
-	// CAS increment on messages_by_room.
 	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND created_at = ? AND message_id = ?`,
-		msg.RoomID, parentCreatedAt, parentID,
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Scan(&tcount); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil
@@ -190,8 +200,8 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentCreatedAt, parentID, expected,
+			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
+			newVal, msg.RoomID, parentBucket, parentCreatedAt, parentID, expected,
 		).WithContext(ctx).ScanCAS(&current)
 		return applied, current, err
 	}); err != nil {
@@ -201,9 +211,11 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 	return nil
 }
 
-// IF EXISTS prevents phantom rows: without it a bare UPDATE on a missing row would
-// materialise a partial Cassandra row containing only thread_room_id.
+// IF EXISTS prevents phantom rows on missing parents; misses log at ERROR
+// because a silent miss permanently breaks thread reads for that parent.
 func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error {
+	parentBucket := s.bucket.Of(parentCreatedAt)
+
 	applied, err := s.cassSession.Query(
 		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? AND created_at = ? IF EXISTS`,
 		threadRoomID, parentMessageID, parentCreatedAt,
@@ -212,18 +224,30 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_id: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_id; thread_room_id not stamped", "messageID", parentMessageID)
+		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"messageID", parentMessageID,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 
 	applied, err = s.cassSession.Query(
-		`UPDATE messages_by_room SET thread_room_id = ? WHERE room_id = ? AND created_at = ? AND message_id = ? IF EXISTS`,
-		threadRoomID, roomID, parentCreatedAt, parentMessageID,
+		`UPDATE messages_by_room SET thread_room_id = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF EXISTS`,
+		threadRoomID, roomID, parentBucket, parentCreatedAt, parentMessageID,
 	).WithContext(ctx).ScanCAS()
 	if err != nil {
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_room: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Warn("parent row absent in messages_by_room; thread_room_id not stamped", "messageID", parentMessageID, "roomID", roomID)
+		slog.Error("thread_room_id stamp on messages_by_room missed: parent row not found at the given (room_id, bucket, created_at, message_id) coordinates",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"messageID", parentMessageID,
+			"roomID", roomID,
+			"bucket", parentBucket,
+			"parentCreatedAt", parentCreatedAt,
+			"threadRoomID", threadRoomID,
+		)
 	}
 	return nil
 }

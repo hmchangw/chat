@@ -16,7 +16,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -150,23 +149,9 @@ func executeRun(ctx context.Context, rt *Runtime, rf *runFlags, p *Preset, injec
 	}
 	defer func() { _ = e1Sub.Unsubscribe() }()
 
-	// E2 subscription: broadcast events.
-	e2Handler := func(msg *nats.Msg) {
-		// Filter: ignore broadcasts that originated from a different loadgen
-		// run so concurrent runs on the same machine don't credit each
-		// other's events.
-		if hdr := msg.Header.Get(HeaderRunID); hdr != "" && hdr != runID {
-			return
-		}
-		var evt model.RoomEvent
-		if err := json.Unmarshal(msg.Data, &evt); err != nil {
-			return
-		}
-		if evt.Message == nil || evt.Message.ID == "" {
-			return
-		}
-		collector.RecordBroadcast(evt.Message.ID, time.Now())
-	}
+	// E2 subscription: broadcast events. See newE2Handler for the cleartext
+	// envelope rationale.
+	e2Handler := newE2Handler(collector, runID)
 
 	e2Sub, err := rt.NC().NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
@@ -778,6 +763,41 @@ func consumerSnapshots(samplers []*ConsumerSampler) []ConsumerStat {
 		out = append(out, s.Snapshot())
 	}
 	return out
+}
+
+// newE2Handler builds the broadcast-event handler used by executeRun.
+//
+// Decoding into a one-field envelope (not the full model.RoomEvent) is
+// deliberate:
+//  1. Under broadcast-worker encryption (ENCRYPTION_ENABLED=true) the
+//     Message field is nil — only the cleartext LastMsgID survives the
+//     envelope. Keying off Message.ID would silently miss every event in
+//     encrypted-mode runs.
+//  2. RoomEvent carries slices and pointers we never use here; decoding a
+//     minimal struct avoids per-event allocation on this hot path.
+//
+// When runID is non-empty, events stamped with a different HeaderRunID are
+// ignored so concurrent runs on the same NATS don't credit each other.
+// runID="" disables the filter (useful for tests).
+func newE2Handler(collector *Collector, runID string) func(*nats.Msg) {
+	type envelope struct {
+		LastMsgID string `json:"lastMsgId"`
+	}
+	return func(msg *nats.Msg) {
+		if runID != "" {
+			if hdr := msg.Header.Get(HeaderRunID); hdr != "" && hdr != runID {
+				return
+			}
+		}
+		var evt envelope
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			return
+		}
+		if evt.LastMsgID == "" {
+			return
+		}
+		collector.RecordBroadcast(evt.LastMsgID, time.Now())
+	}
 }
 
 // ---------------------------------------------------------------------------

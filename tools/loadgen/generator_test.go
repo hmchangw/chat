@@ -544,7 +544,7 @@ func TestBuildSearchRequest(t *testing.T) {
 		assert.Equal(t, "chat.user.user-1.request.search.messages", subj)
 		var got model.SearchMessagesRequest
 		require.NoError(t, json.Unmarshal(body, &got))
-		assert.Equal(t, "hello", got.SearchText)
+		assert.Equal(t, "hello", got.Query)
 		assert.Equal(t, 20, got.Size)
 	})
 
@@ -554,8 +554,8 @@ func TestBuildSearchRequest(t *testing.T) {
 		assert.Equal(t, "chat.user.user-1.request.search.rooms", subj)
 		var got model.SearchRoomsRequest
 		require.NoError(t, json.Unmarshal(body, &got))
-		assert.Equal(t, "hello", got.SearchText)
-		assert.Equal(t, "channel", got.Scope)
+		assert.Equal(t, "hello", got.Query)
+		assert.Equal(t, "channel", got.RoomType)
 		assert.Equal(t, 20, got.Size)
 	})
 

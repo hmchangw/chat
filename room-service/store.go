@@ -33,6 +33,13 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
+type ReadReceiptRow struct {
+	UserID      string `bson:"_id"`
+	Account     string `bson:"account"`
+	ChineseName string `bson:"chineseName"`
+	EngName     string `bson:"engName"`
+}
+
 type RoomStore interface {
 	CreateRoom(ctx context.Context, room *model.Room) error
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
@@ -80,6 +87,8 @@ type RoomStore interface {
 	// A nil value clears the field via $unset; a non-nil value writes via $set.
 	UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error
 
+	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
+
 	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.
@@ -92,4 +101,15 @@ type RoomStore interface {
 // Only the methods room-service needs are declared here.
 type RoomKeyStore interface {
 	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
+	// Get returns the current key for roomID, or (nil, nil) when absent.
+	Get(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error)
+	// Set writes a fresh keypair as the room's current key (version 0).
+	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+}
+
+// MessageReader looks up a message by ID. found=false with err=nil means no row matched.
+type MessageReader interface {
+	GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (
+		roomID string, createdAt time.Time, senderAccount string, found bool, err error,
+	)
 }

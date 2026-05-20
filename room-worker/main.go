@@ -16,20 +16,30 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeysender"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
-	NatsURL       string          `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string          `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string          `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI      string          `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string          `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string          `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string          `env:"MONGO_PASSWORD"  envDefault:""`
-	MaxWorkers    int             `env:"MAX_WORKERS"     envDefault:"100"`
-	Bootstrap     bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL       string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile string                  `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID        string                  `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI      string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB       string                  `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername string                  `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
+	MaxWorkers    int                     `env:"MAX_WORKERS"     envDefault:"100"`
+	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+
+	// Required: room-worker reads/rotates the room key on every create/add/remove path.
+	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"           envDefault:""`
+	// TTL on the :prev key slot after a rotation.
+	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
 }
 
 func main() {
@@ -41,11 +51,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.ValkeyKeyGracePeriod <= 0 {
+		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
+			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "room-worker")
 	if err != nil {
 		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
+	meterShutdown, err := otelutil.InitMeter("room-worker")
+	if err != nil {
+		slog.Error("init meter failed", "error", err)
 		os.Exit(1)
 	}
 
@@ -71,6 +93,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
+		Addr:        cfg.ValkeyAddr,
+		Password:    cfg.ValkeyPassword,
+		GracePeriod: cfg.ValkeyKeyGracePeriod,
+	})
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+	keySender := roomkeysender.NewSender(nc.NatsConn())
+
 	streamCfg := stream.Rooms(cfg.SiteID)
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
@@ -88,11 +121,14 @@ func main() {
 			return fmt.Errorf("publish to %q: %w", subj, err)
 		}
 		return nil
-	})
+	}, keyStore, keySender)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, jetstream.ConsumerConfig{
-		Durable: "room-worker", AckPolicy: jetstream.AckExplicitPolicy,
-	})
+	if _, err := nc.QueueSubscribe(subject.RoomCreateDMSync(cfg.SiteID), "room-worker", handler.natsServerCreateDM); err != nil {
+		slog.Error("subscribe sync DM endpoint failed", "error", err)
+		os.Exit(1)
+	}
+
+	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig(cfg.Consumer))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -128,7 +164,10 @@ func main() {
 
 	slog.Info("room-worker running", "site", cfg.SiteID)
 
-	shutdown.Wait(ctx, 25*time.Second,
+	// Shutdown ordering: drain inbound work first, then close client connections,
+	// THEN flush observability exporters. Reverse order drops traces/metrics
+	// emitted during NATS drain, mongo disconnect, and keyStore close.
+	hooks := []func(ctx context.Context) error{
 		func(ctx context.Context) error {
 			iter.Stop()
 			return nil
@@ -143,8 +182,20 @@ func main() {
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
 		},
-		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-	)
+		func(ctx context.Context) error { return keyStore.Close() },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
+	}
+
+	shutdown.Wait(ctx, 25*time.Second, hooks...)
+}
+
+// buildConsumerConfig returns the durable consumer config for
+// room-worker. Centralized so it is unit-testable without NATS.
+func buildConsumerConfig(s stream.ConsumerSettings) jetstream.ConsumerConfig {
+	cc := stream.DurableConsumerDefaults(s)
+	cc.Durable = "room-worker"
+	return cc
 }

@@ -1,14 +1,34 @@
-DC ?= $(shell ../scripts/lib/compose.sh print-cmd)
-COMPOSE = $(DC) -f docker-compose.loadtest.yml
+ROOT             := ../../..
+DEPS_COMPOSE     := $(ROOT)/docker-local/compose.deps.yaml
+SERVICES_COMPOSE := $(ROOT)/docker-local/compose.services.yaml
+OVERLAY          := docker-compose.yml
+COMPOSE          := docker compose -f $(OVERLAY)
 
-.PHONY: up seed run run-dashboards run-natsrouter down logs validate-rules validate-dashboards shellcheck-scripts validate-chaos validate-compose smoke
+# Encryption is the default for broadcast-worker; the broadcast-worker compose
+# reads ENCRYPTION_ENABLED via env interpolation (defaulting to true). Flip to
+# `ENCRYPTION_ENABLED=false make up` for a plaintext comparison run.
+export ENCRYPTION_ENABLED ?= true
 
-up:
+.PHONY: up stack-up overlay-up seed teardown run run-dashboards run-natsrouter down logs \
+        validate-rules validate-dashboards shellcheck-scripts validate-chaos validate-compose smoke
+
+up: stack-up overlay-up
+
+# Bring up the shared docker-local stack: third-party deps, then microservices.
+stack-up:
+	$(MAKE) -C $(ROOT) deps-up
+	docker compose -f $(SERVICES_COMPOSE) up -d --build
+
+overlay-up:
 	$(COMPOSE) up -d --build
 
 seed:
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
 	$(COMPOSE) exec -T loadgen /loadgen seed --preset=$(PRESET)
+
+teardown:
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen teardown --preset=$(PRESET)
 
 run:
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
@@ -42,6 +62,8 @@ run-natsrouter:
 
 down:
 	$(COMPOSE) --profile dashboards down -v
+	docker compose -f $(SERVICES_COMPOSE) down
+	$(MAKE) -C $(ROOT) deps-down
 
 logs:
 	$(COMPOSE) logs -f loadgen
@@ -87,7 +109,7 @@ validate-chaos:
 validate-compose:
 	$(COMPOSE) config -q
 	@if command -v docker-compose >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then \
-	  docker-compose -f docker-compose.loadtest.yml config -q || echo "WARN: v1 rejected config"; \
+	  docker-compose -f $(OVERLAY) config -q || echo "WARN: v1 rejected config"; \
 	fi
 
 # smoke brings the stack up, waits for health, then tears it down.

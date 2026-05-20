@@ -34,8 +34,8 @@ func shouldClauses(t *testing.T, q map[string]any) []any {
 }
 
 func TestBuildMessageQuery_GlobalUnrestricted(t *testing.T) {
-	req := model.SearchMessagesRequest{SearchText: "hello", Size: 25, Offset: 0}
-	raw, err := buildMessageQuery(req, "alice", nil, 365*24*time.Hour, "")
+	req := model.SearchMessagesRequest{Query: "hello", Size: 25, Offset: 0}
+	raw, err := buildMessageQuery(req, "alice", nil, 365*24*time.Hour, "user-room")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)
@@ -53,12 +53,12 @@ func TestBuildMessageQuery_GlobalUnrestricted(t *testing.T) {
 }
 
 func TestBuildMessageQuery_GlobalWithRestricted(t *testing.T) {
-	req := model.SearchMessagesRequest{SearchText: "hi", Size: 10, Offset: 5}
+	req := model.SearchMessagesRequest{Query: "hi", Size: 10, Offset: 5}
 	restricted := map[string]int64{
 		"room-b": 1_700_000_000_000,
 		"room-a": 1_600_000_000_000,
 	}
-	raw, err := buildMessageQuery(req, "alice", restricted, 24*time.Hour, "")
+	raw, err := buildMessageQuery(req, "alice", restricted, 24*time.Hour, "user-room")
 	require.NoError(t, err)
 
 	q := parseQuery(t, raw)
@@ -114,10 +114,10 @@ func inlineTermsAndLookup(t *testing.T, clause any) (roomIDs []any, account stri
 
 func TestBuildMessageQuery_ScopedInlineTerms(t *testing.T) {
 	req := model.SearchMessagesRequest{
-		SearchText: "hi",
-		RoomIDs:    []string{"r1", "r2", "r3"},
+		Query:   "hi",
+		RoomIDs: []string{"r1", "r2", "r3"},
 	}
-	raw, err := buildMessageQuery(req, "alice", nil, time.Hour, "")
+	raw, err := buildMessageQuery(req, "alice", nil, time.Hour, "user-room")
 	require.NoError(t, err)
 
 	shoulds := shouldClauses(t, parseQuery(t, raw))
@@ -129,11 +129,11 @@ func TestBuildMessageQuery_ScopedInlineTerms(t *testing.T) {
 
 func TestBuildMessageQuery_ScopedMixed(t *testing.T) {
 	req := model.SearchMessagesRequest{
-		SearchText: "hi",
-		RoomIDs:    []string{"r1", "restricted-r2", "r3"},
+		Query:   "hi",
+		RoomIDs: []string{"r1", "restricted-r2", "r3"},
 	}
 	restricted := map[string]int64{"restricted-r2": 1_600_000_000_000}
-	raw, err := buildMessageQuery(req, "alice", restricted, time.Hour, "")
+	raw, err := buildMessageQuery(req, "alice", restricted, time.Hour, "user-room")
 	require.NoError(t, err)
 
 	shoulds := shouldClauses(t, parseQuery(t, raw))
@@ -155,7 +155,7 @@ func TestBuildMessageQuery_ScopedMixed(t *testing.T) {
 }
 
 func TestBuildMessageQuery_UserRoomIndexOverride(t *testing.T) {
-	req := model.SearchMessagesRequest{SearchText: "hi"}
+	req := model.SearchMessagesRequest{Query: "hi"}
 	raw, err := buildMessageQuery(req, "alice", nil, time.Hour, "custom-user-room")
 	require.NoError(t, err)
 
@@ -166,11 +166,11 @@ func TestBuildMessageQuery_UserRoomIndexOverride(t *testing.T) {
 
 func TestBuildMessageQuery_ScopedAllRestricted(t *testing.T) {
 	req := model.SearchMessagesRequest{
-		SearchText: "hi",
-		RoomIDs:    []string{"ra"},
+		Query:   "hi",
+		RoomIDs: []string{"ra"},
 	}
 	restricted := map[string]int64{"ra": 1_700_000_000_000}
-	raw, err := buildMessageQuery(req, "alice", restricted, time.Hour, "")
+	raw, err := buildMessageQuery(req, "alice", restricted, time.Hour, "user-room")
 	require.NoError(t, err)
 
 	shoulds := shouldClauses(t, parseQuery(t, raw))
@@ -180,8 +180,8 @@ func TestBuildMessageQuery_ScopedAllRestricted(t *testing.T) {
 }
 
 func TestBuildMessageQuery_RecentWindow(t *testing.T) {
-	req := model.SearchMessagesRequest{SearchText: "hi"}
-	raw, err := buildMessageQuery(req, "alice", nil, 48*time.Hour, "")
+	req := model.SearchMessagesRequest{Query: "hi"}
+	raw, err := buildMessageQuery(req, "alice", nil, 48*time.Hour, "user-room")
 	require.NoError(t, err)
 
 	filters := filterClauses(t, parseQuery(t, raw))
@@ -191,8 +191,8 @@ func TestBuildMessageQuery_RecentWindow(t *testing.T) {
 }
 
 func TestBuildMessageQuery_RecentWindowDefault(t *testing.T) {
-	req := model.SearchMessagesRequest{SearchText: "hi"}
-	raw, err := buildMessageQuery(req, "alice", nil, 0, "")
+	req := model.SearchMessagesRequest{Query: "hi"}
+	raw, err := buildMessageQuery(req, "alice", nil, 0, "user-room")
 	require.NoError(t, err)
 
 	filters := filterClauses(t, parseQuery(t, raw))

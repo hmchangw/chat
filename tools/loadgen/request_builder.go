@@ -100,8 +100,8 @@ func buildSearchRequest(kind searchRequestKind, args *searchRequestArgs) (string
 	switch kind {
 	case SearchMessagesKind:
 		body, err := json.Marshal(model.SearchMessagesRequest{
-			SearchText: args.Query,
-			Size:       args.Size,
+			Query: args.Query,
+			Size:  args.Size,
 		})
 		if err != nil {
 			return "", nil, fmt.Errorf("marshal SearchMessages: %w", err)
@@ -109,9 +109,9 @@ func buildSearchRequest(kind searchRequestKind, args *searchRequestArgs) (string
 		return subject.SearchMessages(args.User.Account), body, nil
 	case SearchRoomsKind:
 		body, err := json.Marshal(model.SearchRoomsRequest{
-			SearchText: args.Query,
-			Scope:      args.Scope,
-			Size:       args.Size,
+			Query:    args.Query,
+			RoomType: args.Scope,
+			Size:     args.Size,
 		})
 		if err != nil {
 			return "", nil, fmt.Errorf("marshal SearchRooms: %w", err)

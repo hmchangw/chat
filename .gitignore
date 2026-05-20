@@ -55,3 +55,10 @@ chat-frontend/dist/
 # Loadgen per-run artifacts and credentials (Phase 1b §1.8 + §1.13)
 tools/loadgen/runs/
 tools/loadgen/creds/
+
+# Vitest cache (created when vitest is run from a non-package directory)
+.vite/
+chat-frontend/.vite/
+
+# Vitest junit reporter output (CI artifact, not source)
+chat-frontend/junit.xml

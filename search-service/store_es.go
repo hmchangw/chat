@@ -6,12 +6,6 @@ import (
 	"fmt"
 )
 
-// UserRoomIndex is the default index holding per-user access-control docs.
-// The sync-worker uses a site-qualified name internally, but the search
-// service reaches it via a stable alias — one name across cluster
-// topologies. Overridable via SEARCH_USER_ROOM_INDEX.
-const UserRoomIndex = "user-room"
-
 // esEngine is the narrow slice of pkg/searchengine.SearchEngine the
 // store uses — declared at the consumer so unit tests can stub without
 // satisfying the full SearchEngine contract.
@@ -26,17 +20,7 @@ type esStore struct {
 }
 
 func newESStore(engine esEngine, userRoomIndex string) *esStore {
-	return &esStore{engine: engine, userRoomIndex: resolveUserRoomIndex(userRoomIndex)}
-}
-
-// resolveUserRoomIndex falls back to UserRoomIndex when empty. Kept as a
-// single normalization point so both newESStore and termsLookupClause
-// consult the same default without repeating the `if == ""` branch.
-func resolveUserRoomIndex(name string) string {
-	if name == "" {
-		return UserRoomIndex
-	}
-	return name
+	return &esStore{engine: engine, userRoomIndex: userRoomIndex}
 }
 
 func (s *esStore) Search(ctx context.Context, indices []string, body json.RawMessage) (json.RawMessage, error) {

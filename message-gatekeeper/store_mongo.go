@@ -9,14 +9,19 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
 type MongoStore struct {
 	subscriptions *mongo.Collection
+	rooms         *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{subscriptions: db.Collection("subscriptions")}
+	return &MongoStore{
+		subscriptions: db.Collection("subscriptions"),
+		rooms:         db.Collection("rooms"),
+	}
 }
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
@@ -29,4 +34,8 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 		return nil, fmt.Errorf("find subscription for user %s in room %s: %w", account, roomID, err)
 	}
 	return &sub, nil
+}
+
+func (s *MongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+	return roommetacache.FetchFromMongo(ctx, s.rooms, roomID)
 }

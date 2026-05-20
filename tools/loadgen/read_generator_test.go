@@ -289,7 +289,7 @@ func TestSearchReadGenerator_QueryFromTokens(t *testing.T) {
 	for _, c := range calls {
 		var got map[string]any
 		require.NoError(t, json.Unmarshal(c.data, &got))
-		q, _ := got["searchText"].(string)
+		q, _ := got["query"].(string)
 		assert.True(t, tokenSet[q], "query %q should be drawn from preset.SearchTokens", q)
 	}
 }
