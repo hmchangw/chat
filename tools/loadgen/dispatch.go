@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -67,6 +68,19 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		"first-dm scenario: provision a dedicated loadgen-firstdm- prefixed user pool")
 	firstDMPairs := fs.Int("first-dm-pairs", 1000,
 		"first-dm scenario: number of user pairs to provision (only effective with --include-first-dm-fixtures)")
+	// Opt-in seed-time user-room ACL bootstrap for the search-sync-lag
+	// scenario. When set, after Mongo seeding the helper publishes one
+	// synthetic OutboxMemberAdded per unique (account, roomID) onto the
+	// local INBOX subject and waits for ES refresh. Default OFF so the
+	// common messages-workload seed stays Mongo-only and doesn't require
+	// NATS connectivity. Operators running search-sync-lag should pair
+	// `loadgen seed --preset=search-read --with-search-sync-acl` with
+	// `loadgen run --scenario=search-sync-lag --search-sync-skip-acl-bootstrap`
+	// to avoid paying the 35s ES-refresh wait on every Run.
+	withSearchSyncACL := fs.Bool("with-search-sync-acl", false,
+		"search-sync-lag: also publish the user-room ACL bootstrap events to NATS and wait for ES refresh. Required precondition for `loadgen run --scenario=search-sync-lag --search-sync-skip-acl-bootstrap`. Off by default to keep messages-workload seeds Mongo-only.")
+	searchSyncACLWait := fs.Duration("search-sync-acl-wait", defaultSearchSyncACLWait,
+		"search-sync-lag: wait after the ACL bootstrap publishes before exiting seed; covers ES refresh_interval (30s) plus bulk-flush slack. Only effective with --with-search-sync-acl.")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -163,7 +177,106 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		}
 	}
 
+	// Seed-time user-room ACL bootstrap (opt-in). Done AFTER Mongo seed and
+	// credential provisioning because:
+	//   - it depends on the fixtures we just built (subscriptions drive the
+	//     unique (account, roomID) pair set);
+	//   - a NATS connect failure here should not roll back the Mongo seed —
+	//     the Mongo state is independently useful, and the operator can re-run
+	//     `loadgen seed --with-search-sync-acl` against the existing data.
+	if *withSearchSyncACL {
+		if code := dispatchSeedSearchSyncACL(ctx, cfg, fixtures.Subscriptions, *searchSyncACLWait); code != 0 {
+			return code
+		}
+	}
+
 	return 0
+}
+
+// dispatchSeedSearchSyncACL is the NATS-touching half of `loadgen seed
+// --with-search-sync-acl`. Separated from runSeed so the Mongo seed path
+// remains testable without NATS connectivity and so a future caller (e.g.
+// the members workload, if it ever needs ACL) can reuse the connect +
+// publish + wait + drain sequence.
+func dispatchSeedSearchSyncACL(
+	ctx context.Context,
+	cfg *config,
+	subs []model.Subscription,
+	wait time.Duration,
+) int {
+	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
+	if err != nil {
+		slog.Error("nats connect (search-sync ACL seed)", "error", err)
+		return 1
+	}
+	// Drain ensures pending publishes flush before we return; otherwise the
+	// process can exit before the broker has the messages on disk, defeating
+	// the whole point of seeding.
+	defer func() { _ = nc.Drain() }()
+
+	publisher := &natsCoreCorePublisher{nc: nc.NatsConn()}
+	pairs, err := runSeedSearchSyncACL(ctx, publisher, cfg.SiteID, subs, wait)
+	if err != nil {
+		slog.Error("search-sync ACL seed", "error", err)
+		return 1
+	}
+	slog.Info("search-sync-lag ACL seeded",
+		"pairs", pairs,
+		"acl_wait", wait.String(),
+		"hint", "pair with `loadgen run --scenario=search-sync-lag --search-sync-skip-acl-bootstrap` to avoid the redundant Run-time bootstrap")
+	return 0
+}
+
+// runSeedSearchSyncACL is the testable core of the seed-time ACL bootstrap:
+// publish one OutboxMemberAdded per unique (account, roomID), then block for
+// `wait` so search-sync-worker has time to consume the events and ES has time
+// to refresh. Honors ctx cancellation during the wait so a mid-seed SIGTERM
+// shuts down cleanly. Wait is skipped when there's nothing to wait for
+// (empty subs) or when the caller passed wait<=0.
+func runSeedSearchSyncACL(
+	ctx context.Context,
+	publisher Publisher,
+	siteID string,
+	subs []model.Subscription,
+	wait time.Duration,
+) (int, error) {
+	pairs, err := SeedSearchSyncACL(ctx, publisher, siteID, subs)
+	if err != nil {
+		return pairs, fmt.Errorf("publish ACL bootstrap: %w", err)
+	}
+	if pairs == 0 || wait <= 0 {
+		return pairs, nil
+	}
+	// Use NewTimer + Stop so a cancel during the wait doesn't leak the timer
+	// for up to `wait` (default 35s) — same pattern as the Run-time bootstrap.
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return pairs, nil
+	case <-t.C:
+		return pairs, nil
+	}
+}
+
+// natsCoreCorePublisher is a minimal Publisher used by the seed-time ACL
+// bootstrap. The events target the INBOX subject (`chat.inbox.{siteID}.
+// member_added`) which is a core-NATS publish — search-sync-worker's
+// `user-room-sync` consumer subscribes to INBOX, but the publish itself is
+// core, not JetStream. Bypassing ConnPool/JetStream wiring keeps the seed
+// path independent of run-time NATS plumbing (which lives in runtime.go and
+// is laden with metrics/headers we don't need here).
+type natsCoreCorePublisher struct {
+	nc interface {
+		Publish(subject string, data []byte) error
+	}
+}
+
+func (p *natsCoreCorePublisher) Publish(_ context.Context, subj string, data []byte) error {
+	if err := p.nc.Publish(subj, data); err != nil {
+		return fmt.Errorf("nats publish %s: %w", subj, err)
+	}
+	return nil
 }
 
 func runTeardown(ctx context.Context, cfg *config, args []string) int {

@@ -281,13 +281,22 @@ scripted equivalent is [`scripts/compare-runs.sh`](../../scripts/compare-runs.sh
 
 ## Known limitations
 
-- **35 s ACL warm-up adds dead time to every run.** There is no
-  `--skip-acl-bootstrap` knob today. If you've manually pre-seeded the
-  `user-room` index (e.g. from a previous run on the same dev environment)
-  the bootstrap is harmless duplicate work — the user-room actions are
-  idempotent — but the wait still happens. Plan run duration accordingly:
-  a 5-minute run with default `--search-sync-acl-wait=35s` only has
-  ~4.4 minutes of measurement.
+- **35 s ACL warm-up adds dead time to every run by default.** Two knobs
+  remove it:
+  1. **Seed-time ACL (recommended).** Run
+     `loadgen seed --preset=search-read --with-search-sync-acl` once. It
+     publishes the ACL events and pays the 35 s wait as part of seeding,
+     leaving every subsequent run free to start immediately when paired
+     with `--search-sync-skip-acl-bootstrap`.
+  2. **Skip flag for warm clusters.** `--search-sync-skip-acl-bootstrap`
+     short-circuits both the publish and the wait. Safe when the ACL is
+     already populated (seed-time path or a prior run on the same dev
+     environment); the user-room actions are idempotent so duplicate
+     writes are no-ops in painless LWW.
+
+  Without either knob, plan run duration accordingly: a 5-minute run with
+  default `--search-sync-acl-wait=35s` only has ~4.4 minutes of
+  measurement.
 
 - **`transport_error` only covers the poll path, not bootstrap.** If the
   one-shot ACL bootstrap publish fails, `Run` returns the error and the

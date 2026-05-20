@@ -333,8 +333,23 @@ Scenario-specific flags:
 - `--search-sync-poll-interval` (default `250ms`) — interval between `search.messages` polls. Polling much faster than ES refreshes wastes RPCs without resolving the lag better.
 - `--search-sync-timeout` (default `90s`) — per-message poll deadline. ~3× the default refresh covers the long tail (compaction, GC pauses, bulk-flush slack).
 - `--search-sync-acl-wait` (default `35s`) — one-shot wait after the user-room ACL bootstrap, before the per-tick publish/poll loop starts. Covers ES `refresh_interval` plus bulk-flush slack so the very first search request actually has the ACL doc to terms-lookup against.
-- `--search-sync-skip-acl-bootstrap` (default off) — skip the bootstrap publishes AND the `--search-sync-acl-wait` entirely. Use only when iterating fast against a warm cluster where the user-room ACL doc is already populated from a prior run. Leave OFF for the first run after `loadgen seed`.
+- `--search-sync-skip-acl-bootstrap` (default off) — skip the bootstrap publishes AND the `--search-sync-acl-wait` entirely. Safe to set when the ACL doc has already been seeded via `loadgen seed --with-search-sync-acl` (see the recommended workflow below), or when iterating fast against a warm cluster where the user-room ACL doc is already populated from a prior run.
 - `--max-in-flight=N` (overrides the `MAX_IN_FLIGHT` env var when set > 0) — caps concurrent in-flight pollers. Lower it when the dashboard shows `dropped_inflight` dominance; raise it when the SUT has headroom but rate × timeout exceeds 200.
+
+**Recommended workflow (seed-time ACL).** The ACL bootstrap adds ~35 s of dead time to every Run by default. To pay that wait only once per seed:
+
+```bash
+# One-time: provision Mongo fixtures AND publish the ACL events + wait for ES.
+loadgen seed --preset=search-read --with-search-sync-acl
+
+# Subsequent runs skip the redundant Run-time bootstrap — start measuring immediately.
+loadgen run --scenario=search-sync-lag --inject=canonical --preset=search-read \
+            --search-sync-skip-acl-bootstrap
+```
+
+`--with-search-sync-acl` connects to NATS, publishes one synthetic `OutboxMemberAdded` per unique `(account, roomID)` fixture tuple, then blocks for `--search-sync-acl-wait` (default `35s`) so the ES `refresh_interval` has time to expose the `user-room` docs. It is OFF by default so the common messages-workload `loadgen seed` stays Mongo-only and doesn't require NATS connectivity. Re-seeding is idempotent — search-sync-worker's painless LWW treats redundant writes with equal timestamps as no-ops.
+
+If you skip the seed-time flag, the Run-time bootstrap is unchanged: every `loadgen run --scenario=search-sync-lag` still pays the 35 s wait at start. Old workflows keep working.
 
 Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}`:
 
@@ -530,8 +545,9 @@ Key fields:
 | `--raw-timeout` | raw-consistency | 5s | Per-message visibility timeout |
 | `--search-sync-poll-interval` | search-sync-lag | 250ms | Poll interval for `search.messages` visibility |
 | `--search-sync-timeout` | search-sync-lag | 90s | Per-message poll timeout (≈ 3× ES refresh_interval) |
-| `--search-sync-acl-wait` | search-sync-lag | 35s | One-shot wait after ACL bootstrap before the publish/poll loop starts |
-| `--search-sync-skip-acl-bootstrap` | search-sync-lag | false | Skip bootstrap + ACL wait (warm-cluster fast iteration) |
+| `--search-sync-acl-wait` | search-sync-lag | 35s | One-shot wait after ACL bootstrap before the publish/poll loop starts. Also used by `loadgen seed --with-search-sync-acl` for the post-publish wait. |
+| `--search-sync-skip-acl-bootstrap` | search-sync-lag | false | Skip Run-time bootstrap + ACL wait (set when the ACL was already seeded via `loadgen seed --with-search-sync-acl`, or when iterating against a warm cluster) |
+| `--with-search-sync-acl` | `loadgen seed` | false | Publish the user-room ACL bootstrap events to NATS and wait for ES refresh as part of seeding. Pair with `loadgen run --search-sync-skip-acl-bootstrap` to avoid the 35 s wait on every run. |
 | `--max-in-flight` | run, members-sustained, members-capacity | 0 (env) | Override `MAX_IN_FLIGHT` env when > 0; caps concurrent publishers/pollers |
 | `--receipt-coverage` | read-receipts | 0.6 | Fraction of recipients to fire MessageRead for |
 | `--mutate-rate` | message-mutate | 5 | Mutations/sec |

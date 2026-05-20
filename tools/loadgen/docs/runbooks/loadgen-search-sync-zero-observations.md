@@ -297,9 +297,24 @@ missing.**
 
 **Confirm — ACL doc (most common):**
 
+The ACL can be populated by either of two paths; check both before assuming
+the doc is missing.
+
 ```bash
-# Did the bootstrap log line fire at run start?
-grep 'bootstrap search-sync ACL' runs/<run_id>/run.log
+# Path 1: seed-time. Did `loadgen seed --with-search-sync-acl` log positive
+# confirmation? This is the recommended path — it runs once and lets every
+# subsequent `loadgen run --search-sync-skip-acl-bootstrap` start immediately.
+grep 'search-sync-lag ACL seeded' runs/<run_id>/run.log  # may be in the seed run's log, not the run-id's
+
+# Path 2: Run-time bootstrap. Did `bootstrap search-sync ACL` fire at run
+# start? Skipped (logs "ACL bootstrap skipped") if the operator passed
+# --search-sync-skip-acl-bootstrap, which is correct iff path 1 already ran.
+grep -E 'bootstrap search-sync ACL|ACL bootstrap (complete|skipped)' runs/<run_id>/run.log
+
+# If neither log line is present AND --search-sync-skip-acl-bootstrap was
+# passed, the operator skipped the bootstrap without ever seeding the ACL —
+# resolution is to drop the skip flag for one run or re-seed with
+# `--with-search-sync-acl`.
 
 # Is the user-room-sync consumer making progress?
 nats consumer info INBOX_site-local user-room-sync
@@ -336,10 +351,15 @@ curl -s 'http://localhost:9200/messages-*/_settings' \
 **Resolution.**
 
 - **ACL doc missing**: raise `--search-sync-acl-wait` (default `35s`) to
-  cover a slower bulk-flush — try `60s` or `90s`. If the bootstrap log
-  line did not fire at all, the bootstrap publish itself errored before
-  recording a metric; check the loadgen run log for
-  `bootstrap search-sync ACL:` errors.
+  cover a slower bulk-flush — try `60s` or `90s`. The wait flag is honored
+  by both the seed-time path (`loadgen seed --with-search-sync-acl
+  --search-sync-acl-wait=60s`) and the Run-time bootstrap. If the
+  bootstrap log line did not fire at all, the bootstrap publish itself
+  errored before recording a metric; check the loadgen run log for
+  `bootstrap search-sync ACL:` errors. If the operator passed
+  `--search-sync-skip-acl-bootstrap` without ever running
+  `loadgen seed --with-search-sync-acl`, the ACL was never written —
+  re-seed with the flag, or drop the skip for one run.
 - **Sync-worker behind**: scale up `search-sync-worker`, raise its
   consumer's `MAX_AC_PENDING`, or lower scenario `--rate`.
 - **ES misconfigured / under capacity**: confirm `refresh_interval` is

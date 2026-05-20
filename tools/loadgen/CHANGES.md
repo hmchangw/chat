@@ -51,6 +51,36 @@ auth overlay scripts now compose with `-f docker-compose.yml
 / auth overlay files were re-homed onto the shared `chat-local` network
 (previously declared a dangling `loadtest` network that never existed).
 
+### Seed-time user-room ACL bootstrap for search-sync-lag
+
+The user-room ACL bootstrap (publishing one synthetic `OutboxMemberAdded`
+per unique `(account, roomID)` fixture tuple onto the local INBOX subject,
+then waiting ~35 s for the ES refresh) can now be performed at seed time
+instead of on every `loadgen run --scenario=search-sync-lag`. New flags on
+the `seed` subcommand:
+
+- `--with-search-sync-acl` (default `false`) — opt-in: after the Mongo
+  seed completes, connect to NATS, publish the ACL events, and wait for
+  the ES refresh. OFF by default so the common messages-workload seed
+  stays Mongo-only and doesn't require NATS connectivity.
+- `--search-sync-acl-wait` (default `35s`) — post-publish wait duration;
+  same default and semantics as the Run-time flag.
+
+Recommended workflow:
+
+```bash
+loadgen seed --preset=search-read --with-search-sync-acl              # pay the 35s wait once
+loadgen run --scenario=search-sync-lag --inject=canonical \
+            --preset=search-read --search-sync-skip-acl-bootstrap     # subsequent runs start immediately
+```
+
+The Run-time bootstrap path remains as a fallback (default behavior of
+`loadgen run` is unchanged) so existing operator workflows keep working.
+Re-seeding is idempotent — search-sync-worker's painless LWW treats
+redundant writes with equal timestamps as no-ops. The seed-time helper
+`SeedSearchSyncACL` produces wire output identical (modulo `Timestamp`)
+to the Run-time `bootstrapSearchSyncACL`.
+
 ### Search-sync scenario field rename
 
 The search-sync-lag scenario's field/flag surface was renamed during merge

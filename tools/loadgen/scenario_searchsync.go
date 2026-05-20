@@ -182,7 +182,8 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 		}
 		slog.Info("search-sync-lag ACL bootstrap complete",
 			"pairs", pairCount,
-			"acl_wait", aclWait.String())
+			"acl_wait", aclWait.String(),
+			"hint", "move this to seed-time with `loadgen seed --preset=search-read --with-search-sync-acl`, then run with --search-sync-skip-acl-bootstrap")
 		// Wait for search-sync-worker to consume the events, bulk-index, and the
 		// ES refresh to expose them. Cancellation during the wait is a clean exit.
 		// Use NewTimer + Stop so a mid-wait cancel doesn't leak the timer for up

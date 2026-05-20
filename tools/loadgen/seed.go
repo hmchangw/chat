@@ -7,6 +7,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
@@ -92,6 +93,39 @@ func SeedRoomKeys(ctx context.Context, keys roomKeyStore, roomKeys map[string]ro
 		}
 	}
 	return nil
+}
+
+// SeedSearchSyncACL publishes one synthetic OutboxMemberAdded event per unique
+// (account, roomID) tuple in the fixture subscriptions onto the local INBOX
+// subject. search-sync-worker's `user-room-sync` consumer fans these out into
+// one ES user-room doc per account, granting the search-sync-lag scenario the
+// ACL gate that search-service's `search.messages` handler terms-lookups
+// against.
+//
+// This is the seed-time entry point: it lets operators pay the 35s ES-refresh
+// wait once (during `loadgen seed --preset=search-read --with-search-sync-acl`)
+// instead of on every `loadgen run --scenario=search-sync-lag`. The wire
+// output is byte-identical (modulo the publish-site Timestamp) to the legacy
+// Run-time bootstrap in scenario_searchsync.go — operators who don't migrate
+// will see the Run-time bootstrap publish the same events again, and the
+// painless LWW logic in search-sync-worker treats the redundant write as a
+// no-op.
+//
+// Returns the number of unique pairs actually published so callers can log
+// positive confirmation. Honors ctx cancellation between publishes so a
+// shutdown during a large-fixture seed doesn't sit publishing into a dying
+// connection.
+//
+// NOTE: This helper does NOT wait for ES refresh. The caller (dispatch.runSeed)
+// is responsible for the post-publish wait — separating "publish" from "wait"
+// keeps the helper unit-testable without a live ES.
+func SeedSearchSyncACL(
+	ctx context.Context,
+	publisher Publisher,
+	siteID string,
+	subs []model.Subscription,
+) (int, error) {
+	return bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
 }
 
 // TeardownRoomKeys deletes the keypairs written by SeedRoomKeys.
