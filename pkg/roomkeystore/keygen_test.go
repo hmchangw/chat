@@ -2,18 +2,12 @@ package roomkeystore_test
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdh"
-	"crypto/sha256"
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/hkdf"
 
-	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
@@ -33,37 +27,22 @@ func TestGenerateKeyPair_Distinct(t *testing.T) {
 	assert.False(t, bytes.Equal(a.PrivateKey, b.PrivateKey))
 }
 
-// Exercises the full encrypt-then-decrypt path so a generator returning mismatched halves would fail.
-func TestGenerateKeyPair_RoundTripWithRoomcrypto(t *testing.T) {
+// TestGenerateKeyPair_HalvesMatch verifies that the public and private halves
+// returned by GenerateKeyPair are a true P-256 key pair — deriving the public
+// key from the private scalar yields the stored public key bytes.
+//
+// The previous version of this test exercised roomcrypto's ECIES round trip,
+// which is no longer applicable: roomcrypto's HKDF-only scheme does not use
+// the public key at all. The direct curve-derivation check is both stronger
+// (it would catch any mismatch, not just round-trip failures) and free of
+// roomcrypto coupling.
+func TestGenerateKeyPair_HalvesMatch(t *testing.T) {
 	pair, err := roomkeystore.GenerateKeyPair()
 	require.NoError(t, err)
 
-	const plaintext = "hello"
-	encrypted, err := roomcrypto.Encode(plaintext, pair.PublicKey, 0)
+	priv, err := ecdh.P256().NewPrivateKey(pair.PrivateKey)
 	require.NoError(t, err)
 
-	got := decryptForTest(t, encrypted, pair.PrivateKey)
-	assert.Equal(t, plaintext, got, "round-trip must succeed when private and public halves match")
-}
-
-func decryptForTest(t *testing.T, em *roomcrypto.EncryptedMessage, roomPriv []byte) string {
-	t.Helper()
-	priv, err := ecdh.P256().NewPrivateKey(roomPriv)
-	require.NoError(t, err)
-	ephPub, err := ecdh.P256().NewPublicKey(em.EphemeralPublicKey)
-	require.NoError(t, err)
-	shared, err := priv.ECDH(ephPub)
-	require.NoError(t, err)
-
-	aesKey := make([]byte, 32)
-	_, err = io.ReadFull(hkdf.New(sha256.New, shared, nil, []byte("room-message-encryption")), aesKey)
-	require.NoError(t, err)
-
-	block, err := aes.NewCipher(aesKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	plain, err := gcm.Open(nil, em.Nonce, em.Ciphertext, nil)
-	require.NoError(t, err)
-	return string(plain)
+	derived := priv.PublicKey().Bytes()
+	assert.Equal(t, pair.PublicKey, derived, "stored public key must equal the one derived from the private scalar")
 }

@@ -44,7 +44,7 @@ type config struct {
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
-	RoomCryptoCacheSize int                     `env:"ROOM_CRYPTO_CACHE_SIZE" envDefault:"4096"`
+	RoomCryptoCacheSize  int                     `env:"ROOM_CRYPTO_CACHE_SIZE" envDefault:"4096"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
