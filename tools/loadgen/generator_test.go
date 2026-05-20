@@ -642,8 +642,6 @@ func TestGenerator_NoDMRatioRaceWithMaxInFlight(t *testing.T) {
 	assert.Greater(t, rp.count(), 0, "should have published at least one message")
 }
 
-// TestParseInjectMode lives in flags_test.go (predates PR #203's exported
-// ParseInjectMode helper, but exercises identical semantics). The two parsers
-// have not yet been consolidated — both parseInjectMode (flags.go, internal)
-// and ParseInjectMode (generator.go, exported for members handlers) coexist.
-// Tracked as a follow-up; not blocking.
+// TestParseInjectMode lives in flags_test.go (single source of truth — the
+// internal parseInjectMode that used to coexist with the exported
+// ParseInjectMode was consolidated).

@@ -36,19 +36,9 @@ func guardMongoDB(dbName string, override bool) error {
 	return nil
 }
 
-// parseInjectMode maps the --inject string to its enum. Pure function;
-// the only side-effect is the error case. Extracted from runRun for
-// unit-testability.
-func parseInjectMode(s string) (InjectMode, error) {
-	switch s {
-	case "frontdoor":
-		return InjectFrontdoor, nil
-	case "canonical":
-		return InjectCanonical, nil
-	default:
-		return "", fmt.Errorf("unknown inject mode: %s (want frontdoor|canonical)", s)
-	}
-}
+// (Inject-mode parsing lives in generator.go as the exported
+// `ParseInjectMode`; previously this file had a duplicate `parseInjectMode`
+// that was consolidated when PR #203 added the exported helper.)
 
 // parseScenarioFlag validates the --scenario string against the registry.
 // Returns nil when valid.

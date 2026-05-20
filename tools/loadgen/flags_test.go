@@ -24,7 +24,7 @@ func TestParseInjectMode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := parseInjectMode(tc.in)
+			got, err := ParseInjectMode(tc.in)
 			if tc.wantErr {
 				require.Error(t, err)
 				return

@@ -454,7 +454,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", rf.Preset)
 		return 2
 	}
-	injectMode, err := parseInjectMode(rf.Inject)
+	injectMode, err := ParseInjectMode(rf.Inject)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
@@ -486,6 +486,19 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		Lock:            runLock,
 		Scenario:        rf.Scenario,
 		AllowConcurrent: rf.AllowConcurrent,
+	}
+	// --allow-concurrent bypasses the runlock but does NOT isolate SUT
+	// resources: concurrent runs share ES index growth, search-service
+	// capacity, NATS consumer redelivery budget, etc. msgID-keyed
+	// correlation prevents cross-credit at the correctness level (each
+	// run only counts its own broadcasts/replies), but two runs at high
+	// rate will interfere observationally — a saturation in run A may
+	// look like degraded p99 in run B's numbers. Surface this loudly so
+	// operators don't misread the results.
+	if rf.AllowConcurrent {
+		slog.Warn("concurrent runs share SUT resources",
+			"note", "ES index, search-service capacity, NATS redelivery — runs cannot be analyzed independently when overlapping",
+			"scenario", rf.Scenario)
 	}
 
 	// Propagate the --federation-secondary-nats-url flag into cfg so

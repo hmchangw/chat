@@ -178,6 +178,23 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 		pairCount, err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
 		if err != nil {
 			metrics.SearchIndexVisible.WithLabelValues("bootstrap_error").Inc()
+			// Hold the process open long enough for one Prometheus scrape
+			// cycle so the bootstrap_error counter is actually observable
+			// in the dashboard. The increment fires <1s into Run; default
+			// scrape interval is 15s — without this delay the metric would
+			// be set and immediately dropped on process exit, leaving the
+			// dashboard silent. 20s comfortably exceeds 15s + jitter while
+			// staying below the operator's patience threshold for a
+			// fast-failing run. Honors ctx so SIGINT still exits promptly.
+			scrapeHold := 20 * time.Second
+			slog.Warn("holding open for one Prometheus scrape so bootstrap_error is observable",
+				"hold", scrapeHold.String())
+			holdTimer := time.NewTimer(scrapeHold)
+			select {
+			case <-ctx.Done():
+				holdTimer.Stop()
+			case <-holdTimer.C:
+			}
 			return fmt.Errorf("bootstrap search-sync ACL: %w", err)
 		}
 		slog.Info("search-sync-lag ACL bootstrap complete",
