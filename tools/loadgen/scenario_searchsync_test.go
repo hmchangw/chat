@@ -435,8 +435,15 @@ func TestSearchSyncRun_DrainsInFlightOnCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- gen.Run(ctx) }()
 
-	// Let some pollers start, then cancel.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until at least one poller is actually blocked in Request before we
+	// cancel — otherwise the test races between Run's ACL-wait/tick scheduling
+	// and the cancel, and the "drained pollers" assertion becomes vacuous.
+	select {
+	case <-req.firstRequest():
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatalf("no poller started within 2s; active-now=%d", req.activeCount())
+	}
 	cancel()
 
 	select {
@@ -453,15 +460,46 @@ func TestSearchSyncRun_DrainsInFlightOnCancel(t *testing.T) {
 // blockingRequester blocks every Request until ctx cancellation, tracking
 // concurrent in-flight count via atomic. Used to verify Run drains pollers
 // on shutdown.
-type blockingRequester struct{ active atomic.Int32 }
+//
+// firstReq is closed on the first Request call so tests can deterministically
+// wait until a poller is actually in flight before cancelling. Tests that use
+// time.Sleep to wait for goroutines to start violate CLAUDE.md §3.
+type blockingRequester struct {
+	active     atomic.Int32
+	firstReq   chan struct{}
+	firstReqMu sync.Mutex
+	signalled  bool
+}
 
 func (b *blockingRequester) Request(ctx context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+	b.firstReqMu.Lock()
+	if !b.signalled {
+		b.signalled = true
+		if b.firstReq != nil {
+			close(b.firstReq)
+		}
+	}
+	b.firstReqMu.Unlock()
 	b.active.Add(1)
 	defer b.active.Add(-1)
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 func (b *blockingRequester) activeCount() int32 { return b.active.Load() }
+
+// firstRequest returns a channel that closes the first time Request is called.
+// Lazily initialized so callers that don't need it pay nothing.
+func (b *blockingRequester) firstRequest() <-chan struct{} {
+	b.firstReqMu.Lock()
+	defer b.firstReqMu.Unlock()
+	if b.firstReq == nil {
+		b.firstReq = make(chan struct{})
+		if b.signalled {
+			close(b.firstReq)
+		}
+	}
+	return b.firstReq
+}
 
 // getHistogramSampleCount looks up the named histogram in the given registry
 // and returns its sample count.
