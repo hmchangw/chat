@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -56,6 +57,29 @@ func setupMongo(t *testing.T) (string, func()) {
 	uri, err := c.ConnectionString(ctx)
 	require.NoError(t, err)
 	return uri, func() { _ = c.Terminate(ctx) }
+}
+
+// setupValkey starts a valkey/valkey:8 container and returns its addr
+// (host:port). Used by the seed/teardown dispatch smoke tests so they
+// can populate cfg.ValkeyAddr — connectKeyStore now refuses an empty
+// ValkeyAddr with an exit-2 error rather than attempting a dial.
+func setupValkey(t *testing.T) (string, func()) {
+	t.Helper()
+	ctx := context.Background()
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        testimages.Valkey,
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(30 * time.Second),
+		},
+		Started: true,
+	})
+	require.NoError(t, err)
+	host, err := c.Host(ctx)
+	require.NoError(t, err)
+	port, err := c.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+	return fmt.Sprintf("%s:%s", host, port.Port()), func() { _ = c.Terminate(ctx) }
 }
 
 // TestSeedAndTeardown exercises seed.go end-to-end against a real
@@ -483,6 +507,9 @@ func TestDispatch_RunRun_CanonicalInjectSmoke(t *testing.T) {
 	// Build the config the same way main() does, but inject the
 	// container-managed connection strings. The MONGO_DB carries the
 	// `loadgen` prefix so the safety guard passes.
+	valkeyAddr, stopValkey := setupValkey(t)
+	defer stopValkey()
+
 	cfg := &config{
 		NatsURL:     natsURI,
 		MongoURI:    mongoURI,
@@ -490,6 +517,7 @@ func TestDispatch_RunRun_CanonicalInjectSmoke(t *testing.T) {
 		SiteID:      "site-local",
 		MetricsAddr: ":0", // OS-assigned port so concurrent tests don't collide
 		MaxInFlight: 32,
+		ValkeyAddr:  valkeyAddr,
 	}
 	os.Args = []string{
 		"loadgen", "run",
@@ -531,14 +559,17 @@ func TestDispatch_RunRun_CanonicalInjectSmoke(t *testing.T) {
 func TestDispatch_RunSeed_Smoke(t *testing.T) {
 	mongoURI, stopMongo := setupMongo(t)
 	defer stopMongo()
+	valkeyAddr, stopValkey := setupValkey(t)
+	defer stopValkey()
 
 	savedArgs := os.Args
 	defer func() { os.Args = savedArgs }()
 
 	cfg := &config{
-		MongoURI: mongoURI,
-		MongoDB:  "loadgen_seed_smoke",
-		SiteID:   "site-local",
+		MongoURI:   mongoURI,
+		MongoDB:    "loadgen_seed_smoke",
+		SiteID:     "site-local",
+		ValkeyAddr: valkeyAddr,
 	}
 	os.Args = []string{"loadgen", "seed", "--preset=small"}
 	dispatchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -562,15 +593,18 @@ func TestDispatch_RunSeed_Smoke(t *testing.T) {
 func TestDispatch_RunTeardown_Smoke(t *testing.T) {
 	mongoURI, stopMongo := setupMongo(t)
 	defer stopMongo()
+	valkeyAddr, stopValkey := setupValkey(t)
+	defer stopValkey()
 
 	// Seed first so teardown has something to delete.
 	savedArgs := os.Args
 	defer func() { os.Args = savedArgs }()
 
 	cfg := &config{
-		MongoURI: mongoURI,
-		MongoDB:  "loadgen_teardown_smoke",
-		SiteID:   "site-local",
+		MongoURI:   mongoURI,
+		MongoDB:    "loadgen_teardown_smoke",
+		SiteID:     "site-local",
+		ValkeyAddr: valkeyAddr,
 	}
 	os.Args = []string{"loadgen", "seed", "--preset=small"}
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)

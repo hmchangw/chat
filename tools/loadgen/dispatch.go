@@ -22,11 +22,24 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
+// errValkeyAddrUnset is returned by connectKeyStore when the operator did
+// not set VALKEY_ADDR. Distinct from the generic dial error so the caller
+// can print an actionable message instead of a stack-trace-like dial failure.
+var errValkeyAddrUnset = errors.New(
+	"VALKEY_ADDR is not set; loadgen seed/teardown need the room-key store " +
+		"(set VALKEY_ADDR=host:port — broadcast-worker decrypts using the keys this seeds)")
+
 // connectKeyStore opens the Valkey-backed room-key store used by seed and
 // teardown. The grace period mirrors broadcast-worker's default; it does
 // not affect loadgen's seed/teardown logic but keeps keystore behaviour
 // uniform across processes.
+//
+// Returns errValkeyAddrUnset when cfg.ValkeyAddr is empty so callers can
+// emit a clear "set VALKEY_ADDR" message rather than a low-level dial error.
 func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
+	if cfg.ValkeyAddr == "" {
+		return nil, errValkeyAddrUnset
+	}
 	return roomkeystore.NewValkeyStore(roomkeystore.Config{
 		Addr:        cfg.ValkeyAddr,
 		Password:    cfg.ValkeyPassword,
@@ -74,6 +87,10 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	defer mongoutil.Disconnect(ctx, client)
 	keyStore, err := connectKeyStore(cfg)
 	if err != nil {
+		if errors.Is(err, errValkeyAddrUnset) {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 2
+		}
 		slog.Error("valkey connect", "error", err)
 		return 1
 	}
@@ -189,6 +206,10 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		}
 		keyStore, err := connectKeyStore(cfg)
 		if err != nil {
+			if errors.Is(err, errValkeyAddrUnset) {
+				fmt.Fprintln(os.Stderr, err.Error())
+				return 2
+			}
 			slog.Error("valkey connect", "error", err)
 			return 1
 		}

@@ -35,9 +35,12 @@ type config struct {
 	// ToxiproxyURL is the toxiproxy admin endpoint for the chaos subcommand.
 	// Env: TOXIPROXY_URL (optional, default http://localhost:8474).
 	ToxiproxyURL string `env:"TOXIPROXY_URL" envDefault:"http://localhost:8474"`
-	// Valkey backs the room-key store. Required so loadgen can seed per-room
-	// keypairs that broadcast-worker decrypts when ENCRYPTION_ENABLED=true.
-	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
+	// Valkey backs the room-key store. Not marked required at the env level
+	// because subcommands that don't touch the keystore (chaos, scenarios,
+	// presets, recommend, doctor) must still parse a usable config. The seed
+	// and teardown handlers check ValkeyAddr at the call site and exit 2 with
+	// a clear message if the keystore is needed but not configured.
+	ValkeyAddr     string `env:"VALKEY_ADDR"         envDefault:""`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
 }
 

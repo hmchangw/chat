@@ -260,6 +260,68 @@ func TestNewE2Handler_SkipsMalformedJSON(t *testing.T) {
 	assert.Equal(t, 0, c.E2Count())
 }
 
+// When runID is non-empty, events whose HeaderRunID header doesn't match
+// must be dropped. This is the run-isolation filter that prevents
+// concurrent loadgen runs against the same NATS from crediting each
+// other's broadcasts (Task 1b.2).
+func TestNewE2Handler_DropsEventWithMismatchedRunID(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-mismatch", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "run-A")
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-mismatch"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	msg := &nats.Msg{Subject: "chat.room.r.event", Data: data, Header: nats.Header{}}
+	msg.Header.Set(HeaderRunID, "run-B") // wrong run
+	handler(msg)
+
+	assert.Equal(t, 0, c.E2Count(), "events from another run must not be credited")
+}
+
+// Conversely, when the HeaderRunID matches the active runID, the event
+// is processed normally.
+func TestNewE2Handler_AcceptsEventWithMatchingRunID(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-match", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "run-A")
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-match"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	msg := &nats.Msg{Subject: "chat.room.r.event", Data: data, Header: nats.Header{}}
+	msg.Header.Set(HeaderRunID, "run-A") // matches
+	handler(msg)
+
+	assert.Equal(t, 1, c.E2Count(), "events from the active run must be credited")
+}
+
+// A missing HeaderRunID header is treated as legacy traffic (no run ID
+// was stamped at publish time) and is accepted — the filter only rejects
+// when the header is present AND the value disagrees. Same behavior as
+// the existing TestNewE2Handler_RecordsWhenMessageNil flow, but with a
+// non-empty runID configured on the handler.
+func TestNewE2Handler_AcceptsEventWithoutRunIDHeader(t *testing.T) {
+	m := NewMetrics()
+	c := NewCollector(m, "small")
+	c.RecordPublish("req-1", "m-no-header", time.Unix(0, 0))
+
+	handler := newE2Handler(c, "run-A")
+	evt := model.RoomEvent{Type: model.RoomEventNewMessage, RoomID: "r", LastMsgID: "m-no-header"}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	// No Header set — represents legacy publishers / SUT loopback events
+	// that pre-date the run-isolation header.
+	handler(&nats.Msg{Subject: "chat.room.r.event", Data: data})
+
+	assert.Equal(t, 1, c.E2Count(), "events without a run-ID header must still be credited")
+}
+
 func TestMetricsHandler_ServesOpenMetrics(t *testing.T) {
 	m := NewMetrics()
 	m.Published.WithLabelValues("small", "measured", "0", "100-200").Inc()
