@@ -41,8 +41,9 @@ type SubscriptionStore interface {
 	// (DisableNotification → false, IsSubscribed, JoinedAt) while preserving
 	// the existing document's runtime state (LastSeenAt, HasMention,
 	// ThreadUnread, Alert) and identity (_id, u). Intended for botDM
-	// re-creation paths only; channel/DM/add-member paths must continue to
-	// use BulkCreateSubscriptions for safe redelivery idempotency.
+	// re-creation paths only; channel/DM/add-member paths use
+	// BulkCreateSubscriptions, which is also an idempotent upsert
+	// ($setOnInsert) so redeliveries never hit a duplicate-key error.
 	BulkUpsertSubscriptions(ctx context.Context, subs []*model.Subscription) error
 	// ListByRoom returns all subscriptions for roomID across every site.
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
@@ -55,6 +56,12 @@ type SubscriptionStore interface {
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// FindDMSubscription returns the requester's dm/botDM sub by Name; ErrSubscriptionNotFound on miss.
 	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
+	// FindDMSubscriptionPair returns both subs of a DM/botDM room in a
+	// single query. The first return value is the sub owned by
+	// requesterAccount, the second is the counterpart's. Returns
+	// ErrSubscriptionNotFound if the room has fewer than two matching
+	// subs or if requesterAccount is not among them.
+	FindDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error)
 	AddRole(ctx context.Context, account, roomID string, role model.Role) error
 	RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 

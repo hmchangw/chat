@@ -1020,23 +1020,20 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
-// buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
-// findDMSubscriptionPair re-reads the two persisted subs for a (requester,
-// counterpart) DM/botDM pair. Used after BulkCreateSubscriptions (which
-// swallows dup-key races) and after BulkUpsertSubscriptions (which may have
-// hit an existing row) so downstream fan-out carries persisted _id/JoinedAt
-// rather than the in-memory pre-write values.
-func (h *Handler) findDMSubscriptionPair(ctx context.Context, requester, counterpart *model.User) (*model.Subscription, *model.Subscription, error) {
-	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, counterpart.Account)
+// findDMSubscriptionPair re-reads the two persisted subs for a DM/botDM
+// room in a single Mongo round-trip. Used after BulkCreateSubscriptions
+// (idempotent upsert) and after BulkUpsertSubscriptions (which may have
+// hit an existing row) so downstream fan-out carries persisted _id and
+// JoinedAt rather than the in-memory pre-write values.
+func (h *Handler) findDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error) {
+	requesterSub, counterpartSub, err := h.store.FindDMSubscriptionPair(ctx, roomID, requesterAccount)
 	if err != nil {
-		return nil, nil, fmt.Errorf("find requester sub: %w", err)
-	}
-	counterpartSub, err := h.store.FindDMSubscription(ctx, counterpart.Account, requester.Account)
-	if err != nil {
-		return nil, nil, fmt.Errorf("find counterpart sub: %w", err)
+		return nil, nil, fmt.Errorf("find DM sub pair: %w", err)
 	}
 	return requesterSub, counterpartSub, nil
 }
+
+// buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
 
 func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
 	return []*model.Subscription{
@@ -1179,7 +1176,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 			}
 			// Upsert may have hit an existing row; re-read so finishCreateRoom's
 			// fan-out carries persisted _id/JoinedAt.
-			requesterSub, counterpartSub, err := h.findDMSubscriptionPair(ctx, requester, counterpart)
+			requesterSub, counterpartSub, err := h.findDMSubscriptionPair(ctx, room.ID, requester.Account)
 			if err != nil {
 				return fmt.Errorf("re-read botDM subs after upsert: %w", err)
 			}
@@ -1605,9 +1602,10 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 			return nil, fmt.Errorf("bulk create subs: %w", err)
 		}
 	}
-	// Re-read canonical subs: the bulk write may have swallowed a dup-key (insert path)
-	// or hit an existing row (upsert path); publish from persisted state.
-	requesterSub, otherSub, err := h.findDMSubscriptionPair(ctx, requester, other)
+	// Re-read canonical subs: the bulk write either upserted with $setOnInsert
+	// (DM, no-op on collision) or refreshed re-activation fields (botDM);
+	// publish from persisted state so _id and JoinedAt are canonical.
+	requesterSub, otherSub, err := h.findDMSubscriptionPair(ctx, room.ID, requester.Account)
 	if err != nil {
 		return nil, fmt.Errorf("re-read DM subs after write: %w", err)
 	}
