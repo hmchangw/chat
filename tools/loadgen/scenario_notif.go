@@ -177,16 +177,19 @@ func (g *notificationFanoutGenerator) publishNotifTick(ctx context.Context) erro
 	if fixtures == nil || len(fixtures.Subscriptions) == 0 {
 		return nil
 	}
+	// #nosec G404 -- load-test subscription picker; reproducibility via --seed requires deterministic math/rand, no security context
 	subIdx := rand.IntN(len(fixtures.Subscriptions))
 	sub := fixtures.Subscriptions[subIdx]
 
 	content := "loadgen notification-fanout probe"
 	preset := g.deps.Preset()
+	// #nosec G404 -- load-test mention-rate dice; reproducibility via --seed requires deterministic math/rand, no security context
 	if preset != nil && preset.MentionRate > 0 && rand.Float64() < preset.MentionRate {
 		// Mention a different fixture user — fall back to self if there
 		// is only one user in the pool.
 		other := sub.User.Account
 		if len(fixtures.Users) > 1 {
+			// #nosec G404 -- load-test mention-target picker; reproducibility via --seed requires deterministic math/rand, no security context
 			otherIdx := rand.IntN(len(fixtures.Users))
 			if fixtures.Users[otherIdx].Account == sub.User.Account && otherIdx+1 < len(fixtures.Users) {
 				otherIdx++
