@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
@@ -26,7 +28,7 @@ func TestCachedSubStore_HitMiss(t *testing.T) {
 	}
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	got, err := cached.GetSubscription(context.Background(), "alice", "r1")
@@ -53,7 +55,7 @@ func TestCachedSubStore_PreservesUserID(t *testing.T) {
 	}
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	// Miss path: populates the cache.
@@ -74,7 +76,7 @@ func TestCachedSubStore_NotSubscribedNotCached(t *testing.T) {
 
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, errNotSubscribed).Times(2)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	_, err = cached.GetSubscription(context.Background(), "alice", "r1")
@@ -90,7 +92,7 @@ func TestCachedSubStore_TransientErrorNotCached(t *testing.T) {
 	boom := errors.New("transient")
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, boom).Times(2)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	_, err = cached.GetSubscription(context.Background(), "alice", "r1")
@@ -106,7 +108,7 @@ func TestCachedSubStore_TTLExpires(t *testing.T) {
 	want := &model.Subscription{User: model.SubscriptionUser{Account: "alice"}, Roles: []model.Role{model.RoleMember}}
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(2)
 
-	cached, err := newCachedSubStore(inner, 10, 50*time.Millisecond)
+	cached, err := newCachedSubStore(inner, 10, 50*time.Millisecond, nil)
 	require.NoError(t, err)
 
 	_, _ = cached.GetSubscription(context.Background(), "alice", "r1")
@@ -131,7 +133,7 @@ func TestCachedSubStore_SingleflightDedupsConcurrentMisses(t *testing.T) {
 		}).
 		Times(1)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	const N = 20
@@ -157,7 +159,7 @@ func TestCachedSubStore_GetRoomMetaPassesThrough(t *testing.T) {
 
 	inner.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(roommetacache.Meta{ID: "r1", UserCount: 1}, nil).Times(2)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	_, _ = cached.GetRoomMeta(context.Background(), "r1")
@@ -182,7 +184,7 @@ func TestNewCachedSubStore_RejectsInvalidArgs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := newCachedSubStore(inner, tc.size, tc.ttl)
+			c, err := newCachedSubStore(inner, tc.size, tc.ttl, nil)
 			assert.Nil(t, c)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
@@ -190,20 +192,36 @@ func TestNewCachedSubStore_RejectsInvalidArgs(t *testing.T) {
 	}
 }
 
-func TestCachedSubStore_StatsTrackHitsAndMisses(t *testing.T) {
+func TestCachedSubStore_RecorderCountsHitsAndMisses(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	inner := NewMockStore(ctrl)
 	want := &model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}}
 	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
 
-	cached, err := newCachedSubStore(inner, 10, time.Minute)
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("subscription", nil)
+
+	cached, err := newCachedSubStore(inner, 10, time.Minute, rec)
 	require.NoError(t, err)
 
 	_, _ = cached.GetSubscription(context.Background(), "alice", "r1") // miss
 	_, _ = cached.GetSubscription(context.Background(), "alice", "r1") // hit
 	_, _ = cached.GetSubscription(context.Background(), "alice", "r1") // hit
 
-	stats := cached.Stats()
-	assert.Equal(t, uint64(2), stats.Hits)
-	assert.Equal(t, uint64(1), stats.Misses)
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(2), hits)
+	assert.Equal(t, uint64(1), misses)
+}
+
+func TestCachedSubStore_NilRecorderIsSafe(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockStore(ctrl)
+	want := &model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}}
+	inner.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(want, nil).Times(1)
+
+	cached, err := newCachedSubStore(inner, 10, time.Minute, nil)
+	require.NoError(t, err)
+	_, err = cached.GetSubscription(context.Background(), "alice", "r1")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, cached.Len())
 }

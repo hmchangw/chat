@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -36,12 +36,10 @@ type cachedSubStore struct {
 	Store
 	lru *lru.LRU[subKey, cachedSubscription]
 	sf  singleflight.Group
-
-	hits   atomic.Uint64
-	misses atomic.Uint64
+	rec *cachestats.Recorder
 }
 
-func newCachedSubStore(inner Store, size int, ttl time.Duration) (*cachedSubStore, error) {
+func newCachedSubStore(inner Store, size int, ttl time.Duration, rec *cachestats.Recorder) (*cachedSubStore, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("subcache: size must be positive, got %d", size)
 	}
@@ -51,16 +49,21 @@ func newCachedSubStore(inner Store, size int, ttl time.Duration) (*cachedSubStor
 	return &cachedSubStore{
 		Store: inner,
 		lru:   lru.NewLRU[subKey, cachedSubscription](size, nil, ttl),
+		rec:   rec,
 	}, nil
 }
 
 func (c *cachedSubStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	key := subKey{roomID: roomID, account: account}
 	if v, ok := c.lru.Get(key); ok {
-		c.hits.Add(1)
+		c.rec.Hit()
 		return fromCached(v), nil
 	}
-	c.misses.Add(1)
+	// Miss counts every caller whose outer-LRU lookup found no
+	// entry, not every distinct loader invocation. Under singleflight
+	// contention these can diverge: N concurrent callers for the same
+	// missing key produce N misses but a single inner-store call.
+	c.rec.Miss()
 
 	// roomIDs and accounts are validated as UUID/base62/email-style strings that
 	// cannot contain NUL bytes; the \x00 separator therefore makes the key
@@ -104,15 +107,6 @@ func fromCached(c cachedSubscription) *model.Subscription {
 	}
 }
 
-// SubStats is a snapshot of the subscription cache's hit/miss counters.
-type SubStats struct {
-	Hits, Misses uint64
-}
-
-// Stats returns a snapshot of the cache counters.
-func (c *cachedSubStore) Stats() SubStats {
-	return SubStats{
-		Hits:   c.hits.Load(),
-		Misses: c.misses.Load(),
-	}
-}
+// Len lets the owning service register a chat_cache_size gauge in
+// main.go via cachestats. See cachestats.Stats.Register.
+func (c *cachedSubStore) Len() int { return c.lru.Len() }

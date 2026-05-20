@@ -81,7 +81,7 @@ func main() {
 		slog.Error("init room meta cache failed", "error", err)
 		os.Exit(1)
 	}
-	store, err := newCachedSubStore(withMeta, cfg.SubCacheSize, cfg.SubCacheTTL)
+	store, err := newCachedSubStore(withMeta, cfg.SubCacheSize, cfg.SubCacheTTL, nil)
 	if err != nil {
 		slog.Error("init subscription cache failed", "error", err)
 		os.Exit(1)
