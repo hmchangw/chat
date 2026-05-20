@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
@@ -31,7 +30,6 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
-	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 const testUserRoomIndex = "user-room"
@@ -53,9 +51,11 @@ type ccsFixture struct {
 	clientNATS *nats.Conn
 }
 
-// setupCCSFixture stands up the whole CCS environment. Total cost is ~ES
-// container start × 2 (~60-90s) so tests that use it should reuse via
-// TestMain when added.
+// setupCCSFixture stands up the CCS environment. It owns the pair of
+// networked ES containers (they need a shared docker network with
+// transport-port aliases, so they can't be process-shared like the
+// single-node ES used by other fixtures), but piggybacks on the
+// process-shared Valkey and NATS from setup_shared_test.go.
 //
 // Every major step emits a `t.Logf` so a CI failure (where raw logs are
 // often opaque on public runs) leaves enough breadcrumbs in the `go test`
@@ -102,15 +102,9 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	remoteEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: remoteURL})
 	require.NoError(t, err, "build searchengine for remote")
 
-	t.Logf("CCS fixture: starting valkey")
-	valkeyAddr := startValkey(t)
-	valkeyClient, err := valkeyutil.Connect(ctx, valkeyAddr, "")
-	require.NoError(t, err, "connect valkey")
-	t.Cleanup(func() { valkeyutil.Disconnect(valkeyClient) })
-	t.Logf("CCS fixture: valkey at %s", valkeyAddr)
+	valkeyClient := freshValkeyClient(t)
 
-	t.Logf("CCS fixture: starting NATS")
-	natsURL := startNATS(t)
+	natsURL := sharedNATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })
@@ -195,40 +189,6 @@ func startESForCCS(t *testing.T, nw *testcontainers.DockerNetwork, alias, cluste
 	port, err := container.MappedPort(ctx, "9200")
 	require.NoError(t, err)
 	return fmt.Sprintf("http://%s:%s", host, port.Port())
-}
-
-func startValkey(t *testing.T) string {
-	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			Cmd:          []string{"valkey-server", "--save", "", "--appendonly", "no"},
-			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(30 * time.Second),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start valkey")
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-	return fmt.Sprintf("%s:%s", host, port.Port())
-}
-
-func startNATS(t *testing.T) string {
-	t.Helper()
-	ctx := context.Background()
-	c, err := natsmod.Run(ctx, testimages.NATS)
-	require.NoError(t, err, "start nats")
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
-
-	url, err := c.ConnectionString(ctx)
-	require.NoError(t, err, "nats connection string")
-	return url
 }
 
 // --- Index templates ---------------------------------------------------------
@@ -653,19 +613,10 @@ type appsFixture struct {
 
 func setupAppsFixture(t *testing.T) *appsFixture {
 	t.Helper()
-	ctx := context.Background()
 
 	mongoDB := testutil.MongoDB(t, "search_service_test")
 
-	// Start NATS (reuse the existing NATS container helper).
-	natsContainer, err := natsmod.Run(ctx, testimages.NATS,
-		testcontainers.WithWaitStrategy(wait.ForLog("Server is ready").WithStartupTimeout(60*time.Second)),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = natsContainer.Terminate(ctx) })
-
-	natsURL, err := natsContainer.ConnectionString(ctx)
-	require.NoError(t, err)
+	natsURL := sharedNATS(t)
 
 	serverNATS, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err)
@@ -793,8 +744,7 @@ func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixtu
 	stub := httptest.NewServer(thirdPartyHandler)
 	t.Cleanup(stub.Close)
 
-	// NATS.
-	natsURL := startNATS(t)
+	natsURL := sharedNATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })
@@ -891,51 +841,28 @@ func TestIntegration_SearchUsers_ThirdPartyErrorReturnsInternal(t *testing.T) {
 
 // roomsFixture wires a real ES container (for the spotlight index) and
 // NATS. search.rooms is served directly from the spotlight index, so no
-// Mongo is involved.
+// Mongo is involved. The ES container is process-shared; per-test
+// isolation comes from a unique spotlight index name (deleted on
+// cleanup) plus a Valkey FLUSHDB on cleanup.
 type roomsFixture struct {
-	clientNATS *nats.Conn
-	esURL      string
+	clientNATS     *nats.Conn
+	esURL          string
+	spotlightIndex string
 }
 
-// setupRoomsFixture stands up ES (spotlight index) and NATS. It registers
-// t.Cleanup for all containers and returns a ready fixture.
+// setupRoomsFixture wires the search-service router against the
+// process-shared ES, Valkey and NATS containers. The spotlight index
+// name is unique per test so leftovers from a sibling test can't leak
+// into this one's hit set.
 func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	// Single ES node — no CCS needed; spotlight is always local.
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Elasticsearch,
-			ExposedPorts: []string{"9200/tcp"},
-			Env: map[string]string{
-				"discovery.type":         "single-node",
-				"xpack.security.enabled": "false",
-				"ES_JAVA_OPTS":           "-Xms512m -Xmx512m",
-				"cluster.routing.allocation.disk.threshold_enabled": "false",
-			},
-			WaitingFor: wait.ForAll(
-				wait.ForHTTP("/").WithPort("9200/tcp").WithStartupTimeout(120*time.Second),
-				wait.ForHTTP("/_cluster/health?wait_for_status=yellow&timeout=60s").
-					WithPort("9200/tcp").
-					WithStartupTimeout(120*time.Second),
-			),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start elasticsearch for subs fixture")
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "9200")
-	require.NoError(t, err)
-	esURL := fmt.Sprintf("http://%s:%s", host, port.Port())
-
-	spotlightIndex := "spotlight-subs-test"
+	esURL := sharedSingleNodeES(t)
+	spotlightIndex := uniqueESIndex(t, "spotlight")
 	putTestSpotlightIndex(t, esURL, spotlightIndex)
 
-	natsURL := startNATS(t)
+	natsURL := sharedNATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err, "connect nats (server side)")
 	t.Cleanup(func() { _ = serverNC.Drain() })
@@ -948,7 +875,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, err, "build searchengine for subs fixture")
 
 	esStore := newESStore(engine, testUserRoomIndex)
-	cache := newValkeyCache(newSubsValkeyClient(t))
+	cache := newValkeyCache(freshValkeyClient(t))
 	h := newHandler(esStore, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
@@ -965,18 +892,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, serverNC.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 
-	return &roomsFixture{clientNATS: clientNC, esURL: esURL}
-}
-
-// newSubsValkeyClient starts a Valkey testcontainer and returns a connected
-// client for use by the subs fixture. Reuses the existing startValkey helper.
-func newSubsValkeyClient(t *testing.T) valkeyutil.Client {
-	t.Helper()
-	addr := startValkey(t)
-	client, err := valkeyutil.Connect(context.Background(), addr, "")
-	require.NoError(t, err, "connect valkey for subs fixture")
-	t.Cleanup(func() { valkeyutil.Disconnect(client) })
-	return client
+	return &roomsFixture{clientNATS: clientNC, esURL: esURL, spotlightIndex: spotlightIndex}
 }
 
 // putTestSpotlightIndex creates a minimal spotlight index in ES with the
@@ -1022,7 +938,7 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Seed spotlight docs for two rooms alice is in.
-	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-r1", map[string]any{
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r1", map[string]any{
 		"roomId":      "r1",
 		"roomName":    "engineering-announcements",
 		"roomType":    "channel",
@@ -1030,7 +946,7 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 		"siteId":      "site-local",
 		"joinedAt":    now.Add(-48 * time.Hour).Format(time.RFC3339),
 	})
-	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-r2", map[string]any{
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r2", map[string]any{
 		"roomId":      "r2",
 		"roomName":    "engineering-random",
 		"roomType":    "channel",
@@ -1041,7 +957,7 @@ func TestIntegration_SearchRooms_HappyPath(t *testing.T) {
 	// A matching room owned by a different account. With the Mongo
 	// hydration removed, the spotlight userAccount term filter is the
 	// sole access boundary — this must not leak into alice's results.
-	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-r3", map[string]any{
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-r3", map[string]any{
 		"roomId":      "r3",
 		"roomName":    "engineering-secret",
 		"roomType":    "channel",
@@ -1076,7 +992,7 @@ func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
 	const account = "bob"
 	now := time.Now().UTC()
 
-	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-b-r1", map[string]any{
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-b-r1", map[string]any{
 		"roomId":      "b-r1",
 		"roomName":    "bob-alice",
 		"roomType":    "dm",
@@ -1084,7 +1000,7 @@ func TestIntegration_SearchRooms_RoomTypeChannelFilter(t *testing.T) {
 		"siteId":      "site-local",
 		"joinedAt":    now.Add(-1 * time.Hour).Format(time.RFC3339),
 	})
-	seedDoc(t, f.esURL, "spotlight-subs-test", "spot-b-r2", map[string]any{
+	seedDoc(t, f.esURL, f.spotlightIndex, "spot-b-r2", map[string]any{
 		"roomId":      "b-r2",
 		"roomName":    "bob-channel",
 		"roomType":    "channel",
@@ -1171,8 +1087,7 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	fakeValkey := newFakeCache()
 	fakeValkey.store["alice"] = map[string]int64{} // empty restricted map, cache hit
 
-	// NATS
-	natsURL := startNATS(t)
+	natsURL := sharedNATS(t)
 
 	serverNATS, err := natsutil.Connect(natsURL, "")
 	require.NoError(t, err)
