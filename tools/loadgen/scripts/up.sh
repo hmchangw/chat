@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # up.sh — bring up the loadgen compose stack and wait for readiness.
 #
+# Post-merge layout: the backend (NATS, MongoDB, Cassandra, Valkey,
+# Elasticsearch, Keycloak) comes from docker-local/compose.deps.yaml;
+# the microservices from docker-local/compose.services.yaml; the
+# load-test-specific containers (loadgen, prometheus, grafana) from
+# tools/loadgen/deploy/docker-compose.yml. The Makefile's `up` target
+# orchestrates all three in the right order — this script delegates to
+# it so there is one source of truth.
+#
 # Usage:
 #   ./up.sh
 #
-# Idempotent. Safe to re-run; uses `docker compose up -d --build`.
+# Idempotent. Safe to re-run.
 # Waits for both infra (NATS / MongoDB / Cassandra / Elasticsearch /
 # Valkey) AND for the request/reply services-under-test (room-service,
 # history-service, search-service) so subsequent ./quickstart.sh or
@@ -16,10 +24,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
 . "$SCRIPT_DIR/lib/compose.sh"
-COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.yml"
 
-echo "==> Bringing up loadgen stack from $DEPLOY_DIR"
-$COMPOSE up -d --build
+echo "==> Bringing up loadgen stack (delegates to Makefile)"
+make -C "$DEPLOY_DIR" up
 
 # Helper: poll until a docker container reports "running" + healthy.
 # Honors compose-defined healthchecks; falls back to "running" if no

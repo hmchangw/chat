@@ -24,7 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
 . "$SCRIPT_DIR/lib/compose.sh"
-COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.yml"
 
 RATE="${RATE:-200}"
 DURATION="${DURATION:-30s}"

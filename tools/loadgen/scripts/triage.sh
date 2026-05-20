@@ -42,7 +42,7 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 DEPLOY_DIR="$ROOT_DIR/tools/loadgen/deploy"
-COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.yml"
 
 echo "[triage] gathering docker logs..."
 for svc in nats mongo cassandra message-gatekeeper message-worker broadcast-worker history-service search-service room-service; do

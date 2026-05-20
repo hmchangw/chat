@@ -53,7 +53,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/../deploy" && pwd)"
 . "$SCRIPT_DIR/lib/compose.sh"
-COMPOSE="dc -f $DEPLOY_DIR/docker-compose.loadtest.yml"
+COMPOSE="dc -f $DEPLOY_DIR/docker-compose.yml"
 
 WRITE_RATE="${WRITE_RATE:-500}"
 READ_RATE="${READ_RATE:-100}"

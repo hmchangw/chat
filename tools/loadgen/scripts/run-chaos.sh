@@ -45,7 +45,7 @@ TOXIPROXY_URL="${TOXIPROXY_URL:-http://localhost:8474}"
 
 cd "$DEPLOY_DIR"
 echo "[chaos] $(date -u +'%Y-%m-%dT%H:%M:%SZ') bringing up chaos overlay..."
-$DC -f docker-compose.loadtest.yml -f docker-compose.chaos.yml --profile chaos up -d toxiproxy toxiproxy-init
+$DC -f docker-compose.yml -f docker-compose.chaos.yml --profile chaos up -d toxiproxy toxiproxy-init
 
 # Wait for toxiproxy-init to finish creating the proxies.
 sleep 8
