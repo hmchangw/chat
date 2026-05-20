@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -18,9 +20,10 @@ import (
 )
 
 var (
-	mongoOnce    sync.Once
-	mongoClient  *mongo.Client
-	mongoInitErr error
+	mongoOnce      sync.Once
+	mongoClient    *mongo.Client
+	mongoContainer testcontainers.Container
+	mongoInitErr   error
 )
 
 func ensureMongoClient() (*mongo.Client, error) {
@@ -44,8 +47,27 @@ func ensureMongoClient() (*mongo.Client, error) {
 			return
 		}
 		mongoClient = c
+		mongoContainer = container
 	})
 	return mongoClient, mongoInitErr
+}
+
+// TerminateMongo disconnects the shared client and stops the shared
+// container. Best-effort; errors go to stderr. Intended for TestMain to
+// call on clean exits when Ryuk is disabled (e.g., in CI).
+func TerminateMongo() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if mongoClient != nil {
+		if err := mongoClient.Disconnect(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "disconnect shared mongo client: %v\n", err)
+		}
+	}
+	if mongoContainer != nil {
+		if err := mongoContainer.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate shared mongo: %v\n", err)
+		}
+	}
 }
 
 // MongoDB returns an isolated Mongo database for the current test; dropped on t.Cleanup.

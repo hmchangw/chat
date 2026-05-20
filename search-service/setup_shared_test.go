@@ -28,6 +28,7 @@ import (
 	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
@@ -108,6 +109,7 @@ func terminateShared() {
 			fmt.Fprintf(os.Stderr, "terminate shared %s: %v\n", name, err)
 		}
 	}
+	testutil.TerminateMongo()
 }
 
 // sharedSingleNodeES returns the URL of the process-shared single-node ES.
