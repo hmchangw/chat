@@ -3,7 +3,7 @@ import { fetchRoomKeysBootstrap, subscribeToRoomKeyEvents } from '@/api'
 import type { Nats, RoomKeyEvent } from '@/api'
 import { useNats } from '@/context/NatsContext'
 import { b64decode, deriveAesKey, decryptRoomMessage } from '@/lib/roomcrypto'
-import { initialRoomKeysState, roomKeysReducer } from './reducer'
+import { bytesEqual, initialRoomKeysState, roomKeysReducer } from './reducer'
 
 type DecryptInput = {
   roomId: string
@@ -91,7 +91,13 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
         console.warn('roomKeyEvent: invalid base64 privateKey, dropping event', err)
         return
       }
-      aesKeyCacheRef.current.delete(`${evt.roomId}|${evt.version}`)
+      // Skip evicting the cached AES key when the rebroadcast bytes match
+      // the stored bytes — the reducer no-ops on that path, so dropping
+      // the derived CryptoKey would force a redundant deriveKey call.
+      const existing = stateRef.current.byRoom[evt.roomId]?.[evt.version]
+      if (!existing || !bytesEqual(existing.privateKey, privateKey)) {
+        aesKeyCacheRef.current.delete(`${evt.roomId}|${evt.version}`)
+      }
       dispatch({
         type: 'KEY_RECEIVED',
         roomId: evt.roomId,

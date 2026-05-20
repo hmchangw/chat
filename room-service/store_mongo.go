@@ -85,6 +85,9 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "u.account", Value: 1}, {Key: "isSubscribed", Value: 1}},
+		Options: options.Index().SetPartialFilterExpression(
+			bson.M{"isSubscribed": true},
+		),
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,isSubscribed) index: %w", err)
 	}
