@@ -8,9 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -77,7 +80,7 @@ var _ userstore.UserStore = (*CachedUserStore)(nil)
 
 func TestNewCachedUserStore_ConstructsEmpty(t *testing.T) {
 	inner := newFakeUserStore()
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 	require.NotNil(t, c)
 	// A fresh cache doesn't call inner until asked.
 	assert.Equal(t, 0, inner.callCount())
@@ -87,7 +90,7 @@ func TestNewCachedUserStore_ConstructsEmpty(t *testing.T) {
 func TestCachedUserStore_MissCallsInner(t *testing.T) {
 	alice := model.User{ID: "u1", Account: "alice", EngName: "Alice"}
 	inner := newFakeUserStore(alice)
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	users, err := c.FindUsersByAccounts(context.Background(), []string{"alice"})
 	require.NoError(t, err)
@@ -100,7 +103,7 @@ func TestCachedUserStore_MissCallsInner(t *testing.T) {
 func TestCachedUserStore_HitServedFromCache(t *testing.T) {
 	alice := model.User{ID: "u1", Account: "alice", EngName: "Alice"}
 	inner := newFakeUserStore(alice)
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	_, _ = c.FindUsersByAccounts(context.Background(), []string{"alice"}) // prime
 	users, err := c.FindUsersByAccounts(context.Background(), []string{"alice"})
@@ -114,7 +117,7 @@ func TestCachedUserStore_PartialHitCallsInnerWithOnlyMissing(t *testing.T) {
 	alice := model.User{ID: "u1", Account: "alice"}
 	bob := model.User{ID: "u2", Account: "bob"}
 	inner := newFakeUserStore(alice, bob)
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	_, _ = c.FindUsersByAccounts(context.Background(), []string{"alice"}) // prime alice only
 
@@ -127,7 +130,7 @@ func TestCachedUserStore_PartialHitCallsInnerWithOnlyMissing(t *testing.T) {
 
 func TestCachedUserStore_EmptyInputReturnsNil(t *testing.T) {
 	inner := newFakeUserStore()
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	users, err := c.FindUsersByAccounts(context.Background(), nil)
 	require.NoError(t, err)
@@ -137,7 +140,7 @@ func TestCachedUserStore_EmptyInputReturnsNil(t *testing.T) {
 
 func TestCachedUserStore_MissingUserNotCached(t *testing.T) {
 	inner := newFakeUserStore() // no users registered
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	// First call: inner returns no users for "ghost".
 	users, err := c.FindUsersByAccounts(context.Background(), []string{"ghost"})
@@ -158,7 +161,7 @@ func TestCachedUserStore_InnerErrorPropagated(t *testing.T) {
 	innerErr := errors.New("boom")
 	inner := newFakeUserStore()
 	inner.err = innerErr
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	_, err := c.FindUsersByAccounts(context.Background(), []string{"alice"})
 	require.Error(t, err)
@@ -168,7 +171,7 @@ func TestCachedUserStore_InnerErrorPropagated(t *testing.T) {
 func TestCachedUserStore_TTLExpiredReFetches(t *testing.T) {
 	alice := model.User{ID: "u1", Account: "alice"}
 	inner := newFakeUserStore(alice)
-	c := NewCachedUserStore(inner, 10, 1*time.Second)
+	c := NewCachedUserStore(inner, 10, 1*time.Second, nil)
 
 	// Freeze "now" at a known value.
 	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -192,7 +195,7 @@ func TestCachedUserStore_LRUEvictionOnOverflow(t *testing.T) {
 	b := model.User{ID: "u2", Account: "bob"}
 	c := model.User{ID: "u3", Account: "carol"}
 	inner := newFakeUserStore(a, b, c)
-	store := NewCachedUserStore(inner, 2, time.Minute)
+	store := NewCachedUserStore(inner, 2, time.Minute, nil)
 
 	ctx := context.Background()
 	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
@@ -212,7 +215,7 @@ func TestCachedUserStore_AccessPromotesToMRU(t *testing.T) {
 	b := model.User{ID: "u2", Account: "bob"}
 	c := model.User{ID: "u3", Account: "carol"}
 	inner := newFakeUserStore(a, b, c)
-	store := NewCachedUserStore(inner, 2, time.Minute)
+	store := NewCachedUserStore(inner, 2, time.Minute, nil)
 
 	ctx := context.Background()
 	_, _ = store.FindUsersByAccounts(ctx, []string{"alice"})
@@ -246,7 +249,7 @@ func TestCachedUserStore_ConcurrentSafe(t *testing.T) {
 		}
 	}
 	inner := newFakeUserStore(users...)
-	store := NewCachedUserStore(inner, 32, time.Minute)
+	store := NewCachedUserStore(inner, 32, time.Minute, nil)
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -268,7 +271,7 @@ func TestCachedUserStore_FindUserByIDDelegates(t *testing.T) {
 	// Keyed on account in the fake; for this test reuse the account as the ID.
 	alice := model.User{ID: "alice", Account: "alice", EngName: "Alice"}
 	inner := newFakeUserStore(alice)
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	u, err := c.FindUserByID(context.Background(), "alice")
 	require.NoError(t, err)
@@ -282,7 +285,7 @@ func TestCachedUserStore_FindUserByIDDelegates(t *testing.T) {
 func TestCachedUserStore_DedupesDuplicateAccounts(t *testing.T) {
 	alice := model.User{ID: "u1", Account: "alice"}
 	inner := newFakeUserStore(alice)
-	c := NewCachedUserStore(inner, 10, time.Minute)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
 
 	// Cold cache: both duplicates would otherwise hit the inner store.
 	// After dedup, inner sees alice exactly once and the return has one user.
@@ -296,4 +299,98 @@ func TestCachedUserStore_DedupesDuplicateAccounts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, users2, 1)
 	assert.Equal(t, 1, inner.callCount(), "warm-cache dupe lookup must not call inner")
+}
+
+func TestCachedUserStore_RecorderCountsHitsAndMisses_Mixed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockUserStore(ctrl)
+	inner.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).
+		Return([]model.User{{Account: "bob"}, {Account: "carol"}}, nil).Times(2)
+
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("user", nil)
+	c := NewCachedUserStore(inner, 10, time.Minute, rec)
+
+	// Pre-warm bob and carol.
+	_, err := c.FindUsersByAccounts(context.Background(), []string{"bob", "carol"})
+	require.NoError(t, err)
+	// 2 misses recorded above.
+
+	// Now alice is a miss; bob and carol are hits.
+	_, err = c.FindUsersByAccounts(context.Background(), []string{"alice", "bob", "carol"})
+	require.NoError(t, err)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(2), hits, "bob + carol")
+	assert.Equal(t, uint64(3), misses, "first call: 2 misses; second call: 1 miss for alice")
+}
+
+func TestCachedUserStore_RecorderCountsAllMiss_StaleEntries(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockUserStore(ctrl)
+	inner.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+		Return([]model.User{{Account: "bob"}}, nil).Times(1)
+	inner.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+		Return([]model.User{{Account: "bob"}}, nil).Times(1)
+
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("user", nil)
+	c := NewCachedUserStore(inner, 10, time.Millisecond, rec)
+
+	_, err := c.FindUsersByAccounts(context.Background(), []string{"bob"})
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond) // expire bob
+
+	_, err = c.FindUsersByAccounts(context.Background(), []string{"bob"})
+	require.NoError(t, err)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(0), hits)
+	assert.Equal(t, uint64(2), misses, "first call miss; second call stale-as-miss")
+}
+
+func TestCachedUserStore_RecorderCountsOnceForDuplicates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockUserStore(ctrl)
+	inner.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+		Return([]model.User{{Account: "bob"}}, nil).Times(1)
+
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("user", nil)
+	c := NewCachedUserStore(inner, 10, time.Minute, rec)
+
+	// One unique account passed twice. Counts as one miss (the
+	// implementation dedups before counting).
+	_, err := c.FindUsersByAccounts(context.Background(), []string{"bob", "bob"})
+	require.NoError(t, err)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(0), hits)
+	assert.Equal(t, uint64(1), misses)
+}
+
+func TestCachedUserStore_NilRecorderIsSafe(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	inner := NewMockUserStore(ctrl)
+	inner.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+		Return([]model.User{{Account: "bob"}}, nil).Times(1)
+
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
+	_, err := c.FindUsersByAccounts(context.Background(), []string{"bob"})
+	require.NoError(t, err)
+}
+
+func TestCachedUserStore_LenReflectsCacheSize(t *testing.T) {
+	alice := model.User{ID: "u1", Account: "alice"}
+	bob := model.User{ID: "u2", Account: "bob"}
+	inner := newFakeUserStore(alice, bob)
+	c := NewCachedUserStore(inner, 10, time.Minute, nil)
+
+	assert.Equal(t, 0, c.Len(), "fresh cache has zero entries")
+
+	_, _ = c.FindUsersByAccounts(context.Background(), []string{"alice"})
+	assert.Equal(t, 1, c.Len(), "one entry after priming alice")
+
+	_, _ = c.FindUsersByAccounts(context.Background(), []string{"bob"})
+	assert.Equal(t, 2, c.Len(), "two entries after priming bob")
 }

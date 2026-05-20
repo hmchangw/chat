@@ -80,7 +80,7 @@ func main() {
 	slog.Info("room-meta-cache enabled", "size", cfg.RoomMetaCacheSize, "ttl", cfg.RoomMetaCacheTTL)
 	us := userstore.NewMongoStore(db.Collection("users"))
 	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
-		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
+		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL, nil)
 		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
 	} else {
 		slog.Info("user-cache disabled")

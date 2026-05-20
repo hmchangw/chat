@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
@@ -30,11 +31,12 @@ type CachedUserStore struct {
 	lru   *list.List // elements hold *userCacheEntry; front = MRU, back = LRU
 	index map[string]*list.Element
 	now   func() time.Time
+	rec   *cachestats.Recorder
 }
 
 // NewCachedUserStore returns a cache wrapping inner. maxSize and ttl must
-// both be positive.
-func NewCachedUserStore(inner userstore.UserStore, maxSize int, ttl time.Duration) *CachedUserStore {
+// both be positive. rec may be nil — Hit/Miss are no-ops on a nil Recorder.
+func NewCachedUserStore(inner userstore.UserStore, maxSize int, ttl time.Duration, rec *cachestats.Recorder) *CachedUserStore {
 	return &CachedUserStore{
 		inner:   inner,
 		ttl:     ttl,
@@ -42,6 +44,7 @@ func NewCachedUserStore(inner userstore.UserStore, maxSize int, ttl time.Duratio
 		lru:     list.New(),
 		index:   make(map[string]*list.Element, maxSize),
 		now:     time.Now,
+		rec:     rec,
 	}
 }
 
@@ -83,6 +86,7 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 	for _, account := range accounts {
 		elem, ok := c.index[account]
 		if !ok {
+			c.rec.Miss()
 			missing = append(missing, account)
 			continue
 		}
@@ -93,12 +97,14 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 			// repopulate below.
 			c.lru.Remove(elem)
 			delete(c.index, account)
+			c.rec.Miss()
 			missing = append(missing, account)
 			continue
 		}
 		if elem != c.lru.Front() {
 			c.lru.MoveToFront(elem)
 		}
+		c.rec.Hit()
 		hits = append(hits, entry.user)
 	}
 	c.mu.Unlock()
@@ -119,6 +125,15 @@ func (c *CachedUserStore) FindUsersByAccounts(ctx context.Context, accounts []st
 	c.mu.Unlock()
 
 	return append(hits, fresh...), nil
+}
+
+// Len returns the number of entries currently in the cache. It acquires
+// the cache mutex, but contention is irrelevant because this is called
+// only at Prometheus scrape time.
+func (c *CachedUserStore) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lru.Len()
 }
 
 // addLocked inserts or refreshes a cache entry. The caller must hold c.mu.
