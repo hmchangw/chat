@@ -37,18 +37,33 @@ var (
 	testNATSOnce   sync.Once
 )
 
-// TestMain pre-warms ES + NATS in parallel, opens one JetStream client,
-// then terminates the shared containers on clean exit via testutil.TerminateAll.
+// TestMain pre-warms ES + NATS in parallel; fails fast if either errors
+// (so individual tests don't fail with confusing "couldn't connect"
+// messages). Then opens one JetStream client, then terminates the shared
+// containers on clean exit via testutil.TerminateAll.
 func TestMain(m *testing.M) {
 	var wg sync.WaitGroup
-	for _, fn := range []func() error{
+	prewarms := []func() error{
 		testutil.EnsureElasticsearch,
 		testutil.EnsureNATS,
-	} {
+	}
+	errCh := make(chan error, len(prewarms))
+	for _, fn := range prewarms {
 		wg.Add(1)
-		go func(f func() error) { defer wg.Done(); _ = f() }(fn)
+		go func(f func() error) {
+			defer wg.Done()
+			if err := f(); err != nil {
+				errCh <- err
+			}
+		}(fn)
 	}
 	wg.Wait()
+	close(errCh)
+	if err, ok := <-errCh; ok {
+		fmt.Fprintf(os.Stderr, "prewarm shared containers: %v\n", err)
+		testutil.TerminateAll()
+		os.Exit(1)
+	}
 	code := m.Run()
 	if testNATSCon != nil {
 		testNATSCon.Close()
