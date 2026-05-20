@@ -446,6 +446,12 @@ func TestSearchSyncRun_SkipACLBootstrap_PreventsPublishesAndShortensStartup(t *t
 		assert.NotContains(t, c.subject, "inbox",
 			"skip must suppress all ACL publishes; saw bootstrap publish to %s", c.subject)
 	}
+	// bootstrap_error must not fire on the skip path — the increment lives
+	// in the else branch but a regression that hoists it would otherwise
+	// silently mis-classify successful skipped runs as bootstrap failures.
+	bootstrapErrCount := getCounterValue(t, deps.metrics.SearchIndexVisible.WithLabelValues("bootstrap_error"))
+	assert.Equal(t, 0.0, bootstrapErrCount,
+		"skip path must not increment bootstrap_error; a regression that hoisted the increment would be silently miscategorized as a failure")
 	// Without skip, the 10s ACL wait would dominate. With skip, the run
 	// returns close to the 300ms timeout. Use a generous bound to absorb
 	// CI variance, but tight enough to detect a missed skip (would be ~10s).
