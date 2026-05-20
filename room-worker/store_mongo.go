@@ -340,48 +340,6 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 	return nil
 }
 
-// BulkUpsertSubscriptions upserts each sub keyed on (roomId, u.account).
-// On collision with an existing document, $set refreshes the three
-// re-activation fields (disableNotification → false, isSubscribed,
-// joinedAt) and leaves runtime fields (lastSeenAt, hasMention,
-// threadUnread, alert) untouched. On insert, $setOnInsert initialises
-// identity (_id, u, roomId, siteId, roomType, name, roles) plus
-// hasMention/alert zero values. Used exclusively by botDM creation
-// paths — see store.go for the interface comment.
-func (s *MongoStore) BulkUpsertSubscriptions(ctx context.Context, subs []*model.Subscription) error {
-	if len(subs) == 0 {
-		return nil
-	}
-	models := make([]mongo.WriteModel, 0, len(subs))
-	for _, sub := range subs {
-		filter := bson.M{"roomId": sub.RoomID, "u.account": sub.User.Account}
-		update := bson.M{
-			"$set": bson.M{
-				"disableNotification": false,
-				"isSubscribed":        sub.IsSubscribed,
-				"joinedAt":            sub.JoinedAt,
-			},
-			"$setOnInsert": bson.M{
-				"_id":        sub.ID,
-				"u":          sub.User,
-				"roomId":     sub.RoomID,
-				"siteId":     sub.SiteID,
-				"roomType":   sub.RoomType,
-				"name":       sub.Name,
-				"roles":      sub.Roles,
-				"hasMention": false,
-				"alert":      false,
-			},
-		}
-		models = append(models, mongoutil.UpsertModel(filter, update))
-	}
-	opts := options.BulkWrite().SetOrdered(false)
-	if _, err := s.subscriptions.BulkWrite(ctx, models, opts); err != nil {
-		return fmt.Errorf("bulk upsert %d subscriptions: %w", len(subs), err)
-	}
-	return nil
-}
-
 func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
 	if _, err := s.roomMembers.InsertOne(ctx, member); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -487,13 +445,13 @@ func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, request
 		"roomType": bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("find DM subscription pair for room %q: %w", roomID, err)
+		return nil, nil, err
 	}
 	var subs []model.Subscription
 	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, nil, fmt.Errorf("decode DM subscription pair for room %q: %w", roomID, err)
+		return nil, nil, err
 	}
-	if len(subs) < 2 {
+	if len(subs) != 2 {
 		return nil, nil, model.ErrSubscriptionNotFound
 	}
 	var requesterSub, counterpartSub *model.Subscription
@@ -509,21 +467,4 @@ func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, request
 		return nil, nil, model.ErrSubscriptionNotFound
 	}
 	return requesterSub, counterpartSub, nil
-}
-
-// FindDMSubscription returns the requester's dm/botDM sub by Name; ErrSubscriptionNotFound on miss.
-func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
-	var sub model.Subscription
-	err := s.subscriptions.FindOne(ctx, bson.M{
-		"u.account": account,
-		"name":      targetName,
-		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
-	}).Decode(&sub)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, model.ErrSubscriptionNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find dm subscription: %w", err)
-	}
-	return &sub, nil
 }

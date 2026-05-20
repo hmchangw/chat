@@ -872,3 +872,83 @@ the tasks below cover the implementation.
 - [x] `make test SERVICE=room-worker` — pass
 - [x] Commit + push: `d4bb50c refactor(room-worker): single-query DM sub
   pair + idempotent-upsert BulkCreate`
+
+---
+
+## Addendum 2 — Post-Review (user-service Owns Re-subscribe)
+
+A second review round pivoted the design: **user-service** will own the
+re-subscribe semantic via `SetUserAppSubscribe` (clears
+`DisableNotification`, sets `IsSubscribed = true`) and only calls
+`createRoomSync` when no subscription exists. That collapses room-worker's
+re-subscribe code path: both DM and botDM share the same idempotent
+insert, and the `BulkUpsertSubscriptions` refresh path is no longer
+needed.
+
+### Addendum Task B1: Remove `BulkUpsertSubscriptions`
+
+**Files:**
+- Modify: `room-worker/store.go` — delete interface method + doc
+- Modify: `room-worker/store_mongo.go` — delete Mongo impl
+- Regenerate: `room-worker/mock_store_test.go`
+- Modify: `room-worker/handler.go` — both call sites switch to
+  `BulkCreateSubscriptions`
+- Modify: `room-worker/handler_test.go` — all
+  `EXPECT().BulkUpsertSubscriptions` lines become `BulkCreateSubscriptions`
+- Modify: `room-worker/integration_test.go` — delete
+  `TestMongoStore_BulkUpsertSubscriptions_Integration`; invert
+  `TestProcessCreateRoom_BotDM_ReSubscribe_Integration` into
+  `TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration`
+
+- [x] Drop the if/else dispatch in `processCreateRoom` DM branch — both
+  room types call `BulkCreateSubscriptions` followed by the canonical
+  re-read via `FindDMSubscriptionPair`.
+- [x] Same simplification in `handleSyncCreateDM`.
+- [x] Remove the botDM-specific `joinedAt` carve-out on the dup-room path:
+  `joinedAt = existing.CreatedAt` now applies to both DM and botDM (the
+  previous `if req.RoomType == model.RoomTypeDM` gate is gone).
+- [x] Invert the botDM integration test — it now asserts that a
+  pre-seeded muted/inactive sub is **preserved** on redelivery (mirrors
+  the existing DM regression guard).
+
+### Addendum Task B2: Remove `FindDMSubscription`
+
+**Files:**
+- Modify: `room-worker/store.go` — delete interface method + doc
+- Modify: `room-worker/store_mongo.go` — delete Mongo impl
+- Regenerate: `room-worker/mock_store_test.go`
+
+- [x] No call sites remain in `room-worker` after Addendum Task A2
+  (`FindDMSubscriptionPair` covers the only consumer). Delete the
+  interface method and the Mongo impl.
+
+### Addendum Task B3: Tighten `FindDMSubscriptionPair`
+
+**Files:**
+- Modify: `room-worker/store_mongo.go`
+- Modify: `room-worker/handler.go` — inline the helper (pure pass-through
+  after we drop the redundant wrap; callers add their own context)
+
+- [x] Count check: `len(subs) < 2` → `len(subs) != 2` — fail loudly if
+  Mongo ever returns more than two subs for a DM/botDM room.
+- [x] Stop double-wrapping the driver error. The store returns the raw
+  error from `Find` / `cursor.All`; callers (handler) already add
+  operational context (`"re-read DM subs after write: %w"`). Single
+  wrap, not double.
+- [x] Inline `findDMSubscriptionPair` helper — it was a pure pass-through
+  after the wrap was removed.
+
+### Addendum 2 verification
+
+- [x] `make generate SERVICE=room-worker`
+- [x] `make lint` — 0 issues
+- [x] `make test SERVICE=room-worker` — pass
+
+### Spec coverage update
+
+| Spec section | Implementing task(s) |
+|---|---|
+| Post-Review Revision: `BulkUpsertSubscriptions` removed | Addendum Task B1 |
+| Post-Review Revision: `FindDMSubscription` removed | Addendum Task B2 |
+| Post-Review Revision: shared `joinedAt = existing.CreatedAt` for DM + botDM | Addendum Task B1 |
+| Post-Review Revision: `FindDMSubscriptionPair` != 2 check + single error wrap | Addendum Task B3 |

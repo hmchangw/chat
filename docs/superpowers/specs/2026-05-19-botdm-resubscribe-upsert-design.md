@@ -287,3 +287,40 @@ path, and the regular-DM no-upsert regression.
 - Frontend mute toggle UI.
 - `docs/client-api.md` update — only required once the client-facing
   toggle endpoint lands (this PR exposes no new request/response schema).
+
+---
+
+## Post-Review Revision — Re-subscribe Owned by user-service
+
+After review (PR #202), the design pivoted: **`user-service` owns the
+re-subscribe semantic** (it will clear `DisableNotification` and set
+`IsSubscribed = true` via `SetUserAppSubscribe`, and only calls
+`createRoomSync` when no subscription exists for the pair). That means
+`room-worker`'s job for both DM and botDM is now strictly JetStream
+redelivery idempotency, not field refresh.
+
+Concrete changes vs. §3.3 / §3.4 above:
+
+- **`BulkUpsertSubscriptions` is removed entirely** (interface, Mongo impl,
+  mocks). The "re-activation refresh" branch documented in §3.3 no longer
+  exists in `room-worker`.
+- **`FindDMSubscription` is also removed** — it was only used by the
+  removed re-read paths, and `FindDMSubscriptionPair` (§3b) covers the
+  remaining cases.
+- **Both DM and botDM use `BulkCreateSubscriptions`** (the
+  `$setOnInsert`-only upsert from §3a). On a JetStream redelivery the
+  persisted sub is preserved unchanged for both room types.
+- **No `joinedAt` carve-out for botDM.** The sync `handleSyncCreateDM`
+  duplicate-room branch now reuses `existing.CreatedAt` as `joinedAt` for
+  **both** DM and botDM (drops the `if req.RoomType == model.RoomTypeDM`
+  gate).
+- **`FindDMSubscriptionPair` robustness:** count check tightened from
+  `< 2` to `!= 2`, and the Mongo impl no longer wraps the driver error
+  (the handler already adds operational context — single wrap, not
+  double).
+
+Risks section update: the "concurrent mute + re-subscribe race" risk is
+no longer applicable to `room-worker` — it belongs to whichever flow
+calls `SetUserAppSubscribe` and is the responsibility of `user-service`.
+The "`JoinedAt` semantics drift" risk also disappears: room-worker no
+longer refreshes `JoinedAt` for botDM.

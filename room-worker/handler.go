@@ -1020,19 +1020,6 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 	return ""
 }
 
-// findDMSubscriptionPair re-reads the two persisted subs for a DM/botDM
-// room in a single Mongo round-trip. Used after BulkCreateSubscriptions
-// (idempotent upsert) and after BulkUpsertSubscriptions (which may have
-// hit an existing row) so downstream fan-out carries persisted _id and
-// JoinedAt rather than the in-memory pre-write values.
-func (h *Handler) findDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error) {
-	requesterSub, counterpartSub, err := h.store.FindDMSubscriptionPair(ctx, roomID, requesterAccount)
-	if err != nil {
-		return nil, nil, fmt.Errorf("find DM sub pair: %w", err)
-	}
-	return requesterSub, counterpartSub, nil
-}
-
 // buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
 
 func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
@@ -1171,22 +1158,20 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		var subs []*model.Subscription
 		if roomType == model.RoomTypeBotDM {
 			subs = buildBotDMSubs(requester, counterpart, room, acceptedAt)
-			if err := h.store.BulkUpsertSubscriptions(ctx, subs); err != nil {
-				return fmt.Errorf("bulk upsert subs: %w", err)
-			}
-			// Upsert may have hit an existing row; re-read so finishCreateRoom's
-			// fan-out carries persisted _id/JoinedAt.
-			requesterSub, counterpartSub, err := h.findDMSubscriptionPair(ctx, room.ID, requester.Account)
-			if err != nil {
-				return fmt.Errorf("re-read botDM subs after upsert: %w", err)
-			}
-			subs = []*model.Subscription{requesterSub, counterpartSub}
 		} else {
 			subs = buildDMSubs(requester, counterpart, room, acceptedAt)
-			if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-				return fmt.Errorf("bulk create subs: %w", err)
-			}
 		}
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			return fmt.Errorf("bulk create subs: %w", err)
+		}
+		// Re-read canonical subs: BulkCreate is a $setOnInsert upsert, so on a
+		// JetStream redelivery the in-memory _id/JoinedAt may not match the
+		// persisted document. Hand the canonical pair to finishCreateRoom.
+		requesterSub, counterpartSub, err := h.store.FindDMSubscriptionPair(ctx, room.ID, requester.Account)
+		if err != nil {
+			return fmt.Errorf("re-read DM subs after write: %w", err)
+		}
+		subs = []*model.Subscription{requesterSub, counterpartSub}
 		return h.finishCreateRoom(ctx, &req, room, requester, []model.User{*requester, *counterpart}, subs, requestID, now)
 	case model.RoomTypeChannel:
 		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
@@ -1534,9 +1519,9 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 
 	// roomCreatedAt drives the room doc and the outbox dedup seed (must stay
 	// stable across NATS retries). joinedAt drives the subscription's JoinedAt
-	// field — for regular DM it tracks the room's original creation time on a
-	// dup-key retry (idempotency), but for botDM it stays fresh so the upsert
-	// actually refreshes the sub's JoinedAt on re-subscribe.
+	// field — on a dup-key retry it tracks the room's original creation time
+	// so JetStream redelivery is idempotent (user-service guards against
+	// genuine re-subscribe so we never need to refresh JoinedAt here).
 	roomCreatedAt := time.Now().UTC()
 	joinedAt := roomCreatedAt
 	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
@@ -1584,28 +1569,23 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		}
 		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing
-		if req.RoomType == model.RoomTypeDM {
-			joinedAt = existing.CreatedAt
-		}
+		joinedAt = existing.CreatedAt
 	}
 
-	// validateSyncCreateDMShape already gated this to {dm, botDM}.
+	// validateSyncCreateDMShape already gated this to {dm, botDM}. Both share
+	// the same idempotent-insert path: BulkCreateSubscriptions does
+	// $setOnInsert so a JetStream redelivery is a Mongo no-op, and the
+	// subsequent FindDMSubscriptionPair returns the canonical persisted pair.
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
 		subs = buildBotDMSubs(requester, other, room, joinedAt)
-		if err := h.store.BulkUpsertSubscriptions(ctx, subs); err != nil {
-			return nil, fmt.Errorf("bulk upsert subs: %w", err)
-		}
 	} else {
 		subs = buildDMSubs(requester, other, room, joinedAt)
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-			return nil, fmt.Errorf("bulk create subs: %w", err)
-		}
 	}
-	// Re-read canonical subs: the bulk write either upserted with $setOnInsert
-	// (DM, no-op on collision) or refreshed re-activation fields (botDM);
-	// publish from persisted state so _id and JoinedAt are canonical.
-	requesterSub, otherSub, err := h.findDMSubscriptionPair(ctx, room.ID, requester.Account)
+	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		return nil, fmt.Errorf("bulk create subs: %w", err)
+	}
+	requesterSub, otherSub, err := h.store.FindDMSubscriptionPair(ctx, room.ID, requester.Account)
 	if err != nil {
 		return nil, fmt.Errorf("re-read DM subs after write: %w", err)
 	}

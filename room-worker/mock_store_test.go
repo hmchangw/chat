@@ -84,20 +84,6 @@ func (mr *MockSubscriptionStoreMockRecorder) BulkCreateSubscriptions(ctx, subs a
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkCreateSubscriptions), ctx, subs)
 }
 
-// BulkUpsertSubscriptions mocks base method.
-func (m *MockSubscriptionStore) BulkUpsertSubscriptions(ctx context.Context, subs []*model.Subscription) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BulkUpsertSubscriptions", ctx, subs)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// BulkUpsertSubscriptions indicates an expected call of BulkUpsertSubscriptions.
-func (mr *MockSubscriptionStoreMockRecorder) BulkUpsertSubscriptions(ctx, subs any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkUpsertSubscriptions", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkUpsertSubscriptions), ctx, subs)
-}
-
 // CreateRoom mocks base method.
 func (m *MockSubscriptionStore) CreateRoom(ctx context.Context, room *model.Room) error {
 	m.ctrl.T.Helper()
@@ -182,21 +168,6 @@ func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Contex
 func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscriptionsByAccounts(ctx, roomID, accounts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscriptionsByAccounts", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscriptionsByAccounts), ctx, roomID, accounts)
-}
-
-// FindDMSubscription mocks base method.
-func (m *MockSubscriptionStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindDMSubscription", ctx, account, targetName)
-	ret0, _ := ret[0].(*model.Subscription)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindDMSubscription indicates an expected call of FindDMSubscription.
-func (mr *MockSubscriptionStoreMockRecorder) FindDMSubscription(ctx, account, targetName any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindDMSubscription", reflect.TypeOf((*MockSubscriptionStore)(nil).FindDMSubscription), ctx, account, targetName)
 }
 
 // FindDMSubscriptionPair mocks base method.

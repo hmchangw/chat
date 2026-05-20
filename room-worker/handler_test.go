@@ -2015,6 +2015,10 @@ func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 			capturedSubs = subs
 			return nil
 		})
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-1", "alice").
+		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, *model.Subscription, error) {
+			return capturedSubs[0], capturedSubs[1], nil
+		})
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2057,6 +2061,10 @@ func TestProcessCreateRoom_DM_EmitsNoSysMessages(t *testing.T) {
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-1", "alice").Return(
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_alice", Account: "alice"}},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_bob", Account: "bob"}},
+		nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-1").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -2082,14 +2090,14 @@ func TestProcessCreateRoom_BotDM_HasIsSubscribed(t *testing.T) {
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 
 	var capturedSubs []*model.Subscription
-	mockStore.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
 			capturedSubs = subs
 			return nil
 		})
 
-	// After upsert, handler re-reads canonical sub pair via FindDMSubscriptionPair.
-	// Return the same in-memory subs (no dup-key collision in this happy path).
+	// After bulk-create, handler re-reads canonical sub pair via FindDMSubscriptionPair.
+	// Return the same in-memory subs (no collision in this happy path).
 	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").
 		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, *model.Subscription, error) {
 			return capturedSubs[0], capturedSubs[1], nil
@@ -2789,7 +2797,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 			insertedRoom = r
 			return nil
 		})
-	store.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").Return(
 		&model.Subscription{
 			User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, IsSubscribed: true,
@@ -3047,15 +3055,16 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 	}
 }
 
-// On a CreateRoom dup-key for a botDM, the upsert must refresh JoinedAt to the
-// fresh wall-clock time (re-subscribe semantics) rather than reusing the old
-// existing.CreatedAt. The regular-DM idempotency rule (preserve existing time)
-// must NOT apply to botDM, which is the whole point of the upsert path.
-func TestHandleSyncCreateDM_BotDM_Recreate_RefreshesJoinedAt(t *testing.T) {
-	h, store, capture := newSyncDMTestHandler(t)
+// On a CreateRoom dup-key for a botDM, the in-memory sub.JoinedAt must
+// track existing.CreatedAt — same idempotency rule as regular DM. The
+// "re-subscribe refresh" semantic is owned by user-service, not by
+// room-worker; here the upsert is purely for JetStream redelivery
+// idempotency.
+func TestHandleSyncCreateDM_BotDM_Recreate_PreservesExistingCreatedAt(t *testing.T) {
+	h, store, _ := newSyncDMTestHandler(t)
 
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
-	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-b"}
+	bot := &model.User{ID: "u-bot", Account: "helper.bot", SiteID: "site-a"}
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *bot}, nil)
 
 	originalCreatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -3069,17 +3078,14 @@ func TestHandleSyncCreateDM_BotDM_Recreate_RefreshesJoinedAt(t *testing.T) {
 	}, nil)
 
 	var captured []*model.Subscription
-	store.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
 			captured = subs
 			return nil
 		})
-	// Mock the canonical re-read to return a fresh JoinedAt — this is what the
-	// outbox event field must reflect (canonical persisted state).
-	freshJoinedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	store.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").Return(
-		&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: freshJoinedAt},
-		&model.Subscription{User: model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"}, JoinedAt: freshJoinedAt},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}, JoinedAt: originalCreatedAt},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u-bot", Account: "helper.bot"}, JoinedAt: originalCreatedAt},
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
@@ -3089,25 +3095,9 @@ func TestHandleSyncCreateDM_BotDM_Recreate_RefreshesJoinedAt(t *testing.T) {
 
 	require.Len(t, captured, 2)
 	for _, s := range captured {
-		assert.False(t, s.JoinedAt.Equal(originalCreatedAt),
-			"botDM sub.JoinedAt must NOT be reset to existing.CreatedAt on re-subscribe — that defeats the upsert refresh")
+		assert.True(t, s.JoinedAt.Equal(originalCreatedAt),
+			"botDM sub.JoinedAt must reuse existing.CreatedAt on dup-key (JetStream redelivery idempotency)")
 	}
-
-	// Outbox carries the canonical post-write JoinedAt (the re-read value).
-	var outbox *dmCapturedPublish
-	for i := range capture.captured {
-		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxMemberAdded) {
-			outbox = &capture.captured[i]
-			break
-		}
-	}
-	require.NotNil(t, outbox, "expected a member_added outbox publish to site-b")
-	var env model.OutboxEvent
-	require.NoError(t, json.Unmarshal(outbox.data, &env))
-	var payload model.MemberAddEvent
-	require.NoError(t, json.Unmarshal(env.Payload, &payload))
-	assert.Equal(t, freshJoinedAt.UnixMilli(), payload.JoinedAt,
-		"outbox event JoinedAt must reflect the canonical re-read sub, not existing.CreatedAt")
 }
 
 type inboxCapturedPublish struct {
@@ -3153,6 +3143,10 @@ func TestProcessCreateRoom_DM_PublishesLocalInbox(t *testing.T) {
 	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
 	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-inbox", "alice").Return(
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_alice", Account: "alice"}},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_bob", Account: "bob"}},
+		nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-inbox").Return(nil)
 
 	ts := time.Now().UnixMilli()
@@ -4074,6 +4068,10 @@ func TestProcessCreateRoom_DM_SetsParticipantFields(t *testing.T) {
 			return nil
 		})
 	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-fields", "alice").Return(
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_zzz", Account: "alice"}},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u_aaa", Account: "bob"}},
+		nil)
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-fields").Return(nil)
 
 	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
@@ -4108,7 +4106,7 @@ func TestProcessCreateRoom_BotDM_SetsParticipantFields(t *testing.T) {
 			captured = r
 			return nil
 		})
-	mockStore.EXPECT().BulkUpsertSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").Return(
 		&model.Subscription{User: model.SubscriptionUser{ID: "u_zzz", Account: "alice"}},
 		&model.Subscription{User: model.SubscriptionUser{ID: "u_aaa", Account: "supportbot.bot"}},
