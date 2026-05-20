@@ -92,12 +92,12 @@ type SubscriptionStore interface {
 	// matching-existing-room as success-on-redelivery.
 	CreateRoom(ctx context.Context, room *model.Room) error
 
-	// ListNewMembersForNewRoom is the empty-roomID variant of
-	// ListNewMembers — same dedup + bot filter, no "already-subscribed"
-	// pruning since the room doesn't exist yet. excludeAccount drops one
-	// account from the candidate set; create-channel passes the requester's
-	// account so they aren't materialized as a regular member in addition to
-	// being added separately as the owner.
+	// ListNewMembersForNewRoom is the empty-roomID variant of the
+	// ListAddMemberCandidates candidate resolution — same dedup + bot filter,
+	// no "already-subscribed" pruning since the room doesn't exist yet.
+	// excludeAccount drops one account from the candidate set; create-channel
+	// passes the requester's account so they aren't materialized as a regular
+	// member in addition to being added separately as the owner.
 	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
 }
 

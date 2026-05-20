@@ -133,7 +133,7 @@ func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, exc
 
 - [ ] **Step 2: Verify compilation**
 
-```
+```sh
 make build SERVICE=room-worker
 make build SERVICE=room-service
 ```
@@ -142,7 +142,7 @@ Both should succeed. No tests are run yet — they fail at the next task.
 
 - [ ] **Step 3: Commit**
 
-```
+```sh
 git add pkg/pipelines/member.go
 git commit -m "feat(pipelines): add GetCapacityCheckPipeline + GetAddMemberCandidatesPipeline"
 ```
@@ -180,7 +180,7 @@ Add to the `SubscriptionStore` interface (after `ListNewMembers` on line 74):
 
 - [ ] **Step 2: Regenerate mocks**
 
-```
+```sh
 make generate SERVICE=room-worker
 ```
 
@@ -239,7 +239,7 @@ Note: the existing file uses inline `db.Collection("room_members").InsertOne(ctx
 
 - [ ] **Step 4: Run the test and verify it fails with "method not defined"**
 
-```
+```sh
 make test-integration SERVICE=room-worker
 ```
 
@@ -1578,7 +1578,7 @@ Then update the `$set display` block (existing lines 475-489) so it exposes the 
 						bson.A{},
 					}},
 				}},
-				"_orgRaw":     bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
+				"orgRaw":      bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
 				"memberCount": bson.M{"$arrayElemAt": bson.A{"$_orgMatch.memberCount", 0}},
 			},
 		}}},

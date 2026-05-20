@@ -1672,7 +1672,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 					"error", reconcileErr)
 				return nil, errRoomIDCollision
 			}
-			return nil, reconcileErr
+			return nil, fmt.Errorf("reconcile sync DM room on duplicate-key: %w", reconcileErr)
 		}
 		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing

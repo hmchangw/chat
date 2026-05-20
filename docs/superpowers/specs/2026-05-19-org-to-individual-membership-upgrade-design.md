@@ -286,10 +286,10 @@ pipeline: bson.A{
 },
 ```
 
-The outer `$set display` block (`store_mongo.go:475-489`) pulls **raw** name pairs into a temporary `display._orgRaw` sub-doc instead of constructing the combined string in the pipeline:
+The outer `$set display` block (`store_mongo.go:475-489`) pulls **raw** name pairs into a temporary `display.orgRaw` sub-doc instead of constructing the combined string in the pipeline:
 
 ```go
-"_orgRaw": bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
+"orgRaw": bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
 "memberCount": bson.M{"$arrayElemAt": bson.A{"$_orgMatch.memberCount", 0}},
 ```
 

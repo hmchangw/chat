@@ -865,12 +865,11 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("matches dept users when orgId equals deptId without parent sect match", func(t *testing.T) {
-		// Dept-scoped invariant: dept users carry sectId == deptId. Adding
-		// the dept as an org should still find them by deptId match alone,
-		// even if no user happens to have sectId equal to the orgID.
+		// Truly dept-only: alice's sectId does NOT equal the orgID, so a
+		// regression that dropped the deptId branch would no longer find her.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
-		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "dept-x", DeptID: "dept-x"})
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "sect-other", DeptID: "dept-x"})
 		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", SectID: "sect-other", DeptID: ""})
 
 		got, err := store.ListOrgMembers(ctx, "dept-x")
@@ -919,12 +918,11 @@ func TestMongoStore_FindExistingOrgIDs_Integration(t *testing.T) {
 	})
 
 	t.Run("orgId equal to deptId only (no parent sect) still resolves", func(t *testing.T) {
-		// Dept-only invariant: a dept user carries sectId == deptId. The
-		// existence check must find them via the deptId branch even when
-		// no user happens to carry the orgID as a pure sectId.
+		// Truly dept-only: alice's sectId does NOT equal the orgID, so the
+		// existence check must find her via the deptId branch alone.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
-		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "dept-x", DeptID: "dept-x"})
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "sect-other", DeptID: "dept-x"})
 
 		got, err := store.FindExistingOrgIDs(ctx, []string{"dept-x"})
 		require.NoError(t, err)

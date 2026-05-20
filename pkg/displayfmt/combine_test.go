@@ -1,11 +1,9 @@
-package displayfmt_test
+package displayfmt
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/hmchangw/chat/pkg/displayfmt"
 )
 
 func TestCombineWithFallback(t *testing.T) {
@@ -25,7 +23,7 @@ func TestCombineWithFallback(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, displayfmt.CombineWithFallback(tc.first, tc.second, tc.fb))
+			assert.Equal(t, tc.want, CombineWithFallback(tc.first, tc.second, tc.fb))
 		})
 	}
 }
