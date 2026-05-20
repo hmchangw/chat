@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
@@ -73,6 +74,23 @@ func Valkey(t *testing.T) string {
 // EnsureValkey starts the shared Valkey container if not already started.
 // No-t variant intended for TestMain pre-warming.
 func EnsureValkey() error { _, err := ensureValkey(); return err }
+
+// FlushValkey wipes the shared Valkey keyspace. Intended for per-test
+// cleanup so sibling tests don't see each other's keys. Uses a raw
+// go-redis client so we don't need to expose FLUSHDB on the production
+// valkeyutil interface. Failure is a test failure — leftover state would
+// silently break the next sibling test.
+func FlushValkey(t *testing.T) {
+	t.Helper()
+	addr := Valkey(t)
+	rc := goredis.NewClient(&goredis.Options{Addr: addr})
+	defer func() { _ = rc.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rc.FlushDB(ctx).Err(); err != nil {
+		t.Errorf("flush shared valkey: %v", err)
+	}
+}
 
 // TerminateValkey stops the shared Valkey container. Best-effort, idempotent.
 func TerminateValkey() {

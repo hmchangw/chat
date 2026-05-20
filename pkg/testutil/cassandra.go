@@ -84,15 +84,14 @@ func TerminateCassandra() {
 		cassSession.Close()
 		cassSession = nil
 	}
-	if cassContainer == nil {
-		return
+	if cassContainer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := cassContainer.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate shared cassandra: %v\n", err)
+		}
+		cassContainer = nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := cassContainer.Terminate(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "terminate shared cassandra: %v\n", err)
-	}
-	cassContainer = nil
 }
 
 // EnsureCassandra starts the shared Cassandra container if not already

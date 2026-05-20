@@ -6,47 +6,25 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// setupValkey starts a valkey/valkey:8 container and returns a connected valkeyStore.
-// The container is terminated via t.Cleanup.
+// setupValkey returns a RoomKeyStore connected to the process-shared
+// Valkey, with FLUSHDB on cleanup so sibling tests start clean.
 func setupValkey(t *testing.T, gracePeriod time.Duration) RoomKeyStore {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start valkey container")
-	t.Cleanup(func() {
-		_ = container.Terminate(ctx) // best-effort; ignore cleanup errors
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-
 	store, err := NewValkeyStore(Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		Addr:        testutil.Valkey(t),
 		GracePeriod: gracePeriod,
 	})
 	require.NoError(t, err, "create valkeyStore")
+	t.Cleanup(func() { testutil.FlushValkey(t) })
 	return store
 }
 

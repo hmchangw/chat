@@ -13,37 +13,21 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// setupNATS starts a real NATS container and returns a connected otelnats
-// client. Required to surface timing races that in-process NATS cannot
+// setupNATS returns an otelnats client connected to the process-shared
+// NATS. Required to surface timing races that in-process NATS cannot
 // reproduce (real TCP, real server dispatch goroutines, real latency).
 func setupNATS(t *testing.T) *otelnats.Conn {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := tcnats.Run(ctx, testimages.NATS)
-	require.NoError(t, err, "start NATS container")
-	t.Cleanup(func() {
-		// Best-effort container teardown; failures here don't affect outcome.
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("terminate nats container: %v", err)
-		}
-	})
-
-	url, err := container.ConnectionString(ctx)
-	require.NoError(t, err, "nats connection string")
-
-	nc, err := otelnats.Connect(url)
+	nc, err := otelnats.Connect(testutil.NATS(t))
 	require.NoError(t, err, "connect to NATS")
 	t.Cleanup(nc.Close)
-
 	return nc
 }
 

@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -16,8 +15,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -29,7 +26,6 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 // capturedPublish records a single publish call for later assertion.
@@ -1166,33 +1162,22 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
 }
 
-// setupValkey starts a Valkey testcontainer and returns a connected full key store.
-// The returned store satisfies both roomkeystore.RoomKeyStore (for seeding) and the
-// local RoomKeyStore interface accepted by NewHandler (Get-only subset).
+// setupValkey returns a key store backed by the process-shared Valkey,
+// with FLUSHDB on cleanup so sibling tests start clean. Satisfies both
+// roomkeystore.RoomKeyStore (for seeding) and the local Get-only subset
+// accepted by NewHandler.
 func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
 	cfg := roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		Addr:        testutil.Valkey(t),
 		GracePeriod: time.Hour,
 	}
 	ks, err := roomkeystore.NewValkeyStore(cfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = ks.Close() })
+	t.Cleanup(func() {
+		_ = ks.Close()
+		testutil.FlushValkey(t)
+	})
 	return ks
 }
 

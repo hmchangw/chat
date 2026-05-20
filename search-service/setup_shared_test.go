@@ -51,19 +51,35 @@ func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 
 // TestMain pre-warms the shared containers concurrently so the first test
 // doesn't pay their startup serially, then explicitly terminates them on
-// clean exit. Ryuk is disabled repo-wide via pkg/testutil's init(), so
-// TerminateAll is the primary cleanup mechanism.
+// clean exit. TerminateAll runs first so containers disappear immediately;
+// Ryuk is the safety net for SIGKILL / Ctrl+C where m.Run never returns.
+//
+// A pre-warm failure aborts the run with code 1 — better than letting
+// every test fail individually with confusing "couldn't start container"
+// errors.
 func TestMain(m *testing.M) {
 	var wg sync.WaitGroup
+	errCh := make(chan error, 3)
 	for _, fn := range []func() error{
 		testutil.EnsureElasticsearch,
 		testutil.EnsureNATS,
 		testutil.EnsureValkey,
 	} {
 		wg.Add(1)
-		go func(f func() error) { defer wg.Done(); _ = f() }(fn)
+		go func(f func() error) {
+			defer wg.Done()
+			if err := f(); err != nil {
+				errCh <- err
+			}
+		}(fn)
 	}
 	wg.Wait()
+	close(errCh)
+	if err, ok := <-errCh; ok {
+		fmt.Fprintf(os.Stderr, "prewarm shared containers: %v\n", err)
+		testutil.TerminateAll()
+		os.Exit(1)
+	}
 	code := m.Run()
 	testutil.TerminateAll()
 	os.Exit(code)

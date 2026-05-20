@@ -322,9 +322,6 @@ jobs:
       # Explicit `set -o pipefail` so make's exit status (not tee's)
       # drives the step outcome. Previously a pipefail gap let a
       # failing integration test silently report green.
-      #
-      # Ryuk is disabled at the pkg/testutil init() level — see
-      # pkg/testutil/init.go and TerminateAll for the cleanup contract.
       - name: Integration tests (${{ matrix.target.path }})
         run: |
           set -o pipefail

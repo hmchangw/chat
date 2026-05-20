@@ -4,47 +4,27 @@ package roomsubcache_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hmchangw/chat/pkg/roomsubcache"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
-// setupValkey starts a valkey/valkey:8 container and returns a connected
-// valkeyutil.Client. The container is terminated via t.Cleanup.
+// setupValkey returns a client connected to the process-shared Valkey,
+// with FLUSHDB on cleanup so sibling tests start clean.
 func setupValkey(t *testing.T) valkeyutil.Client {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start valkey container")
-	t.Cleanup(func() {
-		_ = container.Terminate(ctx) // best-effort; ignore cleanup errors
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-
-	client, err := valkeyutil.Connect(ctx, fmt.Sprintf("%s:%s", host, port.Port()), "")
+	client, err := valkeyutil.Connect(context.Background(), testutil.Valkey(t), "")
 	require.NoError(t, err, "connect valkey")
-	t.Cleanup(func() { _ = client.Close() }) // best-effort; ignore cleanup errors
+	t.Cleanup(func() {
+		testutil.FlushValkey(t)
+		_ = client.Close()
+	})
 	return client
 }
 

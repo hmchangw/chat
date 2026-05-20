@@ -53,8 +53,7 @@ func ensureMongoClient() (*mongo.Client, error) {
 }
 
 // TerminateMongo disconnects the shared client and stops the shared
-// container. Best-effort; errors go to stderr. Intended for TestMain to
-// call on clean exits when Ryuk is disabled (e.g., in CI).
+// container. Best-effort and idempotent — safe to call from any TestMain.
 func TerminateMongo() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -62,11 +61,13 @@ func TerminateMongo() {
 		if err := mongoClient.Disconnect(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "disconnect shared mongo client: %v\n", err)
 		}
+		mongoClient = nil
 	}
 	if mongoContainer != nil {
 		if err := mongoContainer.Terminate(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "terminate shared mongo: %v\n", err)
 		}
+		mongoContainer = nil
 	}
 }
 

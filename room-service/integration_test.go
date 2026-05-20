@@ -17,9 +17,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
@@ -29,7 +26,6 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
@@ -38,23 +34,9 @@ func setupMongo(t *testing.T) *mongo.Database {
 
 func setupValkey(t *testing.T) *roomkeystore.Config {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
+	t.Cleanup(func() { testutil.FlushValkey(t) })
 	return &roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
+		Addr:        testutil.Valkey(t),
 		GracePeriod: time.Hour,
 	}
 }
@@ -110,13 +92,7 @@ func TestCassMessageReader_GetMessageRoomAndCreatedAt_Integration(t *testing.T) 
 
 func setupNATS(t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
-	container, err := natsmod.Run(ctx, testimages.NATS)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	url, err := container.ConnectionString(ctx)
-	require.NoError(t, err)
-	return url
+	return testutil.NATS(t)
 }
 
 func TestMongoStore_Integration(t *testing.T) {
