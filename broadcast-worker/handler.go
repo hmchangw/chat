@@ -68,10 +68,10 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) error {
 	msg := evt.Message
 
-	// Single user-store round-trip for sender + mentioned accounts. The
-	// resulting map serves both mention.Resolve (via a memoized lookup
-	// closure) and the sender enrichment below, eliminating the second
-	// FindUsersByAccounts call that this path used to make per message.
+	// One user-store round-trip covers both mention enrichment and sender
+	// enrichment: parse mentions, dedupe with the sender, fetch once, then
+	// hand the resulting map to ResolveFromParsed (skips a second parse) and
+	// to buildClientMessage.
 	parsed := mention.Parse(msg.Content)
 	lookupAccounts := dedupedAccounts(msg.UserAccount, parsed.Accounts)
 	users, lookupErr := h.userStore.FindUsersByAccounts(ctx, lookupAccounts)
@@ -83,10 +83,7 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		userByAccount[users[i].Account] = users[i]
 	}
 
-	resolved, err := mention.Resolve(ctx, msg.Content, memoLookup(userByAccount))
-	if err != nil {
-		slog.Warn("mention resolve failed", "error", err)
-	}
+	resolved := mention.ResolveFromParsed(parsed, userByAccount)
 
 	if err := h.store.UpdateRoomLastMessage(ctx, msg.RoomID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
 		return fmt.Errorf("update room last message %s: %w", msg.RoomID, err)
