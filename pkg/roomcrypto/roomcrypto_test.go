@@ -258,3 +258,27 @@ func TestEncoder_Encode_DistinctVersionsCacheSeparately(t *testing.T) {
 
 	assert.Equal(t, 2, enc.cacheLen(), "different versions must occupy distinct cache entries")
 }
+
+func TestEncoder_Encode_EvictsLowestVersion(t *testing.T) {
+	priv := bytes.Repeat([]byte{0x42}, 32)
+	enc := NewEncoder(WithMaxCacheEntries(2))
+
+	_, err := enc.Encode("room-A", "a", priv, 1)
+	require.NoError(t, err)
+	_, err = enc.Encode("room-A", "b", priv, 2)
+	require.NoError(t, err)
+	_, err = enc.Encode("room-A", "c", priv, 3)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, enc.cacheLen(), "cache must not exceed max")
+	// Encoding for version 1 again must miss the cache (we evicted it),
+	// while versions 2 and 3 must hit.
+	prevLen := enc.cacheLen()
+	_, err = enc.Encode("room-A", "d", priv, 2)
+	require.NoError(t, err)
+	assert.Equal(t, prevLen, enc.cacheLen(), "version 2 must still be cached (hit)")
+
+	_, err = enc.Encode("room-A", "e", priv, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, enc.cacheLen(), "after re-inserting v=1, cache stays at max (now v=2 should have been evicted as lowest)")
+}
