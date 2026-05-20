@@ -269,10 +269,10 @@ What do you want to measure?
 │     → subscription-churn
 │
 ├─ First-DM room provisioning
-│     → first-dm  (SKELETON — see scenario_firstdm.go)
+│     → first-dm
 │
 ├─ Auth reconnect storms
-│     → auth-load  (SKELETON — see scenario_auth.go)
+│     → auth-load
 │
 ├─ Cross-site federation INBOX drain
 │     → federation-lag
@@ -399,17 +399,18 @@ Rapidly creates and deletes subscriptions. Flags: `--churn-rate`.
 
 ### first-dm
 
-**Status: SKELETON — see `scenario_firstdm.go` header for what's stubbed.** `sendFirstDM` returns an empty map; the scenario records no observations. See [docs/scenarios/first-dm.md](docs/scenarios/first-dm.md) for what the eventual real implementation will measure and the fixture shape it needs.
-
-Provisions new DM room pairs end-to-end. Flags: `--first-dm-recycle`.
+Provisions new DM room pairs end-to-end and measures four sub-stage lags (`room`, `subs`, `persist`, `e2e`) into `loadgen_first_dm_lag_seconds{stage}` by issuing real RoomCreate requests against room-service and publishing a synthetic DM canonical message per iteration. Pool exhausts cleanly after one pass; `--first-dm-recycle` wraps but logs a warning because recycled pairs hit room-service's existing-DM branch instead of the create path. Flags: `--first-dm-recycle`. Seed-time: `--include-first-dm-fixtures --first-dm-pairs=N`.
 
 Deep dive: [docs/scenarios/first-dm.md](docs/scenarios/first-dm.md).
 
 ### auth-load
 
-**Status: SKELETON — see `scenario_auth.go` header for what's stubbed.** The normal-mode tick loop has no inner work; the `auth-reconnect-storm` preset path (`runReconnectStorm`) is a placeholder. Runs against this scenario today produce no measurements. See [docs/scenarios/auth-load.md](docs/scenarios/auth-load.md) for the actual endpoint surface and the follow-up wire-up.
+Benchmarks `auth-service` under two workloads selected by preset:
 
-Simulates reconnect storms (bulk connection drops + rejoin). Flags: `--auth-storm-period`.
+- **Normal mode** (any preset other than `auth-reconnect-storm`): HTTP tick loop at `--rate` rps alternating `POST /auth` (login) and `GET /healthz` (validate). Observed into `loadgen_requests_total{kind=login|validate}` + `loadgen_request_latency_seconds`. Requires auth-service running in `DEV_MODE=true`.
+- **Reconnect-storm mode** (preset `auth-reconnect-storm`): dials `AuthIdleConnections` NATS connections (1000 by default), drops them all, immediately re-dials, and observes time-to-recovery into `loadgen_auth_reconnect_seconds` + `loadgen_auth_reconnects_completed_total`. First event fires at T+30s; `--auth-storm-period > 0` enables a periodic loop.
+
+Flags: `--auth-storm-period`, `--auth-url` (or `AUTH_SERVICE_URL` env).
 
 Deep dive: [docs/scenarios/auth-load.md](docs/scenarios/auth-load.md).
 
@@ -566,6 +567,7 @@ Key fields:
 | `--churn-rate` | subscription-churn | 5 | Churn events/sec |
 | `--first-dm-recycle` | first-dm | false | Wrap around user-pair pool when exhausted |
 | `--auth-storm-period` | auth-load | 0 | Interval between reconnect storms; 0 = one-shot at T+30s |
+| `--auth-url` | auth-load | `http://auth-service:8080` | auth-service base URL (overrides `AUTH_SERVICE_URL` env) |
 | `--federation-flap` | federation-lag | false | Enable periodic site-b stop/restart |
 | `--federation-cross-read` | federation-lag | false | Enable cross-site history read sub-mode |
 | `--federation-secondary-nats-url` | federation-lag | "" | NATS URL for site-b |

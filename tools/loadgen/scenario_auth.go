@@ -1,57 +1,52 @@
 // tools/loadgen/scenario_auth.go
 //
 // auth-load scenario (Phase 3 §3.8): HTTP-benchmarks auth-service endpoints
-// (POST /auth for login/refresh, GET /healthz as validate proxy) via Resty.
-// Models the load profile of a fleet of clients authenticating concurrently.
-//
-// The auth-reconnect-storm preset additionally spins up M idle NATS
-// connections, drops them all at T+AuthStormPeriod, and measures time-to-recovery.
-// Reported as loadgen_auth_reconnect_seconds histogram +
-// loadgen_auth_reconnects_completed_total counter.
-//
-// Endpoints (per audit, see docs/scenarios/auth-load.md):
-//
-//	POST /auth    — issue NATS JWT (prod mode: ssoToken + natsPublicKey;
-//	               dev mode: account + natsPublicKey)
-//	GET  /healthz — health probe (stand-in for "validate JWT" concept;
-//	               NATS-JWT validation is SUT-internal, not a REST endpoint)
-//
-// doAuthLogin → POST /auth (dev-mode re-auth pattern)
-// doAuthValidate → GET /healthz (liveness / validate proxy)
-// doAuthRefresh → POST /auth (re-auth — same endpoint, no separate refresh)
+// (POST /auth for login/refresh, GET /healthz as a liveness/validate proxy)
+// via Resty. The auth-reconnect-storm preset switches into a separate code
+// path: at T+AuthStormPeriod we drop all M connections, immediately
+// re-handshake, and observe loadgen_auth_reconnect_seconds +
+// loadgen_auth_reconnects_completed_total.
 package main
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
-// authLoadScenario benchmarks auth-service HTTP endpoints using Resty.
 type authLoadScenario struct{}
 
 func (authLoadScenario) Name() string          { return "auth-load" }
 func (authLoadScenario) DefaultPreset() string { return "small" }
 
-// NewGenerator constructs the auth-load runner.
 func (authLoadScenario) NewGenerator(deps ScenarioDeps, rf *runFlags) (Runner, error) {
 	return &authLoadGenerator{deps: deps, rf: rf}, nil
 }
 
 func init() { RegisterScenario(authLoadScenario{}) }
 
-// authLoadGenerator is the runner produced by authLoadScenario.
+// stormConn is just Close-able — interface abstracts *nats.Conn for tests.
+type stormConn interface {
+	Close()
+}
+
 type authLoadGenerator struct {
 	deps ScenarioDeps
 	rf   *runFlags
+
+	dial        func(url string) (stormConn, error)
+	restyClient *resty.Client
+	stormDelay  time.Duration
+	stormPeriod time.Duration
 }
 
-// AuthLoginResponse mirrors auth-service's POST /auth response.
-// In prod mode the handler validates an SSO token and issues a NATS JWT.
-// In dev mode it accepts an account name directly (no SSO).
 type AuthLoginResponse struct {
 	NATSJWT  string           `json:"natsJwt"`
 	UserInfo authUserInfoResp `json:"user"`
@@ -63,11 +58,11 @@ type authUserInfoResp struct {
 	EngName string `json:"engName"`
 }
 
-// doAuthLogin POSTs to /auth in dev mode (account + natsPublicKey) and
-// returns the parsed response. natsPublicKey must be a valid NATS user
-// public key (starts with "U", 56 chars or a valid NKey encoding).
 func doAuthLogin(ctx context.Context, baseURL, account, natsPublicKey string) (*AuthLoginResponse, error) {
-	client := resty.New().SetTimeout(5 * time.Second)
+	return doAuthLoginWith(ctx, newAuthClient(), baseURL, account, natsPublicKey)
+}
+
+func doAuthLoginWith(ctx context.Context, client *resty.Client, baseURL, account, natsPublicKey string) (*AuthLoginResponse, error) {
 	var resp AuthLoginResponse
 	httpResp, err := client.R().
 		SetContext(ctx).
@@ -87,10 +82,11 @@ func doAuthLogin(ctx context.Context, baseURL, account, natsPublicKey string) (*
 	return &resp, nil
 }
 
-// doAuthValidate GETs /healthz as a stand-in for "validate" — auth-service
-// has no dedicated validate endpoint since NATS-JWT validation is SUT-internal.
 func doAuthValidate(ctx context.Context, baseURL string) error {
-	client := resty.New().SetTimeout(5 * time.Second)
+	return doAuthValidateWith(ctx, newAuthClient(), baseURL)
+}
+
+func doAuthValidateWith(ctx context.Context, client *resty.Client, baseURL string) error {
 	httpResp, err := client.R().
 		SetContext(ctx).
 		Get(baseURL + "/healthz")
@@ -103,64 +99,228 @@ func doAuthValidate(ctx context.Context, baseURL string) error {
 	return nil
 }
 
-// doAuthRefresh POSTs to /auth to re-issue a NATS JWT — same endpoint as
-// login (auth-service has no separate refresh path; NATS JWT expiry triggers
-// a full re-auth with the original credentials). Used by the Phase 3.8
-// follow-up tick loop that alternates login/refresh/validate cycles.
 func doAuthRefresh(ctx context.Context, baseURL, account, natsPublicKey string) (*AuthLoginResponse, error) {
 	return doAuthLogin(ctx, baseURL, account, natsPublicKey)
 }
 
-// Run is a SKELETON for Phase 3.8 initial landing. The tick loop alternates
-// between the three auth operations. Real wire-up needs:
-//
-//  1. An auth-service URL (from --auth-url flag or env AUTH_SERVICE_URL).
-//  2. A pool of (account, natsPublicKey) credentials for /auth.
-//  3. JWT cache so subsequent validate calls have live tokens to probe.
-//
-// The auth-reconnect-storm preset takes a separate path: runReconnectStorm.
+func newAuthClient() *resty.Client {
+	return resty.New().SetTimeout(5 * time.Second)
+}
+
+func generateNATSPublicKey() (string, error) {
+	kp, err := nkeys.CreateUser()
+	if err != nil {
+		return "", fmt.Errorf("create user nkey: %w", err)
+	}
+	pub, err := kp.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("derive public key: %w", err)
+	}
+	return pub, nil
+}
+
 func (g *authLoadGenerator) Run(ctx context.Context) error {
+	if g.deps.Preset().Name == "auth-reconnect-storm" {
+		return g.runReconnectStorm(ctx)
+	}
+	return g.runNormal(ctx)
+}
+
+// runNormal alternates POST /auth and GET /healthz at --rate, recording into
+// the standard loadgen Requests / RequestErrors / RequestLatency vectors with
+// kind="login"|"validate".
+func (g *authLoadGenerator) runNormal(ctx context.Context) error {
+	baseURL := g.rf.AuthURL
+	if baseURL == "" {
+		baseURL = "http://auth-service:8080"
+	}
+
+	client := g.restyClient
+	if client == nil {
+		client = newAuthClient()
+	}
+
+	natsPub, err := generateNATSPublicKey()
+	if err != nil {
+		return fmt.Errorf("generate nats public key: %w", err)
+	}
+
 	rate := g.rf.Rate
 	if rate <= 0 {
 		rate = 10
 	}
-	ticker := time.NewTicker(time.Second / time.Duration(rate))
+	interval := time.Second / time.Duration(rate)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Route to the storm path when the preset requests it.
-	if g.deps.Preset().Name == "auth-reconnect-storm" {
-		return g.runReconnectStorm(ctx)
-	}
+	users := g.deps.Fixtures().Users
+	metrics := g.deps.Metrics()
+	preset := g.deps.Preset().Name
 
-	// Normal HTTP benchmark (stubbed for Phase 3.8 initial landing).
-	// TODO Phase 3.8 follow-up: real /auth + /healthz cycle with metrics.
-	// The tick loop will call: doAuthLogin (cold start), doAuthValidate (probe),
-	// doAuthRefresh (re-auth when NATS JWT nears expiry).
-	_ = doAuthRefresh // referenced here so the symbol is kept until follow-up lands
+	var (
+		tick int64
+		wg   sync.WaitGroup
+	)
+
+	slog.Info("auth-load: starting normal-mode HTTP loop",
+		"baseURL", baseURL, "rate", rate, "users", len(users))
+
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return nil
 		case <-ticker.C:
-			// STUB tick — real implementation sends doAuthLogin / doAuthValidate.
+			n := atomic.AddInt64(&tick, 1)
+			kind := "login"
+			if n%2 == 1 {
+				kind = "validate"
+			}
+			var account string
+			if len(users) > 0 {
+				account = users[int(n)%len(users)].Account
+			} else {
+				account = "loadgen-anon"
+			}
+			wg.Add(1)
+			go func(k, acct string) {
+				defer wg.Done()
+				runOneAuthTick(ctx, client, baseURL, k, acct, natsPub, preset, metrics)
+			}(kind, account)
 		}
 	}
 }
 
-// runReconnectStorm implements the auth-reconnect-storm preset path.
-// At each AuthStormPeriod interval (default 30s), drops all M idle NATS
-// connections and measures time-to-recovery (M successful re-handshakes).
-//
-// STUB for Phase 3.8 initial landing. Real wire-up creates a dedicated
-// ConnPool of M connections, calls Close on each, then re-dials and
-// observes via loadgen_auth_reconnect_seconds + loadgen_auth_reconnects_completed_total.
-func (g *authLoadGenerator) runReconnectStorm(ctx context.Context) error {
-	_ = ctx    // consumed by real implementation in Phase 3.8 follow-up
-	return nil // PLACEHOLDER — full implementation in Phase 3.8 follow-up
+func runOneAuthTick(ctx context.Context, client *resty.Client, baseURL, kind, account, natsPub, preset string, metrics *Metrics) {
+	const phase = "measured"
+	metrics.Requests.WithLabelValues(preset, "auth-load", kind, phase).Inc()
+	start := time.Now()
+	var err error
+	switch kind {
+	case "login":
+		_, err = doAuthLoginWith(ctx, client, baseURL, account, natsPub)
+	case "validate":
+		err = doAuthValidateWith(ctx, client, baseURL)
+	default:
+		metrics.RequestErrors.WithLabelValues(preset, "auth-load", kind, phase, "marshal").Inc()
+		return
+	}
+	metrics.RequestLatency.WithLabelValues(preset, "auth-load", kind).Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.RequestErrors.WithLabelValues(preset, "auth-load", kind, phase, "request").Inc()
+	}
 }
 
-// reconnectStormSim is a simulation helper used by tests to validate the
-// recovery-tracking math without needing real NATS connections.
+// runReconnectStorm dials M connections, drops them all, re-dials, and
+// observes loadgen_auth_reconnect_seconds for the recovery time. Loops every
+// stormPeriod; one-shot when zero.
+func (g *authLoadGenerator) runReconnectStorm(ctx context.Context) error {
+	preset := g.deps.Preset()
+	m := preset.AuthIdleConnections
+	if m <= 0 {
+		m = 100
+	}
+
+	dial := g.dial
+	if dial == nil {
+		dial = func(url string) (stormConn, error) {
+			nc, err := nats.Connect(url)
+			if err != nil {
+				return nil, err
+			}
+			return nc, nil
+		}
+	}
+
+	natsURL := ""
+	if sites := g.deps.Sites(); len(sites) > 0 && sites[0].NC != nil && sites[0].NC.NatsConn() != nil {
+		natsURL = sites[0].NC.NatsConn().ConnectedUrl()
+	}
+
+	delay := g.stormDelay
+	if delay <= 0 {
+		delay = 30 * time.Second
+	}
+	period := g.stormPeriod
+	if period <= 0 {
+		period = g.rf.AuthStormPeriod
+	}
+
+	metrics := g.deps.Metrics()
+	slog.Info("auth-load: starting reconnect-storm",
+		"idleConns", m, "firstDropAt", delay.String(),
+		"period", period.String(), "natsURL", natsURL)
+
+	first := true
+	for {
+		wait := period
+		if first {
+			wait = delay
+			first = false
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
+
+		if err := runOneStormEvent(ctx, dial, natsURL, m, metrics); err != nil {
+			slog.Warn("storm event errored — continuing", "error", err)
+		}
+
+		if period == 0 {
+			return nil
+		}
+	}
+}
+
+func runOneStormEvent(ctx context.Context, dial func(string) (stormConn, error), url string, m int, metrics *Metrics) error {
+	initial := make([]stormConn, 0, m)
+	for i := 0; i < m; i++ {
+		if ctx.Err() != nil {
+			closeAll(initial)
+			return ctx.Err()
+		}
+		c, err := dial(url)
+		if err != nil {
+			closeAll(initial)
+			return fmt.Errorf("initial dial %d/%d: %w", i, m, err)
+		}
+		initial = append(initial, c)
+	}
+	closeAll(initial)
+	dropAt := time.Now()
+
+	rejoined := make([]stormConn, 0, m)
+	for i := 0; i < m; i++ {
+		if ctx.Err() != nil {
+			closeAll(rejoined)
+			return ctx.Err()
+		}
+		c, err := dial(url)
+		if err != nil {
+			closeAll(rejoined)
+			return fmt.Errorf("rejoin dial %d/%d: %w", i, m, err)
+		}
+		rejoined = append(rejoined, c)
+	}
+	recovery := time.Since(dropAt)
+	metrics.AuthReconnect.Observe(recovery.Seconds())
+	metrics.AuthReconnectsCompleted.Inc()
+	slog.Info("storm event recovered", "conns", m, "recovery", recovery.String())
+	closeAll(rejoined)
+	return nil
+}
+
+func closeAll(cs []stormConn) {
+	for _, c := range cs {
+		if c != nil {
+			c.Close()
+		}
+	}
+}
+
+// reconnectStormSim — pure-math simulator retained for TestReconnectStorm_TracksRecovery.
 type reconnectStormSim struct {
 	n         int
 	dropAt    time.Time
@@ -168,32 +328,24 @@ type reconnectStormSim struct {
 	mu        sync.Mutex
 }
 
-func newReconnectStormSim(n int) *reconnectStormSim {
-	return &reconnectStormSim{n: n}
-}
+func newReconnectStormSim(n int) *reconnectStormSim { return &reconnectStormSim{n: n} }
 
-// SimulateDrop records the moment connections are "dropped".
 func (s *reconnectStormSim) SimulateDrop() {
 	s.mu.Lock()
 	s.dropAt = time.Now()
 	s.mu.Unlock()
 }
 
-// SimulateReconnects pretends each of the n connections re-handshakes in
-// perConnDelay time. Recovery time is computed deterministically as
-// dropAt + n*perConnDelay to avoid time.Sleep (CLAUDE.md §3 forbids Sleep
-// for goroutine synchronisation). The test calls RecoveryDuration after
-// SimulateReconnects returns to verify the computed gap.
 func (s *reconnectStormSim) SimulateReconnects(perConnDelay time.Duration) {
 	s.mu.Lock()
 	s.recovered = s.dropAt.Add(time.Duration(s.n) * perConnDelay)
 	s.mu.Unlock()
 }
 
-// RecoveryDuration returns the elapsed time between SimulateDrop and the last
-// SimulateReconnects completion.
 func (s *reconnectStormSim) RecoveryDuration() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.recovered.Sub(s.dropAt)
 }
+
+var _ = doAuthRefresh

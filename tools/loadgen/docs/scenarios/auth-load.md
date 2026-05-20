@@ -1,26 +1,98 @@
-# auth-load scenario endpoints
+# auth-load scenario
 
-## Status
+The auth-load scenario benchmarks `auth-service` under two distinct workloads:
 
-**SKELETON — Phase 3.8 follow-up.** Both code paths are placeholders today:
+1. **Normal mode** — sustained HTTP traffic against the auth REST surface.
+2. **Reconnect-storm mode** — bulk NATS connection drops + immediate
+   re-handshake, intended to characterise auth-service behaviour during a
+   client-fleet recovery event (e.g., a NATS rolling restart or a
+   network blip that dropped every client at once).
 
-- **Normal mode** (`scenario_auth.go:122-148`): the tick loop has no inner
-  work. The `doAuthLogin` / `doAuthValidate` / `doAuthRefresh` helpers are
-  defined and tested but not yet called from `Run`.
-- **`auth-reconnect-storm` preset** (`scenario_auth.go:157-160`): the
-  `runReconnectStorm` function is a `return nil` placeholder. Real wire-up
-  needs a dedicated `ConnPool` of M connections, a drop-and-rehandshake
-  cycle, and observation into `loadgen_auth_reconnect_seconds` +
-  `loadgen_auth_reconnects_completed_total`.
+The two modes are mutually exclusive — `auth-load` runs in normal mode by
+default and switches into reconnect-storm mode when the active preset is
+`auth-reconnect-storm`.
 
-Runs against `--scenario=auth-load` therefore produce no measurements — if
-the dashboard is silent, that is the current implementation status, not a
-SUT problem. The endpoint audit below documents what the scenario WILL
-exercise once the follow-up lands.
+## Normal mode
 
-## Endpoint audit
+The tick loop runs at `--rate` rps (default 10 when unset). Each tick
+alternates between two calls:
 
-Audit result for auth-service (commit dbde60b15bc6035d562422d9f9335474475e8ee7, run 2026-05-18):
+| Tick parity | Call                              | Recorded as                                    |
+|-------------|-----------------------------------|------------------------------------------------|
+| even (`n%2==0`) | `POST /auth` (dev-mode body)  | `loadgen_requests_total{kind="login"}`         |
+| odd (`n%2==1`)  | `GET /healthz`                | `loadgen_requests_total{kind="validate"}`      |
+
+Both calls are also observed into `loadgen_request_latency_seconds` and
+on error into `loadgen_request_errors_total` with `reason="request"` (for
+HTTP ≥ 400 or transport-layer failure).
+
+**Concurrency.** Each tick spawns a single goroutine for its HTTP call so a
+slow auth-service response does not back the ticker up; `wg.Wait()` on
+shutdown guarantees no goroutine leaks past `ctx.Done`.
+
+**Account selection.** Fixture users (`Fixtures.Users`) are round-robined
+across ticks. When fixtures are empty the scenario falls back to the
+literal account `"loadgen-anon"` so dev runs without a seed step still
+produce traffic.
+
+**NATS NKey.** One ed25519 keypair (`nkeys.CreateUser`) is generated per
+generator instance and reused across every `/auth` call. Auth-service
+signs whatever public key the client presents, so per-tick keygen would
+add ed25519 cost to the measured loop without changing what's tested.
+
+### Configuration
+
+| Flag | Env | Default | Effect |
+|------|-----|---------|--------|
+| `--auth-url` | `AUTH_SERVICE_URL` | `http://auth-service:8080` | auth-service base URL |
+| `--rate` | — | `10` | total auth+validate rps (split evenly) |
+| `--auth-storm-period` | — | `0` | when `0`, normal mode; when `>0`, switches to storm mode periodic |
+
+`--auth-url` takes precedence over the env. The default targets the
+service name inside the loadgen Compose stack.
+
+### SUT prerequisites
+
+The scenario uses the auth-service **dev-mode** body shape
+(`{"account": "...", "natsPublicKey": "..."}`) — auth-service must be
+configured with `DEV_MODE=true` so it accepts the request without OIDC
+validation. Running against prod-mode auth-service (with OIDC) will
+produce 401s on every `/auth` call; this is a config issue, not a
+scenario bug.
+
+## Reconnect-storm mode
+
+Triggered by `--preset=auth-reconnect-storm` (which sets
+`AuthIdleConnections=1000` and `AuthStormPeriod=30s` by default).
+
+A single "storm event" is:
+
+1. Open `M` NATS connections (`AuthIdleConnections`).
+2. Close all `M` at once.
+3. Re-open `M` connections; observe wall-clock elapsed (`dropAt →
+   last-recovered`) into `loadgen_auth_reconnect_seconds`.
+4. Increment `loadgen_auth_reconnects_completed_total`.
+5. Drop the rejoined cohort so the next event starts from zero.
+
+The first event fires at `T + stormDelay` (default 30 s). When
+`--auth-storm-period > 0` the loop continues with that interval; when
+`0` (the default) the scenario exits after the first event.
+
+### Endpoints touched
+
+Reconnect-storm mode does **not** call any HTTP endpoint on
+auth-service. The connection cost it measures is auth-service's NATS
+callout latency — auth-service is the validator that signs/verifies the
+NATS user JWT, so re-dialing M connections forces M JWT validations
+through the callout subject.
+
+The NATS URL is read from the running site's connection
+(`Sites()[0].NC.NatsConn().ConnectedUrl()`); the scenario does not
+require a separate `--auth-nats-url`.
+
+## Endpoint audit (auth-service)
+
+Audited 2026-05-18 against commit `dbde60b1` of `auth-service/`.
 
 | Method | Path      | Body                                                              | Purpose                    |
 |--------|-----------|-------------------------------------------------------------------|----------------------------|
@@ -28,18 +100,19 @@ Audit result for auth-service (commit dbde60b15bc6035d562422d9f9335474475e8ee7, 
 | POST   | /auth     | `{"account":"...","natsPublicKey":"..."}` (DEV_MODE=true)        | Issue NATS JWT (dev mode)  |
 | GET    | /healthz  | (none)                                                            | Health check               |
 
-**Notes vs spec:**
+Notes on the spec vs reality:
 
-The spec listed `POST /login`, `POST /refresh`, `GET /validate` as the expected endpoint set.
-The actual auth-service does not match:
+- The original spec listed `POST /login`, `POST /refresh`, `GET /validate`
+  as the expected endpoint set. auth-service does **not** have any of
+  these. The single auth endpoint is `POST /auth`, which both issues and
+  implicitly validates.
+- Auth-service issues NATS JWTs (not HTTP Bearer JWTs); the "refresh"
+  concept does not exist — clients hold a signed NATS credential and
+  re-authenticate via `POST /auth` when it nears expiry.
+- `/healthz` is the closest available stand-in for a "validate" probe.
+  Full NATS-JWT validation is SUT-internal (NATS server enforces the
+  signed claims directly), not a REST endpoint.
 
-- There is **no** `/login`, `/refresh`, or `/validate` endpoint.
-- The single auth endpoint is `POST /auth`, which both issues and implicitly validates.
-- Auth-service issues NATS JWTs (not HTTP Bearer JWTs); the "refresh" concept does not exist
-  because clients hold a signed NATS credential — expiry triggers a re-auth via `POST /auth`.
-- `/healthz` is available for health probing.
-
-The `auth-load` scenario and `doAuth*` helpers are written against the actual endpoints.
-`doAuthLogin` → `POST /auth` (dev mode: `account` + `natsPublicKey`).
-`doAuthValidate` → `GET /healthz` (stand-in probe; full NATS-JWT validation is SUT-internal).
-`doAuthRefresh` → `POST /auth` (re-auth, same path as login — NATS JWT refresh pattern).
+`doAuthLogin` → `POST /auth` (dev mode).
+`doAuthValidate` → `GET /healthz`.
+`doAuthRefresh` → `POST /auth` (re-auth — same wire path as login).

@@ -42,6 +42,8 @@ type config struct {
 	// a clear message if the keystore is needed but not configured.
 	ValkeyAddr     string `env:"VALKEY_ADDR"         envDefault:""`
 	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
+	// AuthURL is the auth-service base URL for the auth-load scenario.
+	AuthURL string `env:"AUTH_SERVICE_URL" envDefault:"http://auth-service:8080"`
 }
 
 func main() {

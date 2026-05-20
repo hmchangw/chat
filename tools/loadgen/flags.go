@@ -125,6 +125,8 @@ type runFlags struct {
 	ChurnRate           int
 	FirstDMRecycle      bool
 	AuthStormPeriod     time.Duration
+	// AuthURL overrides the auth-service base URL for the auth-load scenario.
+	AuthURL string
 	// Federation flags (Phase 3 §3.9).
 	FederationFlap             bool
 	FederationCrossRead        bool
@@ -321,6 +323,8 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"first-dm scenario: wrap around the user-pair pool when exhausted (default: exit cleanly)")
 	fs.DurationVar(&rf.AuthStormPeriod, "auth-storm-period", 0,
 		"auth-load: interval between reconnect-storm events (0 = single one-shot drop at T+30s)")
+	fs.StringVar(&rf.AuthURL, "auth-url", "",
+		"auth-load: auth-service base URL (overrides AUTH_SERVICE_URL env; default http://auth-service:8080)")
 	fs.BoolVar(&rf.FederationFlap, "federation-flap", false,
 		"federation-lag: enable periodic site-b stop/restart to measure INBOX backlog drain")
 	fs.BoolVar(&rf.FederationCrossRead, "federation-cross-read", false,

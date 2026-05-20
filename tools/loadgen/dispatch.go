@@ -512,6 +512,10 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	if rf.MaxInFlight > 0 {
 		cfg.MaxInFlight = rf.MaxInFlight
 	}
+	// --auth-url takes precedence over AUTH_SERVICE_URL env.
+	if rf.AuthURL == "" {
+		rf.AuthURL = cfg.AuthURL
+	}
 
 	rt, err := NewRuntime(ctx, cfg, runID, lp)
 	if err != nil {

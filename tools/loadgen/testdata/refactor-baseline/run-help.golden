@@ -13,6 +13,8 @@ Usage of run:
     	allow multiple concurrent loadgen runs against the same SUT (default refuses to start when another active run is detected)
   -auth-storm-period duration
     	auth-load: interval between reconnect-storm events (0 = single one-shot drop at T+30s)
+  -auth-url string
+    	auth-load: auth-service base URL (overrides AUTH_SERVICE_URL env; default http://auth-service:8080)
   -auto-warmup
     	run a brief messaging-pipeline phase to populate message IDs before read scenarios that need them (default true)
   -auto-warmup-rate int
