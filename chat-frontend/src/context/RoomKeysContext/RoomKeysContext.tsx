@@ -135,6 +135,13 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
       const aesKey = await pending
       return await decryptRoomMessage(b64decode(ciphertextB64), b64decode(nonceB64), aesKey)
     } catch (err) {
+      // Drop the cached promise so a subsequent decrypt retries derivation
+      // instead of awaiting the same rejected promise forever. If the cache
+      // entry was already replaced by a newer event between read and catch,
+      // only delete our own — peek before evicting.
+      if (aesKeyCacheRef.current.get(cacheKey) === pending) {
+        aesKeyCacheRef.current.delete(cacheKey)
+      }
       // eslint-disable-next-line no-console
       console.warn('roomKeysContext.decrypt failed:', err)
       return null
