@@ -44,7 +44,7 @@ type config struct {
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
-	RoomCryptoCacheSize  int                     `env:"ROOMCRYPTO_CACHE_SIZE"   envDefault:"4096"`
+	RoomCryptoCacheSize int                     `env:"ROOM_CRYPTO_CACHE_SIZE" envDefault:"4096"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -133,6 +133,7 @@ func main() {
 	}
 
 	encoder := roomcrypto.NewEncoder(roomcrypto.WithMaxCacheEntries(cfg.RoomCryptoCacheSize))
+	slog.Info("roomcrypto-encoder-cache enabled", "size", cfg.RoomCryptoCacheSize)
 	publisher := &natsPublisher{nc: nc}
 	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled, encoder)
 

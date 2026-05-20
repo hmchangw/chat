@@ -310,7 +310,7 @@ Caller (the room-keys context) wraps `deriveAesKey` so the resulting
   `(*Encoder).Encode(roomID, content, roomPrivateKey, version)`.
 - Per-version cache: `map[cacheKey]cipher.AEAD`, protected by
   `sync.RWMutex`, bounded by `MaxCacheEntries` (default 4096; env override
-  `ROOMCRYPTO_CACHE_SIZE`) with simple lowest-version eviction described
+  `ROOM_CRYPTO_CACHE_SIZE`) with simple lowest-version eviction described
   under Implementation Details.
 
 ### `pkg/roomcrypto/roomcrypto_test.go`
@@ -357,7 +357,7 @@ Caller (the room-keys context) wraps `deriveAesKey` so the resulting
 
 ### `broadcast-worker/main.go`
 
-- Parse `ROOMCRYPTO_CACHE_SIZE` (envDefault `4096`).
+- Parse `ROOM_CRYPTO_CACHE_SIZE` (envDefault `4096`).
 - Construct the encoder via `roomcrypto.NewEncoder(roomcrypto.WithMaxCacheEntries(cfg.RoomCryptoCacheSize))`.
 - Pass to the handler constructor.
 
@@ -620,7 +620,7 @@ type cacheKey struct {
 ### Cache size and eviction (server)
 
 - Default `MaxCacheEntries = 4096` (override via env
-  `ROOMCRYPTO_CACHE_SIZE`, parsed in `broadcast-worker/main.go`).
+  `ROOM_CRYPTO_CACHE_SIZE`, parsed in `broadcast-worker/main.go`).
 - Eviction: on insert over the limit, drop the entry with the lowest
   `version` value across all rooms. Deliberately simple — hot rooms keep
   their entries, rare rooms with old versions get dropped first. Linear
