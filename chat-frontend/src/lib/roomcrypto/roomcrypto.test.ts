@@ -58,6 +58,19 @@ describe('deriveAesKey', () => {
 })
 
 import { decryptRoomMessage } from './roomcrypto'
+import fixture from '../../../test/fixtures/encrypted-message.json'
+
+describe('cross-language fixture', () => {
+  it('decrypts a fixture produced by the Go server encoder', async () => {
+    const priv = b64decode(fixture.privateKey)
+    const nonce = b64decode(fixture.message.nonce)
+    const ciphertext = b64decode(fixture.message.ciphertext)
+
+    const aesKey = await deriveAesKey(priv)
+    const plaintext = await decryptRoomMessage(ciphertext, nonce, aesKey)
+    expect(plaintext).toBe(fixture.plaintext)
+  })
+})
 
 describe('decryptRoomMessage', () => {
   it('decrypts ciphertext produced via the matching encrypt path', async () => {
