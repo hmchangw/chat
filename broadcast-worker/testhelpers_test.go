@@ -19,6 +19,9 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
+// hkdfInfo is the HKDF info string used by the Encoder (HKDF-only scheme).
+const hkdfInfo = "room-message-encryption-v2"
+
 func testRoomKey(t *testing.T) *roomkeystore.VersionedKeyPair {
 	t.Helper()
 	priv, err := ecdh.P256().GenerateKey(rand.Reader)
@@ -33,20 +36,9 @@ func testRoomKey(t *testing.T) *roomkeystore.VersionedKeyPair {
 }
 
 func decryptForTest(env *roomcrypto.EncryptedMessage, roomPrivateKey []byte) (string, error) {
-	privKey, err := ecdh.P256().NewPrivateKey(roomPrivateKey)
-	if err != nil {
-		return "", fmt.Errorf("parse room private key: %w", err)
-	}
-	ephPubKey, err := ecdh.P256().NewPublicKey(env.EphemeralPublicKey)
-	if err != nil {
-		return "", fmt.Errorf("parse ephemeral public key: %w", err)
-	}
-	sharedSecret, err := privKey.ECDH(ephPubKey)
-	if err != nil {
-		return "", fmt.Errorf("ecdh: %w", err)
-	}
+	// New HKDF-only scheme: derive AES key directly from the room private key.
 	aesKey := make([]byte, 32)
-	hkdfReader := hkdf.New(sha256.New, sharedSecret, nil, []byte("room-message-encryption"))
+	hkdfReader := hkdf.New(sha256.New, roomPrivateKey, nil, []byte(hkdfInfo))
 	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
 		return "", fmt.Errorf("hkdf: %w", err)
 	}
