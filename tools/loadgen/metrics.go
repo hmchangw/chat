@@ -55,6 +55,13 @@ type Metrics struct {
 	// RAWVisibilityWindow records per-path visibility window:
 	// first-visible − last-not-visible. Companion to RAWLag.
 	RAWVisibilityWindow *prometheus.HistogramVec
+	// SearchIndexLag records canonical→search-index lag observed by the
+	// search-sync-lag scenario: time from publishing a canonical message event
+	// until search.messages returns it. Dominated in practice by the ES
+	// refresh_interval. Label "stage" reserves room for future granularity
+	// (e.g. consume vs. index vs. refresh) but is currently always
+	// "search-service" — what the operator-visible query path sees.
+	SearchIndexLag *prometheus.HistogramVec
 	// RoomOpen records per-leg latency for the room-open scenario (Phase 3 §3.14).
 	// Label "leg" identifies the request (history, rooms_get, presence, read, restricted).
 	RoomOpen *prometheus.HistogramVec
@@ -200,6 +207,14 @@ func NewMetrics() *Metrics {
 			Help:    "Per-path visibility window: first-visible - last-not-visible.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"path"}),
+		SearchIndexLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "loadgen_search_index_lag_seconds",
+			Help: "Canonical→search-index lag from search-sync-lag scenario: publish to first search.messages hit. Dominated by ES refresh_interval.",
+			// 0.1s … ~204s: ES default refresh_interval is 30s, so the
+			// histogram must extend well past it to characterize the right tail
+			// during compaction / GC pauses.
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
+		}, []string{"stage"}),
 		RoomOpen: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "loadgen_room_open_seconds",
 			Help:    "Per-leg latency for room-open scenario (legs: history, rooms_get, presence, read, restricted).",
@@ -279,6 +294,7 @@ func NewMetrics() *Metrics {
 		m.ThreadMessages,
 		m.PublishedByRoomType,
 		m.RAWLag, m.RAWVisibilityWindow,
+		m.SearchIndexLag,
 		m.RoomOpen, m.RoomOpenE2E,
 		m.MessageRead,
 		m.LargeRoomReceive, m.LargeRoomCompletion,
