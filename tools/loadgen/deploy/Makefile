@@ -35,11 +35,13 @@ run: seed
 	$(COMPOSE) exec -T loadgen /loadgen run \
 	    --preset=$(PRESET) \
 	    --rate=$(or $(RATE),500) \
-	    --duration=$(or $(DURATION),60s)
+	    --duration=$(or $(DURATION),60s) \
+	    $(if $(SCENARIO),--scenario=$(SCENARIO)) \
+	    $(if $(INJECT),--inject=$(INJECT))
 
 run-dashboards:
 	$(COMPOSE) --profile dashboards up -d
-	$(MAKE) run PRESET=$(PRESET) RATE=$(RATE) DURATION=$(DURATION)
+	$(MAKE) run PRESET=$(PRESET) RATE=$(RATE) DURATION=$(DURATION) SCENARIO=$(SCENARIO) INJECT=$(INJECT)
 
 # run-natsrouter executes the full Phase 1+2 read-scenario sweep:
 # seed fixtures, brief messaging-pipeline warm-up, history-read,

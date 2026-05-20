@@ -70,7 +70,10 @@ type RAWOutcome struct {
 
 // pollUntilVisible polls lookup every interval until it returns nil (visible)
 // or publishedAt+timeout is exceeded. On success it returns the lag and
-// visibility window. On timeout it returns ErrRAWTimeout.
+// visibility window. On timeout it returns ErrRAWTimeout. Any lookup error
+// other than ErrRAWNotVisible is surfaced immediately (wrapped) so callers
+// can distinguish a transport failure from "not yet indexed" without waiting
+// for the timeout.
 func pollUntilVisible(
 	ctx context.Context,
 	lookup LookupFn,
@@ -84,7 +87,8 @@ func pollUntilVisible(
 	pollCount := 0
 
 	for {
-		if err := lookup(ctx, msgID); err == nil {
+		err := lookup(ctx, msgID)
+		if err == nil {
 			firstVisible := time.Now()
 			window := time.Duration(0)
 			if !lastFailure.IsZero() {
@@ -95,6 +99,9 @@ func pollUntilVisible(
 				VisibilityWindow: window,
 				PollsBeforeHit:   pollCount + 1,
 			}, nil
+		}
+		if !errors.Is(err, ErrRAWNotVisible) {
+			return RAWOutcome{}, fmt.Errorf("RAW lookup: %w", err)
 		}
 		lastFailure = time.Now()
 		pollCount++

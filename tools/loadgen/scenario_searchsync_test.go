@@ -411,6 +411,40 @@ func TestSearchSyncRun_CountsTimeoutsAsOutcome(t *testing.T) {
 	assert.Equal(t, uint64(0), lagCount, "no lag samples should be recorded for timeouts")
 }
 
+// transport_error must fire (and be distinguishable from timeout) when the
+// NATS request itself fails. Previously pollUntilVisible absorbed every
+// non-nil lookup error and re-polled until deadline, so transport failures
+// were indistinguishable from "ES not yet indexed". The pollUntilVisible fix
+// surfaces non-ErrRAWNotVisible errors immediately; this test pins that
+// behaviour end-to-end.
+func TestSearchSyncRun_CountsTransportErrorsAsOutcome(t *testing.T) {
+	pub := &recordingPublisher{}
+	req := &fakeSearchRequester{err: errors.New("nats: connection refused")}
+	deps := buildSearchSyncDeps(t, pub, req)
+	rf := &runFlags{
+		Rate:           50,
+		RequestTimeout: 5 * time.Millisecond,
+		SearchSync: SearchSyncFlags{
+			PollInterval: 1 * time.Millisecond,
+			Timeout:      500 * time.Millisecond,
+			ACLWait:      1 * time.Millisecond,
+		},
+	}
+	sc, _ := LookupScenario("search-sync-lag")
+	gen, err := sc.(GeneratorFactory).NewGenerator(deps, rf)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	runErr := gen.Run(ctx)
+	require.NoError(t, runErr)
+
+	transportCount := getCounterValue(t, deps.metrics.SearchIndexVisible.WithLabelValues("transport_error"))
+	assert.Greater(t, transportCount, 0.0, "NATS transport failures must surface as outcome=transport_error, not be silently absorbed into timeouts")
+	timeoutCount := getCounterValue(t, deps.metrics.SearchIndexVisible.WithLabelValues("timeout"))
+	assert.Equal(t, 0.0, timeoutCount, "transport errors must not be misclassified as timeouts (the original C1-era bug)")
+}
+
 func TestSearchSyncRun_DrainsInFlightOnCancel(t *testing.T) {
 	pub := &recordingPublisher{}
 	// blockingRequester counts active in-flight calls and only completes when

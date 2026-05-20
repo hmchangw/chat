@@ -199,7 +199,9 @@ Goal: measure cross-site message delivery lag (OUTBOX→INBOX round-trip).
 
 ```bash
 # Requires the federation Compose overlay (site-a + site-b NATS).
-./tools/loadgen/scripts/up.sh --profile=federation
+cd tools/loadgen/deploy && \
+    docker compose -f docker-compose.yml -f docker-compose.federation.yml \
+                   --profile federation up -d
 loadgen run --scenario=federation-lag \
     --preset=messaging-pipeline \
     --rate=200 --duration=5m \
@@ -339,6 +341,8 @@ Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}
 - `transport_error` — NATS request itself failed. search-service down or NATS partitioned.
 - `publish_error` — canonical publish failed. JetStream not configured (verify `--inject=canonical` and that `MESSAGES_CANONICAL_{siteID}` exists).
 - `dropped_inflight` — concurrent-poll cap (`MaxInFlight`) was full; the poll was skipped instead of amplifying open-loop pressure on search-service. If you see these consistently the SUT is slower than the scenario rate × timeout product can absorb.
+
+**Sizing the run.** The in-flight poll count grows as `rate × timeout` until either visibility or timeout. With defaults (`MaxInFlight=200`, `--search-sync-timeout=90s`), sustaining `dropped_inflight=0` requires `rate ≲ 2/s`. The default `--rate=500` is intended for the high-volume `messaging-pipeline`; for search-sync-lag start at `--rate=1` and raise gradually while watching the `dropped_inflight` counter. Run for longer (`--duration=10m+`) rather than faster — ES refresh dominates the signal and short runs don't fill the histogram.
 
 **ACL precondition.** `search-service/query_messages.go` AND's the caller's `roomIds` filter with a terms-lookup against the per-user `user-room` ES doc. That doc is written exclusively by search-sync-worker's `user-room-sync` consumer on `OutboxMemberAdded`/`OutboxMemberRemoved` events on the local INBOX stream. Mongo seeding doesn't touch ES, so the scenario publishes one synthetic `member_added` `OutboxEvent` per unique `(account, roomID)` fixture tuple onto `chat.inbox.{siteID}.member_added` at `Run` start, then waits `--search-sync-acl-wait` before driving traffic.
 

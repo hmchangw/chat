@@ -70,7 +70,7 @@ the bottleneck.
 - TODO follow-up: cassandra-site-b + all per-site workers
 
 ```
-docker compose -f docker-compose.loadtest.yml -f docker-compose.federation.yml \
+docker compose -f docker-compose.yml -f docker-compose.federation.yml \
   --profile federation up -d
 ```
 
