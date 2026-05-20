@@ -23,6 +23,16 @@ const (
 	InjectCanonical InjectMode = "canonical"
 )
 
+// ParseInjectMode converts a CLI flag value to an InjectMode.
+func ParseInjectMode(s string) (InjectMode, error) {
+	switch InjectMode(s) {
+	case InjectFrontdoor, InjectCanonical:
+		return InjectMode(s), nil
+	default:
+		return "", fmt.Errorf("unknown inject mode %q (want frontdoor|canonical)", s)
+	}
+}
+
 // Publisher abstracts NATS publishing so tests can inject a recorder.
 type Publisher interface {
 	Publish(ctx context.Context, subject string, data []byte) error

@@ -523,14 +523,14 @@ func (c *Collector) E2Count() int {
 func (c *Collector) E1Samples() []time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.snapshotLatenciesLocked(c.e1)
+	return snapshotLatencies(c.e1)
 }
 
 // E2Samples returns a sorted copy of E2 latencies for tests/reporting.
 func (c *Collector) E2Samples() []time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.snapshotLatenciesLocked(c.e2)
+	return snapshotLatencies(c.e2)
 }
 
 // RequestSampleRow is a single row for the per-sample CSV export.
@@ -662,13 +662,5 @@ func (c *Collector) RecentMessages(n int) []RecentMessage {
 	return out
 }
 
-// snapshotLatenciesLocked copies and sorts latencies from in.
-// Callers must hold c.mu before calling this method.
-func (c *Collector) snapshotLatenciesLocked(in []sample) []time.Duration {
-	out := make([]time.Duration, len(in))
-	for i := range in {
-		out[i] = in[i].latency
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}
+// snapshotLatencies is defined in members_collector.go as a package-level
+// helper so both Collector and MemberCollector can share it.

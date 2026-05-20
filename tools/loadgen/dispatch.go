@@ -49,6 +49,8 @@ func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
+	workload := fs.String("workload", "messages",
+		"messages|members — which fixture shape to provision (members for members-sustained/members-capacity, messages otherwise)")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	override := fs.Bool("i-know-what-i-am-doing", false,
@@ -68,6 +70,13 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
+		return 2
+	}
+	if *workload == "members" {
+		return runSeedMembers(ctx, cfg, *preset, *seed)
+	}
+	if *workload != "messages" {
+		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
 	}
 	p, ok := BuiltinPreset(*preset)
@@ -159,6 +168,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 
 func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
+	workload := fs.String("workload", "messages",
+		"messages|members — which fixture shape to tear down (mirrors the --workload used at seed time)")
 	forceFlag := fs.Bool("force", false,
 		"enumerate and drop all orphaned loadgen_* Mongo DBs and JetStream consumers")
 	olderThan := fs.Duration("older-than", 0,
@@ -172,6 +183,18 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 
 	if *forceFlag {
 		return dispatchTeardownForce(ctx, cfg, *olderThan, *runID)
+	}
+
+	if *workload == "members" {
+		if *preset == "" {
+			fmt.Fprintln(os.Stderr, "--preset required for --workload=members")
+			return 2
+		}
+		return runTeardownMembers(ctx, cfg, *preset, *seed)
+	}
+	if *workload != "messages" {
+		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
+		return 2
 	}
 
 	// Non-force path: teardown is destructive — refuse unless the configured

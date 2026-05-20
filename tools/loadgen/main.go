@@ -47,7 +47,7 @@ type config struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|chaos|scenarios|presets|recommend|doctor> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|chaos|scenarios|presets|recommend|doctor|members-sustained|members-capacity> [flags]")
 		os.Exit(2)
 	}
 
@@ -103,6 +103,10 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runRecommend(cfg, os.Args[2:])
 	case "doctor":
 		return runDoctor(cfg, os.Args[2:])
+	case "members-sustained":
+		return runMembersSustained(ctx, cfg, os.Args[2:])
+	case "members-capacity":
+		return runMembersCapacity(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2

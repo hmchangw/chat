@@ -70,6 +70,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.member.add"},
 		{"MemberEvent", subject.MemberEvent("r1"),
 			"chat.room.r1.event.member"},
+		{"RoomMemberEventWildcard", subject.RoomMemberEventWildcard(),
+			"chat.room.*.event.member"},
 		{"MemberList", subject.MemberList("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.member.list"},
 		{"MemberListWildcard", subject.MemberListWildcard("site-a"),

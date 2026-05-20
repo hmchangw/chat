@@ -54,5 +54,77 @@ the run binary itself never touches ciphertext.
 ## Non-goals
 
 - Not a CI regression gate; invoked manually.
+- Not an auth benchmark. Uses shared `backend.creds`.
+- Not a cross-site benchmark. Single-site only.
 - Not a cross-machine numerical benchmark; compare within one machine across changes.
 - Not a production replay tool.
+
+## Members workload (add-member benchmark)
+
+Benchmarks the add-member pipeline:
+`room-service.handleAddMembers` → `chat.room.canonical.{siteID}.member.add`
+(ROOMS stream) → `room-worker` → `chat.room.{roomID}.event.member` broadcast.
+
+### Quick start
+
+```
+make -C tools/loadgen/deploy up
+make -C tools/loadgen/deploy seed-members PRESET=members-medium
+make -C tools/loadgen/deploy run-sustained PRESET=members-medium RATE=100 DURATION=60s
+```
+
+For capacity-mode growth curves:
+
+```
+make -C tools/loadgen/deploy seed-members PRESET=members-capacity
+make -C tools/loadgen/deploy run-capacity  PRESET=members-capacity TARGET_SIZE=500
+```
+
+Between sustained runs, reset state so candidate pools refill:
+
+```
+make -C tools/loadgen/deploy reset-members PRESET=members-medium
+```
+
+### Presets
+
+| preset             | rooms | baseline | candidate pool | use case                                |
+|--------------------|-------|----------|----------------|-----------------------------------------|
+| `members-small`    | 5     | 10       | 50             | smoke / dev                             |
+| `members-medium`   | 100   | 100      | 500            | sustained-throughput default            |
+| `members-capacity` | 5     | 1        | 990            | capacity-growth, fills up to ~MAX_ROOM_SIZE |
+
+### Subcommands
+
+- `loadgen seed --workload=members --preset=<name>` — populate Mongo
+  + Valkey for the members workload.
+- `loadgen teardown --workload=members --preset=<name>` — drop the seeded data.
+- `loadgen members-sustained --preset=<name> [flags]` — open-loop publish
+  at `--rate` req/sec for `--duration`. Flags: `--users-per-add` (default 10),
+  `--inject=frontdoor|canonical` (default frontdoor),
+  `--shape=users` (v1; orgs/channels/mixed reserved for v2), `--warmup`,
+  `--csv`.
+- `loadgen members-capacity --preset=<name> --target-size=N [flags]` —
+  per-room sequential growth until rooms reach `--target-size`. Flags:
+  `--users-per-add`, `--inject`, `--shape`, `--max-rate` (per-room rate
+  cap, default 0 = sequential pacing only), `--e2-timeout`, `--csv`.
+
+### v1 scope
+
+Only `--shape=users` is implemented. The flag accepts `orgs`, `channels`,
+`mixed` for forward compat but rejects them at parse time. See
+`docs/superpowers/specs/2026-05-19-load-test-room-members-design.md`
+for the rationale and the v2 plan.
+
+### Reading the summary
+
+- **Sustained mode**: `final_pending == 0` on room-worker + zero errors →
+  pipeline is sustaining the target rate. Climbing `final_pending` or
+  non-zero errors → over capacity. If you see `aborted early — pools
+  exhausted` in the logs, your `rate × duration × users-per-add` exceeded
+  the preset's `CandidatePool` budget; pick a bigger preset or shorter
+  duration.
+- **Capacity mode**: the size-bucket table shows latency at four
+  size ranges; the `final sizes` block confirms each room hit
+  `--target-size`. A row with `count > 0` whose `e2_p99` is much larger
+  than smaller-size buckets indicates a per-room-size degradation.
