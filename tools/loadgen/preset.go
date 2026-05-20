@@ -62,20 +62,40 @@ func padInt(i int) string {
 // augmentWithFirstDMFixtures adds nPairs user pairs that have NEVER messaged
 // each other. Users are prefixed with "loadgen-firstdm-". No rooms or
 // subscriptions are added — the scenario creates DM rooms on-the-fly via
-// idgen.BuildDMRoomID at first publish.
+// the room-service DM path keyed by idgen.BuildDMRoomID.
 //
-// The preset parameter is accepted for API symmetry with augmentWithChurnFixtures;
-// the first-DM pool size is controlled exclusively by nPairs.
+// EngName / ChineseName / SiteID are populated because room-service's
+// handleCreateRoomDMOrBotDM rejects users with empty Eng/Chinese names
+// (errInvalidUserData). SiteID is inherited from the existing fixture set
+// (BuildFixtures stamps it on every base user); when the fixture set is
+// empty (e.g. some unit tests) we fall back to "site-local".
+//
+// The preset parameter is accepted for API symmetry with
+// augmentWithChurnFixtures; the first-DM pool size is controlled
+// exclusively by nPairs.
 func augmentWithFirstDMFixtures(f *Fixtures, _ *Preset, nPairs int) {
 	const prefix = "loadgen-firstdm-"
+	siteID := ""
+	if len(f.Users) > 0 {
+		siteID = f.Users[0].SiteID
+	}
+	if siteID == "" {
+		siteID = "site-local"
+	}
 	for i := 0; i < nPairs; i++ {
 		userA := model.User{
-			ID:      prefix + "user-" + padInt(2*i+1),
-			Account: prefix + "user-" + padInt(2*i+1),
+			ID:          prefix + "user-" + padInt(2*i+1),
+			Account:     prefix + "user-" + padInt(2*i+1),
+			SiteID:      siteID,
+			EngName:     engNameBank[(2*i)%len(engNameBank)],
+			ChineseName: chineseNameBank[(2*i)%len(chineseNameBank)],
 		}
 		userB := model.User{
-			ID:      prefix + "user-" + padInt(2*i+2),
-			Account: prefix + "user-" + padInt(2*i+2),
+			ID:          prefix + "user-" + padInt(2*i+2),
+			Account:     prefix + "user-" + padInt(2*i+2),
+			SiteID:      siteID,
+			EngName:     engNameBank[(2*i+1)%len(engNameBank)],
+			ChineseName: chineseNameBank[(2*i+1)%len(chineseNameBank)],
 		}
 		f.Users = append(f.Users, userA, userB)
 	}
