@@ -830,6 +830,39 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.Equal(t, "site-a", m.SiteID)
 	})
+
+	t.Run("matches by deptId", func(t *testing.T) {
+		// A dept-scoped org: room_members stores member.id = deptId. The
+		// query must find users by deptId, not sectId alone — symmetric to
+		// the GetUserWithMembership / GetSubscriptionWithMembership fixes
+		// in the dept-aware membership pass.
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-fe"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", EngName: "Bob", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-fe"})
+		insertUser(t, db, model.User{ID: "u-carol", Account: "carol", EngName: "Carol", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-be"})
+
+		got, err := store.ListOrgMembers(ctx, "dept-fe")
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		accounts := []string{got[0].Account, got[1].Account}
+		assert.ElementsMatch(t, []string{"alice", "bob"}, accounts)
+	})
+
+	t.Run("matches dept users when orgId equals deptId without parent sect match", func(t *testing.T) {
+		// Dept-scoped invariant: dept users carry sectId == deptId. Adding
+		// the dept as an org should still find them by deptId match alone,
+		// even if no user happens to have sectId equal to the orgID.
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "dept-x", DeptID: "dept-x"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", SectID: "sect-other", DeptID: ""})
+
+		got, err := store.ListOrgMembers(ctx, "dept-x")
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "alice", got[0].Account)
+	})
 }
 
 func TestMongoStore_ListRoomsByIDs(t *testing.T) {

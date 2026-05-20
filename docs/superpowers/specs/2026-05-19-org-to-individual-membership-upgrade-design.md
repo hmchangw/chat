@@ -313,6 +313,25 @@ The field name `display.sectName` stays unchanged for wire stability; its semant
 
 **Net stage count:** unchanged at 3 inner stages (vs. today's 3). All BSON-Go duplication is eliminated.
 
+### List-org-members RPC (`room-service/store_mongo.go:707`)
+
+The `chat.user.{account}.request.orgs.{orgId}.members` endpoint (the "expand org" RPC the client calls to enumerate an org row in the member roster) was sectId-only. Under the broadened semantics it must resolve a deptId-added org just as it resolves a sectId-added org — otherwise the roster shows the org row but expansion returns `errInvalidOrg`.
+
+`ListOrgMembers` switches from `Find({sectId: orgId})` to:
+
+```go
+cursor, err := s.users.Find(ctx, bson.M{"$or": []bson.M{
+    {"sectId": orgID},
+    {"deptId": orgID},
+}}, opts)
+```
+
+This is the symmetric companion to the `GetSubscriptionWithMembership` / `GetUserWithMembership` dept-aware lookups landed earlier in this PR — same `$or` shape, same indexes covering both branches. Under the operator's domain assumption (dept ⊇ sect for any overlapping id), a deptId-added org returns the dept's full membership; a sectId-only org returns just the sect's members. The wire response shape and `errInvalidOrg` semantics are unchanged.
+
+Test coverage (integration, `room-service/integration_test.go::TestMongoStore_ListOrgMembers_Integration`):
+- `matches_by_deptId` — users with distinct `sectId` and `deptId`; query by `deptId` returns dept rows the sect-only filter would have missed.
+- `matches dept users when orgId equals deptId without parent sect match` — invariant case (`sectId == deptId` for dept users); query by that id returns only the dept user.
+
 ### Remove-org name harvest (`room-worker/handler.go:514-523`)
 
 `OrgMemberStatus` (`room-worker/store.go:31`) drops `SectName` and gains a per-row resolved pair. The pipeline does the per-row name selection (sect-fields when the row matched sectId, dept-fields when it matched deptId); the handler does the org-level dept-first tiebreak:
@@ -386,6 +405,7 @@ This keeps the wire schema stable. The field name's semantics drift (it's no lon
 - `pkg/model/user.go` — new fields.
 - `pkg/pipelines/member.go` — `$or` extended; applies to both `GetNewMembersPipeline` and the new `GetAddMemberCandidatesPipeline` from Part 1.
 - `room-service/store_mongo.go:451-472, 475-489` — enrichment join + display fold (dept-preference, new TCName field).
+- `room-service/store_mongo.go:707` — `ListOrgMembers` `$or` over `(sectId, deptId)` so the `orgs.{orgId}.members` RPC resolves deptId-added orgs.
 - `room-worker/store.go` — `OrgMemberStatus` struct extended.
 - `room-worker/store_mongo.go:261-294` — `GetOrgMembersWithIndividualStatus` pipeline extended.
 - `room-worker/handler.go:508-523` — name-harvest loop with dept-first preference.
@@ -436,6 +456,7 @@ Every new or modified query is verified against the existing indexes; nothing is
 | `GetOrgMembersWithIndividualStatus` `$match` | `sectId == orgID OR deptId == orgID` | `(sectId, account)` + new `(deptId, account)` | Both branches index-covered; same index union as above. |
 | `GetOrgMembersWithIndividualStatus` `$lookup room_members` | `rid == X && member.type == "individual" && member.id == $$uid` | existing unique `(rid, member.type, member.id)` | Index-covered. Switched from `member.account` to `member.id` as part of this work. |
 | Enrichment `_orgMatch` `$lookup` (`room-service/store_mongo.go:451-472`) | `member.type == "org" && (sectId == $$orgId OR deptId == $$orgId)` | `(sectId, account)` + new `(deptId, account)` | $or both branches indexed; inner `$sort _isDept desc` + `$group $first` work on a small per-org candidate set (members of one org), not the whole users collection. |
+| `ListOrgMembers.Find` (`room-service/store_mongo.go:707`) | `sectId == orgID OR deptId == orgID` | `(sectId, account)` + new `(deptId, account)` | $or both branches index-covered; sorted by `account` ASC matches the leading prefix of both compound indexes after the equality on the leading key. |
 
 ### Required new index
 

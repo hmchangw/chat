@@ -708,9 +708,14 @@ func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName
 	return &sub, nil
 }
 
-// ListOrgMembers returns all users whose sectId equals orgID, projected as
-// OrgMember rows sorted by account ascending. Returns errInvalidOrg when the
-// query matches no users.
+// ListOrgMembers returns all users whose sectId OR deptId equals orgID,
+// projected as OrgMember rows sorted by account ascending. The dept branch
+// is symmetric to the membership-lookup pipelines (GetSubscriptionWithMembership,
+// GetUserWithMembership): an org added by a dept-only match stores
+// member.id = deptId in room_members, so the expansion RPC must look up
+// users by deptId too. Both (sectId, account) and (deptId, account) indexes
+// exist (see ensureIndexes) so the $or stays index-backed. Returns
+// errInvalidOrg when neither branch matches any users.
 func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "account", Value: 1}}).
@@ -721,7 +726,10 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 			"chineseName": 1,
 			"siteId":      1,
 		})
-	cursor, err := s.users.Find(ctx, bson.M{"sectId": orgID}, opts)
+	cursor, err := s.users.Find(ctx, bson.M{"$or": []bson.M{
+		{"sectId": orgID},
+		{"deptId": orgID},
+	}}, opts)
 	if err != nil {
 		return nil, fmt.Errorf("find users for org %q: %w", orgID, err)
 	}

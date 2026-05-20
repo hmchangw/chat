@@ -858,7 +858,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 **Subject:** `chat.user.{account}.request.orgs.{orgID}.members`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-The org ID is the second-to-last subject segment — there is no request body.
+The org ID is the second-to-last subject segment — there is no request body. `orgID` matches a user's `sectId` OR `deptId`; the response includes every user whose either field equals `orgID`. This mirrors the dept-aware org membership pipelines on the server side (a room may be added by sect-level or dept-level org and either form resolves through this endpoint).
 
 ##### Request body
 
