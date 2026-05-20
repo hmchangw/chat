@@ -65,6 +65,78 @@ grep -E 'duration|started|exited' runs/<run_id>/run.log
 - If the run exited too early, set `--duration` ≥ `--search-sync-acl-wait
   + 2 minutes` minimum.
 
+### 1b. `bootstrap_error` dominant
+
+**Symptom.**
+
+```
+loadgen_search_index_visible_total{outcome="bootstrap_error"} 1
+loadgen_search_index_visible_total{outcome="visible"} 0
+loadgen_search_index_visible_total{outcome="timeout"} 0
+```
+
+`bootstrap_error` is the only outcome present, and it appears exactly
+**once** per failed run — the ACL bootstrap is a one-shot step before the
+publish/poll loop, so a single increment is the canonical signature of a
+run that exited before any tick could fire.
+
+This counter exists specifically to disambiguate "scenario never ran" from
+"scenario ran with zero observations" on an otherwise-silent dashboard:
+section 1 above is the same root cause but reads as "no metric at all",
+whereas the `bootstrap_error` increment surfaces the failure on the outcome
+breakdown.
+
+**Likely causes** (ordered by frequency):
+
+1. NATS unreachable or wrong credentials. The bootstrap publish uses the
+   loadgen publisher; if the connection itself is broken the bootstrap is
+   the first thing to fail.
+2. `INBOX_{siteID}` stream not configured for the seed-time publish
+   subject. The bootstrap publishes to
+   `subject.InboxMemberAdded(siteID)` =
+   `chat.inbox.{siteID}.member_added`
+   ([`pkg/subject/subject.go:122-126`](../../../../pkg/subject/subject.go)).
+   The owning service is `inbox-worker`; the bootstrap itself does NOT go
+   through inbox-worker — it publishes directly onto the INBOX subject.
+   If the stream is missing or doesn't accept that subject, the publish
+   errors immediately.
+3. JetStream not enabled on the local NATS (the bootstrap requires
+   JetStream — the local INBOX stream is JetStream-backed).
+4. Loadgen's NATS credentials lack publish permission on
+   `chat.inbox.{siteID}.>`.
+
+**Confirm.**
+
+```bash
+# Loadgen log: the bootstrap emits a structured error on failure
+grep -E 'bootstrap search-sync ACL|inbox.*member_added' runs/<run_id>/run.log
+
+# INBOX stream exists and accepts the member_added subject
+nats stream info INBOX_site-local
+nats stream subjects INBOX_site-local | grep member_added
+
+# JetStream is up
+nats server check jetstream
+
+# Manual smoke publish onto the INBOX subject (substitute siteID)
+nats pub chat.inbox.site-local.member_added '{}' --jetstream
+```
+
+**Resolution.**
+
+- If NATS is unreachable, fix connectivity (creds path, NATS URL) and
+  rerun. `loadgen doctor` covers the common cases.
+- If `INBOX_{siteID}` is missing, have ops/IaC provision it via
+  `pkg/stream.Inbox(siteID)` (see CLAUDE.md §6 Stream-bootstrap ownership
+  rules — `inbox-worker` owns this stream). For dev environments, bring
+  up the SUT with `BOOTSTRAP_STREAMS=true` so `inbox-worker` creates it.
+- If the subject is configured but the publish still errors, check the
+  builder in `pkg/subject/subject.go::InboxMemberAdded` against the
+  stream's configured subjects — a rename or drift would manifest here.
+- The narrative discussion of bootstrap failure in section 1 above
+  applies — `bootstrap_error` is the outcome-counter signature of the
+  same failure mode.
+
 ### 2. `publish_error` dominant
 
 **Symptom.**
