@@ -807,3 +807,68 @@ git push -u origin claude/fix-room-notification-settings-RqyO1
 | Testing §3 Integration test — regular-DM regression | Task 7 |
 | Testing §4 Coverage gate ≥90% | Task 8 |
 | Out-of-scope: notification-worker filter, mute toggle endpoint, frontend UI | (deferred — explicitly out of scope per spec) |
+| §3a `BulkCreateSubscriptions` → `$setOnInsert` upsert | Addendum Task A1 |
+| §3b `FindDMSubscriptionPair` single-query re-read | Addendum Task A2 |
+
+---
+
+## Addendum — Post-Review Changes (commit `d4bb50c`)
+
+Three review comments from `mliu33` on PR #202 triggered follow-up changes
+after the original plan landed. Spec sections §3a and §3b cover the design;
+the tasks below cover the implementation.
+
+### Addendum Task A1: Convert `BulkCreateSubscriptions` to `$setOnInsert` upsert
+
+**Files:**
+- Modify: `room-worker/store_mongo.go` — `BulkCreateSubscriptions` impl
+- Modify: `room-worker/handler_test.go` — drop the "non-dup-key" wording in
+  the `BulkCreateSubsTransientError` comment; the test itself is unchanged
+  (a transient error still surfaces as "internal error")
+
+- [x] Replace the `InsertMany + SetOrdered(false) + IsDuplicateKeyError`
+  swallow with a `BulkWrite` of `mongoutil.UpsertModel(filter, $setOnInsert)`
+  models, one per sub, filter keyed on `(roomId, u.account)`. Use the same
+  `options.BulkWrite().SetOrdered(false)` so partial collisions don't halt
+  the batch.
+- [x] No interface change — same signature, same semantics observed by
+  callers. `BulkUpsertSubscriptions` (botDM refresh) stays untouched.
+- [x] Confirm `TestProcessCreateRoom_DM_DoesNotUpsert_Integration` still
+  passes — `$setOnInsert` is a no-op on collision, so the pre-seeded
+  `DisableNotification = true` and old `JoinedAt` remain.
+
+### Addendum Task A2: `FindDMSubscriptionPair` single-query re-read
+
+**Files:**
+- Modify: `room-worker/store.go` — declare on `SubscriptionStore` interface
+- Modify: `room-worker/store_mongo.go` — Mongo impl
+- Modify: `room-worker/handler.go` — `findDMSubscriptionPair` helper now
+  wraps the new store method; both call sites pass `room.ID` +
+  `requester.Account`
+- Modify: `room-worker/handler_test.go` — every test that previously mocked
+  two `FindDMSubscription` calls now mocks one `FindDMSubscriptionPair` call
+  (returning both subs)
+- Regenerate: `room-worker/mock_store_test.go` via `make generate`
+
+- [x] Add interface method:
+  ```go
+  FindDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error)
+  ```
+- [x] Mongo impl: one `Find` on
+  `{"roomId": roomID, "roomType": {"$in": [dm, botDM]}}`, decode into
+  `[]model.Subscription`, partition by `u.account`. Return
+  `model.ErrSubscriptionNotFound` if fewer than two results or if
+  `requesterAccount` isn't among them.
+- [x] Update handler helper signature from
+  `findDMSubscriptionPair(ctx, requester, counterpart *model.User)` to
+  `findDMSubscriptionPair(ctx, roomID, requesterAccount string)`.
+- [x] Update both call sites (async `processCreateRoom` botDM branch, sync
+  `handleSyncCreateDM` post-bulk re-read).
+- [x] `make generate` → `make test SERVICE=room-worker` → `make lint`.
+
+### Addendum verification
+
+- [x] `make lint` — 0 issues
+- [x] `make test SERVICE=room-worker` — pass
+- [x] Commit + push: `d4bb50c refactor(room-worker): single-query DM sub
+  pair + idempotent-upsert BulkCreate`

@@ -35,6 +35,13 @@ In scope:
 - Add `DisableNotification bool` to `model.Subscription`.
 - Add a new store method `BulkUpsertSubscriptions` that implements the re-join
   refresh semantics described above.
+- Convert the existing `BulkCreateSubscriptions` Mongo impl to a
+  `$setOnInsert`-only upsert (insert-only contract preserved, dup-key error
+  path eliminated). See §3a.
+- Add a new store method `FindDMSubscriptionPair` that returns both subs of a
+  DM/botDM room in a single Mongo `Find`, replacing the two sequential
+  `FindDMSubscription` calls previously used to re-read canonical state. See
+  §3b.
 - Wire the two botDM call sites in `room-worker` to use the new method.
 - Re-read canonical subs after the async-path upsert so the
   `subscription.update` / `MemberAddEvent` fan-out carries persisted state.
@@ -109,7 +116,57 @@ re-subscribe is not erased. On the insert branch, `$setOnInsert`
 initialises `hasMention` and `alert` to `false`; `lastSeenAt` and
 `threadUnread` remain unset (their bson tags are `omitempty`).
 
+Both `$set` and `$setOnInsert` payloads are constructed via the shared
+`mongoutil.UpsertModel(filter, update)` helper, which bakes in
+`SetUpsert(true)` on the `UpdateOneModel` so call sites can't forget it.
+
 `mock_store_test.go` is regenerated via `make generate`.
+
+### 3a. Convert `BulkCreateSubscriptions` to `$setOnInsert` upsert
+
+`BulkCreateSubscriptions` previously used `InsertMany` with
+`SetOrdered(false)` and silently swallowed `mongo.IsDuplicateKeyError`. That
+worked, but the dup-key error path is implicit and a reviewer flagged it as
+brittle when reasoning about JetStream redelivery.
+
+Switch the Mongo implementation to `BulkWrite` with one `UpdateOneModel` per
+sub, using `$setOnInsert: sub` and `SetUpsert(true)` (via
+`mongoutil.UpsertModel`). On a `(roomId, u.account)` collision, `$setOnInsert`
+is a no-op so the existing document is preserved entirely — the insert-only
+contract for channel/DM/add-member paths is unchanged. The benefit is that
+the dup-key error path is eliminated; redelivery idempotency is expressed
+explicitly in the idiom rather than via error swallowing.
+
+This matches the pattern already used by `inbox-worker.BulkCreateSubscriptions`
+(`inbox-worker/main.go:96-116`).
+
+The `TestProcessCreateRoom_DM_DoesNotUpsert_Integration` regression test still
+locks in that the regular-DM path does not refresh fields on re-create.
+
+### 3b. `FindDMSubscriptionPair` — single-query re-read
+
+`FindDMSubscription(ctx, account, targetName)` returns one sub by
+`{u.account, name}`. The botDM and DM re-read path needs both subs of a room,
+which previously required two sequential `FindDMSubscription` calls. Add:
+
+```go
+// FindDMSubscriptionPair returns both subs of a DM/botDM room in a single
+// query. The first return value is the sub owned by requesterAccount, the
+// second is the counterpart's. Returns ErrSubscriptionNotFound if the
+// room has fewer than two matching subs or if requesterAccount is not
+// among them.
+FindDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error)
+```
+
+Mongo impl: a single `Find` on
+`{"roomId": roomID, "roomType": {"$in": [dm, botDM]}}`, then partition the
+returned slice by `u.account` (== requesterAccount → requester sub; else →
+counterpart sub). DM/botDM rooms always have exactly two subs, so no
+projection or limit is needed.
+
+The handler's `findDMSubscriptionPair` helper now wraps the new store
+method (single round-trip) instead of issuing two `FindDMSubscription`
+calls.
 
 ### 4. Wire into botDM paths — `room-worker/handler.go`
 
@@ -137,20 +194,22 @@ add-member flow) are unchanged.
 
 ### 5. Re-read after upsert (async path)
 
-The sync path (`processSyncCreateDM`) already re-reads via
-`FindDMSubscription` after the bulk call (`handler.go:1574-1582`) so the
-fan-out carries canonical `_id` and `JoinedAt`. No change there.
+Both paths re-read the canonical sub pair via the new
+`FindDMSubscriptionPair(ctx, room.ID, requester.Account)` (one Mongo
+round-trip).
 
-The async `processCreateRoom` botDM branch currently hands the in-memory
-`subs` directly to `finishCreateRoom` (`handler.go:1166`). On an upsert that
-hit an existing row, the in-memory `sub.ID` and `sub.JoinedAt` may not match
-the persisted document. Mirror the sync path: after a successful
-`BulkUpsertSubscriptions` in the async botDM branch, call
-`FindDMSubscription` for `(requester.Account, counterpart.Account)` and
-`(counterpart.Account, requester.Account)`, replace the in-memory subs with
-the canonical pair, and pass that into `finishCreateRoom`. This keeps
-`subscription.update` events, `MemberAddEvent`s, and reconcile counts
-operating on persisted state.
+The sync path (`processSyncCreateDM`) already re-reads after the bulk call
+(`handler.go:1610`); just swap the two `FindDMSubscription` calls for the
+single `FindDMSubscriptionPair`.
+
+The async `processCreateRoom` botDM branch previously handed the in-memory
+`subs` directly to `finishCreateRoom`. On an upsert that hit an existing row,
+the in-memory `sub.ID` and `sub.JoinedAt` may not match the persisted
+document. Mirror the sync path: after a successful `BulkUpsertSubscriptions`
+in the async botDM branch, call `FindDMSubscriptionPair`, replace the
+in-memory subs with the canonical pair, and pass that into
+`finishCreateRoom`. This keeps `subscription.update` events,
+`MemberAddEvent`s, and reconcile counts operating on persisted state.
 
 ## Testing
 
