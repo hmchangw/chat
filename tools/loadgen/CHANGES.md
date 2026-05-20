@@ -63,9 +63,12 @@ scripts and presets reference the new names directly.
   `loadgen` (the prefix `guardMongoDB` requires), not `chat` (which the
   guard refuses for `seed` and `teardown` and which would silently write
   into the production DB for `run`).
-- `prometheus.yml` no longer scrapes `cadvisor:8080` — no cadvisor service
-  exists in the post-refactor overlay; the previous scrape produced noise
-  but no signal. A commented-out block carries the TODO for re-adding it.
+- `cadvisor` is restored to the `dashboards` profile in
+  `tools/loadgen/deploy/docker-compose.yml` and `prometheus.yml` scrapes
+  `cadvisor:8080` again. Container-level CPU/memory panels in the
+  `loadgen-system` dashboard now have data again. The cohort B
+  `/var/run:ro` mount fix from the previous `docker-compose.loadtest.yml`
+  is preserved in the new overlay definition.
 - `newE2Handler` filters incoming events by `X-Loadgen-Run-ID` so
   concurrent runs against the same NATS no longer credit each other's
   broadcasts. Test coverage added for the runID-filter branch.

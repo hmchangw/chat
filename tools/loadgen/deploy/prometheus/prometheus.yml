@@ -26,12 +26,7 @@ scrape_configs:
     static_configs:
       - targets: ['cassandra-exporter:8080']
 
-  # TODO: re-add the cadvisor scrape once a cadvisor service is wired into
-  # the loadgen overlay (or the shared docker-local stack). The previous
-  # block was dropped during the docker-compose.loadtest.yml -> docker-local
-  # overlay refactor because no cadvisor container exists in either compose
-  # file; scraping a nonexistent target produced noise but no signal.
-  # - job_name: 'cadvisor'
-  #   scrape_interval: 15s
-  #   static_configs:
-  #     - targets: ['cadvisor:8080']
+  - job_name: 'cadvisor'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['cadvisor:8080']
