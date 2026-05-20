@@ -316,6 +316,32 @@ Publishes a message, then polls the history API until it is visible (or times ou
 
 Flags: `--raw-poll-interval`, `--raw-timeout`. See [Pitfalls → raw-poll-bias](#raw-poll-bias).
 
+### search-sync-lag
+
+Publishes a canonical `MessageEvent` carrying a unique searchable token, then polls `search.messages` until that doc surfaces. Records `loadgen_search_index_lag_seconds` (publish → first search hit) and `loadgen_search_index_visible_total{outcome=...}` (terminal counts).
+
+The measured lag is dominated by ES's `refresh_interval` (default `30s` on the `messageCollection` index template in `search-sync-worker/messages.go`). Lowering it is a SUT-side decision, not loadgen's.
+
+Required flags:
+
+- `--inject=canonical` — the scenario publishes to `MESSAGES_CANONICAL_{siteID}`; with the default `frontdoor` mode the publish dead-letters and zero observations land. `NewGenerator` refuses the run with a clear error in that case.
+
+Scenario-specific flags:
+
+- `--search-sync-poll-interval` (default `250ms`) — interval between `search.messages` polls. Polling much faster than ES refreshes wastes RPCs without resolving the lag better.
+- `--search-sync-timeout` (default `90s`) — per-message poll deadline. ~3× the default refresh covers the long tail (compaction, GC pauses, bulk-flush slack).
+- `--search-sync-acl-wait` (default `35s`) — one-shot wait after the user-room ACL bootstrap, before the per-tick publish/poll loop starts. Covers ES `refresh_interval` plus bulk-flush slack so the very first search request actually has the ACL doc to terms-lookup against.
+
+Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}`:
+
+- `visible` — happy path; corresponding lag samples are in the histogram.
+- `timeout` — poll deadline hit. Raise `--search-sync-timeout`, or look at ES and search-sync-worker — refresh interval misconfigured, sync-worker behind, or ACL bootstrap missed.
+- `transport_error` — NATS request itself failed. search-service down or NATS partitioned.
+- `publish_error` — canonical publish failed. JetStream not configured (verify `--inject=canonical` and that `MESSAGES_CANONICAL_{siteID}` exists).
+- `dropped_inflight` — concurrent-poll cap (`MaxInFlight`) was full; the poll was skipped instead of amplifying open-loop pressure on search-service. If you see these consistently the SUT is slower than the scenario rate × timeout product can absorb.
+
+**ACL precondition.** `search-service/query_messages.go` AND's the caller's `roomIds` filter with a terms-lookup against the per-user `user-room` ES doc. That doc is written exclusively by search-sync-worker's `user-room-sync` consumer on `OutboxMemberAdded`/`OutboxMemberRemoved` events on the local INBOX stream. Mongo seeding doesn't touch ES, so the scenario publishes one synthetic `member_added` `OutboxEvent` per unique `(account, roomID)` fixture tuple onto `chat.inbox.{siteID}.member_added` at `Run` start, then waits `--search-sync-acl-wait` before driving traffic.
+
 ### large-room-broadcast
 
 Sends to rooms with hundreds–thousands of members. Measures fan-out latency and broadcast worker throughput.
@@ -487,6 +513,9 @@ Key fields:
 | `--request-timeout` | read scenarios | 5s | Per-request deadline |
 | `--raw-poll-interval` | raw-consistency | 10ms | Poll interval for visibility probe |
 | `--raw-timeout` | raw-consistency | 5s | Per-message visibility timeout |
+| `--search-sync-poll-interval` | search-sync-lag | 250ms | Poll interval for `search.messages` visibility |
+| `--search-sync-timeout` | search-sync-lag | 90s | Per-message poll timeout (≈ 3× ES refresh_interval) |
+| `--search-sync-acl-wait` | search-sync-lag | 35s | One-shot wait after ACL bootstrap before the publish/poll loop starts |
 | `--receipt-coverage` | read-receipts | 0.6 | Fraction of recipients to fire MessageRead for |
 | `--mutate-rate` | message-mutate | 5 | Mutations/sec |
 | `--edit-age-distribution` | message-mutate | `0.7,0.3` | Typo vs correction age fractions |

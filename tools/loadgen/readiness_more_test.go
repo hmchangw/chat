@@ -22,6 +22,9 @@ type fakeScenarioDeps struct {
 	omission       *OmissionTracker
 	warmupDeadline time.Time
 	msgIDs         []string
+	// injectMode lets a test override InjectMode(); zero-value preserves the
+	// historical InjectFrontdoor behavior for tests that don't set it.
+	injectMode InjectMode
 }
 
 func (f *fakeScenarioDeps) Publisher() Publisher {
@@ -52,7 +55,12 @@ func (f *fakeScenarioDeps) Omission() *OmissionTracker {
 	}
 	return NewOmissionTracker(NewMetrics())
 }
-func (f *fakeScenarioDeps) InjectMode() InjectMode    { return InjectFrontdoor }
+func (f *fakeScenarioDeps) InjectMode() InjectMode {
+	if f.injectMode == "" {
+		return InjectFrontdoor
+	}
+	return f.injectMode
+}
 func (f *fakeScenarioDeps) WarmupDeadline() time.Time { return f.warmupDeadline }
 func (f *fakeScenarioDeps) MessageIDs() []string      { return f.msgIDs }
 func (f *fakeScenarioDeps) Sites() []SiteDeps         { return nil }

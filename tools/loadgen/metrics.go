@@ -58,10 +58,20 @@ type Metrics struct {
 	// SearchIndexLag records canonical→search-index lag observed by the
 	// search-sync-lag scenario: time from publishing a canonical message event
 	// until search.messages returns it. Dominated in practice by the ES
-	// refresh_interval. Label "stage" reserves room for future granularity
-	// (e.g. consume vs. index vs. refresh) but is currently always
-	// "search-service" — what the operator-visible query path sees.
-	SearchIndexLag *prometheus.HistogramVec
+	// refresh_interval. Unlabelled — the scenario only ever measures a single
+	// stage (the operator-visible search.messages query path); the previous
+	// stage="search-service" label was dead cardinality.
+	SearchIndexLag prometheus.Histogram
+	// SearchIndexVisible counts terminal outcomes of the search-sync-lag
+	// scenario's publish→poll cycle by outcome:
+	//   visible         — search returned our doc; lag observed.
+	//   timeout         — poll deadline passed without a hit.
+	//   transport_error — NATS request itself failed.
+	//   publish_error   — canonical publish failed; no poll happened.
+	//   dropped_inflight — semaphore was full; poll skipped to avoid self-DoS.
+	// Lets an operator triage a zero-observation dashboard without guessing
+	// whether ES is slow, the SUT is down, or the scenario is misconfigured.
+	SearchIndexVisible *prometheus.CounterVec
 	// RoomOpen records per-leg latency for the room-open scenario (Phase 3 §3.14).
 	// Label "leg" identifies the request (history, rooms_get, presence, read, restricted).
 	RoomOpen *prometheus.HistogramVec
@@ -207,14 +217,22 @@ func NewMetrics() *Metrics {
 			Help:    "Per-path visibility window: first-visible - last-not-visible.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"path"}),
-		SearchIndexLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		SearchIndexLag: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "loadgen_search_index_lag_seconds",
 			Help: "Canonical→search-index lag from search-sync-lag scenario: publish to first search.messages hit. Dominated by ES refresh_interval.",
-			// 0.1s … ~204s: ES default refresh_interval is 30s, so the
-			// histogram must extend well past it to characterize the right tail
-			// during compaction / GC pauses.
-			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
-		}, []string{"stage"}),
+			// Buckets are tuned for the 30s ES refresh_interval default:
+			// at least 5 buckets between 20s and 60s so the p50/p95/p99
+			// around the SLO point are resolvable, plus a fat right tail
+			// for compaction / GC pause outliers. The previous
+			// ExponentialBuckets(0.1, 2, 12) collapsed 25.6s→51.2s into a
+			// single bucket spanning the SLO; dashboards couldn't tell
+			// "just barely meeting" from "just barely missing".
+			Buckets: []float64{0.5, 1, 2, 5, 10, 20, 25, 30, 35, 40, 50, 70, 100, 150, 300},
+		}),
+		SearchIndexVisible: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loadgen_search_index_visible_total",
+			Help: "Terminal outcomes of search-sync-lag publish→poll cycles. outcome=visible|timeout|transport_error|publish_error|dropped_inflight.",
+		}, []string{"outcome"}),
 		RoomOpen: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "loadgen_room_open_seconds",
 			Help:    "Per-leg latency for room-open scenario (legs: history, rooms_get, presence, read, restricted).",
@@ -294,7 +312,7 @@ func NewMetrics() *Metrics {
 		m.ThreadMessages,
 		m.PublishedByRoomType,
 		m.RAWLag, m.RAWVisibilityWindow,
-		m.SearchIndexLag,
+		m.SearchIndexLag, m.SearchIndexVisible,
 		m.RoomOpen, m.RoomOpenE2E,
 		m.MessageRead,
 		m.LargeRoomReceive, m.LargeRoomCompletion,

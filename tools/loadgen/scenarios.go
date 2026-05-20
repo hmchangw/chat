@@ -30,7 +30,7 @@ var scenarioDescriptions = map[string]string{
 	"first-dm":             "lazy DM-room create path with 4-stage lag (skeleton)",
 	"room-open":            "composite: 4-5 legs fired in parallel via errgroup",
 	"read-receipts":        "MessageRead emission for a fraction of recipients",
-	"search-sync-lag":      "publish→search.messages visibility lag via search-sync-worker",
+	"search-sync-lag":      "publish→search.messages visibility lag; requires --inject=canonical; bootstraps user-room ACL",
 }
 
 // ScenarioDescription is an optional extension to the Scenario interface.

@@ -123,6 +123,7 @@ type runFlags struct {
 	JS                  jetStreamFlags
 	Settle              SettleFlags
 	RAW                 RAWFlags
+	SearchSync          SearchSyncFlags
 	ReceiptCoverage     float64
 	MutateRate          int
 	EditAgeDistribution string
@@ -187,6 +188,20 @@ type RAWFlags struct {
 	PollInterval time.Duration
 	// Timeout is the per-message deadline before declaring not-visible.
 	Timeout time.Duration
+}
+
+// SearchSyncFlags holds flags specific to the search-sync-lag scenario.
+// Kept distinct from RAWFlags so the two scenarios don't share defaults —
+// raw-consistency's 10ms/5s pair is way out of scale for an ES refresh of 30s.
+type SearchSyncFlags struct {
+	// PollInterval is the interval between search.messages visibility polls.
+	PollInterval time.Duration
+	// Timeout is the per-message poll deadline before declaring not-visible.
+	Timeout time.Duration
+	// ACLWait is the time to wait after the one-shot user-room ACL bootstrap
+	// publishes before the per-tick publish/poll loop starts; covers ES
+	// refresh_interval plus bulk-flush slack.
+	ACLWait time.Duration
 }
 
 // PrintRunHelp writes the run-subcommand flag usage to w in the same
@@ -278,6 +293,12 @@ func (rf *runFlags) registerOn(fs *flag.FlagSet) {
 		"raw-consistency scenario: interval between visibility polls per path")
 	fs.DurationVar(&rf.RAW.Timeout, "raw-timeout", 5*time.Second,
 		"raw-consistency scenario: per-message poll timeout before declaring not-visible")
+	fs.DurationVar(&rf.SearchSync.PollInterval, "search-sync-poll-interval", 250*time.Millisecond,
+		"search-sync-lag scenario: interval between search.messages visibility polls (ES refresh_interval default is 30s, so sub-100ms polls burn RPCs without resolution gain)")
+	fs.DurationVar(&rf.SearchSync.Timeout, "search-sync-timeout", 90*time.Second,
+		"search-sync-lag scenario: per-message poll timeout before declaring not-visible (3x default ES refresh_interval to cover the long tail)")
+	fs.DurationVar(&rf.SearchSync.ACLWait, "search-sync-acl-wait", 35*time.Second,
+		"search-sync-lag scenario: wait after the one-shot user-room ACL bootstrap before the main publish/poll loop starts (covers ES refresh_interval + bulk-flush slack)")
 	fs.Float64Var(&rf.ReceiptCoverage, "receipt-coverage", 0.6,
 		"read-receipts scenario: fraction of recipients to fire MessageRead for per published message")
 	fs.DurationVar(&rf.Settle.Timeout, "settle-timeout", 30*time.Second, "settle phase: max time to wait for probes to succeed before declaring failure")
