@@ -251,7 +251,7 @@ func TestValkeyStore_Get(t *testing.T) {
 			name: "non-numeric version — returns error containing parse version",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"priv": "AQID", "ver": "not-a-number"},
+					roomkey("room-1"): {"priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "not-a-number"},
 				},
 			},
 			roomID:      "room-1",
@@ -262,11 +262,11 @@ func TestValkeyStore_Get(t *testing.T) {
 			name: "old row with pub field — pub is ignored, priv is decoded",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"pub": "AQID", "priv": "AQID", "ver": "0"},
+					roomkey("room-1"): {"pub": "AQID", "priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "0"},
 				},
 			},
 			roomID:   "room-1",
-			wantPair: &RoomKeyPair{PrivateKey: []byte{0x01, 0x02, 0x03}},
+			wantPair: &RoomKeyPair{PrivateKey: bytes.Repeat([]byte{0xCD}, 32)},
 			wantVer:  0,
 		},
 	}
@@ -376,7 +376,7 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			name: "corrupted previous key base64 — returns error",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"):     {"priv": "AQID", "ver": "0"},
+					roomkey("room-1"):     {"priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "0"},
 					roomprevkey("room-1"): {"priv": "!!!bad!!!", "ver": "99"},
 				},
 			},
@@ -401,12 +401,12 @@ func TestValkeyStore_GetByVersion(t *testing.T) {
 			name: "old row with pub field — pub is ignored, priv is decoded",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"pub": "AQID", "priv": "AQID", "ver": "0"},
+					roomkey("room-1"): {"pub": "AQID", "priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "0"},
 				},
 			},
 			roomID:   "room-1",
 			version:  0,
-			wantPair: &RoomKeyPair{PrivateKey: []byte{0x01, 0x02, 0x03}},
+			wantPair: &RoomKeyPair{PrivateKey: bytes.Repeat([]byte{0xCD}, 32)},
 		},
 	}
 
@@ -632,7 +632,8 @@ func TestValkeyStore_GetMany(t *testing.T) {
 			name: "decode error — error containing room ID",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"priv": "AQID", "ver": "0"},
+					// room-1 has a valid 32-byte secret so decoding succeeds.
+					roomkey("room-1"): {"priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "0"},
 					roomkey("room-2"): {"priv": "!!!notbase64!!!", "ver": "0"},
 				},
 			},
@@ -645,7 +646,7 @@ func TestValkeyStore_GetMany(t *testing.T) {
 			name: "version parse error — error containing room ID",
 			fake: &fakeHashClient{
 				store: map[string]map[string]string{
-					roomkey("room-1"): {"priv": "AQID", "ver": "not-a-number"},
+					roomkey("room-1"): {"priv": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "ver": "not-a-number"},
 				},
 			},
 			roomIDs:       []string{"room-1"},

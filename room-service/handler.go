@@ -989,6 +989,10 @@ func (h *Handler) handleListRoomKeys(ctx context.Context, account string) ([]byt
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	if h.keyStore == nil {
+		return nil, fmt.Errorf("list room keys for %s: keystore not configured", account)
+	}
+
 	subs, err := h.store.ListSubscriptionsByAccount(ctx, account)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions for %s: %w", account, err)

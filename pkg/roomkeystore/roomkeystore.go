@@ -224,9 +224,16 @@ func (s *valkeyStore) Delete(ctx context.Context, roomID string) error {
 // layout; we ignore it. The room secret is the 32-byte private scalar used as
 // HKDF IKM.
 func decodeKeyPair(fields map[string]string) (*RoomKeyPair, error) {
-	priv, err := base64.StdEncoding.DecodeString(fields["priv"])
+	encodedPriv, ok := fields["priv"]
+	if !ok || encodedPriv == "" {
+		return nil, fmt.Errorf("decode private key: missing priv field")
+	}
+	priv, err := base64.StdEncoding.DecodeString(encodedPriv)
 	if err != nil {
 		return nil, fmt.Errorf("decode private key: %w", err)
+	}
+	if len(priv) != 32 {
+		return nil, fmt.Errorf("decode private key: invalid length %d", len(priv))
 	}
 	return &RoomKeyPair{PrivateKey: priv}, nil
 }
