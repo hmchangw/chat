@@ -33,3 +33,26 @@ export async function deriveAesKey(roomPrivateKey: Uint8Array): Promise<CryptoKe
     ['decrypt'],
   )
 }
+
+/**
+ * Decrypt a server-produced {nonce, ciphertext} pair using the AES key
+ * derived via deriveAesKey. The ciphertext is body || 16-byte GCM tag,
+ * matching Go's cipher.AEAD.Seal output.
+ */
+export async function decryptRoomMessage(
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  aesKey: CryptoKey,
+): Promise<string> {
+  if (nonce.length !== 12) {
+    throw new Error(`nonce must be 12 bytes, got ${nonce.length}`)
+  }
+  const ivBuffer = nonce.buffer.slice(nonce.byteOffset, nonce.byteOffset + nonce.byteLength) as ArrayBuffer
+  const ctBuffer = ciphertext.buffer.slice(ciphertext.byteOffset, ciphertext.byteOffset + ciphertext.byteLength) as ArrayBuffer
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: ivBuffer, tagLength: 128 },
+    aesKey,
+    ctBuffer,
+  )
+  return new TextDecoder('utf-8').decode(plaintext)
+}

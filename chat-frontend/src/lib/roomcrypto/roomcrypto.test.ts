@@ -56,3 +56,41 @@ describe('deriveAesKey', () => {
     await expect(deriveAesKey(new Uint8Array(31))).rejects.toThrow(/32 bytes/)
   })
 })
+
+import { decryptRoomMessage } from './roomcrypto'
+
+describe('decryptRoomMessage', () => {
+  it('decrypts ciphertext produced via the matching encrypt path', async () => {
+    const priv = new Uint8Array(32)
+    priv.fill(0x99)
+    const aesKey = await deriveAesKey(priv)
+
+    // Build a matching encrypt key (extractable=false but with encrypt usage).
+    const encKey = await crypto.subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('room-message-encryption-v2') },
+      await crypto.subtle.importKey('raw', priv, 'HKDF', false, ['deriveKey']),
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt'],
+    )
+
+    const nonce = new Uint8Array(12)
+    crypto.getRandomValues(nonce)
+    const plaintext = new TextEncoder().encode('héllo 🌎')
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, encKey, plaintext),
+    )
+
+    const got = await decryptRoomMessage(ciphertext, nonce, aesKey)
+    expect(got).toBe('héllo 🌎')
+  })
+
+  it('throws on tag mismatch', async () => {
+    const priv = new Uint8Array(32)
+    priv.fill(0x11)
+    const aesKey = await deriveAesKey(priv)
+    const nonce = new Uint8Array(12)
+    const bogusCiphertext = new Uint8Array(32) // all-zero bytes, will fail tag verification
+    await expect(decryptRoomMessage(bogusCiphertext, nonce, aesKey)).rejects.toBeDefined()
+  })
+})

@@ -1,1 +1,1 @@
-export { b64decode, deriveAesKey } from './roomcrypto'
+export { b64decode, deriveAesKey, decryptRoomMessage } from './roomcrypto'
