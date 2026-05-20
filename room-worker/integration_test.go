@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1239,7 +1240,7 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 	keyStore := setupValkey(t)
 	const roomID = "test-fan-out-room"
 	seedPair := roomkeystore.RoomKeyPair{
-		PrivateKey: []byte("private-key-bytes"),
+		PrivateKey: bytes.Repeat([]byte{0xAA}, 32),
 	}
 	_, err := keyStore.Set(ctx, roomID, seedPair)
 	require.NoError(t, err)
