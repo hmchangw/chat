@@ -32,6 +32,7 @@ type config struct {
 	CassandraKeyspace  string                  `env:"CASSANDRA_KEYSPACE"   envDefault:"chat"`
 	CassandraUsername  string                  `env:"CASSANDRA_USERNAME"   envDefault:""`
 	CassandraPassword  string                  `env:"CASSANDRA_PASSWORD"   envDefault:""`
+	CassandraNumConns  int                     `env:"CASSANDRA_NUM_CONNS"  envDefault:"8"`
 	MaxWorkers         int                     `env:"MAX_WORKERS"          envDefault:"100"`
 	MessageBucketHours int                     `env:"MESSAGE_BUCKET_HOURS" envDefault:"72"`
 	MongoURI           string                  `env:"MONGO_URI,required"`
@@ -78,12 +79,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassSession, err := cassutil.Connect(
-		cfg.CassandraHosts,
-		cfg.CassandraKeyspace,
-		cfg.CassandraUsername,
-		cfg.CassandraPassword,
-	)
+	cassSession, err := cassutil.Connect(cassutil.Config{
+		Hosts:    cfg.CassandraHosts,
+		Keyspace: cfg.CassandraKeyspace,
+		Username: cfg.CassandraUsername,
+		Password: cfg.CassandraPassword,
+		NumConns: cfg.CassandraNumConns,
+	})
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)
