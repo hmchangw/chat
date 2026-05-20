@@ -178,3 +178,165 @@ tests:
       - alertname: LoadgenOmissionBudgetExceeded
         eval_time: 90s
         exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 10: LoadgenSearchIndexLagP99High fires when p99 lag > 60s.
+  # We pin all observations into the le="70" bucket (and +Inf) so p99 lands
+  # at ~70s, well above the 60s threshold. Need 5m of sustained data
+  # (for: 5m) + one eval tick, so we synthesise 12 30s steps = 6m.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="70"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="100"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="150"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="300"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="+Inf"}'
+        values: '0+100x12'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexLagP99High
+        eval_time: 360s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenSearchIndexLagP99High
+              severity: warning
+              component: loadgen
+            exp_annotations:
+              summary: "Loadgen search-index p99 lag > 60s (2× ES refresh_interval)"
+              description: "Canonical→ES indexing p99 lag has exceeded 60s for 5m — past 2× the 30s ES refresh_interval default. See USAGE.md#search-sync-lag"
+
+  # -----------------------------------------------------------------------
+  # Test 11: LoadgenSearchIndexLagP99High does NOT fire when p99 lag <= 60s.
+  # All observations land in the le="30" bucket → p99 ≈ 30s, well below 60s.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="30"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="35"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="40"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_lag_seconds_bucket{le="+Inf"}'
+        values: '0+100x12'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexLagP99High
+        eval_time: 360s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 12: LoadgenSearchIndexNoSamples fires when published_total is
+  # incrementing but the histogram count is flat. for: 2m + one eval = 150s.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_published_total{phase="measured",preset="p",scenario="search-sync-lag",kind="k"}'
+        values: '0+100x6'
+      - series: 'loadgen_search_index_lag_seconds_count'
+        values: '0 0 0 0 0 0'   # flat — zero rate
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexNoSamples
+        eval_time: 150s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenSearchIndexNoSamples
+              severity: warning
+              component: loadgen
+            exp_annotations:
+              summary: "Loadgen search-index lag histogram has zero samples while publishes are flowing"
+              description: "Scenario is publishing (published_total increasing) but no search-index lag samples are being recorded — visibility poll loop is misconfigured or wedged. See USAGE.md#search-sync-lag"
+
+  # -----------------------------------------------------------------------
+  # Test 13: LoadgenSearchIndexNoSamples does NOT fire when histogram is
+  # receiving samples alongside publishes.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_published_total{phase="measured",preset="p",scenario="search-sync-lag",kind="k"}'
+        values: '0+100x6'
+      - series: 'loadgen_search_index_lag_seconds_count'
+        values: '0+10x6'   # samples arriving at 0.33/s
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexNoSamples
+        eval_time: 150s
+        exp_alerts: []
+
+  # Test 14: LoadgenSearchIndexTransportErrors fires when transport_error
+  # rate > 0.1/s sustained 5m. We synthesise 18 steps × 30s = 9m of data
+  # so the rate over [5m] is at full steady-state (0.2/s = 6 increments per
+  # 30s ÷ 30s) by the time the for: 5m window completes. Alert fires at
+  # eval_time = 8m (the first eval where rate has been > 0.1 for a full 5m).
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_visible_total{outcome="transport_error"}'
+        values: '0+6x18'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexTransportErrors
+        eval_time: 8m
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenSearchIndexTransportErrors
+              severity: warning
+              component: loadgen
+            exp_annotations:
+              summary: "Loadgen search-index transport errors sustained (>0.1/s for 5m)"
+              description: "NATS transport failures polling search-service > 0.1/s sustained 5m — search-service unreachable or subject misrouted. See USAGE.md#search-sync-lag"
+
+  # -----------------------------------------------------------------------
+  # Test 15: LoadgenSearchIndexTransportErrors does NOT fire when transport
+  # errors are absent and only "visible" outcomes are observed.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_visible_total{outcome="visible"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_visible_total{outcome="transport_error"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexTransportErrors
+        eval_time: 360s
+        exp_alerts: []
+
+  # -----------------------------------------------------------------------
+  # Test 16: LoadgenSearchIndexDroppedHigh fires when dropped_inflight is
+  # the majority of outcomes. 6m of data; dropped_inflight rate = 100/30 ≈
+  # 3.33/s, visible rate = 30/30 = 1/s → ratio ≈ 0.77 > 0.5.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_visible_total{outcome="dropped_inflight"}'
+        values: '0+100x12'
+      - series: 'loadgen_search_index_visible_total{outcome="visible"}'
+        values: '0+30x12'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexDroppedHigh
+        eval_time: 360s
+        exp_alerts:
+          - exp_labels:
+              alertname: LoadgenSearchIndexDroppedHigh
+              severity: warning
+              component: loadgen
+            exp_annotations:
+              summary: "Loadgen search-sync dropped_inflight is majority of outcomes"
+              description: "dropped_inflight > 50% of terminal outcomes for 5m — scenario is misconfigured (rate × timeout > MaxInFlight). See USAGE.md#search-sync-lag"
+
+  # -----------------------------------------------------------------------
+  # Test 17: LoadgenSearchIndexDroppedHigh does NOT fire when dropped is
+  # a minority. dropped rate = 10/30 ≈ 0.33/s, visible rate = 100/30 ≈ 3.33/s
+  # → ratio ≈ 0.09, well below 0.5.
+  # -----------------------------------------------------------------------
+  - interval: 30s
+    input_series:
+      - series: 'loadgen_search_index_visible_total{outcome="dropped_inflight"}'
+        values: '0+10x12'
+      - series: 'loadgen_search_index_visible_total{outcome="visible"}'
+        values: '0+100x12'
+    alert_rule_test:
+      - alertname: LoadgenSearchIndexDroppedHigh
+        eval_time: 360s
+        exp_alerts: []

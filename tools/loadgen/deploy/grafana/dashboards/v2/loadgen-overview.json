@@ -185,12 +185,97 @@
       ]
     },
     {
+      "id": 7,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Search-index lag p50 / p99",
+      "description": "Canonical→ES indexing lag from the search-sync-lag scenario (loadgen_search_index_lag_seconds). The 30s threshold marks the ES default refresh_interval; p99 above 60s triggers LoadgenSearchIndexLagP99High. See the Loadgen Search Sync Lag dashboard for the full panel set.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 30},
+              {"color": "red", "value": 60}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_search_index_lag_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_search_index_lag_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Search-index outcomes rate — by outcome",
+      "description": "Stacked rate of terminal outcomes from loadgen_search_index_visible_total. outcome=visible is success; transport_error, timeout, publish_error indicate SUT failure; dropped_inflight indicates scenario misconfiguration.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "visible"},
+            "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "transport_error"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "dropped_inflight"},
+            "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome)(rate(loadgen_search_index_visible_total[1m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 6,
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "title": "Phase split — published rate by phase",
       "description": "Published message rate split by phase (warmup vs measured). Allows operators to verify warmup is excluded from quality accounting.",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
       "options": {
         "legend": {"displayMode": "list", "placement": "bottom"},
         "tooltip": {"mode": "multi"}

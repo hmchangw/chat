@@ -1,0 +1,256 @@
+{
+  "uid": "loadgen-search-sync",
+  "title": "Loadgen Search Sync Lag",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["loadgen", "v2", "search-sync"],
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Search-Sync Lag Scenario",
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "## Canonical → Elasticsearch indexing lag\n\nMetrics from the `search-sync-lag` scenario: `loadgen_search_index_lag_seconds` (histogram) and `loadgen_search_index_visible_total{outcome=...}` (counter). The reference line at 30s on the lag panels marks the Elasticsearch default `refresh_interval` — a p50 near 30–40s is normal."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Search-index lag p50 / p99",
+      "description": "Canonical-to-Elasticsearch indexing lag percentiles from loadgen_search_index_lag_seconds. The 30s reference line marks the ES default refresh_interval; p50 should sit close to that, p99 should stay below ~60s (2× refresh).",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 30},
+              {"color": "red", "value": 60}
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "p50"},
+            "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "p99"},
+            "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loadgen_search_index_lag_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loadgen_search_index_lag_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Visible outcomes rate — by outcome",
+      "description": "Stacked rate of terminal outcomes from loadgen_search_index_visible_total. outcome=visible is the success path; timeout/transport_error/publish_error indicate SUT problems; dropped_inflight indicates the scenario itself is misconfigured (rate × timeout > MaxInFlight).",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 3},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "visible"},
+            "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "timeout"},
+            "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "transport_error"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "publish_error"},
+            "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "dropped_inflight"},
+            "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome)(rate(loadgen_search_index_visible_total[1m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Dropped-inflight total",
+      "description": "Cumulative count of dropped_inflight outcomes. Any value > 0 indicates the scenario shed work because MaxInFlight was saturated — the run is misconfigured (rate × timeout > MaxInFlight). Large red number is a louder-than-it-looks signal.",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 11},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(loadgen_search_index_visible_total{outcome=\"dropped_inflight\"})",
+          "legendFormat": "dropped_inflight",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Transport-error total",
+      "description": "Cumulative NATS transport failures when polling search-service. Any sustained increase signals search-service unreachability or a subject misroute.",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 11},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 1}
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(loadgen_search_index_visible_total{outcome=\"transport_error\"})",
+          "legendFormat": "transport_error",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Visible / total ratio",
+      "description": "Fraction of search-sync attempts that observed visibility (outcome=visible). A healthy run sits near 1.0; ratios below 0.95 indicate timeouts, transport errors, or scenario misconfiguration are eating into the success rate.",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 11},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.9},
+              {"color": "green", "value": 0.95}
+            ]
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(loadgen_search_index_visible_total{outcome=\"visible\"}) / sum(loadgen_search_index_visible_total)",
+          "legendFormat": "visible ratio",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "title": "Lag histogram — per-bucket rate (heatmap-style)",
+      "description": "Rate of lag observations per histogram bucket. Useful for spotting the bimodal 'before vs after ES refresh' distribution: a healthy run shows a peak in the 25–35s buckets (just past refresh_interval) and a much smaller tail past 60s. Two peaks or a heavy right tail suggest indexing pressure.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 15},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(loadgen_search_index_lag_seconds_bucket[1m])) by (le)",
+          "legendFormat": "le={{le}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

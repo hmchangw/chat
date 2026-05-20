@@ -80,6 +80,81 @@ groups:
           summary: "Loadgen RAW history p99 lag > 5s"
           description: "Read-after-write consistency is degraded — see USAGE.md#raw-lag"
 
+      # Rule 6: Search-sync canonical→ES indexing p99 lag high.
+      # Metric: loadgen_search_index_lag_seconds (unlabeled histogram from the
+      # search-sync-lag scenario). Buckets are tuned for the ES default
+      # refresh_interval=30s, so a p50 of 30-40s is normal. p99 > 60s sustained
+      # 5m means indexing is regressing past 2× refresh — investigate ES.
+      # Warning-level: this is an SLO regression, not an outage.
+      - alert: LoadgenSearchIndexLagP99High
+        expr: histogram_quantile(0.99, sum(rate(loadgen_search_index_lag_seconds_bucket[5m])) by (le)) > 60
+        for: 5m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen search-index p99 lag > 60s (2× ES refresh_interval)"
+          description: "Canonical→ES indexing p99 lag has exceeded 60s for 5m — past 2× the 30s ES refresh_interval default. See USAGE.md#search-sync-lag"
+
+      # Rule 7: Search-sync histogram receiving zero samples while scenario publishes.
+      # If loadgen_published_total is incrementing (scenario is running, messages
+      # are flowing) but loadgen_search_index_lag_seconds_count is flat for 2m,
+      # the visibility-polling side of the search-sync-lag scenario is broken
+      # (misconfigured search subject, missing search-service, or the poll loop
+      # is wedged). This is operator-error / scenario-config rather than SUT
+      # failure, hence warning-level.
+      - alert: LoadgenSearchIndexNoSamples
+        expr: |
+          (
+            sum(rate(loadgen_published_total{phase="measured"}[2m])) > 0
+          )
+          and
+          (
+            sum(rate(loadgen_search_index_lag_seconds_count[2m])) == 0
+          )
+        for: 2m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen search-index lag histogram has zero samples while publishes are flowing"
+          description: "Scenario is publishing (published_total increasing) but no search-index lag samples are being recorded — visibility poll loop is misconfigured or wedged. See USAGE.md#search-sync-lag"
+
+      # Rule 8: Search-sync transport errors.
+      # outcome="transport_error" counts NATS request/reply failures when polling
+      # the search-service. Sustained >0.1/s over 5m indicates the search-service
+      # is unreachable or the subject is misrouted. Critical-leaning warning
+      # (SUT problem, not loadgen problem).
+      - alert: LoadgenSearchIndexTransportErrors
+        expr: sum(rate(loadgen_search_index_visible_total{outcome="transport_error"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen search-index transport errors sustained (>0.1/s for 5m)"
+          description: "NATS transport failures polling search-service > 0.1/s sustained 5m — search-service unreachable or subject misrouted. See USAGE.md#search-sync-lag"
+
+      # Rule 9: Search-sync dropped_inflight is the majority of outcomes.
+      # outcome="dropped_inflight" means the scenario shed work because MaxInFlight
+      # was saturated. If this outcome dominates the others for 5m, the operator
+      # has misconfigured the run (rate × timeout > MaxInFlight). Warning, not
+      # critical — operator-error, not SUT failure.
+      - alert: LoadgenSearchIndexDroppedHigh
+        expr: |
+          (
+            sum(rate(loadgen_search_index_visible_total{outcome="dropped_inflight"}[5m]))
+            /
+            sum(rate(loadgen_search_index_visible_total[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: loadgen
+        annotations:
+          summary: "Loadgen search-sync dropped_inflight is majority of outcomes"
+          description: "dropped_inflight > 50% of terminal outcomes for 5m — scenario is misconfigured (rate × timeout > MaxInFlight). See USAGE.md#search-sync-lag"
+
       # Rule 5: Generator self-saturation.
       # Pool saturation is tracked via loadgen_request_errors_total{reason="saturated"}
       # (not a dedicated loadgen_send_saturated_total — see tickloop.go). A sustained
