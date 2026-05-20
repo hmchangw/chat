@@ -316,7 +316,8 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 		return fmt.Errorf("get room key: %w", err)
 	}
-	// Skip-rotation guard: a prior redelivery of this canonical event already rotated Valkey past req.BaseKeyVersion.
+	// Load-bearing on rotate-then-NAK redelivery: re-rotating would emit fresh
+	// key bytes and lock out survivors offline during the second fan-out.
 	shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
 
 	if req.OrgID != "" {
@@ -344,7 +345,6 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return fmt.Errorf("store room key (no prior): %w", err)
 		}
-		roomkeymetrics.KeyGenerated.Add(ctx, 1)
 		return nil
 	}
 	if _, err := h.keyStore.Rotate(ctx, roomID, *newPair); err != nil {
@@ -356,13 +356,11 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "SetWithVersion")))
 				return fmt.Errorf("store room key (fallback): %w", setErr)
 			}
-			roomkeymetrics.KeyGenerated.Add(ctx, 1)
 			return nil
 		}
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
 		return fmt.Errorf("rotate room key: %w", err)
 	}
-	roomkeymetrics.KeyRotated.Add(ctx, 1)
 	return nil
 }
 
@@ -994,7 +992,12 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		newSubUsers = append(newSubUsers, userMap[c.Account])
 	}
 	if len(newSubUsers) > 0 {
-		if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, newSubUsers); err != nil {
+		pair, err := h.keyStore.Get(ctx, req.RoomID)
+		if err != nil {
+			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+			return fmt.Errorf("get room key for fan-out: %w", err)
+		}
+		if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, pair, newSubUsers); err != nil {
 			return fmt.Errorf("fan out room key: %w", err)
 		}
 	}
@@ -1267,9 +1270,9 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 			return fmt.Errorf("re-read DM subs after write: %w", err)
 		}
 		subs = []*model.Subscription{requesterSub, counterpartSub}
-		return h.finishCreateRoom(ctx, &req, room, requester, []model.User{*requester, *counterpart}, subs, requestID, now)
+		return h.finishCreateRoom(ctx, &req, room, requester, pair, []model.User{*requester, *counterpart}, subs, requestID, now)
 	case model.RoomTypeChannel:
-		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
+		return h.processCreateRoomChannel(ctx, &req, room, requester, pair, requestID, acceptedAt, now)
 	default:
 		return newPermanent("unknown room type %q", roomType)
 	}
@@ -1289,7 +1292,7 @@ func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 	return model.RoomTypeChannel
 }
 
-func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, requestID string, acceptedAt, now time.Time) error {
+func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, pair *roomkeystore.VersionedKeyPair, requestID string, acceptedAt, now time.Time) error {
 	// Pass requester.Account as excludeAccount so org-expansion can't re-
 	// introduce the requester (who joins separately as owner). Mirrors the
 	// room-service capacity-check exclusion exactly.
@@ -1369,10 +1372,10 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 	// brings in an org will backfill existing accounts (including the owner)
 	// into `room_members`.
 
-	return h.finishCreateRoom(ctx, req, room, requester, allUsers, subs, requestID, now)
+	return h.finishCreateRoom(ctx, req, room, requester, pair, allUsers, subs, requestID, now)
 }
 
-func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, allUsers []model.User, subs []*model.Subscription, requestID string, now time.Time) error {
+func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomRequest, room *model.Room, requester *model.User, pair *roomkeystore.VersionedKeyPair, allUsers []model.User, subs []*model.Subscription, requestID string, now time.Time) error {
 	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
@@ -1473,7 +1476,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	// subscriptions are durable but no member received the initial key event;
 	// NAK so JetStream retries the whole handler rather than persisting silent
 	// missing-key state.
-	if err := h.buildAndFanOutRoomKey(ctx, room.ID, allUsers); err != nil {
+	if err := h.buildAndFanOutRoomKey(ctx, room.ID, pair, allUsers); err != nil {
 		return fmt.Errorf("room key fan-out (room %s): %w", room.ID, err)
 	}
 
@@ -1802,15 +1805,9 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 	h.fanOutKey(ctx, roomID, accounts, &evt)
 }
 
-// buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
-// and fans it out to every room member account in users (local + remote).
-// NATS supercluster routes user-subjects to home sites.
-func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, users []model.User) error {
-	pair, err := h.keyStore.Get(ctx, roomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		return fmt.Errorf("get room key: %w", err)
-	}
+// buildAndFanOutRoomKey publishes pair as a RoomKeyEvent to every account in users.
+// Caller owns the Get; nil pair returns a permanent error as a defensive guard.
+func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, users []model.User) error {
 	if pair == nil {
 		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
 		return newPermanentAbsent("room key absent for %s", roomID)

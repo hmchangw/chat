@@ -1346,7 +1346,7 @@ func TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration(t *testing.T) {
 
 	mustInsertRoom(t, db, &model.Room{
 		ID: roomID, Type: model.RoomTypeBotDM, SiteID: "site-A",
-		CreatedBy: "u_alice", CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
+		CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
 		UIDs:     []string{"u_alice", "u_helper_bot"},
 		Accounts: []string{"alice", "helper.bot"},
 	})
@@ -1426,7 +1426,7 @@ func TestProcessCreateRoom_DM_DoesNotUpsert_Integration(t *testing.T) {
 
 	mustInsertRoom(t, db, &model.Room{
 		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A",
-		CreatedBy: "u_alice", CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
+		CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
 		UIDs:     []string{"u_alice", "u_bob"},
 		Accounts: []string{"alice", "bob"},
 	})

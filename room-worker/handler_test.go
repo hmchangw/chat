@@ -3169,7 +3169,7 @@ func TestHandleSyncCreateDM_BotDM_Recreate_PreservesExistingCreatedAt(t *testing
 	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(dupErr)
 	store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&model.Room{
 		ID: roomID, Type: model.RoomTypeBotDM, SiteID: "site-a",
-		Name: "", CreatedBy: "u-alice",
+		Name:      "",
 		CreatedAt: originalCreatedAt, UpdatedAt: originalCreatedAt,
 	}, nil)
 
@@ -3381,9 +3381,6 @@ func TestProcessCreateRoom_Channel_PublishesCrossSiteMemberAdded(t *testing.T) {
 // publishes a RoomKeyEvent for all members, including remote-site users. NATS supercluster routes
 // user-subjects to home sites.
 func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	keyStore := NewMockRoomKeyStore(ctrl)
-
 	pub := &mockPublisher{}
 	sender := roomkeysender.NewSender(pub)
 
@@ -3393,10 +3390,8 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 			PrivateKey: []byte("priv"),
 		},
 	}
-	keyStore.EXPECT().Get(gomock.Any(), "room-1").Return(keyPair, nil)
 
 	h := &Handler{
-		keyStore:  keyStore,
 		keySender: sender,
 		siteID:    "site-A",
 	}
@@ -3407,7 +3402,7 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 		{Account: "carol", SiteID: "site-B"}, // remote — also receives key
 	}
 
-	err := h.buildAndFanOutRoomKey(context.Background(), "room-1", users)
+	err := h.buildAndFanOutRoomKey(context.Background(), "room-1", keyPair, users)
 	require.NoError(t, err)
 	assert.Equal(t, 3, pub.publishCount(), "all members including remote-site should receive key events")
 }
@@ -3842,7 +3837,9 @@ func TestHandler_ProcessCreateRoom_Channel_IndividualFilter(t *testing.T) {
 		ResolvedOrgs:  []string{"o1"},
 		Timestamp:     1,
 	}
-	require.NoError(t, h.processCreateRoomChannel(context.Background(), req, room, requester, "req-1", time.UnixMilli(1).UTC(), time.UnixMilli(2).UTC()))
+	pair, err := testKeyStore.Get(context.Background(), roomID)
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoomChannel(context.Background(), req, room, requester, pair, "req-1", time.UnixMilli(1).UTC(), time.UnixMilli(2).UTC()))
 
 	var indivAccts []string
 	var orgIDs []string

@@ -720,3 +720,65 @@ Integration (`room-service/integration_test.go`):
 - Org/user existence checks for the `Channels` ref (cross-site bulk-source). Channel expansion already pulls members from `room_members`, which can only carry rows for users that previously existed. The validation gate runs on the resulting `allUsers` set anyway, so a malformed remote source would still surface as `errUserNotFound`.
 - Cross-site federation behavior: an account that exists on a remote site but not locally will reject with `errUserNotFound`. This is intentional under the current single-site `users` collection model; multi-site user replication is a separate problem.
 
+# Part 7 — PR #171 (room-encryption-keys) Follow-up Findings
+
+Three review threads left unresolved on PR #171 after merge. The PR is on `main` now (this branch rebased onto it), so the follow-ups land here.
+
+## Finding 1 — `shouldRotate` guard at `room-worker/handler.go:319`
+
+**Reviewer comment (`@mliu33`):**
+
+> I actually can't think of the case where this might happen. Because Jetstream will not redeliver unless you nak, and once the message is delivered, only one pod will receive the message. Therefore, current version will always be less than or equal to req.BaseKeyVersion because if a prior redelivery already rotates the key, there won't be another redelivery happening. If there is no such case, we should remove this check and also the one in room-service to reduce redundant valkey db call.
+
+**Decision: keep both guards. Tighten the inline comment so the failure mode is obvious to future readers.**
+
+**Reply to post on the thread:**
+
+> The "no second redelivery after rotate" premise holds only if every step after rotate either succeeds or is NAK-safe. In `processRemoveIndividual` there are three NAK sites that fire *after* `rotateAndFanOut` returns: `GetUser` for non-self-leave (`handler.go:470`), the sys-msg publish (`handler.go:514`), and the cross-site outbox publish (`handler.go:530`). Same shape in `processRemoveOrg`.
+>
+> When one of those NAKs, redelivery is real. Without the guard, delivery 2 calls `roomkeystore.GenerateKeyPair()` — fresh random bytes K2 — and fans them out to survivors. If any survivor is briefly offline for that second fanout (NATS gap, mobile sleep, brief WS disconnect), they're stranded on K1 while Valkey holds K2 and `broadcast-worker` encrypts under K2. They can't decrypt new messages until something forces a key recovery.
+>
+> With the guard, `currentPair.Version (1) > req.BaseKeyVersion (0)` ⇒ `shouldRotate = false`, the redelivery re-runs only the failing tail and K1 stays bound to its version. No stale-key trap.
+>
+> So the guard is load-bearing for survivor decryption continuity across rotate-then-NAK redelivery, not a no-op optimization. Keeping it; updating the comment to record the rationale.
+
+**Code change:** comment-only at `room-worker/handler.go:319-320`. Max two lines.
+
+## Finding 2 — `buildAndFanOutRoomKey` re-fetches the key at `room-worker/handler.go:1789`
+
+**Reviewer comment (`@mliu33`):**
+
+> One optimization is to pass room key down so that buildAndFanout does not need to make db call to fetch again.
+
+**Decision: accept, under a caller-owns-the-fetch contract.**
+
+**Reply to post on the thread:**
+
+> Good catch on the create path — `processCreateRoom` already has the pair in scope from the gate-Get at `handler.go:1188` and discards it before `buildAndFanOutRoomKey` re-fetches at `handler.go:1793`. Refactored `buildAndFanOutRoomKey` to take `*VersionedKeyPair` as a parameter and threaded it through `finishCreateRoom`. Saves one Valkey round trip per channel/DM create.
+>
+> The `processAddMembers` path doesn't have the pair in scope; rather than two ways to invoke (with/without pair) I kept the contract uniform — caller always fetches, function always receives. Net: −1 Valkey Get on create, 0 change on add. The nil check stays inside `buildAndFanOutRoomKey` as a defensive guard so a future caller bug surfaces as a permanent error instead of a panic.
+
+**Why the caller-owns-fetch pattern is safe against concurrent rotation:**
+
+The theoretical race is: create's gate-Get (sees v=0) → concurrent `member.remove` on the same room rotates Valkey to v=1 → create's fan-out runs with the stashed v=0. `member.remove` can only be authorized once the room exists in Mongo, which only happens after `processCreateRoom` commits the room insert, well past the gate-Get. Within a single `processCreateRoom` invocation the pair is stable.
+
+**Code change:**
+
+1. Change `buildAndFanOutRoomKey` signature to take `pair *roomkeystore.VersionedKeyPair`. Keep the nil check and the permanent-absent error path inside as a defensive guard.
+2. Thread `pair` through `finishCreateRoom` (new parameter) and pass through from both `processCreateRoom` call sites.
+3. `processAddMembers`: add a `keyStore.Get` immediately before the fan-out call (unchanged Valkey round-trip count for this path).
+4. Update `TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite` to pass the pair directly and drop the `keyStore.Get` expectation.
+
+## Finding 3 — success counters at `room-worker/handler.go:347, 356, 362`
+
+**Reviewer comment (`@mliu33`):**
+
+> In my opinion, I think there is not much benefit to track success rotate/generate key metrics. It's good to track error count, but not so much for success count as adding metric also costs some cpu time.
+
+**Decision: drop them. Counter `Add` is cheap, but the team's stated convention is errors-only and we follow it.**
+
+**Reply to post on the thread:**
+
+> Agreed — dropped `KeyGenerated` and `KeyRotated` at every emit site (`room-worker/handler.go:347, 356, 362` and `room-service/handler.go:369`) and removed the counter declarations + `init()` registrations from `pkg/roomkeymetrics/metrics.go`. Denominator for error-rate alerting can come from JetStream consumer ack rate or upstream remove/create handler counts. Error counters (`FanoutErrors`, `ValkeyErrors`, `KeyAbsentErrors`) stay.
+
+**Code change:** delete the four `KeyGenerated.Add` / `KeyRotated.Add` call sites and the two counter declarations + their `init()` registration blocks.

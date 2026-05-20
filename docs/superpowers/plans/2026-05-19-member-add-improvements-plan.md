@@ -2216,3 +2216,140 @@ git add room-service/ docs/client-api.md docs/superpowers/specs/2026-05-19-org-t
 git commit -m "feat(room-service): reject phantom org IDs and accounts at request time"
 ```
 
+# Part 7 — PR #171 Follow-up Findings
+
+Spec: see `2026-05-19-org-to-individual-membership-upgrade-design.md` Part 7. Three review threads from `@mliu33` on PR #171 (merged into `main`, this branch already rebased onto it).
+
+## Task 16: Document `shouldRotate` guard rationale (Finding 1 — comment only)
+
+- [ ] **Step 1: Replace the comment at `room-worker/handler.go:319-320`**
+
+Current:
+
+```go
+// Skip-rotation guard: a prior redelivery of this canonical event already rotated Valkey past req.BaseKeyVersion.
+shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
+```
+
+New (max two lines):
+
+```go
+// Load-bearing on rotate-then-NAK redelivery: re-rotating would emit fresh
+// key bytes and lock out survivors offline during the second fan-out.
+shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
+```
+
+No behavior change. The condition stays exactly as it is.
+
+- [ ] **Step 2: Post the reply on the GitHub thread**
+
+Reply text in the spec (Part 7, Finding 1). The thread is at PR #171, comment on `room-worker/handler.go:275` (file may have shifted; line number is on the original PR).
+
+## Task 17: Pass room key pair into `buildAndFanOutRoomKey` (Finding 2)
+
+- [ ] **Step 1: Change the function signature in `room-worker/handler.go:1792`**
+
+```go
+func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, users []model.User) error {
+    if pair == nil {
+        roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
+        return newPermanentAbsent("room key absent for %s", roomID)
+    }
+    // ...build event + fanOutKey as today...
+}
+```
+
+Drop the `keyStore.Get` call at line 1793. Keep the nil check as a defensive guard.
+
+- [ ] **Step 2: Thread `pair` through `finishCreateRoom`**
+
+`finishCreateRoom` at `room-worker/handler.go:1363` is the only site that calls `buildAndFanOutRoomKey` on the create path. Add a `pair *roomkeystore.VersionedKeyPair` parameter, pass it directly to `buildAndFanOutRoomKey` at line 1464.
+
+Update both callers in `processCreateRoom`:
+- `room-worker/handler.go:1258` (DM/BotDM branch) — pass `pair` already in scope from L1188.
+- `room-worker/handler.go:1360` (channel branch via `processCreateRoomChannel`) — `processCreateRoomChannel` gets a `pair` parameter too; pass through from `processCreateRoom`.
+
+- [ ] **Step 3: `processAddMembers` fetches the pair before the fan-out call**
+
+At `room-worker/handler.go:993-997`:
+
+```go
+if len(newSubUsers) > 0 {
+    pair, err := h.keyStore.Get(ctx, req.RoomID)
+    if err != nil {
+        roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+        return fmt.Errorf("get room key for fan-out: %w", err)
+    }
+    if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, pair, newSubUsers); err != nil {
+        return fmt.Errorf("fan out room key: %w", err)
+    }
+}
+```
+
+`buildAndFanOutRoomKey`'s internal nil check handles the absent case; no separate `if pair == nil` here.
+
+- [ ] **Step 4: Update `TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite`**
+
+At `room-worker/handler_test.go:3324`:
+- Drop the `keyStore.EXPECT().Get(...)` expectation.
+- Pass `keyPair` directly as the new third argument:
+  ```go
+  err := h.buildAndFanOutRoomKey(context.Background(), "room-1", keyPair, users)
+  ```
+- The `keyStore` mock can be dropped entirely from this test (no `Get` call left).
+
+Other tests that exercise `processCreateRoom` / `processAddMembers` end-to-end will still see one `keyStore.Get` per request (the existing gate-Get); they should not need new mocks.
+
+## Task 18: Drop `KeyGenerated` / `KeyRotated` success counters (Finding 3)
+
+- [ ] **Step 1: Delete the four emit sites**
+
+- `room-worker/handler.go:347` — `roomkeymetrics.KeyGenerated.Add(ctx, 1)` (no-prior path)
+- `room-worker/handler.go:356` — `roomkeymetrics.KeyGenerated.Add(ctx, 1)` (ErrNoCurrentKey fallback)
+- `room-worker/handler.go:362` — `roomkeymetrics.KeyRotated.Add(ctx, 1)` (rotate success)
+- `room-service/handler.go:369` — `roomkeymetrics.KeyGenerated.Add(ctx, 1)` (create-time gen success)
+
+- [ ] **Step 2: Remove the declarations from `pkg/roomkeymetrics/metrics.go`**
+
+Delete:
+- `KeyGenerated metric.Int64Counter` (line 15)
+- `KeyRotated metric.Int64Counter` (line 17)
+- The two `init()` blocks that register them (lines 39-45 and 47-53).
+
+Keep `FanoutErrors`, `ValkeyErrors`, `KeyAbsentErrors` as-is.
+
+- [ ] **Step 3: Verify**
+
+```
+make lint
+make test
+```
+
+No tests reference these counters (verified — grep on `_test.go` returns no hits for `KeyGenerated` / `KeyRotated`).
+
+## Task 19: Verify combined Part 7 work
+
+- [ ] **Step 1: Full local check**
+
+```
+make lint
+make test
+go vet -tags integration ./room-worker/... ./room-service/...
+```
+
+- [ ] **Step 2: Rebuild affected services**
+
+```
+docker compose -f docker-local/compose.services.yaml up -d --build --no-deps room-worker room-service
+```
+
+- [ ] **Step 3: Post the three GitHub thread replies**
+
+Each reply text is in the spec, Part 7. Post on the original PR #171 threads.
+
+- [ ] **Step 4: Commit**
+
+```
+git add room-worker/handler.go room-worker/handler_test.go room-service/handler.go pkg/roomkeymetrics/metrics.go docs/superpowers/specs/2026-05-19-org-to-individual-membership-upgrade-design.md docs/superpowers/plans/2026-05-19-member-add-improvements-plan.md
+git commit -m "refactor(room-worker): address PR #171 follow-up review findings"
+```
