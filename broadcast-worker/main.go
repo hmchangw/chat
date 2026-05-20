@@ -72,7 +72,7 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
-	cachedStore, err := newCachedMetaStore(store, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
+	cachedStore, err := newCachedMetaStore(store, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL, nil)
 	if err != nil {
 		slog.Error("init room meta cache failed", "error", err)
 		os.Exit(1)

@@ -15,7 +15,6 @@ package roommetacache
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
@@ -24,6 +23,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -49,21 +49,13 @@ type Cache struct {
 	lru    *lru.LRU[string, Meta]
 	loader Loader
 	sf     singleflight.Group
-
-	hits     atomic.Uint64
-	misses   atomic.Uint64
-	loadErrs atomic.Uint64
-}
-
-// Stats is a snapshot of the cache's hit/miss counters.
-type Stats struct {
-	Hits, Misses, LoadErrors uint64
-	Size                     int
+	rec    *cachestats.Recorder
 }
 
 // New constructs a Cache with the given capacity, TTL, and loader.
 // size and ttl must both be positive; loader must be non-nil.
-func New(size int, ttl time.Duration, loader Loader) (*Cache, error) {
+// rec may be nil — all Recorder methods are nil-safe.
+func New(size int, ttl time.Duration, loader Loader, rec *cachestats.Recorder) (*Cache, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("roommetacache: size must be positive, got %d", size)
 	}
@@ -76,6 +68,7 @@ func New(size int, ttl time.Duration, loader Loader) (*Cache, error) {
 	return &Cache{
 		lru:    lru.NewLRU[string, Meta](size, nil, ttl),
 		loader: loader,
+		rec:    rec,
 	}, nil
 }
 
@@ -84,10 +77,10 @@ func New(size int, ttl time.Duration, loader Loader) (*Cache, error) {
 // are returned to the caller and not cached.
 func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error) {
 	if v, ok := c.lru.Get(roomID); ok {
-		c.hits.Add(1)
+		c.rec.Hit()
 		return v, nil
 	}
-	c.misses.Add(1)
+	c.rec.Miss()
 
 	v, err, _ := c.sf.Do(roomID, func() (interface{}, error) {
 		// Recheck the cache inside singleflight in case a sibling caller
@@ -103,21 +96,14 @@ func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error) {
 		return loaded, nil
 	})
 	if err != nil {
-		c.loadErrs.Add(1)
 		return Meta{}, fmt.Errorf("get room meta for %q: %w", roomID, err)
 	}
 	return v.(Meta), nil
 }
 
-// Stats returns a snapshot of the cache's counters.
-func (c *Cache) Stats() Stats {
-	return Stats{
-		Hits:       c.hits.Load(),
-		Misses:     c.misses.Load(),
-		LoadErrors: c.loadErrs.Load(),
-		Size:       c.lru.Len(),
-	}
-}
+// Len returns the current entry count. Used by callers that want to
+// register a chat_cache_size gauge via cachestats.
+func (c *Cache) Len() int { return c.lru.Len() }
 
 // Invalidate removes any cached entry for roomID. Safe to call when
 // no entry exists; in that case it is a no-op. Included from v1 even
@@ -151,11 +137,12 @@ type Wrapper[S MetaProvider] struct {
 
 // WrapStore builds a Wrapper[S] that caches GetRoomMeta calls. size and
 // ttl are passed directly to the underlying Cache and must be positive.
-func WrapStore[S MetaProvider](inner S, size int, ttl time.Duration) (*Wrapper[S], error) {
+// rec may be nil — all Recorder methods are nil-safe.
+func WrapStore[S MetaProvider](inner S, size int, ttl time.Duration, rec *cachestats.Recorder) (*Wrapper[S], error) {
 	loader := func(ctx context.Context, roomID string) (Meta, error) {
 		return inner.GetRoomMeta(ctx, roomID)
 	}
-	cache, err := New(size, ttl, loader)
+	cache, err := New(size, ttl, loader, rec)
 	if err != nil {
 		return nil, err
 	}
@@ -167,6 +154,9 @@ func WrapStore[S MetaProvider](inner S, size int, ttl time.Duration) (*Wrapper[S
 func (w *Wrapper[S]) GetRoomMeta(ctx context.Context, roomID string) (Meta, error) {
 	return w.cache.Get(ctx, roomID)
 }
+
+// Len returns the current entry count of the underlying Cache.
+func (w *Wrapper[S]) Len() int { return w.cache.Len() }
 
 // FetchFromMongo runs the canonical projected FindOne against a rooms
 // collection and decodes into Meta. Both gatekeeper and broadcast-worker

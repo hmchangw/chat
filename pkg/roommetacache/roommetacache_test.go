@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/cachestats"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
@@ -42,7 +44,7 @@ func TestCache_GetMissThenHit(t *testing.T) {
 		loaderCalls.Add(1)
 		return makeMeta(roomID), nil
 	}
-	c, err := roommetacache.New(10, time.Minute, loader)
+	c, err := roommetacache.New(10, time.Minute, loader, nil)
 	require.NoError(t, err)
 
 	// First call: miss, loader runs.
@@ -56,11 +58,6 @@ func TestCache_GetMissThenHit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, makeMeta("r1"), got2)
 	assert.Equal(t, int32(1), loaderCalls.Load(), "loader should not run on hit")
-
-	stats := c.Stats()
-	assert.Equal(t, uint64(1), stats.Hits)
-	assert.Equal(t, uint64(1), stats.Misses)
-	assert.Equal(t, uint64(0), stats.LoadErrors)
 }
 
 func TestCache_LoaderErrorNotCached(t *testing.T) {
@@ -70,7 +67,7 @@ func TestCache_LoaderErrorNotCached(t *testing.T) {
 		calls.Add(1)
 		return roommetacache.Meta{}, wantErr
 	}
-	c, err := roommetacache.New(10, time.Minute, loader)
+	c, err := roommetacache.New(10, time.Minute, loader, nil)
 	require.NoError(t, err)
 
 	_, err = c.Get(context.Background(), "r1")
@@ -79,10 +76,6 @@ func TestCache_LoaderErrorNotCached(t *testing.T) {
 	assert.ErrorIs(t, err, wantErr)
 
 	assert.Equal(t, int32(2), calls.Load(), "errors should not be cached; loader must run again")
-
-	stats := c.Stats()
-	assert.Equal(t, uint64(2), stats.Misses)
-	assert.Equal(t, uint64(2), stats.LoadErrors)
 }
 
 func TestCache_TTLExpires(t *testing.T) {
@@ -91,7 +84,7 @@ func TestCache_TTLExpires(t *testing.T) {
 		calls.Add(1)
 		return makeMeta(roomID), nil
 	}
-	c, err := roommetacache.New(10, 50*time.Millisecond, loader)
+	c, err := roommetacache.New(10, 50*time.Millisecond, loader, nil)
 	require.NoError(t, err)
 
 	_, err = c.Get(context.Background(), "r1")
@@ -112,7 +105,7 @@ func TestCache_CapacityEviction(t *testing.T) {
 		calls.Add(1)
 		return makeMeta(roomID), nil
 	}
-	c, err := roommetacache.New(2, time.Minute, loader)
+	c, err := roommetacache.New(2, time.Minute, loader, nil)
 	require.NoError(t, err)
 
 	_, err = c.Get(context.Background(), "r1") // miss
@@ -140,7 +133,7 @@ func TestCache_Invalidate(t *testing.T) {
 		calls.Add(1)
 		return makeMeta(roomID), nil
 	}
-	c, err := roommetacache.New(10, time.Minute, loader)
+	c, err := roommetacache.New(10, time.Minute, loader, nil)
 	require.NoError(t, err)
 
 	_, err = c.Get(context.Background(), "r1")
@@ -164,7 +157,7 @@ func TestCache_SingleflightDedupsMisses(t *testing.T) {
 		<-gate // hold so concurrent callers pile up
 		return makeMeta(roomID), nil
 	}
-	c, err := roommetacache.New(10, time.Minute, loader)
+	c, err := roommetacache.New(10, time.Minute, loader, nil)
 	require.NoError(t, err)
 
 	const N = 50
@@ -204,7 +197,7 @@ func TestNew_RejectsInvalidArgs(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := roommetacache.New(tc.size, tc.ttl, tc.loader)
+			c, err := roommetacache.New(tc.size, tc.ttl, tc.loader, nil)
 			assert.Nil(t, c)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
@@ -214,7 +207,7 @@ func TestNew_RejectsInvalidArgs(t *testing.T) {
 
 func TestWrapStore_CachesGetRoomMeta(t *testing.T) {
 	stub := &stubProvider{meta: makeMeta("r1")}
-	w, err := roommetacache.WrapStore(stub, 10, time.Minute)
+	w, err := roommetacache.WrapStore(stub, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	for i := 0; i < 3; i++ {
@@ -227,8 +220,43 @@ func TestWrapStore_CachesGetRoomMeta(t *testing.T) {
 
 func TestWrapStore_RejectsInvalidArgs(t *testing.T) {
 	stub := &stubProvider{}
-	_, err := roommetacache.WrapStore(stub, 0, time.Minute)
+	_, err := roommetacache.WrapStore(stub, 0, time.Minute, nil)
 	assert.Error(t, err)
-	_, err = roommetacache.WrapStore(stub, 10, 0)
+	_, err = roommetacache.WrapStore(stub, 10, 0, nil)
 	assert.Error(t, err)
+}
+
+func TestCache_RecorderCountsHitsAndMisses(t *testing.T) {
+	stats := cachestats.New(prometheus.NewRegistry())
+	rec := stats.Register("test_roommeta", nil)
+
+	calls := 0
+	loader := func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+		calls++
+		return roommetacache.Meta{ID: roomID}, nil
+	}
+	c, err := roommetacache.New(10, time.Minute, loader, rec)
+	require.NoError(t, err)
+
+	_, err = c.Get(context.Background(), "r1") // miss
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r1") // hit
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r1") // hit
+	require.NoError(t, err)
+
+	hits, misses := rec.Snapshot()
+	assert.Equal(t, uint64(2), hits)
+	assert.Equal(t, uint64(1), misses)
+	assert.Equal(t, 1, calls)
+}
+
+func TestCache_NilRecorderIsSafe(t *testing.T) {
+	loader := func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+		return roommetacache.Meta{ID: roomID}, nil
+	}
+	c, err := roommetacache.New(10, time.Minute, loader, nil)
+	require.NoError(t, err)
+	_, err = c.Get(context.Background(), "r1")
+	assert.NoError(t, err)
 }

@@ -327,7 +327,7 @@ func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
 	seedUsers(t, db)
 
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
-	cached, err := newCachedMetaStore(store, 10, time.Minute)
+	cached, err := newCachedMetaStore(store, 10, time.Minute, nil)
 	require.NoError(t, err)
 
 	pub := &recordingPublisher{}
