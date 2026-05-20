@@ -3235,7 +3235,6 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 	keyPair := &roomkeystore.VersionedKeyPair{
 		Version: 3,
 		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  []byte("pub"),
 			PrivateKey: []byte("priv"),
 		},
 	}
@@ -3309,7 +3308,6 @@ func TestProcessAddMembers_FansOutKeyToNewAccountsOnly(t *testing.T) {
 	pair := &roomkeystore.VersionedKeyPair{
 		Version: 1,
 		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  []byte("pubkey"),
 			PrivateKey: []byte("privkey"),
 		},
 	}
@@ -3463,7 +3461,7 @@ func TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite(t *test
 	keySender := roomkeysender.NewSender(pub)
 
 	pair := &roomkeystore.VersionedKeyPair{Version: 5, KeyPair: roomkeystore.RoomKeyPair{
-		PublicKey: bytes.Repeat([]byte{0x04}, 65), PrivateKey: bytes.Repeat([]byte{0x03}, 32),
+		PrivateKey: bytes.Repeat([]byte{0x03}, 32),
 	}}
 	survivors := []model.Subscription{
 		{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a"},

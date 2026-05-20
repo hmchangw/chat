@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -24,13 +23,13 @@ const hkdfInfo = "room-message-encryption-v2"
 
 func testRoomKey(t *testing.T) *roomkeystore.VersionedKeyPair {
 	t.Helper()
-	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	buf := make([]byte, 32)
+	_, err := rand.Read(buf)
 	require.NoError(t, err)
 	return &roomkeystore.VersionedKeyPair{
 		Version: 3,
 		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  priv.PublicKey().Bytes(),
-			PrivateKey: priv.Bytes(),
+			PrivateKey: buf,
 		},
 	}
 }

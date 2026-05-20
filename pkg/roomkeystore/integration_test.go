@@ -54,9 +54,8 @@ func TestValkeyStore_Integration_RoundTrip(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	pubKey := bytes.Repeat([]byte{0xAB}, 65)
 	privKey := bytes.Repeat([]byte{0xCD}, 32)
-	pair := RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey}
+	pair := RoomKeyPair{PrivateKey: privKey}
 
 	// Set
 	ver, err := store.Set(ctx, "room-1", pair)
@@ -68,7 +67,6 @@ func TestValkeyStore_Integration_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 0, got.Version)
-	assert.Equal(t, pubKey, got.KeyPair.PublicKey)
 	assert.Equal(t, privKey, got.KeyPair.PrivateKey)
 
 	// Delete
@@ -85,9 +83,8 @@ func TestValkeyStore_Integration_SetWithVersion(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	pubKey := bytes.Repeat([]byte{0xAB}, 65)
 	privKey := bytes.Repeat([]byte{0xCD}, 32)
-	pair := RoomKeyPair{PublicKey: pubKey, PrivateKey: privKey}
+	pair := RoomKeyPair{PrivateKey: privKey}
 
 	require.NoError(t, store.SetWithVersion(ctx, "room-replicated", pair, 7))
 
@@ -95,17 +92,16 @@ func TestValkeyStore_Integration_SetWithVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 7, got.Version, "version must match the caller-supplied value")
-	assert.Equal(t, pubKey, got.KeyPair.PublicKey)
 	assert.Equal(t, privKey, got.KeyPair.PrivateKey)
 
 	// Overwriting at a higher version is allowed (idempotent for replication catch-up).
-	newPub := bytes.Repeat([]byte{0xEE}, 65)
-	require.NoError(t, store.SetWithVersion(ctx, "room-replicated", RoomKeyPair{PublicKey: newPub, PrivateKey: privKey}, 9))
+	newPriv := bytes.Repeat([]byte{0xEE}, 32)
+	require.NoError(t, store.SetWithVersion(ctx, "room-replicated", RoomKeyPair{PrivateKey: newPriv}, 9))
 	got, err = store.Get(ctx, "room-replicated")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 9, got.Version)
-	assert.Equal(t, newPub, got.KeyPair.PublicKey)
+	assert.Equal(t, newPriv, got.KeyPair.PrivateKey)
 }
 
 func TestValkeyStore_Integration_MissingKey(t *testing.T) {
@@ -121,18 +117,16 @@ func TestValkeyStore_Integration_RotateRoundTrip(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	oldPub := bytes.Repeat([]byte{0xAA}, 65)
 	oldPriv := bytes.Repeat([]byte{0xBB}, 32)
-	newPub := bytes.Repeat([]byte{0xCC}, 65)
 	newPriv := bytes.Repeat([]byte{0xDD}, 32)
 
 	// Set initial key pair.
-	ver, err := store.Set(ctx, "room-rot", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
+	ver, err := store.Set(ctx, "room-rot", RoomKeyPair{PrivateKey: oldPriv})
 	require.NoError(t, err)
 	assert.Equal(t, 0, ver)
 
 	// Rotate to new key pair.
-	ver, err = store.Rotate(ctx, "room-rot", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
+	ver, err = store.Rotate(ctx, "room-rot", RoomKeyPair{PrivateKey: newPriv})
 	require.NoError(t, err)
 	assert.Equal(t, 1, ver)
 
@@ -141,21 +135,18 @@ func TestValkeyStore_Integration_RotateRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 1, got.Version)
-	assert.Equal(t, newPub, got.KeyPair.PublicKey)
 	assert.Equal(t, newPriv, got.KeyPair.PrivateKey)
 
 	// GetByVersion with old version — should return old key pair from previous slot.
 	oldPair, err := store.GetByVersion(ctx, "room-rot", 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldPair)
-	assert.Equal(t, oldPub, oldPair.PublicKey)
 	assert.Equal(t, oldPriv, oldPair.PrivateKey)
 
 	// GetByVersion with new version — should return new key pair from current slot.
 	newPair, err := store.GetByVersion(ctx, "room-rot", 1)
 	require.NoError(t, err)
 	require.NotNil(t, newPair)
-	assert.Equal(t, newPub, newPair.PublicKey)
 	assert.Equal(t, newPriv, newPair.PrivateKey)
 
 	// GetByVersion with unknown version — should return nil, nil.
@@ -169,15 +160,13 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	store := setupValkey(t, 1*time.Second)
 	ctx := context.Background()
 
-	oldPub := bytes.Repeat([]byte{0x01}, 65)
 	oldPriv := bytes.Repeat([]byte{0x02}, 32)
-	newPub := bytes.Repeat([]byte{0x03}, 65)
 	newPriv := bytes.Repeat([]byte{0x04}, 32)
 
-	_, err := store.Set(ctx, "room-grace", RoomKeyPair{PublicKey: oldPub, PrivateKey: oldPriv})
+	_, err := store.Set(ctx, "room-grace", RoomKeyPair{PrivateKey: oldPriv})
 	require.NoError(t, err)
 
-	_, err = store.Rotate(ctx, "room-grace", RoomKeyPair{PublicKey: newPub, PrivateKey: newPriv})
+	_, err = store.Rotate(ctx, "room-grace", RoomKeyPair{PrivateKey: newPriv})
 	require.NoError(t, err)
 
 	// Immediately after rotate, old key should still be retrievable.
@@ -206,7 +195,6 @@ func TestValkeyStore_Integration_RotateNoCurrentKey(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.Rotate(ctx, "room-empty", RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0x01}, 65),
 		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
 	})
 	require.Error(t, err)
@@ -219,13 +207,11 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 
 	// Set + Rotate to create both current and previous keys.
 	_, err := store.Set(ctx, "room-del", RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0xAA}, 65),
 		PrivateKey: bytes.Repeat([]byte{0xBB}, 32),
 	})
 	require.NoError(t, err)
 
 	_, err = store.Rotate(ctx, "room-del", RoomKeyPair{
-		PublicKey:  bytes.Repeat([]byte{0xCC}, 65),
 		PrivateKey: bytes.Repeat([]byte{0xDD}, 32),
 	})
 	require.NoError(t, err)
@@ -249,18 +235,15 @@ func TestValkeyStore_Integration_GetMany(t *testing.T) {
 	store := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	pub1 := bytes.Repeat([]byte{0x01}, 65)
 	priv1 := bytes.Repeat([]byte{0x02}, 32)
-	pub2 := bytes.Repeat([]byte{0x03}, 65)
 	priv2 := bytes.Repeat([]byte{0x04}, 32)
-	pub3 := bytes.Repeat([]byte{0x05}, 65)
 	priv3 := bytes.Repeat([]byte{0x06}, 32)
 
-	_, err := store.Set(ctx, "room-1", RoomKeyPair{PublicKey: pub1, PrivateKey: priv1})
+	_, err := store.Set(ctx, "room-1", RoomKeyPair{PrivateKey: priv1})
 	require.NoError(t, err)
-	_, err = store.Set(ctx, "room-2", RoomKeyPair{PublicKey: pub2, PrivateKey: priv2})
+	_, err = store.Set(ctx, "room-2", RoomKeyPair{PrivateKey: priv2})
 	require.NoError(t, err)
-	_, err = store.Set(ctx, "room-3", RoomKeyPair{PublicKey: pub3, PrivateKey: priv3})
+	_, err = store.Set(ctx, "room-3", RoomKeyPair{PrivateKey: priv3})
 	require.NoError(t, err)
 
 	got, err := store.GetMany(ctx, []string{"room-1", "room-2", "room-3", "room-missing"})
@@ -269,17 +252,14 @@ func TestValkeyStore_Integration_GetMany(t *testing.T) {
 
 	require.Contains(t, got, "room-1")
 	assert.Equal(t, 0, got["room-1"].Version)
-	assert.Equal(t, pub1, got["room-1"].KeyPair.PublicKey)
 	assert.Equal(t, priv1, got["room-1"].KeyPair.PrivateKey)
 
 	require.Contains(t, got, "room-2")
 	assert.Equal(t, 0, got["room-2"].Version)
-	assert.Equal(t, pub2, got["room-2"].KeyPair.PublicKey)
 	assert.Equal(t, priv2, got["room-2"].KeyPair.PrivateKey)
 
 	require.Contains(t, got, "room-3")
 	assert.Equal(t, 0, got["room-3"].Version)
-	assert.Equal(t, pub3, got["room-3"].KeyPair.PublicKey)
 	assert.Equal(t, priv3, got["room-3"].KeyPair.PrivateKey)
 
 	_, missing := got["room-missing"]

@@ -292,20 +292,20 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 	if currentPair != nil {
 		predictedVersion = currentPair.Version + 1
 	}
-	versioned := &roomkeystore.VersionedKeyPair{Version: predictedVersion, KeyPair: newPair}
+	versioned := &roomkeystore.VersionedKeyPair{Version: predictedVersion, KeyPair: *newPair}
 	h.fanOutRoomKeyToSurvivors(ctx, roomID, versioned, survivors)
 
 	if currentPair == nil {
-		if _, err := h.keyStore.Set(ctx, roomID, newPair); err != nil {
+		if _, err := h.keyStore.Set(ctx, roomID, *newPair); err != nil {
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return fmt.Errorf("store room key (no prior): %w", err)
 		}
 		roomkeymetrics.KeyGenerated.Add(ctx, 1)
 		return nil
 	}
-	if _, err := h.keyStore.Rotate(ctx, roomID, newPair); err != nil {
+	if _, err := h.keyStore.Rotate(ctx, roomID, *newPair); err != nil {
 		if errors.Is(err, roomkeystore.ErrNoCurrentKey) {
-			if _, setErr := h.keyStore.Set(ctx, roomID, newPair); setErr != nil {
+			if _, setErr := h.keyStore.Set(ctx, roomID, *newPair); setErr != nil {
 				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 				return fmt.Errorf("store room key (fallback): %w", setErr)
 			}

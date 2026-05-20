@@ -46,7 +46,6 @@ func (stubRoomKeyStore) Get(_ context.Context, _ string) (*roomkeystore.Versione
 	return &roomkeystore.VersionedKeyPair{
 		Version: 0,
 		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
 			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
 		},
 	}, nil

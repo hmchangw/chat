@@ -355,7 +355,7 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		if err != nil {
 			return nil, fmt.Errorf("generate room key: %w", err)
 		}
-		if _, err := h.keyStore.Set(ctx, req.RoomID, pair); err != nil {
+		if _, err := h.keyStore.Set(ctx, req.RoomID, *pair); err != nil {
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return nil, fmt.Errorf("store room key: %w", err)
 		}

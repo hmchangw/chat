@@ -5,7 +5,6 @@ package roomkeysender_test
 import (
 	"bytes"
 	"context"
-	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -250,11 +249,10 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	nc, wsURL := setupNATS(t, nw)
 	nodeContainer := setupNode(t, nw)
 
-	// 2. Generate a fresh P-256 key pair.
-	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	// 2. Generate a fresh 32-byte room secret.
+	privKeyBytes := make([]byte, 32)
+	_, err := rand.Read(privKeyBytes)
 	require.NoError(t, err)
-	pubKeyBytes := privKey.PublicKey().Bytes()
-	privKeyBytes := privKey.Bytes()
 
 	// 3. Test parameters.
 	account := "alice"
@@ -293,7 +291,6 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	evt := &model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    version,
-		PublicKey:  pubKeyBytes,
 		PrivateKey: privKeyBytes,
 	}
 	err = sender.Send(account, *evt)

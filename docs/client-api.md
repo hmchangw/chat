@@ -1988,7 +1988,7 @@ Server-pushed events are delivered to clients on NATS subjects the client is alr
 
 ### 5.1 Room Encryption Keys
 
-Each room has a P-256 private key generated server-side at create time. The private scalar is distributed to channel members; channel rooms use it as the input keying material for the message-encryption scheme described below. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+Each room has a 32-byte secret generated server-side at create time. The secret is distributed to channel members and used as HKDF input keying material for the message-encryption scheme described below. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
 
 #### Subject
 
@@ -2004,12 +2004,12 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 {
   "roomId": "<room id>",
   "version": 0,
-  "privateKey": "<base64-encoded 32-byte P-256 scalar>",
+  "privateKey": "<base64-encoded 32-byte room secret>",
   "timestamp": 1747000000000
 }
 ```
 
-`[]byte` fields marshal to standard base64 in JSON. The room's public key is server-side only (used by `broadcast-worker` to encrypt outgoing messages) and is not transmitted to clients — clients only need the private key to decrypt incoming ciphertext.
+`[]byte` fields marshal to standard base64 in JSON. The `privateKey` is the 32-byte room secret used as HKDF IKM; no public key field is transmitted.
 
 #### Client behavior
 
@@ -2058,7 +2058,7 @@ The server derives the room set from the caller's active subscriptions; no clien
     {
       "roomId": "<room id>",
       "version": 0,
-      "privateKey": "<base64-encoded 32-byte P-256 scalar>"
+      "privateKey": "<base64-encoded 32-byte room secret>"
     }
   ]
 }
