@@ -42,8 +42,15 @@ type Handler struct {
 	encoder   *roomcrypto.Encoder
 }
 
-func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keyStore RoomKeyProvider, encrypt bool, encoder *roomcrypto.Encoder) *Handler {
-	return &Handler{store: store, userStore: userStore, pub: pub, keyStore: keyStore, encrypt: encrypt, encoder: encoder}
+func NewHandler(store Store, userStore userstore.UserStore, pub Publisher, keyStore RoomKeyProvider, encrypt bool) *Handler {
+	return &Handler{
+		store:     store,
+		userStore: userStore,
+		pub:       pub,
+		keyStore:  keyStore,
+		encrypt:   encrypt,
+		encoder:   roomcrypto.NewEncoder(),
+	}
 }
 
 // HandleMessage processes a single MESSAGES_CANONICAL message payload.

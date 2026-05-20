@@ -17,7 +17,6 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
-	"github.com/hmchangw/chat/pkg/roomcrypto"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -44,7 +43,6 @@ type config struct {
 	ValkeyAddr           string                  `env:"VALKEY_ADDR"`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
-	RoomCryptoCacheSize  int                     `env:"ROOM_CRYPTO_CACHE_SIZE" envDefault:"4096"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -132,10 +130,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	encoder := roomcrypto.NewEncoder(roomcrypto.WithMaxCacheEntries(cfg.RoomCryptoCacheSize))
-	slog.Info("roomcrypto-encoder-cache enabled", "size", cfg.RoomCryptoCacheSize)
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled, encoder)
+	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {

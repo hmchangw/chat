@@ -138,7 +138,7 @@ func TestHandleMessage_DispatchesByEvent(t *testing.T) {
 				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 			}
 
-			h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+			h := NewHandler(store, us, pub, keyStore, true)
 			err = h.HandleMessage(context.Background(), data)
 
 			if tc.wantErr {
@@ -222,7 +222,7 @@ func TestHandler_HandleMessage_ChannelRoom(t *testing.T) {
 			// Sender lookup
 			us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil)
 
-			h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+			h := NewHandler(store, us, pub, keyStore, true)
 			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
 			require.NoError(t, err)
 
@@ -321,7 +321,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
 
 			keyStore := NewMockRoomKeyProvider(ctrl)
-			h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+			h := NewHandler(store, us, pub, keyStore, true)
 			err := h.HandleMessage(context.Background(), data)
 			require.NoError(t, err)
 
@@ -361,7 +361,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us := NewMockUserStore(ctrl)
 		pub := &mockPublisher{}
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 
 		err := h.HandleMessage(context.Background(), []byte("not json"))
 		require.Error(t, err)
@@ -377,7 +377,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("not found"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -392,7 +392,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Empty(t, pub.records)
@@ -410,7 +410,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().SetSubscriptionMentions(gomock.Any(), "room-1", gomock.Any()).Return(errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @alice", msgTime))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "set subscription mentions")
@@ -432,7 +432,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil) // sender lookup
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 		assert.Empty(t, pub.records)
@@ -450,7 +450,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(nil, errors.New("db error"))
 
 		keyStore := NewMockRoomKeyProvider(ctrl)
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		evt := model.MessageEvent{
 			Event:  model.EventCreated,
 			SiteID: "site-a",
@@ -483,7 +483,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // mention lookup
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil) // sender lookup
 
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hey @sender", msgTime))
 		require.NoError(t, err)
 
@@ -509,7 +509,7 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, errors.New("db error")) // sender lookup
 
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 
@@ -551,7 +551,7 @@ func TestHandler_HandleMessage_DMRoom_PublishError(t *testing.T) {
 	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil) // sender lookup
 
 	keyStore := NewMockRoomKeyProvider(ctrl)
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	evt := model.MessageEvent{
 		Event:  model.EventCreated,
 		SiteID: "site-a",
@@ -583,7 +583,7 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, errNoCurrentKey)
@@ -603,7 +603,7 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "get room key")
@@ -625,7 +625,7 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
 		us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{{ID: "u-sender", Account: "sender", EngName: "Sender Lin", ChineseName: "寄件者", SiteID: "site-a"}}, nil)
 
-		h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+		h := NewHandler(store, us, pub, keyStore, true)
 		err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime))
 		require.NoError(t, err)
 
@@ -706,7 +706,7 @@ func TestHandler_FetchAndUpdateRoom_Missing(t *testing.T) {
 		Return(fmt.Errorf("update room last message ghost-room: %w", mongo.ErrNoDocuments))
 
 	keyStore := NewMockRoomKeyProvider(ctrl)
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 
 	err := h.HandleMessage(context.Background(), makeMessageEvent("ghost-room", "hello", msgTime))
 	require.Error(t, err)
@@ -744,7 +744,7 @@ func TestHandleUpdated_ChannelRoomScopedPublish(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, false, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
@@ -792,7 +792,7 @@ func TestHandleUpdated_EncryptedChannel_EncryptsContent(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
@@ -828,7 +828,7 @@ func TestHandleUpdated_MissingEditedAt_ReturnsError(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	err = h.HandleMessage(context.Background(), data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing EditedAt")
@@ -863,7 +863,7 @@ func TestHandleDeleted_ChannelRoomScopedPublish(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
@@ -898,7 +898,7 @@ func TestHandleDeleted_MissingUpdatedAt_ReturnsError(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	err = h.HandleMessage(context.Background(), data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing UpdatedAt")
@@ -940,7 +940,7 @@ func TestHandleUpdated_DMRoom_FansOutToBothMembers(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 2, "per-user fan-out: one publish per DM member")
@@ -996,7 +996,7 @@ func TestHandleDeleted_DMRoom_FansOutToBothMembers(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 2, "per-user fan-out: one publish per DM member")
@@ -1053,7 +1053,7 @@ func TestHandleUpdated_BotDMRoom_SkipsBotAccount(t *testing.T) {
 	data, err := json.Marshal(&evt)
 	require.NoError(t, err)
 
-	h := NewHandler(store, us, pub, keyStore, true, roomcrypto.NewEncoder())
+	h := NewHandler(store, us, pub, keyStore, true)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
 	require.Len(t, pub.records, 1, "botDM: only the human recipient gets the live event")
@@ -1109,7 +1109,7 @@ func TestHandler_HandleMessage_ChannelEncryptionDisabled(t *testing.T) {
 			us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return([]model.User{senderUser}, nil)
 
 			// nil keyStore — handler must NOT dereference it when encrypt=false
-			h := NewHandler(store, us, pub, nil, false, roomcrypto.NewEncoder())
+			h := NewHandler(store, us, pub, nil, false)
 			err := h.HandleMessage(context.Background(), makeMessageEvent("room-1", tc.content, msgTime))
 			require.NoError(t, err)
 
