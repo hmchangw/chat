@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"sync"
 
 	"golang.org/x/crypto/hkdf"
 )
@@ -20,7 +21,7 @@ import (
 type EncryptedMessage struct {
 	// key version used to encrypt; matches roomkeystore VersionedKeyPair.Version
 	Version            int    `json:"version"`
-	EphemeralPublicKey []byte `json:"ephemeralPublicKey"` // 65 bytes, uncompressed P-256 point
+	EphemeralPublicKey []byte `json:"ephemeralPublicKey,omitempty"` // legacy scheme; empty on the new scheme
 	Nonce              []byte `json:"nonce"`              // 12 bytes, AES-GCM nonce
 	Ciphertext         []byte `json:"ciphertext"`         // encrypted content + 16-byte AES-GCM tag
 }
@@ -92,4 +93,131 @@ func encode(content string, roomPublicKey []byte, version int, randReader io.Rea
 		Nonce:              nonce,
 		Ciphertext:         ciphertext,
 	}, nil
+}
+
+// Encoder holds the per-(roomId, version) AES-GCM cipher cache for the
+// HKDF-only encryption scheme. Construct one per process and share it
+// across goroutines.
+type Encoder struct {
+	mu    sync.RWMutex
+	cache map[encoderCacheKey]cipher.AEAD
+	rand  io.Reader
+	max   int
+}
+
+type encoderCacheKey struct {
+	roomID  string
+	version int
+}
+
+// EncoderOption configures an Encoder at construction time.
+type EncoderOption func(*Encoder)
+
+// WithMaxCacheEntries sets the upper bound on the per-(roomId, version)
+// AES-GCM cache. When exceeded, the entry with the lowest version is
+// evicted. Default 4096.
+func WithMaxCacheEntries(n int) EncoderOption {
+	return func(e *Encoder) { e.max = n }
+}
+
+// WithRand overrides the source of randomness used for nonce generation.
+// Intended for testing only.
+func WithRand(r io.Reader) EncoderOption {
+	return func(e *Encoder) { e.rand = r }
+}
+
+// NewEncoder constructs an Encoder with default cache size 4096 and
+// crypto/rand.Reader as the randomness source.
+func NewEncoder(opts ...EncoderOption) *Encoder {
+	e := &Encoder{
+		cache: make(map[encoderCacheKey]cipher.AEAD),
+		rand:  rand.Reader,
+		max:   4096,
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
+}
+
+// Encode encrypts content under the AES key derived from roomPrivateKey
+// for the given (roomID, version). The derived AES-GCM cipher is cached
+// on the Encoder; repeat calls for the same (roomID, version) skip key
+// derivation.
+func (e *Encoder) Encode(roomID, content string, roomPrivateKey []byte, version int) (*EncryptedMessage, error) {
+	gcm, err := e.aeadFor(roomID, roomPrivateKey, version)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(e.rand, nonce); err != nil {
+		return nil, fmt.Errorf("generating nonce: %w", err)
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, []byte(content), nil)
+	return &EncryptedMessage{
+		Version:    version,
+		Nonce:      nonce,
+		Ciphertext: ciphertext,
+	}, nil
+}
+
+func (e *Encoder) aeadFor(roomID string, roomPrivateKey []byte, version int) (cipher.AEAD, error) {
+	key := encoderCacheKey{roomID: roomID, version: version}
+
+	e.mu.RLock()
+	gcm, ok := e.cache[key]
+	e.mu.RUnlock()
+	if ok {
+		return gcm, nil
+	}
+
+	if len(roomPrivateKey) != 32 {
+		return nil, fmt.Errorf("room private key must be 32 bytes, got %d", len(roomPrivateKey))
+	}
+
+	aesKey := make([]byte, 32)
+	r := hkdf.New(sha256.New, roomPrivateKey, nil, []byte("room-message-encryption-v2"))
+	if _, err := io.ReadFull(r, aesKey); err != nil {
+		return nil, fmt.Errorf("deriving AES key: %w", err)
+	}
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("creating AES cipher: %w", err)
+	}
+	newGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("creating GCM wrapper: %w", err)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Double-check under write lock — another goroutine may have populated.
+	if existing, ok := e.cache[key]; ok {
+		return existing, nil
+	}
+	if len(e.cache) >= e.max {
+		e.evictLowestVersionLocked()
+	}
+	e.cache[key] = newGCM
+	return newGCM, nil
+}
+
+// evictLowestVersionLocked drops the entry with the lowest version
+// across all rooms. Caller must hold e.mu for writing.
+func (e *Encoder) evictLowestVersionLocked() {
+	var (
+		victim    encoderCacheKey
+		haveFirst bool
+	)
+	for k := range e.cache {
+		if !haveFirst || k.version < victim.version {
+			victim = k
+			haveFirst = true
+		}
+	}
+	if haveFirst {
+		delete(e.cache, victim)
+	}
 }

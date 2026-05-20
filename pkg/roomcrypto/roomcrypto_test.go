@@ -216,3 +216,21 @@ type failReader struct{}
 func (f *failReader) Read(_ []byte) (int, error) {
 	return 0, errors.New("injected read failure")
 }
+
+func TestEncoder_Encode_HappyPath(t *testing.T) {
+	// Use a fixed 32-byte private key (a P-256 scalar's worth of entropy).
+	priv := make([]byte, 32)
+	for i := range priv {
+		priv[i] = byte(i + 1)
+	}
+
+	enc := NewEncoder()
+	got, err := enc.Encode("room-1", "hello", priv, 7)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 7, got.Version)
+	assert.Len(t, got.Nonce, 12)
+	assert.NotEmpty(t, got.Ciphertext)
+	// EphemeralPublicKey field must be empty/unset on the new scheme output.
+	assert.Empty(t, got.EphemeralPublicKey)
+}
