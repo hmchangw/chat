@@ -106,7 +106,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	remoteEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: remoteURL})
 	require.NoError(t, err, "build searchengine for remote")
 
-	valkeyClient := freshValkeyClient(t)
+	cacheClient := valkeyClient(t)
 
 	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")
@@ -120,7 +120,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 
 	userRoomIndex := testUserRoomIndex
 	store := newESStore(localEngine, userRoomIndex)
-	cache := newValkeyCache(valkeyClient)
+	cache := newValkeyCache(cacheClient)
 	handler := newHandler(store, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
@@ -130,10 +130,10 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 		SpotlightReadPattern:    "spotlight-test-*",
 	})
 
-	router := natsrouter.New(serverNC, "search-service-test")
+	router := natsrouter.New(serverNC, testQueueGroup)
 	router.Use(natsrouter.RequestID())
 	handler.Register(router)
-	// Flush — see setupAppsFixture for the rationale.
+	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
 	require.NoError(t, serverNC.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 

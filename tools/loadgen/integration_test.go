@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
@@ -142,8 +141,4 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	require.Equal(t, fixtures.Rooms[0].ID, room.ID)
 }
 
-func TestMain(m *testing.M) {
-	code := m.Run()
-	testutil.TerminateAll()
-	os.Exit(code)
-}
+func TestMain(m *testing.M) { testutil.RunTests(m) }

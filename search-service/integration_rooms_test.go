@@ -54,7 +54,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, err, "build searchengine for subs fixture")
 
 	esStore := newESStore(engine, testUserRoomIndex)
-	cache := newValkeyCache(freshValkeyClient(t))
+	cache := newValkeyCache(valkeyClient(t))
 	h := newHandler(esStore, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
@@ -64,10 +64,10 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 		SpotlightReadPattern:    spotlightIndex,
 	})
 
-	router := natsrouter.New(serverNC, "search-service-test-subs")
+	router := natsrouter.New(serverNC, testQueueGroupSubs)
 	router.Use(natsrouter.RequestID())
 	h.Register(router)
-	// Flush — see setupAppsFixture for the rationale.
+	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
 	require.NoError(t, serverNC.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 

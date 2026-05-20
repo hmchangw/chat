@@ -75,10 +75,10 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 		SpotlightReadPattern:    "spotlight-*",
 	})
 
-	router := natsrouter.New(serverNATS, "search-service-test-v2")
+	router := natsrouter.New(serverNATS, testQueueGroupV2)
 	router.Use(natsrouter.RequestID())
 	h.Register(router)
-	// Flush — see setupAppsFixture for the rationale.
+	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
 	require.NoError(t, serverNATS.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 

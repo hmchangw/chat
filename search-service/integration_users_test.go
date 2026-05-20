@@ -53,10 +53,10 @@ func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixtu
 		RequestTimeout: 5 * time.Second,
 	})
 
-	router := natsrouter.New(serverNC, "search-service-test")
+	router := natsrouter.New(serverNC, testQueueGroup)
 	router.Use(natsrouter.RequestID())
 	h.Register(router)
-	// Flush — see setupAppsFixture for the rationale.
+	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
 	require.NoError(t, serverNC.NatsConn().Flush())
 	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
 

@@ -78,7 +78,7 @@ func Elasticsearch(t *testing.T) string {
 }
 
 // EnsureElasticsearch starts the shared ES container if not already
-// started. No-t variant intended for TestMain pre-warming via Prewarm.
+// started. No-t variant intended for TestMain pre-warming.
 func EnsureElasticsearch() error { _, err := ensureElasticsearch(); return err }
 
 // TerminateElasticsearch stops the shared ES container. Best-effort and
