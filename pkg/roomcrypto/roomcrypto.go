@@ -22,8 +22,8 @@ type EncryptedMessage struct {
 	// key version used to encrypt; matches roomkeystore VersionedKeyPair.Version
 	Version            int    `json:"version"`
 	EphemeralPublicKey []byte `json:"ephemeralPublicKey,omitempty"` // legacy scheme; empty on the new scheme
-	Nonce              []byte `json:"nonce"`              // 12 bytes, AES-GCM nonce
-	Ciphertext         []byte `json:"ciphertext"`         // encrypted content + 16-byte AES-GCM tag
+	Nonce              []byte `json:"nonce"`                        // 12 bytes, AES-GCM nonce
+	Ciphertext         []byte `json:"ciphertext"`                   // encrypted content + 16-byte AES-GCM tag
 }
 
 // Encode encrypts content using the room's P-256 public key.
@@ -147,7 +147,7 @@ func NewEncoder(opts ...EncoderOption) *Encoder {
 func (e *Encoder) Encode(roomID, content string, roomPrivateKey []byte, version int) (*EncryptedMessage, error) {
 	gcm, err := e.aeadFor(roomID, roomPrivateKey, version)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("preparing cipher for room %s v%d: %w", roomID, version, err)
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
@@ -164,6 +164,10 @@ func (e *Encoder) Encode(roomID, content string, roomPrivateKey []byte, version 
 }
 
 func (e *Encoder) aeadFor(roomID string, roomPrivateKey []byte, version int) (cipher.AEAD, error) {
+	if len(roomPrivateKey) != 32 {
+		return nil, fmt.Errorf("room private key must be 32 bytes, got %d", len(roomPrivateKey))
+	}
+
 	key := encoderCacheKey{roomID: roomID, version: version}
 
 	e.mu.RLock()
@@ -171,10 +175,6 @@ func (e *Encoder) aeadFor(roomID string, roomPrivateKey []byte, version int) (ci
 	e.mu.RUnlock()
 	if ok {
 		return gcm, nil
-	}
-
-	if len(roomPrivateKey) != 32 {
-		return nil, fmt.Errorf("room private key must be 32 bytes, got %d", len(roomPrivateKey))
 	}
 
 	aesKey := make([]byte, 32)
@@ -205,7 +205,11 @@ func (e *Encoder) aeadFor(roomID string, roomPrivateKey []byte, version int) (ci
 }
 
 // evictLowestVersionLocked drops the entry with the lowest version
-// across all rooms. Caller must hold e.mu for writing.
+// across all rooms. This policy is deliberately simple (not LRU): hot
+// rooms keep their entries via frequent insertions; rare rooms with
+// old, unused versions are dropped first. Caller must hold e.mu for writing.
+//
+// Precondition: len(e.cache) > 0 (only called when cache is full).
 func (e *Encoder) evictLowestVersionLocked() {
 	var (
 		victim    encoderCacheKey
