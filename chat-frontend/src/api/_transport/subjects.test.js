@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   userRoomEvent,
+  userRoomKey,
   roomEvent,
   memberAdd,
   memberRemove,
@@ -21,6 +22,7 @@ import {
   userSubscriptionGetApps,
   userSubscriptionGetRooms,
   userSubscriptionCount,
+  roomsKeysBootstrap,
 } from './subjects'
 
 describe('subjects', () => {
@@ -135,5 +137,16 @@ describe('subjects', () => {
       'chat.user.alice.request.user.site-A.subscription.count'
     )
   })
+})
 
+describe('userRoomKey', () => {
+  it('builds the per-user room-key event subject', () => {
+    expect(userRoomKey('alice')).toBe('chat.user.alice.event.room.key')
+  })
+})
+
+describe('roomsKeysBootstrap', () => {
+  it('builds the per-user keys-bootstrap RPC subject', () => {
+    expect(roomsKeysBootstrap('alice')).toBe('chat.user.alice.request.rooms.keys')
+  })
 })
