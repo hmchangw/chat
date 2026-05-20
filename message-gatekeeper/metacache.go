@@ -29,5 +29,6 @@ func (c *cachedMetaStore) GetRoomMeta(ctx context.Context, roomID string) (roomm
 	return c.cache.GetRoomMeta(ctx, roomID)
 }
 
-// Len exposes the cache size for the cachestats sizeFn.
+// Len lets the owning service register a chat_cache_size gauge in
+// main.go via cachestats. See cachestats.Stats.Register.
 func (c *cachedMetaStore) Len() int { return c.cache.Len() }

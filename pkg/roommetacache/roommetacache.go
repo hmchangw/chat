@@ -80,6 +80,10 @@ func (c *Cache) Get(ctx context.Context, roomID string) (Meta, error) {
 		c.rec.Hit()
 		return v, nil
 	}
+	// Miss counts every caller whose outer-LRU lookup found no entry,
+	// not every distinct loader invocation. Under singleflight contention
+	// these can diverge: N concurrent callers for the same missing key
+	// produce N misses but a single loader call.
 	c.rec.Miss()
 
 	v, err, _ := c.sf.Do(roomID, func() (interface{}, error) {
@@ -155,7 +159,7 @@ func (w *Wrapper[S]) GetRoomMeta(ctx context.Context, roomID string) (Meta, erro
 	return w.cache.Get(ctx, roomID)
 }
 
-// Len returns the current entry count of the underlying Cache.
+// Len returns the current entry count of the underlying Cache. See Cache.Len.
 func (w *Wrapper[S]) Len() int { return w.cache.Len() }
 
 // FetchFromMongo runs the canonical projected FindOne against a rooms

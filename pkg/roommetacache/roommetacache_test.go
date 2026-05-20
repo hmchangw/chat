@@ -58,6 +58,7 @@ func TestCache_GetMissThenHit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, makeMeta("r1"), got2)
 	assert.Equal(t, int32(1), loaderCalls.Load(), "loader should not run on hit")
+	assert.Equal(t, 1, c.Len())
 }
 
 func TestCache_LoaderErrorNotCached(t *testing.T) {
@@ -216,6 +217,7 @@ func TestWrapStore_CachesGetRoomMeta(t *testing.T) {
 		assert.Equal(t, makeMeta("r1"), got)
 	}
 	assert.Equal(t, int32(1), stub.calls.Load(), "wrapper should call inner exactly once across N hits")
+	assert.Equal(t, 1, w.Len())
 }
 
 func TestWrapStore_RejectsInvalidArgs(t *testing.T) {
@@ -230,9 +232,9 @@ func TestCache_RecorderCountsHitsAndMisses(t *testing.T) {
 	stats := cachestats.New(prometheus.NewRegistry())
 	rec := stats.Register("test_roommeta", nil)
 
-	calls := 0
+	var calls atomic.Int32
 	loader := func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-		calls++
+		calls.Add(1)
 		return roommetacache.Meta{ID: roomID}, nil
 	}
 	c, err := roommetacache.New(10, time.Minute, loader, rec)
@@ -248,7 +250,7 @@ func TestCache_RecorderCountsHitsAndMisses(t *testing.T) {
 	hits, misses := rec.Snapshot()
 	assert.Equal(t, uint64(2), hits)
 	assert.Equal(t, uint64(1), misses)
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, int32(1), calls.Load())
 }
 
 func TestCache_NilRecorderIsSafe(t *testing.T) {
