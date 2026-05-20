@@ -7,12 +7,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // rawConsistencyScenario publishes a message via frontdoor and immediately spawns
@@ -118,8 +123,11 @@ func pollUntilVisible(
 	}
 }
 
-// Run is the generator's main loop. Per tick, publishes a message and spawns
-// a poll goroutine per registered read path that records lag + visibility-window.
+// Run is the generator's main loop. Per tick, picks a fixture subscription,
+// publishes a SendMessageRequest via the frontdoor MsgSend subject, then
+// spawns a poll goroutine that calls history-service GetMessageByID until
+// the message is visible. Records per-path lag + visibility-window into
+// Prometheus histograms labelled path="history".
 func (g *rawConsistencyGenerator) Run(ctx context.Context) error {
 	pollInterval := g.rf.RAW.PollInterval
 	if pollInterval == 0 {
@@ -129,6 +137,10 @@ func (g *rawConsistencyGenerator) Run(ctx context.Context) error {
 	if pollTimeout == 0 {
 		pollTimeout = 5 * time.Second
 	}
+	requestTimeout := g.rf.RequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 2 * time.Second
+	}
 
 	rate := g.rf.Rate
 	if rate <= 0 {
@@ -137,27 +149,40 @@ func (g *rawConsistencyGenerator) Run(ctx context.Context) error {
 	ticker := time.NewTicker(time.Second / time.Duration(rate))
 	defer ticker.Stop()
 
+	subs := g.deps.Fixtures().Subscriptions
+	if len(subs) == 0 {
+		// No fixtures — Run would spin without ever publishing. Block on ctx
+		// so the scenario still respects shutdown semantics without panicking.
+		<-ctx.Done()
+		return nil
+	}
+
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
+	var pickIdx int
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			sub := subs[pickIdx%len(subs)]
+			pickIdx++
+
 			messageID := idgen.GenerateMessageID()
 			publishedAt := time.Now()
 
-			if err := g.publishForRAW(ctx, messageID, publishedAt); err != nil {
-				// Skip polls for failed publishes; the publish error is
+			if err := g.publishForRAW(ctx, &sub, messageID, publishedAt); err != nil {
+				// Skip polls for failed publishes; publish errors are
 				// already counted by the underlying Publisher metrics.
 				continue
 			}
 
+			lookup := newHistoryLookup(g.deps.Requester(), &sub, g.deps.SiteID(), requestTimeout)
 			wg.Add(1)
 			go func(msgID string, pubAt time.Time) {
 				defer wg.Done()
-				outcome, err := pollUntilVisible(ctx, g.lookupHistory, msgID, pubAt, pollInterval, pollTimeout)
+				outcome, err := pollUntilVisible(ctx, lookup, msgID, pubAt, pollInterval, pollTimeout)
 				if err != nil {
 					return
 				}
@@ -169,27 +194,85 @@ func (g *rawConsistencyGenerator) Run(ctx context.Context) error {
 	}
 }
 
-// lookupHistory polls history-service for the message ID via NATS request/reply.
-// Returns ErrRAWNotVisible when not yet present, nil when visible, or another
-// error on transport failure.
+// newHistoryLookup returns a LookupFn that polls history-service for the given
+// messageID via GetMessageByID. We use GetMessageByID rather than a LoadHistory
+// scan because:
 //
-// TODO Phase 3.1 follow-up: wire the real history-service get-by-id endpoint
-// (or a LoadHistory scan with a small limit) using the Requester pattern from
-// read_generator.go. The current stub always returns ErrRAWNotVisible so the
-// poll loop runs until timeout in live operation — the scaffolding is complete
-// and compile-clean.
-func (g *rawConsistencyGenerator) lookupHistory(_ context.Context, _ string) error {
-	return ErrRAWNotVisible // TODO Phase 3.1 follow-up: wire real history-service lookup
+//   - GetMessageByID is O(1) per poll on Cassandra (messages_by_id partition
+//     key = message ID), so a 10ms poll interval can fire hundreds of times
+//     per publish without overwhelming the SUT.
+//   - LoadHistory would scan the room's recent window on every poll, which
+//     amplifies the SUT load by the room's traffic rate and adds noise to the
+//     RAW lag signal (history-service's read latency varies with page size).
+//   - GetMessageByID is the same path a client uses for permalinks and "jump
+//     to message" — it's the user-visible read path RAW is meant to measure.
+//
+// The lookup returns:
+//
+//   - nil                      — message is visible (success reply)
+//   - ErrRAWNotVisible         — history-service returned a not_found app error
+//   - <transport error wrap>   — NATS request failed (timeout, disconnect, etc.)
+//   - <app error wrap>         — non-not_found app error (forbidden, internal);
+//     surfaced so pollUntilVisible exits fast instead of burning the timeout
+//     on a misconfiguration.
+//
+// Subject and body are precomputed once and reused across every poll iteration
+// — closing over them avoids per-poll json.Marshal + fmt.Sprintf allocations
+// on a hot path that can fire hundreds of times per published message.
+func newHistoryLookup(
+	requester Requester,
+	sub *model.Subscription,
+	siteID string,
+	timeout time.Duration,
+) LookupFn {
+	subj := subject.MsgGet(sub.User.Account, sub.RoomID, siteID)
+	return func(ctx context.Context, msgID string) error {
+		body, err := json.Marshal(getMessageByIDRequestWire{MessageID: msgID})
+		if err != nil {
+			return fmt.Errorf("marshal GetMessageByID: %w", err)
+		}
+		reply, err := requester.Request(ctx, subj, body, timeout)
+		if err != nil {
+			return fmt.Errorf("history-service GetMessageByID: %w", err)
+		}
+		// natsrouter encodes handler errors as model.ErrorResponse. A
+		// CodeNotFound reply means "message hasn't propagated yet" → treat
+		// as not-visible. Any other coded error (forbidden, internal, …)
+		// is a real problem; surface it so the poll loop fails fast.
+		if errResp, ok := natsutil.TryParseError(reply); ok {
+			if errResp.Code == natsrouter.CodeNotFound {
+				return ErrRAWNotVisible
+			}
+			return fmt.Errorf("history-service GetMessageByID app error: %s", errResp.Error)
+		}
+		return nil
+	}
 }
 
-// publishForRAW publishes a message for the given ID via the configured
-// injection path (frontdoor) so the downstream pipeline can propagate it to
-// the read paths being polled.
-//
-// TODO Phase 3.1 follow-up: build a SendMessageRequest using deps.Publisher()
-// and the fixture subscriptions, mirroring the messaging-pipeline generator's
-// publish pattern. The current stub returns nil so the poll goroutine is
-// spawned but always observes ErrRAWNotVisible (safe no-op in dev).
-func (g *rawConsistencyGenerator) publishForRAW(_ context.Context, _ string, _ time.Time) error {
-	return nil // TODO Phase 3.1 follow-up: wire real frontdoor publish
+// publishForRAW publishes a SendMessageRequest for the given messageID via the
+// configured frontdoor MsgSend subject. RAW measures the user-visible read
+// path, so we MUST publish through the frontdoor (not MESSAGES_CANONICAL): the
+// scenario's lag signal is "time from publish to history-service visible",
+// which includes gatekeeper validation + canonical persist. Publishing
+// directly to canonical would understate the lag operators see in production.
+func (g *rawConsistencyGenerator) publishForRAW(
+	ctx context.Context,
+	sub *model.Subscription,
+	messageID string,
+	_ time.Time,
+) error {
+	req := model.SendMessageRequest{
+		ID:        messageID,
+		Content:   "raw-consistency probe",
+		RequestID: idgen.GenerateRequestID(),
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal SendMessageRequest: %w", err)
+	}
+	subj := subject.MsgSend(sub.User.Account, sub.RoomID, g.deps.SiteID())
+	if err := g.deps.Publisher().Publish(ctx, subj, data); err != nil {
+		return fmt.Errorf("publish frontdoor MsgSend: %w", err)
+	}
+	return nil
 }
