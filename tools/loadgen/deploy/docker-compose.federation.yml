@@ -1,7 +1,7 @@
 # docker-compose.federation.yml — 2-site federation overlay.
 # Default-off (profile: federation).
 # Usage:
-#   docker compose -f docker-compose.loadtest.yml -f docker-compose.federation.yml \
+#   docker compose -f docker-compose.yml -f docker-compose.federation.yml \
 #     --profile federation up -d
 #
 # Doubles the per-site footprint: nats-site-b + mongo-site-b for Phase 3.9's
@@ -9,6 +9,9 @@
 # from tools/loadgen/testdata/federation/streams.json by the integration test
 # setup helper BEFORE tests run — loadgen production code is blind to federation
 # policy (CLAUDE.md §6).
+#
+# Rides the chat-local network declared external in docker-compose.yml so
+# site-b containers share the backend service-discovery namespace.
 #
 # TODO Phase 3.9 follow-up: add cassandra-site-b, message-gatekeeper-site-b,
 # message-worker-site-b, broadcast-worker-site-b, inbox-worker-site-b, etc.
@@ -25,15 +28,15 @@ services:
       - "--http_port=8222"
       - "--name=nats-site-b"
     networks:
-      loadtest:
+      chat-local:
         aliases: [nats-site-b]
 
   mongo-site-b:
     image: mongo:7
     profiles: [federation]
     networks:
-      loadtest:
+      chat-local:
 
 networks:
-  loadtest:
+  chat-local:
     external: true

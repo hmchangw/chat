@@ -3,7 +3,7 @@
 # without it and no auth-service containers are started.
 #
 # Usage:
-#   docker compose -f docker-compose.loadtest.yml \
+#   docker compose -f docker-compose.yml \
 #                  -f docker-compose.auth.yml \
 #                  --profile auth up -d
 #
@@ -18,6 +18,8 @@
 #     dependency is NATS (for callout integration) — but the loadgen HTTP
 #     benchmark path does not use NATS callout, so `nats` is listed as
 #     service_started (not service_healthy) to keep startup fast.
+#
+# Rides the chat-local network declared external in docker-compose.yml.
 
 services:
   auth-service:
@@ -37,4 +39,8 @@ services:
     ports:
       - "8081:8080"
     networks:
-      - loadtest
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

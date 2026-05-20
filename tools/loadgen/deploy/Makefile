@@ -30,7 +30,7 @@ teardown:
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
 	$(COMPOSE) exec -T loadgen /loadgen teardown --preset=$(PRESET)
 
-run:
+run: seed
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
 	$(COMPOSE) exec -T loadgen /loadgen run \
 	    --preset=$(PRESET) \
