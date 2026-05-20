@@ -963,7 +963,12 @@ func (h *Handler) natsListRoomKeys(m otelnats.Msg) {
 	ctx := wrappedCtx(m)
 	// Subject pattern: chat.user.{account}.request.rooms.keys → account at index 2.
 	parts := strings.Split(m.Msg.Subject, ".")
-	if len(parts) < 6 || parts[0] != "chat" || parts[1] != "user" {
+	if len(parts) != 6 ||
+		parts[0] != "chat" ||
+		parts[1] != "user" ||
+		parts[3] != "request" ||
+		parts[4] != "rooms" ||
+		parts[5] != "keys" {
 		natsutil.ReplyError(m.Msg, fmt.Sprintf("invalid subject: %s", m.Msg.Subject))
 		return
 	}

@@ -302,8 +302,10 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	// 7. Small delay to ensure key is received before the encrypted message.
 	time.Sleep(500 * time.Millisecond)
 
-	// 8. Encrypt a message with the room public key.
-	encrypted, err := roomcrypto.Encode(plaintext, pubKeyBytes, version)
+	// 8. Encrypt a message using the HKDF-only Encoder (new scheme: derive AES
+	// key directly from room private key via HKDF-SHA-256).
+	encoder := roomcrypto.NewEncoder()
+	encrypted, err := encoder.Encode(roomID, plaintext, privKeyBytes, version)
 	require.NoError(t, err, "encrypt message")
 	encryptedJSON, err := json.Marshal(encrypted)
 	require.NoError(t, err, "marshal encrypted message")
