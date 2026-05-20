@@ -115,9 +115,9 @@ up:
 	  echo "Missing $(NATS_CREDS) or $(NATS_CONF). Run './docker-local/setup.sh'."; exit 1; \
 	}
 ifdef SERVICE
-	COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=1 docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
+	docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
 else
-	COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=1 docker compose -f $(SERVICES_COMPOSE) up --build
+	docker compose -f $(SERVICES_COMPOSE) up --build
 endif
 
 # Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
