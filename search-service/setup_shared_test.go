@@ -214,7 +214,9 @@ func freshValkeyClient(t *testing.T) valkeyutil.Client {
 
 // flushValkey wipes the keyspace at addr. Uses a raw go-redis client so
 // we don't have to expose FLUSHDB on the production valkeyutil.Client
-// interface.
+// interface. A FLUSHDB failure here is fatal to the test: state would
+// leak into the next sibling test and produce a confusing assertion
+// failure far from the real root cause.
 func flushValkey(t *testing.T, addr string) {
 	t.Helper()
 	rc := goredis.NewClient(&goredis.Options{Addr: addr})
@@ -222,6 +224,6 @@ func flushValkey(t *testing.T, addr string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := rc.FlushDB(ctx).Err(); err != nil {
-		t.Logf("flush valkey at %s: %v", addr, err)
+		t.Errorf("flush valkey at %s: %v", addr, err)
 	}
 }
