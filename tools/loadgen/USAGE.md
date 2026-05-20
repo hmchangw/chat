@@ -260,7 +260,7 @@ What do you want to measure?
 │     → large-room-broadcast
 │
 ├─ Notification delivery to offline users
-│     → notification-fanout  (SKELETON — see scenario_notif.go)
+│     → notification-fanout  (in-app channel; push/email gated on notif_routing_ready)
 │
 ├─ Message edit/delete throughput
 │     → message-mutate
@@ -372,9 +372,20 @@ Presets: `announce-room`, `firehose-room`, `bot-room`.
 
 ### notification-fanout
 
-**Status: SKELETON — see `scenario_notif.go` header for what's stubbed.** The tick loop has no real publish + subscriber wire-up; runs against this scenario today produce zero observations. See [docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md) for activation steps.
+**Status: IMPLEMENTED (in-app channel).** The scenario subscribes to
+`subject.Notification(account)` for every unique fixture account, publishes
+user messages at the configured rate, and records publish→notification lag
+into `loadgen_notification_lag_seconds{channel="inapp"}`. Each publish fans
+out to N recipients (everyone in the room except the sender), so each
+recipient's notification yields a separate lag observation — histogram
+cardinality is N × tick-count.
 
-Publishes messages to rooms with offline members and measures notification delivery latency.
+The push/email channels remain gated on the `notif_routing_ready` build tag
+until `pkg/subject` exposes per-channel routing builders. See
+[docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md)
+for the SUT subject contract and §3.4b activation playbook.
+
+Publishes messages and measures notification delivery latency per recipient.
 
 Deep dive: [docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md).
 

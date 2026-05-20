@@ -5,6 +5,32 @@ All notable changes to loadgen are documented here. Format follows
 
 ---
 
+## Upgrade: notification-fanout real implementation (in-app channel)
+
+The `notification-fanout` scenario, previously a SKELETON whose tick loop
+recorded nothing, is now real for the in-app channel:
+
+- The scenario subscribes to `subject.Notification(account)` for every
+  unique fixture account via the long-lived `Subscribers()` registry.
+- Per tick it publishes a `model.SendMessageRequest` through the standard
+  frontdoor (`subject.MsgSend(account, roomID, siteID)`), with a mention
+  injected at the configured `Preset.MentionRate`.
+- Each notification received from the SUT (one per recipient per published
+  message) observes lag into
+  `loadgen_notification_lag_seconds{channel="inapp"}` — histogram
+  cardinality is N × tick-count, not just tick-count.
+
+The push/email sub-scenario (§3.4b) remains gated behind the
+`notif_routing_ready` build tag — those subjects do not yet exist in
+`pkg/subject`. No new operator flags or seed steps are required;
+`loadgen seed --preset=<any messages preset>` already provisions the Mongo
+subscriptions notification-worker needs to derive recipients.
+
+See `docs/scenarios/notification-fanout.md` for the full subject contract
+and algorithm.
+
+---
+
 ## Post-v2 merge with origin/main (broadcast encryption + compose refactor)
 
 A large merge from `origin/main` introduced cross-cutting changes loadgen had
