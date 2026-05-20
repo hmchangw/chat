@@ -66,7 +66,8 @@ func NewSustainedMembersGenerator(cfg *SustainedMembersConfig, seed int64) *Sust
 		shapeLabel:  string(cfg.Shape),
 		pools:       pools,
 		roomIDs:     roomIDs,
-		rng:         rand.New(rand.NewSource(seed)),
+		// #nosec G404 -- load-test fixture generation; reproducibility via --seed requires deterministic math/rand, no security context
+		rng: rand.New(rand.NewSource(seed)),
 	}
 }
 

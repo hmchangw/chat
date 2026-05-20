@@ -250,6 +250,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 		room := pickRoomByDMRatio(g.cfg.Preset, &g.cfg.Fixtures)
 		if room != nil {
 			if indices, ok := g.cfg.Fixtures.RoomSubs[room.ID]; ok && len(indices) > 0 {
+				// #nosec G404 -- load-test subscription picker; uniform draw over a fixture pool, no security context
 				subIdx = indices[randv2.IntN(len(indices))]
 			} else {
 				subIdx = g.senders.pick()
@@ -362,6 +363,7 @@ func (g *Generator) publishOne(ctx context.Context) {
 // Falls back to any room when the preferred type has no candidates.
 // Uses math/rand/v2 package-level globals which are goroutine-safe.
 func pickRoomByDMRatio(p *Preset, f *Fixtures) *model.Room {
+	// #nosec G404 -- load-test DM/channel split; weighted coin flip for traffic mix, no security context
 	wantDM := randv2.Float64() < p.DMRatio
 	candidates := make([]*model.Room, 0, len(f.Rooms))
 	for i := range f.Rooms {
@@ -373,8 +375,10 @@ func pickRoomByDMRatio(p *Preset, f *Fixtures) *model.Room {
 	if len(candidates) == 0 {
 		// Fallback: return any room to avoid panic when the fixture set has
 		// only one room type (e.g. DMRatio=0.9 but no DM rooms seeded yet).
+		// #nosec G404 -- load-test fallback room picker; uniform draw over fixtures, no security context
 		return &f.Rooms[randv2.IntN(len(f.Rooms))]
 	}
+	// #nosec G404 -- load-test room picker; uniform draw over fixture candidates, no security context
 	return candidates[randv2.IntN(len(candidates))]
 }
 
@@ -382,13 +386,16 @@ func (g *Generator) content() string {
 	r := g.cfg.Preset.ContentBytes
 	size := r.Min
 	if r.Max > r.Min {
+		// #nosec G404 -- load-test message-size jitter within [Min,Max], no security context
 		size = r.Min + randv2.IntN(r.Max-r.Min+1)
 	}
 	if size <= 0 {
 		size = 1
 	}
 	body := g.maxBody[:size]
+	// #nosec G404 -- load-test mention-rate sampling; weighted coin flip for mention injection, no security context
 	if g.cfg.Preset.MentionRate > 0 && randv2.Float64() < g.cfg.Preset.MentionRate {
+		// #nosec G404 -- load-test mention target picker; uniform draw over fixture user space, no security context
 		target := randv2.IntN(g.cfg.Preset.Users)
 		body = fmt.Sprintf("@user-%d %s", target, body)
 	}

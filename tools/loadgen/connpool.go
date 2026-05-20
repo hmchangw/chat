@@ -110,6 +110,7 @@ func (p *ConnPool) IndexFor(userID string) int {
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(userID))
+	// #nosec G115 -- p.Size() is a positive pool count guarded by the Size()<=1 early return above, well within uint32
 	return int(h.Sum32() % uint32(p.Size()))
 }
 

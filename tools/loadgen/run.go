@@ -734,6 +734,7 @@ func drainTrailingReplies(c *Collector, maxWait, interval time.Duration, stableT
 // ---------------------------------------------------------------------------
 
 func writeCSVFile(path, runID string, c *Collector) error {
+	// #nosec G304 G703 -- path is operator-supplied via --csv flag; loadgen runs under the operator's own UID with no privileged file system access
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create csv: %w", err)

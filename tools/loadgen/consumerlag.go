@@ -56,7 +56,9 @@ func (s *ConsumerSampler) sampleOnce(ctx context.Context) {
 		return
 	}
 	pending := info.NumPending
+	// #nosec G115 -- NumAckPending is JetStream's non-negative in-flight counter (always fits uint64)
 	ack := uint64(info.NumAckPending)
+	// #nosec G115 -- NumRedelivered is JetStream's non-negative delivery counter (always fits uint64)
 	redel := uint64(info.NumRedelivered)
 
 	s.metrics.ConsumerPending.WithLabelValues(s.stream, s.durable).Set(float64(pending))

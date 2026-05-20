@@ -465,6 +465,7 @@ func pickWeighted[K ~int](weights map[K]int) K {
 		var zero K
 		return zero
 	}
+	// #nosec G404 -- load-test weighted mix selector; uniform draw over weight totals, no security context
 	pick := randv2.IntN(total)
 	cum := 0
 	for _, k := range keys {
@@ -510,6 +511,7 @@ var (
 // BuildFixtures is a pure function of (preset, seed, siteID) producing the
 // full fixture set. Two calls with equal inputs produce equal outputs.
 func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
+	// #nosec G404 -- load-test fixture generation; reproducibility via --seed requires deterministic math/rand, no security context
 	r := rand.New(rand.NewSource(seed))
 	now := time.Unix(0, 0).UTC() // fixed so output is deterministic
 

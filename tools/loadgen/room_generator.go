@@ -72,6 +72,7 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 	}
 	kind := pickRoomKind(g.cfg.Preset.RoomMix)
 
+	// #nosec G404 -- load-test subscription picker; uniform draw over fixture pool, no security context
 	sub := g.cfg.Fixtures.Subscriptions[randv2.IntN(len(g.cfg.Fixtures.Subscriptions))]
 	args := roomRequestArgs{
 		User:          model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: g.cfg.SiteID},
@@ -80,6 +81,7 @@ func (g *RoomRPCGenerator) tick(ctx context.Context) {
 		WriteIDPrefix: g.cfg.Preset.WriteIDPrefix,
 	}
 	if kind == MemberAddKind && len(g.cfg.Fixtures.Users) > 0 {
+		// #nosec G404 -- load-test member-add target picker; uniform draw over fixture user pool, no security context
 		args.MemberAccount = g.cfg.Fixtures.Users[randv2.IntN(len(g.cfg.Fixtures.Users))].Account
 	}
 

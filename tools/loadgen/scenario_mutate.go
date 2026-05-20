@@ -54,6 +54,7 @@ func pickMutationKind(p *Preset, rng *rand.Rand) string {
 	if rng != nil {
 		f = rng.Float64()
 	} else {
+		// #nosec G404 -- load-test edit/delete weighted coin flip, no security context
 		f = rand.Float64()
 	}
 	if f < p.EditRate/total {
@@ -111,6 +112,7 @@ func parseEditAgeDistribution(s string) (float64, error) {
 
 // newDeterministicRand returns a *rand.Rand with a fixed seed (for tests).
 func newDeterministicRand(seed uint64) *rand.Rand {
+	// #nosec G404 -- load-test deterministic RNG for unit tests, no security context
 	return rand.New(rand.NewPCG(seed, 0))
 }
 
@@ -153,6 +155,7 @@ func (g *messageMutateGenerator) Run(ctx context.Context) error {
 			// goroutine-safe and would race when goroutines from consecutive
 			// ticks overlap.
 			kind := pickMutationKind(g.deps.Preset(), nil)
+			// #nosec G404 -- load-test mutation target picker; uniform draw over recent-message ring, no security context
 			target := recents[rand.IntN(len(recents))]
 
 			wg.Add(1)

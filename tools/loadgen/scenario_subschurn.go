@@ -104,6 +104,7 @@ func (g *subscriptionChurnGenerator) Run(ctx context.Context) error {
 
 	histogram := g.deps.Metrics().SubsChurn
 	counter := g.deps.Metrics().SubsChurnTotal
+	// #nosec G404 -- load-test subs-churn RNG; PCG seeded from clock for traffic shaping, no security context
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 
 	var wg sync.WaitGroup

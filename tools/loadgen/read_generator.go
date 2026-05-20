@@ -85,6 +85,7 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 		return
 	}
 	kind := pickHistoryKind(g.cfg.Preset.HistoryMix)
+	// #nosec G404 -- load-test subscription picker; uniform draw over fixture pool, no security context
 	sub := g.cfg.Fixtures.Subscriptions[randv2.IntN(len(g.cfg.Fixtures.Subscriptions))]
 	args := historyRequestArgs{
 		User: model.User{Account: sub.User.Account, ID: sub.User.ID, SiteID: g.cfg.SiteID},
@@ -101,6 +102,7 @@ func (g *HistoryReadGenerator) tick(ctx context.Context) {
 			).Inc()
 			return
 		}
+		// #nosec G404 -- load-test message-id picker; uniform draw over fixture pool, no security context
 		args.MessageID = g.cfg.MessageIDs[randv2.IntN(len(g.cfg.MessageIDs))]
 	}
 	subj, body, err := buildHistoryRequest(kind, &args)
@@ -222,7 +224,9 @@ func (g *SearchReadGenerator) tick(ctx context.Context) {
 		return
 	}
 	kind := pickSearchKind(g.cfg.Preset.SearchMix)
+	// #nosec G404 -- load-test user picker; uniform draw over fixture pool, no security context
 	user := g.cfg.Fixtures.Users[randv2.IntN(len(g.cfg.Fixtures.Users))]
+	// #nosec G404 -- load-test search-token picker; uniform draw over preset token list, no security context
 	query := g.cfg.Preset.SearchTokens[randv2.IntN(len(g.cfg.Preset.SearchTokens))]
 	size := g.cfg.Preset.SearchSize
 	if size <= 0 {

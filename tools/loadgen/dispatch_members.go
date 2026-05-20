@@ -491,6 +491,7 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 // ---------------------------------------------------------------- CSV / buckets
 
 func writeMembersCSV(path string, c *MemberCollector) error {
+	// #nosec G304 G703 -- path is operator-supplied via --csv flag; loadgen runs under the operator's own UID with no privileged file system access
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create csv: %w", err)

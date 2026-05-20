@@ -81,6 +81,7 @@ func checkDiskSpace() doctorCheck {
 	if err := syscall.Statfs(".", &stat); err != nil {
 		return doctorCheck{Name: "disk space", Status: "warn", Detail: "unable to determine"}
 	}
+	// #nosec G115 -- Bavail/Bsize are filesystem free-block counts from statfs; product in MB comfortably fits int on any host loadgen runs on
 	freeMB := int(stat.Bavail) * int(stat.Bsize) / (1024 * 1024)
 	if freeMB < 1024 {
 		return doctorCheck{Name: "disk space", Status: "warn", Detail: fmt.Sprintf("%d MB free in cwd (low)", freeMB)}

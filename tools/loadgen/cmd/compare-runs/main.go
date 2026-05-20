@@ -71,6 +71,7 @@ func main() {
 }
 
 func readHistograms(path string) (map[string]*hdr.Snapshot, error) {
+	// #nosec G304 G703 -- path is operator-supplied via positional CLI arg to compare-runs; tool runs under the operator's own UID with no privileged file system access
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)

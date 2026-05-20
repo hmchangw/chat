@@ -37,7 +37,9 @@ func newSenderPicker(n int, dist Distribution, seed int64) *senderPicker {
 	if dist == DistZipf && n > 1 {
 		// PCG seeded from the user's --seed; using two derived halves
 		// keeps repro-ability while not duplicating fixture seeding.
+		// #nosec G115 -- seed is operator-supplied int64; reinterpreting bits as uint64 PCG seed is intentional, value range is irrelevant for a PRNG seed
 		src := randv2.NewPCG(uint64(seed), uint64(seed)^0xDEADBEEF)
+		// #nosec G404 -- load-test Zipf sender distribution; reproducibility via --seed requires deterministic math/rand, no security context
 		r := randv2.New(src)
 		sp.zipf = randv2.NewZipf(r, 1.07, 1.0, uint64(n-1))
 	}
@@ -54,6 +56,7 @@ func (sp *senderPicker) pick() int {
 		sp.mu.Lock()
 		v := sp.zipf.Uint64()
 		sp.mu.Unlock()
+		// #nosec G115 -- Zipf is constructed with imax=n-1 (an int>0), so v fits in int; defensive cap below protects against any boundary surprise
 		idx := int(v)
 		if idx >= sp.n {
 			// Defensive — Zipf is bounded by imax=n-1 but be paranoid.
@@ -61,6 +64,7 @@ func (sp *senderPicker) pick() int {
 		}
 		return idx
 	}
+	// #nosec G404 -- load-test uniform sender picker; uniform draw over fixture subscription pool, no security context
 	return randv2.IntN(sp.n)
 }
 
@@ -130,6 +134,7 @@ func (tp *threadPool) maybeParent(rate float64) (string, time.Time) {
 	if rate <= 0 {
 		return "", time.Time{}
 	}
+	// #nosec G404 -- load-test thread-rate weighted coin flip; samples whether to thread-reply, no security context
 	if randv2.Float64() >= rate {
 		return "", time.Time{}
 	}
@@ -142,6 +147,7 @@ func (tp *threadPool) maybeParent(rate float64) (string, time.Time) {
 	if n == 0 {
 		return "", time.Time{}
 	}
+	// #nosec G404 -- load-test thread-parent picker; uniform draw over recent-publish ring buffer, no security context
 	idx := randv2.IntN(n)
 	return tp.ids[idx], tp.created[idx]
 }

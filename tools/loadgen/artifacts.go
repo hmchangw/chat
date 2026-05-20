@@ -92,6 +92,7 @@ func writeJSON(path string, v interface{}) error {
 
 // writeFile writes data to path. A nil data slice writes an empty file.
 func writeFile(path string, data []byte) error {
+	// #nosec G306 -- run-artifact files (summary.json, stdout.log, metrics.prom, etc.) are operator-readable run outputs; 0644 lets the operator scp / cat them without sudo, and the directory is operator-supplied with no secret content
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
 	}

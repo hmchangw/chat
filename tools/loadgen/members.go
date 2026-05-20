@@ -70,6 +70,7 @@ type CandidatePools map[string][]string
 // the full members-workload fixture set plus per-room candidate pools.
 // Two calls with equal inputs produce equal outputs.
 func BuildMembersFixtures(p *MembersPreset, seed int64, siteID string) (Fixtures, CandidatePools) {
+	// #nosec G404 -- load-test fixture generation; reproducibility via --seed requires deterministic math/rand, no security context
 	r := rand.New(rand.NewSource(seed))
 	now := time.Unix(0, 0).UTC()
 
