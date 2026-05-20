@@ -105,6 +105,16 @@ const threadPoolCapacity = 1024
 
 // drainGracePeriod bounds how long Run waits for in-flight publishes
 // to complete after ctx cancels.
+//
+// Leak boundedness invariant: if the grace expires while wg.Wait is still
+// pending, the spawned `go func() { wg.Wait(); close(done) }()` keeps
+// running until the slowest in-flight publish returns. This is bounded in
+// practice by the outer Runtime shutdown, which calls nc.Drain() after Run
+// returns; nc.Drain() closes the NATS connection, every pending Publish
+// returns an error, every worker's wg.Done fires, and the closure exits.
+// Worst case: one extra goroutine alive for the ~25s shutdown window. Do
+// not lengthen the grace beyond ~10s — past that, the leak window grows
+// without bounded benefit.
 const drainGracePeriod = 5 * time.Second
 
 // Run publishes at the configured rate until ctx is cancelled. When

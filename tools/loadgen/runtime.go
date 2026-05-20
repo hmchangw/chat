@@ -174,6 +174,12 @@ func (r *Runtime) startMetricsServer() *http.Server {
 		Addr:              r.cfg.MetricsAddr,
 		Handler:           r.metrics.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		// WriteTimeout bounds the entire response — a Prometheus scrape that
+		// hangs (e.g., huge registry, slow client) won't pin a goroutine.
+		// IdleTimeout closes long-lived keep-alive conns so the server's
+		// goroutine count stays bounded under scraper churn.
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  90 * time.Second,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -197,6 +203,11 @@ func (r *Runtime) startPprofServer() *http.Server {
 		Addr:              r.cfg.PProfAddr,
 		Handler:           pprofMux,
 		ReadHeaderTimeout: 5 * time.Second,
+		// Longer WriteTimeout than the metrics server — `pprof profile` and
+		// `pprof trace` legitimately stream for 30s+ at the operator's
+		// requested seconds= duration. Bound generously rather than not at all.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

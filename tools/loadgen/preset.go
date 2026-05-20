@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/ecdh"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -611,12 +610,15 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 // covers the astronomically rare case of a zero or out-of-range scalar; it
 // consumes only deterministic bytes from r so the output stays a function of
 // the seed alone.
-func deterministicRoomKeyPair(r io.Reader) roomkeystore.RoomKeyPair {
+//
+// Takes *rand.Rand (not io.Reader) so we can rely on rand.Rand.Read's
+// documented contract — "always returns n == len(p) and a nil error" — and
+// avoid the panic-on-impossible-error pattern CLAUDE.md §3 forbids.
+func deterministicRoomKeyPair(r *rand.Rand) roomkeystore.RoomKeyPair {
 	buf := make([]byte, 32)
 	for {
-		if _, err := io.ReadFull(r, buf); err != nil {
-			panic(fmt.Errorf("read deterministic key bytes: %w", err))
-		}
+		// math/rand.Rand.Read is documented to always return (len(buf), nil).
+		_, _ = r.Read(buf)
 		priv, err := ecdh.P256().NewPrivateKey(buf)
 		if err == nil {
 			return roomkeystore.RoomKeyPair{

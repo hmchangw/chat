@@ -1,16 +1,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
+
+// newChaosClient builds a Resty client tuned for the toxiproxy admin API:
+// short request timeout (chaos ops are local control-plane RPCs, not user
+// traffic) and no retries (we want operator errors to surface immediately).
+// CLAUDE.md §6 requires Resty for outbound HTTP — never net/http directly.
+func newChaosClient() *resty.Client {
+	return resty.New().
+		SetTimeout(10*time.Second).
+		SetHeader("Content-Type", "application/json")
+}
 
 // chaosUsage writes the chaos subcommand usage to w.
 func chaosUsage(w io.Writer) {
@@ -42,70 +52,50 @@ type chaosToxic struct {
 // toxicType: latency | bandwidth | slow_close | timeout | slicer | limit_data.
 // attrs: type-specific knobs (e.g., {"latency": 200, "jitter": 50} for latency).
 func chaosAddToxic(ctx context.Context, baseURL, proxy, name, toxicType string, attrs interface{}) error {
-	body, err := json.Marshal(map[string]interface{}{
-		"name":       name,
-		"type":       toxicType,
-		"attributes": attrs,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal toxic body: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		baseURL+"/proxies/"+proxy+"/toxics", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build chaos add request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newChaosClient().R().
+		SetContext(ctx).
+		SetBody(map[string]interface{}{
+			"name":       name,
+			"type":       toxicType,
+			"attributes": attrs,
+		}).
+		Post(baseURL + "/proxies/" + proxy + "/toxics")
 	if err != nil {
 		return fmt.Errorf("chaos add request: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("toxiproxy add toxic: HTTP %d: %s", resp.StatusCode, string(b))
+	if resp.StatusCode() >= 400 {
+		return fmt.Errorf("toxiproxy add toxic: HTTP %d: %s", resp.StatusCode(), resp.String())
 	}
 	return nil
 }
 
-// chaosRemoveToxic removes a named toxic from a proxy.
+// chaosRemoveToxic removes a named toxic from a proxy. A 404 is treated as
+// success so the operator can call remove idempotently after a partial state.
 func chaosRemoveToxic(ctx context.Context, baseURL, proxy, name string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		baseURL+"/proxies/"+proxy+"/toxics/"+name, nil)
-	if err != nil {
-		return fmt.Errorf("build chaos remove request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newChaosClient().R().
+		SetContext(ctx).
+		Delete(baseURL + "/proxies/" + proxy + "/toxics/" + name)
 	if err != nil {
 		return fmt.Errorf("chaos remove request: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("toxiproxy remove toxic: HTTP %d: %s", resp.StatusCode, string(b))
+	if resp.StatusCode() >= 400 && resp.StatusCode() != http.StatusNotFound {
+		return fmt.Errorf("toxiproxy remove toxic: HTTP %d: %s", resp.StatusCode(), resp.String())
 	}
 	return nil
 }
 
 // chaosListToxics returns all installed toxics on a proxy.
 func chaosListToxics(ctx context.Context, baseURL, proxy string) ([]chaosToxic, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		baseURL+"/proxies/"+proxy+"/toxics", nil)
-	if err != nil {
-		return nil, fmt.Errorf("build chaos list request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
+	var toxics []chaosToxic
+	resp, err := newChaosClient().R().
+		SetContext(ctx).
+		SetResult(&toxics).
+		Get(baseURL + "/proxies/" + proxy + "/toxics")
 	if err != nil {
 		return nil, fmt.Errorf("chaos list request: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("toxiproxy list toxics: HTTP %d: %s", resp.StatusCode, string(b))
-	}
-	var toxics []chaosToxic
-	if err := json.NewDecoder(resp.Body).Decode(&toxics); err != nil {
-		return nil, fmt.Errorf("decode toxics response: %w", err)
+	if resp.StatusCode() >= 400 {
+		return nil, fmt.Errorf("toxiproxy list toxics: HTTP %d: %s", resp.StatusCode(), resp.String())
 	}
 	return toxics, nil
 }

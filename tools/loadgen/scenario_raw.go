@@ -91,6 +91,16 @@ func pollUntilVisible(
 	var lastFailure time.Time
 	pollCount := 0
 
+	// Reuse a single timer across iterations rather than allocating one per
+	// poll via time.After. At 10ms poll × 100rps × 60s that's 6M timer objects
+	// in the GC; reuse keeps the hot path allocation-free.
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	if !timer.Stop() {
+		// Drain the initial timer so the first Reset below starts fresh.
+		<-timer.C
+	}
+
 	for {
 		err := lookup(ctx, msgID)
 		if err == nil {
@@ -115,10 +125,14 @@ func pollUntilVisible(
 			return RAWOutcome{}, ErrRAWTimeout
 		}
 
+		timer.Reset(interval)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return RAWOutcome{}, fmt.Errorf("RAW poll cancelled: %w", ctx.Err())
-		case <-time.After(interval):
+		case <-timer.C:
 		}
 	}
 }

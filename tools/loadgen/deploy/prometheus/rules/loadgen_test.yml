@@ -98,17 +98,18 @@ tests:
 
   # -----------------------------------------------------------------------
   # Test 6: LoadgenAsyncAckBacklog fires when async_ack error rate >1/s sustained 5m
-  # 12 steps at 30s interval = 6 minutes of data.
-  # async_ack: 0+90x12 → increment 90 per 30s → rate = 90/30 = 3/s
-  # 3 > 1 sustained for 5m → fires at 360s (5m for= window + 1 eval tick)
+  # 20 steps at 30s interval = 10 minutes of data.
+  # async_ack: 0+90x20 → increment 90 per 30s → rate = 90/30 = 3/s
+  # rate stabilizes after the 5m window fills (t ≈ 300s); for=5m then fires
+  # at t ≈ 600s with one eval-tick of slack. Eval at 660s confirms firing.
   # -----------------------------------------------------------------------
   - interval: 30s
     input_series:
       - series: 'loadgen_publish_errors_total{phase="measured",reason="async_ack"}'
-        values: '0+90x12'   # 0, 90, 180, … → rate ≈ 3/s sustained
+        values: '0+90x20'   # 0, 90, 180, … 1800 → rate ≈ 3/s sustained
     alert_rule_test:
       - alertname: LoadgenAsyncAckBacklog
-        eval_time: 360s
+        eval_time: 660s
         exp_alerts:
           - exp_labels:
               alertname: LoadgenAsyncAckBacklog
@@ -124,10 +125,10 @@ tests:
   - interval: 30s
     input_series:
       - series: 'loadgen_publish_errors_total{phase="measured",reason="async_ack"}'
-        values: '0 0 0 0 0 0 0 0 0 0 0 0'   # constant → rate = 0/s
+        values: '0x20'   # constant zero → rate = 0/s
     alert_rule_test:
       - alertname: LoadgenAsyncAckBacklog
-        eval_time: 360s
+        eval_time: 660s
         exp_alerts: []
 
   # -----------------------------------------------------------------------
