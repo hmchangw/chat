@@ -35,6 +35,7 @@ type SustainedMembersConfig struct {
 // run dry.
 type SustainedMembersGenerator struct {
 	cfg         SustainedMembersConfig
+	presetLabel string
 	injectLabel string
 	shapeLabel  string
 	mu          sync.Mutex
@@ -60,6 +61,7 @@ func NewSustainedMembersGenerator(cfg *SustainedMembersConfig, seed int64) *Sust
 	}
 	return &SustainedMembersGenerator{
 		cfg:         *cfg,
+		presetLabel: cfg.Preset.Name,
 		injectLabel: string(cfg.Inject),
 		shapeLabel:  string(cfg.Shape),
 		pools:       pools,
@@ -179,7 +181,7 @@ func (g *SustainedMembersGenerator) publishOne(ctx context.Context, roomID strin
 	if now.Before(g.cfg.WarmupDeadline) {
 		phase = "warmup"
 	}
-	g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, phase, g.injectLabel, g.shapeLabel).Inc()
+	g.cfg.Metrics.MemberPublished.WithLabelValues(g.presetLabel, phase, g.injectLabel, g.shapeLabel).Inc()
 }
 
 // CapacityMembersConfig parameterizes the per-room sequential growth generator.
@@ -203,6 +205,7 @@ type CapacityMembersConfig struct {
 // room loops run concurrently so a slow room does not gate the others.
 type CapacityMembersGenerator struct {
 	cfg         CapacityMembersConfig
+	presetLabel string
 	injectLabel string
 	shapeLabel  string
 }
@@ -211,6 +214,7 @@ type CapacityMembersGenerator struct {
 func NewCapacityMembersGenerator(cfg *CapacityMembersConfig) *CapacityMembersGenerator {
 	return &CapacityMembersGenerator{
 		cfg:         *cfg,
+		presetLabel: cfg.Preset.Name,
 		injectLabel: string(cfg.Inject),
 		shapeLabel:  string(cfg.Shape),
 	}
@@ -295,7 +299,7 @@ func (g *CapacityMembersGenerator) runRoom(ctx context.Context, room *model.Room
 			g.cfg.Metrics.MemberPublishErrors.WithLabelValues("publish").Inc()
 			return
 		}
-		g.cfg.Metrics.MemberPublished.WithLabelValues(g.cfg.Preset.Name, "measured", g.injectLabel, g.shapeLabel).Inc()
+		g.cfg.Metrics.MemberPublished.WithLabelValues(g.presetLabel, "measured", g.injectLabel, g.shapeLabel).Inc()
 
 		select {
 		case <-ack:

@@ -169,6 +169,9 @@ func (c *MemberCollector) E2Samples() []time.Duration {
 	return snapshotLatencies(c.e2)
 }
 
+// snapshotLatencies copies and sorts latencies from in. Shared by Collector
+// and MemberCollector; callers must already hold the collector's mutex since
+// in aliases the live sample slice.
 func snapshotLatencies(in []sample) []time.Duration {
 	out := make([]time.Duration, len(in))
 	for i := range in {
