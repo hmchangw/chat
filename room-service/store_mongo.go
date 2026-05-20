@@ -83,6 +83,11 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "u.account", Value: 1}, {Key: "isSubscribed", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (u.account,isSubscribed) index: %w", err)
+	}
 	return nil
 }
 

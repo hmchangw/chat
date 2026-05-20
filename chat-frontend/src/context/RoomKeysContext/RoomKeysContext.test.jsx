@@ -21,7 +21,7 @@ vi.mock('@/context/NatsContext', () => ({
 
 import { fetchRoomKeysBootstrap, subscribeToRoomKeyEvents } from '@/api'
 
-let lastDecryptHook: ReturnType<typeof useRoomKeys> | null = null
+let lastDecryptHook = null
 
 function Probe() {
   lastDecryptHook = useRoomKeys()
@@ -59,9 +59,9 @@ describe('RoomKeysProvider', () => {
 
   it('dispatches KEY_RECEIVED for each live event', async () => {
     vi.mocked(fetchRoomKeysBootstrap).mockResolvedValue({ keys: [] })
-    let savedCb: ((evt: unknown) => void) | undefined
+    let savedCb
     vi.mocked(subscribeToRoomKeyEvents).mockImplementation((_n, cb) => {
-      savedCb = cb as never
+      savedCb = cb
       return { unsubscribe: vi.fn() }
     })
 
@@ -74,7 +74,7 @@ describe('RoomKeysProvider', () => {
     await waitFor(() => expect(savedCb).toBeDefined())
 
     act(() => {
-      savedCb!({
+      savedCb({
         roomId: 'r2',
         version: 3,
         privateKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(1))),

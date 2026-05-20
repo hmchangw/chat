@@ -969,7 +969,8 @@ func (h *Handler) natsListRoomKeys(m otelnats.Msg) {
 		parts[3] != "request" ||
 		parts[4] != "rooms" ||
 		parts[5] != "keys" {
-		natsutil.ReplyError(m.Msg, fmt.Sprintf("invalid subject: %s", m.Msg.Subject))
+		slog.Warn("rooms keys bootstrap: invalid subject", "subject", m.Msg.Subject)
+		natsutil.ReplyError(m.Msg, "invalid subject")
 		return
 	}
 	account := parts[2]

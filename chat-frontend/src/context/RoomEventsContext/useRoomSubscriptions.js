@@ -223,44 +223,44 @@ export function useRoomSubscriptions(
     // handles the missing body gracefully.
     const decryptAndDispatch = async (evt, finalize) => {
       let decoded = evt
-      // Handle encrypted full-message events.
-      if (decoded.encryptedMessage && !decoded.message) {
-        const enc = decoded.encryptedMessage
-        if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
-          const plaintext = await decryptRef.current({
-            roomId: decoded.roomId,
-            version: enc.version,
-            nonceB64: enc.nonce,
-            ciphertextB64: enc.ciphertext,
-          })
-          if (plaintext != null) {
-            try {
+      try {
+        // Handle encrypted full-message events.
+        if (decoded.encryptedMessage && !decoded.message) {
+          const enc = decoded.encryptedMessage
+          if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
+            const plaintext = await decryptRef.current({
+              roomId: decoded.roomId,
+              version: enc.version,
+              nonceB64: enc.nonce,
+              ciphertextB64: enc.ciphertext,
+            })
+            if (plaintext != null) {
               const msg = JSON.parse(plaintext)
               decoded = { ...decoded, message: msg, encryptedMessage: undefined }
-            } catch (err) {
-              // eslint-disable-next-line no-console
-              console.warn('decrypted message is not valid JSON', err)
             }
           }
         }
-      }
-      // Handle encrypted message edits.
-      if (decoded.messageEdited && decoded.messageEdited.encryptedNewContent && !decoded.messageEdited.newContent) {
-        const enc = decoded.messageEdited.encryptedNewContent
-        if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
-          const plaintext = await decryptRef.current({
-            roomId: decoded.roomId,
-            version: enc.version,
-            nonceB64: enc.nonce,
-            ciphertextB64: enc.ciphertext,
-          })
-          if (plaintext != null) {
-            decoded = {
-              ...decoded,
-              messageEdited: { ...decoded.messageEdited, newContent: plaintext, encryptedNewContent: undefined },
+        // Handle encrypted message edits.
+        if (decoded.messageEdited && decoded.messageEdited.encryptedNewContent && !decoded.messageEdited.newContent) {
+          const enc = decoded.messageEdited.encryptedNewContent
+          if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
+            const plaintext = await decryptRef.current({
+              roomId: decoded.roomId,
+              version: enc.version,
+              nonceB64: enc.nonce,
+              ciphertextB64: enc.ciphertext,
+            })
+            if (plaintext != null) {
+              decoded = {
+                ...decoded,
+                messageEdited: { ...decoded.messageEdited, newContent: plaintext, encryptedNewContent: undefined },
+              }
             }
           }
         }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('decryptAndDispatch failed; forwarding original event', err)
       }
       finalize(decoded)
     }

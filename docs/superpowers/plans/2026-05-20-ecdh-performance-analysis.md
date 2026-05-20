@@ -25,7 +25,7 @@
 | `pkg/roomcrypto/testdata/decrypt.ts` | Rewrite TS reference decoder |
 | `broadcast-worker/handler.go` | Hold `*roomcrypto.Encoder`; call `Encode(roomID, content, privKey, version)` |
 | `broadcast-worker/handler_test.go` | Pass real encoder into handler under test |
-| `broadcast-worker/main.go` | Parse `ROOMCRYPTO_CACHE_SIZE`; construct encoder |
+| `broadcast-worker/main.go` | Parse `ROOM_CRYPTO_CACHE_SIZE`; construct encoder |
 | `pkg/subject/subject.go` | Add `RoomsKeysBootstrap(account)`, `RoomsKeysBootstrapWildcard()` |
 | `pkg/model/event.go` | Add `RoomsKeysResponse`, `RoomsKeysEntry` |
 | `room-service/handler.go` | New `natsListRoomKeys` handler; register in `RegisterCRUD` |
@@ -586,7 +586,7 @@ Note the swap from `key.KeyPair.PublicKey` → `key.KeyPair.PrivateKey` and the 
 Add to the `config` struct:
 
 ```go
-RoomCryptoCacheSize int `env:"ROOMCRYPTO_CACHE_SIZE" envDefault:"4096"`
+RoomCryptoCacheSize int `env:"ROOM_CRYPTO_CACHE_SIZE" envDefault:"4096"`
 ```
 
 In the `main` function dependency-construction block, before `NewHandler` is called:

@@ -61,14 +61,19 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
     fetchRoomKeysBootstrap(liveNats)
       .then((resp) => {
         if (cancelled) return
-        dispatch({
-          type: 'BOOTSTRAP_LOADED',
-          keys: resp.keys.map((k) => ({
-            roomId: k.roomId,
-            version: k.version,
-            privateKey: b64decode(k.privateKey),
-          })),
-        })
+        const keys: Array<{ roomId: string; version: number; privateKey: Uint8Array }> = []
+        for (const k of resp.keys) {
+          let privateKey: Uint8Array
+          try {
+            privateKey = b64decode(k.privateKey)
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('roomKeysBootstrap: invalid base64 privateKey for entry, skipping', { roomId: k.roomId, version: k.version }, err)
+            continue
+          }
+          keys.push({ roomId: k.roomId, version: k.version, privateKey })
+        }
+        dispatch({ type: 'BOOTSTRAP_LOADED', keys })
       })
       .catch((err) => {
         // eslint-disable-next-line no-console
@@ -78,11 +83,20 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
     const sub = subscribeToRoomKeyEvents(liveNats, (raw) => {
       const evt = raw as RoomKeyEvent
       if (!evt || typeof evt.roomId !== 'string' || typeof evt.version !== 'number' || typeof evt.privateKey !== 'string') return
+      let privateKey: Uint8Array
+      try {
+        privateKey = b64decode(evt.privateKey)
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('roomKeyEvent: invalid base64 privateKey, dropping event', err)
+        return
+      }
+      aesKeyCacheRef.current.delete(`${evt.roomId}|${evt.version}`)
       dispatch({
         type: 'KEY_RECEIVED',
         roomId: evt.roomId,
         version: evt.version,
-        privateKey: b64decode(evt.privateKey),
+        privateKey,
       })
     })
 

@@ -187,6 +187,9 @@ func RoomsList(account string) string {
 // room private keys the user is currently subscribed to. Used by clients
 // on (re)connect to bootstrap their key cache.
 func RoomsKeysBootstrap(account string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.rooms.keys", account)
 }
 
