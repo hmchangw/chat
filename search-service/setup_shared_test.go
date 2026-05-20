@@ -56,23 +56,28 @@ func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 }
 
 var (
-	sharedESOnce sync.Once
-	sharedESURL  string
-	sharedESErr  error
+	sharedESOnce      sync.Once
+	sharedESContainer testcontainers.Container
+	sharedESURL       string
+	sharedESErr       error
 
-	sharedValkeyOnce sync.Once
-	sharedValkeyAddr string
-	sharedValkeyErr  error
+	sharedValkeyOnce      sync.Once
+	sharedValkeyContainer testcontainers.Container
+	sharedValkeyAddr      string
+	sharedValkeyErr       error
 
-	sharedNATSOnce sync.Once
-	sharedNATSURL  string
-	sharedNATSErr  error
+	sharedNATSOnce      sync.Once
+	sharedNATSContainer testcontainers.Container
+	sharedNATSURL       string
+	sharedNATSErr       error
 )
 
 // TestMain pre-warms the shared containers concurrently so the first
-// test doesn't pay their startup serially. Total wall-clock for cold
-// start drops to max(ES, NATS, Valkey) ≈ ES alone (~30-60s) instead of
-// the sum.
+// test doesn't pay their startup serially, then explicitly terminates
+// them on clean exit. Explicit cleanup is required because CI runs with
+// TESTCONTAINERS_RYUK_DISABLED=true — Ryuk would otherwise reap the
+// shared containers (they have no t.Cleanup). Locally Ryuk is enabled
+// as a safety net for SIGKILL / Ctrl+C, where m.Run never returns.
 func TestMain(m *testing.M) {
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -80,7 +85,29 @@ func TestMain(m *testing.M) {
 	go func() { defer wg.Done(); ensureSharedValkey() }()
 	go func() { defer wg.Done(); ensureSharedNATS() }()
 	wg.Wait()
-	os.Exit(m.Run())
+	code := m.Run()
+	terminateShared()
+	os.Exit(code)
+}
+
+// terminateShared best-effort kills every shared container. Errors are
+// logged but don't change the test exit code — the tests already passed
+// or failed by this point.
+func terminateShared() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for name, c := range map[string]testcontainers.Container{
+		"elasticsearch": sharedESContainer,
+		"valkey":        sharedValkeyContainer,
+		"nats":          sharedNATSContainer,
+	} {
+		if c == nil {
+			continue
+		}
+		if err := c.Terminate(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate shared %s: %v\n", name, err)
+		}
+	}
 }
 
 // sharedSingleNodeES returns the URL of the process-shared single-node ES.
@@ -131,6 +158,7 @@ func ensureSharedES() {
 			sharedESErr = fmt.Errorf("get shared es port: %w", err)
 			return
 		}
+		sharedESContainer = container
 		sharedESURL = fmt.Sprintf("http://%s:%s", host, port.Port())
 	})
 }
@@ -175,6 +203,7 @@ func ensureSharedValkey() {
 			sharedValkeyErr = fmt.Errorf("get shared valkey port: %w", err)
 			return
 		}
+		sharedValkeyContainer = container
 		sharedValkeyAddr = fmt.Sprintf("%s:%s", host, port.Port())
 	})
 }
@@ -205,6 +234,7 @@ func ensureSharedNATS() {
 			sharedNATSErr = fmt.Errorf("get shared nats url: %w", err)
 			return
 		}
+		sharedNATSContainer = c
 		sharedNATSURL = url
 	})
 }

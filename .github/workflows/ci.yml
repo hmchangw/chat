@@ -322,7 +322,15 @@ jobs:
       # Explicit `set -o pipefail` so make's exit status (not tee's)
       # drives the step outcome. Previously a pipefail gap let a
       # failing integration test silently report green.
+      #
+      # TESTCONTAINERS_RYUK_DISABLED=true: Ryuk doesn't work reliably on
+      # this CI runner. Shared containers in test packages are cleaned
+      # up explicitly via TestMain (see search-service/setup_shared_test.go);
+      # per-test containers use t.Cleanup. Locally Ryuk stays enabled as
+      # a safety net for SIGKILL / Ctrl+C.
       - name: Integration tests (${{ matrix.target.path }})
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
         run: |
           set -o pipefail
           make test-integration SERVICE=${{ matrix.target.path }} 2>&1 \
