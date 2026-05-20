@@ -1,28 +1,32 @@
-# ECDH Ephemeral Key Performance — Analysis and Stage-2 Design Spec
+# ECDH Ephemeral Key Performance — Analysis and Design Spec
 
 **Date:** 2026-05-20
 **Status:** Draft — awaiting review
-**Scope:** Eliminate the per-message ECDH/ephemeral-keygen cost from
-`broadcast-worker`'s encryption hot path by replacing the current ECIES-style
-scheme with a versioned symmetric AES key derived once per room key version.
+**Scope:** Replace the per-message ECIES-style encryption scheme in
+`pkg/roomcrypto` with a versioned symmetric AES key derived once per room key
+version via HKDF, eliminating ECDH and ephemeral-keygen from the hot path.
+Includes both the `broadcast-worker` change and the first chat-frontend
+decoder implementation. Drops the legacy scheme entirely; no dual-scheme
+migration window.
 
 ---
 
 ## Overview
 
 `pkg/roomcrypto.Encode` is called on every broadcast event for an encrypted
-channel room (see `broadcast-worker/handler.go:210, 254`). It generates a fresh
-P-256 ephemeral key pair, performs ECDH against the room public key, HKDFs the
-shared secret into a 32-byte AES key, and AEAD-seals the message under that
-key. The ephemeral public key is sent on the wire so clients can repeat the
-ECDH on their side and recover the same AES key.
+channel room (see `broadcast-worker/handler.go:210, 254`). It generates a
+fresh P-256 ephemeral key pair, performs ECDH against the room public key,
+HKDFs the shared secret into a 32-byte AES key, and AEAD-seals the message
+under that key. The ephemeral public key is sent on the wire so clients
+could repeat the ECDH on their side.
 
-This spec proposes replacing that scheme with a versioned symmetric AES key
-derived directly from the room private key via HKDF — eliminating ECDH and
-ephemeral-keygen from both server and client per-message paths. The wire
-format drops the `ephemeralPublicKey` field and gains an explicit `scheme`
-field so the decoder can tell new ciphertexts from legacy ones during the
-migration window.
+This spec replaces the scheme with a versioned symmetric AES key derived
+directly from the room private key:
+`aesKey_v = HKDF-SHA256(roomPriv_v, salt=nil, info="room-message-encryption-v2")`.
+The wire format drops `ephemeralPublicKey` outright. Both server and
+chat-frontend are updated in this branch. The Swift client lives outside this
+repo and will need its own update; coordination of that work is out of scope
+here.
 
 ---
 
@@ -38,12 +42,16 @@ Per call to `roomcrypto.Encode(content, roomPublicKey, version)`:
 5. AES-256-GCM seal with a random 96-bit nonce.
 6. Return `{version, ephemeralPublicKey, nonce, ciphertext}`.
 
-Clients reverse the process: parse `ephemeralPublicKey`, ECDH against the
-room private key, HKDF, GCM-open.
+The room key pair lives in Valkey (`pkg/roomkeystore`). The server holds
+both halves; only the public half is used at encrypt time. Clients receive
+the private half via `room-key-sender` on the subject
+`chat.user.{account}.event.room.key`.
 
-The room key pair (P-256 public + private) lives in Valkey under
-`pkg/roomkeystore`. The server holds both halves; only the public half is
-used at encrypt time. Clients receive the private half via `room-key-sender`.
+Today **no client in this monorepo actually decrypts.** chat-frontend
+renders an `[encrypted message]` placeholder
+(`chat-frontend/src/context/RoomEventsContext/reducer.js:300-318`). The
+Swift client (out-of-repo) does decode but is treated as a separate-track
+update for this change.
 
 ---
 
@@ -53,7 +61,7 @@ Benchmark file: `pkg/roomcrypto/bench_test.go`. Run with
 `go test -bench=. -benchmem -benchtime=2s -run=^$ ./pkg/roomcrypto/`.
 
 Hardware used for these numbers: Intel Xeon @ 2.80 GHz, Linux amd64,
-Go 1.25.10. (Reproducible in the dev container.)
+Go 1.25.10 (the dev container; production silicon is comparable or faster).
 
 | Operation                          | ns/op   | allocs/op | Share of `Encode` |
 | ---------------------------------- | ------- | --------- | ----------------- |
@@ -80,11 +88,10 @@ GC pressure removed from the broadcast hot path.
 
 X25519 is conventionally faster than P-256, but Go's standard library ships
 amd64 assembly for P-256 (`p256_asm_amd64.s` using ADX/BMI2) and not for
-X25519, so on amd64 our measurements show P-256 ECDH (~65 µs) is **faster**
-than X25519 ECDH (~54 µs). Curve switching would therefore not buy a useful
-amount of performance in this deployment and is rejected on those grounds.
-This is environment-specific — on arm64 or other Go targets the picture
-inverts. Reconsider if the deployment substrate changes.
+X25519. On amd64 our benchmarks show P-256 ECDH (~65 µs) is **faster** than
+X25519 ECDH (~54 µs in keygen, ~54 µs in ECDH). Curve switching is rejected
+on benchmark evidence in this deployment. (On arm64 the picture would
+invert; revisit if the deployment substrate changes.)
 
 ---
 
@@ -98,8 +105,8 @@ encryption scheme protects ciphertexts in two places only:
    OUTBOX/INBOX).
 2. **Nothing else.** `message-worker` writes messages to Cassandra in
    plaintext; `history-service` and `search-service` do not touch
-   `roomcrypto`. Legacy ciphertexts are transient — once a broadcast event is
-   consumed and acknowledged it is gone.
+   `roomcrypto`. Encrypted ciphertexts are transient — once a broadcast event
+   is consumed and acknowledged it is gone from the system.
 
 The realistic threats this encryption blunts:
 
@@ -126,9 +133,9 @@ key, and decrypts.
 The only FS this system actually has is at the **key-rotation boundary**:
 once a `VersionedKeyPair` ages out of Valkey's previous-key slot (per
 `VALKEY_KEY_GRACE_PERIOD`), ciphertexts encrypted under the retired version
-can no longer be decrypted from current Valkey state. Stage 2 preserves
-this property unchanged — per-version forward secrecy is exactly what the
-versioned symmetric key gives you.
+are no longer decryptable from current Valkey state. The new scheme
+preserves this property unchanged — per-version forward secrecy is exactly
+what the versioned symmetric key gives you.
 
 ### What the ephemeral key actually buys today
 
@@ -148,23 +155,25 @@ and is discussed under Risks below.
 
 ### A. Status quo
 
-Keep paying ~87 µs per message. Easiest to ship (zero work) but the
-broadcast hot path keeps burning CPU on cryptographic operations that
-provide no security benefit beyond what Stage 2 provides for free.
+Keep paying ~87 µs per message. Easiest to ship (zero work). Rejected
+because the broadcast hot path keeps burning CPU on cryptographic
+operations that provide no security benefit beyond what the proposed
+scheme provides for free.
 
 ### B. Cache ephemeral key per (room, key-version), keep wire format
 
-Server-only change: cache the ephemeral keypair the first time a key version
-is used, then reuse it for every subsequent message in that version. Wire
-format and client code unchanged. Captures ~99% of the perf win with zero
-client coordination. Rejected only because the user has accepted the client
-coordination cost and prefers a clean end state — the design notes this
-option as a viable fallback if client coordination stalls.
+Server-only change: cache the ephemeral keypair the first time a key
+version is used, then reuse it for every subsequent message in that
+version. Wire format and client code unchanged. Captures ~99% of the perf
+win with zero client coordination. Rejected because the user has accepted
+the client coordination cost in exchange for the cleaner end state, and
+because chat-frontend has no existing decoder to break — there's nothing
+to coordinate with on this side of the wire.
 
 ### C. Switch curve to X25519
 
-Conventional wisdom says "X25519 is faster than P-256." False in this
-deployment — see the X25519 note above. Rejected on benchmark evidence.
+Conventional wisdom says X25519 beats P-256. False on amd64 Go — see the
+X25519 note above. Rejected on benchmark evidence.
 
 ### D. Precompute a pool of ephemeral keys
 
@@ -176,20 +185,19 @@ Rejected.
 
 Drop ECDH entirely. The room private key (32 bytes of high-entropy scalar)
 is already perfectly good IKM. Derive the per-version AES key as
-`HKDF-SHA256(room_priv_v, salt=nil, info="room-message-encryption-v2")`,
-cache it on both sides keyed on version, and use it directly. Wire format
-becomes `{scheme, version, nonce, ciphertext}` — no `ephemeralPublicKey`.
-
-Per-version FS is preserved (one AES key per key version; rotation retires
-it). Per-message FS is unchanged (we never had it). The hot path becomes a
-nonce read + GCM seal: ~200 ns per message.
+`HKDF-SHA256(roomPriv_v, salt=nil, info="room-message-encryption-v2")`,
+cache it on both sides keyed on `(roomId, version)`, and use it directly.
+Wire format becomes `{version, nonce, ciphertext}` — no
+`ephemeralPublicKey`. Per-version FS preserved; per-message FS (which we
+never had) unchanged. Hot path becomes a nonce read + GCM seal: ~200 ns per
+message.
 
 ---
 
 ## Recommendation
 
-Adopt Alternative E. Bump the scheme to version `1` and update server and
-clients together.
+Adopt Alternative E. Replace the existing scheme entirely (no dual-scheme
+migration window). Server and chat-frontend ship together in this branch.
 
 ---
 
@@ -198,58 +206,49 @@ clients together.
 ```go
 // pkg/roomcrypto/roomcrypto.go
 type EncryptedMessage struct {
-    // Scheme identifies the encryption algorithm in use.
-    //   0 (or absent): legacy ECIES with per-message ephemeral P-256 key.
-    //   1:             HKDF-only versioned symmetric AES-256-GCM.
-    // Decoders MUST inspect this field before interpreting other fields.
-    Scheme int `json:"scheme,omitempty"`
-
     // Version is the room key version; matches roomkeystore VersionedKeyPair.Version.
     Version int `json:"version"`
 
-    // EphemeralPublicKey is set only when Scheme == 0. Omitted for Scheme >= 1.
-    EphemeralPublicKey []byte `json:"ephemeralPublicKey,omitempty"`
-
-    // Nonce is the 12-byte AES-GCM nonce. Always present.
+    // Nonce is the 12-byte AES-GCM nonce.
     Nonce []byte `json:"nonce"`
 
-    // Ciphertext is content || 16-byte GCM tag. Always present.
+    // Ciphertext is content || 16-byte GCM tag.
     Ciphertext []byte `json:"ciphertext"`
 }
 ```
 
-Backwards compatibility: existing legacy ciphertexts already on the wire
-during the rolling deploy decode correctly because Scheme defaults to 0
-(`omitempty` on absence reads back as 0). Old clients that don't know about
-`Scheme` ignore it and proceed to decode under the legacy path — which fails
-loudly when `EphemeralPublicKey` is missing. That's acceptable only after
-clients ship the new decoder; the migration plan below sequences this.
+This is a **breaking** change to the wire format. The old `EphemeralPublicKey`
+field is removed entirely. Clients on the old scheme (i.e., the Swift
+client, until separately updated) will fail to decode messages from a
+server running this change and will display whatever fallback their
+decoder surfaces. chat-frontend's existing "[encrypted message]"
+placeholder code is replaced with a real decoder in this PR, so it sees no
+regression.
 
 ---
 
-## New algorithm
+## Algorithm
 
-Server-side `Encode(content, roomPrivateKey, version)`:
+### Server `(*Encoder).Encode(roomID, content, roomPrivateKey, version)`
 
-1. Look up (or compute and cache) `aesKey_v` for `version` from the in-process
-   per-key-version cache. On cache miss:
+1. Look up (or compute and cache) `aesKey_v` for `(roomID, version)`. On
+   cache miss:
    `aesKey_v = HKDF-SHA256(roomPrivateKey, salt=nil, info=[]byte("room-message-encryption-v2"))`,
-   read 32 bytes.
-2. AES-256-GCM with `aesKey_v`.
-3. Generate a fresh 12-byte nonce from `crypto/rand`.
-4. `gcm.Seal(nil, nonce, []byte(content), nil)`.
-5. Return `EncryptedMessage{Scheme: 1, Version: version, Nonce: nonce, Ciphertext: ciphertext}`.
+   read 32 bytes; construct an `aes.NewCipher` + `cipher.NewGCM`; store the
+   resulting `cipher.AEAD` in the cache.
+2. Generate a fresh 12-byte nonce from `crypto/rand`.
+3. `gcm.Seal(nil, nonce, []byte(content), nil)`.
+4. Return `EncryptedMessage{Version: version, Nonce: nonce, Ciphertext: ciphertext}`.
 
-Two notable changes from the current API:
+Two notable API changes:
 
-- **`Encode` now takes the room private key, not the public key.** The server
-  already has it in `roomkeystore.VersionedKeyPair.KeyPair.PrivateKey`. The
-  caller in `broadcast-worker/handler.go` swaps `key.KeyPair.PublicKey` for
-  `key.KeyPair.PrivateKey` at lines 210 and 254. No new fetches required.
-- **The cache lives in the `Encoder` value, not in package state.** A new
-  `roomcrypto.Encoder` struct holds the per-version AES key cache, eviction
-  policy, and the `crypto/rand` reader. `broadcast-worker` constructs one
-  `*Encoder` in `main.go` and passes it to the handler.
+- **`Encode` now takes the room private key, not the public key.** The
+  server already has `key.KeyPair.PrivateKey` in
+  `broadcast-worker/handler.go`. Lines 210 and 254 swap
+  `key.KeyPair.PublicKey` for `key.KeyPair.PrivateKey`.
+- **`Encode` is now a method on `*Encoder`,** not a free function. The
+  encoder owns the per-version AES-GCM cipher cache, eviction policy, and
+  the `crypto/rand` reader.
 
 ```go
 // pkg/roomcrypto/roomcrypto.go
@@ -259,36 +258,44 @@ type cacheKey struct {
 }
 
 type Encoder struct {
-    mu     sync.RWMutex
-    cache  map[cacheKey]cipher.AEAD
-    rand   io.Reader // crypto/rand.Reader; overridable for tests
-    scheme int       // 0 or 1; set via NewEncoder option
+    mu    sync.RWMutex
+    cache map[cacheKey]cipher.AEAD
+    rand  io.Reader // crypto/rand.Reader; overridable for tests
+    max   int       // MaxCacheEntries
 }
 
 func NewEncoder(opts ...EncoderOption) *Encoder
 
-// Encode encrypts content under the AES key derived from roomPrivateKey for
-// the given (roomID, version). The derived AES-GCM cipher is cached on the
-// Encoder, so repeat calls for the same (roomID, version) skip key derivation.
 func (e *Encoder) Encode(roomID, content string, roomPrivateKey []byte, version int) (*EncryptedMessage, error)
 ```
 
-The cache is bounded by `MaxCacheEntries` (default 4096, env override
-`ROOMCRYPTO_CACHE_SIZE`). Different rooms have different private keys, so
-the key is `(roomID, version)` — `version` alone would alias across rooms.
-Eviction policy is described under Implementation Details.
+The free function `roomcrypto.Encode` is **removed** in this PR. All
+callers (`broadcast-worker/handler.go:210, 254`) move to the encoder.
 
-Client-side decryption (described informally — implementation in the JS and
-Swift client repos):
+### Client decrypt (chat-frontend)
 
-1. Parse `{scheme, version, nonce, ciphertext}` (and `ephemeralPublicKey` if
-   scheme == 0).
-2. If `scheme == 0`: existing ECIES decode path (legacy).
-3. If `scheme == 1`: look up cached `aesKey_v` for `(roomID, version)`; on
-   cache miss, fetch the room's private key for that version from the local
-   key store, derive `aesKey_v` via HKDF, cache it, then GCM-open.
-4. If `scheme >= 2` or unknown: refuse to decrypt; surface a clear error so
-   client telemetry catches a stale build hitting newer ciphertexts.
+```ts
+// chat-frontend/src/lib/roomcrypto/roomcrypto.ts (new module)
+
+export async function decryptRoomMessage(
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  aesKey: CryptoKey,
+): Promise<string>
+
+export async function deriveAesKey(
+  roomPrivateKey: Uint8Array, // 32-byte raw key
+): Promise<CryptoKey>
+```
+
+Internals:
+
+1. `deriveAesKey` uses `crypto.subtle.importKey('raw', roomPrivateKey, 'HKDF', ...)`
+   then `crypto.subtle.deriveKey({name:'HKDF', hash:'SHA-256', salt:new Uint8Array(0), info:utf8('room-message-encryption-v2')}, ikm, {name:'AES-GCM', length:256}, false, ['decrypt'])`.
+2. `decryptRoomMessage` calls `crypto.subtle.decrypt({name:'AES-GCM', iv:nonce, tagLength:128}, aesKey, ciphertext)`, then `TextDecoder('utf-8').decode(...)`.
+
+Caller (the room-keys context) wraps `deriveAesKey` so the resulting
+`CryptoKey` is cached per `(roomId, version)`.
 
 ---
 
@@ -296,144 +303,312 @@ Swift client repos):
 
 ### `pkg/roomcrypto/roomcrypto.go`
 
-- Add `Scheme int` field to `EncryptedMessage` (json `omitempty`).
-- Make `EphemeralPublicKey` `omitempty`.
-- Introduce `Encoder` struct + `NewEncoder()` + `(*Encoder).Encode(content, roomPrivateKey, version)`.
-- Keep the package-level `Encode(content, roomPublicKey, version)` function
-  for one release as a thin wrapper that returns scheme-0 ciphertexts —
-  marked with a deprecation comment pointing to `Encoder`. Removed in a
-  follow-up PR after the migration completes.
-- Per-version cache: `map[cacheKey]cipher.AEAD` where `cacheKey = struct{ roomID string; version int }`,
-  protected by `sync.RWMutex`, bounded by `MaxCacheEntries` with simple
-  lowest-version eviction. (Bound is loose; this collection is small and
-  warm.)
-
-### `pkg/roomcrypto/bench_test.go`
-
-- Already added as part of this analysis. Update to also benchmark
-  `(*Encoder).Encode` so the new hot path's perf is tracked in CI runs.
+- `EncryptedMessage` struct: drop `EphemeralPublicKey`. Keep
+  `Version`, `Nonce`, `Ciphertext`.
+- Remove the free `Encode` function.
+- Add `Encoder` struct, `NewEncoder()`, `EncoderOption`, and
+  `(*Encoder).Encode(roomID, content, roomPrivateKey, version)`.
+- Per-version cache: `map[cacheKey]cipher.AEAD`, protected by
+  `sync.RWMutex`, bounded by `MaxCacheEntries` (default 4096; env override
+  `ROOMCRYPTO_CACHE_SIZE`) with simple lowest-version eviction described
+  under Implementation Details.
 
 ### `pkg/roomcrypto/roomcrypto_test.go`
 
-- New table-driven test `TestEncoder_Encode` covering: happy path, empty
-  content, invalid private key length, scheme field set to 1 on output,
-  `EphemeralPublicKey` is empty on output.
-- New round-trip test `TestEncoder_RoundTrip` that encodes with the new
-  encoder and decodes inline using the same HKDF derivation logic against
-  the room private key.
-- New `TestEncoder_CacheHit` that asserts encoding twice for the same
-  `(roomID, version)` derives the AES key only once. Use a counting
-  `randReader` or instrument cache misses via a test-only accessor.
-- Keep all existing scheme-0 tests intact — they validate the legacy code
-  path that must continue to work for the deprecation window.
+- Drop all tests that exercise the legacy `Encode` / `EphemeralPublicKey`
+  path. The legacy code is gone; testing it is dead weight.
+- New table-driven `TestEncoder_Encode`: happy path, empty content, too-short
+  private key (31 bytes), too-long private key (33 bytes), version stamped
+  on output, no `EphemeralPublicKey` field present in JSON.
+- New `TestEncoder_RoundTrip`: encode, then decode inline using
+  HKDF-SHA256(privKey, info="room-message-encryption-v2") + AES-GCM, content
+  matches.
+- New `TestEncoder_CacheHit`: two encodes for same (roomID, version) derive
+  the AES key only once (instrument via a test hook on the encoder).
+- New `TestEncoder_CacheEviction`: fill to `MaxCacheEntries`, add one more,
+  assert lowest-version entry evicted.
+- New `TestEncoder_NonDeterminism`: two encodes for same inputs produce
+  different nonces and different ciphertexts (under the same cached AES key,
+  this is solely a property of the random nonce).
+- New `TestEncoder_RandReaderError`: inject a failing reader; nonce
+  generation surfaces a wrapped error.
+
+### `pkg/roomcrypto/bench_test.go`
+
+- Already committed. Update to benchmark `(*Encoder).Encode` as the
+  primary case, leave the curve-comparison benchmarks for posterity.
+
+### `pkg/roomcrypto/integration_test.go`
+
+- Existing test uses a Node container to validate a TypeScript decrypt
+  script against `pkg/roomcrypto.Encode`. Update the TS decrypt script to
+  the new HKDF-only algorithm; update `decryptPayload` struct accordingly
+  (drop the publicKey field; keep privateKey).
 
 ### `broadcast-worker/handler.go`
 
 - Hold `*roomcrypto.Encoder` on the handler struct, constructed in
-  `main.go` via `roomcrypto.NewEncoder()`.
-- At lines 210 and 254, replace
+  `main.go`.
+- Lines 210 and 254: replace
   `roomcrypto.Encode(content, key.KeyPair.PublicKey, key.Version)` with
   `h.encoder.Encode(roomID, content, key.KeyPair.PrivateKey, key.Version)`.
-  Add `roomID` to the encoder signature so the cache key is correct.
-- Add config gate `BROADCAST_ENCRYPTION_SCHEME` (envDefault `0`) that
-  forces scheme 0 when set to 0 and scheme 1 when set to 1. Default 0
-  during initial deploy; flipped to 1 only after clients are caught up.
-  Encoder accepts the requested scheme through a constructor option:
-  `NewEncoder(WithScheme(1))`.
+  Pass `meta.ID` / `edited.RoomID` (or `msg.RoomID` — whichever is in
+  scope) as the `roomID` argument.
 
 ### `broadcast-worker/main.go`
 
-- Parse the new config field, construct the encoder with the right scheme.
-- Pass the encoder to the handler.
+- Parse `ROOMCRYPTO_CACHE_SIZE` (envDefault `4096`).
+- Construct the encoder via `roomcrypto.NewEncoder(roomcrypto.WithMaxCacheEntries(cfg.RoomCryptoCacheSize))`.
+- Pass to the handler constructor.
 
 ### `broadcast-worker/handler_test.go`
 
-- Mock expectations updated to inject a real `*roomcrypto.Encoder` (it has
-  no external dependencies, no mocking required).
-- New test case: scheme is correctly set on the published event JSON.
+- Mock expectations stay the same (`pkg/roomcrypto` has no mocks; a real
+  encoder is injected with no external dependencies).
+- New case: published event's `encryptedMessage` JSON contains
+  `version`, `nonce`, `ciphertext` but **no** `ephemeralPublicKey` field.
 
 ### `pkg/model/event.go`
 
-- No struct changes. `EncryptedMessage` (the inner ciphertext type in
-  `pkg/roomcrypto`) is what changes; `RoomEvent.EncryptedMessage` remains a
-  `json.RawMessage` and is opaque to `pkg/model`.
+- No struct changes. `RoomEvent.EncryptedMessage` remains
+  `json.RawMessage`; the inner shape change lives in `pkg/roomcrypto`.
 
 ### `docs/client-api.md`
 
-- Update §4.1 and the encryption section to describe the new scheme
-  field, the new wire layout, and the migration semantics. Per project
-  rule (CLAUDE.md "Before Committing"), this doc update is part of the
-  same PR as the broadcast-worker change.
+- Update §4.1 RoomEvent description and the room-encryption section to
+  describe the new wire layout (no ephemeral public key) and the new
+  derivation algorithm. Per project rule, this doc update is in the same
+  PR as the broadcast-worker change.
 
 ### Mock regeneration
 
-- `make generate SERVICE=broadcast-worker` after the handler interface
-  change. `pkg/roomcrypto` does not use mockgen.
+- `make generate SERVICE=broadcast-worker` after the handler signature
+  changes.
 
 ---
 
-## Client changes (informational, out of scope for this branch)
+## chat-frontend changes
 
-Client changes are tracked separately because they live in other repos. The
-client work this spec assumes:
+The frontend changes implement room-key handling and message decryption
+end-to-end. This is greenfield work — there is no existing decoder to
+extend or be compatible with.
 
-1. JS and Swift decoders are updated to:
-   - Inspect `scheme` first.
-   - If `scheme == 0` (or absent): existing ECIES decode.
-   - If `scheme == 1`: derive AES key from local room private key via
-     HKDF-SHA256 with `info="room-message-encryption-v2"`, cache per
-     `(roomID, version)`, then GCM-open.
-   - Any other scheme: surface a clear error.
-2. Client decoder is shipped to production and reaches a stable
-   client-population coverage (target: ≥99%) **before** the server flips to
-   emit scheme 1.
+### New module: `src/lib/roomcrypto/roomcrypto.ts`
+
+Pure utility using Web Crypto API. Per `chat-frontend/CLAUDE.md`, `lib/`
+is the right home: no React, no NATS, no async I/O beyond `crypto.subtle`.
+
+```ts
+// Derive an AES-256-GCM CryptoKey from a 32-byte room private key.
+export async function deriveAesKey(roomPrivateKey: Uint8Array): Promise<CryptoKey>
+
+// Decrypt {nonce, ciphertext} produced by the server encoder.
+export async function decryptRoomMessage(
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  aesKey: CryptoKey,
+): Promise<string>
+
+// Decode helpers: base64 → Uint8Array. Re-exported for tests + callers.
+export function b64decode(s: string): Uint8Array
+```
+
+Test file `roomcrypto.test.ts` covers:
+
+- Round-trip against a fixed Go-produced ciphertext (committed as test
+  fixture under `chat-frontend/test/fixtures/`).
+- HKDF parameters match server (info string, salt=empty, 32-byte output).
+- Reject ciphertext with wrong tag (GCM verification failure surfaces a
+  clear error).
+- Reject ciphertext with wrong nonce length.
+
+### New API op: `src/api/subscribeToRoomKeyEvents/index.ts`
+
+```ts
+export function subscribeToRoomKeyEvents(
+  nats: Nats,
+  onEvent: (evt: RoomKeyEvent) => void,
+): Subscription
+```
+
+Subject: `chat.user.${account}.event.room.key` (build via
+`api/_transport/subjects.ts` — add `userRoomKey(account)`). Wire shape
+mirrors `pkg/model.RoomKeyEvent`: `{ roomId, version, privateKey, timestamp }`
+where `privateKey` is base64.
+
+Re-exported from `src/api/index.ts`.
+
+### Extend `RoomsInfoBatch` bootstrap (existing RPC)
+
+`room-service/handler.go:874` already returns `privateKey` + `keyVersion`
+per room from the batch RPC. chat-frontend does not call this RPC today.
+Two options:
+
+- **Option F1 (recommended):** add a new lightweight RPC
+  `chat.user.{account}.request.rooms.keys` that, given the caller's
+  subscribed room IDs (derived server-side from the user's subscriptions),
+  returns `[{roomId, version, privateKey}]`. Cleaner API surface; isolates
+  the key-bootstrap concern.
+- **Option F2:** call the existing `RoomsInfoBatch` RPC for the keys. Less
+  new server-side surface, but couples key bootstrap to room-info fetch
+  (which today is on-demand, not on-connect).
+
+For this spec, go with **F1**. New handler in `room-service`:
+
+- Subject: `chat.user.{account}.request.rooms.keys`.
+- Request: empty (or `{roomIds: []}` — but the server has the
+  authoritative subscription list, so it can derive without trusting
+  client input).
+- Response: `[{roomId, version, privateKey}]` — only rooms the caller is
+  subscribed to AND that have a key in Valkey.
+
+Add tests in `room-service/handler_test.go` and update `docs/client-api.md`.
+
+### New context: `src/context/RoomKeysContext/`
+
+Folder layout per `chat-frontend/CLAUDE.md`:
+
+```
+context/RoomKeysContext/
+├── RoomKeysContext.tsx     ← provider + useRoomKeys() hook
+├── reducer.ts              ← state machine
+├── useKeyBootstrap.ts      ← initial fetch hook
+├── index.tsx               ← re-export
+└── *.test.{ts,tsx}
+```
+
+State shape:
+
+```ts
+type StoredKey = {
+  privateKey: Uint8Array   // raw 32-byte scalar (base64-decoded)
+  aesKey?: CryptoKey       // lazily derived, cached
+}
+
+type RoomKeysState = {
+  // outer key: roomId; inner key: version
+  byRoom: Record<string, Record<number, StoredKey>>
+  bootstrapped: boolean
+}
+```
+
+Actions:
+
+- `BOOTSTRAP_LOADED`: bulk insert from the new keys RPC.
+- `KEY_RECEIVED`: insert one `{roomId, version, privateKey}` from the
+  subscription. Idempotent — replacing an existing entry is fine (the same
+  privateKey should arrive).
+- `CLEAR_KEYS`: on logout/reconnect, clear all state.
+
+Provider responsibilities:
+
+1. On mount (post-login), call the new keys-RPC; dispatch
+   `BOOTSTRAP_LOADED`.
+2. Subscribe to `subscribeToRoomKeyEvents`; dispatch `KEY_RECEIVED` on each
+   event.
+3. Unsubscribe + clear on unmount/reconnect.
+
+Exported hook `useDecryptMessage(roomId, version, ciphertextB64, nonceB64): Promise<string | null>`:
+
+- Look up `byRoom[roomId]?.[version]`. If absent, return `null` (caller
+  surfaces placeholder).
+- If `aesKey` not cached, derive it via `deriveAesKey(privateKey)` and
+  store back into state via a dispatch (or write directly into the
+  ref-backed cache; see Implementation Details).
+- Call `decryptRoomMessage(ciphertext, nonce, aesKey)`; return the
+  plaintext on success or `null` on failure.
+
+### Reducer integration: `src/context/RoomEventsContext/`
+
+Today's `MESSAGE_RECEIVED` handler at `reducer.js:296-318` does the
+"synthesize a placeholder" fallback when `evt.encryptedMessage` is
+present and `evt.message` is not. Replace this with a decrypt attempt
+**before** the placeholder fallback:
+
+The trick: the reducer is pure synchronous JS. Decryption is async.
+Resolution: do the decrypt in the **dispatcher** (the
+`subscribeToRoomEvents` callback in `useRoomSubscriptions.js:221`), not in
+the reducer. When `evt.encryptedMessage` is present:
+
+1. Look up the key from the room-keys context.
+2. Attempt to decrypt via `useDecryptMessage` (or the underlying async
+   function exposed by the context).
+3. If decrypt succeeds: parse the JSON `ClientMessage`, replace
+   `evt.message` with the decoded message, drop `evt.encryptedMessage`,
+   dispatch `MESSAGE_RECEIVED` as usual.
+4. If decrypt fails (no key, wrong version, GCM tag mismatch): dispatch a
+   variant that keeps the placeholder path (today's behavior).
+
+The reducer itself only sees fully-decoded events. The placeholder
+fallback at lines 308-318 stays as the last-resort branch for events that
+arrived before the key did.
+
+Edits (`MessageEditedPayload.encryptedNewContent` at
+`pkg/model/event.go:152`) take the same treatment: decrypt in the
+dispatcher, hand the plaintext `NewContent` to the reducer.
+
+### Tests
+
+Following `chat-frontend/CLAUDE.md` testing conventions:
+
+- `lib/roomcrypto/roomcrypto.test.ts`: round-trip with a Go-produced
+  fixture (see Implementation Details for how the fixture is generated).
+- `api/subscribeToRoomKeyEvents/index.test.ts`: argument-to-payload
+  mapping; subject correctness; callback receives parsed event.
+- `context/RoomKeysContext/reducer.test.ts`: pure JS tests on all three
+  actions; idempotency of `KEY_RECEIVED`.
+- `context/RoomKeysContext/RoomKeysContext.test.tsx`: provider mounts,
+  calls bootstrap RPC, subscribes, dispatches; unmount unsubscribes.
+- `context/RoomEventsContext/reducer.test.js`: existing
+  "placeholder when only encryptedMessage" case stays — covers the
+  no-key-yet branch. **New** case: decrypted event arrives with
+  populated `message`, reducer treats it as a normal new-message event.
+- `context/RoomEventsContext/useRoomSubscriptions.test.js` (or a new
+  test file): dispatcher path decrypts successfully, then dispatches the
+  decoded event.
+
+### Smoke
+
+Add a new `scripts/encryption.smoke.mjs` (or extend the existing
+`smoke-test.mjs`) that runs end-to-end against the live stack: send an
+encrypted message, then assert chat-frontend's decoder produces the
+expected plaintext.
+
+### What this does NOT change in chat-frontend
+
+- `RoomEvent` wire type stays the same (`encryptedMessage` is still
+  `unknown`/`json.RawMessage`-equivalent at the TS layer).
+- `subscribeToRoomEvents` stays the same.
+- The placeholder rendering code path is preserved as a fallback.
+- No UI changes — decrypted messages flow through the same render path
+  plaintext messages do today.
 
 ---
 
 ## Migration plan
 
-Four phases. Each phase is a separate deploy.
+One deploy. Server and chat-frontend ship in the same PR. Encrypted
+broadcast events are transient; there are no historical scheme-0
+ciphertexts to support. The Swift client (out-of-repo) will see decode
+failures from the moment the server flips — coordination of that update
+is outside this branch's scope and tracked separately.
 
-**Phase 1 — Server: scheme-aware encoder, default off.**
+Deployment order if any: chat-frontend first, then server. Either order
+is safe (chat-frontend's placeholder fallback handles any scheme it can't
+decode), but frontend-first means users see the new decoded messages the
+moment the server flips, with no in-flight gap.
 
-- Land all server changes above. Server can emit either scheme based on
-  config. Default `BROADCAST_ENCRYPTION_SCHEME=0`. No production behavior
-  change yet.
-
-**Phase 2 — Clients ship scheme-1 decoder.**
-
-- JS and Swift decoders updated and deployed. Telemetry on
-  "decoded scheme=1 message count" stays at zero until phase 3.
-
-**Phase 3 — Server flips to scheme 1.**
-
-- Set `BROADCAST_ENCRYPTION_SCHEME=1` on broadcast-worker in one site,
-  monitor decode-error telemetry from clients. Roll out per-site.
-
-**Phase 4 — Cleanup.**
-
-- After a stabilization period (suggested: 4 weeks at scheme 1), open a PR
-  to remove the package-level `roomcrypto.Encode` wrapper and the scheme-0
-  branch of `(*Encoder).Encode`. The decoder side (client) keeps scheme-0
-  support for a longer window or indefinitely; the actual call sites in
-  `broadcast-worker` no longer reach the scheme-0 path.
-
-Rollback at any phase is a config flip — set the env var back to 0 and
-restart.
-
-Encrypted ciphertexts are transient (never persisted by message-worker or
-elsewhere), so once a scheme-1 broadcast is delivered or expires from
-JetStream there are no orphan scheme-1 ciphertexts left in the system to
-worry about. This is what makes the migration tractable.
+Rollback: revert the PR. Encrypted ciphertexts are transient; nothing
+persistent depends on the new format.
 
 ---
 
 ## Implementation details
 
-### Cache key
+### Cache key (server)
 
-The per-version AES key derivation depends on `(roomID, version)` because
-different rooms have different private keys. Cache key:
+The per-version AES key depends on `(roomID, version)` because different
+rooms have different private keys. Cache key:
 
 ```go
 type cacheKey struct {
@@ -442,113 +617,58 @@ type cacheKey struct {
 }
 ```
 
-`(*Encoder).Encode` takes `roomID, content, roomPrivateKey, version` and
-looks up the cache under `cacheKey{roomID, version}`.
+### Cache size and eviction (server)
 
-### Cache size and eviction
-
-- Default `MaxCacheEntries = 4096` (override via env var
-  `ROOMCRYPTO_CACHE_SIZE` parsed in `broadcast-worker/main.go` and passed
-  into the encoder constructor).
+- Default `MaxCacheEntries = 4096` (override via env
+  `ROOMCRYPTO_CACHE_SIZE`, parsed in `broadcast-worker/main.go`).
 - Eviction: on insert over the limit, drop the entry with the lowest
-  `version` value across all rooms. This is a deliberately simple policy —
-  hot rooms keep their entries because they hit and refresh, and rare rooms
-  with old versions are the right thing to drop. Constant-factor work per
-  eviction is acceptable at this cache size; a min-heap is overkill.
-- Cache entries are `cipher.AEAD` values, not raw bytes — derived once via
-  `aes.NewCipher` + `cipher.NewGCM` and reused for every `Seal`. AES-GCM
-  Go internals do not retain per-call state; reusing the `AEAD` is safe and
-  is what the stdlib documents.
+  `version` value across all rooms. Deliberately simple — hot rooms keep
+  their entries, rare rooms with old versions get dropped first. Linear
+  scan per eviction is acceptable at n=4096.
+- Cache entries are `cipher.AEAD` values, not raw bytes — derived once
+  via `aes.NewCipher` + `cipher.NewGCM` and reused for every `Seal`.
 
 ### Key-version rotation correctness
 
-When a room rotates its key:
-
-1. `roomkeystore.Rotate` increments the version and demotes the prior
-   `VersionedKeyPair` to the previous-key slot.
-2. `broadcast-worker` reads the new `VersionedKeyPair` via
-   `keyStore.Get(ctx, roomID)` on its next message handle.
-3. `(*Encoder).Encode` looks up `(roomID, newVersion)`, misses, derives the
-   new AES key, caches it.
-4. The old `(roomID, oldVersion)` cache entry is harmless — it ages out
-   under the size-bounded eviction policy and is never used again because
-   no encrypt path will request the old version.
+On rotation, `broadcast-worker` reads the new `VersionedKeyPair` from
+Valkey on its next message. `(*Encoder).Encode` misses on the new
+version, derives, caches. Old entries age out under the size bound. The
+old AES key is never asked for again because no encrypt path requests an
+old version. chat-frontend keeps the old version in `RoomKeysState`
+indefinitely so any in-flight messages encrypted under the old version
+(during the rotation grace window) still decrypt; eviction policy on the
+client side is "drop after `VALKEY_KEY_GRACE_PERIOD * 2`" or simpler
+"keep up to N most recent versions per room"; see open question O3.
 
 ### Nonce hygiene
 
-With one AES key per (room, version) instead of one per message, nonce
-collision becomes a real concern. The Go `crypto/rand` 96-bit nonce yields
-collision probability ~2⁻³² after ~2³² messages **per key version**. Two
-mitigations:
+With one AES key per (room, version), nonce collision becomes a real
+concern. `crypto/rand` 96-bit random nonces collide with probability
+~2⁻³² after ~2³² messages **per key version**. Mitigations:
 
-1. **Document the rotation cadence as a security parameter.** The room key
-   rotation policy (currently operationally driven) must keep
-   "messages per key version" comfortably below 2³² ≈ 4.3B. At 10K msg/s
-   sustained on a single room that's ~5 days between mandatory rotations.
-   For realistic chat workloads this is trivially satisfied.
-2. **Prefer a deterministic-counter nonce scheme if rotation cadence is
-   ever in doubt.** Out of scope here — flagged as future work below.
+1. **Document the rotation cadence as a security parameter.** Room-key
+   rotation policy must keep "messages per key version" comfortably below
+   2³² ≈ 4.3B. At 10K msg/s on one room that's ~5 days between mandatory
+   rotations — trivially satisfied at realistic chat scale.
+2. **Counter-based nonces if rotation cadence is ever in doubt.** Out of
+   scope here; flagged as future work.
+
+### Fixture generation for chat-frontend roundtrip tests
+
+A small Go program under `chat-frontend/scripts/gen-crypto-fixtures.go`
+(invoked manually, output committed to
+`chat-frontend/test/fixtures/encrypted-message.json`) encodes a known
+plaintext with a known private key + version. The TS test reads the
+fixture and verifies decryption produces the original plaintext. Cross-
+language round-trip coverage in one direction is sufficient; the
+integration test in `pkg/roomcrypto/integration_test.go` covers the
+other direction (Go encode → Node decode via tsx).
 
 ### Test reproducibility
 
-`pkg/roomcrypto/bench_test.go` is committed and run via the standard
-`go test -bench` invocation. No load harness changes required for this
-spec. The benchmark numbers in this document were captured on the dev
-container's Xeon @ 2.80 GHz; production silicon (typically newer Skylake
-or Sapphire Rapids in our fleet) is likely faster on P-256 ASM and faster
-still on AES-NI for the symmetric path. The ratios should hold.
-
----
-
-## Testing
-
-### Unit tests (in `pkg/roomcrypto/`)
-
-- Existing scheme-0 tests stay green throughout the migration.
-- `TestEncoder_Encode` — table-driven: happy path, empty content,
-  too-short private key (31 bytes), too-long private key (33 bytes), scheme
-  field set to 1, ephemeral field empty, version stamped.
-- `TestEncoder_RoundTrip` — encode + decode inline using HKDF-derived AES
-  key, content matches.
-- `TestEncoder_CacheHit` — encode twice for the same `(roomID, version)`,
-  assert AES key derivation happened only once (instrument via a test hook
-  on the encoder).
-- `TestEncoder_CacheEviction` — fill the cache past `MaxCacheEntries`, add
-  one more, assert the lowest-version entry is evicted.
-- `TestEncoder_NonDeterminism` — two encodes with identical inputs produce
-  different nonces and different ciphertexts (under the same cached AES
-  key, this is now solely a property of the random nonce — the test must
-  still pass).
-- `TestEncoder_RandReaderError` — inject a failing reader; nonce
-  generation surfaces a wrapped error.
-
-### Handler test (in `broadcast-worker/handler_test.go`)
-
-- Existing cases updated so the handler holds a real `*roomcrypto.Encoder`.
-- New case: published event's `encryptedMessage` JSON has `scheme: 1` and
-  no `ephemeralPublicKey` field when the encoder is constructed
-  `WithScheme(1)`. Same case with `WithScheme(0)` asserts the legacy
-  fields are still present.
-
-### Integration test
-
-- `pkg/roomcrypto/integration_test.go` exists today and covers the JS
-  decode side via testcontainers. Add scheme-1 cases that emit a
-  scheme-1 ciphertext and assert a parallel JS decoder script can recover
-  the plaintext. (This is non-trivial wiring — flagged in the plan
-  as a discrete task.)
-
-### Coverage target
-
-`pkg/roomcrypto` ≥90% per project core-library standard.
-`broadcast-worker` ≥80% per project default.
-
-### Benchmark gate
-
-`make test` does not run benchmarks by default. The intent is not to gate
-CI on absolute benchmark numbers — only that the benchmark file builds and
-runs cleanly. Periodic manual runs are the policy. (No new perf-CI rule
-proposed here.)
+Benchmark numbers in this document were captured on the dev container's
+Xeon @ 2.80 GHz. The relative ratios (Encode vs symmetric-only) should
+hold across CPU generations.
 
 ---
 
@@ -556,73 +676,90 @@ proposed here.)
 
 ### R1. PRNG failure mode
 
-If `crypto/rand.Read` returns identical bytes on two calls under the same
-AES key, GCM authenticity is broken and the auth key can be recovered. The
-current scheme hides this behind the per-message key derivation; the new
-scheme is exposed to it directly. Mitigation: this is a system-wide
-catastrophe under either scheme (JWT generation, NATS NKey signing, every
-other use of `crypto/rand` is equally affected), so localizing the concern
-here is misleading. Accept the risk.
+If `crypto/rand.Read` returns identical bytes on two calls under the
+same AES key, GCM authenticity is broken and the auth key can be
+recovered. The current scheme hides this behind per-message key
+derivation; the new scheme is exposed to it directly. Mitigation: this
+is a system-wide catastrophe under either scheme (every NKey signature,
+JWT generation, etc. is equally affected), so localizing the concern to
+this change is misleading. Accept the risk.
 
 ### R2. Forgetting to rotate
 
 If a room never rotates, its AES key encrypts the room's entire history
 under one key. Mitigation: document the rotation cadence as a security
-parameter (see Nonce hygiene above). If rotation discipline is a real
-concern, follow-up work can add an automated rotation policy in
-`roomkeystore` — out of scope for this spec.
+parameter (see Nonce hygiene). If rotation discipline is a real concern,
+follow-up work can add an automated rotation policy in `roomkeystore`.
+Out of scope here.
 
-### R3. Migration coordination
+### R3. Swift client breaks at the moment of server flip
 
-Phase 3 (flipping the server to scheme 1) must wait for client decoder
-coverage. If we flip too early, in-flight clients on the old build fail to
-decode messages and surface decryption errors in the UI. Mitigation: the
-config flag is per-site; roll out to one site first, watch
-client-reported decode errors, then proceed.
+The Swift client expects scheme-0 (with `ephemeralPublicKey`) on the
+wire. The moment the server flips, Swift cannot decrypt. Mitigation:
+out-of-scope for this branch; tracked separately. If Swift is on the
+critical path, defer this change until the Swift update is ready.
 
-### R4. `EncryptedMessage` is also used for edits
+### O1. New RPC vs. extending an existing one for key bootstrap
 
-`broadcast-worker/handler.go:210` encrypts edited content the same way as
-new messages. Confirmed in this spec — the same encoder is used in both
-sites with no special handling needed.
+This spec proposes a new `chat.user.{account}.request.rooms.keys` RPC.
+Alternative is to extend `RoomsInfoBatch` so chat-frontend calls it on
+connect. Choosing the new RPC keeps responsibilities separate and avoids
+a client behavior change ("now we call RoomsInfoBatch on connect, not
+on-demand"). Confirm with reviewer before implementation.
 
-### R5. The "previous key" grace window
+### O2. AES key derivation cached at decrypt site (client)
 
-`roomkeystore` supports a previous-key slot so messages encrypted just
-before a rotation can still be decoded. Under the new scheme this works
-unchanged on the client (the client looks up the room private key for the
-specific `version` on the message and derives the AES key from it). No
-spec changes required.
+`useDecryptMessage` returns a `Promise<string | null>` and lazily caches
+the derived `CryptoKey` per (roomId, version). Caching via dispatch
+loops through the React reducer; caching via a ref is faster but lives
+outside React state. Recommend: ref-backed map inside the context
+provider, exposed via a stable callback. State carries only the raw
+`privateKey`; the derived `CryptoKey` is a transient cache.
 
-### R6. Backwards compatibility on `EncryptedMessage` JSON
+### O3. Old-version retention policy (client)
 
-Old clients with the existing decoder receive a scheme-1 payload and fail
-to decode it. This is expected and is exactly what the phased rollout
-protects against. No JSON-level shim is provided; the `scheme` field is
-the only signal.
+chat-frontend's `RoomKeysState.byRoom[roomId]` accumulates versions over
+time. Two reasonable policies:
+
+- Keep all versions ever received in this session (memory leak in
+  long-lived tabs).
+- Keep last N versions per room (default N=2 — current + previous).
+
+Recommend the latter, default N=2 (matches Valkey's previous-key grace
+slot). Flag for reviewer.
+
+### O4. Edit-content key version
+
+`MessageEditedPayload.encryptedNewContent` is encrypted under whatever
+the current key is at edit time. The decryptor needs the version. The
+`EncryptedMessage` JSON inside `encryptedNewContent` carries `version`
+already — no payload change needed. Just confirmed for the spec.
 
 ---
 
 ## Future work (deferred)
 
 - **Counter-based nonces.** If sustained per-room throughput approaches
-  2³² messages between rotations, switch from random 96-bit nonces to a
-  deterministic counter + random prefix scheme (per NIST SP 800-38D §8.2.1).
-  Not needed at current scale.
+  2³² messages between rotations.
 - **Automated key rotation policy.** Tie rotation to a max-messages or
-  max-age policy enforced in `roomkeystore`. Currently manual.
-- **Removing the deprecated `roomcrypto.Encode` wrapper.** Follow-up PR
-  after Phase 4 stabilization.
-- **Re-evaluating curve choice on non-amd64 architectures.** If we ever
-  deploy to arm64 the X25519 vs P-256 picture inverts; the scheme-0 code
-  path is then a candidate for removal regardless of scheme-1 success.
+  max-age policy enforced in `roomkeystore`.
+- **Swift client update.** Tracked separately.
+- **Removing the chat-frontend `[encrypted message]` fallback once the
+  bootstrap path is rock-solid.** For now it stays as the last-resort
+  branch for events that arrive before their key does.
+- **Persisting room keys to IndexedDB across reloads.** Today every
+  reload re-bootstraps via the keys RPC. Cheap at low room counts; revisit
+  if room counts per user grow large.
 
 ---
 
 ## Out of scope
 
-- Client decoder implementation (lives in JS and Swift repos).
+- Swift client decoder implementation.
 - Re-encrypting historical messages (none are persisted encrypted).
-- Changes to `roomkeystore`, `room-key-sender`, or NATS subjects.
+- Changes to `roomkeystore`, `room-key-sender`, or NATS subjects
+  beyond the new keys-bootstrap RPC.
 - Changes to `message-worker`, `history-service`, `search-service`.
-- Performance work outside `roomcrypto` and its caller in `broadcast-worker`.
+- Performance work outside `roomcrypto` and its caller in
+  `broadcast-worker`.
+- Persisting room keys client-side beyond the lifetime of the tab.
