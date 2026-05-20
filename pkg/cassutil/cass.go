@@ -9,14 +9,32 @@ import (
 	"github.com/gocql/gocql"
 )
 
-func Connect(hosts, keyspace, username, password string) (*gocql.Session, error) {
-	cluster := buildCluster(parseHosts(hosts), keyspace, username, password)
+// defaultNumConns is the per-host connection count used when Config.NumConns
+// is unset (zero or negative). gocql's own default is 2, which underprovisions
+// any service issuing concurrent queries — history-service's bucket walks and
+// message-worker's per-message inserts both push enough concurrency that two
+// connections per host queue requests at the driver level.
+const defaultNumConns = 8
+
+// Config bundles the connection parameters for Connect. The caller's service
+// owns the env binding (e.g. `CASSANDRA_NUM_CONNS`); cassutil only consumes
+// the resolved struct.
+type Config struct {
+	Hosts    string // comma-separated "host:port,host:port"
+	Keyspace string
+	Username string
+	Password string
+	NumConns int // per-host connection count; 0 or negative → defaultNumConns
+}
+
+func Connect(cfg Config) (*gocql.Session, error) {
+	cluster := buildCluster(parseHosts(cfg.Hosts), cfg.Keyspace, cfg.Username, cfg.Password, cfg.NumConns)
 
 	session, err := cluster.CreateSession()
 	if err != nil {
 		return nil, fmt.Errorf("cassandra connect: %w", err)
 	}
-	slog.Info("connected to Cassandra", "keyspace", keyspace)
+	slog.Info("connected to Cassandra", "keyspace", cfg.Keyspace, "num_conns", cluster.NumConns)
 	return session, nil
 }
 
@@ -36,11 +54,16 @@ func parseHosts(s string) []string {
 	return hosts
 }
 
-func buildCluster(hosts []string, keyspace, username, password string) *gocql.ClusterConfig {
+func buildCluster(hosts []string, keyspace, username, password string, numConns int) *gocql.ClusterConfig {
 	cluster := gocql.NewCluster(hosts...)
 	cluster.Keyspace = keyspace
 	cluster.Consistency = gocql.LocalQuorum
 	cluster.Timeout = 10 * time.Second
+	if numConns > 0 {
+		cluster.NumConns = numConns
+	} else {
+		cluster.NumConns = defaultNumConns
+	}
 	if username != "" && password != "" {
 		cluster.Authenticator = gocql.PasswordAuthenticator{
 			Username: username,

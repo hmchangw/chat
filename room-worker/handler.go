@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
@@ -35,16 +36,39 @@ var errRoomKeyAbsent = errors.New("room key absent")
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
 type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
 
+// defaultKeyFanoutWorkers caps concurrent in-flight key publishes when the
+// caller doesn't override via SetKeyFanoutWorkers. Sized to absorb common
+// channel sizes (32 members fan out in one batch) without unbounded goroutine
+// growth on giant rooms (10k members → 32 goroutines, not 10k).
+const defaultKeyFanoutWorkers = 32
+
 type Handler struct {
-	store     SubscriptionStore
-	siteID    string
-	publish   PublishFunc
-	keyStore  RoomKeyStore
-	keySender *roomkeysender.Sender
+	store            SubscriptionStore
+	siteID           string
+	publish          PublishFunc
+	keyStore         RoomKeyStore
+	keySender        *roomkeysender.Sender
+	keyFanoutWorkers int
 }
 
 func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, keyStore RoomKeyStore, keySender *roomkeysender.Sender) *Handler {
-	return &Handler{store: store, siteID: siteID, publish: publish, keyStore: keyStore, keySender: keySender}
+	return &Handler{
+		store:            store,
+		siteID:           siteID,
+		publish:          publish,
+		keyStore:         keyStore,
+		keySender:        keySender,
+		keyFanoutWorkers: defaultKeyFanoutWorkers,
+	}
+}
+
+// SetKeyFanoutWorkers overrides the bounded-worker pool size used by
+// fanOutKey. Values <= 0 are ignored so partial-deployment misconfig can't
+// disable the cap. main wires this from KEY_FANOUT_WORKERS at startup.
+func (h *Handler) SetKeyFanoutWorkers(n int) {
+	if n > 0 {
+		h.keyFanoutWorkers = n
+	}
 }
 
 // messageDedupSeed returns the X-Request-ID from ctx, or payloadSeed when absent (partial-deployment safety, with a warn log).
@@ -1690,12 +1714,11 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 		Version:    pair.Version,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
+	accounts := make([]string, len(survivors))
 	for i := range survivors {
-		if err := h.keySender.Send(survivors[i].User.Account, evt); err != nil {
-			slog.Error("send room key", "error", err, "account", survivors[i].User.Account, "roomId", roomID)
-			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
-		}
+		accounts[i] = survivors[i].User.Account
 	}
+	h.fanOutKey(ctx, roomID, accounts, &evt)
 }
 
 // buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
@@ -1717,12 +1740,50 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 		Version:    pair.Version,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
+	accounts := make([]string, len(users))
 	for i := range users {
-		u := &users[i]
-		if err := h.keySender.Send(u.Account, evt); err != nil {
-			slog.Error("send room key", "error", err, "account", u.Account, "roomId", roomID)
-			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
-		}
+		accounts[i] = users[i].Account
 	}
+	h.fanOutKey(ctx, roomID, accounts, &evt)
 	return nil
+}
+
+// fanOutKey distributes evt to every account via h.keySender.Send using up to
+// h.keyFanoutWorkers concurrent goroutines. Per-account errors are logged and
+// counted via roomkeymetrics; partial fan-out is acceptable because JetStream
+// redelivers on permanent failure and recipients are idempotent on key version.
+//
+// evt is taken by pointer so the 80-byte struct isn't copied per fan-out call;
+// callers must not mutate it after passing it in.
+func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []string, evt *model.RoomKeyEvent) {
+	if len(accounts) == 0 {
+		return
+	}
+	workers := h.keyFanoutWorkers
+	if workers <= 0 {
+		// Defensive default for tests and any future construction path that
+		// bypasses NewHandler with a zero-value Handler — without this an
+		// unbuffered semaphore deadlocks the first publish.
+		workers = defaultKeyFanoutWorkers
+	}
+	if workers > len(accounts) {
+		workers = len(accounts)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, account := range accounts {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(acct string) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			if err := h.keySender.Send(acct, *evt); err != nil {
+				slog.Error("send room key", "error", err, "account", acct, "roomId", roomID)
+				roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
+			}
+		}(account)
+	}
+	wg.Wait()
 }

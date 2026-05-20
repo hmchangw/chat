@@ -24,16 +24,17 @@ import (
 )
 
 type config struct {
-	NatsURL       string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile string                  `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID        string                  `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI      string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB       string                  `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername string                  `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword string                  `env:"MONGO_PASSWORD"  envDefault:""`
-	MaxWorkers    int                     `env:"MAX_WORKERS"     envDefault:"100"`
-	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
-	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	NatsURL          string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile    string                  `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID           string                  `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI         string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB          string                  `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername    string                  `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword    string                  `env:"MONGO_PASSWORD"  envDefault:""`
+	MaxWorkers       int                     `env:"MAX_WORKERS"        envDefault:"100"`
+	KeyFanoutWorkers int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
+	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 
 	// Required: room-worker reads/rotates the room key on every create/add/remove path.
 	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
@@ -122,6 +123,7 @@ func main() {
 		}
 		return nil
 	}, keyStore, keySender)
+	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
 
 	if _, err := nc.QueueSubscribe(subject.RoomCreateDMSync(cfg.SiteID), "room-worker", handler.natsServerCreateDM); err != nil {
 		slog.Error("subscribe sync DM endpoint failed", "error", err)
