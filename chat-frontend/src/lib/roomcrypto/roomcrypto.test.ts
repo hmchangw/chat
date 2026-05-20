@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { b64decode, deriveAesKey } from './roomcrypto'
+import { b64decode, decryptRoomMessage, deriveAesKey } from './roomcrypto'
+import fixture from '../../../test/fixtures/encrypted-message.json'
 
 describe('b64decode', () => {
   it('decodes a known base64 string', () => {
@@ -28,74 +29,23 @@ describe('deriveAesKey', () => {
     expect(key.extractable).toBe(false)
   })
 
-  it('produces a key that decrypts ciphertext from the matching encryptor', async () => {
-    const priv = new Uint8Array(32)
-    priv.fill(0x07)
-    const k1 = await deriveAesKey(priv)
-    const k2 = await deriveAesKey(priv)
-    const nonce = new Uint8Array(12)
-    crypto.getRandomValues(nonce)
-    const plaintext = new TextEncoder().encode('hello')
-    // Derive a separate encryption-capable key from the same IKM for the test.
-    const encKey = await crypto.subtle.deriveKey(
-      { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('room-message-encryption-v2') },
-      await crypto.subtle.importKey('raw', priv, 'HKDF', false, ['deriveKey']),
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt'],
-    )
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, encKey, plaintext))
-    // Decrypt with k1 and k2 — both must succeed.
-    const pt1 = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, k1, ct))
-    const pt2 = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, k2, ct))
-    expect(new TextDecoder().decode(pt1)).toBe('hello')
-    expect(new TextDecoder().decode(pt2)).toBe('hello')
-  })
-
   it('rejects a private key of wrong length', async () => {
     await expect(deriveAesKey(new Uint8Array(31))).rejects.toThrow(/32 bytes/)
   })
 })
 
-import { decryptRoomMessage } from './roomcrypto'
-import fixture from '../../../test/fixtures/encrypted-message.json'
-
-describe('cross-language fixture', () => {
-  it('decrypts a fixture produced by the Go server encoder', async () => {
-    const priv = b64decode(fixture.privateKey)
-    const nonce = b64decode(fixture.message.nonce)
-    const ciphertext = b64decode(fixture.message.ciphertext)
-
-    const aesKey = await deriveAesKey(priv)
-    const plaintext = await decryptRoomMessage(ciphertext, nonce, aesKey)
-    expect(plaintext).toBe(fixture.plaintext)
-  })
-})
-
 describe('decryptRoomMessage', () => {
-  it('decrypts ciphertext produced via the matching encrypt path', async () => {
-    const priv = new Uint8Array(32)
-    priv.fill(0x99)
-    const aesKey = await deriveAesKey(priv)
-
-    // Build a matching encrypt key (extractable=false but with encrypt usage).
-    const encKey = await crypto.subtle.deriveKey(
-      { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('room-message-encryption-v2') },
-      await crypto.subtle.importKey('raw', priv, 'HKDF', false, ['deriveKey']),
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt'],
+  it('decrypts a fixture produced by the Go server encoder', async () => {
+    // Cross-language round-trip via the committed fixture. This exercises
+    // the full chain (HKDF derive + AES-GCM open) against bytes that the
+    // Go server actually emits — stronger than an inline-encrypt test.
+    const aesKey = await deriveAesKey(b64decode(fixture.privateKey))
+    const plaintext = await decryptRoomMessage(
+      b64decode(fixture.message.ciphertext),
+      b64decode(fixture.message.nonce),
+      aesKey,
     )
-
-    const nonce = new Uint8Array(12)
-    crypto.getRandomValues(nonce)
-    const plaintext = new TextEncoder().encode('héllo 🌎')
-    const ciphertext = new Uint8Array(
-      await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, encKey, plaintext),
-    )
-
-    const got = await decryptRoomMessage(ciphertext, nonce, aesKey)
-    expect(got).toBe('héllo 🌎')
+    expect(plaintext).toBe(fixture.plaintext)
   })
 
   it('throws on tag mismatch', async () => {
@@ -103,7 +53,7 @@ describe('decryptRoomMessage', () => {
     priv.fill(0x11)
     const aesKey = await deriveAesKey(priv)
     const nonce = new Uint8Array(12)
-    const bogusCiphertext = new Uint8Array(32) // all-zero bytes, will fail tag verification
+    const bogusCiphertext = new Uint8Array(32) // all-zero bytes; GCM tag fails
     await expect(decryptRoomMessage(bogusCiphertext, nonce, aesKey)).rejects.toBeDefined()
   })
 })

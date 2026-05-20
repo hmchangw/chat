@@ -1,5 +1,5 @@
 // decrypt.ts — invoked by integration_test.go via tsx
-import { createHmac, createDecipheriv } from 'node:crypto'
+import { createDecipheriv, hkdfSync } from 'node:crypto'
 
 type Payload = {
   privateKey: string  // base64 32-byte raw private scalar (high-entropy IKM)
@@ -8,23 +8,6 @@ type Payload = {
     nonce: string       // base64
     ciphertext: string  // base64 = content || 16-byte GCM tag
   }
-}
-
-function hkdfSha256(ikm: Buffer, info: Buffer, length: number): Buffer {
-  // HKDF-Extract(salt=nil, IKM) = HMAC-SHA-256(0^32, IKM).
-  const prk = createHmac('sha256', Buffer.alloc(32)).update(ikm).digest()
-  const blocks: Buffer[] = []
-  let prev = Buffer.alloc(0)
-  const n = Math.ceil(length / 32)
-  for (let i = 1; i <= n; i++) {
-    const h = createHmac('sha256', prk)
-    h.update(prev)
-    h.update(info)
-    h.update(Buffer.from([i]))
-    prev = h.digest()
-    blocks.push(prev)
-  }
-  return Buffer.concat(blocks).subarray(0, length)
 }
 
 async function main() {
@@ -40,7 +23,7 @@ async function main() {
   const privateKey = Buffer.from(p.privateKey, 'base64')
   if (privateKey.length !== 32) throw new Error(`expected 32-byte private key, got ${privateKey.length}`)
 
-  const aesKey = hkdfSha256(privateKey, Buffer.from('room-message-encryption-v2'), 32)
+  const aesKey = Buffer.from(hkdfSync('sha256', privateKey, Buffer.alloc(0), 'room-message-encryption-v2', 32))
   const nonce = Buffer.from(p.message.nonce, 'base64')
   const ciphertext = Buffer.from(p.message.ciphertext, 'base64')
 
