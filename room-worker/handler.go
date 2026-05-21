@@ -545,26 +545,29 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("get org members with individual status: %w", err)
 	}
 
-	// Two-pass: dept-matching rows win on overlap; otherwise first row.
-	// Name/TCName harvested from the UNFILTERED members slice so they remain
-	// correct when every org member also has an individual sub and toRemove
-	// ends up empty. The orgID fallback in displayOrg/CombineWithFallback
-	// guarantees a non-empty rendered string even when all names are empty,
-	// so an all-empty result is no longer a permanent error.
+	// Single pass: dept wins on overlap; otherwise first sect row. Stash the
+	// first sect candidate as we scan so we don't need a second pass — the
+	// dept row (if any) overrides it. Name/TCName harvested from the
+	// UNFILTERED members slice so they remain correct when every org member
+	// also has an individual sub and toRemove ends up empty. The orgID
+	// fallback in displayOrg/CombineWithFallback guarantees a non-empty
+	// rendered string even when all names are empty, so an all-empty result
+	// is no longer a permanent error.
 	var name, tcName string
+	var sectName, sectTCName string
+	var sectFound bool
 	for _, m := range members {
 		if m.IsDept {
 			name, tcName = m.Name, m.TCName
 			break
 		}
-	}
-	if name == "" && tcName == "" {
-		for _, m := range members {
-			if !m.IsDept {
-				name, tcName = m.Name, m.TCName
-				break
-			}
+		if !sectFound {
+			sectName, sectTCName = m.Name, m.TCName
+			sectFound = true
 		}
+	}
+	if name == "" && tcName == "" && sectFound {
+		name, tcName = sectName, sectTCName
 	}
 	if name == "" && tcName == "" {
 		slog.Warn("org-remove: no name resolved from any member; falling back to orgID",
