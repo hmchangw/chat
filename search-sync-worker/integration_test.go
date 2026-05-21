@@ -38,25 +38,10 @@ var (
 )
 
 // TestMain pre-warms shared containers in parallel; fails fast on error.
+// Custom wrap (not testutil.RunTestsWithPrewarm) so we can close the
+// lazy-init JetStream conn between m.Run and TerminateAll.
 func TestMain(m *testing.M) {
-	var wg sync.WaitGroup
-	prewarms := []func() error{
-		testutil.EnsureElasticsearch,
-		testutil.EnsureNATS,
-	}
-	errCh := make(chan error, len(prewarms))
-	for _, fn := range prewarms {
-		wg.Add(1)
-		go func(f func() error) {
-			defer wg.Done()
-			if err := f(); err != nil {
-				errCh <- err
-			}
-		}(fn)
-	}
-	wg.Wait()
-	close(errCh)
-	if err, ok := <-errCh; ok {
+	if err := testutil.PrewarmFailFast(testutil.EnsureElasticsearch, testutil.EnsureNATS); err != nil {
 		fmt.Fprintf(os.Stderr, "prewarm shared containers: %v\n", err)
 		testutil.TerminateAll()
 		os.Exit(1)

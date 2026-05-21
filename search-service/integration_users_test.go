@@ -5,7 +5,6 @@ package main
 // Integration tests for search.users (NATS + httptest stub for HR endpoint).
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,10 +17,8 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/restyutil"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 type usersFixture struct {
@@ -31,35 +28,16 @@ type usersFixture struct {
 
 func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixture {
 	t.Helper()
-
 	stub := httptest.NewServer(thirdPartyHandler)
 	t.Cleanup(stub.Close)
 
-	natsURL := testutil.NATS(t)
-	serverNC, err := natsutil.Connect(natsURL, "")
-	require.NoError(t, err, "connect nats (server side)")
-	t.Cleanup(func() { _ = serverNC.Drain() })
-
-	clientNC, err := nats.Connect(natsURL)
-	require.NoError(t, err, "connect nats (client side)")
-	t.Cleanup(func() { clientNC.Close() })
-
 	usersRC := restyutil.New(stub.URL, restyutil.WithTimeout(5*time.Second))
-	usersClient := newHTTPUsersClient(usersRC, "")
-
-	h := newHandler(nil, nil, usersClient, newFakeCache(), handlerConfig{
+	h := newHandler(nil, nil, newHTTPUsersClient(usersRC, ""), newFakeCache(), handlerConfig{
 		DocCounts:      25,
 		MaxDocCounts:   100,
 		RequestTimeout: 5 * time.Second,
 	})
-
-	router := natsrouter.New(serverNC, testQueueGroup)
-	router.Use(natsrouter.RequestID())
-	h.Register(router)
-	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
-	require.NoError(t, serverNC.NatsConn().Flush())
-	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
-
+	clientNC := setupRouter(t, testQueueGroup, h.Register)
 	return &usersFixture{clientNATS: clientNC, thirdParty: stub}
 }
 

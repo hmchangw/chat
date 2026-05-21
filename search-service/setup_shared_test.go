@@ -7,18 +7,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"net/http"
-	"os"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
@@ -51,55 +52,36 @@ func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 		"seedDoc %s/%s: status=%d body=%s", index, id, resp.StatusCode, body)
 }
 
-// TestMain pre-warms shared containers in parallel; fails fast on error.
 func TestMain(m *testing.M) {
-	var wg sync.WaitGroup
-	prewarms := []func() error{
+	testutil.RunTestsWithPrewarm(m,
 		testutil.EnsureElasticsearch,
 		testutil.EnsureNATS,
 		testutil.EnsureValkey,
 		testutil.EnsureMongo,
-	}
-	errCh := make(chan error, len(prewarms))
-	for _, fn := range prewarms {
-		wg.Add(1)
-		go func(f func() error) {
-			defer wg.Done()
-			if err := f(); err != nil {
-				errCh <- err
-			}
-		}(fn)
-	}
-	wg.Wait()
-	close(errCh)
-	if err, ok := <-errCh; ok {
-		fmt.Fprintf(os.Stderr, "prewarm shared containers: %v\n", err)
-		testutil.TerminateAll()
-		os.Exit(1)
-	}
-	testutil.RunTests(m)
+	)
 }
 
-// uniqueESIndex returns a per-test ES index name (fnv hash keeps it short
-// and ES-safe across subtest slashes) and registers DELETE on cleanup.
-func uniqueESIndex(t *testing.T, prefix string) string {
+// setupRouter wires the NATS plumbing shared by every search-service
+// fixture: server+client conns against the shared NATS, a router with the
+// given queue group, RequestID middleware, register, flush, and cleanups.
+// The Flush is required because otelnats wraps the conn — subscriptions
+// don't reach the server otherwise before tests publish.
+func setupRouter(t *testing.T, queueGroup string, register func(*natsrouter.Router)) *nats.Conn {
 	t.Helper()
-	esURL := testutil.Elasticsearch(t)
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(t.Name()))
-	name := fmt.Sprintf("%s-%x", prefix, h.Sum64())
-	t.Cleanup(func() {
-		req, err := http.NewRequest(http.MethodDelete, esURL+"/"+name, nil)
-		if err != nil {
-			t.Logf("delete index %s: build request: %v", name, err)
-			return
-		}
-		resp, err := testHTTPClient.Do(req)
-		if err != nil {
-			t.Logf("delete index %s: %v", name, err)
-			return
-		}
-		_ = resp.Body.Close()
-	})
-	return name
+	natsURL := testutil.NATS(t)
+	serverNC, err := natsutil.Connect(natsURL, "")
+	require.NoError(t, err, "connect nats (server side)")
+	t.Cleanup(func() { _ = serverNC.Drain() })
+
+	clientNC, err := nats.Connect(natsURL)
+	require.NoError(t, err, "connect nats (client side)")
+	t.Cleanup(func() { clientNC.Close() })
+
+	router := natsrouter.New(serverNC, queueGroup)
+	router.Use(natsrouter.RequestID())
+	register(router)
+	require.NoError(t, serverNC.NatsConn().Flush())
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+
+	return clientNC
 }

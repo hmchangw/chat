@@ -5,6 +5,8 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"net/http"
 	"os"
 	"sync"
 	"testing"
@@ -15,6 +17,10 @@ import (
 
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
+
+// esCleanupHTTPClient is a bounded HTTP client for the index-delete cleanup
+// in ElasticsearchIndex. Stalled containers shouldn't hang test exit.
+var esCleanupHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 var (
 	esOnce      sync.Once
@@ -77,9 +83,33 @@ func Elasticsearch(t *testing.T) string {
 	return u
 }
 
-// EnsureElasticsearch starts the shared ES container if not already
-// started. No-t variant intended for TestMain pre-warming.
+// EnsureElasticsearch is the no-t variant for TestMain pre-warming.
 func EnsureElasticsearch() error { _, err := ensureElasticsearch(); return err }
+
+// ElasticsearchIndex returns a per-test index name (fnv hash of t.Name()
+// keeps it short and ES-safe across subtest slashes) and registers a
+// DELETE on cleanup so sibling tests start clean.
+func ElasticsearchIndex(t *testing.T, prefix string) string {
+	t.Helper()
+	url := Elasticsearch(t)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name()))
+	name := fmt.Sprintf("%s-%x", prefix, h.Sum64())
+	t.Cleanup(func() {
+		req, err := http.NewRequest(http.MethodDelete, url+"/"+name, nil)
+		if err != nil {
+			t.Logf("delete index %s: build request: %v", name, err)
+			return
+		}
+		resp, err := esCleanupHTTPClient.Do(req)
+		if err != nil {
+			t.Logf("delete index %s: %v", name, err)
+			return
+		}
+		_ = resp.Body.Close()
+	})
+	return name
+}
 
 // TerminateElasticsearch stops the shared ES container. Best-effort and
 // idempotent — safe to call from TestMain even if no test touched ES.

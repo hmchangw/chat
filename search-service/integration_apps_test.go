@@ -18,7 +18,6 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
@@ -30,23 +29,8 @@ type appsFixture struct {
 
 func setupAppsFixture(t *testing.T) *appsFixture {
 	t.Helper()
-
 	mongoDB := testutil.MongoDB(t, "search_service_test")
-
-	natsURL := testutil.NATS(t)
-
-	serverNATS, err := natsutil.Connect(natsURL, "")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = serverNATS.Drain() })
-
-	clientNATS, err := nats.Connect(natsURL)
-	require.NoError(t, err)
-	t.Cleanup(func() { clientNATS.Close() })
-
-	mongoStore := newMongoStore(mongoDB)
-	store := &fakeStore{}
-	cache := newFakeCache()
-	h := newHandler(store, mongoStore, nil, cache, handlerConfig{
+	h := newHandler(&fakeStore{}, newMongoStore(mongoDB), nil, newFakeCache(), handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
@@ -54,16 +38,7 @@ func setupAppsFixture(t *testing.T) *appsFixture {
 		RequestTimeout:          5 * time.Second,
 		SpotlightReadPattern:    "spotlight-*",
 	})
-
-	router := natsrouter.New(serverNATS, testQueueGroup)
-	router.Use(natsrouter.RequestID())
-	h.Register(router)
-	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
-	require.NoError(t, serverNATS.NatsConn().Flush())
-	t.Cleanup(func() {
-		_ = router.Shutdown(context.Background())
-	})
-
+	clientNATS := setupRouter(t, testQueueGroup, h.Register)
 	return &appsFixture{clientNATS: clientNATS, mongoDB: mongoDB}
 }
 

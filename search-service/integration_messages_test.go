@@ -19,10 +19,8 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
-	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 type messagesV2Fixture struct {
@@ -31,8 +29,6 @@ type messagesV2Fixture struct {
 
 func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	t.Helper()
-	ctx := context.Background()
-
 	esStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Drain the body so the HTTP/1.1 connection stays open.
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -51,21 +47,9 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 	fakeValkey := newFakeCache()
 	fakeValkey.store["alice"] = map[string]int64{} // empty restricted map, cache hit
 
-	natsURL := testutil.NATS(t)
-
-	serverNATS, err := natsutil.Connect(natsURL, "")
+	engine, err := searchengine.New(context.Background(), searchengine.Config{Backend: "elasticsearch", URL: esStub.URL})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = serverNATS.Drain() })
-
-	clientNATS, err := nats.Connect(natsURL)
-	require.NoError(t, err)
-	t.Cleanup(func() { clientNATS.Close() })
-
-	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esStub.URL})
-	require.NoError(t, err)
-	esStore := newESStore(engine, testUserRoomIndex)
-
-	h := newHandler(esStore, nil, nil, fakeValkey, handlerConfig{
+	h := newHandler(newESStore(engine, testUserRoomIndex), nil, nil, fakeValkey, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
@@ -74,14 +58,7 @@ func setupMessagesV2Fixture(t *testing.T) *messagesV2Fixture {
 		UserRoomIndex:           testUserRoomIndex,
 		SpotlightReadPattern:    "spotlight-*",
 	})
-
-	router := natsrouter.New(serverNATS, testQueueGroupV2)
-	router.Use(natsrouter.RequestID())
-	h.Register(router)
-	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
-	require.NoError(t, serverNATS.NatsConn().Flush())
-	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
-
+	clientNATS := setupRouter(t, testQueueGroupV2, h.Register)
 	return &messagesV2Fixture{clientNATS: clientNATS}
 }
 

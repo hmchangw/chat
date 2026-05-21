@@ -19,7 +19,6 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -35,28 +34,16 @@ type roomsFixture struct {
 
 func setupRoomsFixture(t *testing.T) *roomsFixture {
 	t.Helper()
-	ctx := context.Background()
-
 	esURL := testutil.Elasticsearch(t)
-	spotlightIndex := uniqueESIndex(t, "spotlight")
+	spotlightIndex := testutil.ElasticsearchIndex(t, "spotlight")
 	putTestSpotlightIndex(t, esURL, spotlightIndex)
 
-	natsURL := testutil.NATS(t)
-	serverNC, err := natsutil.Connect(natsURL, "")
-	require.NoError(t, err, "connect nats (server side)")
-	t.Cleanup(func() { _ = serverNC.Drain() })
-
-	clientNC, err := nats.Connect(natsURL)
-	require.NoError(t, err, "connect nats (client side)")
-	t.Cleanup(func() { clientNC.Close() })
-
-	engine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: esURL})
+	engine, err := searchengine.New(context.Background(), searchengine.Config{Backend: "elasticsearch", URL: esURL})
 	require.NoError(t, err, "build searchengine for subs fixture")
 
-	esStore := newESStore(engine, testUserRoomIndex)
 	cache := newValkeyCache(valkeyutil.WrapClusterClient(testutil.SharedValkeyCluster(t)))
 	t.Cleanup(func() { testutil.FlushValkey(t) })
-	h := newHandler(esStore, nil, nil, cache, handlerConfig{
+	h := newHandler(newESStore(engine, testUserRoomIndex), nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
@@ -64,14 +51,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 		RequestTimeout:          5 * time.Second,
 		SpotlightReadPattern:    spotlightIndex,
 	})
-
-	router := natsrouter.New(serverNC, testQueueGroupSubs)
-	router.Use(natsrouter.RequestID())
-	h.Register(router)
-	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
-	require.NoError(t, serverNC.NatsConn().Flush())
-	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
-
+	clientNC := setupRouter(t, testQueueGroupSubs, h.Register)
 	return &roomsFixture{clientNATS: clientNC, esURL: esURL, spotlightIndex: spotlightIndex}
 }
 

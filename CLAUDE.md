@@ -155,7 +155,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
   - `testutil.MongoDB(t, prefix) *mongo.Database` — isolated DB per test
   - `testutil.CassandraKeyspace(t, prefix) (keyspace, *gocql.Session, host)` — isolated keyspace per test
   - `testutil.MinIO(t, prefix) (*minio.Client, bucket)` — isolated bucket per test
-  - `testutil.Elasticsearch(t) string` — shared ES URL; use a per-test unique index name (fnv hash of `t.Name()`)
+  - `testutil.Elasticsearch(t) string` — shared ES URL; pair with `testutil.ElasticsearchIndex(t, prefix)` for a per-test isolated index (DELETEd on cleanup)
   - `testutil.NATS(t) string` — shared NATS URL with JetStream enabled
 - Valkey (cluster-mode — services use this in production):
   - `testutil.SharedValkeyCluster(t) *redis.ClusterClient` — process-shared cluster (started via `sync.Once`, reaped via `TerminateValkey`/`TerminateAll`). Per-test caller MUST register `t.Cleanup(func() { testutil.FlushValkey(t) })` so sibling tests start with a clean keyspace. Default choice.
@@ -172,7 +172,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 
   func TestMain(m *testing.M) { testutil.RunTests(m) }
   ```
-  `testutil.RunTests` wraps `m.Run()` + `testutil.TerminateAll()` + `os.Exit(code)`. For packages that want concurrent pre-warming, wrap manually instead — see `search-service/setup_shared_test.go` for the reference pattern (`EnsureXxx` goroutines + error channel + fail-fast).
+  `testutil.RunTests` wraps `m.Run()` + `testutil.TerminateAll()` + `os.Exit(code)`. For concurrent pre-warming use `testutil.RunTestsWithPrewarm(m, testutil.EnsureElasticsearch, testutil.EnsureNATS, ...)` — runs each `EnsureXxx` concurrently and fails fast on the first error before `m.Run`. The `testutil.PrewarmFailFast(fns...)` building block is also exposed for packages that need extra cleanup between `m.Run` and `os.Exit`.
 - **Ryuk is disabled repo-wide** (via `pkg/testutil/init.go`) because our CI runner can't run the reaper sidecar. `testutil.TerminateAll` is the only cleanup mechanism on clean exits. SIGKILL / Ctrl+C will leak containers locally — acceptable trade-off; flip Ryuk back on with `TESTCONTAINERS_RYUK_DISABLED=false go test ...` if debugging a leak.
 - Per-test isolation is the caller's responsibility: the `MongoDB`/`Cassandra`/`MinIO` helpers already hash `t.Name()`; for ES use a per-test unique index name and DELETE on cleanup; for NATS use a per-test `*nats.Conn` pair with `Drain`/`Shutdown` cleanups; for shared Valkey call `testutil.FlushValkey(t)` in `t.Cleanup` (StartValkeyCluster's per-test mode is automatic).
 - Inline `testcontainers.GenericContainer` is only acceptable when a shared testutil container can't accommodate the test (e.g. search-service CCS needs two ES nodes on a shared docker network; `pkg/roomkeysender` needs NATS with WebSocket transport; `pkg/roomcrypto` needs a Node container with bundled scripts). Each inline container must store its reference and register `t.Cleanup(container.Terminate)`.

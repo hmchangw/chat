@@ -25,8 +25,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -80,33 +78,15 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	cacheClient := valkeyutil.WrapClusterClient(testutil.SharedValkeyCluster(t))
 	t.Cleanup(func() { testutil.FlushValkey(t) })
 
-	natsURL := testutil.NATS(t)
-	serverNC, err := natsutil.Connect(natsURL, "")
-	require.NoError(t, err, "connect nats (server side)")
-	t.Cleanup(func() { _ = serverNC.Drain() })
-
-	clientNC, err := nats.Connect(natsURL)
-	require.NoError(t, err, "connect nats (client side)")
-	t.Cleanup(func() { clientNC.Close() })
-
-	userRoomIndex := testUserRoomIndex
-	store := newESStore(localEngine, userRoomIndex)
-	cache := newValkeyCache(cacheClient)
-	handler := newHandler(store, nil, nil, cache, handlerConfig{
+	h := newHandler(newESStore(localEngine, testUserRoomIndex), nil, nil, newValkeyCache(cacheClient), handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
 		RestrictedRoomsCacheTTL: 5 * time.Minute,
 		RecentWindow:            365 * 24 * time.Hour,
-		UserRoomIndex:           userRoomIndex,
+		UserRoomIndex:           testUserRoomIndex,
 		SpotlightReadPattern:    "spotlight-test-*",
 	})
-
-	router := natsrouter.New(serverNC, testQueueGroup)
-	router.Use(natsrouter.RequestID())
-	handler.Register(router)
-	// Flush so subscriptions reach the server before tests send requests (otelnats wraps the conn).
-	require.NoError(t, serverNC.NatsConn().Flush())
-	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+	clientNC := setupRouter(t, testQueueGroup, h.Register)
 
 	return &ccsFixture{
 		localURL:   localURL,
