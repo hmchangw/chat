@@ -575,11 +575,18 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			"roomID", req.RoomID, "orgID", req.OrgID)
 	}
 
+	// Skip members who still have an individual row OR are still reachable
+	// via another org row in the same room. The latter matters because this
+	// PR's dept-aware matching lets the same user be covered by two org rows
+	// concurrently (one matching their sectId, one matching their deptId);
+	// removing one of those orgs must not orphan the user's subscription
+	// while the sibling row still claims them as a member.
 	var toRemove []OrgMemberStatus
 	for _, m := range members {
-		if !m.HasIndividualMembership {
-			toRemove = append(toRemove, m)
+		if m.HasIndividualMembership || m.HasOtherOrgMembership {
+			continue
 		}
+		toRemove = append(toRemove, m)
 	}
 
 	accounts := make([]string, len(toRemove))

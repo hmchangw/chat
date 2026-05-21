@@ -32,6 +32,14 @@ type OrgMemberStatus struct {
 	TCName                  string `bson:"tcName"`
 	IsDept                  bool   `bson:"isDept"`
 	HasIndividualMembership bool   `bson:"hasIndividualMembership"`
+	// HasOtherOrgMembership is true when the user is still reachable via
+	// ANOTHER org row in the same room (one whose member.id matches the
+	// user's sectId or deptId), excluding the org being removed.
+	// processRemoveOrg uses this to avoid deleting subs of users who remain
+	// covered by a sibling org — relevant since this PR's dept-aware match
+	// makes the same user potentially reachable via two org rows
+	// concurrently (sectId-org + deptId-org).
+	HasOtherOrgMembership bool `bson:"hasOtherOrgMembership"`
 }
 
 // AddMemberCandidate is one element returned by ListAddMemberCandidates.

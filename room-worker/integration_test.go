@@ -1565,6 +1565,60 @@ func TestMongoStore_GetOrgMembersWithIndividualStatus_DeptAndSect_Integration(t 
 	}, byAccount["bob"])
 }
 
+// Multi-org overlap: alice's sectId matches one org row, her deptId matches
+// another. When asking for either org's members, the result MUST mark her
+// HasOtherOrgMembership=true so processRemoveOrg knows her subscription stays.
+// Without this, removing one of the two orgs would silently orphan her sub.
+func TestMongoStore_GetOrgMembersWithIndividualStatus_OtherOrgCovers_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	const roomID = "room-1"
+	// alice: sectId="X", deptId="Y" — covered by both org rows simultaneously.
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-a",
+		SectID: "X", SectName: "Eng Sect", SectTCName: "工程組",
+		DeptID: "Y", DeptName: "Frontend", DeptTCName: "前端",
+	})
+	// carol: only sectId="X" — when X is removed she's not covered by anything else.
+	mustInsertUser(t, db, &model.User{
+		ID: "u_carol", Account: "carol", SiteID: "site-a",
+		SectID: "X", SectName: "Eng Sect", SectTCName: "工程組",
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomType: model.RoomTypeChannel,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: "site-a",
+		User:     model.SubscriptionUser{ID: "u_carol", Account: "carol"},
+		RoomType: model.RoomTypeChannel,
+	})
+	// Both X and Y are in the room as org members.
+	for _, orgID := range []string{"X", "Y"} {
+		_, err := db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+			Member: model.RoomMemberEntry{ID: orgID, Type: model.RoomMemberOrg},
+		})
+		require.NoError(t, err)
+	}
+
+	got, err := store.GetOrgMembersWithIndividualStatus(ctx, roomID, "X")
+	require.NoError(t, err)
+
+	byAccount := map[string]OrgMemberStatus{}
+	for _, m := range got {
+		byAccount[m.Account] = m
+	}
+	require.Len(t, byAccount, 2)
+	assert.True(t, byAccount["alice"].HasOtherOrgMembership,
+		"alice's deptId Y is also an org row in the room — she stays covered when X is removed")
+	assert.False(t, byAccount["carol"].HasOtherOrgMembership,
+		"carol has no other org coverage; removing X must drop her")
+}
+
 func TestHandler_ProcessCreateRoom_DMConcurrentByCounterpart_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)

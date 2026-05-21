@@ -4233,6 +4233,54 @@ func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 	assert.Equal(t, "o1", payload.SectName)
 }
 
+// Multi-org overlap: when the user being removed is still covered by ANOTHER
+// org row in the same room (HasOtherOrgMembership == true), their subscription
+// must NOT be deleted. Reachable because this PR's dept-aware matching lets a
+// single user be the union of two org rows (one matching their sectId, one
+// matching their deptId).
+func TestHandler_ProcessRemoveOrg_OtherOrgCovers_PreservesSub(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	roomID := "r1"
+	// alice has no individual row, but is still covered by another org row.
+	store.EXPECT().GetOrgMembersWithIndividualStatus(gomock.Any(), roomID, "X").
+		Return([]OrgMemberStatus{
+			{
+				Account: "alice", SiteID: "site-a",
+				Name: "Eng Sect", TCName: "工程組",
+				IsDept:                  false,
+				HasIndividualMembership: false,
+				HasOtherOrgMembership:   true,
+			},
+		}, nil)
+	// MUST NOT be called — alice is still covered by the sibling org.
+	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	// MUST NOT rotate — no survivors were displaced.
+	store.EXPECT().ListByRoom(gomock.Any(), gomock.Any()).Times(0)
+	// The X org row still gets deleted; the count gets reconciled.
+	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "X").Return(nil)
+	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice-req").
+		Return(&model.User{ID: "u_r", Account: "alice-req", SiteID: "site-a", EngName: "Req", ChineseName: "求"}, nil)
+
+	var published []publishedMsg
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
+		published = append(published, publishedMsg{subj: subj, data: data})
+		return nil
+	}, keyStore: testKeyStore, keySender: testKeySender}
+	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice-req", OrgID: "X", Timestamp: 1}
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	require.NoError(t, h.processRemoveOrg(ctx, &req, nil))
+
+	// Sys-msg is still published — the org WAS removed — but RemovedUsersCount must be 0.
+	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
+	var payload model.MemberRemoved
+	require.NoError(t, json.Unmarshal(sysMsg.SysMsgData, &payload))
+	assert.Equal(t, 0, payload.RemovedUsersCount, "no users were actually removed; siblings still cover them")
+}
+
 // F1: async DM create sets UIDs/Accounts sorted by UID, paired by index, on
 // the initial CreateRoom insert (single Mongo write, no follow-up update).
 func TestProcessCreateRoom_DM_SetsParticipantFields(t *testing.T) {

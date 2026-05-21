@@ -285,8 +285,33 @@ func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, room
 					bson.M{"$eq": bson.A{"$member.id", "$$uid"}},
 				}}}},
 				bson.M{"$limit": 1},
+				// Outer stage only reads $size — drop everything else.
+				bson.M{"$project": bson.M{"_id": 1}},
 			},
 			"as": "individualMembership",
+		}}},
+		// Sibling-org lookup: is there ANOTHER org row in the same room whose
+		// member.id matches this user's sectId or deptId (excluding the org
+		// being removed)? If yes, the user remains a member via that sibling
+		// even after the current org is dropped, so processRemoveOrg must NOT
+		// delete their subscription.
+		{{Key: "$lookup", Value: bson.M{
+			"from": "room_members",
+			"let":  bson.M{"sectId": "$sectId", "deptId": "$deptId"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$rid", roomID}},
+					bson.M{"$eq": bson.A{"$member.type", "org"}},
+					bson.M{"$ne": bson.A{"$member.id", orgID}},
+					bson.M{"$or": bson.A{
+						bson.M{"$eq": bson.A{"$member.id", "$$sectId"}},
+						bson.M{"$eq": bson.A{"$member.id", "$$deptId"}},
+					}},
+				}}}},
+				bson.M{"$limit": 1},
+				bson.M{"$project": bson.M{"_id": 1}},
+			},
+			"as": "otherOrgMembership",
 		}}},
 		{{Key: "$project", Value: bson.M{
 			"_id":                     0,
@@ -296,6 +321,7 @@ func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, room
 			"tcName":                  1,
 			"isDept":                  1,
 			"hasIndividualMembership": bson.M{"$gt": bson.A{bson.M{"$size": "$individualMembership"}, 0}},
+			"hasOtherOrgMembership":   bson.M{"$gt": bson.A{bson.M{"$size": "$otherOrgMembership"}, 0}},
 		}}},
 	}
 	cursor, err := s.users.Aggregate(ctx, pipeline)
