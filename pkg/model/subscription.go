@@ -39,7 +39,7 @@ type Subscription struct {
 	HasMention          bool             `json:"hasMention" bson:"hasMention"`
 	ThreadUnread        []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert               bool             `json:"alert" bson:"alert"`
-	DisableNotification bool             `json:"disableNotification" bson:"disableNotification"`
+	DisableNotifications bool             `json:"disableNotifications" bson:"disableNotifications"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a

@@ -467,7 +467,7 @@ func TestSubscriptionJSON(t *testing.T) {
 			HasMention:          true,
 			ThreadUnread:        []string{"parent-1", "parent-2"},
 			Alert:               true,
-			DisableNotification: true,
+			DisableNotifications: true,
 		}
 		roundTrip(t, &s, &model.Subscription{})
 	})
@@ -519,8 +519,8 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	assert.True(t, hasAlert, "alert must be present in JSON even when false")
 	assert.Equal(t, false, alertVal)
 
-	disableVal, hasDisable := raw["disableNotification"]
-	assert.True(t, hasDisable, "disableNotification must be present in JSON even when false")
+	disableVal, hasDisable := raw["disableNotifications"]
+	assert.True(t, hasDisable, "disableNotifications must be present in JSON even when false")
 	assert.Equal(t, false, disableVal)
 
 	var dst model.Subscription
