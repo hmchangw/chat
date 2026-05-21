@@ -293,16 +293,7 @@ func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return 0, nil
 	}
-	var pipeline bson.A
-	if roomID == "" {
-		pipeline = pipelines.GetNewMembersPipeline(orgIDs, directAccounts, "", excludeAccount)
-	} else {
-		p, err := pipelines.GetCapacityCheckPipeline(orgIDs, directAccounts, roomID, excludeAccount)
-		if err != nil {
-			return 0, fmt.Errorf("build capacity-check pipeline: %w", err)
-		}
-		pipeline = p
-	}
+	pipeline := pipelines.GetNewMembersPipeline(orgIDs, directAccounts, roomID, excludeAccount)
 	pipeline = append(pipeline, bson.M{"$count": "n"})
 
 	cursor, err := s.users.Aggregate(ctx, pipeline)

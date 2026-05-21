@@ -36,11 +36,13 @@ Replace the filter-on-subscription pipeline (for `roomID != ""`) with a pipeline
 `pkg/pipelines/member.go` gains two sibling pipelines that share a private match-stage helper. Splitting capacity-counting from full-candidate-resolution avoids paying for the `room_members` lookup on the capacity path (room-service runs `CountNewMembers` on every add request).
 
 ```go
-// GetCapacityCheckPipeline counts net-new subscriptions; caller appends $count.
-func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A
+// GetNewMembersPipeline counts net-new subscriptions; caller appends $count
+// (capacity check) or $group (worker candidate resolution). Existing API,
+// extended with dept-aware $or as documented later in this section.
+func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A
 
 // GetAddMemberCandidatesPipeline returns per-candidate {account, hasSubscription, hasIndividualRoomMember} for the worker.
-func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) bson.A
+func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, excludeAccount string) (bson.A, error)
 ```
 
 Both pipelines:
@@ -95,7 +97,7 @@ For the bug scenario specifically (alice already in via org, now added individua
 
 ### room-service changes
 
-`room-service/store.go` + `store_mongo.go`: `CountNewMembers` swaps from `GetNewMembersPipeline` (with `roomID != ""`) to `GetCapacityCheckPipeline` + `$count: "n"`.
+`room-service/store.go` + `store_mongo.go`: `CountNewMembers` continues to use `GetNewMembersPipeline` (which natively handles both `roomID == ""` and `roomID != ""`) and appends `$count: "n"` as the terminal stage.
 
 Public signature and return type are unchanged. Capacity semantics preserved: re-adding an org-only user as an individual produces a count of 0 (no new sub), so the user doesn't double-count against `maxRoomSize`. The lite pipeline skips the `room_members` lookup that the worker path needs, so capacity checks stay cheap.
 

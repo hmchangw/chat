@@ -116,59 +116,6 @@ func TestGetNewMembersPipelineWithRoomIDStillHasLookup(t *testing.T) {
 	assert.True(t, hasLookup, "non-empty roomID must keep the subscriptions $lookup")
 }
 
-func TestGetCapacityCheckPipeline(t *testing.T) {
-	t.Run("stage count is 3", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
-		require.NoError(t, err)
-		assert.Len(t, got, 3)
-	})
-
-	t.Run("$match shape with orgIDs only — 2 OR clauses: sectId, deptId", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline([]string{"org1"}, nil, "room1", "")
-		require.NoError(t, err)
-		stage0 := got[0].(bson.M)
-		match := stage0["$match"].(bson.M)
-		orFilter := match["$or"].(bson.A)
-		assert.Len(t, orFilter, 2, "sectId + deptId clauses for orgIDs only")
-		assert.Contains(t, orFilter[0].(bson.M), "sectId")
-		assert.Contains(t, orFilter[1].(bson.M), "deptId")
-	})
-
-	t.Run("$match shape with directAccounts only — 1 OR clause for account", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline(nil, []string{"alice"}, "room1", "")
-		require.NoError(t, err)
-		stage0 := got[0].(bson.M)
-		match := stage0["$match"].(bson.M)
-		orFilter := match["$or"].(bson.A)
-		assert.Len(t, orFilter, 1)
-		assert.Contains(t, orFilter[0].(bson.M), "account")
-	})
-
-	t.Run("$match shape with both — 3 elements in $or: sectId, deptId, account", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
-		require.NoError(t, err)
-		stage0 := got[0].(bson.M)
-		match := stage0["$match"].(bson.M)
-		orFilter := match["$or"].(bson.A)
-		assert.Len(t, orFilter, 3, "sectId + deptId + account")
-	})
-
-	t.Run("excludeAccount adds $ne to the account filter", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline([]string{"org1"}, []string{"alice"}, "room1", "exclude-me")
-		require.NoError(t, err)
-		stage0 := got[0].(bson.M)
-		match := stage0["$match"].(bson.M)
-		accountFilter := match["account"].(bson.M)
-		assert.Equal(t, "exclude-me", accountFilter["$ne"])
-	})
-
-	t.Run("error on empty roomID", func(t *testing.T) {
-		got, err := GetCapacityCheckPipeline([]string{"org1"}, nil, "", "")
-		assert.Nil(t, got)
-		assert.ErrorIs(t, err, ErrRoomIDRequired)
-	})
-}
-
 func TestGetAddMemberCandidatesPipeline(t *testing.T) {
 	t.Run("stage count is 4", func(t *testing.T) {
 		got, err := GetAddMemberCandidatesPipeline([]string{"org1"}, []string{"alice"}, "room1", "")
