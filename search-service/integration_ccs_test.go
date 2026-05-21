@@ -36,6 +36,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 // --- Fixture -----------------------------------------------------------------
@@ -106,7 +107,7 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	remoteEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: remoteURL})
 	require.NoError(t, err, "build searchengine for remote")
 
-	cacheClient := valkeyClient(t)
+	cacheClient := valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
 
 	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")

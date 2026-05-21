@@ -2,12 +2,13 @@
 
 package main
 
-// Per-package shared test infrastructure. Containers come from
-// pkg/testutil; CCS tests bring their own ES pair (integration_ccs_test.go).
+// Per-package shared test infrastructure. ES / NATS / Mongo come from
+// pkg/testutil as process-shared containers; Valkey is per-test via
+// testutil.StartValkeyCluster. CCS tests bring their own ES pair
+// (integration_ccs_test.go).
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -21,7 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/testutil"
-	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 const testUserRoomIndex = "user-room"
@@ -62,7 +62,6 @@ func TestMain(m *testing.M) {
 	prewarms := []func() error{
 		testutil.EnsureElasticsearch,
 		testutil.EnsureNATS,
-		testutil.EnsureValkey,
 		testutil.EnsureMongo,
 	}
 	errCh := make(chan error, len(prewarms))
@@ -108,18 +107,4 @@ func uniqueESIndex(t *testing.T, prefix string) string {
 		_ = resp.Body.Close()
 	})
 	return name
-}
-
-// valkeyClient returns a valkeyutil.Client connected to the shared Valkey,
-// with FLUSHDB on cleanup so sibling tests start clean. Tests in this
-// package run sequentially.
-func valkeyClient(t *testing.T) valkeyutil.Client {
-	t.Helper()
-	client, err := valkeyutil.Connect(context.Background(), testutil.Valkey(t), "")
-	require.NoError(t, err, "connect shared valkey")
-	t.Cleanup(func() {
-		testutil.FlushValkey(t)
-		valkeyutil.Disconnect(client)
-	})
-	return client
 }

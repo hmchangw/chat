@@ -23,6 +23,7 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 // roomsFixture uses a per-test spotlight index against the shared ES so
@@ -54,7 +55,7 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, err, "build searchengine for subs fixture")
 
 	esStore := newESStore(engine, testUserRoomIndex)
-	cache := newValkeyCache(valkeyClient(t))
+	cache := newValkeyCache(valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t)))
 	h := newHandler(esStore, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
