@@ -16,7 +16,8 @@ import (
 
 func setupValkey(t *testing.T) valkeyutil.Client {
 	t.Helper()
-	return valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
+	t.Cleanup(func() { testutil.FlushValkey(t) })
+	return valkeyutil.WrapClusterClient(testutil.SharedValkeyCluster(t))
 }
 
 func TestValkeyCache_Integration_SetGetInvalidate(t *testing.T) {

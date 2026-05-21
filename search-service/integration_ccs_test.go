@@ -107,7 +107,8 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	remoteEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: remoteURL})
 	require.NoError(t, err, "build searchengine for remote")
 
-	cacheClient := valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
+	cacheClient := valkeyutil.WrapClusterClient(testutil.SharedValkeyCluster(t))
+	t.Cleanup(func() { testutil.FlushValkey(t) })
 
 	natsURL := testutil.NATS(t)
 	serverNC, err := natsutil.Connect(natsURL, "")

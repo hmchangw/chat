@@ -7,13 +7,14 @@ package testutil
 // started, so this is safe from any service's TestMain. Use via
 // testutil.RunTests for the standard wrap.
 //
-// Valkey is not included — StartValkeyCluster is per-test (each test
-// gets its own container with its own t.Cleanup) so there's no shared
-// state to terminate here.
+// StartValkeyCluster (per-test) is unaffected — those containers are
+// cleaned up by their own t.Cleanup hooks. TerminateValkey only stops
+// the shared cluster from SharedValkeyCluster, if one was started.
 func TerminateAll() {
 	TerminateMongo()
 	TerminateCassandra()
 	TerminateMinIO()
 	TerminateElasticsearch()
 	TerminateNATS()
+	TerminateValkey()
 }

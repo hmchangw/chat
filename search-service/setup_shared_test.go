@@ -62,6 +62,7 @@ func TestMain(m *testing.M) {
 	prewarms := []func() error{
 		testutil.EnsureElasticsearch,
 		testutil.EnsureNATS,
+		testutil.EnsureValkey,
 		testutil.EnsureMongo,
 	}
 	errCh := make(chan error, len(prewarms))

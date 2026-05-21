@@ -55,7 +55,8 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	require.NoError(t, err, "build searchengine for subs fixture")
 
 	esStore := newESStore(engine, testUserRoomIndex)
-	cache := newValkeyCache(valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t)))
+	cache := newValkeyCache(valkeyutil.WrapClusterClient(testutil.SharedValkeyCluster(t)))
+	t.Cleanup(func() { testutil.FlushValkey(t) })
 	h := newHandler(esStore, nil, nil, cache, handlerConfig{
 		DocCounts:               25,
 		MaxDocCounts:            100,
