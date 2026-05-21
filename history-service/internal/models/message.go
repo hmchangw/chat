@@ -76,6 +76,22 @@ type DeleteMessageResponse struct {
 	DeletedAt int64  `json:"deletedAt"` // UTC millis; mirrors updated_at (no separate deleted_at column)
 }
 
+// ReactMessageRequest is the client payload for the reaction toggle handler.
+// Shortcode is the bare shortcode without wrapping colons.
+type ReactMessageRequest struct {
+	MessageID string `json:"messageId"`
+	Shortcode string `json:"shortcode"`
+}
+
+// ReactMessageResponse echoes the action the server applied. Action is
+// either "added" or "removed".
+type ReactMessageResponse struct {
+	MessageID string `json:"messageId"`
+	Shortcode string `json:"shortcode"`
+	Action    string `json:"action"`
+	ReactedAt int64  `json:"reactedAt"` // UTC millis
+}
+
 type GetThreadMessagesRequest struct {
 	ThreadMessageID string    `json:"threadMessageId"` // must be a top-level thread message ID, not a reply
 	Cursor          string    `json:"cursor,omitempty"`

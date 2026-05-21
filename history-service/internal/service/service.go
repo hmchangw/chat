@@ -13,7 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,UserStore,CustomEmojiStore
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -32,6 +32,12 @@ type MessageWriter interface {
 	// Returns the updated_at value now persisted (the deletedAt argument when
 	// applied; the existing value when a concurrent delete won the race).
 	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, err error)
+	// ToggleReaction adds actor to msg.Reactions[shortcode] when absent and
+	// removes it when present. Uses an LWT-with-retry loop on messages_by_id
+	// to converge under concurrent toggles, then mirrors the new value to
+	// messages_by_room / thread_messages_by_room / pinned_messages_by_room
+	// as applicable. The returned action is "added" or "removed".
+	ToggleReaction(ctx context.Context, msg *models.Message, shortcode string, actor models.Participant, reactedAt time.Time) (action string, err error)
 }
 
 // MessageRepository composes read and write access; satisfied by *cassrepo.Repository.
@@ -64,6 +70,19 @@ type ThreadRoomRepository interface {
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 }
 
+// UserStore resolves the calling user's full profile so the reaction handler
+// can populate the cassandra Participant stored in the reactions set and the
+// pkg/model.Participant carried on the canonical event.
+type UserStore interface {
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]pkgmodel.User, error)
+}
+
+// CustomEmojiStore reports whether a custom emoji shortcode is registered for
+// the site. Implementations typically query the custom_emojis Mongo collection.
+type CustomEmojiStore interface {
+	CustomEmojiExists(ctx context.Context, siteID, shortcode string) (bool, error)
+}
+
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
 	msgReader     MessageReader
@@ -72,6 +91,8 @@ type HistoryService struct {
 	rooms         RoomRepository
 	publisher     EventPublisher
 	threadRooms   ThreadRoomRepository
+	users         UserStore
+	customEmojis  CustomEmojiStore
 	historyFloor  time.Duration // from MESSAGE_HISTORY_FLOOR_DAYS
 }
 
@@ -81,6 +102,8 @@ func New(
 	rooms RoomRepository,
 	pub EventPublisher,
 	threadRooms ThreadRoomRepository,
+	users UserStore,
+	customEmojis CustomEmojiStore,
 	historyFloor time.Duration,
 ) *HistoryService {
 	return &HistoryService{
@@ -90,6 +113,8 @@ func New(
 		rooms:         rooms,
 		publisher:     pub,
 		threadRooms:   threadRooms,
+		users:         users,
+		customEmojis:  customEmojis,
 		historyFloor:  historyFloor,
 	}
 }
@@ -105,6 +130,9 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	})
 	natsrouter.Register(r, subject.MsgDeletePattern(siteID), func(c *natsrouter.Context, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
 		return s.DeleteMessage(c, siteID, req)
+	})
+	natsrouter.Register(r, subject.MsgReactPattern(siteID), func(c *natsrouter.Context, req models.ReactMessageRequest) (*models.ReactMessageResponse, error) {
+		return s.ReactMessage(c, siteID, req)
 	})
 	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)

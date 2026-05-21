@@ -42,7 +42,7 @@ var defaultRoomLastMsgAt = joinTime.Add(24 * time.Hour)
 var defaultRoomCreatedAt = joinTime.Add(-30 * 24 * time.Hour)
 
 func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository) {
-	svc, msgs, subs, rooms, pub, threadRooms := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, pub, threadRooms, _, _ := newServiceWithRoomMock(t)
 	// Permissive defaults: existing tests don't care about the room reads.
 	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	// MinTimes(0) — tests asserting resolver invocation should override with a
@@ -58,21 +58,26 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 // can set its own GetMinUserLastSeenAt expectations. The mock IS pre-populated
 // with a permissive GetRoomTimes default — every handler invokes the bucket-
 // walk resolver, and almost no test cares about its return. Tests asserting
-// resolver behaviour should override with a stricter Times(N).
-func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockRoomRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository) {
+// resolver behaviour should override with a stricter Times(N). The reaction
+// helpers UserStore/CustomEmojiStore are also returned so reaction tests can
+// set their own expectations; reads on these are not pre-stubbed because
+// only ReactMessage exercises them.
+func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockRoomRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository, *mocks.MockUserStore, *mocks.MockCustomEmojiStore) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
 	subs := mocks.NewMockSubscriptionRepository(ctrl)
 	rooms := mocks.NewMockRoomRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	users := mocks.NewMockUserStore(ctrl)
+	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
 	rooms.EXPECT().
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
 		MinTimes(0)
 	// historyFloor: 90 days — long enough that the floor never clips test fixtures.
 	const historyFloor = 90 * 24 * time.Hour
-	return service.New(msgs, subs, rooms, pub, threadRooms, historyFloor), msgs, subs, rooms, pub, threadRooms
+	return service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, historyFloor), msgs, subs, rooms, pub, threadRooms, users, customEmojis
 }
 
 func assertInternalErr(t *testing.T, err error, wantMsg string) {
@@ -210,7 +215,7 @@ func TestHistoryService_LoadHistory_WithBeforeTimestamp(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_ReturnsMinUserLastSeenAt(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	floor := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -225,7 +230,7 @@ func TestHistoryService_LoadHistory_ReturnsMinUserLastSeenAt(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_NoMinUserLastSeenAt(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
@@ -243,7 +248,7 @@ func TestHistoryService_LoadHistory_NoMinUserLastSeenAt(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	pageMessages := []models.Message{
@@ -260,7 +265,7 @@ func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.
 }
 
 func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
@@ -272,7 +277,7 @@ func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
 }
 
 func TestHistoryService_LoadSurroundingMessages_DoesNotReadRoom(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	central := models.Message{MessageID: "mC", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)}

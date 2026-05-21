@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 func main() {
@@ -86,14 +87,20 @@ func main() {
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	roomRepo := mongorepo.NewRoomRepo(db)
 	threadRoomRepo := mongorepo.NewThreadRoomRepo(db)
+	customEmojiRepo := mongorepo.NewCustomEmojiRepo(db)
+	userStore := userstore.NewMongoStore(db.Collection("users"))
 
 	if err := threadRoomRepo.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure thread_rooms indexes failed", "error", err)
 		os.Exit(1)
 	}
+	if err := customEmojiRepo.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure custom_emojis indexes failed", "error", err)
+		os.Exit(1)
+	}
 
 	pub := publisher.New(nc)
-	svc := service.New(cassRepo, subRepo, roomRepo, pub, threadRoomRepo, historyFloor)
+	svc := service.New(cassRepo, subRepo, roomRepo, pub, threadRoomRepo, userStore, customEmojiRepo, historyFloor)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())
