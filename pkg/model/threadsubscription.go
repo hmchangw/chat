@@ -1,6 +1,13 @@
 package model
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrThreadSubscriptionNotFound is returned when a thread-subscription
+// lookup finds no matching document.
+var ErrThreadSubscriptionNotFound = errors.New("thread subscription not found")
 
 type ThreadSubscription struct {
 	ID              string `json:"id"              bson:"_id"`

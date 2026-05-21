@@ -65,3 +65,10 @@ type DMSubscription struct {
 	*Subscription
 	HRInfo *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
 }
+
+// MessageThreadReadRequest is the body of the message.thread.read RPC.
+// The subject already carries account and roomID; only the thread's
+// ParentMessageID is supplied in the body.
+type MessageThreadReadRequest struct {
+	ThreadID string `json:"threadId"`
+}

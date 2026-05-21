@@ -83,6 +83,7 @@ const (
 	OutboxMemberRemoved              OutboxEventType = "member_removed"
 	OutboxSubscriptionRead           OutboxEventType = "subscription_read"
 	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
+	OutboxThreadRead                 OutboxEventType = "thread_read"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -96,6 +97,23 @@ type SubscriptionReadEvent struct {
 	LastSeenAt int64  `json:"lastSeenAt" bson:"lastSeenAt"`
 	Alert      bool   `json:"alert"      bson:"alert"`
 	Timestamp  int64  `json:"timestamp"  bson:"timestamp"`
+}
+
+// ThreadReadEvent is the OutboxEvent.Payload for type "thread_read".
+// Sent from the room's home site to the user's home site when a user
+// marks a thread as read. The source site computes the authoritative
+// result (NewThreadUnread, Alert); the destination applies values
+// directly rather than re-deriving. LastSeenAt is UnixMilli (UTC);
+// Timestamp is the publish time (UnixMilli, UTC).
+type ThreadReadEvent struct {
+	Account         string   `json:"account"`
+	RoomID          string   `json:"roomId"`
+	ThreadRoomID    string   `json:"threadRoomId"`
+	ParentMessageID string   `json:"parentMessageId"`
+	NewThreadUnread []string `json:"newThreadUnread"`
+	Alert           bool     `json:"alert"`
+	LastSeenAt      int64    `json:"lastSeenAt"`
+	Timestamp       int64    `json:"timestamp"`
 }
 
 type OutboxEvent struct {
