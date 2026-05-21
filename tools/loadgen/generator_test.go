@@ -336,3 +336,27 @@ func TestGenerator_PoolSaturationCountedAsError(t *testing.T) {
 	}
 	assert.Greater(t, saturated, float64(0), "expected saturated counter to increment under pool-full conditions")
 }
+
+func TestParseInjectMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want InjectMode
+		err  bool
+	}{
+		{"frontdoor", InjectFrontdoor, false},
+		{"canonical", InjectCanonical, false},
+		{"", "", true},
+		{"http", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := ParseInjectMode(tc.in)
+			if tc.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

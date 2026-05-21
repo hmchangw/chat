@@ -6,81 +6,57 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// setupValkey starts a valkey/valkey:8 container and returns a connected valkeyStore.
-// The container is terminated via t.Cleanup.
-func setupValkey(t *testing.T, gracePeriod time.Duration) RoomKeyStore {
+// setupValkey starts a cluster-mode Valkey container via testutil and returns
+// a RoomKeyStore plus the raw *redis.ClusterClient (needed for CLUSTER KEYSLOT
+// assertions). The container and client are terminated/closed via t.Cleanup.
+func setupValkey(t *testing.T, gracePeriod time.Duration) (RoomKeyStore, *redis.ClusterClient) {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start valkey container")
-	t.Cleanup(func() {
-		_ = container.Terminate(ctx) // best-effort; ignore cleanup errors
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-
-	store, err := NewValkeyStore(Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
-		GracePeriod: gracePeriod,
-	})
-	require.NoError(t, err, "create valkeyStore")
-	return store
+	c := testutil.StartValkeyCluster(t)
+	store := &valkeyStore{
+		client:      &clusterAdapter{c: c},
+		closer:      c,
+		gracePeriod: gracePeriod,
+	}
+	return store, c
 }
 
 func TestValkeyStore_Integration_RoundTrip(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	privKey := bytes.Repeat([]byte{0xCD}, 32)
 	pair := RoomKeyPair{PrivateKey: privKey}
 
-	// Set
 	ver, err := store.Set(ctx, "room-1", pair)
 	require.NoError(t, err)
 	assert.Equal(t, 0, ver)
 
-	// Get — should return the stored pair with version
 	got, err := store.Get(ctx, "room-1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 0, got.Version)
 	assert.Equal(t, privKey, got.KeyPair.PrivateKey)
 
-	// Delete
 	err = store.Delete(ctx, "room-1")
 	require.NoError(t, err)
 
-	// Get after delete — should return nil, nil
 	got, err = store.Get(ctx, "room-1")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
 
 func TestValkeyStore_Integration_SetWithVersion(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	privKey := bytes.Repeat([]byte{0xCD}, 32)
@@ -105,7 +81,7 @@ func TestValkeyStore_Integration_SetWithVersion(t *testing.T) {
 }
 
 func TestValkeyStore_Integration_MissingKey(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	got, err := store.Get(ctx, "nonexistent-room")
@@ -114,7 +90,7 @@ func TestValkeyStore_Integration_MissingKey(t *testing.T) {
 }
 
 func TestValkeyStore_Integration_RotateRoundTrip(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	oldPriv := bytes.Repeat([]byte{0xBB}, 32)
@@ -130,34 +106,29 @@ func TestValkeyStore_Integration_RotateRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, ver)
 
-	// Get — should return new key pair as current.
 	got, err := store.Get(ctx, "room-rot")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, 1, got.Version)
 	assert.Equal(t, newPriv, got.KeyPair.PrivateKey)
 
-	// GetByVersion with old version — should return old key pair from previous slot.
 	oldPair, err := store.GetByVersion(ctx, "room-rot", 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldPair)
 	assert.Equal(t, oldPriv, oldPair.PrivateKey)
 
-	// GetByVersion with new version — should return new key pair from current slot.
 	newPair, err := store.GetByVersion(ctx, "room-rot", 1)
 	require.NoError(t, err)
 	require.NotNil(t, newPair)
 	assert.Equal(t, newPriv, newPair.PrivateKey)
 
-	// GetByVersion with unknown version — should return nil, nil.
 	unknown, err := store.GetByVersion(ctx, "room-rot", 999)
 	require.NoError(t, err)
 	assert.Nil(t, unknown)
 }
 
 func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
-	// Use a 1-second grace period so the test completes quickly.
-	store := setupValkey(t, 1*time.Second)
+	store, _ := setupValkey(t, 1*time.Second)
 	ctx := context.Background()
 
 	oldPriv := bytes.Repeat([]byte{0x02}, 32)
@@ -169,7 +140,6 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	_, err = store.Rotate(ctx, "room-grace", RoomKeyPair{PrivateKey: newPriv})
 	require.NoError(t, err)
 
-	// Immediately after rotate, old key should still be retrievable.
 	oldPair, err := store.GetByVersion(ctx, "room-grace", 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldPair, "old key should be retrievable during grace period")
@@ -178,12 +148,10 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 	// waiting for an external Valkey TTL, not synchronising goroutines.
 	time.Sleep(2 * time.Second)
 
-	// Old key should now be expired.
 	oldPair, err = store.GetByVersion(ctx, "room-grace", 0)
 	require.NoError(t, err)
 	assert.Nil(t, oldPair, "old key should be expired after grace period")
 
-	// Current key should still be present (no TTL).
 	got, err := store.Get(ctx, "room-grace")
 	require.NoError(t, err)
 	require.NotNil(t, got)
@@ -191,7 +159,7 @@ func TestValkeyStore_Integration_GracePeriodExpiry(t *testing.T) {
 }
 
 func TestValkeyStore_Integration_RotateNoCurrentKey(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	_, err := store.Rotate(ctx, "room-empty", RoomKeyPair{
@@ -202,10 +170,9 @@ func TestValkeyStore_Integration_RotateNoCurrentKey(t *testing.T) {
 }
 
 func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
-	// Set + Rotate to create both current and previous keys.
 	_, err := store.Set(ctx, "room-del", RoomKeyPair{
 		PrivateKey: bytes.Repeat([]byte{0xBB}, 32),
 	})
@@ -216,57 +183,85 @@ func TestValkeyStore_Integration_DeleteBothKeys(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Delete should remove both.
 	err = store.Delete(ctx, "room-del")
 	require.NoError(t, err)
 
-	// Current key should be gone.
 	got, err := store.Get(ctx, "room-del")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	// Previous key should also be gone.
 	prev, err := store.GetByVersion(ctx, "room-del", 0)
 	require.NoError(t, err)
 	assert.Nil(t, prev)
 }
 
 func TestValkeyStore_Integration_GetMany(t *testing.T) {
-	store := setupValkey(t, time.Hour)
+	store, _ := setupValkey(t, time.Hour)
 	ctx := context.Background()
 
 	priv1 := bytes.Repeat([]byte{0x02}, 32)
 	priv2 := bytes.Repeat([]byte{0x04}, 32)
 	priv3 := bytes.Repeat([]byte{0x06}, 32)
 
-	_, err := store.Set(ctx, "room-1", RoomKeyPair{PrivateKey: priv1})
+	_, err := store.Set(ctx, "getmany-room-1", RoomKeyPair{PrivateKey: priv1})
 	require.NoError(t, err)
-	_, err = store.Set(ctx, "room-2", RoomKeyPair{PrivateKey: priv2})
+	_, err = store.Set(ctx, "getmany-room-2", RoomKeyPair{PrivateKey: priv2})
 	require.NoError(t, err)
-	_, err = store.Set(ctx, "room-3", RoomKeyPair{PrivateKey: priv3})
+	_, err = store.Set(ctx, "getmany-room-3", RoomKeyPair{PrivateKey: priv3})
 	require.NoError(t, err)
 
-	got, err := store.GetMany(ctx, []string{"room-1", "room-2", "room-3", "room-missing"})
+	got, err := store.GetMany(ctx, []string{"getmany-room-1", "getmany-room-2", "getmany-room-3", "getmany-room-missing"})
 	require.NoError(t, err)
 	require.Len(t, got, 3, "missing room must be omitted from result")
 
-	require.Contains(t, got, "room-1")
-	assert.Equal(t, 0, got["room-1"].Version)
-	assert.Equal(t, priv1, got["room-1"].KeyPair.PrivateKey)
+	require.Contains(t, got, "getmany-room-1")
+	assert.Equal(t, 0, got["getmany-room-1"].Version)
+	assert.Equal(t, priv1, got["getmany-room-1"].KeyPair.PrivateKey)
 
-	require.Contains(t, got, "room-2")
-	assert.Equal(t, 0, got["room-2"].Version)
-	assert.Equal(t, priv2, got["room-2"].KeyPair.PrivateKey)
+	require.Contains(t, got, "getmany-room-2")
+	assert.Equal(t, 0, got["getmany-room-2"].Version)
+	assert.Equal(t, priv2, got["getmany-room-2"].KeyPair.PrivateKey)
 
-	require.Contains(t, got, "room-3")
-	assert.Equal(t, 0, got["room-3"].Version)
-	assert.Equal(t, priv3, got["room-3"].KeyPair.PrivateKey)
+	require.Contains(t, got, "getmany-room-3")
+	assert.Equal(t, 0, got["getmany-room-3"].Version)
+	assert.Equal(t, priv3, got["getmany-room-3"].KeyPair.PrivateKey)
 
-	_, missing := got["room-missing"]
-	assert.False(t, missing, "room-missing must not be present in result")
+	_, missing := got["getmany-room-missing"]
+	assert.False(t, missing, "getmany-room-missing must not be present in result")
 
 	empty, err := store.GetMany(ctx, []string{})
 	require.NoError(t, err)
 	require.NotNil(t, empty)
 	assert.Empty(t, empty)
+}
+
+// TestValkeyStore_Integration_HashTagSlotConsistency verifies that the
+// {roomID} hash tag in both key names forces them onto the same cluster slot.
+// Without hash tags the Lua rotate script would fail with a CROSSSLOT error.
+func TestValkeyStore_Integration_HashTagSlotConsistency(t *testing.T) {
+	store, c := setupValkey(t, time.Hour)
+	ctx := context.Background()
+
+	const roomID = "test-hash-tag-room"
+
+	currentKey := roomkey(roomID)
+	prevKey := roomprevkey(roomID)
+
+	slotCurrent, err := c.Do(ctx, "CLUSTER", "KEYSLOT", currentKey).Int()
+	require.NoError(t, err, "CLUSTER KEYSLOT current")
+	slotPrev, err := c.Do(ctx, "CLUSTER", "KEYSLOT", prevKey).Int()
+	require.NoError(t, err, "CLUSTER KEYSLOT prev")
+
+	assert.Equal(t, slotCurrent, slotPrev,
+		"current key %q and prev key %q must hash to the same cluster slot", currentKey, prevKey)
+
+	_, err = store.Set(ctx, roomID, RoomKeyPair{
+		PrivateKey: bytes.Repeat([]byte{0x02}, 32),
+	})
+	require.NoError(t, err)
+
+	_, err = store.Rotate(ctx, roomID, RoomKeyPair{
+		PrivateKey: bytes.Repeat([]byte{0x04}, 32),
+	})
+	require.NoError(t, err, "rotate must not return CROSSSLOT — hash tags ensure both keys share a slot")
 }

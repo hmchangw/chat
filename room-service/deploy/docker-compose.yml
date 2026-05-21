@@ -13,7 +13,7 @@ services:
       - MONGO_DB=chat
       - MAX_ROOM_SIZE=1000
       - MAX_BATCH_SIZE=500
-      - VALKEY_ADDR=valkey:6379
+      - VALKEY_ADDRS=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat

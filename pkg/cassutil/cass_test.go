@@ -72,13 +72,14 @@ func TestBuildCluster(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cluster := buildCluster(hosts, keyspace, tc.username, tc.password)
+			cluster := buildCluster(hosts, keyspace, tc.username, tc.password, 0)
 			require.NotNil(t, cluster)
 
 			assert.Equal(t, hosts, cluster.Hosts)
 			assert.Equal(t, keyspace, cluster.Keyspace)
 			assert.Equal(t, gocql.LocalQuorum, cluster.Consistency)
 			assert.Equal(t, 10*time.Second, cluster.Timeout)
+			assert.Equal(t, defaultNumConns, cluster.NumConns, "zero NumConns must fall back to defaultNumConns")
 
 			if !tc.expectAuth {
 				assert.Nil(t, cluster.Authenticator)
@@ -91,4 +92,23 @@ func TestBuildCluster(t *testing.T) {
 			assert.Equal(t, tc.expectedPass, auth.Password)
 		})
 	}
+}
+
+func TestBuildCluster_NumConns(t *testing.T) {
+	hosts := []string{"cass-a:9042"}
+
+	t.Run("explicit value is propagated", func(t *testing.T) {
+		cluster := buildCluster(hosts, "ks", "", "", 16)
+		assert.Equal(t, 16, cluster.NumConns)
+	})
+
+	t.Run("zero falls back to default", func(t *testing.T) {
+		cluster := buildCluster(hosts, "ks", "", "", 0)
+		assert.Equal(t, defaultNumConns, cluster.NumConns)
+	})
+
+	t.Run("negative falls back to default", func(t *testing.T) {
+		cluster := buildCluster(hosts, "ks", "", "", -4)
+		assert.Equal(t, defaultNumConns, cluster.NumConns)
+	})
 }

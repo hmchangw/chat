@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
@@ -35,16 +36,39 @@ var errRoomKeyAbsent = errors.New("room key absent")
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
 type PublishFunc func(ctx context.Context, subj string, data []byte, msgID string) error
 
+// defaultKeyFanoutWorkers caps concurrent in-flight key publishes when the
+// caller doesn't override via SetKeyFanoutWorkers. Sized to absorb common
+// channel sizes (32 members fan out in one batch) without unbounded goroutine
+// growth on giant rooms (10k members → 32 goroutines, not 10k).
+const defaultKeyFanoutWorkers = 32
+
 type Handler struct {
-	store     SubscriptionStore
-	siteID    string
-	publish   PublishFunc
-	keyStore  RoomKeyStore
-	keySender *roomkeysender.Sender
+	store            SubscriptionStore
+	siteID           string
+	publish          PublishFunc
+	keyStore         RoomKeyStore
+	keySender        *roomkeysender.Sender
+	keyFanoutWorkers int
 }
 
 func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, keyStore RoomKeyStore, keySender *roomkeysender.Sender) *Handler {
-	return &Handler{store: store, siteID: siteID, publish: publish, keyStore: keyStore, keySender: keySender}
+	return &Handler{
+		store:            store,
+		siteID:           siteID,
+		publish:          publish,
+		keyStore:         keyStore,
+		keySender:        keySender,
+		keyFanoutWorkers: defaultKeyFanoutWorkers,
+	}
+}
+
+// SetKeyFanoutWorkers overrides the bounded-worker pool size used by
+// fanOutKey. Values <= 0 are ignored so partial-deployment misconfig can't
+// disable the cap. main wires this from KEY_FANOUT_WORKERS at startup.
+func (h *Handler) SetKeyFanoutWorkers(n int) {
+	if n > 0 {
+		h.keyFanoutWorkers = n
+	}
 }
 
 // messageDedupSeed returns the X-Request-ID from ctx, or payloadSeed when absent (partial-deployment safety, with a warn log).
@@ -1024,6 +1048,7 @@ func resolveRoomName(req *model.CreateRoomRequest, roomType model.RoomType) stri
 }
 
 // buildDMSubs returns the two DM subs (each names the counterpart, IsSubscribed=false).
+
 func buildDMSubs(requester, other *model.User, room *model.Room, acceptedAt time.Time) []*model.Subscription {
 	return []*model.Subscription{
 		newSub(idgen.GenerateUUIDv7(), requester, room, nil, other.Account, false, acceptedAt),
@@ -1166,6 +1191,14 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 			return fmt.Errorf("bulk create subs: %w", err)
 		}
+		// Re-read canonical subs: BulkCreate is a $setOnInsert upsert, so on a
+		// JetStream redelivery the in-memory _id/JoinedAt may not match the
+		// persisted document. Hand the canonical pair to finishCreateRoom.
+		requesterSub, counterpartSub, err := h.store.FindDMSubscriptionPair(ctx, room.ID, requester.Account)
+		if err != nil {
+			return fmt.Errorf("re-read DM subs after write: %w", err)
+		}
+		subs = []*model.Subscription{requesterSub, counterpartSub}
 		return h.finishCreateRoom(ctx, &req, room, requester, []model.User{*requester, *counterpart}, subs, requestID, now)
 	case model.RoomTypeChannel:
 		return h.processCreateRoomChannel(ctx, &req, room, requester, requestID, acceptedAt, now)
@@ -1511,7 +1544,13 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		return nil, errUserLookupFailed
 	}
 
-	acceptedAt := time.Now().UTC()
+	// roomCreatedAt drives the room doc and the outbox dedup seed (must stay
+	// stable across NATS retries). joinedAt drives the subscription's JoinedAt
+	// field — on a dup-key retry it tracks the room's original creation time
+	// so JetStream redelivery is idempotent (user-service guards against
+	// genuine re-subscribe so we never need to refresh JoinedAt here).
+	roomCreatedAt := time.Now().UTC()
+	joinedAt := roomCreatedAt
 	roomID := idgen.BuildDMRoomID(requester.ID, other.ID)
 
 	uids, accounts := model.BuildDMParticipants(requester, other)
@@ -1532,8 +1571,8 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		AppCount:  appCount,
 		UIDs:      uids,
 		Accounts:  accounts,
-		CreatedAt: acceptedAt,
-		UpdatedAt: acceptedAt,
+		CreatedAt: roomCreatedAt,
+		UpdatedAt: roomCreatedAt,
 	}
 	if err := h.store.CreateRoom(ctx, room); err != nil {
 		if !mongo.IsDuplicateKeyError(err) {
@@ -1557,36 +1596,31 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		}
 		// Sync-path duplicate-key: forward-only — no UIDs/Accounts backfill on the existing room.
 		room = existing
-		acceptedAt = existing.CreatedAt
+		joinedAt = existing.CreatedAt
 	}
 
-	// validateSyncCreateDMShape already gated this to {dm, botDM}.
+	// validateSyncCreateDMShape already gated this to {dm, botDM}. Both share
+	// the same idempotent-insert path: BulkCreateSubscriptions does
+	// $setOnInsert so a JetStream redelivery is a Mongo no-op, and the
+	// subsequent FindDMSubscriptionPair returns the canonical persisted pair.
 	var subs []*model.Subscription
 	if req.RoomType == model.RoomTypeBotDM {
-		subs = buildBotDMSubs(requester, other, room, acceptedAt)
+		subs = buildBotDMSubs(requester, other, room, joinedAt)
 	} else {
-		subs = buildDMSubs(requester, other, room, acceptedAt)
+		subs = buildDMSubs(requester, other, room, joinedAt)
 	}
-
 	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
 		return nil, fmt.Errorf("bulk create subs: %w", err)
 	}
-	// Re-read canonical subs: BulkCreateSubscriptions swallows dup-key races, so the
-	// in-memory subs may carry IDs/JoinedAt that never made it to Mongo. Publish from
-	// the persisted pair instead.
-	requesterSub, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
+	requesterSub, otherSub, err := h.store.FindDMSubscriptionPair(ctx, room.ID, requester.Account)
 	if err != nil {
-		return nil, fmt.Errorf("find requester sub after insert: %w", err)
-	}
-	otherSub, err := h.store.FindDMSubscription(ctx, other.Account, requester.Account)
-	if err != nil {
-		return nil, fmt.Errorf("find counterpart sub after insert: %w", err)
+		return nil, fmt.Errorf("re-read DM subs after write: %w", err)
 	}
 
 	h.publishSubscriptionUpdates(ctx, []*model.Subscription{requesterSub, otherSub}, requestID)
 
 	// Outbox failure means the remote site won't learn about the room; fail the request.
-	if err := h.publishSyncDMOutbox(ctx, room, requester, other, acceptedAt); err != nil {
+	if err := h.publishSyncDMOutbox(ctx, room, requester, other, requesterSub.JoinedAt); err != nil {
 		return nil, fmt.Errorf("publish room_created outbox: %w", err)
 	}
 
@@ -1629,7 +1663,7 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 	}
 }
 
-func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, acceptedAt time.Time) error {
+func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, joinedAt time.Time) error {
 	if other.SiteID == "" || other.SiteID == h.siteID {
 		return nil
 	}
@@ -1643,7 +1677,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 		Accounts:         []string{other.Account},
 		SiteID:           room.SiteID,
 		RequesterAccount: requester.Account,
-		JoinedAt:         acceptedAt.UnixMilli(),
+		JoinedAt:         joinedAt.UnixMilli(),
 		Timestamp:        now,
 	}
 	pData, err := json.Marshal(memberEvt)
@@ -1661,7 +1695,10 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	if err != nil {
 		return fmt.Errorf("marshal outbox envelope: %w", err)
 	}
-	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, acceptedAt.UnixMilli())
+	// Dedup seed keys on room.CreatedAt (stable across retries and re-subscribes)
+	// rather than joinedAt — botDM re-subscribes carry a fresh joinedAt that
+	// would otherwise defeat JetStream dedup on a NATS request retry.
+	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, room.CreatedAt.UnixMilli())
 	return h.publish(ctx,
 		subject.Outbox(room.SiteID, other.SiteID, model.OutboxMemberAdded),
 		eData,
@@ -1693,12 +1730,11 @@ func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, p
 		Version:    pair.Version,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
+	accounts := make([]string, len(survivors))
 	for i := range survivors {
-		if err := h.keySender.Send(survivors[i].User.Account, evt); err != nil {
-			slog.Error("send room key", "error", err, "account", survivors[i].User.Account, "roomId", roomID)
-			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
-		}
+		accounts[i] = survivors[i].User.Account
 	}
+	h.fanOutKey(ctx, roomID, accounts, &evt)
 }
 
 // buildAndFanOutRoomKey fetches the current key from Valkey, builds the RoomKeyEvent,
@@ -1720,12 +1756,50 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, user
 		Version:    pair.Version,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
+	accounts := make([]string, len(users))
 	for i := range users {
-		u := &users[i]
-		if err := h.keySender.Send(u.Account, evt); err != nil {
-			slog.Error("send room key", "error", err, "account", u.Account, "roomId", roomID)
-			roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
-		}
+		accounts[i] = users[i].Account
 	}
+	h.fanOutKey(ctx, roomID, accounts, &evt)
 	return nil
+}
+
+// fanOutKey distributes evt to every account via h.keySender.Send using up to
+// h.keyFanoutWorkers concurrent goroutines. Per-account errors are logged and
+// counted via roomkeymetrics; partial fan-out is acceptable because JetStream
+// redelivers on permanent failure and recipients are idempotent on key version.
+//
+// evt is taken by pointer so the 80-byte struct isn't copied per fan-out call;
+// callers must not mutate it after passing it in.
+func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []string, evt *model.RoomKeyEvent) {
+	if len(accounts) == 0 {
+		return
+	}
+	workers := h.keyFanoutWorkers
+	if workers <= 0 {
+		// Defensive default for tests and any future construction path that
+		// bypasses NewHandler with a zero-value Handler — without this an
+		// unbuffered semaphore deadlocks the first publish.
+		workers = defaultKeyFanoutWorkers
+	}
+	if workers > len(accounts) {
+		workers = len(accounts)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, account := range accounts {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(acct string) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			if err := h.keySender.Send(acct, *evt); err != nil {
+				slog.Error("send room key", "error", err, "account", acct, "roomId", roomID)
+				roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
+			}
+		}(account)
+	}
+	wg.Wait()
 }

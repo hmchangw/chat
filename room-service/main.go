@@ -30,13 +30,14 @@ type config struct {
 	MaxRoomSize       int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
 	MaxBatchSize      int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
 	MemberListTimeout time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
-	ValkeyAddr        string          `env:"VALKEY_ADDR,required"`
+	ValkeyAddrs       []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
 	ValkeyPassword    string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 	CassandraHosts    string          `env:"CASSANDRA_HOSTS,required"`
 	CassandraKeyspace string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
 	CassandraUsername string          `env:"CASSANDRA_USERNAME"        envDefault:""`
 	CassandraPassword string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
+	CassandraNumConns int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
 	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 }
 
@@ -79,8 +80,8 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr:        cfg.ValkeyAddr,
+	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
+		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
 		GracePeriod: cfg.ValkeyGracePeriod,
 	})
@@ -104,12 +105,13 @@ func main() {
 	}
 	ensureCancel()
 
-	cassSession, err := cassutil.Connect(
-		cfg.CassandraHosts,
-		cfg.CassandraKeyspace,
-		cfg.CassandraUsername,
-		cfg.CassandraPassword,
-	)
+	cassSession, err := cassutil.Connect(cassutil.Config{
+		Hosts:    cfg.CassandraHosts,
+		Keyspace: cfg.CassandraKeyspace,
+		Username: cfg.CassandraUsername,
+		Password: cfg.CassandraPassword,
+		NumConns: cfg.CassandraNumConns,
+	})
 	if err != nil {
 		slog.Error("cassandra connect failed", "error", err)
 		os.Exit(1)

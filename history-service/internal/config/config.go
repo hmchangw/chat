@@ -9,6 +9,9 @@ type CassandraConfig struct {
 	Keyspace string `env:"KEYSPACE" envDefault:"chat"`
 	Username string `env:"USERNAME" envDefault:""`
 	Password string `env:"PASSWORD" envDefault:""`
+	// NumConns sets gocql's per-host connection count. Zero leaves cassutil
+	// to apply its own default (which is well above gocql's stock 2).
+	NumConns int `env:"NUM_CONNS" envDefault:"8"`
 }
 
 // MongoConfig holds MongoDB connection settings.

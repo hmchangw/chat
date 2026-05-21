@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -17,8 +16,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -30,7 +27,6 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 // capturedPublish records a single publish call for later assertion.
@@ -1167,34 +1163,9 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
 }
 
-// setupValkey starts a Valkey testcontainer and returns a connected full key store.
-// The returned store satisfies both roomkeystore.RoomKeyStore (for seeding) and the
-// local RoomKeyStore interface accepted by NewHandler (Get-only subset).
 func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-	cfg := roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
-		GracePeriod: time.Hour,
-	}
-	ks, err := roomkeystore.NewValkeyStore(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ks.Close() })
-	return ks
+	return roomkeystore.NewValkeyClusterStoreFromClient(testutil.StartValkeyCluster(t), time.Hour)
 }
 
 // startEmbeddedNATS starts an in-process NATS server and returns a connected client.
@@ -1309,4 +1280,153 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 		gotSubjects,
 		"key fan-out must reach every local-site member",
 	)
+}
+
+// TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration locks in that
+// processCreateRoom's botDM branch keeps its insert-only contract on a
+// JetStream redelivery: a pre-existing muted, inactive botDM subscription
+// must NOT be refreshed (DisableNotification, IsSubscribed, JoinedAt
+// untouched). The re-subscribe refresh semantic is owned by user-service.
+func TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_helper_bot", Account: "helper.bot", SiteID: "site-A",
+	})
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_helper_bot")
+	oldJoinedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Type: model.RoomTypeBotDM, SiteID: "site-A",
+		CreatedBy: "u_alice", CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
+		UIDs:     []string{"u_alice", "u_helper_bot"},
+		Accounts: []string{"alice", "helper.bot"},
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:                  "existing-human-sub",
+		User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:              roomID,
+		SiteID:              "site-A",
+		RoomType:            model.RoomTypeBotDM,
+		Name:                "helper.bot",
+		IsSubscribed:        false,
+		DisableNotification: true,
+		JoinedAt:            oldJoinedAt,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:           "existing-bot-sub",
+		User:         model.SubscriptionUser{ID: "u_helper_bot", Account: "helper.bot"},
+		RoomID:       roomID,
+		SiteID:       "site-A",
+		RoomType:     model.RoomTypeBotDM,
+		Name:         "alice",
+		IsSubscribed: false,
+		JoinedAt:     oldJoinedAt,
+	})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID:           roomID,
+		Users:            []string{"helper.bot"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	got, err := store.GetSubscription(ctx, "alice", roomID)
+	require.NoError(t, err)
+	assert.True(t, got.DisableNotification,
+		"botDM path must NOT clear DisableNotification on redelivery (insert-only contract)")
+	assert.False(t, got.IsSubscribed,
+		"botDM path must NOT refresh IsSubscribed on redelivery (insert-only contract)")
+	assert.True(t, got.JoinedAt.Equal(oldJoinedAt),
+		"botDM path must NOT refresh JoinedAt on redelivery (insert-only contract)")
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), subCount, "no duplicate subs after re-delivery")
+}
+
+// TestProcessCreateRoom_DM_DoesNotUpsert_Integration locks in that
+// processCreateRoom's regular-DM branch keeps its insert-only contract:
+// a pre-existing regular-DM subscription's state (specifically
+// DisableNotification = true and an old JoinedAt) must NOT be refreshed
+// when processCreateRoom is replayed for the same (room, user) pair.
+// This regression guard prevents accidental upsert wiring on the DM
+// branch in future edits.
+func TestProcessCreateRoom_DM_DoesNotUpsert_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertUser(t, db, &model.User{
+		ID: "u_alice", Account: "alice", SiteID: "site-A",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	})
+	mustInsertUser(t, db, &model.User{
+		ID: "u_bob", Account: "bob", SiteID: "site-A",
+		EngName: "Bob", ChineseName: "鲍勃",
+	})
+
+	roomID := idgen.BuildDMRoomID("u_alice", "u_bob")
+	oldJoinedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-A",
+		CreatedBy: "u_alice", CreatedAt: oldJoinedAt, UpdatedAt: oldJoinedAt,
+		UIDs:     []string{"u_alice", "u_bob"},
+		Accounts: []string{"alice", "bob"},
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:                  "existing-alice-sub",
+		User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:              roomID,
+		SiteID:              "site-A",
+		RoomType:            model.RoomTypeDM,
+		Name:                "bob",
+		DisableNotification: true,
+		JoinedAt:            oldJoinedAt,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID:       "existing-bob-sub",
+		User:     model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		RoomID:   roomID,
+		SiteID:   "site-A",
+		RoomType: model.RoomTypeDM,
+		Name:     "alice",
+		JoinedAt: oldJoinedAt,
+	})
+
+	h := newIntegrationHandler(t, store, "site-A")
+	const reqID = "0193abcd-0193-7abc-89ab-0193abcd0193"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.CreateRoomRequest{
+		RoomID:           roomID,
+		Users:            []string{"bob"},
+		RequesterID:      "u_alice",
+		RequesterAccount: "alice",
+		Timestamp:        time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	got, err := store.GetSubscription(ctx, "alice", roomID)
+	require.NoError(t, err)
+	assert.True(t, got.DisableNotification,
+		"regular-DM path must NOT clear DisableNotification on re-create (insert-only contract)")
+	assert.True(t, got.JoinedAt.Equal(oldJoinedAt),
+		"regular-DM path must NOT refresh JoinedAt on re-create (insert-only contract)")
 }

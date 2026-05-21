@@ -17,9 +17,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	natsmod "github.com/testcontainers/testcontainers-go/modules/nats"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
@@ -29,34 +26,15 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
-	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
 func setupMongo(t *testing.T) *mongo.Database {
 	return testutil.MongoDB(t, "room_service_test")
 }
 
-func setupValkey(t *testing.T) *roomkeystore.Config {
+func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections"),
-		},
-		Started: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-	return &roomkeystore.Config{
-		Addr:        fmt.Sprintf("%s:%s", host, port.Port()),
-		GracePeriod: time.Hour,
-	}
+	return roomkeystore.NewValkeyClusterStoreFromClient(testutil.StartValkeyCluster(t), time.Hour)
 }
 
 func setupCassandra(t *testing.T) *gocql.Session {
@@ -110,13 +88,7 @@ func TestCassMessageReader_GetMessageRoomAndCreatedAt_Integration(t *testing.T) 
 
 func setupNATS(t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
-	container, err := natsmod.Run(ctx, testimages.NATS)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-	url, err := container.ConnectionString(ctx)
-	require.NoError(t, err)
-	return url
+	return testutil.NATS(t)
 }
 
 func TestMongoStore_Integration(t *testing.T) {
@@ -856,10 +828,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	valCfg := setupValkey(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 	store := NewMongoStore(db)
 
 	ctx := context.Background()
@@ -869,7 +838,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	// Source channel on site-a: seed room_members explicitly so ListRoomMembers takes the room_members
 	// branch (not the subscriptions fallback); also seed users so ResolveAccounts can find them.
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+	_, err := db.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
 		model.User{ID: "u3", Account: "dave", SiteID: "site-a", SectID: "eng-org"},
@@ -932,10 +901,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	valCfg := setupValkey(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 	store := NewMongoStore(db)
 
 	ctx := context.Background()
@@ -943,7 +909,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
 	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
 	// Seed users so ResolveAccounts can find them.
-	_, err = db.Collection("users").InsertMany(ctx, []interface{}{
+	_, err := db.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
 		model.User{ID: "u3", Account: "dave", SiteID: "site-a"},
@@ -996,10 +962,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 	}
 
 	db := setupMongo(t)
-	valCfg := setupValkey(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 	store := NewMongoStore(db)
 
 	ctx := context.Background()
@@ -1032,10 +995,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	dbA := testutil.MongoDB(t, "room_service_test_a")
 	dbB := testutil.MongoDB(t, "room_service_test_b")
 	natsURLb := setupNATS(t)
-	valCfg := setupValkey(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 
 	storeA := NewMongoStore(dbA)
 	storeB := NewMongoStore(dbB)
@@ -1121,10 +1081,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	db := setupMongo(t)
 	natsURL := setupNATS(t)
-	valCfg := setupValkey(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 	store := NewMongoStore(db)
 	otelNC, err := otelnats.Connect(natsURL)
 	require.NoError(t, err)
@@ -1171,11 +1128,8 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
 	db := setupMongo(t)
-	valCfg := setupValkey(t)
+	keyStore := setupValkey(t)
 	natsURL := setupNATS(t)
-
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
 
 	store := NewMongoStore(db)
 	ctx := context.Background()
@@ -1193,7 +1147,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 
 	privKey1 := bytes.Repeat([]byte{0x01}, 32)
 	privKey2 := bytes.Repeat([]byte{0x02}, 32)
-	_, err = keyStore.Set(ctx, "r1", roomkeystore.RoomKeyPair{PrivateKey: privKey1})
+	_, err := keyStore.Set(ctx, "r1", roomkeystore.RoomKeyPair{PrivateKey: privKey1})
 	require.NoError(t, err)
 	_, err = keyStore.Set(ctx, "r2", roomkeystore.RoomKeyPair{PrivateKey: privKey2})
 	require.NoError(t, err)
@@ -1262,9 +1216,7 @@ func TestIntegration_CreateRoom_PersistsKeyInValkey(t *testing.T) {
 	store := NewMongoStore(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	valCfg := setupValkey(t)
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 
 	mustInsertUser(t, db, &model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A",
@@ -1348,9 +1300,7 @@ func TestCreateRoomChannelEndToEnd(t *testing.T) {
 	store := NewMongoStore(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	valCfg := setupValkey(t)
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 
 	mustInsertUser(t, db, &model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A",
@@ -1399,9 +1349,7 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	store := NewMongoStore(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	valCfg := setupValkey(t)
-	keyStore, err := roomkeystore.NewValkeyStore(*valCfg)
-	require.NoError(t, err)
+	keyStore := setupValkey(t)
 
 	mustInsertUser(t, db, &model.User{ID: "u_alice", Account: "alice",
 		EngName: "Alice", ChineseName: "爱丽丝", SiteID: "site-A"})
