@@ -3201,3 +3201,160 @@ func TestHandler_EnsureRoomKey_NilKeyStore(t *testing.T) {
 	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
 }
+
+func TestHandler_MuteToggle_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{
+			ID:     "s1",
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+		}, nil)
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(true, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil) // same site → no outbox publish
+
+	var coreSubjects []string
+	var coreBodies [][]byte
+	h := &Handler{
+		store:  store,
+		siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site mute toggle")
+			return nil
+		},
+		publishCore: func(_ context.Context, subj string, data []byte) error {
+			coreSubjects = append(coreSubjects, subj)
+			coreBodies = append(coreBodies, data)
+			return nil
+		},
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	resp, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	var got model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.DisableNotifications)
+
+	require.Len(t, coreSubjects, 1)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), coreSubjects[0])
+
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
+	assert.Equal(t, "mute_toggled", evt.Action)
+	assert.True(t, evt.Subscription.DisableNotifications)
+	assert.Equal(t, "alice", evt.Subscription.User.Account)
+}
+
+func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1", SiteID: "site-a",
+		}, nil)
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(true, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	var streamSubj string
+	var streamData []byte
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, s string, d []byte) error {
+			streamSubj = s
+			streamData = d
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, subject.Outbox("site-a", "site-b", model.OutboxSubscriptionMuteToggled), streamSubj)
+
+	var outbox model.OutboxEvent
+	require.NoError(t, json.Unmarshal(streamData, &outbox))
+	assert.Equal(t, model.OutboxSubscriptionMuteToggled, outbox.Type)
+	assert.Equal(t, "site-a", outbox.SiteID)
+	assert.Equal(t, "site-b", outbox.DestSiteID)
+
+	var payload model.SubscriptionMuteToggledEvent
+	require.NoError(t, json.Unmarshal(outbox.Payload, &payload))
+	assert.Equal(t, "alice", payload.Account)
+	assert.Equal(t, "r1", payload.RoomID)
+	assert.True(t, payload.DisableNotifications)
+	assert.NotZero(t, payload.Timestamp)
+}
+
+func TestHandler_MuteToggle_NotRoomMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, model.ErrSubscriptionNotFound)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	assert.ErrorIs(t, err, errNotRoomMember)
+}
+
+func TestHandler_MuteToggle_InvalidSubject(t *testing.T) {
+	h := &Handler{
+		siteID:          "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	_, err := h.handleMuteToggle(context.Background(), "garbage.subject", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid mute-toggle subject")
+}
+
+func TestHandler_MuteToggle_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{
+			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		}, nil)
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(false, fmt.Errorf("db down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "toggle subscription mute")
+}
