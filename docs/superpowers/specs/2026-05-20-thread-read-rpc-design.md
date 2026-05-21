@@ -72,33 +72,62 @@ Flow:
 
 1. **Parse subject** via `subject.ParseUserRoomSubject(subj)` → `account`, `roomID`. `!ok` → `fmt.Errorf("invalid message-thread-read subject: %s", subj)`.
 2. **Unmarshal** request body into `MessageThreadReadRequest`. Empty `req.ThreadID` → `errInvalidThreadID`.
-3. **Room-access check:** `sub, err := h.store.GetSubscription(ctx, account, roomID)`.
-   - `errors.Is(err, model.ErrSubscriptionNotFound)` → `errNotRoomMember` (existing sentinel).
-   - other error → wrap.
-4. **Thread-sub existence check:** `tsub, err := h.store.GetThreadSubscriptionByParent(ctx, account, req.ThreadID)`.
-   - `errors.Is(err, model.ErrThreadSubscriptionNotFound)` → `errThreadSubNotFound`.
-   - other error → wrap.
-5. **Compute new state:**
+3. **Room-access + thread-sub existence checks (concurrent):** the two reads target different collections and are independent, so they run in parallel inside an `errgroup.WithContext`. Results and errors are captured into local vars; errors are then inspected with explicit priority (`errNotRoomMember` outranks `errThreadSubNotFound` because room access is the more fundamental authorization, and the group context cancellation could otherwise mask the real result):
+
+   ```go
+   var (
+       sub             *model.Subscription
+       tsub            *model.ThreadSubscription
+       subErr, tsubErr error
+   )
+   g, gctx := errgroup.WithContext(ctx)
+   g.Go(func() error {
+       s, err := h.store.GetSubscription(gctx, account, roomID)
+       sub, subErr = s, err
+       return err
+   })
+   g.Go(func() error {
+       t, err := h.store.GetThreadSubscriptionByParent(gctx, account, req.ThreadID, roomID)
+       tsub, tsubErr = t, err
+       return err
+   })
+   _ = g.Wait()
+   switch {
+   case errors.Is(subErr, model.ErrSubscriptionNotFound):
+       return nil, errNotRoomMember
+   case subErr != nil:
+       return nil, fmt.Errorf("get subscription: %w", subErr)
+   case errors.Is(tsubErr, model.ErrThreadSubscriptionNotFound):
+       return nil, errThreadSubNotFound
+   case tsubErr != nil:
+       return nil, fmt.Errorf("get thread subscription: %w", tsubErr)
+   }
+   ```
+
+   `GetThreadSubscriptionByParent` takes `roomID` as a defensive correctness filter: the supplied `threadId` must belong to the room named in the subject. A mismatch is reported as `ErrThreadSubscriptionNotFound`.
+
+4. **Compute new state:**
    - `newThreadUnread` is `sub.ThreadUnread` with `req.ThreadID` removed (idempotent — absence is allowed).
    - `newAlert := sub.Alert && len(newThreadUnread) > 0` (mirrors `handleMessageRead`'s formula — a thread-read can only clear an alert, never set one).
    - `now := time.Now().UTC()`.
-6. **Concurrent writes** via `errgroup.WithContext(ctx)`:
+5. **Concurrent writes** via a second `errgroup.WithContext(ctx)`:
    - Goroutine A: `store.UpdateSubscriptionThreadRead(ctx, roomID, account, newThreadUnread, newAlert)`.
    - Goroutine B: `store.UpdateThreadSubscriptionRead(ctx, tsub.ThreadRoomID, account, now)` (sets `lastSeenAt=now`, `updatedAt=now`, `hasMention=false`).
    - `g.Wait()` — first error wins, wrapped.
-7. **Cross-site outbox** (only when needed):
+6. **Cross-site outbox** (only when needed):
    - `userSiteID, err := store.GetUserSiteID(ctx, account)`. Wrap on error.
    - `userSiteID == ""` → `slog.Warn` and skip publish — local writes have already succeeded.
    - `userSiteID != "" && userSiteID != h.siteID`:
      - Build `model.ThreadReadEvent{Account, RoomID, ThreadRoomID: tsub.ThreadRoomID, ParentMessageID: req.ThreadID, NewThreadUnread: newThreadUnread, Alert: newAlert, LastSeenAt: now.UnixMilli(), Timestamp: now.UnixMilli()}`.
      - Wrap in `model.OutboxEvent{Type: model.OutboxThreadRead, SiteID: h.siteID, DestSiteID: userSiteID, Payload, Timestamp: now.UnixMilli()}`.
      - Publish to `subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead)` via `h.publishToStream`. Errors wrap.
-8. **Return** `{"status":"accepted"}`.
+7. **Return** `{"status":"accepted"}`.
 
 ### 3.1 Step ordering rationale
 
 - Local writes go before the outbox so a publish failure cannot leave the local state stale and the federation gap is what gets reported.
-- The two local writes are independent (different collections, different documents) — `errgroup` runs them in parallel per your spec.
+- The two reads (room sub + thread sub) and the two writes (sub update + thread-sub update) each form an independent pair of operations against different collections, so each pair runs concurrently via `errgroup`.
+- Read-error priority (`errNotRoomMember` over `errThreadSubNotFound`) is enforced by manual inspection after `g.Wait()` rather than relying on errgroup's first-error semantics, because the group context cancellation can otherwise mask the real lookup result.
 - No room-floor recompute: `Room.MinUserLastSeenAt` is driven by `Subscription.LastSeenAt`, which thread reads do not touch.
 
 ### 3.2 Error sanitization
@@ -167,9 +196,14 @@ Both added to `sanitizeError`'s allow-list.
 
 ```go
 // GetThreadSubscriptionByParent looks up the user's ThreadSubscription
-// by (parentMessageID, account). Returns model.ErrThreadSubscriptionNotFound
-// (wrapped) when no document matches.
-GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID string) (*model.ThreadSubscription, error)
+// by (parentMessageID, account) and additionally enforces that the
+// matched document's roomId equals the supplied roomID. The roomID
+// filter is a defensive correctness check — it prevents a client from
+// pairing a roomID in the request subject with a threadId belonging
+// to a different room. Returns model.ErrThreadSubscriptionNotFound
+// (wrapped) when no document matches the full (parentMessageID,
+// account, roomID) tuple.
+GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error)
 
 // UpdateSubscriptionThreadRead overwrites threadUnread and alert on the
 // subscription keyed by (roomID, account). When threadUnread is empty,
@@ -191,7 +225,7 @@ UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, 
 
 Room-service does not currently hold a handle to the `thread_subscriptions` collection. Add it to `roomStoreMongo` alongside the existing `subscriptions`, `rooms`, `users` handles, and wire it in the constructor — mirror what `inbox-worker` and `message-worker` already do.
 
-- **`GetThreadSubscriptionByParent`** — `s.threadSubscriptions.FindOne(ctx, bson.M{"parentMessageId": parentMessageID, "userAccount": account}).Decode(...)`. On `mongo.ErrNoDocuments` return wrapped `model.ErrThreadSubscriptionNotFound`.
+- **`GetThreadSubscriptionByParent`** — `s.threadSubscriptions.FindOne(ctx, bson.M{"parentMessageId": parentMessageID, "userAccount": account, "roomId": roomID}).Decode(...)`. On `mongo.ErrNoDocuments` return wrapped `model.ErrThreadSubscriptionNotFound`. The new `(parentMessageId, userAccount)` index satisfies the equality predicates; `roomId` is verified on the matched document. Adding `roomId` as a third index key gives no measurable benefit — `parentMessageId` is unique per thread, so the index already returns at most one candidate.
 - **`UpdateSubscriptionThreadRead`** — filter `bson.M{"roomId": roomID, "u.account": account}`. When `len(threadUnread) == 0`: update is `bson.M{"$set": bson.M{"alert": alert}, "$unset": bson.M{"threadUnread": ""}}` so the field is removed and round-trips to `nil`. When non-empty: `bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}`. `MatchedCount == 0` → wrapped `ErrSubscriptionNotFound`.
 - **`UpdateThreadSubscriptionRead`** — filter `bson.M{"threadRoomId": threadRoomID, "userAccount": account}`; update `bson.M{"$set": bson.M{"lastSeenAt": lastSeenAt, "updatedAt": lastSeenAt, "hasMention": false}}`. `MatchedCount == 0` → wrapped `ErrThreadSubscriptionNotFound`.
 
@@ -320,6 +354,8 @@ Mock `RoomStore`; capture `publishToStream`. Table-driven cases for `handleMessa
 3. Malformed JSON body → unmarshal error, no store calls.
 4. Not a room member (`GetSubscription` → `ErrSubscriptionNotFound`) → `errNotRoomMember`. No thread-sub lookup.
 5. Thread subscription missing (`GetThreadSubscriptionByParent` → `ErrThreadSubscriptionNotFound`) → `errThreadSubNotFound`. No writes.
+5b. Both lookups miss → `errNotRoomMember` wins (priority assertion). Confirms the manual error-priority inspection works regardless of which goroutine finishes first.
+5c. ThreadSubscription belongs to a different room than the subject → `errThreadSubNotFound` (the roomId mismatch is reported as not-found by design).
 6. Happy path, alert clears — `Subscription.ThreadUnread = ["t1"]`, `Alert = true`; request clears `"t1"` → store called with `threadUnread = []`, `alert = false`. Both writes invoked. Local user → no outbox.
 7. Happy path, alert stays — `ThreadUnread = ["t1","t2"]`, request clears `"t1"` → `threadUnread = ["t2"]`, `alert = true`. No outbox.
 8. Idempotent — threadID not in array (`ThreadUnread = ["t2"]`, request clears `"t1"`) → `threadUnread = ["t2"]`, `alert = old.Alert && len > 0`. Both writes still invoked. No outbox.
@@ -334,7 +370,7 @@ Mock `RoomStore`; capture `publishToStream`. Table-driven cases for `handleMessa
 
 ### 7.5 Room-service integration tests (`room-service/integration_test.go`)
 
-- `GetThreadSubscriptionByParent` — hit returns the document; miss returns wrapped `ErrThreadSubscriptionNotFound`.
+- `GetThreadSubscriptionByParent` — hit returns the document; miss on any of (parentMessageId, userAccount, roomId) returns wrapped `ErrThreadSubscriptionNotFound`. Include an explicit case where the document exists with a different `roomId` than the one supplied → miss.
 - `UpdateSubscriptionThreadRead`:
   - Non-empty array path: both fields written.
   - Empty array path: `threadUnread` field absent in BSON (matches the existing `omitempty` round-trip test).
