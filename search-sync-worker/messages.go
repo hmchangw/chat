@@ -61,6 +61,11 @@ func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction,
 	if evt.Timestamp <= 0 {
 		return nil, fmt.Errorf("build message action: missing timestamp")
 	}
+	// Reactions don't change indexed content; skip rather than re-upserting
+	// the same document with a bumped updatedAt.
+	if evt.Event == model.EventReacted {
+		return nil, nil
+	}
 	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
 }
 
