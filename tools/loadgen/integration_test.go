@@ -24,6 +24,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
@@ -135,12 +136,7 @@ func TestSeedAndTeardown(t *testing.T) {
 // and MongoDB shows the seeded room data.
 func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	ctx := context.Background()
-	natsURI, stopNATS := setupNATS(t)
-	defer stopNATS()
-	mongoURI, stopMongo := setupMongo(t)
-	defer stopMongo()
-
-	nc, err := nats.Connect(natsURI)
+	nc, err := nats.Connect(testutil.NATS(t))
 	require.NoError(t, err)
 	defer nc.Drain()
 
@@ -174,11 +170,7 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 		}
 	}()
 
-	// Connect Mongo and seed fixtures.
-	client, err := mongoutil.Connect(ctx, mongoURI, "", "")
-	require.NoError(t, err)
-	defer mongoutil.Disconnect(ctx, client)
-	db := client.Database("chat")
+	db := testutil.MongoDB(t, "loadgen")
 
 	preset, _ := BuiltinPreset("small")
 	fixtures := BuildFixtures(&preset, 42, siteID)
@@ -247,10 +239,8 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	defer cancel()
 	require.NoError(t, gen.Run(runCtx))
 
-	// Allow trailing events to flow.
 	time.Sleep(2 * time.Second)
 
-	// Assert the canonical stream drained.
 	for _, durable := range []string{"message-worker", "broadcast-worker"} {
 		cons, err := js.Consumer(ctx, canonical.Name, durable)
 		require.NoError(t, err)
@@ -259,7 +249,6 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 		require.Equal(t, uint64(0), info.NumPending, "durable %s still has pending", durable)
 	}
 
-	// Assert seed data is visible in Mongo.
 	var room model.Room
 	err = db.Collection("rooms").FindOne(ctx, bson.M{"_id": fixtures.Rooms[0].ID}).Decode(&room)
 	require.NoError(t, err)
@@ -865,3 +854,10 @@ func TestTeardownForce_DropsOrphanedDBsAndConsumers(t *testing.T) {
 	require.Empty(t, rep2.DroppedMongoDBs, "second run: no DBs to drop")
 	require.Empty(t, rep2.DroppedConsumers, "second run: no consumers to drop")
 }
+
+// TestMain enables shared-container testcontainers via pkg/testutil for any
+// tests in this file that opt in (e.g., the members_integration_test.go
+// TestLoadgenMembersSustained_EndToEnd that calls testutil.NATS(t)). Tests
+// that use the local setupNATS/setupMongo/setupValkey helpers below get
+// their own per-test containers as before — the two patterns coexist.
+func TestMain(m *testing.M) { testutil.RunTests(m) }
