@@ -2,10 +2,8 @@
 
 package main
 
-// Per-package shared test infrastructure. ES / NATS / Mongo come from
-// pkg/testutil as process-shared containers; Valkey is per-test via
-// testutil.StartValkeyCluster. CCS tests bring their own ES pair
-// (integration_ccs_test.go).
+// ES / NATS / Valkey / Mongo come from pkg/testutil. CCS tests bring
+// their own ES pair (integration_ccs_test.go).
 
 import (
 	"bytes"
@@ -34,10 +32,9 @@ const (
 	testQueueGroupV2   = "search-service-test-v2"   // messages v2
 )
 
-// testHTTPClient bounds ES control-plane calls so a stalled container can't hang the job.
+// Bounded HTTP client for ES control-plane calls.
 var testHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
-// seedDoc PUTs a JSON document into ES, synchronously refreshing the index.
 func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 	t.Helper()
 	data, err := json.Marshal(doc)
@@ -54,9 +51,7 @@ func seedDoc(t *testing.T, esURL, index, id string, doc any) {
 		"seedDoc %s/%s: status=%d body=%s", index, id, resp.StatusCode, body)
 }
 
-// TestMain pre-warms the shared containers concurrently so the first test
-// doesn't pay their startup serially. A pre-warm failure aborts the run
-// before m.Run rather than letting every test fail individually.
+// TestMain pre-warms shared containers in parallel; fails fast on error.
 func TestMain(m *testing.M) {
 	var wg sync.WaitGroup
 	prewarms := []func() error{
@@ -85,9 +80,8 @@ func TestMain(m *testing.M) {
 	testutil.RunTests(m)
 }
 
-// uniqueESIndex returns a per-test ES index name derived from t.Name() and
-// registers cleanup that DELETEs the index. The fnv hash keeps the name
-// short and free of characters ES dislikes (slashes from subtests).
+// uniqueESIndex returns a per-test ES index name (fnv hash keeps it short
+// and ES-safe across subtest slashes) and registers DELETE on cleanup.
 func uniqueESIndex(t *testing.T, prefix string) string {
 	t.Helper()
 	esURL := testutil.Elasticsearch(t)

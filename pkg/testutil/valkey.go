@@ -20,11 +20,8 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
-// StartValkeyCluster starts a single-node cluster-mode Valkey container
-// and returns a connected *redis.ClusterClient. The container and client
-// are terminated/closed via t.Cleanup. Use this when a test needs a
-// pristine cluster (e.g. CLUSTER KEYSLOT routing assertions in
-// pkg/roomkeystore); use SharedValkeyCluster otherwise.
+// StartValkeyCluster boots a per-test cluster-mode Valkey. Use when a
+// test asserts on cluster-routing state; otherwise prefer SharedValkeyCluster.
 func StartValkeyCluster(t *testing.T) *redis.ClusterClient {
 	t.Helper()
 	ctx := context.Background()
@@ -36,15 +33,10 @@ func StartValkeyCluster(t *testing.T) *redis.ClusterClient {
 	return c
 }
 
-// SharedValkeyCluster returns a *redis.ClusterClient connected to a
-// process-shared cluster-mode Valkey. The cluster boots once per `go test`
-// invocation via sync.Once; TerminateValkey (called from TerminateAll)
-// tears it down at process exit. Callers must register
-// `t.Cleanup(func() { testutil.FlushValkey(t) })` themselves so the next
-// test starts with a clean keyspace.
-//
-// Use this for tests that only care about cache get/set behaviour; use
-// StartValkeyCluster if the test asserts on cluster-routing state.
+// SharedValkeyCluster returns a *redis.ClusterClient against a
+// process-shared cluster-mode Valkey (started via sync.Once, reaped via
+// TerminateAll). Callers must register
+// `t.Cleanup(func() { testutil.FlushValkey(t) })` for keyspace isolation.
 func SharedValkeyCluster(t *testing.T) *redis.ClusterClient {
 	t.Helper()
 	ensureSharedValkeyCluster()
@@ -54,14 +46,11 @@ func SharedValkeyCluster(t *testing.T) *redis.ClusterClient {
 	return sharedValkeyClient
 }
 
-// EnsureValkey starts the shared Valkey cluster if not already started.
-// No-t variant intended for TestMain pre-warming.
+// EnsureValkey is the no-t variant for TestMain pre-warming.
 func EnsureValkey() error { ensureSharedValkeyCluster(); return sharedValkeyErr }
 
-// FlushValkey runs FLUSHALL across every master in the shared cluster.
-// Intended for per-test cleanup so sibling tests start with an empty
-// keyspace. Test-fatal on error — leftover state would silently break
-// the next test.
+// FlushValkey runs FLUSHALL on every master in the shared cluster.
+// Test-fatal on error — leftover state would silently break the next test.
 func FlushValkey(t *testing.T) {
 	t.Helper()
 	if sharedValkeyClient == nil {
@@ -77,8 +66,7 @@ func FlushValkey(t *testing.T) {
 	}
 }
 
-// TerminateValkey closes the shared client and stops the shared
-// container. Best-effort, idempotent.
+// TerminateValkey closes the shared client/container. Idempotent.
 func TerminateValkey() {
 	if sharedValkeyClient != nil {
 		_ = sharedValkeyClient.Close()
@@ -122,9 +110,6 @@ func ensureSharedValkeyCluster() {
 	})
 }
 
-// startValkeyClusterContainer starts a cluster-mode container, assigns
-// all 16384 slots to the node, and waits for cluster_state:ok. Test-fatal
-// on error; for the no-t variant see startValkeyClusterContainerNoT.
 func startValkeyClusterContainer(ctx context.Context, t *testing.T) (testcontainers.Container, string) {
 	t.Helper()
 	container, addr, err := startValkeyClusterContainerNoT(ctx)

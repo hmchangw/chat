@@ -2,15 +2,10 @@
 
 package main
 
-// This file owns the cross-cluster-search (CCS) integration tests and
-// every helper that only CCS needs. The two CCS tests are the one
-// exception to the shared-container pattern in setup_shared_test.go:
+// CCS integration tests + helpers only CCS uses. The two CCS tests are
+// the exception to the shared-container pattern in setup_shared_test.go:
 // they need a pair of ES nodes on a shared docker network with
-// transport-port aliases (`es-local`, `es-remote`), which doesn't fit
-// the process-shared single-node ES. NATS and Valkey are still shared.
-//
-// Shared utilities used here (seedDoc, testHTTPClient, testUserRoomIndex)
-// live in integration_test.go.
+// transport-port aliases. NATS and Valkey are still shared.
 
 import (
 	"bytes"
@@ -41,13 +36,8 @@ import (
 
 // --- Fixture -----------------------------------------------------------------
 
-// ccsFixture is the full stack for cross-cluster integration tests: two ES
-// containers on a shared Docker network (with CCS configured from local →
-// remote), plus Valkey and NATS, plus the wired search-service router.
-//
-// localURL / remoteURL are the host-mapped HTTP URLs for seeding; the
-// search-service itself sees only localURL. `clientNATS` is the raw NATS
-// client used to issue request/reply calls.
+// ccsFixture owns the two-ES + Valkey + NATS stack for CCS tests.
+// localURL / remoteURL are host-mapped for seeding; the service sees localURL.
 type ccsFixture struct {
 	localURL   string
 	remoteURL  string
@@ -56,51 +46,31 @@ type ccsFixture struct {
 	clientNATS *nats.Conn
 }
 
-// setupCCSFixture stands up the CCS environment. It owns the pair of
-// networked ES containers (they need a shared docker network with
-// transport-port aliases, so they can't be process-shared like the
-// single-node ES used by other fixtures), but piggybacks on the
-// process-shared Valkey and NATS from setup_shared_test.go.
-//
-// Every major step emits a `t.Logf` so a CI failure (where raw logs are
-// often opaque on public runs) leaves enough breadcrumbs in the `go test`
-// output to pinpoint which phase broke.
+// setupCCSFixture owns the pair of networked ES containers (can't be
+// process-shared — they need a shared docker network with transport-port
+// aliases); piggybacks on shared Valkey/NATS.
 func setupCCSFixture(t *testing.T) *ccsFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	t.Logf("CCS fixture: creating docker network")
 	nw, err := network.New(ctx)
 	require.NoError(t, err, "create docker network")
 	t.Cleanup(func() { _ = nw.Remove(ctx) })
-	t.Logf("CCS fixture: network %q created", nw.Name)
 
-	t.Logf("CCS fixture: starting remote ES container (alias=es-remote)")
 	remoteURL := startESForCCS(t, nw, "es-remote", "remote-cluster")
-	t.Logf("CCS fixture: remote ES up at %s", remoteURL)
-
-	t.Logf("CCS fixture: starting local ES container (alias=es-local)")
 	localURL := startESForCCS(t, nw, "es-local", "local-cluster")
-	t.Logf("CCS fixture: local ES up at %s", localURL)
 
-	// Wire local ES to reach the remote in PROXY mode. Proxy mode opens a
-	// single direct connection to the configured address and skips the
-	// sniff-then-reconnect dance that sniff mode does — that dance requires
-	// each remote node to advertise a reachable publish address, which is
-	// fragile when docker containers bind transport on 0.0.0.0 and the
-	// publish address defaults to an interface the peer can't route to.
-	// Proxy mode is the robust choice for CCS over an ephemeral docker
-	// network. Ref: ES docs "Remote cluster settings" → `mode=proxy`.
-	t.Logf("CCS fixture: configuring cluster.remote.remote1 (proxy mode → es-remote:9300)")
+	// Wire local→remote in PROXY mode. Proxy mode skips sniff-then-reconnect,
+	// which requires the remote to advertise a reachable publish address —
+	// fragile when containers bind transport on 0.0.0.0 and publish defaults
+	// to an unreachable interface. Ref: ES "Remote cluster settings" → `mode=proxy`.
 	putClusterSetting(t, localURL, map[string]any{
 		"persistent": map[string]any{
 			"cluster.remote.remote1.mode":          "proxy",
 			"cluster.remote.remote1.proxy_address": "es-remote:9300",
 		},
 	})
-	t.Logf("CCS fixture: waiting for remote1 to report connected=true (timeout 120s)")
 	waitForRemoteConnected(t, localURL, "remote1", 120*time.Second)
-	t.Logf("CCS fixture: remote1 connected")
 
 	localEngine, err := searchengine.New(ctx, searchengine.Config{Backend: "elasticsearch", URL: localURL})
 	require.NoError(t, err, "build searchengine for local")
@@ -118,7 +88,6 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	clientNC, err := nats.Connect(natsURL)
 	require.NoError(t, err, "connect nats (client side)")
 	t.Cleanup(func() { clientNC.Close() })
-	t.Logf("CCS fixture: NATS at %s", natsURL)
 
 	userRoomIndex := testUserRoomIndex
 	store := newESStore(localEngine, userRoomIndex)
@@ -148,16 +117,9 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	}
 }
 
-// startESForCCS starts one ES node on the shared network with the given
-// network alias so the peer can reach it at `{alias}:9300`. Returns the
-// host-mapped HTTP URL for seeding.
-//
-// `transport.host: 0.0.0.0` is required so the transport port binds on all
-// interfaces, including the bridge network (ES 8.x defaults to `_site_`
-// which excludes the container's bridge IP in some setups). CCS itself
-// uses `proxy` mode to avoid publish-address sensitivity — see
-// setupCCSFixture. `xpack.security.enabled=false` matches the local dev
-// deps compose.
+// startESForCCS starts one ES node on the shared network at alias `{alias}`.
+// transport.host=0.0.0.0 is required so the transport port binds on the bridge
+// network (ES 8.x defaults to `_site_` which excludes the container bridge IP).
 func startESForCCS(t *testing.T, nw *testcontainers.DockerNetwork, alias, clusterName string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -200,10 +162,9 @@ func startESForCCS(t *testing.T, nw *testcontainers.DockerNetwork, alias, cluste
 
 // --- Index templates ---------------------------------------------------------
 
-// buildTestTemplate wraps a pattern + property map with single-node-friendly
-// index settings (1 shard, 0 replicas, 1s refresh) and `dynamic: false`
-// mappings. The templates below hand-roll their property sets so the tests
-// remain independent of search-sync-worker's custom-analyzer configuration.
+// buildTestTemplate wraps properties with single-node-friendly settings
+// (1 shard, 0 replicas) so tests don't depend on search-sync-worker's
+// analyzer config.
 func buildTestTemplate(pattern string, properties map[string]any) json.RawMessage {
 	body := map[string]any{
 		"index_patterns": []string{pattern},
@@ -263,8 +224,6 @@ func userRoomTestTemplate() json.RawMessage {
 
 // --- CCS HTTP helpers --------------------------------------------------------
 
-// putClusterSetting pushes a /_cluster/settings update. Used to configure
-// the CCS remote after both clusters are up.
 func putClusterSetting(t *testing.T, esURL string, body map[string]any) {
 	t.Helper()
 	data, _ := json.Marshal(body)
@@ -314,18 +273,13 @@ func waitForRemoteConnected(t *testing.T, localURL, remoteName string, timeout t
 func (f *ccsFixture) installTemplates(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-
-	t.Logf("templates: upserting messages_template on local")
 	require.NoError(t, f.localES.UpsertTemplate(ctx, "messages_template", messageTestTemplate()),
 		"upsert messages_template on local")
-	t.Logf("templates: upserting messages_template on remote")
 	require.NoError(t, f.remoteES.UpsertTemplate(ctx, "messages_template", messageTestTemplate()),
 		"upsert messages_template on remote")
 	// user-room is local-only per the search-service architecture.
-	t.Logf("templates: upserting user_room_template on local")
 	require.NoError(t, f.localES.UpsertTemplate(ctx, "user_room_template", userRoomTestTemplate()),
 		"upsert user_room_template on local")
-	t.Logf("templates: all upserted")
 }
 
 // --- Tests -------------------------------------------------------------------
@@ -340,12 +294,9 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 	f := setupCCSFixture(t)
 	f.installTemplates(t)
 
-	// --- Seed --------------------------------------------------------------
-	//
-	// Alice is a member of two unrestricted rooms: one lives on the local
-	// site, the other on the remote site. The user-room doc (local-only)
-	// lists BOTH in `rooms[]` — the sync-worker would normally populate
-	// this via INBOX events; here we seed directly.
+	// Alice is in two unrestricted rooms (one local, one remote); the
+	// local user-room doc lists both. Sync-worker normally populates it via
+	// INBOX events — seeded directly here.
 	const account = "alice"
 	const localRoomID = "room-local-1"
 	const remoteRoomID = "room-remote-1"
@@ -367,7 +318,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 		"updatedAt": createdAt.Format(time.RFC3339Nano),
 	})
 
-	// Local message in local room.
 	seedDoc(t, f.localURL, monthIdx, "msg-local-1", map[string]any{
 		"messageId":   "msg-local-1",
 		"roomId":      localRoomID,
@@ -378,9 +328,7 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 		"createdAt":   createdAt.Format(time.RFC3339Nano),
 	})
 
-	// Remote message in remote room. Same index pattern (`messages-*`) on
-	// the remote cluster — CCS resolves the `*:messages-*` segment on the
-	// local query.
+	// Same index pattern on the remote cluster — CCS resolves `*:messages-*`.
 	seedDoc(t, f.remoteURL, monthIdx, "msg-remote-1", map[string]any{
 		"messageId":   "msg-remote-1",
 		"roomId":      remoteRoomID,
@@ -391,19 +339,11 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Unrestricted(t *testing.T
 		"createdAt":   createdAt.Format(time.RFC3339Nano),
 	})
 
-	// --- Search via NATS ---------------------------------------------------
-	//
-	// Round-trips through the real natsrouter: the handler reads
-	// restrictedRooms from Valkey (miss → ES prefetch → Valkey SET), then
-	// builds the CCS query against `messages-*,*:messages-*` and parses
-	// the merged response.
 	req := model.SearchMessagesRequest{Query: "hello"}
 	reqData, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	// Generous timeout: first request is Valkey miss → ES prefetch of
-	// user-room doc → CCS fanout → response parse. Tight timeouts mask
-	// real latency bugs in integration.
+	// Long timeout: first request is Valkey miss → ES prefetch → CCS fanout.
 	msg, err := f.clientNATS.Request(subject.SearchMessages(account), reqData, 30*time.Second)
 	require.NoError(t, err, "NATS request failed")
 
@@ -449,13 +389,8 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	const localRoomID = "room-local-unrestricted"
 	const remoteRoomID = "room-remote-restricted"
 
-	// Temporal setup:
-	//   - hss is the user's join-time bound for the restricted remote room.
-	//   - preHSS is 3 hours before hss (so pre-HSS messages are clearly
-	//     older than the gate).
-	//   - postHSS is 1 hour after hss.
-	// All well within the default 1-year `recent_window` so none of them
-	// get filtered out by the global createdAt range filter.
+	// hss is the user's join-time bound for the restricted remote room;
+	// preHSS / postHSS straddle it. All within the 1-year recent_window.
 	now := time.Now().UTC()
 	hss := now.Add(-2 * time.Hour)
 	preHSS := hss.Add(-3 * time.Hour)
@@ -463,7 +398,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	monthIdxFor := func(ts time.Time) string { return "messages-" + ts.Format("2006-01") }
 
 	// user-room doc: local room unrestricted, remote room restricted with hss.
-	t.Logf("seed: upserting user-room doc for %s (restricted %s since %s)", account, remoteRoomID, hss.Format(time.RFC3339))
 	seedDoc(t, f.localURL, testUserRoomIndex, account, map[string]any{
 		"userAccount": account,
 		"rooms":       []string{localRoomID},
@@ -481,7 +415,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	// --- LOCAL unrestricted room ----------------------------------------
 	// One plain message that should always match via the terms-lookup
 	// branch (no HSS involved).
-	t.Logf("seed: local unrestricted message in %s", localRoomID)
 	seedDoc(t, f.localURL, monthIdxFor(postHSS), "msg-local-1", map[string]any{
 		"messageId":   "msg-local-1",
 		"roomId":      localRoomID,
@@ -497,7 +430,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	// clauses. Pre-HSS parent lives at `msg-remote-pre-parent`; its
 	// thread replies reference it via threadParentMessageId +
 	// threadParentMessageCreatedAt=preHSS.
-	t.Logf("seed: remote pre-HSS parent (MUST NOT match)")
 	seedDoc(t, f.remoteURL, monthIdxFor(preHSS), "msg-remote-pre-parent", map[string]any{
 		"messageId":   "msg-remote-pre-parent",
 		"roomId":      remoteRoomID,
@@ -508,7 +440,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 		"createdAt":   preHSS.Format(time.RFC3339Nano),
 	})
 
-	t.Logf("seed: remote post-HSS parent (Clause A match)")
 	seedDoc(t, f.remoteURL, monthIdxFor(postHSS), "msg-remote-post-parent", map[string]any{
 		"messageId":   "msg-remote-post-parent",
 		"roomId":      remoteRoomID,
@@ -524,7 +455,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	// (createdAt >= hss); tshow=true then fires B1 regardless of the
 	// parent's age. If the outer gate weren't there, a pre-HSS tshow=true
 	// reply would leak history the user never had access to.
-	t.Logf("seed: remote post-HSS reply with tshow=true, pre-HSS parent (Clause B1 match)")
 	seedDoc(t, f.remoteURL, monthIdxFor(postHSS), "msg-remote-reply-tshow", map[string]any{
 		"messageId":                    "msg-remote-reply-tshow",
 		"roomId":                       remoteRoomID,
@@ -541,7 +471,6 @@ func TestSearchService_SearchMessages_CCS_CrossCluster_Restricted(t *testing.T) 
 	// Post-HSS reply to a pre-HSS parent, tshow=false → Clause B rejects.
 	// Outer gate passes (reply createdAt >= hss) but the inner OR fails:
 	// tshow=false blocks B1 and the parent's pre-HSS createdAt blocks B2.
-	t.Logf("seed: remote post-HSS reply without tshow, pre-HSS parent (MUST NOT match)")
 	seedDoc(t, f.remoteURL, monthIdxFor(postHSS), "msg-remote-reply-plain", map[string]any{
 		"messageId":                    "msg-remote-reply-plain",
 		"roomId":                       remoteRoomID,

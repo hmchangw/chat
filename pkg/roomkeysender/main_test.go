@@ -2,9 +2,6 @@
 
 package roomkeysender
 
-// Import testutil for the Ryuk-disable init() side effect even though
-// this package starts its containers per-test (t.Cleanup handles teardown).
-
 import (
 	"testing"
 

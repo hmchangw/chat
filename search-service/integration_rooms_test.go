@@ -26,8 +26,7 @@ import (
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
-// roomsFixture uses a per-test spotlight index against the shared ES so
-// sibling tests can't leak hits into each other.
+// Per-test spotlight index against shared ES.
 type roomsFixture struct {
 	clientNATS     *nats.Conn
 	esURL          string
@@ -76,8 +75,6 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	return &roomsFixture{clientNATS: clientNC, esURL: esURL, spotlightIndex: spotlightIndex}
 }
 
-// putTestSpotlightIndex creates a minimal spotlight index in ES with the
-// fields needed by the subscription search query.
 func putTestSpotlightIndex(t *testing.T, esURL, index string) {
 	t.Helper()
 	body := map[string]any{

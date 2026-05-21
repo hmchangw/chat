@@ -26,7 +26,7 @@ import (
 
 type usersFixture struct {
 	clientNATS *nats.Conn
-	thirdParty *httptest.Server // controls the stub response
+	thirdParty *httptest.Server
 }
 
 func setupUsersFixture(t *testing.T, thirdPartyHandler http.Handler) *usersFixture {

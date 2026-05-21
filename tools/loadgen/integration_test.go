@@ -122,10 +122,8 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 	defer cancel()
 	require.NoError(t, gen.Run(runCtx))
 
-	// Allow trailing events to flow.
 	time.Sleep(2 * time.Second)
 
-	// Assert the canonical stream drained.
 	for _, durable := range []string{"message-worker", "broadcast-worker"} {
 		cons, err := js.Consumer(ctx, canonical.Name, durable)
 		require.NoError(t, err)
@@ -134,7 +132,6 @@ func TestLoadgenSmallPreset_EndToEnd(t *testing.T) {
 		require.Equal(t, uint64(0), info.NumPending, "durable %s still has pending", durable)
 	}
 
-	// Assert seed data is visible in Mongo.
 	var room model.Room
 	err = db.Collection("rooms").FindOne(ctx, bson.M{"_id": fixtures.Rooms[0].ID}).Decode(&room)
 	require.NoError(t, err)

@@ -71,8 +71,6 @@ func TestIntegration_SearchApps_PrototypePipeline(t *testing.T) {
 	f := setupAppsFixture(t)
 	ctx := context.Background()
 
-	// Prototype pipeline matches by `name` regex + $limit; $lookup
-	// access-guard is a follow-up.
 	_, err := f.mongoDB.Collection("apps").InsertMany(ctx, []any{
 		map[string]any{"_id": "a1", "name": "Weather Alpha", "assistant": map[string]any{"enabled": true, "name": "weather.bot"}},
 		map[string]any{"_id": "a2", "name": "Weatherly", "assistant": map[string]any{"enabled": false, "name": "weatherly.bot"}},
