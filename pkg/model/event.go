@@ -11,13 +11,26 @@ const (
 	EventCreated EventType = "created"
 	EventUpdated EventType = "updated"
 	EventDeleted EventType = "deleted"
+	EventReacted EventType = "reacted"
 )
 
 type MessageEvent struct {
-	Event     EventType `json:"event,omitempty" bson:"event,omitempty"`
-	Message   Message   `json:"message"`
-	SiteID    string    `json:"siteId"`
-	Timestamp int64     `json:"timestamp" bson:"timestamp"`
+	Event   EventType `json:"event,omitempty" bson:"event,omitempty"`
+	Message Message   `json:"message"`
+	SiteID  string    `json:"siteId"`
+	// ReactionDelta is set only when Event == EventReacted; it carries the
+	// per-toggle reaction info (the slim Message identifies the target).
+	ReactionDelta *ReactionDelta `json:"reactionDelta,omitempty" bson:"reactionDelta,omitempty"`
+	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
+}
+
+// ReactionDelta is the per-toggle reaction payload. Action is "added" or
+// "removed". Actor is the user whose toggle produced this event; the
+// reacted-to message's author is on the enclosing MessageEvent.Message.
+type ReactionDelta struct {
+	Shortcode string      `json:"shortcode" bson:"shortcode"`
+	Action    string      `json:"action"    bson:"action"`
+	Actor     Participant `json:"actor"     bson:"actor"`
 }
 
 type RoomMetadataUpdateEvent struct {
@@ -140,6 +153,7 @@ const (
 	RoomEventNewMessage     RoomEventType = "new_message"
 	RoomEventMessageEdited  RoomEventType = "message_edited"
 	RoomEventMessageDeleted RoomEventType = "message_deleted"
+	RoomEventMessageReacted RoomEventType = "message_reacted"
 )
 
 // MessageEditedPayload carries the per-edit fields on a RoomEvent of type
@@ -164,6 +178,17 @@ type MessageDeletedPayload struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// MessageReactedPayload carries the per-toggle reaction fields on a RoomEvent
+// of type RoomEventMessageReacted. Action is "added" or "removed".
+type MessageReactedPayload struct {
+	MessageID string      `json:"messageId"`
+	Shortcode string      `json:"shortcode"`
+	Action    string      `json:"action"`
+	Actor     Participant `json:"actor"`
+	ReactedAt time.Time   `json:"reactedAt"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+}
+
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
 	RoomID    string        `json:"roomId"`
@@ -186,6 +211,7 @@ type RoomEvent struct {
 
 	MessageEdited  *MessageEditedPayload  `json:"messageEdited,omitempty"`
 	MessageDeleted *MessageDeletedPayload `json:"messageDeleted,omitempty"`
+	MessageReacted *MessageReactedPayload `json:"messageReacted,omitempty"`
 }
 
 type RoomKeyEvent struct {

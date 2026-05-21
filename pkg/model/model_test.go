@@ -2354,3 +2354,117 @@ func TestRoomEventMessageDeletedJSON(t *testing.T) {
 	}
 	roundTrip(t, &evt, &model.RoomEvent{})
 }
+
+func TestCustomEmojiRoundtrip(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	var dst model.CustomEmoji
+	roundTrip(t, &e, &dst)
+	assert.Equal(t, "acme_party", dst.Shortcode)
+	assert.Equal(t, "site-a", dst.SiteID)
+}
+
+func TestCustomEmojiBSON(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	data, err := bson.Marshal(&e)
+	require.NoError(t, err)
+	var dst model.CustomEmoji
+	require.NoError(t, bson.Unmarshal(data, &dst))
+	assert.Equal(t, e, dst)
+}
+
+func TestEventReactedConstant(t *testing.T) {
+	assert.Equal(t, model.EventType("reacted"), model.EventReacted)
+}
+
+func TestReactionDeltaRoundtrip(t *testing.T) {
+	d := model.ReactionDelta{
+		Shortcode: "thumbsup",
+		Action:    "added",
+		Actor: model.Participant{
+			UserID:  "u-1",
+			Account: "alice",
+			SiteID:  "site-a",
+			EngName: "Alice",
+		},
+	}
+	var dst model.ReactionDelta
+	roundTrip(t, &d, &dst)
+}
+
+func TestMessageEventWithReactionDeltaJSON(t *testing.T) {
+	evt := model.MessageEvent{
+		Event: model.EventReacted,
+		Message: model.Message{
+			ID:          "msg-uuid",
+			RoomID:      "r1",
+			UserID:      "u-author",
+			UserAccount: "bob",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID:  "u-1",
+				Account: "alice",
+				SiteID:  "site-a",
+				EngName: "Alice",
+			},
+		},
+	}
+	roundTrip(t, &evt, &model.MessageEvent{})
+}
+
+func TestMessageEventOmitsReactionDeltaWhenAbsent(t *testing.T) {
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   model.Message{ID: "msg-uuid", RoomID: "r1"},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "reactionDelta")
+}
+
+func TestRoomEventMessageReactedJSON(t *testing.T) {
+	reactedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.RoomEvent{
+		Type:   model.RoomEventMessageReacted,
+		RoomID: "r1",
+		MessageReacted: &model.MessageReactedPayload{
+			MessageID: "msg-uuid",
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID:  "u-1",
+				Account: "alice",
+				SiteID:  "site-a",
+				EngName: "Alice",
+			},
+			ReactedAt: reactedAt,
+			UpdatedAt: reactedAt,
+		},
+	}
+	roundTrip(t, &evt, &model.RoomEvent{})
+}
+
+func TestRoomEventMessageReactedConstant(t *testing.T) {
+	assert.Equal(t, model.RoomEventType("message_reacted"), model.RoomEventMessageReacted)
+}
