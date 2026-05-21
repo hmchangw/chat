@@ -302,3 +302,29 @@ This is the highest-priority performance issue since it doubles the per-request 
 No critical issues. The new store operations hit covered indexes on the room-service side. The redundant `GetSubscription` round-trip (medium) doubles per-request DB latency on every mute toggle and could be eliminated by widening `ToggleSubscriptionMute`'s projection. The missing index assertion in `inbox-worker.ensureIndexes` is a medium latent risk.
 
 ---
+
+## Observability
+
+### Findings
+
+**[medium]** `room-service/handler.go:1239` — `handleMuteToggle` is missing span attributes. The closest structural analogue `handleMessageRead` also doesn't set them (so matching that precedent is defensible), but `handleMessageReadReceipt` (line 1105) and `publishCreateRoom` (line 349) DO set `room.id` / `site.id`. Adding `span.SetAttributes(attribute.String("room.id", roomID), attribute.String("site.id", h.siteID))` would cost two lines and improve trace correlation for a per-room operation.
+
+**[medium]** `room-service/handler.go:1282` — `slog.Warn("get user siteId failed; skipping outbox", "error", err, "account", account)`. The `Warn` level signals "degraded but OK", but `GetUserSiteID` returning an error means a real Mongo failure on `users` (not-found is `("", nil)`, not an error). The handler then silently suppresses federation. **Either**: (a) match `handleMessageRead`'s precedent and propagate the error (hard fail), OR (b) keep the soft-fail but escalate to `slog.Error` so operators know cross-site federation is silently dropping events.
+
+**[nitpick]** `room-service/handler.go:1230` — `natsMuteToggle` logs `slog.Error` with an extra `subject` structured field. The peer `natsMessageRead` (line 971) doesn't. The new field is an improvement for debuggability — propagate to peers in a follow-up, or accept the inconsistency.
+
+**[low]** No Prometheus metric on the new RPC path. The codebase doesn't add explicit metrics per-handler — OTel + slog is the observability mechanism. No action needed.
+
+### Discipline checks — all PASS
+
+1. **slog/JSON discipline**: all four new log calls use `slog` with structured key-value pairs. No `fmt.Println` / `log.Println` / text loggers. ✓
+2. **No secret leakage**: tokens/passwords/full message bodies not logged. `account` is a non-secret identifier; existing handlers log it identically (e.g. `handler.go:1029`). ✓
+3. **Request-ID propagation**: `natsMuteToggle` (line 1227) calls `ctx := wrappedCtx(m)` and passes that `ctx` to `handleMuteToggle`. Context flows through every store call and publish. ✓
+4. **Error log levels**: `slog.Error` for the publish-failure non-fatal path is appropriate (operators need to know NATS publish is failing even though the RPC succeeds). The `slog.Warn` for the `GetUserSiteID` path is the one questionable case — see medium-2 above.
+5. **inbox-worker error handling**: `handleSubscriptionMuteToggled` returns errors to the consumer loop without per-handler slog, matching `handleSubscriptionRead`. The consumer loop in `main.go:261` logs all returned errors at `slog.Error` with `request_id`. Pattern is consistent. ✓
+
+### Verdict
+
+PASS with two `medium` findings — both about the `GetUserSiteID` failure path (missing span attrs is a minor instrumentation gap; the Warn-vs-Error level is a meaningful operator-signal choice). Everything else — slog-only JSON, `wrappedCtx` propagation, no secret leakage, inbox-worker error pattern — is correct.
+
+---
