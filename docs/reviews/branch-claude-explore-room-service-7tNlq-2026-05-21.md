@@ -269,3 +269,36 @@ No `critical` or `high` findings. Mocks are fresh, TDD discipline followed at th
 No security vulnerabilities, no race conditions, no injection surface. Two `medium` correctness bugs: the `sanitizeError` gap breaks the documented API contract on a single error path, and the `GetUserSiteID` silent-success creates reachable cross-site data divergence inconsistent with the rest of the codebase. Both should be fixed before merge.
 
 ---
+
+## Performance
+
+### Findings
+
+**[medium]** `room-service/handler.go:1245-1253` — Redundant Mongo round-trip before atomic write. `GetSubscription` runs before `ToggleSubscriptionMute` solely to (a) check membership and (b) supply the full `Subscription` struct for the downstream `SubscriptionUpdateEvent`. Both can be addressed without the extra round-trip:
+- Membership check: `ToggleSubscriptionMute` already returns `ErrSubscriptionNotFound` on filter mismatch.
+- Full struct for event: `sub.User.ID` is the only field beyond `disableNotifications` actually consumed. The atomic toggle could project the needed fields directly.
+
+This is the highest-priority performance issue since it doubles the per-request DB latency on every mute toggle.
+
+**[medium]** `inbox-worker/main.go:121-129` + `inbox-worker/main.go` `ensureIndexes` — `UpdateSubscriptionMute` filters on `{roomId, u.account}` but `inbox-worker`'s `ensureIndexes` (around `main.go:151`) only creates the `thread_subscriptions (threadRoomId, userId)` index. It does NOT create or assert the `(roomId, u.account)` index on `subscriptions`. The index is owned by whichever service first bootstraps the collection (typically `room-service` or `room-worker`), but `inbox-worker`'s `ensureIndexes` silently relies on it. If `inbox-worker` is deployed against a fresh collection (e.g. a new site in integration tests), the update degrades to a full collection scan. Either add the (idempotent) `CreateOne` call mirroring `room-service`'s `EnsureIndexes`, or document the cross-service index dependency.
+
+**[low]** `room-service/handler.go:1280` — `GetUserSiteID` runs strictly sequentially after the write and the `publishCore` call. It hits `users` (a different collection from `subscriptions`). It could overlap with `publishCore` (lines 1275-1278) but `publishCore` is non-fatal and core-NATS publish is very fast, so parallelisation adds complexity for ~µs gain. `users.account` index exists (`room-service/store_mongo.go:63-66`) — query is O(1). Not worth optimising.
+
+**[low]** `room-service/handler.go:1263` — `updatedSub := *sub` copies the entire `Subscription` struct just to mutate `DisableNotifications`. The copy is then embedded by value in `SubscriptionUpdateEvent`. If `Subscription` grows in the future, this becomes a per-request allocation hotspot. Consider holding the event sub by pointer or constructing it from individual fields.
+
+**[nitpick]** `room-service/handler.go:1307` — `publishToStream` (which calls `js.PublishMsg(ctx, ...)`) blocks waiting for JetStream PubAck with an unbounded context derived from `wrappedCtx(m)`. If the NATS server is overloaded, the handler goroutine blocks indefinitely. A `context.WithTimeout` of ~5s would bound the wait. Same pattern as the rest of the service (not introduced by this branch), but the new cross-site path makes it more reachable.
+
+### Index audit summary
+
+| Operation | Filter | Index | Status |
+|---|---|---|---|
+| `ToggleSubscriptionMute` (room-service) | `(roomId, u.account)` | unique compound at `store_mongo.go:57-61` | ✓ |
+| `GetSubscription` (room-service) | `(roomId, u.account)` | same | ✓ |
+| `GetUserSiteID` (room-service) | `account` | `users.account` at `store_mongo.go:63-66` | ✓ |
+| `UpdateSubscriptionMute` (inbox-worker) | `(roomId, u.account)` | not declared in inbox-worker `ensureIndexes` | ✗ medium |
+
+### Verdict
+
+No critical issues. The new store operations hit covered indexes on the room-service side. The redundant `GetSubscription` round-trip (medium) doubles per-request DB latency on every mute toggle and could be eliminated by widening `ToggleSubscriptionMute`'s projection. The missing index assertion in `inbox-worker.ensureIndexes` is a medium latent risk.
+
+---
