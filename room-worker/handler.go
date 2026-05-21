@@ -1111,6 +1111,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		if err := h.publish(ctx, subject.MsgCanonicalCreated(room.SiteID), msgEvtData, natsutil.CanonicalDedupID(&msgEvt)); err != nil {
 			return fmt.Errorf("publish add-members system message: %w", err)
 		}
+	}
 
 	// 10. Outbox for cross-site members — batched by destination site
 	remoteSiteMembers := make(map[string][]string)
