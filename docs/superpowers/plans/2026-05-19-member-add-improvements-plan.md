@@ -2218,34 +2218,9 @@ git commit -m "feat(room-service): reject phantom org IDs and accounts at reques
 
 # Part 7 — PR #171 Follow-up Findings
 
-Spec: see `2026-05-19-org-to-individual-membership-upgrade-design.md` Part 7. Three review threads from `@mliu33` on PR #171 (merged into `main`, this branch already rebased onto it).
+Spec: see `2026-05-19-org-to-individual-membership-upgrade-design.md` Part 7. Two review threads from `@mliu33` on PR #171 (merged into `main`, this branch already rebased onto it).
 
-## Task 16: Document `shouldRotate` guard rationale (Finding 1 — comment only)
-
-- [ ] **Step 1: Replace the comment at `room-worker/handler.go:319-320`**
-
-Current:
-
-```go
-// Skip-rotation guard: a prior redelivery of this canonical event already rotated Valkey past req.BaseKeyVersion.
-shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
-```
-
-New (max two lines):
-
-```go
-// Load-bearing on rotate-then-NAK redelivery: re-rotating would emit fresh
-// key bytes and lock out survivors offline during the second fan-out.
-shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
-```
-
-No behavior change. The condition stays exactly as it is.
-
-- [ ] **Step 2: Post the reply on the GitHub thread**
-
-Reply text in the spec (Part 7, Finding 1). The thread is at PR #171, comment on `room-worker/handler.go:275` (file may have shifted; line number is on the original PR).
-
-## Task 17: Pass room key pair into `buildAndFanOutRoomKey` (Finding 2)
+## Task 16: Pass room key pair into `buildAndFanOutRoomKey` (Finding 1)
 
 - [ ] **Step 1: Change the function signature in `room-worker/handler.go:1792`**
 
@@ -2300,7 +2275,7 @@ At `room-worker/handler_test.go:3324`:
 
 Other tests that exercise `processCreateRoom` / `processAddMembers` end-to-end will still see one `keyStore.Get` per request (the existing gate-Get); they should not need new mocks.
 
-## Task 18: Drop `KeyGenerated` / `KeyRotated` success counters (Finding 3)
+## Task 17: Drop `KeyGenerated` / `KeyRotated` success counters (Finding 2)
 
 - [ ] **Step 1: Delete the four emit sites**
 
@@ -2327,7 +2302,7 @@ make test
 
 No tests reference these counters (verified — grep on `_test.go` returns no hits for `KeyGenerated` / `KeyRotated`).
 
-## Task 19: Verify combined Part 7 work
+## Task 18: Verify combined Part 7 work
 
 - [ ] **Step 1: Full local check**
 
@@ -2343,7 +2318,7 @@ go vet -tags integration ./room-worker/... ./room-service/...
 docker compose -f docker-local/compose.services.yaml up -d --build --no-deps room-worker room-service
 ```
 
-- [ ] **Step 3: Post the three GitHub thread replies**
+- [ ] **Step 3: Post the two GitHub thread replies**
 
 Each reply text is in the spec, Part 7. Post on the original PR #171 threads.
 

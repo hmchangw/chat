@@ -3277,41 +3277,6 @@ func TestHandler_CreateRoom_AbortsOnKeyStoreSetError(t *testing.T) {
 	assert.Contains(t, err.Error(), "store room key")
 }
 
-func TestHandler_RemoveMember_StampsBaseKeyVersion(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-	keyStore := NewMockRoomKeyStore(ctrl)
-
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
-	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").Return(
-		&SubscriptionWithMembership{
-			Subscription:            &model.Subscription{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
-			HasIndividualMembership: true,
-		}, nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
-		&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1",
-			Roles: []model.Role{model.RoleOwner, model.RoleMember}}, nil)
-	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").Return(
-		&RoomCounts{MemberCount: 5, OwnerCount: 2}, nil)
-	// Read current version; room-worker uses this as the skip-rotation baseline.
-	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(&roomkeystore.VersionedKeyPair{Version: 4}, nil)
-
-	var captured model.RemoveMemberRequest
-	publish := func(_ context.Context, _ string, data []byte) error {
-		require.NoError(t, json.Unmarshal(data, &captured))
-		return nil
-	}
-
-	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxRoomSize: 1000, publishToStream: publish}
-
-	req := model.RemoveMemberRequest{Account: "bob"}
-	data, _ := json.Marshal(req)
-	_, err := h.handleRemoveMember(ctxWithReqID(),
-		"chat.user.alice.request.room.r1.site-a.member.remove", data)
-	require.NoError(t, err)
-	assert.Equal(t, 4, captured.BaseKeyVersion, "BaseKeyVersion must be stamped from the current Valkey version")
-}
-
 func TestHandler_EnsureRoomKey_KeyExists(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	keyStore := NewMockRoomKeyStore(ctrl)

@@ -316,14 +316,11 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 		return fmt.Errorf("get room key: %w", err)
 	}
-	// Load-bearing on rotate-then-NAK redelivery: re-rotating would emit fresh
-	// key bytes and lock out survivors offline during the second fan-out.
-	shouldRotate := currentPair == nil || currentPair.Version <= req.BaseKeyVersion
 
 	if req.OrgID != "" {
-		return h.processRemoveOrg(ctx, &req, currentPair, shouldRotate)
+		return h.processRemoveOrg(ctx, &req, currentPair)
 	}
-	return h.processRemoveIndividual(ctx, &req, currentPair, shouldRotate)
+	return h.processRemoveIndividual(ctx, &req, currentPair)
 }
 
 // rotateAndFanOut generates v+1, fans it out to survivors, then commits via Valkey Rotate.
@@ -364,7 +361,7 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 	return nil
 }
 
-func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair, shouldRotate bool) (err error) {
+func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -404,14 +401,12 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 
 	// Rotate after delete + reconcile; ListByRoom returns post-deletion survivors.
-	if shouldRotate {
-		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
-		if listErr != nil {
-			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
-		}
-		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
-			return fmt.Errorf("rotate and fan-out room key after remove-individual: %w", err)
-		}
+	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
+	if listErr != nil {
+		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
+	}
+	if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
+		return fmt.Errorf("rotate and fan-out room key after remove-individual: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -536,7 +531,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	return nil
 }
 
-func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair, shouldRotate bool) (err error) {
+func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberRequest, currentPair *roomkeystore.VersionedKeyPair) (err error) {
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -604,7 +599,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 
 	// Rotate only when something was actually deleted; ListByRoom returns post-deletion survivors.
-	if shouldRotate && len(accounts) > 0 {
+	if len(accounts) > 0 {
 		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
 		if listErr != nil {
 			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)

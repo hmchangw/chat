@@ -545,18 +545,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
-	// Stamp current Valkey version so room-worker's skip-rotation guard can detect already-rotated redeliveries.
-	if h.keyStore != nil {
-		current, err := h.keyStore.Get(ctx, req.RoomID)
-		if err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-			return nil, fmt.Errorf("get current room key: %w", err)
-		}
-		if current != nil {
-			req.BaseKeyVersion = current.Version
-		}
-	}
-
 	// Publish to ROOMS stream for room-worker processing.
 	data, err = json.Marshal(req)
 	if err != nil {

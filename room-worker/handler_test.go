@@ -3564,31 +3564,6 @@ func TestProcessAddMembers_RejectsNonChannel(t *testing.T) {
 
 // ---- Task 12: channel guard + version gate + fan-out to survivors ----
 
-// Skip-rotation guard: if Valkey is already past req.BaseKeyVersion, a previous
-// redelivery already rotated — current handler skips the rotation block (no key gen, no fan-out, no Rotate).
-func TestProcessRemoveMember_SkipsRotationWhenValkeyAlreadyAhead(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	keyStore := NewMockRoomKeyStore(ctrl)
-
-	// Valkey already at version 6; BaseKeyVersion = 5 means a prior delivery already rotated.
-	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(&roomkeystore.VersionedKeyPair{Version: 6}, nil)
-
-	// Mongo work still happens (idempotent). No Rotate/Set should be called.
-	store.EXPECT().GetUserWithMembership(gomock.Any(), "r1", "bob").
-		Return(&UserWithMembership{User: model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"}}, nil)
-	store.EXPECT().DeleteRoomMember(gomock.Any(), "r1", model.RoomMemberIndividual, "u-bob").Return(nil)
-	store.EXPECT().DeleteSubscription(gomock.Any(), "r1", "bob").Return(int64(1), nil)
-	store.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
-	store.EXPECT().GetUser(gomock.Any(), "alice").
-		Return(&model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
-
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, testKeySender)
-	req := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob", BaseKeyVersion: 5, RoomType: model.RoomTypeChannel}
-	data, _ := json.Marshal(req)
-	require.NoError(t, h.processRemoveMember(natsutil.WithRequestID(context.Background(), "req-1"), data))
-}
-
 func TestProcessRemoveMember_RejectsNonChannel(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
@@ -4093,6 +4068,7 @@ func TestHandler_ProcessRemoveIndividual_SelfLeave_Content(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u_b").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return([]model.Subscription{}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
@@ -4101,7 +4077,7 @@ func TestHandler_ProcessRemoveIndividual_SelfLeave_Content(t *testing.T) {
 	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "bob", Account: "bob", Timestamp: 1}
-	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil, false))
+	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_left")
 	assert.Equal(t, "bob", sysMsg.UserAccount)
@@ -4122,6 +4098,7 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u_b").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return([]model.Subscription{}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
@@ -4132,7 +4109,7 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", Account: "bob", Timestamp: 1}
-	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil, false))
+	require.NoError(t, h.processRemoveIndividual(context.Background(), &req, nil))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
@@ -4165,7 +4142,7 @@ func TestHandler_ProcessRemoveOrg_AllOverlap_SectNameFromUnfiltered(t *testing.T
 	}, keyStore: testKeyStore, keySender: testKeySender}
 
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
-	require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil, false))
+	require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, "alice", sysMsg.UserAccount)
@@ -4200,7 +4177,7 @@ func TestHandler_ProcessRemoveOrg_AllSectNamesEmpty(t *testing.T) {
 	req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
-	require.NoError(t, h.processRemoveOrg(ctx, &req, nil, false))
+	require.NoError(t, h.processRemoveOrg(ctx, &req, nil))
 
 	sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 	assert.Equal(t, `"o1" has been removed from the channel`, sysMsg.Content)
@@ -4584,7 +4561,7 @@ func TestHandler_ProcessRemoveOrg_DeptFirstTiebreak(t *testing.T) {
 			}
 
 			req := model.RemoveMemberRequest{RoomID: roomID, Requester: "alice", OrgID: "o1", Timestamp: 1}
-			require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil, false))
+			require.NoError(t, h.processRemoveOrg(context.Background(), &req, nil))
 
 			sysMsg := findSysMsg(t, published, "site-a", "member_removed")
 			assert.Equal(t, tc.wantContent, sysMsg.Content)
