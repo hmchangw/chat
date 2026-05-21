@@ -347,26 +347,28 @@ Per `CLAUDE.md`, all new code follows Red → Green → Refactor. Write tests fi
 
 ### 7.4 Room-service unit tests (`room-service/handler_test.go`)
 
-Mock `RoomStore`; capture `publishToStream`. Table-driven cases for `handleMessageThreadRead`:
+Mock `RoomStore`; capture `publishToStream`. Table-driven cases for `handleMessageThreadRead`.
+
+**Mock setup convention under concurrency.** Both pre-check reads (`GetSubscription`, `GetThreadSubscriptionByParent`) and both writes (`UpdateSubscriptionThreadRead`, `UpdateThreadSubscriptionRead`) run inside `errgroup.WithContext`. When one goroutine returns early — either because of an error or because the group context is cancelled — the other goroutine's store call may have already started, may complete, or may not run at all. Tests that exercise a single-path failure use `.AnyTimes()` (or `.MaxTimes(1)`) on the sibling mock to tolerate the non-deterministic ordering, rather than `.Times(0)` / `.Times(1)`. The handler-level assertion is the returned error and the absence/presence of writes/outbox publish — not the exact call count on the sibling read/write.
 
 1. Invalid subject → error, no store calls.
 2. Empty `threadId` → `errInvalidThreadID`, no store calls.
 3. Malformed JSON body → unmarshal error, no store calls.
-4. Not a room member (`GetSubscription` → `ErrSubscriptionNotFound`) → `errNotRoomMember`. No thread-sub lookup.
-5. Thread subscription missing (`GetThreadSubscriptionByParent` → `ErrThreadSubscriptionNotFound`) → `errThreadSubNotFound`. No writes.
-5b. Both lookups miss → `errNotRoomMember` wins (priority assertion). Confirms the manual error-priority inspection works regardless of which goroutine finishes first.
-5c. ThreadSubscription belongs to a different room than the subject → `errThreadSubNotFound` (the roomId mismatch is reported as not-found by design).
-6. Happy path, alert clears — `Subscription.ThreadUnread = ["t1"]`, `Alert = true`; request clears `"t1"` → store called with `threadUnread = []`, `alert = false`. Both writes invoked. Local user → no outbox.
+4. Not a room member (`GetSubscription` → `ErrSubscriptionNotFound`) → `errNotRoomMember`. `GetThreadSubscriptionByParent` mock is `.AnyTimes()` (may have raced ahead). Neither `UpdateSubscriptionThreadRead`, `UpdateThreadSubscriptionRead`, `GetUserSiteID`, nor the outbox publish runs — those gates check `subErr` first.
+5. Thread subscription missing (`GetThreadSubscriptionByParent` → `ErrThreadSubscriptionNotFound`, `GetSubscription` → ok) → `errThreadSubNotFound`. No writes, no outbox.
+5b. Both lookups miss → `errNotRoomMember` wins. Repeat the subtest enough iterations (e.g. via a small loop inside the subtest) that both goroutine-completion orderings are exercised; the manual error-priority switch must return `errNotRoomMember` either way.
+5c. ThreadSubscription belongs to a different room than the subject (store returns `ErrThreadSubscriptionNotFound` because of the roomId filter) → `errThreadSubNotFound`. This is identical at the handler level to case 5 — the discrimination happens inside the store — so the handler test asserts the surfaced error and that no writes ran. The store-level coverage of the roomId mismatch lives in the integration tests (§7.5).
+6. Happy path, alert clears — `Subscription.ThreadUnread = ["t1"]`, `Alert = true`; request clears `"t1"` → `UpdateSubscriptionThreadRead` called with `threadUnread = []`, `alert = false`; `UpdateThreadSubscriptionRead` called with `tsub.ThreadRoomID` and a `lastSeenAt` near `time.Now()`. Local user → no outbox.
 7. Happy path, alert stays — `ThreadUnread = ["t1","t2"]`, request clears `"t1"` → `threadUnread = ["t2"]`, `alert = true`. No outbox.
 8. Idempotent — threadID not in array (`ThreadUnread = ["t2"]`, request clears `"t1"`) → `threadUnread = ["t2"]`, `alert = old.Alert && len > 0`. Both writes still invoked. No outbox.
 9. Alert already false (`Alert = false`, `ThreadUnread = ["t1"]`, clear `"t1"`) → `newAlert = false`.
-10. Cross-site user (`GetUserSiteID == "site-b"`, handler at `"site-a"`) → outbox publish; assert subject `outbox.site-a.to.site-b.thread_read`; decode payload and assert every field including `NewThreadUnread` and `Alert`.
+10. Cross-site user (`GetUserSiteID == "site-b"`, handler at `"site-a"`) → outbox publish; assert subject `outbox.site-a.to.site-b.thread_read`; decode payload and assert every field including `NewThreadUnread`, `Alert`, `ParentMessageID`, `ThreadRoomID`.
 11. Same-site user (`GetUserSiteID == h.siteID`) → no outbox.
 12. `GetUserSiteID` returns `("", nil)` — `slog.Warn`, no outbox, no error.
-13. `GetUserSiteID` returns error → wrapped error after local writes succeeded.
-14. Cross-site outbox publish failure → handler returns wrapped error.
-15. `UpdateSubscriptionThreadRead` error → wrapped (errgroup short-circuit).
-16. `UpdateThreadSubscriptionRead` error → wrapped (errgroup short-circuit).
+13. `GetUserSiteID` returns error → wrapped error after both local writes succeeded.
+14. Cross-site outbox publish failure → handler returns wrapped error (local writes already applied).
+15. `UpdateSubscriptionThreadRead` error → handler returns wrapped error. The sibling `UpdateThreadSubscriptionRead` mock is `.AnyTimes()`-returning-nil because it may have completed before the group context was cancelled, may be mid-flight, or may have observed cancellation. `GetUserSiteID` and the outbox publish are asserted as not invoked.
+16. `UpdateThreadSubscriptionRead` error → mirror of case 15 with the roles of A and B swapped; same `.AnyTimes()` discipline on the sibling write.
 
 ### 7.5 Room-service integration tests (`room-service/integration_test.go`)
 
