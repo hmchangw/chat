@@ -150,3 +150,31 @@ The test continues to use `testutil.MongoDB`, `testutil.NATS`, and a `TestMain` 
 No findings. The change is a correct, complete mechanical rename with no omissions or semantic drift — approved as-is.
 
 ---
+
+## Go expert
+
+### Findings
+
+**[high]** `room-service/handler.go:1245-1264` — TOCTOU window between the pre-fetch and the atomic toggle. `GetSubscription` exists to (a) gate membership and (b) supply the full `Subscription` struct for the downstream `SubscriptionUpdateEvent`. `ToggleSubscriptionMute` already returns `ErrSubscriptionNotFound` on a missing document, so the pre-fetch primarily serves the event payload. Between the two calls a concurrent writer could delete the subscription (yielding a different error class) or update another field — the constructed `updatedSub := *sub` copy then carries pre-fetch values for everything except `DisableNotifications`, which is the post-flip value. Either project the necessary fields directly in `ToggleSubscriptionMute`'s `FindOneAndUpdate` (eliminating the pre-fetch) or accept the staleness with a comment acknowledging it.
+
+**[medium]** `pkg/model/event.go:35` — `SubscriptionUpdateEvent.Action` comment says `// "added" | "removed"`. This branch introduces `"mute_toggled"` (line 1267 in `room-service/handler.go`), and earlier work already added `"role_updated"`. Clients parsing this field rely on the comment as the contract. Update to `// "added" | "removed" | "role_updated" | "mute_toggled"`.
+
+**[medium]** `room-service/handler.go:1242` — `fmt.Errorf("invalid mute-toggle subject: %s", subj)` is not sentinel-wrapped, so `errors.Is(err, errInvalidSubject)` cannot match. The codebase already uses sentinels elsewhere (`errInvalidRole`, `errNotRoomMember`, etc.). Introducing an `errInvalidMuteToggleSubject` sentinel would also fix the `sanitizeError` passthrough issue flagged in the Bug & Security chapter.
+
+**[medium]** Missing test for the cross-site outbox `publishToStream` failure path. `handleMuteToggle` returns a hard error (`"publish mute-toggled outbox: %w"`) at line 1308 if the JetStream publish fails after the DB write committed. `TestHandler_MuteToggle_CrossSitePublishesOutbox` only covers the success path; the analogous `TestHandler_MessageRead_CrossSite_PublishFailureAborts` shows the pattern to follow.
+
+**[medium]** `room-service/handler.go:1280-1283` vs `1305-1308` — Asymmetric error handling: `GetUserSiteID` failure silently returns OK, but `publishToStream` failure on the same cross-site path returns a hard error. The asymmetry is defensible (publish has JetStream retries; the users-collection read does not) but it's undocumented and surprises a reader. Add an inline comment explaining the trade-off.
+
+**[low]** `room-service/handler.go:44` — `NewHandler` now has 10 positional parameters, including two adjacent `func(context.Context, string, []byte) error` closures (`publishToStream`, `publishCore`). They can be silently swapped at the call site with no compile error. A `HandlerConfig` struct or functional options would be more idiomatic at this arity. Not introduced by this PR but worsened by it.
+
+**[low]** `pkg/model/event.go:225` — `SubscriptionMuteToggledEvent` carries `bson` tags it will never use (the struct is only JSON-encoded as `OutboxEvent.Payload`, never stored in Mongo). Consistent with `SubscriptionReadEvent` on line 94, so accepted as pattern-conformance noise.
+
+**[nitpick]** `pkg/model/event.go:219` — `MuteToggleResponse.Status` is always the constant `"ok"`. Encoding a fixed string as a struct field rather than a typed const means it can only be tested by string comparison. Cosmetic.
+
+**[nitpick]** `inbox-worker/main.go:120-129` — `UpdateSubscriptionMute` implementation lives in `main.go` rather than a `store_mongo.go`. Consistent with the pre-existing `UpdateSubscriptionRead` on the same `mongoInboxStore`, but the pattern itself deviates from the per-service layout in CLAUDE.md. Out of scope for this PR; see inbox-worker chapter for the follow-up split recommendation.
+
+### Verdict
+
+Logically sound and well-tested for happy and most error paths. The TOCTOU window in the two-stage subscription lookup, the stale `Action` enum comment (a client-facing contract), and the missing outbox-failure test case should all be addressed before merge.
+
+---
