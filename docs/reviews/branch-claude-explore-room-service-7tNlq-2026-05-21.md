@@ -45,3 +45,45 @@ The notable items to address before merge:
 None of these are blocking-critical; the branch can ship after a small fix-up commit.
 
 ---
+
+## Service: room-service
+
+### (a) Diff correctness against existing conventions
+
+**[medium]** `room-service/handler.go:1230` — `natsMuteToggle` logs `slog.Error("mute toggle failed", "error", err, "subject", m.Msg.Subject)` with an extra `subject` structured field that the analogous `natsMessageRead` (line 971) and `natsUpdateRole` etc. do not. Either propagate the field across all handlers or drop it here. Inconsistency only.
+
+**[nitpick]** `room-service/handler.go:1253-1255` — `handleMuteToggle` calls `ToggleSubscriptionMute` and re-checks `ErrSubscriptionNotFound` even though the preceding `GetSubscription` guard at line 1245 should prevent that branch. Dead-code defense-in-depth that could mislead a future reader about atomicity guarantees.
+
+### (b) Scope drift / refactor-readiness
+
+**[low]** room-service is cohesive; `mute.toggle` is a per-subscription mutation that the service already owns (same `subscriptions` collection used by `UpdateSubscriptionRead`). No scope drift. `handler.go` is large (~1300 lines) but already was — the new handler follows the established length pattern. No split needed.
+
+### (c) Abstraction changes
+
+**[low]** `publishCore` closure injection is justified. room-service already had `publishToStream` for JetStream; core-NATS publish for `subscription.update` fan-out needs a separate path because the APIs differ (`js.PublishMsg` returns `(*PubAck, error)`, `nc.PublishMsg` returns only `error`). The shape mirrors `publishToStream`, it's injected in `main.go` at line 119, and existing tests that don't exercise it pass `nil`. No premature abstraction.
+
+**[low]** `NewHandler` now has 10 positional parameters (`handler.go:44`). Borderline; a config struct would be cleaner. Pre-existing issue, not introduced by this PR but worsened by it.
+
+### (d) Design coherence
+
+The mute.toggle flow is a textbook match for room-service's job: validate membership → atomic Mongo write → fan out `subscription.update` core event → cross-site outbox. The plan's Pattern-B (`message.read` shape) is exactly what landed.
+
+### (e) Project-pattern adherence
+
+- **`pkg/subject` builders**: `subject.MuteToggleWildcard`, `subject.MuteToggle`, `subject.ParseUserRoomSubject`, `subject.SubscriptionUpdate`, `subject.Outbox` — all used correctly; no raw `fmt.Sprintf` subjects in new code. ✓
+- **Outbox pattern**: `publishToStream` called with `subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled)` at line 1307. ✓
+- **`Timestamp int64` on new event structs**: `SubscriptionMuteToggledEvent.Timestamp` set at the publish site (`now.UnixMilli()`, line 1290). `OutboxEvent.Timestamp` set at line 1301. `SubscriptionUpdateEvent.Timestamp` set at line 1269. All correct. ✓
+
+**[medium]** `room-service/handler.go:1280-1283` — When `GetUserSiteID` errors, the handler logs `slog.Warn` and returns `{status: "ok"}` while silently dropping the cross-site outbox publish. The peer handler `handleMessageRead` (line 1023) treats `GetUserSiteID` failure as a hard error returned to the caller. The asymmetry means a transient DB failure on `users` causes silent cross-site divergence with no client-visible signal — the user mutes on the room site but their home site keeps the old value forever. Either match `handleMessageRead`'s hard-error behaviour or document the intentional degraded-mode trade-off (and consider a retry/backfill mechanism).
+
+### (f) Client-API doc rule
+
+`docs/client-api.md` is updated in this branch with a full new "Toggle Mute" section (50 lines). Subject, request body, success response, error cases, triggered events, cross-site behaviour, and the `notification-worker` follow-up caveat are all documented. ✓
+
+**[low]** The docs section lists the not-a-member error as `"only room members can list members"` (the reused `errNotRoomMember` sentinel from `helper.go:25`). The string is semantically misleading for a mute operation. Either rename the sentinel or call out the reuse in the docs note.
+
+### Verdict
+
+The implementation is functionally correct and pattern-compliant. The one actionable blocker is the silent skip of the cross-site outbox on `GetUserSiteID` error (`handler.go:1280-1283`), which diverges from `handleMessageRead`'s precedent and risks undetected cross-site inconsistency.
+
+---
