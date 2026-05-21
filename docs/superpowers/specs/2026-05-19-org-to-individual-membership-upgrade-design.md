@@ -482,7 +482,7 @@ Mirrors the existing `(sectId, account)` index. Created in `EnsureIndexes` at se
 
 The new `GetAddMemberCandidatesPipeline` runs **4 stages per candidate** (`$match` → 2× `$lookup` → `$project`), the same operator count as the existing `GetNewMembersPipeline` for the non-empty-roomID case. No N+1 patterns; no per-row Go-side queries.
 
-The enrichment `_orgMatch` inner pipeline grows from **3 stages** (`$match` → `$group` → existing `$arrayElemAt`) to **6 stages** (`$match` → `$addFields` → `$sort` → `$group` → `$addFields display` → outer `$let` with `$cond`). Each runs on the small per-org candidate set, so absolute time stays in the low-millisecond range for typical rooms.
+The enrichment `_orgMatch` inner pipeline stays at **3 stages** (`$match` → `$addFields` → `$group`) — the same count as before. The `$group` widens to carry `isDept` and parallel `deptName`/`deptTCName`/`sectName`/`sectTCName` accumulators, but no stages are added. Combining the chosen branch happens once in Go (`displayfmt.CombineWithFallback`) on read, not in BSON. Each pipeline runs on the small per-org candidate set, so absolute time stays in the low-millisecond range for typical rooms.
 
 ## Out of scope (Part 2)
 

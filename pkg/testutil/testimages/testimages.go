@@ -29,7 +29,10 @@ const (
 	// has moved to Mongo 8; if a regression of that shape recurs, the
 	// replacement guard is whatever lint/validation the deploy stack
 	// enforces — not an integration-test version pin.
-	Mongo = "mongo:8"
+	//
+	// Patch-pinned so testcontainers can't drift across patch releases
+	// between CI runs. Bump in lockstep with docker-local/compose.deps.yaml.
+	Mongo = "mongo:8.2.9"
 
 	// NATS is the image for every NATS-backed integration test
 	// (core NATS + JetStream + WebSocket).
@@ -44,7 +47,9 @@ const (
 
 	// Valkey is the Redis-compatible cache used by room-service and
 	// pkg/roomkeystore. Tracks docker-local/compose.deps.yaml.
-	Valkey = "valkey/valkey:8-alpine"
+	//
+	// Patch-pinned (same rationale as Mongo above).
+	Valkey = "valkey/valkey:8.1.7-alpine"
 
 	// MinIO is the image for every MinIO-backed integration test.
 	MinIO = "minio/minio:RELEASE.2025-01-20T14-49-07Z"

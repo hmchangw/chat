@@ -939,6 +939,22 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			if err != nil {
 				return fmt.Errorf("find users for backfill: %w", err)
 			}
+			// Fail-hard if any requested account is missing. A partial result
+			// would commit some IRM rows + flip hadOrgsBefore=true (once
+			// BulkCreateRoomMembers writes the org row), after which no future
+			// redelivery can repair the missing rows — backfill only fires on
+			// the first-org transition. Better to halt and surface the stale
+			// sub via the async-job error than to bake permanent divergence
+			// between subscriptions and room_members.
+			found := make(map[string]struct{}, len(backfillUsers))
+			for i := range backfillUsers {
+				found[backfillUsers[i].Account] = struct{}{}
+			}
+			for _, acc := range backfillAccounts {
+				if _, ok := found[acc]; !ok {
+					return newPermanent("backfill user %s not found in room.member.add (room %s)", acc, req.RoomID)
+				}
+			}
 			for i := range backfillUsers {
 				roomMembers = append(roomMembers, &model.RoomMember{
 					ID:     idgen.GenerateUUIDv7(),

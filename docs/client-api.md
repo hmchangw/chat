@@ -259,7 +259,7 @@ See [Error envelope](#6-error-envelope-reference). Channel creates also reject a
 
 ##### Triggered events — success path
 
-`None — reply only.` Member additions are a separate RPC (Add Members); creating a room only enrolls the owner.
+`None — reply only.` Creation enrolls the owner (from the subject's `{account}`) plus any members supplied via `users` / `orgs` / `channels` per the request schema above. Adding members to an existing room is a separate RPC (Add Members).
 
 ##### Triggered events — error path
 

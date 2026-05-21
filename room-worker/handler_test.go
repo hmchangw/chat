@@ -989,6 +989,53 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Backfill partial-subset guard: when an existing subscription points at an
+// account whose user document is gone (e.g. directory delete that didn't
+// cascade), FindUsersByAccounts returns fewer rows than requested. Without a
+// guard, the worker would silently commit room_members for the rows it got,
+// flip hadOrgsBefore=true via BulkCreateRoomMembers, and leave the stale
+// account with a sub but no individual room_members row that no future retry
+// can ever repair (subsequent deliveries see hadOrgsBefore=true and skip
+// backfill entirely). Fail hard with errPermanent so the operator sees it
+// before partial state is committed.
+func TestHandler_ProcessAddMembers_BackfillUserMissing(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
+	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
+
+	// Org-only add on a room with no prior orgs → backfill fires.
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, nil, "r1").
+		Return([]AddMemberCandidate{}, nil)
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
+	}, nil)
+	// Existing subs: alice + ghost (ghost has no users document).
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), "r1").Return([]string{"alice", "ghost"}, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "ghost"}).Return([]model.User{
+		{ID: "u1", Account: "alice", SiteID: "site-a"},
+	}, nil)
+	// BulkCreateRoomMembers / ReconcileMemberCounts MUST NOT be called.
+
+	req := model.AddMembersRequest{
+		RoomID:           "r1",
+		Orgs:             []string{"eng"},
+		RequesterAccount: "alice",
+		Timestamp:        1000,
+		History:          model.HistoryConfig{Mode: model.HistoryModeAll},
+	}
+	reqData, _ := json.Marshal(req)
+
+	err := h.processAddMembers(natsutil.WithRequestID(context.Background(), testRequestID), reqData)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent)
+	assert.Contains(t, err.Error(), "ghost")
+	assert.Contains(t, err.Error(), "r1")
+}
+
 // New permanent-error contract: when ListNewMembers resolves a candidate
 // account that's no longer present in the users collection, processAddMembers
 // must NOT silently materialize a smaller membership. It returns errPermanent
