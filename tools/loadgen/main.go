@@ -35,13 +35,15 @@ type config struct {
 	// ToxiproxyURL is the toxiproxy admin endpoint for the chaos subcommand.
 	// Env: TOXIPROXY_URL (optional, default http://localhost:8474).
 	ToxiproxyURL string `env:"TOXIPROXY_URL" envDefault:"http://localhost:8474"`
-	// Valkey backs the room-key store. Not marked required at the env level
-	// because subcommands that don't touch the keystore (chaos, scenarios,
-	// presets, recommend, doctor) must still parse a usable config. The seed
-	// and teardown handlers check ValkeyAddr at the call site and exit 2 with
-	// a clear message if the keystore is needed but not configured.
-	ValkeyAddr     string `env:"VALKEY_ADDR"         envDefault:""`
-	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
+	// Valkey cluster addresses for the room-key store. Comma-separated list
+	// (e.g. "valkey-0:6379,valkey-1:6379,valkey-2:6379"). PR #199 changed the
+	// roomkeystore client to a cluster-aware shape. Not marked required at
+	// the env level because subcommands that don't touch the keystore
+	// (chaos, scenarios, presets, recommend, doctor) must still parse a
+	// usable config; the seed and teardown handlers check ValkeyAddrs at
+	// the call site and exit 2 with a clear message if missing.
+	ValkeyAddrs    []string `env:"VALKEY_ADDRS" envSeparator:"," envDefault:""`
+	ValkeyPassword string   `env:"VALKEY_PASSWORD" envDefault:""`
 	// AuthURL is the auth-service base URL for the auth-load scenario.
 	AuthURL string `env:"AUTH_SERVICE_URL" envDefault:"http://auth-service:8080"`
 }

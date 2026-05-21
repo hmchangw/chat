@@ -103,11 +103,9 @@ func setupCCSFixture(t *testing.T) *ccsFixture {
 	require.NoError(t, err, "build searchengine for remote")
 
 	t.Logf("CCS fixture: starting valkey")
-	valkeyAddr := startValkey(t)
-	valkeyClient, err := valkeyutil.Connect(ctx, valkeyAddr, "")
-	require.NoError(t, err, "connect valkey")
+	valkeyClient := valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
 	t.Cleanup(func() { valkeyutil.Disconnect(valkeyClient) })
-	t.Logf("CCS fixture: valkey at %s", valkeyAddr)
+	t.Logf("CCS fixture: valkey started")
 
 	t.Logf("CCS fixture: starting NATS")
 	natsURL := startNATS(t)
@@ -195,28 +193,6 @@ func startESForCCS(t *testing.T, nw *testcontainers.DockerNetwork, alias, cluste
 	port, err := container.MappedPort(ctx, "9200")
 	require.NoError(t, err)
 	return fmt.Sprintf("http://%s:%s", host, port.Port())
-}
-
-func startValkey(t *testing.T) string {
-	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        testimages.Valkey,
-			ExposedPorts: []string{"6379/tcp"},
-			Cmd:          []string{"valkey-server", "--save", "", "--appendonly", "no"},
-			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(30 * time.Second),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start valkey")
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "6379")
-	require.NoError(t, err)
-	return fmt.Sprintf("%s:%s", host, port.Port())
 }
 
 func startNATS(t *testing.T) string {
@@ -968,15 +944,9 @@ func setupRoomsFixture(t *testing.T) *roomsFixture {
 	return &roomsFixture{clientNATS: clientNC, esURL: esURL}
 }
 
-// newSubsValkeyClient starts a Valkey testcontainer and returns a connected
-// client for use by the subs fixture. Reuses the existing startValkey helper.
 func newSubsValkeyClient(t *testing.T) valkeyutil.Client {
 	t.Helper()
-	addr := startValkey(t)
-	client, err := valkeyutil.Connect(context.Background(), addr, "")
-	require.NoError(t, err, "connect valkey for subs fixture")
-	t.Cleanup(func() { valkeyutil.Disconnect(client) })
-	return client
+	return valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
 }
 
 // putTestSpotlightIndex creates a minimal spotlight index in ES with the

@@ -24,25 +24,32 @@ import (
 )
 
 // errValkeyAddrUnset is returned by connectKeyStore when the operator did
-// not set VALKEY_ADDR. Distinct from the generic dial error so the caller
+// not set VALKEY_ADDRS. Distinct from the generic dial error so the caller
 // can print an actionable message instead of a stack-trace-like dial failure.
-var errValkeyAddrUnset = errors.New(
-	"VALKEY_ADDR is not set; loadgen seed/teardown need the room-key store " +
-		"(set VALKEY_ADDR=host:port — broadcast-worker decrypts using the keys this seeds)")
-
-// connectKeyStore opens the Valkey-backed room-key store used by seed and
-// teardown. The grace period mirrors broadcast-worker's default; it does
-// not affect loadgen's seed/teardown logic but keeps keystore behaviour
-// uniform across processes.
 //
-// Returns errValkeyAddrUnset when cfg.ValkeyAddr is empty so callers can
-// emit a clear "set VALKEY_ADDR" message rather than a low-level dial error.
+// PR #199 renamed VALKEY_ADDR (single string) → VALKEY_ADDRS (comma-separated
+// cluster seed list) and replaced NewValkeyStore with NewValkeyClusterStore.
+// The old env name no longer works; operators upgrading from a pre-#199 build
+// must rename their env var. The error text below names VALKEY_ADDRS so the
+// fix is unambiguous.
+var errValkeyAddrUnset = errors.New(
+	"VALKEY_ADDRS is not set; loadgen seed/teardown need the room-key store " +
+		"(set VALKEY_ADDRS=host1:port,host2:port,... — comma-separated cluster " +
+		"seed nodes; broadcast-worker decrypts using the keys this seeds)")
+
+// connectKeyStore opens the Valkey-cluster-backed room-key store used by
+// seed and teardown. The grace period mirrors broadcast-worker's default;
+// it does not affect loadgen's seed/teardown logic but keeps keystore
+// behaviour uniform across processes.
+//
+// Returns errValkeyAddrUnset when cfg.ValkeyAddrs is empty so callers can
+// emit a clear "set VALKEY_ADDRS" message rather than a low-level dial error.
 func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
-	if cfg.ValkeyAddr == "" {
+	if len(cfg.ValkeyAddrs) == 0 {
 		return nil, errValkeyAddrUnset
 	}
-	return roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr:        cfg.ValkeyAddr,
+	return roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
+		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
 		GracePeriod: time.Hour,
 	})

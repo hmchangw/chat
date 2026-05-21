@@ -61,8 +61,10 @@ func setupMongo(t *testing.T) (string, func()) {
 
 // setupValkey starts a valkey/valkey:8 container and returns its addr
 // (host:port). Used by the seed/teardown dispatch smoke tests so they
-// can populate cfg.ValkeyAddr — connectKeyStore now refuses an empty
-// ValkeyAddr with an exit-2 error rather than attempting a dial.
+// can populate cfg.ValkeyAddrs — connectKeyStore (PR #199) refuses an
+// empty ValkeyAddrs with an exit-2 error rather than attempting a dial.
+// The cluster client connects to a standalone valkey OK for the basic
+// HSET/HGET ops this scenario uses.
 func setupValkey(t *testing.T) (string, func()) {
 	t.Helper()
 	ctx := context.Background()
@@ -517,7 +519,7 @@ func TestDispatch_RunRun_CanonicalInjectSmoke(t *testing.T) {
 		SiteID:      "site-local",
 		MetricsAddr: ":0", // OS-assigned port so concurrent tests don't collide
 		MaxInFlight: 32,
-		ValkeyAddr:  valkeyAddr,
+		ValkeyAddrs: []string{valkeyAddr},
 	}
 	os.Args = []string{
 		"loadgen", "run",
@@ -569,7 +571,7 @@ func TestDispatch_RunSeed_Smoke(t *testing.T) {
 		MongoURI:   mongoURI,
 		MongoDB:    "loadgen_seed_smoke",
 		SiteID:     "site-local",
-		ValkeyAddr: valkeyAddr,
+		ValkeyAddrs: []string{valkeyAddr},
 	}
 	os.Args = []string{"loadgen", "seed", "--preset=small"}
 	dispatchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -604,7 +606,7 @@ func TestDispatch_RunTeardown_Smoke(t *testing.T) {
 		MongoURI:   mongoURI,
 		MongoDB:    "loadgen_teardown_smoke",
 		SiteID:     "site-local",
-		ValkeyAddr: valkeyAddr,
+		ValkeyAddrs: []string{valkeyAddr},
 	}
 	os.Args = []string{"loadgen", "seed", "--preset=small"}
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)

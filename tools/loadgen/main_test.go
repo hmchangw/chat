@@ -751,7 +751,7 @@ func TestDispatch_MembersSustained_UnknownPreset(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"loadgen", "members-sustained", "--preset=nope"}
-	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddr: "localhost:1"}
+	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddrs: []string{"localhost:1"}}
 	code := dispatch(context.Background(), cfg)
 	assert.Equal(t, 2, code)
 }
@@ -760,7 +760,7 @@ func TestDispatch_MembersSustained_RejectsBadShape(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"loadgen", "members-sustained", "--preset=members-small", "--shape=orgs"}
-	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddr: "localhost:1"}
+	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddrs: []string{"localhost:1"}}
 	code := dispatch(context.Background(), cfg)
 	assert.Equal(t, 2, code)
 }
@@ -769,7 +769,7 @@ func TestDispatch_MembersCapacity_RequiresTargetSize(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"loadgen", "members-capacity", "--preset=members-capacity"}
-	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddr: "localhost:1"}
+	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddrs: []string{"localhost:1"}}
 	code := dispatch(context.Background(), cfg)
 	assert.Equal(t, 2, code)
 }
