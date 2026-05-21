@@ -42,8 +42,6 @@ type AddMemberCandidate struct {
 }
 
 type SubscriptionStore interface {
-	// --- existing methods (invite flow) ---
-	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	// BulkCreateSubscriptions upserts each sub keyed on (roomId, u.account)
 	// via $setOnInsert; collisions (e.g. JetStream redelivery) are a Mongo
 	// no-op so the persisted sub is preserved unchanged. Used by every
@@ -78,7 +76,6 @@ type SubscriptionStore interface {
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
 
 	// --- add-member flow ---
-	CreateRoomMember(ctx context.Context, member *model.RoomMember) error
 	BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error)

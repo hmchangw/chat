@@ -98,20 +98,20 @@ func TestMongoStore_Integration(t *testing.T) {
 
 	// Test CreateRoom and GetRoom
 	room := model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", UserCount: 1}
-	require.NoError(t, store.CreateRoom(ctx, &room))
+	mustInsertRoom(t, db, &room)
 	got, err := store.GetRoom(ctx, "r1")
 	require.NoError(t, err)
 	assert.Equal(t, "general", got.Name)
 
 	// Test ListRooms
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel}))
+	mustInsertRoom(t, db, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel})
 	rooms, err := store.ListRooms(ctx)
 	require.NoError(t, err)
 	assert.Len(t, rooms, 2)
 
 	// Test CreateSubscription and GetSubscription
 	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
-	require.NoError(t, store.CreateSubscription(ctx, &sub))
+	mustInsertSub(t, db, &sub)
 	gotSub, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
 	// Bound the slice access explicitly with require.Len before indexing —
@@ -138,7 +138,7 @@ func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 		RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleOwner},
 		JoinedAt: time.Now().UTC(),
 	}
-	require.NoError(t, store.CreateSubscription(ctx, sub))
+	mustInsertSub(t, db, sub)
 
 	t.Run("no individual or org membership", func(t *testing.T) {
 		result, err := store.GetSubscriptionWithMembership(ctx, "r1", "alice")
@@ -199,11 +199,11 @@ func TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration(t *t
 
 	// Alice has deptId="X" and NO sectId. The org row in room_members is keyed
 	// by member.id="X" — the dept-blind sectId-only lookup would miss it.
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: account},
 		RoomID: roomID, SiteID: "site-a", Roles: []model.Role{model.RoleMember},
 		JoinedAt: time.Now().UTC(),
-	}))
+	})
 	_, err := db.Collection("users").InsertOne(ctx, model.User{
 		ID: "u1", Account: account, SiteID: "site-a",
 		DeptID: "X", DeptName: "Engineering",
@@ -379,9 +379,9 @@ func TestMongoStore_ListRoomMembers_Integration(t *testing.T) {
 		_, err := db.Collection("room_members").InsertOne(ctx, rm)
 		require.NoError(t, err)
 	}
-	insertSub := func(t *testing.T, store *MongoStore, sub model.Subscription) {
+	insertSub := func(t *testing.T, db *mongo.Database, sub model.Subscription) {
 		t.Helper()
-		require.NoError(t, store.CreateSubscription(ctx, &sub))
+		mustInsertSub(t, db, &sub)
 	}
 	ptr := func(i int) *int { return &i }
 
@@ -410,11 +410,11 @@ func TestMongoStore_ListRoomMembers_Integration(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-a", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 			RoomID: "r1", SiteID: "site-a", JoinedAt: base.Add(10 * time.Second),
 		})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-b", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
 			RoomID: "r1", SiteID: "site-a", JoinedAt: base.Add(20 * time.Second),
 		})
@@ -503,7 +503,7 @@ func TestMongoStore_ListRoomMembers_Integration(t *testing.T) {
 		insertRM(t, db, model.RoomMember{ID: "rm-org-2", RoomID: "r1", Ts: base.Add(20 * time.Second),
 			Member: model.RoomMemberEntry{ID: "org-2", Type: model.RoomMemberOrg}})
 		// Also seed a subscription — must NOT appear in the result since room_members is non-empty.
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-ghost", User: model.SubscriptionUser{ID: "u-ghost", Account: "ghost"},
 			RoomID: "r1", SiteID: "site-a", JoinedAt: base,
 		})
@@ -551,9 +551,9 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		_, err := db.Collection("users").InsertOne(ctx, u)
 		require.NoError(t, err)
 	}
-	insertSub := func(t *testing.T, store *MongoStore, sub model.Subscription) {
+	insertSub := func(t *testing.T, db *mongo.Database, sub model.Subscription) {
 		t.Helper()
-		require.NoError(t, store.CreateSubscription(ctx, &sub))
+		mustInsertSub(t, db, &sub)
 	}
 	ptr := func(i int) *int { return &i }
 
@@ -566,7 +566,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 			ID: "u-alice", Account: "alice", SiteID: "site-a",
 			EngName: "Alice Wang", ChineseName: "愛麗絲",
 		})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 			RoomID: "r1", SiteID: "site-a",
 			Roles: []model.Role{model.RoleOwner}, JoinedAt: base,
@@ -593,7 +593,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		base := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
 
 		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", EngName: "Bob", ChineseName: "鮑伯"})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-bob", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
 			RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: base,
 		})
@@ -643,11 +643,11 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"})
 		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", EngName: "Bob", ChineseName: "鮑伯"})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-a", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 			RoomID: "r1", Roles: []model.Role{model.RoleOwner}, JoinedAt: base.Add(10 * time.Second),
 		})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-b", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
 			RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: base.Add(20 * time.Second),
 		})
@@ -672,7 +672,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		base := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"})
-		insertSub(t, store, model.Subscription{
+		insertSub(t, db, model.Subscription{
 			ID: "sub-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
 			RoomID: "r1", Roles: []model.Role{model.RoleOwner}, JoinedAt: base,
 		})
@@ -988,9 +988,7 @@ func TestMongoStore_ListRoomsByIDs(t *testing.T) {
 		{ID: "r5", Name: "five", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &t5},
 	}
 	for i := range seed {
-		if err := store.CreateRoom(ctx, &seed[i]); err != nil {
-			t.Fatalf("seed CreateRoom %q: %v", seed[i].ID, err)
-		}
+		mustInsertRoom(t, db, &seed[i])
 	}
 
 	t.Run("returns matches and skips missing", func(t *testing.T) {
@@ -1040,10 +1038,10 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	ctx := context.Background()
 
 	// Target room on site-a
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	mustInsertRoom(t, db, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
 	// Source channel on site-a: seed room_members explicitly so ListRoomMembers takes the room_members
 	// branch (not the subscriptions fallback); also seed users so ResolveAccounts can find them.
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	mustInsertRoom(t, db, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"})
 	_, err := db.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
@@ -1060,10 +1058,10 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, err)
 	// Subscriptions: requester must be subscribed on both rooms; the source room's subscriptions
 	// collection stays in sync with room_members so existing-subscription filtering works downstream.
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	mustInsertSub(t, db, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s3", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s4", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
 	// Same-site only: pass nil for memberListClient — the same-site branch in
 	// expandChannelRefs uses store.ListRoomMembers and never invokes the client.
@@ -1112,8 +1110,8 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 
 	ctx := context.Background()
 
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	mustInsertRoom(t, db, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
+	mustInsertRoom(t, db, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"})
 	// Seed users so ResolveAccounts can find them.
 	_, err := db.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
@@ -1123,12 +1121,12 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// Source only has subscriptions (no room_members rows) — ListRoomMembers falls back to subscriptions
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s3", RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}}))
+	mustInsertSub(t, db, &model.Subscription{ID: "s1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s3", RoomID: "source", User: model.SubscriptionUser{ID: "u3", Account: "dave"}})
 	// Requester in both
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s4", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s5", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	mustInsertSub(t, db, &model.Subscription{ID: "s4", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}})
+	mustInsertSub(t, db, &model.Subscription{ID: "s5", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
 	// Same-site only: nil memberListClient is safe (the same-site branch never invokes it).
 	var publishedSubj string
@@ -1173,10 +1171,10 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	ctx := context.Background()
 
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	mustInsertRoom(t, db, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
+	mustInsertRoom(t, db, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-a"})
 	// Requester subscribed to target but NOT source
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	mustInsertSub(t, db, &model.Subscription{RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}})
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
@@ -1213,26 +1211,26 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
 	// Site-A: target room; requester subscribed; user document needed for ResolveAccounts.
-	require.NoError(t, storeA.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
+	mustInsertRoom(t, dbA, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
 	_, err = dbA.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "req", Account: "alice", SiteID: "site-a"},
 		model.User{ID: "u1", Account: "bob", SiteID: "site-a"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-a"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, storeA.CreateSubscription(ctx, &model.Subscription{ID: "sa1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	mustInsertSub(t, dbA, &model.Subscription{ID: "sa1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}})
 
 	// Site-B: source channel with members; requester subscribed on site-b too.
-	require.NoError(t, storeB.CreateRoom(ctx, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-b"}))
+	mustInsertRoom(t, dbB, &model.Room{ID: "source", Type: model.RoomTypeChannel, SiteID: "site-b"})
 	_, err = dbB.Collection("users").InsertMany(ctx, []interface{}{
 		model.User{ID: "u1", Account: "bob", SiteID: "site-b"},
 		model.User{ID: "u2", Account: "carol", SiteID: "site-b"},
 		model.User{ID: "req", Account: "alice", SiteID: "site-b"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}}))
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}}))
-	require.NoError(t, storeB.CreateSubscription(ctx, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}}))
+	mustInsertSub(t, dbB, &model.Subscription{ID: "sb1", RoomID: "source", User: model.SubscriptionUser{ID: "u1", Account: "bob"}})
+	mustInsertSub(t, dbB, &model.Subscription{ID: "sb2", RoomID: "source", User: model.SubscriptionUser{ID: "u2", Account: "carol"}})
+	mustInsertSub(t, dbB, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
 	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil })
@@ -1296,8 +1294,8 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	ctx := context.Background()
 
 	// Target on site-a, requester subscribed.
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{ID: "s1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}}))
+	mustInsertRoom(t, db, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
+	mustInsertSub(t, db, &model.Subscription{ID: "s1", RoomID: "target", User: model.SubscriptionUser{ID: "req", Account: "alice"}, Roles: []model.Role{model.RoleOwner}})
 
 	// Register a site-b responder that sleeps past the client timeout, so we actually
 	// exercise the context.WithTimeout path (not NATS "no responders" fast-fail).
@@ -1348,7 +1346,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 		{ID: "r3", Name: "room-3", Type: model.RoomTypeChannel, SiteID: "site-a", LastMsgAt: &earlier},
 	}
 	for i := range rooms {
-		require.NoError(t, store.CreateRoom(ctx, &rooms[i]))
+		mustInsertRoom(t, db, &rooms[i])
 	}
 
 	privKey1 := bytes.Repeat([]byte{0x01}, 32)
@@ -1593,14 +1591,14 @@ func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID:       "s1",
 		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID:   "r1",
 		SiteID:   "site-a",
 		JoinedAt: time.Now().UTC().Add(-time.Hour),
 		Alert:    true,
-	}))
+	})
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", now, false))
@@ -1649,19 +1647,19 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	// (no lastSeenAt). The unread sub MUST be excluded — being invited into a
 	// room doesn't mean the user has read anything, so its joinedAt must not
 	// pull the room floor down.
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &mid,
-	}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	})
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
 		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &latest,
-	}))
+	})
 	// Never-read sub: joined at `earliest` but never opened the room.
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
 		RoomID: "r1", JoinedAt: earliest,
-	}))
+	})
 
 	got, err := store.MinSubscriptionLastSeenByRoomID(ctx, "r1")
 	require.NoError(t, err)
@@ -1670,10 +1668,10 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 
 	// Room with subs but none has lastSeenAt — return nil so the caller can
 	// $unset rooms.minUserLastSeenAt.
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "dave"},
 		RoomID: "r2", JoinedAt: earliest,
-	}))
+	})
 	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "r2")
 	require.NoError(t, err)
 	assert.Nil(t, got)
@@ -1690,9 +1688,9 @@ func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	require.NoError(t, store.CreateRoom(ctx, &model.Room{
+	mustInsertRoom(t, db, &model.Room{
 		ID: "r1", Name: "x", Type: model.RoomTypeChannel, CreatedAt: now, UpdatedAt: now,
-	}))
+	})
 
 	require.NoError(t, store.UpdateRoomMinUserLastSeenAt(ctx, "r1", &now))
 	r, err := store.GetRoom(ctx, "r1")

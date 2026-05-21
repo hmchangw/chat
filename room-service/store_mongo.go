@@ -99,11 +99,6 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
-func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room) error {
-	_, err := s.rooms.InsertOne(ctx, room)
-	return err
-}
-
 func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error) {
 	var room model.Room
 	if err := s.rooms.FindOne(ctx, bson.M{"_id": id}).Decode(&room); err != nil {
@@ -134,11 +129,6 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 		return nil, fmt.Errorf("get subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return &sub, nil
-}
-
-func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
-	_, err := s.subscriptions.InsertOne(ctx, sub)
-	return err
 }
 
 // GetSubscriptionWithMembership loads the target subscription joined with their

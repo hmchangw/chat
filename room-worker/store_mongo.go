@@ -31,11 +31,6 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
-func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
-	_, err := s.subscriptions.InsertOne(ctx, sub)
-	return err
-}
-
 func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
 	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
 	if err != nil {
@@ -357,16 +352,6 @@ func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.
 	opts := options.BulkWrite().SetOrdered(false)
 	if _, err := s.subscriptions.BulkWrite(ctx, models, opts); err != nil {
 		return fmt.Errorf("bulk create %d subscriptions: %w", len(subs), err)
-	}
-	return nil
-}
-
-func (s *MongoStore) CreateRoomMember(ctx context.Context, member *model.RoomMember) error {
-	if _, err := s.roomMembers.InsertOne(ctx, member); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil
-		}
-		return fmt.Errorf("create room member for room %q: %w", member.RoomID, err)
 	}
 	return nil
 }

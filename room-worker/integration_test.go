@@ -103,11 +103,8 @@ func TestMongoStore_Integration(t *testing.T) {
 	// Seed a room for ReconcileMemberCounts and GetRoom
 	db.Collection("rooms").InsertOne(ctx, model.Room{ID: "r1", Name: "general", UserCount: 1})
 
-	// Test CreateSubscription
-	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
-	if err := store.CreateSubscription(ctx, &sub); err != nil {
-		t.Fatalf("CreateSubscription: %v", err)
-	}
+	// Seed a subscription for ListByRoom / ReconcileMemberCounts.
+	mustInsertSub(t, db, &model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}})
 
 	// Test ListByRoom
 	subs, err := store.ListByRoom(ctx, "r1")
@@ -337,10 +334,10 @@ func TestMongoStore_DeleteSubscription_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
-	}))
+	})
 
 	deleted, err := store.DeleteSubscription(ctx, "r1", "alice")
 	require.NoError(t, err)
@@ -356,18 +353,18 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
-	}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	})
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
-	}))
-	require.NoError(t, store.CreateSubscription(ctx, &model.Subscription{
+	})
+	mustInsertSub(t, db, &model.Subscription{
 		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
-	}))
+	})
 
 	deleted, err := store.DeleteSubscriptionsByAccounts(ctx, "r1", []string{"alice", "bob"})
 	require.NoError(t, err)
