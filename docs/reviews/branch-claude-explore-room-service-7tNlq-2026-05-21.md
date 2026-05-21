@@ -87,3 +87,45 @@ The mute.toggle flow is a textbook match for room-service's job: validate member
 The implementation is functionally correct and pattern-compliant. The one actionable blocker is the silent skip of the cross-site outbox on `GetUserSiteID` error (`handler.go:1280-1283`), which diverges from `handleMessageRead`'s precedent and risks undetected cross-site inconsistency.
 
 ---
+
+## Service: inbox-worker
+
+### (a) Diff correctness against existing handler conventions
+
+**[low]** The new `handleSubscriptionMuteToggled` (`handler.go:212-221`) is structurally identical to `handleSubscriptionRead` (`handler.go:196-206`): unmarshal inner event → call store method → wrap error with `"short description: %w"`. Dispatch case is placed immediately after `subscription_read` in the switch, mirroring how `subscription_read` was slotted between `role_updated` and `thread_subscription_upserted`. Shape correct, no issues.
+
+### (b) Scope drift / refactor-readiness
+
+**[medium]** `inbox-worker/main.go:39-195` — The `mongoInboxStore` struct and all its methods remain embedded in `main.go`, which now spans ~200 lines of store implementation before `main()` even starts. The plan (Task 8 step 1) explicitly noted: "Modify: `inbox-worker/store.go` (interface) and `inbox-worker/store_mongo.go` (impl) — confirm exact filenames first." The split never happened. Adding `UpdateSubscriptionMute` to `main.go:118-129` follows the existing pattern, but the growing inline store is now clearly beyond the per-service layout in CLAUDE.md (`main.go` = config + wiring + startup). Pre-existing tech debt that this PR adds to. Worth a follow-up split before the next handler grows the inline store further.
+
+### (c) Abstraction changes
+
+**[low]** `UpdateSubscriptionMute` earns its keep. It parallels `UpdateSubscriptionRead` one-to-one in the interface (`handler.go:33-36`) and in the Mongo impl (`main.go:120-129`). The no-op-on-missing-subscription semantic is documented in both the interface comment and the store comment.
+
+**[nitpick]** `inbox-worker/main.go:128` — `UpdateSubscriptionMute` discards `res *UpdateResult` (assigns to `_`) and does NOT check `res.MatchedCount` before returning nil, while `UpdateSubscriptionRoles` (`main.go:60-70`) DOES return an error on `MatchedCount == 0`. The asymmetry is intentional (plan explicitly requires silent no-op on missing subscription) and is documented in both the interface and store comments — but a one-line inline comment (`// MatchedCount 0 is intentional — missing subscription is a federation-race no-op`) on the `return nil` would close that reading ambiguity for the next developer.
+
+### (d) Design coherence
+
+**[low]** The handler correctly fits inbox-worker's stated job: mirror a room's-home-site write onto the user's home-site subscription copy. The `OutboxEvent.Type == "subscription_mute_toggled"` dispatch case (`handler.go:66-67`) wires correctly against the constant `model.OutboxSubscriptionMuteToggled`. The silent-no-op semantic is encoded end-to-end (store Mongo impl → store interface doc → handler comment). No design issues.
+
+### (e) Project-pattern adherence
+
+- **Federation wiring**: dispatch string `"subscription_mute_toggled"` matches `model.OutboxSubscriptionMuteToggled` (`pkg/model/event.go:85`). `handler_test.go` uses the const directly, not a bare string. ✓
+- **Mongo write**: direct driver, `bson.M` filter + `$set` update, no ORM. ✓
+- **Error wrapping**: `"unmarshal subscription_mute_toggled payload: %w"` and `"update subscription mute for %q in room %q: %w"` — both follow the `"short description: %w"` convention. ✓
+
+**[low]** The plan prescribed `gomock` + `make generate SERVICE=inbox-worker` for the new test (Task 8 steps 5/8). The landed implementation uses a hand-written `stubInboxStore` in `handler_test.go` instead. The plan was wrong about inbox-worker's testing style — the landed code correctly matches the existing convention. Worth noting for future plans against this service.
+
+### (f) Client-API doc rule
+
+N/A — inbox-worker has no `nc.QueueSubscribe` handlers on `chat.user.…` client-facing subjects.
+
+### Test coverage
+
+Three targeted tests cover the happy path (`TestHandler_SubscriptionMuteToggled`), missing-subscription no-op (`TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp`), and malformed payload (`TestHandler_SubscriptionMuteToggled_MalformedPayload`). Missing: a store-error propagation test (see Test-automation chapter).
+
+### Verdict
+
+The diff is mechanically correct and safe to merge. Actionable items: a one-line clarity comment on the intentional `MatchedCount` omission (`main.go:128`), and a follow-up PR to split the inline store from `main.go` into `store.go`/`store_mongo.go` before the next handler grows it further.
+
+---
