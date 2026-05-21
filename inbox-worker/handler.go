@@ -29,6 +29,16 @@ type InboxStore interface {
 	// silent no-ops. Missing-subscription is also a silent no-op.
 	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
+	// ApplyThreadRead mirrors a remote site's thread-read on the local cache.
+	// Subscription: authoritative overwrite of threadUnread + alert
+	// (idempotent under repeated delivery — the source ships the resulting
+	// state). When newThreadUnread is empty, threadUnread is $unset to match
+	// the omitempty contract. ThreadSubscription: sets lastSeenAt, updatedAt,
+	// hasMention=false, guarded by $lt lastSeenAt so out-of-order deliveries
+	// cannot regress. Missing documents on either side are silent no-ops
+	// (replays may arrive before the corresponding member_added /
+	// thread_subscription_upserted has been processed).
+	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -61,6 +71,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleSubscriptionRead(ctx, &evt)
 	case "thread_subscription_upserted":
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
+	case "thread_read":
+		return h.handleThreadRead(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -211,6 +223,19 @@ func (h *Handler) handleThreadSubscriptionUpserted(ctx context.Context, evt *mod
 	if err := h.store.UpsertThreadSubscription(ctx, &sub); err != nil {
 		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
 			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+
+func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) error {
+	var e model.ThreadReadEvent
+	if err := json.Unmarshal(evt.Payload, &e); err != nil {
+		return fmt.Errorf("unmarshal thread_read payload: %w", err)
+	}
+	lastSeenAt := time.UnixMilli(e.LastSeenAt).UTC()
+	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
+		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
+			e.RoomID, e.ParentMessageID, e.Account, err)
 	}
 	return nil
 }
