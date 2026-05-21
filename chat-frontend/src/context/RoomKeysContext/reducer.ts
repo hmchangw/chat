@@ -8,19 +8,13 @@ export type StoredKey = {
 
 export type RoomKeysState = {
   byRoom: Record<string, Record<number, StoredKey>>
-  bootstrapped: boolean
 }
 
 export const initialRoomKeysState: RoomKeysState = {
   byRoom: {},
-  bootstrapped: false,
 }
 
 export type RoomKeysAction =
-  | {
-      type: 'BOOTSTRAP_LOADED'
-      keys: Array<{ roomId: string; version: number; privateKey: Uint8Array }>
-    }
   | {
       type: 'KEY_RECEIVED'
       roomId: string
@@ -31,15 +25,6 @@ export type RoomKeysAction =
 
 export function roomKeysReducer(state: RoomKeysState, action: RoomKeysAction): RoomKeysState {
   switch (action.type) {
-    case 'BOOTSTRAP_LOADED': {
-      const byRoom: Record<string, Record<number, StoredKey>> = { ...state.byRoom }
-      for (const k of action.keys) {
-        const room = { ...(byRoom[k.roomId] ?? {}) }
-        room[k.version] = { privateKey: k.privateKey }
-        byRoom[k.roomId] = trimVersions(room)
-      }
-      return { ...state, byRoom, bootstrapped: true }
-    }
     case 'KEY_RECEIVED': {
       const existing = state.byRoom[action.roomId]?.[action.version]
       if (existing && bytesEqual(existing.privateKey, action.privateKey)) {

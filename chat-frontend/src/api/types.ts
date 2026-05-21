@@ -275,18 +275,6 @@ export interface RoomKeyEvent {
   timestamp: number
 }
 
-/** One entry in RoomKeysResponse — see pkg/model.RoomsKeysEntry. */
-export interface RoomKeysEntry {
-  roomId: string
-  version: number
-  privateKey: string  // base64
-}
-
-/** Response to roomsKeysBootstrap RPC — see pkg/model.RoomsKeysResponse. */
-export interface RoomKeysResponse {
-  keys: RoomKeysEntry[]
-}
-
 /** Two-phase async-job result returned by `requestWithAsyncResult`. */
 export interface AsyncJobResult<S = unknown, A = unknown> {
   requestId: string

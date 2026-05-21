@@ -14,15 +14,15 @@ import (
 
 func TestEncryptedMessage_JSONRoundTrip(t *testing.T) {
 	original := EncryptedMessage{
-		Version:            7,
-		EphemeralPublicKey: []byte{1, 2, 3},
-		Nonce:              []byte{4, 5, 6},
-		Ciphertext:         []byte{7, 8, 9},
+		Version:    7,
+		Nonce:      []byte{4, 5, 6},
+		Ciphertext: []byte{7, 8, 9},
 	}
 
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"version":7`)
+	assert.NotContains(t, string(data), "ephemeralPublicKey", "legacy field must not appear in JSON output")
 
 	var decoded EncryptedMessage
 	require.NoError(t, json.Unmarshal(data, &decoded))
@@ -63,8 +63,6 @@ func TestEncoder_Encode_HappyPath(t *testing.T) {
 	assert.Equal(t, 7, got.Version)
 	assert.Len(t, got.Nonce, 12)
 	assert.NotEmpty(t, got.Ciphertext)
-	// EphemeralPublicKey field must be empty/unset on the new scheme output.
-	assert.Empty(t, got.EphemeralPublicKey)
 }
 
 func TestEncoder_Encode_CacheHit(t *testing.T) {

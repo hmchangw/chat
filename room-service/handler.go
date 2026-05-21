@@ -95,9 +95,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
 		return fmt.Errorf("subscribe org members: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsKeysBootstrapWildcard(), queue, h.natsListRoomKeys); err != nil {
-		return fmt.Errorf("subscribe rooms keys bootstrap: %w", err)
-	}
 	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
 		return fmt.Errorf("subscribe room key ensure: %w", err)
 	}
@@ -960,72 +957,6 @@ func chunkedGetKeys(ctx context.Context, ks RoomKeyStore, ids []string) (map[str
 		}
 	}
 	return merged, nil
-}
-
-func (h *Handler) natsListRoomKeys(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	// Subject pattern: chat.user.{account}.request.rooms.keys → account at index 2.
-	parts := strings.Split(m.Msg.Subject, ".")
-	if len(parts) != 6 ||
-		parts[0] != "chat" ||
-		parts[1] != "user" ||
-		parts[3] != "request" ||
-		parts[4] != "rooms" ||
-		parts[5] != "keys" {
-		slog.Warn("rooms keys bootstrap: invalid subject", "subject", m.Msg.Subject)
-		natsutil.ReplyError(m.Msg, "invalid subject")
-		return
-	}
-	account := parts[2]
-	resp, err := h.handleListRoomKeys(ctx, account)
-	if err != nil {
-		slog.Error("list room keys failed", "error", err, "account", account)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
-		return
-	}
-	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to message", "error", err)
-	}
-}
-
-func (h *Handler) handleListRoomKeys(ctx context.Context, account string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if h.keyStore == nil {
-		return nil, fmt.Errorf("list room keys for %s: keystore not configured", account)
-	}
-
-	subs, err := h.store.ListSubscriptionsByAccount(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("list subscriptions for %s: %w", account, err)
-	}
-	if len(subs) == 0 {
-		return json.Marshal(model.RoomsKeysResponse{Keys: []model.RoomsKeysEntry{}})
-	}
-
-	roomIDs := make([]string, 0, len(subs))
-	for i := range subs {
-		roomIDs = append(roomIDs, subs[i].RoomID)
-	}
-
-	keys, err := chunkedGetKeys(ctx, h.keyStore, roomIDs)
-	if err != nil {
-		return nil, fmt.Errorf("get room keys for %s: %w", account, err)
-	}
-
-	out := make([]model.RoomsKeysEntry, 0, len(keys))
-	for roomID, kp := range keys {
-		if kp == nil {
-			continue
-		}
-		out = append(out, model.RoomsKeysEntry{
-			RoomID:     roomID,
-			Version:    kp.Version,
-			PrivateKey: kp.KeyPair.PrivateKey,
-		})
-	}
-	return json.Marshal(model.RoomsKeysResponse{Keys: out})
 }
 
 func (h *Handler) natsMessageRead(m otelnats.Msg) {

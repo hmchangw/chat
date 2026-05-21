@@ -4,19 +4,6 @@ import { roomKeysReducer, initialRoomKeysState, type RoomKeysState } from './red
 const seed = (): RoomKeysState => ({ ...initialRoomKeysState, byRoom: { ...initialRoomKeysState.byRoom } })
 
 describe('roomKeysReducer', () => {
-  it('BOOTSTRAP_LOADED merges all entries by (roomId, version)', () => {
-    const next = roomKeysReducer(seed(), {
-      type: 'BOOTSTRAP_LOADED',
-      keys: [
-        { roomId: 'r1', version: 1, privateKey: new Uint8Array([1, 2, 3]) },
-        { roomId: 'r2', version: 5, privateKey: new Uint8Array([9]) },
-      ],
-    })
-    expect(next.bootstrapped).toBe(true)
-    expect(next.byRoom.r1[1].privateKey).toEqual(new Uint8Array([1, 2, 3]))
-    expect(next.byRoom.r2[5].privateKey).toEqual(new Uint8Array([9]))
-  })
-
   it('KEY_RECEIVED inserts a single (roomId, version) entry', () => {
     const next = roomKeysReducer(seed(), {
       type: 'KEY_RECEIVED',
@@ -56,7 +43,6 @@ describe('roomKeysReducer', () => {
 
   it('CLEAR_KEYS resets state', () => {
     const populated: RoomKeysState = {
-      bootstrapped: true,
       byRoom: { r1: { 1: { privateKey: new Uint8Array([1]) } } },
     }
     const next = roomKeysReducer(populated, { type: 'CLEAR_KEYS' })

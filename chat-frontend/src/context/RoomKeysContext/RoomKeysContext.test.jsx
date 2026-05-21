@@ -3,7 +3,6 @@ import { render, waitFor, act } from '@testing-library/react'
 import { RoomKeysProvider, useRoomKeys } from './RoomKeysContext'
 
 vi.mock('@/api', () => ({
-  fetchRoomKeysBootstrap: vi.fn(),
   subscribeToRoomKeyEvents: vi.fn(),
 }))
 
@@ -19,7 +18,7 @@ vi.mock('@/context/NatsContext', () => ({
   }),
 }))
 
-import { fetchRoomKeysBootstrap, subscribeToRoomKeyEvents } from '@/api'
+import { subscribeToRoomKeyEvents } from '@/api'
 
 let lastDecryptHook = null
 
@@ -31,34 +30,10 @@ function Probe() {
 describe('RoomKeysProvider', () => {
   beforeEach(() => {
     lastDecryptHook = null
-    vi.mocked(fetchRoomKeysBootstrap).mockReset()
     vi.mocked(subscribeToRoomKeyEvents).mockReset()
   })
 
-  it('calls fetchRoomKeysBootstrap on mount and seeds state', async () => {
-    vi.mocked(fetchRoomKeysBootstrap).mockResolvedValue({
-      keys: [{ roomId: 'r1', version: 1, privateKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))) }],
-    })
-    const unsub = { unsubscribe: vi.fn() }
-    vi.mocked(subscribeToRoomKeyEvents).mockReturnValue(unsub)
-
-    render(
-      <RoomKeysProvider>
-        <Probe />
-      </RoomKeysProvider>,
-    )
-
-    await waitFor(() => {
-      expect(fetchRoomKeysBootstrap).toHaveBeenCalled()
-    })
-
-    await waitFor(() => {
-      expect(lastDecryptHook?.hasKey('r1', 1)).toBe(true)
-    })
-  })
-
   it('dispatches KEY_RECEIVED for each live event', async () => {
-    vi.mocked(fetchRoomKeysBootstrap).mockResolvedValue({ keys: [] })
     let savedCb
     vi.mocked(subscribeToRoomKeyEvents).mockImplementation((_n, cb) => {
       savedCb = cb
@@ -86,7 +61,6 @@ describe('RoomKeysProvider', () => {
   })
 
   it('unsubscribes and clears state on unmount', async () => {
-    vi.mocked(fetchRoomKeysBootstrap).mockResolvedValue({ keys: [] })
     const unsub = { unsubscribe: vi.fn() }
     vi.mocked(subscribeToRoomKeyEvents).mockReturnValue(unsub)
 

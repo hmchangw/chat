@@ -29,7 +29,6 @@ paths.
 4. [Message Send](#4-message-send)
 5. [Server-Pushed Events](#5-server-pushed-events)
    - [5.1 Room Encryption Keys](#51-room-encryption-keys)
-   - [5.2 Bootstrap room keys on (re)connect](#52-bootstrap-room-keys-on-reconnect)
 6. [Error envelope reference](#6-error-envelope-reference)
 
 ---
@@ -2029,47 +2028,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 Removed members keep prior keys for decrypting historical messages but cannot decrypt anything published after the rotation.
 
-### 5.2 Bootstrap room keys on (re)connect
-
-Live `RoomKeyEvent`s on §5.1 fire only when keys change (room creation, member add/remove, rotation). To learn the current keys for rooms the client is already subscribed to (e.g., on app start or after a long reconnect gap), call:
-
-#### Subject
-
-```text
-chat.user.{account}.request.rooms.keys
-```
-
-#### Request
-
-Empty object:
-
-```json
-{}
-```
-
-The server derives the room set from the caller's active subscriptions; no client input is required.
-
-#### Response (`RoomKeysResponse`)
-
-```json
-{
-  "keys": [
-    {
-      "roomId": "<room id>",
-      "version": 0,
-      "privateKey": "<base64-encoded 32-byte room secret>"
-    }
-  ]
-}
-```
-
-One entry per room the caller is subscribed to AND that has a key in Valkey. Rooms without a key (e.g., currently-unencrypted DMs) are omitted.
-
-#### Client behavior
-
-1. Call once on (re)connect, before subscribing to live `chat.user.{account}.event.room.key` events.
-2. Seed the local `(roomId, version) → privateKey` cache from the response.
-3. Continue to update the cache as live `RoomKeyEvent`s arrive.
+**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to will be delivered as part of the `subscription.get*` RPC family (see user-service — to be documented). Until that extension lands, clients receive keys only via live events.
 
 ---
 

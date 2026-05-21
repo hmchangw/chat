@@ -658,7 +658,6 @@ func TestHandler_HandleMessage_ChannelRoom_Encryption(t *testing.T) {
 		var env roomcrypto.EncryptedMessage
 		require.NoError(t, json.Unmarshal(evt.EncryptedMessage, &env))
 		assert.Equal(t, key.Version, env.Version)
-		assert.Empty(t, env.EphemeralPublicKey, "direct-import scheme does not use ephemeral public key")
 		assert.NotEmpty(t, env.Nonce)
 		assert.NotEmpty(t, env.Ciphertext)
 

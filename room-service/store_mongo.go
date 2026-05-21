@@ -83,10 +83,8 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
-	// Lookup index for FindDMSubscription (filters on u.account+name) AND
-	// ListSubscriptionsByAccount (filters on u.account only — uses this as a
-	// prefix). Without this index, both queries fall back to a collection
-	// scan on subscriptions.
+	// Lookup index for FindDMSubscription (filters on u.account+name).
+	// Without this index, FindDMSubscription falls back to a collection scan.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "u.account", Value: 1}, {Key: "name", Value: 1}},
 	}); err != nil {
@@ -130,25 +128,6 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 		return nil, fmt.Errorf("get subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return &sub, nil
-}
-
-func (s *MongoStore) ListSubscriptionsByAccount(ctx context.Context, account string) ([]model.Subscription, error) {
-	// Note: Subscription.IsSubscribed is set to true ONLY for the human side of
-	// botDM rooms (see inbox-worker subscriptionIsSubscribed); channels, DMs,
-	// and the bot side leave it false. Filtering by isSubscribed:true would
-	// therefore exclude essentially all user subscriptions. The subscription
-	// row's mere existence is the signal that the user belongs to the room.
-	filter := bson.M{"u.account": account}
-	cursor, err := s.subscriptions.Find(ctx, filter)
-	if err != nil {
-		return nil, fmt.Errorf("find subscriptions for account %q: %w", account, err)
-	}
-	defer cursor.Close(ctx)
-	var subs []model.Subscription
-	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, fmt.Errorf("decode subscriptions for account %q: %w", account, err)
-	}
-	return subs, nil
 }
 
 func (s *MongoStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {

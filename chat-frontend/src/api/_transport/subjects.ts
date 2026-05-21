@@ -37,10 +37,6 @@ export function roomsGet(account: string, roomId: string): string {
   return `chat.user.${account}.request.rooms.get.${roomId}`
 }
 
-export function roomsKeysBootstrap(account: string): string {
-  return `chat.user.${account}.request.rooms.keys`
-}
-
 // roomCreate is the room-service create subject. The site segment is the
 // requester's site — room-service queue-subscribes on its own siteID, so a
 // caller from site-A always lands its create on the site-A room-service.

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react'
-import { fetchRoomKeysBootstrap, subscribeToRoomKeyEvents } from '@/api'
+import { subscribeToRoomKeyEvents } from '@/api'
 import type { Nats, RoomKeyEvent } from '@/api'
 import { useNats } from '@/context/NatsContext'
 import { b64decode, importAesKey, decryptRoomMessage } from '@/lib/roomcrypto'
@@ -54,32 +54,14 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!userAccount) return
-    let cancelled = false
 
     const liveNats = natsRef.current
 
-    fetchRoomKeysBootstrap(liveNats)
-      .then((resp) => {
-        if (cancelled) return
-        const keys: Array<{ roomId: string; version: number; privateKey: Uint8Array }> = []
-        for (const k of resp.keys) {
-          let privateKey: Uint8Array
-          try {
-            privateKey = b64decode(k.privateKey)
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn('roomKeysBootstrap: invalid base64 privateKey for entry, skipping', { roomId: k.roomId, version: k.version }, err)
-            continue
-          }
-          keys.push({ roomId: k.roomId, version: k.version, privateKey })
-        }
-        dispatch({ type: 'BOOTSTRAP_LOADED', keys })
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('roomKeysBootstrap failed:', err)
-      })
-
+    // TODO: initial keys arrive via the subscription.get* RPCs (user-service
+    // responsibility — to be extended in a follow-up). Until then,
+    // RoomKeysContext populates from live RoomKeyEvent subscriptions only;
+    // reconnecting users re-acquire keys when a rotation or membership change
+    // next fires for each room.
     const sub = subscribeToRoomKeyEvents(liveNats, (raw) => {
       const evt = raw as RoomKeyEvent
       if (!evt || typeof evt.roomId !== 'string' || typeof evt.version !== 'number' || typeof evt.privateKey !== 'string') return
@@ -107,7 +89,6 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
     })
 
     return () => {
-      cancelled = true
       sub.unsubscribe()
       aesKeyCacheRef.current.clear()
       dispatch({ type: 'CLEAR_KEYS' })

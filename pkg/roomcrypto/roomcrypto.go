@@ -16,10 +16,9 @@ import (
 // It is a serialisation-only type sent to clients over JSON; it is never written to MongoDB.
 type EncryptedMessage struct {
 	// key version used to encrypt; matches roomkeystore VersionedKeyPair.Version
-	Version            int    `json:"version"`
-	EphemeralPublicKey []byte `json:"ephemeralPublicKey,omitempty"` // legacy scheme; empty on the new scheme
-	Nonce              []byte `json:"nonce"`                        // 12 bytes, AES-GCM nonce
-	Ciphertext         []byte `json:"ciphertext"`                   // encrypted content + 16-byte AES-GCM tag
+	Version    int    `json:"version"`
+	Nonce      []byte `json:"nonce"`      // 12 bytes, AES-GCM nonce
+	Ciphertext []byte `json:"ciphertext"` // encrypted content + 16-byte AES-GCM tag
 }
 
 // Encoder holds the per-(roomId, version) AES-GCM cipher cache. The room

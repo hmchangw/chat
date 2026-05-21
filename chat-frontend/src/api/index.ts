@@ -16,7 +16,6 @@ export { createRoom } from './createRoom'
 export { deleteMessage } from './deleteMessage'
 export { editMessage } from './editMessage'
 export { fetchMessageHistory } from './fetchMessageHistory'
-export { fetchRoomKeysBootstrap } from './fetchRoomKeysBootstrap'
 export { fetchReadReceipt } from './fetchReadReceipt'
 export { fetchSidebarBuckets } from './fetchSidebarBuckets'
 export { fetchSurroundingMessages } from './fetchSurroundingMessages'
@@ -75,6 +74,4 @@ export type {
   HistoryConfig,
   HistoryMode,
   RoomKeyEvent,
-  RoomKeysEntry,
-  RoomKeysResponse,
 } from './types'

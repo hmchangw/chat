@@ -22,7 +22,6 @@ import {
   userSubscriptionGetApps,
   userSubscriptionGetRooms,
   userSubscriptionCount,
-  roomsKeysBootstrap,
 } from './subjects'
 
 describe('subjects', () => {
@@ -145,8 +144,3 @@ describe('userRoomKey', () => {
   })
 })
 
-describe('roomsKeysBootstrap', () => {
-  it('builds the per-user keys-bootstrap RPC subject', () => {
-    expect(roomsKeysBootstrap('alice')).toBe('chat.user.alice.request.rooms.keys')
-  })
-})

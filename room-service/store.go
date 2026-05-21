@@ -46,10 +46,6 @@ type RoomStore interface {
 	ListRooms(ctx context.Context) ([]model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
-	// ListSubscriptionsByAccount returns all subscriptions for the given account
-	// where the user is currently subscribed. Used by the rooms-keys bootstrap
-	// RPC to discover the set of rooms whose keys must be returned.
-	ListSubscriptionsByAccount(ctx context.Context, account string) ([]model.Subscription, error)
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)

@@ -613,11 +613,3 @@ func TestUserServicePatternBuilders(t *testing.T) {
 		})
 	}
 }
-
-func TestRoomsKeysBootstrap(t *testing.T) {
-	assert.Equal(t, "chat.user.alice.request.rooms.keys", subject.RoomsKeysBootstrap("alice"))
-}
-
-func TestRoomsKeysBootstrapWildcard(t *testing.T) {
-	assert.Equal(t, "chat.user.*.request.rooms.keys", subject.RoomsKeysBootstrapWildcard())
-}
