@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1190,13 +1191,17 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		return nil, errInvalidThreadID
 	}
 
-	// Concurrent room-access + thread-sub existence checks. Manual error
-	// inspection after Wait() so errNotRoomMember always outranks
-	// errThreadSubNotFound regardless of goroutine completion order.
+	// Concurrent reads: room-sub, thread-sub, and the user's home site.
+	// All three depend only on values known at parse time, so prefetching
+	// userSiteID here saves a Mongo round-trip later (we'd otherwise serialize
+	// it after the writes). Manual error inspection after Wait() enforces
+	// priority: errNotRoomMember > errThreadSubNotFound > internal errors,
+	// regardless of goroutine completion order.
 	var (
-		sub             *model.Subscription
-		tsub            *model.ThreadSubscription
-		subErr, tsubErr error
+		sub                          *model.Subscription
+		tsub                         *model.ThreadSubscription
+		userSiteID                   string
+		subErr, tsubErr, userSiteErr error
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -1209,6 +1214,11 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		tsub, tsubErr = t, err
 		return err
 	})
+	g.Go(func() error {
+		s, err := h.store.GetUserSiteID(gctx, account)
+		userSiteID, userSiteErr = s, err
+		return err
+	})
 	_ = g.Wait()
 	switch {
 	case errors.Is(subErr, model.ErrSubscriptionNotFound):
@@ -1219,9 +1229,11 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		return nil, errThreadSubNotFound
 	case tsubErr != nil:
 		return nil, fmt.Errorf("get thread subscription: %w", tsubErr)
+	case userSiteErr != nil:
+		return nil, fmt.Errorf("get user siteId: %w", userSiteErr)
 	}
 
-	newThreadUnread := removeThreadID(sub.ThreadUnread, req.ThreadID)
+	newThreadUnread := slices.DeleteFunc(slices.Clone(sub.ThreadUnread), func(s string) bool { return s == req.ThreadID })
 	newAlert := sub.Alert && len(newThreadUnread) > 0
 	now := time.Now().UTC()
 
@@ -1242,10 +1254,6 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		return nil, err
 	}
 
-	userSiteID, err := h.store.GetUserSiteID(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("get user siteId: %w", err)
-	}
 	switch {
 	case userSiteID == "":
 		slog.Warn("user not found locally; skipping cross-site outbox", "account", account)
@@ -1281,16 +1289,4 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
-}
-
-// removeThreadID returns a copy of unread with all occurrences of id removed.
-// The input slice is never mutated.
-func removeThreadID(unread []string, id string) []string {
-	out := make([]string, 0, len(unread))
-	for _, x := range unread {
-		if x != id {
-			out = append(out, x)
-		}
-	}
-	return out
 }
