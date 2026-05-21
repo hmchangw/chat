@@ -81,10 +81,13 @@ type InboxMemberEvent struct {
 }
 
 type NotificationEvent struct {
-	Type      string  `json:"type"` // "new_message"
-	RoomID    string  `json:"roomId"`
-	Message   Message `json:"message"`
-	Timestamp int64   `json:"timestamp" bson:"timestamp"`
+	Type    string  `json:"type"` // "new_message" | "reaction"
+	RoomID  string  `json:"roomId"`
+	Message Message `json:"message"`
+	// ReactionDelta is set only when Type == "reaction"; it carries the
+	// per-toggle reaction info (shortcode, action, actor).
+	ReactionDelta *ReactionDelta `json:"reactionDelta,omitempty" bson:"reactionDelta,omitempty"`
+	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
 }
 
 // OutboxEventType is the type tag on an OutboxEvent used to route it to the

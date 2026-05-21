@@ -1353,6 +1353,94 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sen
 
 ---
 
+#### React to Message
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.react`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Toggles a reaction on a message. Any subscribed room member may react — the server decides add vs remove by checking whether the calling user is already in the message's reactor set for that shortcode. Reactions can always be _removed_ from a soft-deleted message (so users can clean up their reactions after a delete), but cannot be _added_ to one.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The message to react to. |
+| `shortcode` | string | yes | The bare reaction shortcode without surrounding colons. Must match `^[a-z0-9][a-z0-9_+-]{0,31}$` _or_ be one of the well-known no-letter built-ins (`+1`, `-1`). Built-in Unicode shortcodes (`thumbsup`, `tada`, `heart`, …) skip the custom-emoji lookup; any other shortcode is resolved against the `custom_emojis` collection for the site. |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "shortcode": "thumbsup"
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | Echoes the input. |
+| `shortcode` | string | Echoes the input. |
+| `action`    | string | `"added"` or `"removed"` — which side of the toggle the server applied. |
+| `reactedAt` | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "shortcode": "thumbsup",
+  "action": "added",
+  "reactedAt": 1746518900000
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is required"`, `"shortcode is required"`, `"invalid reaction shortcode"` (format or unknown custom emoji), `"message not found"` (also returned when attempting to _add_ a reaction to a soft-deleted message), `"not subscribed to room"`, `"failed to toggle reaction"`.
+
+##### Triggered events — success path
+
+**`chat.room.{roomID}.event`** — `MessageReactedEvent`. Recipients: every client subscribed to the room (channel rooms); for DMs, each member receives the event on `chat.user.{account}.event.room`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"message_reacted"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomId` | string |       |
+| `messageReacted.messageId` | string | The reacted-to message's ID. |
+| `messageReacted.shortcode` | string | The bare reaction shortcode. |
+| `messageReacted.action`    | string | `"added"` or `"removed"`. |
+| `messageReacted.actor`     | object | The user whose toggle produced this event. Fields: `userId`, `account`, `siteId`, `engName`, `chineseName`. |
+| `messageReacted.reactedAt` | string (RFC 3339) | Domain time of the toggle. |
+| `messageReacted.updatedAt` | string (RFC 3339) | Mirrors `reactedAt`. |
+
+```json
+{
+  "type": "message_reacted",
+  "timestamp": 1746518900123,
+  "roomId": "01970a4f8c2d7c9aQ",
+  "messageReacted": {
+    "messageId": "01970a4f8c2d7c9aQRST",
+    "shortcode": "thumbsup",
+    "action": "added",
+    "actor": {
+      "userId": "u-alice",
+      "account": "alice",
+      "siteId": "site-a",
+      "engName": "Alice"
+    },
+    "reactedAt": "2026-05-06T11:28:20Z",
+    "updatedAt": "2026-05-06T11:28:20Z"
+  }
+}
+```
+
+**`chat.user.{account}.notification`** — `NotificationEvent` with `type: "reaction"`. Recipients: the message author only, and only when the toggle is an `"added"` action and the actor is not the author. The notification carries the same `reactionDelta` as the canonical event so the client can render which emoji was added and by whom.
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 #### Get Thread Messages
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread`

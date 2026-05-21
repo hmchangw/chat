@@ -914,6 +914,129 @@ func TestHandleDeleted_MissingUpdatedAt_ReturnsError(t *testing.T) {
 	assert.Empty(t, pub.records)
 }
 
+func TestHandleReacted_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	reactedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventReacted,
+		SiteID:    "site-a",
+		Timestamp: reactedAt.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-bob",
+			UserAccount: "bob",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:   &reactedAt,
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor:     model.Participant{UserID: "u-alice", Account: "alice", EngName: "Alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.RoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessageReacted, roomEvt.Type)
+	assert.Equal(t, roomID, roomEvt.RoomID)
+	require.NotNil(t, roomEvt.MessageReacted)
+	assert.Equal(t, "msg-1", roomEvt.MessageReacted.MessageID)
+	assert.Equal(t, "thumbsup", roomEvt.MessageReacted.Shortcode)
+	assert.Equal(t, "added", roomEvt.MessageReacted.Action)
+	assert.Equal(t, "alice", roomEvt.MessageReacted.Actor.Account)
+	assert.True(t, roomEvt.MessageReacted.ReactedAt.Equal(reactedAt))
+	assert.True(t, roomEvt.MessageReacted.UpdatedAt.Equal(reactedAt))
+	// Reactions never carry encrypted content — payload is metadata only.
+	assert.Nil(t, roomEvt.MessageEdited)
+	assert.Nil(t, roomEvt.MessageDeleted)
+}
+
+func TestHandleReacted_DMFanOut(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-r1"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	reactedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventReacted,
+		SiteID:    "site-a",
+		Timestamp: reactedAt.UnixMilli(),
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserID: "u-bob", UserAccount: "bob",
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt: &reactedAt,
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "tada",
+			Action:    "added",
+			Actor:     model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2, "DM: one event per non-bot account")
+	subjects := []string{pub.records[0].subject, pub.records[1].subject}
+	assert.ElementsMatch(t,
+		[]string{subject.UserRoomEvent("alice"), subject.UserRoomEvent("bob")},
+		subjects,
+	)
+}
+
+func TestHandleReacted_MissingDelta_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event:   model.EventReacted,
+		Message: model.Message{ID: "msg-1", RoomID: "r1"},
+		// ReactionDelta intentionally nil
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err = h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing ReactionDelta")
+	assert.Empty(t, pub.records)
+}
+
 func TestHandleUpdated_DMRoom_FansOutToBothMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)

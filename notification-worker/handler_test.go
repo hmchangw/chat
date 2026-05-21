@@ -192,3 +192,115 @@ func TestHandleMessage_InvalidJSON(t *testing.T) {
 		t.Error("expected error for invalid JSON, got nil")
 	}
 }
+
+func TestHandleMessage_Reaction_Added_NotifiesAuthorOnly(t *testing.T) {
+	lookup := &stubMemberLookup{}
+	pub := &mockPublisher{}
+	h := NewHandler(lookup, pub)
+
+	evt := model.MessageEvent{
+		Event:  model.EventReacted,
+		SiteID: "site-a",
+		Message: model.Message{
+			ID:          "m1",
+			RoomID:      "room-1",
+			UserID:      "bob",
+			UserAccount: "account-bob",
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor:     model.Participant{UserID: "alice", Account: "account-alice", EngName: "Alice"},
+		},
+	}
+	data, _ := json.Marshal(evt)
+	if err := h.HandleMessage(context.Background(), data); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	records := pub.getRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 reaction notification, got %d", len(records))
+	}
+	if records[0].subject != "chat.user.account-bob.notification" {
+		t.Errorf("notification subject = %q, want chat.user.account-bob.notification", records[0].subject)
+	}
+	var notif model.NotificationEvent
+	if err := json.Unmarshal(records[0].data, &notif); err != nil {
+		t.Fatalf("unmarshal notification: %v", err)
+	}
+	if notif.Type != "reaction" {
+		t.Errorf("notification Type = %q, want reaction", notif.Type)
+	}
+	if notif.ReactionDelta == nil {
+		t.Fatal("notification ReactionDelta is nil")
+	}
+	if notif.ReactionDelta.Shortcode != "thumbsup" {
+		t.Errorf("ReactionDelta.Shortcode = %q, want thumbsup", notif.ReactionDelta.Shortcode)
+	}
+	if notif.ReactionDelta.Action != "added" {
+		t.Errorf("ReactionDelta.Action = %q, want added", notif.ReactionDelta.Action)
+	}
+}
+
+func TestHandleMessage_Reaction_Removed_NoNotification(t *testing.T) {
+	pub := &mockPublisher{}
+	h := NewHandler(&stubMemberLookup{}, pub)
+
+	evt := model.MessageEvent{
+		Event: model.EventReacted,
+		Message: model.Message{
+			RoomID: "room-1", UserID: "bob", UserAccount: "account-bob",
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup", Action: "removed",
+			Actor: model.Participant{UserID: "alice", Account: "account-alice"},
+		},
+	}
+	data, _ := json.Marshal(evt)
+	if err := h.HandleMessage(context.Background(), data); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if got := len(pub.getRecords()); got != 0 {
+		t.Errorf("expected 0 notifications on removed reaction, got %d", got)
+	}
+}
+
+func TestHandleMessage_Reaction_SelfReact_NoNotification(t *testing.T) {
+	pub := &mockPublisher{}
+	h := NewHandler(&stubMemberLookup{}, pub)
+
+	evt := model.MessageEvent{
+		Event: model.EventReacted,
+		Message: model.Message{
+			RoomID: "room-1", UserID: "alice", UserAccount: "account-alice",
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup", Action: "added",
+			Actor: model.Participant{UserID: "alice", Account: "account-alice"},
+		},
+	}
+	data, _ := json.Marshal(evt)
+	if err := h.HandleMessage(context.Background(), data); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if got := len(pub.getRecords()); got != 0 {
+		t.Errorf("expected 0 notifications on self-react, got %d", got)
+	}
+}
+
+func TestHandleMessage_Reaction_MissingDelta_Error(t *testing.T) {
+	pub := &mockPublisher{}
+	h := NewHandler(&stubMemberLookup{}, pub)
+
+	evt := model.MessageEvent{
+		Event:   model.EventReacted,
+		Message: model.Message{RoomID: "room-1", UserAccount: "account-bob"},
+		// ReactionDelta intentionally nil
+	}
+	data, _ := json.Marshal(evt)
+	err := h.HandleMessage(context.Background(), data)
+	if err == nil {
+		t.Error("expected error for EventReacted with nil ReactionDelta")
+	}
+}

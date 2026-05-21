@@ -59,6 +59,8 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return h.handleUpdated(ctx, &evt)
 	case model.EventDeleted:
 		return h.handleDeleted(ctx, &evt)
+	case model.EventReacted:
+		return h.handleReacted(ctx, &evt)
 	default:
 		slog.Warn("unknown message event type, skipping", "event", evt.Event, "messageID", evt.Message.ID)
 		return nil
@@ -123,7 +125,7 @@ func (h *Handler) handleUpdated(ctx context.Context, evt *model.MessageEvent) er
 		EditedBy:   msg.UserAccount,
 		EditedAt:   *msg.EditedAt,
 		UpdatedAt:  *msg.UpdatedAt,
-	}, nil)
+	}, nil, nil)
 }
 
 func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) error {
@@ -136,17 +138,36 @@ func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) er
 		DeletedBy: msg.UserAccount,
 		DeletedAt: *msg.UpdatedAt,
 		UpdatedAt: *msg.UpdatedAt,
+	}, nil)
+}
+
+func (h *Handler) handleReacted(ctx context.Context, evt *model.MessageEvent) error {
+	msg := evt.Message
+	if evt.ReactionDelta == nil {
+		return fmt.Errorf("reacted event missing ReactionDelta: %s", msg.ID)
+	}
+	if msg.UpdatedAt == nil {
+		return fmt.Errorf("reacted event missing UpdatedAt: %s", msg.ID)
+	}
+	return h.fanOutMutationEvent(ctx, evt, model.RoomEventMessageReacted, nil, nil, &model.MessageReactedPayload{
+		MessageID: msg.ID,
+		Shortcode: evt.ReactionDelta.Shortcode,
+		Action:    evt.ReactionDelta.Action,
+		Actor:     evt.ReactionDelta.Actor,
+		ReactedAt: *msg.UpdatedAt,
+		UpdatedAt: *msg.UpdatedAt,
 	})
 }
 
 // fanOutMutationEvent routes the live event by room type, same as the create
-// path. Exactly one of edited/deleted is non-nil.
+// path. Exactly one of edited/deleted/reacted is non-nil.
 func (h *Handler) fanOutMutationEvent(
 	ctx context.Context,
 	evt *model.MessageEvent,
 	roomEvtType model.RoomEventType,
 	edited *model.MessageEditedPayload,
 	deleted *model.MessageDeletedPayload,
+	reacted *model.MessageReactedPayload,
 ) error {
 	msg := evt.Message
 
@@ -162,6 +183,7 @@ func (h *Handler) fanOutMutationEvent(
 		SiteID:         room.SiteID,
 		MessageEdited:  edited,
 		MessageDeleted: deleted,
+		MessageReacted: reacted,
 	}
 
 	switch room.Type {
