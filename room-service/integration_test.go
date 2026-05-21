@@ -1535,3 +1535,40 @@ func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rows)
 }
+
+func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
+	db := testutil.MongoDB(t, "room-svc-mute")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	sub := &model.Subscription{
+		ID:                   idgen.GenerateUUIDv7(),
+		User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:               "r1",
+		RoomType:             model.RoomTypeChannel,
+		SiteID:               "site-a",
+		Roles:                []model.Role{model.RoleMember},
+		JoinedAt:             time.Now().UTC(),
+		DisableNotifications: false,
+	}
+	require.NoError(t, store.CreateSubscription(ctx, sub))
+
+	// First toggle: false → true.
+	got, err := store.ToggleSubscriptionMute(ctx, "r1", "alice")
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	// Verify persisted.
+	persisted, err := store.GetSubscription(ctx, "alice", "r1")
+	require.NoError(t, err)
+	assert.True(t, persisted.DisableNotifications)
+
+	// Second toggle: true → false.
+	got, err = store.ToggleSubscriptionMute(ctx, "r1", "alice")
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// Not-found case.
+	_, err = store.ToggleSubscriptionMute(ctx, "missing", "alice")
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}

@@ -1310,15 +1310,15 @@ func TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration(t *testing.T) {
 		Accounts: []string{"alice", "helper.bot"},
 	})
 	mustInsertSub(t, db, &model.Subscription{
-		ID:                  "existing-human-sub",
-		User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:              roomID,
-		SiteID:              "site-A",
-		RoomType:            model.RoomTypeBotDM,
-		Name:                "helper.bot",
-		IsSubscribed:        false,
+		ID:                   "existing-human-sub",
+		User:                 model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:               roomID,
+		SiteID:               "site-A",
+		RoomType:             model.RoomTypeBotDM,
+		Name:                 "helper.bot",
+		IsSubscribed:         false,
 		DisableNotifications: true,
-		JoinedAt:            oldJoinedAt,
+		JoinedAt:             oldJoinedAt,
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID:           "existing-bot-sub",
@@ -1390,14 +1390,14 @@ func TestProcessCreateRoom_DM_DoesNotUpsert_Integration(t *testing.T) {
 		Accounts: []string{"alice", "bob"},
 	})
 	mustInsertSub(t, db, &model.Subscription{
-		ID:                  "existing-alice-sub",
-		User:                model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:              roomID,
-		SiteID:              "site-A",
-		RoomType:            model.RoomTypeDM,
-		Name:                "bob",
+		ID:                   "existing-alice-sub",
+		User:                 model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:               roomID,
+		SiteID:               "site-A",
+		RoomType:             model.RoomTypeDM,
+		Name:                 "bob",
 		DisableNotifications: true,
-		JoinedAt:            oldJoinedAt,
+		JoinedAt:             oldJoinedAt,
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID:       "existing-bob-sub",

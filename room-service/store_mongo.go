@@ -678,6 +678,37 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 	return nil
 }
 
+// ToggleSubscriptionMute atomically flips disableNotifications via an
+// aggregation-pipeline FindOneAndUpdate. The $ifNull guard treats a missing
+// field as false so legacy documents toggle to true on the first call.
+// Returns the post-flip value, or model.ErrSubscriptionNotFound when no
+// subscription matches.
+func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (bool, error) {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	update := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: bson.M{
+			"disableNotifications": bson.M{"$not": bson.M{
+				"$ifNull": bson.A{"$disableNotifications", false},
+			}},
+		}}},
+	}
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.After).
+		SetProjection(bson.M{"_id": 0, "disableNotifications": 1})
+
+	var result struct {
+		DisableNotifications bool `bson:"disableNotifications"`
+	}
+	err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return false, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, err)
+	}
+	return result.DisableNotifications, nil
+}
+
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
 // user document exists.
 func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string, error) {
