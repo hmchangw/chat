@@ -67,6 +67,8 @@ func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccou
 						bson.M{"$eq": bson.A{"$u.account", "$$userAccount"}},
 					}}}},
 					bson.M{"$limit": 1},
+					// Outer stage only checks emptiness — drop the full sub doc.
+					bson.M{"$project": bson.M{"_id": 1}},
 				},
 				"as": "existingSub",
 			}},
@@ -110,6 +112,8 @@ func GetCapacityCheckPipeline(orgIDs, directAccounts []string, roomID, excludeAc
 					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
 				}}}},
 				bson.M{"$limit": 1},
+				// Outer stage only checks emptiness — drop the full sub doc.
+				bson.M{"$project": bson.M{"_id": 1}},
 			},
 			"as": "_sub",
 		}},
@@ -134,6 +138,8 @@ func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, exc
 					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
 				}}}},
 				bson.M{"$limit": 1},
+				// Outer $project only reads $size of _sub — drop everything else.
+				bson.M{"$project": bson.M{"_id": 1}},
 			},
 			"as": "_sub",
 		}},
@@ -147,6 +153,8 @@ func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, exc
 					bson.M{"$eq": bson.A{"$member.id", "$$uid"}},
 				}}}},
 				bson.M{"$limit": 1},
+				// Same rationale as the _sub lookup above.
+				bson.M{"$project": bson.M{"_id": 1}},
 			},
 			"as": "_irm",
 		}},
