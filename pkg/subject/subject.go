@@ -161,6 +161,10 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
+func MsgCanonicalReacted(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.reacted", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
@@ -321,6 +325,12 @@ func MsgEditPattern(siteID string) string {
 // The {account} and {roomID} placeholders are extracted by natsrouter.
 func MsgDeletePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.delete", siteID)
+}
+
+// MsgReactPattern is the natsrouter pattern for toggling a reaction on a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgReactPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.react", siteID)
 }
 
 func MsgThreadPattern(siteID string) string {
