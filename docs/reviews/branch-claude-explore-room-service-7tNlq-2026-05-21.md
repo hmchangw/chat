@@ -328,3 +328,24 @@ No critical issues. The new store operations hit covered indexes on the room-ser
 PASS with two `medium` findings — both about the `GetUserSiteID` failure path (missing span attrs is a minor instrumentation gap; the Warn-vs-Error level is a meaningful operator-signal choice). Everything else — slog-only JSON, `wrappedCtx` propagation, no secret leakage, inbox-worker error pattern — is correct.
 
 ---
+
+## Prioritized action list
+
+Top items across all chapters, ordered by severity then impact-divided-by-effort.
+
+| # | Severity | Action | Location | Why |
+|---|---|---|---|---|
+| 1 | **high** | Eliminate the TOCTOU between `GetSubscription` and `ToggleSubscriptionMute`. Widen the atomic toggle's projection to include `u.id`/`u.account` and drop the pre-fetch — OR add a comment acknowledging the race. | `room-service/handler.go:1245-1264` | Doubles per-request DB latency; subscription state in the constructed `SubscriptionUpdateEvent` can be stale on a concurrent writer |
+| 2 | **medium** | Add `"invalid mute-toggle"` to the `sanitizeError` safe-prefix list (or introduce an `errInvalidMuteToggleSubject` sentinel). | `room-service/helper.go:202` + `handler.go:1242` | API contract documented in this same PR is broken at delivery — clients get `"internal error"` instead of the documented message |
+| 3 | **medium** | Resolve the `GetUserSiteID` failure asymmetry. Either propagate as hard error (match `handleMessageRead`) or escalate the log to `slog.Error` and add a doc note about the intentional degraded mode. | `room-service/handler.go:1280-1283` | Reachable cross-site data divergence on a transient DB hiccup; surfaced by 3 independent reviewers |
+| 4 | **medium** | Update `SubscriptionUpdateEvent.Action` comment to include `"role_updated"` and `"mute_toggled"`. | `pkg/model/event.go:35` | Client-facing contract drift; comment is the API doc for that field |
+| 5 | **medium** | Add the missing `(roomId, u.account)` index assertion to `inbox-worker`'s `ensureIndexes` (mirror room-service's `CreateOne` call). | `inbox-worker/main.go` `ensureIndexes` | Fresh-DB deployments degrade `UpdateSubscriptionMute` to a full collection scan |
+| 6 | **medium** | Add test for cross-site `publishToStream` failure in `handleMuteToggle`. | `room-service/handler_test.go` | The hard-error path post-DB-write is currently untested; pattern exists in `TestHandler_MessageRead_CrossSite_PublishFailureAborts` |
+| 7 | **medium** | Add test for `GetSubscription` generic error arm. | `room-service/handler_test.go` | Branch coverage for `handleMuteToggle` is ~70-75%; below the 90% target |
+| 8 | **medium** | Add `span.SetAttributes(room.id, site.id)` to `handleMuteToggle`. | `room-service/handler.go:1239` | Two-line trace-correlation win |
+| 9 | **medium** | Split `inbox-worker`'s inline `mongoInboxStore` from `main.go` into `store.go` + `store_mongo.go` (follow-up PR). | `inbox-worker/main.go:39-195` | Pre-existing tech debt this PR adds to; per-service layout convention |
+| 10 | **low** | Remove the redundant `ErrSubscriptionNotFound` re-check after `ToggleSubscriptionMute`. | `room-service/handler.go:1253-1258` | Dead code that misleads about atomicity guarantees |
+
+---
+
+**End of report.**
