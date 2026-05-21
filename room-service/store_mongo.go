@@ -756,16 +756,19 @@ func (s *MongoStore) FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([
 	if err := s.users.Distinct(ctx, "deptId", bson.M{"deptId": bson.M{"$in": orgIDs}}).Decode(&deptIDs); err != nil {
 		return nil, fmt.Errorf("distinct deptIds for org validation: %w", err)
 	}
-	found := make(map[string]struct{}, len(sectIDs)+len(deptIDs))
+	out := make([]string, 0, len(sectIDs)+len(deptIDs))
+	seen := make(map[string]struct{}, len(sectIDs)+len(deptIDs))
 	for _, id := range sectIDs {
-		found[id] = struct{}{}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
 	}
 	for _, id := range deptIDs {
-		found[id] = struct{}{}
-	}
-	out := make([]string, 0, len(found))
-	for id := range found {
-		out = append(out, id)
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
 	}
 	return out, nil
 }
