@@ -354,6 +354,19 @@ func MessageReadReceiptWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.read-receipt", siteID)
 }
 
+// MessageThreadRead returns the concrete subject for the per-user
+// mark-thread-as-read RPC. Pair with MessageThreadReadWildcard for
+// room-service's QueueSubscribe.
+func MessageThreadRead(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.message.thread.read", account, roomID, siteID)
+}
+
+// MessageThreadReadWildcard is the per-site subscription pattern for
+// the mark-thread-as-read RPC.
+func MessageThreadReadWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.thread.read", siteID)
+}
+
 // RoomCreate: client→room-service create subject; siteID is the requester's site.
 func RoomCreate(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.create", account, siteID)
