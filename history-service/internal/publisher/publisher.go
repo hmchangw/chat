@@ -1,7 +1,5 @@
 // Package publisher adapts a JetStream context to the service.EventPublisher
-// interface. Splitting it out of cmd/main.go keeps the wiring code thin and
-// matches the per-collaborator structure used elsewhere (cassrepo,
-// mongorepo).
+// interface.
 package publisher
 
 import (
@@ -20,7 +18,6 @@ type Publisher struct {
 	js oteljetstream.JetStream
 }
 
-// New constructs a Publisher backed by the given JetStream context.
 func New(js oteljetstream.JetStream) *Publisher {
 	return &Publisher{js: js}
 }

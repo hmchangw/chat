@@ -1135,10 +1135,9 @@ func TestHistoryService_EditMessage_PublishFailureDoesNotFailRPC(t *testing.T) {
 	require.NotNil(t, resp)
 }
 
-// TestHistoryService_EditMessage_PassesDedupMessageID asserts the canonical
-// publish carries a Nats-Msg-Id of the form "{messageID}:updated:{editedAtMs}".
-// The op suffix avoids collision with gatekeeper's `.created` key (bare
-// messageID); the editedAtMs suffix gives each distinct edit its own key.
+// Nats-Msg-Id shape "{messageID}:updated:{editedAtMs}": the op suffix avoids
+// collision with gatekeeper's `.created` key (bare messageID); editedAtMs
+// gives each distinct edit its own key.
 func TestHistoryService_EditMessage_PassesDedupMessageID(t *testing.T) {
 	svc, msgs, subs, pub, _ := newService(t)
 	c := testContext()
@@ -1395,10 +1394,9 @@ func TestHistoryService_DeleteMessage_PublishesCanonicalDeletedEvent(t *testing.
 	require.NotNil(t, resp)
 }
 
-// TestHistoryService_DeleteMessage_PassesDedupMessageID asserts the canonical
-// publish carries a Nats-Msg-Id of the form "{messageID}:deleted". Distinct
-// from the `.created` msgID for the same message so the JetStream dedup
-// window doesn't collapse a delete against an earlier create.
+// Nats-Msg-Id shape "{messageID}:deleted": distinct from the `.created` key
+// so the JetStream dedup window doesn't collapse a delete against an earlier
+// create.
 func TestHistoryService_DeleteMessage_PassesDedupMessageID(t *testing.T) {
 	svc, msgs, subs, pub, _ := newService(t)
 	c := testContext()

@@ -1,6 +1,3 @@
-// canonical_dedup.go: Nats-Msg-Id composition for the MESSAGES_CANONICAL stream.
-// Sits alongside OutboxDedupID — same concern (JetStream dedup keys), shared
-// home so the convention is discoverable and uniform across publishers.
 package natsutil
 
 import (
@@ -9,19 +6,16 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-// CanonicalDedupID returns the Nats-Msg-Id for a canonical message event
-// published to the MESSAGES_CANONICAL stream. The key shape depends on the
-// event type:
+// CanonicalDedupID returns the Nats-Msg-Id for a MessageEvent published to
+// MESSAGES_CANONICAL. The op suffix keeps created/updated/deleted keyspaces
+// disjoint within the stream's dedup window; the editedAtMs suffix on
+// updated gives each distinct edit its own key.
 //
-//   - EventCreated:  "<messageID>"
-//   - EventUpdated:  "<messageID>:updated:<editedAtUnixMilli>"
-//   - EventDeleted:  "<messageID>:deleted"
+//   - EventCreated: "<messageID>"
+//   - EventUpdated: "<messageID>:updated:<editedAtUnixMilli>"
+//   - EventDeleted: "<messageID>:deleted"
 //
-// The op suffix keeps the three keyspaces disjoint so a .updated/.deleted
-// publish can't collide with the same message's earlier .created within the
-// stream's dedup window. For .updated the editedAtMs suffix gives each
-// distinct edit its own key. Panics on unsupported event types — adding a new
-// canonical event type must update this helper.
+// Panics on unsupported event types.
 func CanonicalDedupID(evt *model.MessageEvent) string {
 	switch evt.Event {
 	case model.EventCreated:
