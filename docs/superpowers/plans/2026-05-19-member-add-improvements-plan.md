@@ -1988,7 +1988,7 @@ All green. The new DM-concurrent-create test passes; nothing else regresses.
 `chat-frontend/src/api/types.ts:110` — remove `createdBy: string` from the `Room` interface.
 `chat-frontend/src/api/fetchSidebarBuckets/index.ts:135` — remove the `createdBy: '',` line.
 
-Frontend grep: use `grep -nE '\bcreatedBy\b' chat-frontend/src/` (word-boundary — DO NOT match `createdByAccount`, which is a separate field on the create-request schema).
+Frontend grep: `grep -rnE '\b(createdBy|createdByAccount)\b' chat-frontend/src/`. Neither field exists in the live request shape (the creator's account is taken from the NATS subject); both names should be stripped wherever they appear.
 
 Run:
 
@@ -2000,13 +2000,13 @@ All green.
 
 - [ ] **Step 12: Update `docs/client-api.md`**
 
-Use a word-boundary search to avoid stripping `createdByAccount`:
+Strip both names from the doc — neither corresponds to a real field on the wire:
 
 ```
-grep -nE '\bcreatedBy\b' docs/client-api.md
+grep -rnE '\b(createdBy|createdByAccount)\b' docs/client-api.md
 ```
 
-Then remove each matched line. Expected matches (from spec-time reconnaissance, verify yourself before editing): the `| createdBy | ... |` rows and `"createdBy": "..."` lines in example JSON blocks. **Confirm `createdByAccount` lines are NOT in the match list.** Re-grep after editing to confirm zero `createdBy` matches remain and `createdByAccount` lines are intact.
+Expected matches: the `| createdBy | ... |` / `| createdByAccount | ... |` rows in the Room and Create Room schema tables and the `"createdBy": "..."` / `"createdByAccount": "..."` lines in example JSON blocks. Remove every match; the creator's account is derived server-side from the `{account}` segment of the create-room subject.
 
 - [ ] **Step 13: Commit**
 
