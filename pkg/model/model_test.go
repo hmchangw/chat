@@ -887,6 +887,16 @@ func TestRoomKeyEventJSON(t *testing.T) {
 	}
 }
 
+func TestRoomKeyEnsureRequestJSON(t *testing.T) {
+	src := model.RoomKeyEnsureRequest{RoomID: "room-abc"}
+	roundTrip(t, &src, &model.RoomKeyEnsureRequest{})
+}
+
+func TestRoomKeyEnsureResponseJSON(t *testing.T) {
+	src := model.RoomKeyEnsureResponse{RoomID: "room-abc", Version: 3}
+	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
+}
+
 func TestNotificationEventJSON(t *testing.T) {
 	src := model.NotificationEvent{
 		Type:   "new_message",
