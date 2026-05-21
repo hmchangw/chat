@@ -34,8 +34,8 @@ type ESConfig struct {
 }
 
 type ValkeyConfig struct {
-	Addr     string `env:"ADDR,required"`
-	Password string `env:"PASSWORD" envDefault:""`
+	Addrs    []string `env:"ADDRS,required" envSeparator:","`
+	Password string   `env:"PASSWORD"        envDefault:""`
 }
 
 type NATSConfig struct {
@@ -61,7 +61,7 @@ type UsersAPIConfig struct {
 
 // SearchConfig groups the request-shape knobs — size caps, cache TTL, and
 // the recent-window filter bound. All optional with sane defaults so a
-// minimal environment only needs URL + NATS_URL + VALKEY_ADDR.
+// minimal environment only needs URL + NATS_URL + VALKEY_ADDRS.
 type SearchConfig struct {
 	DocCounts               int           `env:"DOC_COUNTS"                 envDefault:"25"`
 	MaxDocCounts            int           `env:"MAX_DOC_COUNTS"             envDefault:"100"`
@@ -125,7 +125,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	valkey, err := valkeyutil.Connect(ctx, cfg.Valkey.Addr, cfg.Valkey.Password)
+	valkey, err := valkeyutil.ConnectCluster(ctx, cfg.Valkey.Addrs, cfg.Valkey.Password)
 	if err != nil {
 		slog.Error("valkey connect failed", "error", err)
 		os.Exit(1)
@@ -202,7 +202,7 @@ func main() {
 	slog.Info("search-service running",
 		"site", cfg.SiteID,
 		"backend", cfg.ES.Backend,
-		"valkey", cfg.Valkey.Addr,
+		"valkey", cfg.Valkey.Addrs,
 	)
 
 	shutdown.Wait(ctx, 25*time.Second,

@@ -41,13 +41,6 @@ type RoomKeyStore interface {
 	Close() error
 }
 
-// Config holds Valkey connection and grace period configuration, parsed via caarlos0/env.
-type Config struct {
-	Addr        string        `env:"VALKEY_ADDR,required"`
-	Password    string        `env:"VALKEY_PASSWORD" envDefault:""`
-	GracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-}
-
 // hashCommander is a minimal internal interface over the Valkey hash commands used by valkeyStore.
 // Unexported and command-specific so unit tests can inject a fake without a live Valkey connection.
 type hashCommander interface {
@@ -76,13 +69,15 @@ func (s *valkeyStore) Close() error {
 }
 
 // roomkey returns the Valkey hash key for a room's current key pair.
+// The {roomID} hash tag ensures both roomkey and roomprevkey for the same
+// room always land on the same cluster slot, which is required for the Lua
+// rotate script and DEL pipeline to execute without a CROSSSLOT error.
 func roomkey(roomID string) string {
-	return "room:" + roomID + ":key"
+	return "room:{" + roomID + "}:key"
 }
 
-// roomprevkey returns the Valkey hash key for a room's previous key pair.
 func roomprevkey(roomID string) string {
-	return "room:" + roomID + ":key:prev"
+	return "room:{" + roomID + "}:key:prev"
 }
 
 // Set stores pair in Valkey as a hash with no TTL, assigning version 0.

@@ -31,18 +31,18 @@ import (
 )
 
 type config struct {
-	NatsURL        string `env:"NATS_URL,required"`
-	NatsCredsFile  string `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID         string `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI       string `env:"MONGO_URI,required"`
-	MongoDB        string `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername  string `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword  string `env:"MONGO_PASSWORD"  envDefault:""`
-	MetricsAddr    string `env:"METRICS_ADDR"    envDefault:":9099"`
-	MaxInFlight    int    `env:"MAX_IN_FLIGHT"   envDefault:"200"`
-	PProfAddr      string `env:"PPROF_ADDR"      envDefault:""`
-	ValkeyAddr     string `env:"VALKEY_ADDR,required"`
-	ValkeyPassword string `env:"VALKEY_PASSWORD"     envDefault:""`
+	NatsURL        string   `env:"NATS_URL,required"`
+	NatsCredsFile  string   `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID         string   `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI       string   `env:"MONGO_URI,required"`
+	MongoDB        string   `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername  string   `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword  string   `env:"MONGO_PASSWORD"  envDefault:""`
+	MetricsAddr    string   `env:"METRICS_ADDR"    envDefault:":9099"`
+	MaxInFlight    int      `env:"MAX_IN_FLIGHT"   envDefault:"200"`
+	PProfAddr      string   `env:"PPROF_ADDR"      envDefault:""`
+	ValkeyAddrs    []string `env:"VALKEY_ADDRS,required" envSeparator:","`
+	ValkeyPassword string   `env:"VALKEY_PASSWORD"       envDefault:""`
 }
 
 func main() {
@@ -669,8 +669,8 @@ func connectStores(ctx context.Context, cfg *config) (*mongo.Database, roomkeyst
 }
 
 func connectKeyStore(cfg *config) (roomkeystore.RoomKeyStore, error) {
-	return roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr:        cfg.ValkeyAddr,
+	return roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
+		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
 		GracePeriod: time.Hour,
 	})

@@ -1162,23 +1162,9 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
 }
 
-// setupValkey returns a key store backed by the process-shared Valkey,
-// with FLUSHDB on cleanup so sibling tests start clean. Satisfies both
-// roomkeystore.RoomKeyStore (for seeding) and the local Get-only subset
-// accepted by NewHandler.
 func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
 	t.Helper()
-	cfg := roomkeystore.Config{
-		Addr:        testutil.Valkey(t),
-		GracePeriod: time.Hour,
-	}
-	ks, err := roomkeystore.NewValkeyStore(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = ks.Close()
-		testutil.FlushValkey(t)
-	})
-	return ks
+	return roomkeystore.NewValkeyClusterStoreFromClient(testutil.StartValkeyCluster(t), time.Hour)
 }
 
 // startEmbeddedNATS starts an in-process NATS server and returns a connected client.

@@ -30,7 +30,7 @@ type config struct {
 	MaxRoomSize       int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
 	MaxBatchSize      int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
 	MemberListTimeout time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
-	ValkeyAddr        string          `env:"VALKEY_ADDR,required"`
+	ValkeyAddrs       []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
 	ValkeyPassword    string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
 	CassandraHosts    string          `env:"CASSANDRA_HOSTS,required"`
@@ -80,8 +80,8 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	keyStore, err := roomkeystore.NewValkeyStore(roomkeystore.Config{
-		Addr:        cfg.ValkeyAddr,
+	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
+		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
 		GracePeriod: cfg.ValkeyGracePeriod,
 	})

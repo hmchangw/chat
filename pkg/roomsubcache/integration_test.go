@@ -1,6 +1,6 @@
 //go:build integration
 
-package roomsubcache
+package roomsubcache_test
 
 import (
 	"context"
@@ -10,29 +10,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/roomsubcache"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
-// setupValkey returns a client connected to the process-shared Valkey,
-// with FLUSHDB on cleanup so sibling tests start clean.
 func setupValkey(t *testing.T) valkeyutil.Client {
 	t.Helper()
-	client, err := valkeyutil.Connect(context.Background(), testutil.Valkey(t), "")
-	require.NoError(t, err, "connect valkey")
-	t.Cleanup(func() {
-		testutil.FlushValkey(t)
-		_ = client.Close()
-	})
-	return client
+	return valkeyutil.WrapClusterClient(testutil.StartValkeyCluster(t))
 }
 
 func TestValkeyCache_Integration_SetGetInvalidate(t *testing.T) {
 	client := setupValkey(t)
-	cache := NewValkeyCache(client)
+	cache := roomsubcache.NewValkeyCache(client)
 	ctx := context.Background()
 
-	members := []Member{
+	members := []roomsubcache.Member{
 		{ID: "u1", Account: "alice"},
 		{ID: "u2", Account: "bob"},
 	}
@@ -50,7 +43,7 @@ func TestValkeyCache_Integration_SetGetInvalidate(t *testing.T) {
 
 func TestValkeyCache_Integration_MissOnUnsetRoom(t *testing.T) {
 	client := setupValkey(t)
-	cache := NewValkeyCache(client)
+	cache := roomsubcache.NewValkeyCache(client)
 	ctx := context.Background()
 
 	_, err := cache.Get(ctx, "never-set")
@@ -59,10 +52,10 @@ func TestValkeyCache_Integration_MissOnUnsetRoom(t *testing.T) {
 
 func TestValkeyCache_Integration_TTLExpires(t *testing.T) {
 	client := setupValkey(t)
-	cache := NewValkeyCache(client)
+	cache := roomsubcache.NewValkeyCache(client)
 	ctx := context.Background()
 
-	require.NoError(t, cache.Set(ctx, "room-ttl", []Member{{ID: "u1", Account: "a"}}, time.Second))
+	require.NoError(t, cache.Set(ctx, "room-ttl", []roomsubcache.Member{{ID: "u1", Account: "a"}}, time.Second))
 
 	// Poll for expiry — Valkey honors TTL with sub-second granularity but
 	// asserting on a precise deadline is flaky. Allow up to 5s.
@@ -80,10 +73,10 @@ func TestValkeyCache_Integration_TTLExpires(t *testing.T) {
 
 func TestValkeyCache_Integration_EmptyListIsCacheHit(t *testing.T) {
 	client := setupValkey(t)
-	cache := NewValkeyCache(client)
+	cache := roomsubcache.NewValkeyCache(client)
 	ctx := context.Background()
 
-	require.NoError(t, cache.Set(ctx, "empty-room", []Member{}, time.Minute))
+	require.NoError(t, cache.Set(ctx, "empty-room", []roomsubcache.Member{}, time.Minute))
 
 	got, err := cache.Get(ctx, "empty-room")
 	require.NoError(t, err)

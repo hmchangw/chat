@@ -5,102 +5,79 @@ package testutil
 import (
 	"context"
 	"fmt"
-	"os"
-	"sync"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
-	goredis "github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
-var (
-	valkeyOnce      sync.Once
-	valkeyContainer testcontainers.Container
-	valkeyAddr      string
-	valkeyInitErr   error
-)
+// StartValkeyCluster starts a single-node cluster-mode Valkey container,
+// assigns all 16384 hash slots to that node, and returns a connected
+// *redis.ClusterClient. The ClusterSlots override routes traffic to the
+// externally-mapped address rather than the internal 127.0.0.1:6379 that
+// the node announces to peers — required for testcontainer port mapping.
+// The container and client are terminated/closed via t.Cleanup.
+func StartValkeyCluster(t *testing.T) *redis.ClusterClient {
+	t.Helper()
+	ctx := context.Background()
 
-func ensureValkey() (string, error) {
-	valkeyOnce.Do(func() {
-		ctx := context.Background()
-		container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Image:        testimages.Valkey,
-				ExposedPorts: []string{"6379/tcp"},
-				Cmd:          []string{"valkey-server", "--save", "", "--appendonly", "no"},
-				WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(30 * time.Second),
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        testimages.Valkey,
+			ExposedPorts: []string{"6379/tcp"},
+			Cmd: []string{
+				"valkey-server",
+				"--cluster-enabled", "yes",
+				"--cluster-config-file", "nodes.conf",
+				"--cluster-node-timeout", "5000",
+				"--save", "",
 			},
-			Started: true,
-		})
-		if err != nil {
-			valkeyInitErr = fmt.Errorf("start valkey: %w", err)
-			return
-		}
-		host, err := container.Host(ctx)
-		if err != nil {
-			_ = container.Terminate(ctx)
-			valkeyInitErr = fmt.Errorf("get valkey host: %w", err)
-			return
-		}
-		port, err := container.MappedPort(ctx, "6379")
-		if err != nil {
-			_ = container.Terminate(ctx)
-			valkeyInitErr = fmt.Errorf("get valkey port: %w", err)
-			return
-		}
-		valkeyContainer = container
-		valkeyAddr = fmt.Sprintf("%s:%s", host, port.Port())
+			WaitingFor: wait.ForLog("Ready to accept connections"),
+		},
+		Started: true,
 	})
-	return valkeyAddr, valkeyInitErr
-}
+	require.NoError(t, err, "start valkey cluster container")
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
-// Valkey returns the addr (host:port) of a process-shared Valkey container.
-// Persistence is disabled (--save '' --appendonly no) so the data plane
-// is purely in-memory; callers wanting per-test isolation should namespace
-// their keys or FLUSHDB on cleanup.
-func Valkey(t *testing.T) string {
-	t.Helper()
-	addr, err := ensureValkey()
-	if err != nil {
-		t.Fatalf("testutil.Valkey: %v", err)
-	}
-	return addr
-}
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	port, err := container.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+	addr := fmt.Sprintf("%s:%s", host, port.Port())
 
-// EnsureValkey starts the shared Valkey container if not already started.
-// No-t variant intended for TestMain pre-warming.
-func EnsureValkey() error { _, err := ensureValkey(); return err }
+	exitCode, _, err := container.Exec(ctx, []string{"valkey-cli", "CLUSTER", "ADDSLOTSRANGE", "0", "16383"})
+	require.NoError(t, err, "exec cluster addslotsrange")
+	require.Equal(t, 0, exitCode, "cluster addslotsrange must exit 0")
 
-// FlushValkey wipes the shared Valkey keyspace. Intended for per-test
-// cleanup so sibling tests don't see each other's keys. Uses a raw
-// go-redis client so we don't need to expose FLUSHDB on the production
-// valkeyutil interface. Failure is a test failure — leftover state would
-// silently break the next sibling test.
-func FlushValkey(t *testing.T) {
-	t.Helper()
-	addr := Valkey(t)
-	rc := goredis.NewClient(&goredis.Options{Addr: addr})
-	defer func() { _ = rc.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	require.Eventually(t, func() bool {
+		_, out, execErr := container.Exec(ctx, []string{"valkey-cli", "CLUSTER", "INFO"})
+		if execErr != nil {
+			return false
+		}
+		buf, _ := io.ReadAll(out)
+		return strings.Contains(string(buf), "cluster_state:ok")
+	}, 10*time.Second, 100*time.Millisecond, "cluster must reach ok state")
+
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{addr},
+		ClusterSlots: func(_ context.Context) ([]redis.ClusterSlot, error) {
+			return []redis.ClusterSlot{
+				{Start: 0, End: 16383, Nodes: []redis.ClusterNode{{Addr: addr}}},
+			}, nil
+		},
+	})
+	t.Cleanup(func() { _ = c.Close() })
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := rc.FlushDB(ctx).Err(); err != nil {
-		t.Errorf("flush shared valkey: %v", err)
-	}
-}
+	require.NoError(t, c.Ping(pingCtx).Err(), "ping valkey cluster")
 
-// TerminateValkey stops the shared Valkey container. Best-effort, idempotent.
-func TerminateValkey() {
-	if valkeyContainer == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := valkeyContainer.Terminate(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "terminate shared valkey: %v\n", err)
-	}
-	valkeyContainer = nil
+	return c
 }
