@@ -233,3 +233,39 @@ All other new functions are unexported. TDD compliance: PASS at the unit level, 
 No `critical` or `high` findings. Mocks are fresh, TDD discipline followed at the exported-function level, all tests pass with `-race`. The two `medium` gaps (`GetSubscription` generic error + `publishToStream` cross-site failure) bring effective handler branch coverage below the 90% target — each is a small mechanical addition following patterns already in the same file.
 
 ---
+
+## Bug & security
+
+### SAST results
+
+| Tool | Result |
+|---|---|
+| gosec | PASS — no medium+ findings introduced |
+| govulncheck | PASS — no vulnerabilities |
+| semgrep | NOT RUN — binary not installed in env; environment limitation, not a code defect |
+
+### Findings
+
+**[medium]** `room-service/handler.go:1242` + `room-service/helper.go:202` — Invalid-subject error string silently downgraded to `"internal error"` by `sanitizeError`. `handleMuteToggle` produces `fmt.Errorf("invalid mute-toggle subject: %s", subj)`. The `sanitizeError` safe-prefix list in `helper.go:202` includes `"invalid request"` and similar prefixes but NOT `"invalid mute-toggle"`. Result: NATS replies to clients carry `"internal error"` instead of the documented `"invalid mute-toggle subject: …"`. The unit tests at `handler_test.go:3340` call `handleMuteToggle` directly and never pass through `sanitizeError`, so the mismatch is not caught. `docs/client-api.md` explicitly documents `"invalid mute-toggle subject: …"` as the error clients should see — **the API contract is broken at delivery**. Fix: add `"invalid mute-toggle"` to the safe-prefix list, OR introduce an `errInvalidMuteToggleSubject` sentinel and wire it through.
+
+**[medium]** `room-service/handler.go:1280-1283` — `GetUserSiteID` failure silently returns `"ok"` and skips the cross-site outbox publish. If `GetUserSiteID` errors on a transient or permanent DB issue, the local toggle has already committed but the federation event is dropped. The client considers the RPC successful; the user's home site never receives the mute update and permanently disagrees with the room site. Inconsistent with the analogous `handleMessageRead` (`handler.go:1010`) which propagates the `GetUserSiteID` error. (Surfaced independently by 3 reviewers — room-service generalist, Go expert, and this lens.)
+
+**[low]** `room-service/handler.go:1253-1258` — Redundant `ErrSubscriptionNotFound` guard after the prior membership check at line 1245. `GetSubscription` already gatekeeps; the second check is unreachable in practice. Dead code that misleads readers about atomicity guarantees.
+
+**[nitpick]** `room-service/handler.go:1230` — `slog.Error("mute toggle failed", "error", err, "subject", m.Msg.Subject)` logs the raw NATS subject on every error, including malformed-subject errors. The subject encodes `account` and `roomID` (identifiers, not secrets); not a CLAUDE.md violation but worth noting that this handler logs an extra `subject` field that peer handlers do not.
+
+**[nitpick]** `inbox-worker/main.go:121` — `UpdateSubscriptionMute` discards `*UpdateResult` (assigns to `_`). Intentional per the design spec — missing-subscription is a silent no-op for federation races. Worth a one-line inline comment justifying the discard.
+
+### Specific trust assertions
+
+1. **Membership check before toggle** ✓ — `handleMuteToggle` calls `store.GetSubscription` at line 1245 before `ToggleSubscriptionMute`. A non-member cannot mutate state at the store layer.
+2. **Mongo filter injection safety** ✓ — Filter `{"roomId": roomID, "u.account": account}` uses strings parsed by `subject.ParseUserRoomSubject` from the NATS subject. Subject tokens are dot-delimited and the parser rejects malformed inputs before reaching the store. No object-injection surface.
+3. **Outbox payload trust** ✓ — `inbox-worker`'s `UpdateSubscriptionMute` receives `disableNotifications` from the outbox payload, which originates from `room-service`'s atomic Mongo write result (`ToggleSubscriptionMute` post-flip value) — not from client input. The trust assumption is that federated JetStream delivery from a peer site is trustworthy, consistent with the rest of `inbox-worker`.
+4. **OutboxEvent assembly** ✓ — `Type`, `SiteID`, `DestSiteID`, `Payload`, `Timestamp` are all set in `handleMuteToggle` at lines 1294-1300. No fields missing.
+5. **`sanitizeError` leak surface** ✓ — Internal Mongo error strings (e.g. `"db down"`) are caught by the catch-all `"internal error"` fallback at `helper.go:209`, but the same fallback ALSO catches the legitimate `"invalid mute-toggle subject"` string — see medium-1 above.
+
+### Verdict
+
+No security vulnerabilities, no race conditions, no injection surface. Two `medium` correctness bugs: the `sanitizeError` gap breaks the documented API contract on a single error path, and the `GetUserSiteID` silent-success creates reachable cross-site data divergence inconsistent with the rest of the codebase. Both should be fixed before merge.
+
+---
