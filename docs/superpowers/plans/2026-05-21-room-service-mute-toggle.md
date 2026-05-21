@@ -19,19 +19,7 @@ For `mute.toggle`:
 - **User's home-site copy needs cross-site sync.** When the client later refetches subscriptions via `user-service` (which reads from the user's home-site Mongo), it would see the stale value and the UI toggle would visibly snap back. The outbox event closes this gap.
 - **Notification dispatch in `notification-worker` does not yet check `DisableNotifications`.** The current `handler.go` blindly publishes to every subscriber except the sender. Wiring the mute into the notification check is **out of scope for this plan** — call it out in the docs update so the next PR owns that follow-up.
 
-**Production-data migration of the field rename** (`disableNotification` → `disableNotifications` in existing Mongo docs) is an **ops task** outside this plan. Existing botDM resubscribe behaviour writes `disableNotifications: false` on resubscribe upsert (post-rename), so new docs are clean; pre-existing docs with `disableNotification: true` would silently read as `false` under the new code. Ops needs to run:
-
-```js
-db.subscriptions.updateMany(
-  { disableNotification: { $exists: true } },
-  [
-    { $set: { disableNotifications: "$disableNotification" } },
-    { $unset: "disableNotification" }
-  ]
-)
-```
-
-Note this in the PR description; do **not** add a code-side migration.
+No prod or staging environment exists yet, so the field rename does not need a Mongo data migration — local dev databases get recreated on every `docker-compose up`. If/when an environment with persisted data appears, ops can run a one-shot `updateMany` to copy `disableNotification` → `disableNotifications`; the plan itself contains no migration step.
 
 ---
 
