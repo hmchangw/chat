@@ -225,7 +225,7 @@ The created `Room` object.
 | `name`              | string  |       |
 | `type`              | string  | Same values as request. |
 | `siteId`            | string  |       |
-| `userCount`         | number  | `1` immediately after creation (the owner). |
+| `userCount`         | number  | `1` for owner-only creates; higher when initial members were enrolled at creation via `users` / `orgs` / `channels`. |
 | `lastMsgAt`         | string  | Optional. RFC 3339 timestamp; absent until first message. |
 | `lastMsgId`         | string  | Empty until first message. |
 | `lastMentionAllAt`  | string  | Optional. RFC 3339 timestamp. |
