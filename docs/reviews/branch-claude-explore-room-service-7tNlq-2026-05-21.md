@@ -129,3 +129,24 @@ Three targeted tests cover the happy path (`TestHandler_SubscriptionMuteToggled`
 The diff is mechanically correct and safe to merge. Actionable items: a one-line clarity comment on the intentional `MatchedCount` omission (`main.go:128`), and a follow-up PR to split the inline store from `main.go` into `store.go`/`store_mongo.go` before the next handler grows it further.
 
 ---
+
+## Service: room-worker
+
+Scope: Test-only change — `room-worker/integration_test.go` had 8 occurrences of `DisableNotification` renamed to `DisableNotifications` (matching the field-rename in `pkg/model/subscription.go:42`). No production code in `room-worker/` was touched.
+
+### Findings
+
+All 8 occurrences are renamed and semantically equivalent:
+- Struct-literal fixtures (lines ~1320, ~1397): the boolean values are preserved.
+- `assert.True` calls and their message strings (lines ~1350, ~1352, ~1432, ~1434): same field, new name.
+- Doc-comment references (lines ~1288, ~1365): updated for accuracy.
+
+The cosmetic alignment adjustment (one space → two spaces after the colon to maintain column alignment with surrounding fields) is consistent with the rest of the struct literal.
+
+The test continues to use `testutil.MongoDB`, `testutil.NATS`, and a `TestMain` with `testutil.RunTests(m)` — consistent with CLAUDE.md Section 4. No inline container usage was introduced. Scope discipline maintained.
+
+### Verdict
+
+No findings. The change is a correct, complete mechanical rename with no omissions or semantic drift — approved as-is.
+
+---
