@@ -6,7 +6,7 @@
 //	go run chat-frontend/scripts/gen-crypto-fixtures.go > chat-frontend/test/fixtures/encrypted-message.json
 //
 // Commit the output. The fixture exists to lock the cross-language wire
-// format: any change in the server encoder's HKDF parameters or wire
+// format: any change in the server encoder's AES-GCM parameters or wire
 // shape MUST update this fixture together with the corresponding TS
 // decoder.
 package main

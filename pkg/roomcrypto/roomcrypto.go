@@ -4,12 +4,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"sync"
-
-	"golang.org/x/crypto/hkdf"
 )
 
 // EncryptedMessage holds the output of Encode.
@@ -25,9 +22,9 @@ type EncryptedMessage struct {
 	Ciphertext         []byte `json:"ciphertext"`                   // encrypted content + 16-byte AES-GCM tag
 }
 
-// Encoder holds the per-(roomId, version) AES-GCM cipher cache for the
-// HKDF-only encryption scheme. Construct one per process and share it
-// across goroutines.
+// Encoder holds the per-(roomId, version) AES-GCM cipher cache. The room
+// secret is used directly as an AES-256 key. Construct one per process and
+// share it across goroutines.
 type Encoder struct {
 	mu    sync.RWMutex
 	cache map[encoderCacheKey]cipher.AEAD
@@ -70,10 +67,9 @@ func NewEncoder(opts ...EncoderOption) *Encoder {
 	return e
 }
 
-// Encode encrypts content under the AES key derived from roomPrivateKey
-// for the given (roomID, version). The derived AES-GCM cipher is cached
-// on the Encoder; repeat calls for the same (roomID, version) skip key
-// derivation.
+// Encode encrypts content using the AES-256-GCM cipher keyed directly from
+// roomPrivateKey for the given (roomID, version). The cipher is cached on the
+// Encoder; repeat calls for the same (roomID, version) reuse the cached entry.
 func (e *Encoder) Encode(roomID, content string, roomPrivateKey []byte, version int) (*EncryptedMessage, error) {
 	gcm, err := e.aeadFor(roomID, roomPrivateKey, version)
 	if err != nil {
@@ -107,12 +103,7 @@ func (e *Encoder) aeadFor(roomID string, roomPrivateKey []byte, version int) (ci
 		return gcm, nil
 	}
 
-	aesKey := make([]byte, 32)
-	r := hkdf.New(sha256.New, roomPrivateKey, nil, []byte("room-message-encryption-v2"))
-	if _, err := io.ReadFull(r, aesKey); err != nil {
-		return nil, fmt.Errorf("deriving AES key: %w", err)
-	}
-	block, err := aes.NewCipher(aesKey)
+	block, err := aes.NewCipher(roomPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating AES cipher: %w", err)
 	}

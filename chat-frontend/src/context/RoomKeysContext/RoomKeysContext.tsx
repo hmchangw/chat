@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useReducer, useRef }
 import { fetchRoomKeysBootstrap, subscribeToRoomKeyEvents } from '@/api'
 import type { Nats, RoomKeyEvent } from '@/api'
 import { useNats } from '@/context/NatsContext'
-import { b64decode, deriveAesKey, decryptRoomMessage } from '@/lib/roomcrypto'
+import { b64decode, importAesKey, decryptRoomMessage } from '@/lib/roomcrypto'
 import { bytesEqual, initialRoomKeysState, roomKeysReducer } from './reducer'
 
 type DecryptInput = {
@@ -36,7 +36,7 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
   // where the NATS handshake has populated user/request/etc.
   const nats = useNats() as unknown as Nats
 
-  // CryptoKey cache lives in a ref — derived lazily, not React state.
+  // CryptoKey cache lives in a ref — imported lazily, not React state.
   // Keyed by `${roomId}|${version}`.
   const aesKeyCacheRef = useRef<Map<string, Promise<CryptoKey>>>(new Map())
   const stateRef = useRef(state)
@@ -128,7 +128,7 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
     const cacheKey = `${roomId}|${version}`
     let pending = aesKeyCacheRef.current.get(cacheKey)
     if (!pending) {
-      pending = deriveAesKey(entry.privateKey)
+      pending = importAesKey(entry.privateKey)
       aesKeyCacheRef.current.set(cacheKey, pending)
     }
     try {

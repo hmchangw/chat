@@ -5,7 +5,7 @@ import { connect, type NatsConnection, type Msg } from "nats.ws";
 interface RoomKeyEvent {
   roomId: string;
   version: number;
-  privateKey: string; // base64-encoded 32-byte scalar (HKDF IKM)
+  privateKey: string; // base64-encoded 32-byte room secret, used directly as AES-256 key
 }
 
 interface EncryptedMessage {
@@ -14,7 +14,7 @@ interface EncryptedMessage {
   ciphertext: string; // base64-encoded ciphertext + 16-byte GCM tag
 }
 
-// ---- Decryption (matches pkg/roomcrypto HKDF-only scheme) ----
+// ---- Decryption (matches pkg/roomcrypto direct-import scheme) ----
 
 async function decryptMessage(
   encrypted: EncryptedMessage,
@@ -22,24 +22,10 @@ async function decryptMessage(
 ): Promise<string> {
   const privKeyBytes = Buffer.from(roomPrivateKeyB64, "base64");
 
-  // Import room private key as raw HKDF IKM.
-  const ikm = await crypto.subtle.importKey(
+  // Import room private key directly as AES-256-GCM key (no HKDF step).
+  const aesKey = await crypto.subtle.importKey(
     "raw",
     privKeyBytes,
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
-
-  // HKDF-SHA256: derive AES-256-GCM key directly from private key.
-  const aesKey = await crypto.subtle.deriveKey(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: new Uint8Array(0),
-      info: new TextEncoder().encode("room-message-encryption-v2"),
-    },
-    ikm,
     { name: "AES-GCM", length: 256 },
     false,
     ["decrypt"],

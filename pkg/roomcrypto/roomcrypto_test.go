@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/hkdf"
 )
 
 func TestEncryptedMessage_JSONRoundTrip(t *testing.T) {
@@ -154,13 +151,8 @@ func TestEncoder_Encode_RoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, msg)
 
-			// Re-derive the AES key with the same HKDF parameters and decrypt.
-			aesKey := make([]byte, 32)
-			r := hkdf.New(sha256.New, priv, nil, []byte("room-message-encryption-v2"))
-			_, err = io.ReadFull(r, aesKey)
-			require.NoError(t, err)
-
-			block, err := aes.NewCipher(aesKey)
+			// The AES key is the room private key directly.
+			block, err := aes.NewCipher(priv)
 			require.NoError(t, err)
 			gcm, err := cipher.NewGCM(block)
 			require.NoError(t, err)

@@ -1988,7 +1988,7 @@ Server-pushed events are delivered to clients on NATS subjects the client is alr
 
 ### 5.1 Room Encryption Keys
 
-Each room has a 32-byte secret generated server-side at create time. The secret is distributed to channel members and used as HKDF input keying material for the message-encryption scheme described below. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+Each room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
 
 #### Subject
 
@@ -2009,16 +2009,15 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 }
 ```
 
-`[]byte` fields marshal to standard base64 in JSON. The `privateKey` is the 32-byte room secret used as HKDF IKM; no public key field is transmitted.
+`[]byte` fields marshal to standard base64 in JSON. The `privateKey` is the 32-byte room secret used directly as the AES-256-GCM key; no public key field is transmitted.
 
 #### Client behavior
 
 1. On every `RoomKeyEvent`, store the key under `(roomId, version) → privateKey`.
 2. To decrypt an incoming `encryptedMessage` payload:
    - Look up `privateKey` for `(roomId, encryptedMessage.version)`.
-   - Derive the AES-256-GCM key:
-     `aesKey = HKDF-SHA256(privateKey, salt=empty, info="room-message-encryption-v2", length=32 bytes)`
-   - Decrypt: `AES-GCM-Decrypt(aesKey, nonce, ciphertext, aad=empty)`. The ciphertext already includes the 16-byte GCM tag at the end (Go `cipher.AEAD.Seal` format).
+   - Use the 32-byte `privateKey` directly as the AES-256-GCM key (no key derivation step).
+   - Decrypt: `AES-GCM-Decrypt(privateKey, nonce, ciphertext, aad=empty)`. The ciphertext already includes the 16-byte GCM tag at the end (Go `cipher.AEAD.Seal` format).
    - The plaintext is a UTF-8-encoded JSON `ClientMessage` (for `encryptedMessage`) or a UTF-8 string (for `messageEdited.encryptedNewContent`).
 3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 

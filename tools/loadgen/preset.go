@@ -144,8 +144,8 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 }
 
 // deterministicRoomKeyPair generates a 32-byte room secret from bytes drawn
-// from r. The secret is used as HKDF IKM by roomcrypto; no curve arithmetic
-// is needed. The name retains "KeyPair" for call-site compatibility.
+// from r. The secret is used directly as an AES-256-GCM key by roomcrypto; no
+// key derivation step is needed. The name retains "KeyPair" for call-site compatibility.
 func deterministicRoomKeyPair(r io.Reader) roomkeystore.RoomKeyPair {
 	buf := make([]byte, 32)
 	if _, err := io.ReadFull(r, buf); err != nil {

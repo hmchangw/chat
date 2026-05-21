@@ -16,7 +16,7 @@ func BenchmarkEncoder_Encode(b *testing.B) {
 	}
 	enc := NewEncoder()
 
-	// Warm the cache so we measure steady-state, not one-time HKDF.
+	// Warm the cache so we measure steady-state, not one-time AES cipher construction.
 	if _, err := enc.Encode("room-1", "warm", priv, 1); err != nil {
 		b.Fatal(err)
 	}

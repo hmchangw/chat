@@ -299,8 +299,8 @@ func TestRoomKeySender_TypeScriptClient(t *testing.T) {
 	// 7. Small delay to ensure key is received before the encrypted message.
 	time.Sleep(500 * time.Millisecond)
 
-	// 8. Encrypt a message using the HKDF-only Encoder (new scheme: derive AES
-	// key directly from room private key via HKDF-SHA-256).
+	// 8. Encrypt a message using the Encoder (room private key used directly
+	// as AES-256-GCM key — no key derivation step).
 	encoder := roomcrypto.NewEncoder()
 	encrypted, err := encoder.Encode(roomID, plaintext, privKeyBytes, version)
 	require.NoError(t, err, "encrypt message")

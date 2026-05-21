@@ -13,9 +13,9 @@ import (
 // ErrNoCurrentKey is returned by Rotate when no current key exists for the room.
 var ErrNoCurrentKey = errors.New("no current key")
 
-// RoomKeyPair holds the 32-byte room secret used as HKDF IKM by roomcrypto.
+// RoomKeyPair holds the 32-byte room secret used directly as the AES-256-GCM key by roomcrypto.
 type RoomKeyPair struct {
-	PrivateKey []byte // 32-byte secret; used as HKDF input keying material
+	PrivateKey []byte // 32-byte secret; used directly as AES-256-GCM key material
 }
 
 // VersionedKeyPair pairs a key pair with its store-assigned version number.
@@ -221,8 +221,8 @@ func (s *valkeyStore) Delete(ctx context.Context, roomID string) error {
 
 // decodeKeyPair decodes the base64-encoded priv field from a Valkey hash.
 // Old Valkey rows may still carry a "pub" field from the legacy P-256 keypair
-// layout; we ignore it. The room secret is the 32-byte private scalar used as
-// HKDF IKM.
+// layout; we ignore it. The room secret is the 32-byte uniform-random key used
+// directly as the AES-256-GCM key.
 func decodeKeyPair(fields map[string]string) (*RoomKeyPair, error) {
 	encodedPriv, ok := fields["priv"]
 	if !ok || encodedPriv == "" {

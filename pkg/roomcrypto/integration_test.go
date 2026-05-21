@@ -104,7 +104,7 @@ func TestEncode_TypeScriptDecrypt(t *testing.T) {
 			_, err := io.ReadFull(rand.Reader, roomPriv)
 			require.NoError(t, err)
 
-			// Encrypt with Go using the HKDF-only scheme.
+			// Encrypt with Go (room private key used directly as AES-256-GCM key).
 			enc := NewEncoder()
 			msg, err := enc.Encode("room-integration", tc.content, roomPriv, 1)
 			require.NoError(t, err)

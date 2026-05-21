@@ -1,5 +1,5 @@
 // decrypt.ts — invoked by integration_test.go via tsx
-import { createDecipheriv, hkdfSync } from 'node:crypto'
+import { createDecipheriv } from 'node:crypto'
 
 type Payload = {
   privateKey: string  // base64 32-byte raw private scalar (high-entropy IKM)
@@ -23,7 +23,7 @@ async function main() {
   const privateKey = Buffer.from(p.privateKey, 'base64')
   if (privateKey.length !== 32) throw new Error(`expected 32-byte private key, got ${privateKey.length}`)
 
-  const aesKey = Buffer.from(hkdfSync('sha256', privateKey, Buffer.alloc(0), 'room-message-encryption-v2', 32))
+  const aesKey = privateKey // already 32 bytes; used directly as AES-256 key
   const nonce = Buffer.from(p.message.nonce, 'base64')
   const ciphertext = Buffer.from(p.message.ciphertext, 'base64')
   if (nonce.length !== 12) throw new Error(`expected 12-byte nonce, got ${nonce.length}`)
