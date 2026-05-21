@@ -928,6 +928,21 @@ func TestMongoStore_FindExistingOrgIDs_Integration(t *testing.T) {
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{"dept-x"}, got)
 	})
+
+	t.Run("orgId matched by sect on one user and dept on another dedupes", func(t *testing.T) {
+		// Same orgID "foo" lands on both the sectId branch (via alice) and
+		// the deptId branch (via bob). The dedup contract says it shows up
+		// once in the result, not twice.
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "foo", DeptID: "dept-a"})
+		insertUser(t, db, model.User{ID: "u-bob", Account: "bob", SiteID: "site-a", SectID: "sect-b", DeptID: "foo"})
+
+		got, err := store.FindExistingOrgIDs(ctx, []string{"foo"})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"foo"}, got)
+		assert.Len(t, got, 1, "overlapping sect+dept match must appear exactly once")
+	})
 }
 
 func TestMongoStore_FindExistingAccounts_Integration(t *testing.T) {
