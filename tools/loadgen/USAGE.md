@@ -399,7 +399,7 @@ Rapidly creates and deletes subscriptions. Flags: `--churn-rate`.
 
 ### first-dm
 
-Provisions new DM room pairs end-to-end and measures four sub-stage lags (`room`, `subs`, `persist`, `e2e`) into `loadgen_first_dm_lag_seconds{stage}` by issuing real RoomCreate requests against room-service and publishing a synthetic DM canonical message per iteration. Pool exhausts cleanly after one pass; `--first-dm-recycle` wraps but logs a warning because recycled pairs hit room-service's existing-DM branch instead of the create path. Flags: `--first-dm-recycle`. Seed-time: `--include-first-dm-fixtures --first-dm-pairs=N`.
+Provisions new DM room pairs end-to-end and measures three sub-stage lags (`room`, `subs`, `e2e`) into `loadgen_first_dm_lag_seconds{stage}` by issuing real RoomCreate requests against room-service and publishing a synthetic DM canonical message per iteration. Pool exhausts cleanly after one pass; `--first-dm-recycle` wraps but logs a warning because recycled pairs hit room-service's existing-DM branch instead of the create path. Flags: `--first-dm-recycle`. Seed-time: `--include-first-dm-fixtures --first-dm-pairs=N`. (An earlier shape exposed a fourth `stage=persist` measurement keyed off `chat.msg.canonical.{siteID}.created`, but message-worker consumes that subject silently with no persist-complete event — the measurement was the loadgen→broker→loadgen self-loop, not Cassandra persistence, so it was removed.)
 
 Deep dive: [docs/scenarios/first-dm.md](docs/scenarios/first-dm.md).
 

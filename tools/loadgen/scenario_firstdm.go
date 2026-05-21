@@ -3,24 +3,30 @@
 // first-dm scenario (Phase 3 §3.13): exercises the "first-DM" path for user
 // pairs that have NEVER messaged each other. Each tick picks the next
 // (userA, userB) from a dedicated loadgen-firstdm-prefixed pool (provisioned
-// by `seed --include-first-dm-fixtures`) and observes four sub-lag stages
+// by `seed --include-first-dm-fixtures`) and observes three sub-lag stages
 // along the full create-room → send-message → broadcast path:
 //
-//	stage=room    — publishedAt → observer sees room-canonical create event
-//	stage=subs    — publishedAt → SubscriptionUpdate seen for BOTH users
-//	stage=persist — publishedAt → DM message persisted (canonical-created)
-//	stage=e2e     — publishedAt → userB sees the DM broadcast event
+//	stage=room — publishedAt → observer sees room-canonical create event
+//	stage=subs — publishedAt → SubscriptionUpdate seen for BOTH users
+//	stage=e2e  — publishedAt → userB sees the DM broadcast event
+//
+// (An earlier shape included a `stage=persist` measurement keyed off the
+// `chat.msg.canonical.{siteID}.created` subject. That stage was removed:
+// message-worker consumes the subject silently with no persist-complete
+// event, so the lag would have been the loadgen→broker→loadgen self-loop,
+// not Cassandra persistence. Measuring real Cassandra persistence requires
+// either a Cassandra poll — out of scope for a NATS-only scenario — or a
+// new persist-complete signal in message-worker which is a SUT change.)
 //
 // DM room IDs are computed via idgen.BuildDMRoomID(a, b) per CLAUDE.md §6.
 //
 // # Wire-up overview
 //
-// At Run start the scenario installs four wildcard observer subscriptions on
+// At Run start the scenario installs three wildcard observer subscriptions on
 // the shared Subscribers registry:
 //
 //	chat.room.canonical.{siteID}.create          → "room" stage
 //	chat.user.*.event.subscription.update        → "subs" stage (needs both)
-//	chat.msg.canonical.{siteID}.created          → "persist" stage
 //	chat.user.*.event.room                       → "e2e" stage
 //
 // Each tick:
@@ -28,7 +34,7 @@
 //  2. computes dmRoomID = idgen.BuildDMRoomID(userA.ID, userB.ID)
 //  3. issues a RoomCreate request from userA (Users=[userB])
 //  4. after the room is accepted, publishes the DM canonical message so the
-//     persist + e2e stages flow against the same publishedAt anchor
+//     e2e stages flow against the same publishedAt anchor
 //
 // All stage observations are then computed as (observedAt - publishedAt) and
 // observed into loadgen_first_dm_lag_seconds{stage}.
@@ -62,10 +68,9 @@ import (
 // Stage label constants for loadgen_first_dm_lag_seconds{stage}. Keep these
 // in sync with metrics.go's FirstDMLag docstring.
 const (
-	firstDMStageRoom    = "room"
-	firstDMStageSubs    = "subs"
-	firstDMStagePersist = "persist"
-	firstDMStageE2E     = "e2e"
+	firstDMStageRoom = "room"
+	firstDMStageSubs = "subs"
+	firstDMStageE2E  = "e2e"
 )
 
 // firstDMTrackerCap bounds the per-run tracker's in-flight pair set. At ~5k
@@ -228,8 +233,8 @@ func (g *firstDMGenerator) Run(ctx context.Context) error {
 }
 
 // sendFirstDM issues the RoomCreate request that triggers room-service's DM
-// creation path, then publishes the DM canonical message so the persist +
-// e2e stages fire under the same publishedAt anchor.
+// creation path, then publishes the DM canonical message so the e2e stage
+// fires under the same publishedAt anchor as the room/subs stages.
 //
 // Returns the per-stage lag map; stages that don't complete within
 // firstDMStageTimeout (e.g. SUT stalled, JetStream consumer wedged) are
@@ -257,7 +262,7 @@ func (g *firstDMGenerator) sendFirstDM(ctx context.Context, userA, userB string)
 	}
 
 	// Publish the DM canonical message. The canonical injection path is the
-	// most reliable way to drive the persist + e2e stages without depending
+	// most reliable way to drive the e2e stages without depending
 	// on the gatekeeper's subscription check (which would race the just-
 	// created subscription docs). first-dm is about measuring the room +
 	// subs provisioning + broadcast path, not the gatekeeper's auth check.
@@ -286,7 +291,7 @@ func (g *firstDMGenerator) sendFirstDM(ctx context.Context, userA, userB string)
 	return g.waitForStages(ctx, dmRoomID, publishedAt)
 }
 
-// waitForStages polls the tracker until all four stages are recorded or the
+// waitForStages polls the tracker until all three stages are recorded or the
 // per-iteration timeout elapses. Returns the lag map (possibly partial).
 func (g *firstDMGenerator) waitForStages(ctx context.Context, roomID string, publishedAt time.Time) map[string]time.Duration {
 	deadline := publishedAt.Add(firstDMStageTimeout)
@@ -298,7 +303,7 @@ func (g *firstDMGenerator) waitForStages(ctx context.Context, roomID string, pub
 	defer ticker.Stop()
 	for {
 		lags := g.collectLags(roomID)
-		if len(lags) == 4 {
+		if len(lags) == 3 {
 			return lags
 		}
 		if time.Now().After(deadline) {
@@ -371,7 +376,6 @@ type firstDMEntry struct {
 	roomAt      time.Time
 	subsA       time.Time
 	subsB       time.Time
-	persistAt   time.Time
 	e2eAt       time.Time
 }
 
@@ -424,7 +428,7 @@ func (t *firstDMTracker) RecordPublish(roomID, msgID, userA, userB string, publi
 }
 
 // RecordStage records the observed timestamp for one of
-// firstDMStageRoom / firstDMStagePersist / firstDMStageE2E. Unknown rooms
+// firstDMStageRoom / firstDMStageSubs / firstDMStageE2E. Unknown rooms
 // are silently ignored.
 //
 // The "subs" stage is recorded via RecordSubsFor instead because it
@@ -440,10 +444,6 @@ func (t *firstDMTracker) RecordStage(roomID, stage string, at time.Time) {
 	case firstDMStageRoom:
 		if entry.roomAt.IsZero() {
 			entry.roomAt = at
-		}
-	case firstDMStagePersist:
-		if entry.persistAt.IsZero() {
-			entry.persistAt = at
 		}
 	case firstDMStageE2E:
 		if entry.e2eAt.IsZero() {
@@ -498,9 +498,6 @@ func (t *firstDMTracker) Lags(roomID string) (map[string]time.Duration, bool) {
 			latest = entry.subsB
 		}
 		out[firstDMStageSubs] = latest.Sub(entry.publishedAt)
-	}
-	if !entry.persistAt.IsZero() {
-		out[firstDMStagePersist] = entry.persistAt.Sub(entry.publishedAt)
 	}
 	if !entry.e2eAt.IsZero() {
 		out[firstDMStageE2E] = entry.e2eAt.Sub(entry.publishedAt)
@@ -576,24 +573,6 @@ func parseSubscriptionUpdatePayload(data []byte) (roomID, account string, ok boo
 	return roomID, account, true
 }
 
-// parseMessageCanonicalPayload extracts (messageID, roomID) from a
-// MessageEvent payload on chat.msg.canonical.{siteID}.created.
-func parseMessageCanonicalPayload(data []byte) (msgID, roomID string, ok bool) {
-	var evt struct {
-		Message struct {
-			ID     string `json:"id"`
-			RoomID string `json:"roomId"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(data, &evt); err != nil {
-		return "", "", false
-	}
-	if evt.Message.ID == "" || evt.Message.RoomID == "" {
-		return "", "", false
-	}
-	return evt.Message.ID, evt.Message.RoomID, true
-}
-
 // parseUserRoomEventPayload extracts the message ID from a RoomEvent envelope
 // delivered on chat.user.{account}.event.room. Returns ok=false when the
 // payload is malformed or lacks a message ID.
@@ -662,15 +641,14 @@ func setupFirstDMSubscriptions(subs firstDMSubscriber, tracker *firstDMTracker, 
 	}); err != nil {
 		return fmt.Errorf("subscribe subscription-update: %w", err)
 	}
-	if err := subs.SubscribeData(subject.MsgCanonicalCreated(siteID), func(data []byte) {
-		_, roomID, ok := parseMessageCanonicalPayload(data)
-		if !ok {
-			return
-		}
-		tracker.RecordStage(roomID, firstDMStagePersist, time.Now())
-	}); err != nil {
-		return fmt.Errorf("subscribe msg-canonical: %w", err)
-	}
+	// Note: a previous implementation subscribed to
+	// `chat.msg.canonical.{siteID}.created` to measure a "persist" stage,
+	// but message-worker consumes that subject silently and emits no
+	// persist-complete event — the resulting lag was the loadgen→broker→
+	// loadgen self-loop, not Cassandra persistence. Removed in favour of
+	// the three stages that do have real signals: room / subs / e2e.
+	// (The published canonical event still happens, see publish loop below,
+	// because broadcast-worker needs it to drive the e2e stage.)
 	if err := subs.SubscribeData(subject.UserRoomEventWildcard(), func(data []byte) {
 		msgID, ok := parseUserRoomEventPayload(data)
 		if !ok {

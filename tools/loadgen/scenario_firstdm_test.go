@@ -113,7 +113,6 @@ func TestFirstDMTracker_RecordsAllStages(t *testing.T) {
 	tr.RecordStage(roomID, firstDMStageRoom, publishedAt.Add(5*time.Millisecond))
 	tr.RecordSubsFor(roomID, "userA", publishedAt.Add(10*time.Millisecond))
 	tr.RecordSubsFor(roomID, "userB", publishedAt.Add(15*time.Millisecond))
-	tr.RecordStage(roomID, firstDMStagePersist, publishedAt.Add(30*time.Millisecond))
 	tr.RecordStage(roomID, firstDMStageE2E, publishedAt.Add(50*time.Millisecond))
 
 	lags, ok := tr.Lags(roomID)
@@ -121,7 +120,6 @@ func TestFirstDMTracker_RecordsAllStages(t *testing.T) {
 	assert.InDelta(t, 5*time.Millisecond, lags[firstDMStageRoom], float64(2*time.Millisecond))
 	// subs is when BOTH users' subs arrive — i.e. max of the two.
 	assert.InDelta(t, 15*time.Millisecond, lags[firstDMStageSubs], float64(2*time.Millisecond))
-	assert.InDelta(t, 30*time.Millisecond, lags[firstDMStagePersist], float64(2*time.Millisecond))
 	assert.InDelta(t, 50*time.Millisecond, lags[firstDMStageE2E], float64(2*time.Millisecond))
 }
 
@@ -220,25 +218,6 @@ func TestParseSubscriptionUpdatePayload_ExtractsRoomAndAccount(t *testing.T) {
 	assert.Equal(t, "userA", account)
 }
 
-// TestParseMessageCanonicalPayload_ExtractsIDs verifies the canonical-created
-// observer parser extracts message ID + room ID for the persist stage.
-func TestParseMessageCanonicalPayload_ExtractsIDs(t *testing.T) {
-	evt := model.MessageEvent{
-		Event: model.EventCreated,
-		Message: model.Message{
-			ID:     "msg-id-1",
-			RoomID: "dm-roomid-1",
-		},
-	}
-	data, err := json.Marshal(evt)
-	require.NoError(t, err)
-
-	msgID, roomID, ok := parseMessageCanonicalPayload(data)
-	require.True(t, ok)
-	assert.Equal(t, "msg-id-1", msgID)
-	assert.Equal(t, "dm-roomid-1", roomID)
-}
-
 // TestParseUserRoomEventPayload_ExtractsMessageID verifies the broadcast
 // observer parser extracts the message ID from a RoomEvent envelope.
 func TestParseUserRoomEventPayload_ExtractsMessageID(t *testing.T) {
@@ -310,10 +289,9 @@ func TestFirstDMGenerator_ObservesAllStagesIntoHistogram(t *testing.T) {
 	gen := &firstDMGenerator{deps: deps, rf: &runFlags{Rate: 50, FirstDMRecycle: false}}
 	gen.sendOverride = func(_ context.Context, _, _ string) map[string]time.Duration {
 		return map[string]time.Duration{
-			firstDMStageRoom:    1 * time.Millisecond,
-			firstDMStageSubs:    5 * time.Millisecond,
-			firstDMStagePersist: 10 * time.Millisecond,
-			firstDMStageE2E:     20 * time.Millisecond,
+			firstDMStageRoom: 1 * time.Millisecond,
+			firstDMStageSubs: 5 * time.Millisecond,
+			firstDMStageE2E:  20 * time.Millisecond,
 		}
 	}
 
@@ -324,7 +302,7 @@ func TestFirstDMGenerator_ObservesAllStagesIntoHistogram(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, stage := range []string{
-		firstDMStageRoom, firstDMStageSubs, firstDMStagePersist, firstDMStageE2E,
+		firstDMStageRoom, firstDMStageSubs, firstDMStageE2E,
 	} {
 		count := histogramSampleCount(t, deps.metrics.FirstDMLag, prometheus.Labels{"stage": stage})
 		assert.Positive(t, count, "stage=%s histogram must record at least one observation", stage)
@@ -344,7 +322,7 @@ func TestBuildCreateDMRequestBody(t *testing.T) {
 }
 
 // TestSetupFirstDMSubscriptions_SubjectCoverage verifies the setup helper
-// registers subscriptions on the four observer subjects.
+// registers subscriptions on the three observer subjects.
 func TestSetupFirstDMSubscriptions_SubjectCoverage(t *testing.T) {
 	subs := newFakeFirstDMSubs()
 	tr := newFirstDMTracker()
@@ -353,8 +331,11 @@ func TestSetupFirstDMSubscriptions_SubjectCoverage(t *testing.T) {
 
 	assert.Contains(t, subs.subjects, subject.RoomCanonical("site-local", "create"))
 	assert.Contains(t, subs.subjects, "chat.user.*.event.subscription.update")
-	assert.Contains(t, subs.subjects, subject.MsgCanonicalCreated("site-local"))
 	assert.Contains(t, subs.subjects, subject.UserRoomEventWildcard())
+	assert.NotContains(t, subs.subjects, subject.MsgCanonicalCreated("site-local"),
+		"MsgCanonicalCreated subscription was removed — message-worker consumes that "+
+			"subject silently with no persist-complete event, so the stage was a "+
+			"loadgen→broker→loadgen self-loop")
 }
 
 // TestSetupFirstDMSubscriptions_HandlersDispatch invokes the captured handlers
@@ -383,13 +364,6 @@ func TestSetupFirstDMSubscriptions_HandlersDispatch(t *testing.T) {
 	subs.handlers["chat.user.*.event.subscription.update"](subAData)
 	subs.handlers["chat.user.*.event.subscription.update"](subBData)
 
-	msgEvt, err := json.Marshal(model.MessageEvent{
-		Event:   model.EventCreated,
-		Message: model.Message{ID: "msg-h1", RoomID: roomID},
-	})
-	require.NoError(t, err)
-	subs.handlers[subject.MsgCanonicalCreated("site-local")](msgEvt)
-
 	roomEvt, err := json.Marshal(map[string]any{
 		"type":    "newMessage",
 		"message": map[string]any{"id": "msg-h1"},
@@ -399,7 +373,7 @@ func TestSetupFirstDMSubscriptions_HandlersDispatch(t *testing.T) {
 
 	lags, ok := tr.Lags(roomID)
 	require.True(t, ok)
-	for _, st := range []string{firstDMStageRoom, firstDMStageSubs, firstDMStagePersist, firstDMStageE2E} {
+	for _, st := range []string{firstDMStageRoom, firstDMStageSubs, firstDMStageE2E} {
 		_, present := lags[st]
 		assert.True(t, present, "stage=%s should be recorded", st)
 	}
@@ -450,13 +424,12 @@ func TestSendFirstDM_HappyPath(t *testing.T) {
 	gen.tracker.RecordStage(dmRoomID, firstDMStageRoom, time.Now())
 	gen.tracker.RecordSubsFor(dmRoomID, userA, time.Now())
 	gen.tracker.RecordSubsFor(dmRoomID, userB, time.Now())
-	gen.tracker.RecordStage(dmRoomID, firstDMStagePersist, time.Now())
 	gen.tracker.RecordStage(dmRoomID, firstDMStageE2E, time.Now())
 
 	select {
 	case lags := <-done:
-		assert.Len(t, lags, 4, "all four stages should be present")
-		for _, st := range []string{firstDMStageRoom, firstDMStageSubs, firstDMStagePersist, firstDMStageE2E} {
+		assert.Len(t, lags, 3, "all three stages should be present")
+		for _, st := range []string{firstDMStageRoom, firstDMStageSubs, firstDMStageE2E} {
 			_, present := lags[st]
 			assert.True(t, present, "stage=%s must be in returned map", st)
 		}

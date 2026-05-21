@@ -100,7 +100,10 @@ type Metrics struct {
 	// Labels: "action" (join|leave), "outcome" (ok|error).
 	SubsChurnTotal *prometheus.CounterVec
 	// FirstDMLag records per-stage lag for the first-DM scenario (Phase 3 §3.13).
-	// Label "stage" is one of: room, subs, persist, e2e.
+	// Label "stage" is one of: room, subs, e2e. (An earlier shape included
+	// stage="persist" keyed off chat.msg.canonical.{siteID}.created, but
+	// message-worker consumes that subject silently with no persist-complete
+	// event, so the measurement was a self-loop and not informative.)
 	FirstDMLag *prometheus.HistogramVec
 	// AuthReconnect records the time from connection drop to M successful
 	// re-handshakes for the auth-reconnect-storm preset (Phase 3 §3.8).
@@ -282,7 +285,7 @@ func NewMetrics() *Metrics {
 		}, []string{"action", "outcome"}),
 		FirstDMLag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "loadgen_first_dm_lag_seconds",
-			Help:    "Per-stage lag for first-DM scenario (4 stages: room, subs, persist, e2e).",
+			Help:    "Per-stage lag for first-DM scenario (3 stages: room, subs, e2e).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}, []string{"stage"}),
 		AuthReconnect: prometheus.NewHistogram(prometheus.HistogramOpts{

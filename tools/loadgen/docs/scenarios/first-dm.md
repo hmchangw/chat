@@ -2,43 +2,45 @@
 
 ## Status
 
-**Implemented.** The scenario records four sub-stage lags into
-`loadgen_first_dm_lag_seconds{stage="room|subs|persist|e2e"}` by
-running a real RoomCreate-then-publish loop against room-service per
-user pair pulled from the seeded `loadgen-firstdm-` pool.
+**Implemented.** The scenario records three sub-stage lags into
+`loadgen_first_dm_lag_seconds{stage="room|subs|e2e"}` by running a real
+RoomCreate-then-publish loop against room-service per user pair pulled
+from the seeded `loadgen-firstdm-` pool. An earlier shape included a
+`stage=persist` measurement keyed off `chat.msg.canonical.{siteID}.created`,
+but that subject is consumed silently by message-worker (no
+persist-complete event), so the lag was the loadgen→broker→loadgen
+self-loop, not Cassandra persistence. Removed for honesty; measuring
+real Cassandra persistence would require a Cassandra poll or a new
+persist-complete signal on the SUT side, both out of scope here.
 
 ## What it measures
 
 End-to-end latency of the **first DM** path: the moment user A decides
 to message user B (no existing DM room between them) all the way
-through to that message being persisted on the canonical pipeline and
-visible to user B's clients.
+through to user B receiving the broadcast.
 
 Concretely, the scenario exercises room-service's
 `handleCreateRoomDMOrBotDM` path: when no room exists for the
 `(userA, userB)` tuple, `idgen.BuildDMRoomID(a, b)` is used to compute
 a deterministic DM room ID and the room + subscription documents are
-created on the fly. The scenario breaks the publish→persist→visible
-path into four sub-stages so operators can pinpoint whether room
-provisioning, subscription fan-out, canonical persistence, or
-broadcast delivery is the slow link.
+created on the fly. The scenario breaks the publish→broadcast path into
+three sub-stages so operators can pinpoint whether room provisioning,
+subscription fan-out, or broadcast delivery is the slow link.
 
-## Four lag stages
+## Three lag stages
 
-All four are measured against a single anchor `publishedAt` (set right
+All three are measured against a single anchor `publishedAt` (set right
 before issuing the RoomCreate request from userA):
 
-| Stage   | From → To                                                                  |
-|---------|----------------------------------------------------------------------------|
-| room    | publishedAt → observer sees the `chat.room.canonical.{siteID}.create` event |
-| subs    | publishedAt → `chat.user.*.event.subscription.update` seen for **both** userA and userB |
-| persist | publishedAt → DM `chat.msg.canonical.{siteID}.created` event for the synthesized message |
-| e2e     | publishedAt → `chat.user.{userB}.event.room` broadcast delivered            |
+| Stage | From → To                                                                  |
+|-------|----------------------------------------------------------------------------|
+| room  | publishedAt → observer sees the `chat.room.canonical.{siteID}.create` event |
+| subs  | publishedAt → `chat.user.*.event.subscription.update` seen for **both** userA and userB |
+| e2e   | publishedAt → `chat.user.{userB}.event.room` broadcast delivered            |
 
-The four stages map to `loadgen_first_dm_lag_seconds{stage}` histogram
-labels. e2e ≥ persist ≥ subs ≥ room in steady state. Per-stage
-isolation lets ops single out the slow link rather than reading a
-single end-to-end number.
+The three stages map to `loadgen_first_dm_lag_seconds{stage}` histogram
+labels. e2e ≥ subs ≥ room in steady state. Per-stage isolation lets ops
+single out the slow link rather than reading a single end-to-end number.
 
 ## Pipeline
 
@@ -46,19 +48,18 @@ single end-to-end number.
 loadgen.tick:
     pair = pool.Next()                          # (userA, userB) from fixture pool
     roomID = idgen.BuildDMRoomID(userA, userB)  # deterministic DM room ID
-    msgID = idgen.GenerateMessageID()           # message ID for persist/e2e correlation
+    msgID = idgen.GenerateMessageID()           # message ID for e2e correlation
     publishedAt = now()
     tracker.RecordPublish(roomID, msgID, userA, userB, publishedAt)
     Requester.Request(chat.user.{userA}.request.room.{siteID}.create, …)
     Publisher.Publish(chat.msg.canonical.{siteID}.created, MessageEvent{ID: msgID, RoomID: roomID, …})
 
 observer subscriptions (installed once at Run start):
-    chat.room.canonical.{siteID}.create     → record "room"  stage
-    chat.user.*.event.subscription.update   → record "subs"  stage (only after both userA and userB land)
-    chat.msg.canonical.{siteID}.created     → record "persist" stage
+    chat.room.canonical.{siteID}.create     → record "room" stage
+    chat.user.*.event.subscription.update   → record "subs" stage (only after both userA and userB land)
     chat.user.*.event.room                  → record "e2e"  stage (matched by msgID → roomID lookup)
 
-per iteration: poll the tracker until all four stages land or the
+per iteration: poll the tracker until all three stages land or the
 firstDMStageTimeout (10s) elapses; observe each present stage into
 loadgen_first_dm_lag_seconds{stage}.
 ```
@@ -135,7 +136,7 @@ gap in the histogram count, not silently lost.
 
 ## Metrics
 
-- `loadgen_first_dm_lag_seconds{stage="room|subs|persist|e2e"}` —
+- `loadgen_first_dm_lag_seconds{stage="room|subs|e2e"}` —
   per-stage histogram. Buckets: exponential from 1 ms (×2 factor, 14
   buckets → max ~16 s). Defined in
   [`metrics.go`](../../metrics.go) (search for `FirstDMLag`).
@@ -166,12 +167,14 @@ gap in the histogram count, not silently lost.
   with canonical inserts but falling behind on per-user
   `SubscriptionUpdate` fan-out. Look at room-worker's per-handler
   latency in the v2 services dashboard.
-- **stage=subs fast, stage=persist slow** — message-worker's
-  Cassandra path is the bottleneck. Cross-check Cassandra LWT
-  latency.
-- **stage=persist fast, stage=e2e slow** — broadcast-worker fan-out
-  to `UserRoomEvent` is the slow link. The DM fan-out path is per-
+- **stage=subs fast, stage=e2e slow** — broadcast-worker fan-out to
+  `UserRoomEvent` is the slow link. The DM fan-out path is per-
   recipient (see broadcast-worker/handler.go `publishDMEvents`).
+  (Note: a previous shape included a separate `stage=persist`
+  measurement here keyed off `chat.msg.canonical.{siteID}.created`,
+  but message-worker consumes that subject silently with no
+  persist-complete event, so the measurement was the
+  loadgen→broker→loadgen self-loop and not informative. Removed.)
 
 ## See also
 
