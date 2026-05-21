@@ -52,11 +52,10 @@ func TestCanonicalDedupID(t *testing.T) {
 	}
 }
 
-func TestCanonicalDedupID_UnsupportedEventPanics(t *testing.T) {
-	assert.Panics(t, func() {
-		natsutil.CanonicalDedupID(&model.MessageEvent{
-			Event:   model.EventType("bogus"),
-			Message: model.Message{ID: "msg-1"},
-		})
+func TestCanonicalDedupID_UnknownEventFallsBackToMessageID(t *testing.T) {
+	got := natsutil.CanonicalDedupID(&model.MessageEvent{
+		Event:   model.EventType("bogus"),
+		Message: model.Message{ID: "msg-1"},
 	})
+	assert.Equal(t, "msg-1", got)
 }
