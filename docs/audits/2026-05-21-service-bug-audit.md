@@ -12,7 +12,7 @@
 
 | # | Severity | Service | Category | Finding |
 |---|----------|---------|----------|---------|
-| 1 | **Critical** | auth-service | Security/Authorization | `chat.room.>` subscribe permission granted to every authenticated user — any user can intercept channel room events for rooms they aren't a member of |
+| 1 | **High** | auth-service | Security/Authorization | `chat.room.>` subscribe permission granted to every authenticated user — any user can intercept channel room events for rooms they aren't a member of. Downgraded from Critical: room-key encryption clears the message body when `ENCRYPTION_ENABLED=true`, but envelope metadata (room name, mentions, traffic timing) still leaks |
 | 2 | **High** | broadcast-worker | Correctness | `UpdateRoomLastMessage` is an unconditional `$set` with no timestamp guard — concurrent processing or redelivery can leave the room pointing at an older message |
 | 3 | **High** | inbox-worker | Correctness | `UpsertRoom` `$sets` the entire federated Room document — clobbers locally-owned fields (lastMsgAt, lastMsgId, userCount, appCount, minUserLastSeenAt) every time a `room_sync` arrives |
 | 4 | **High** | history-service | NATS / Correctness | Canonical `.updated` / `.deleted` events published via core NATS without `Nats-Msg-Id` — no JetStream dedup, so client edit retry produces duplicate fan-out events to every recipient |
@@ -37,7 +37,7 @@
 
 ## 1. auth-service
 
-### 1.1 `chat.room.>` subscribe permission granted to every authenticated user — **Critical**
+### 1.1 `chat.room.>` subscribe permission granted to every authenticated user — **High** (downgraded from Critical)
 
 `auth-service/handler.go:171-177` builds the NATS user JWT with these subscribe grants:
 
@@ -61,11 +61,28 @@ func RoomEvent(roomID string) string {
 return h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload)
 ```
 
-**Impact.** Any user with a valid SSO token can `nc.Subscribe("chat.room.>")` and receive every channel message broadcast on the NATS supercluster, regardless of subscription/membership. The application layer enforces membership for *posting* and for the `history-service` read path, but the live broadcast subject is not subject-ACL'd per room.
+**Impact.** Any user with a valid SSO token can `nc.Subscribe("chat.room.>")` and receive every channel-room event broadcast on the NATS supercluster, regardless of subscription/membership. The application layer enforces membership for *posting* and for the `history-service` read path, but the live broadcast subject is not subject-ACL'd per room.
 
-**How to trigger.** Authenticate as any user, then `Subscribe("chat.room.>")`. You will receive `chat.room.<any_room_id>.event` payloads for rooms you have never joined. DMs route through `chat.user.{account}.event.room` (subject 168) so are not exposed; channel messages are.
+**Mitigation in place (basis for downgrade from Critical to High).** When `ENCRYPTION_ENABLED=true` on broadcast-worker (`broadcast-worker/main.go:27-28`, `envDefault:"false"`), `publishChannelEvent` (`handler.go:245-268`) encrypts the message body with the room key and clears `evt.Message`, so an eavesdropper can't read the plaintext. Same for edits in `encryptEditedContent` (`handler.go:207-223`), which clears `edited.NewContent`.
 
-**Recommendation.** Either (a) move per-room delivery onto a user-scoped subject (`chat.user.{account}.event.room.<roomID>`) so the existing `chat.user.{account}.>` grant is sufficient, or (b) move to per-room JWT scoping driven by subscriptions (issue/renew JWTs on subscribe/unsubscribe). Option (a) is simpler and aligns with how DMs already work.
+**What still leaks even with encryption on.** The `RoomEvent` envelope built by `buildRoomEvent` (`handler.go:307-320`) and the mutation payloads (`MessageEditedPayload`, `MessageDeletedPayload`) carry these fields in cleartext:
+
+- `RoomID`, `SiteID`, `RoomType`, `UserCount` — full room enumeration and member-count inference
+- `RoomName` (`meta.Name`) — often as sensitive as content
+- `Timestamp`, `LastMsgAt`, `LastMsgID` — traffic analysis: which rooms are active, when, how often
+- `Mentions []Participant` (`handler.go:242`) and `MentionAll` — list of accounts being @-mentioned, set even when the body is encrypted
+- For `.edited`/`.deleted` events: `MessageID`, `EditedBy`/`DeletedBy` (the user account), `EditedAt`/`DeletedAt`/`UpdatedAt`
+
+DMs route through `chat.user.{account}.event.room` (subject 168) so are not exposed; only channel-room events are.
+
+**Conditions that re-elevate to Critical.**
+
+- `ENCRYPTION_ENABLED=false` anywhere in production: full plaintext disclosure resumes.
+- An attacker who only needs metadata (room directory, mention graph, traffic timing) gets it regardless of the encryption setting.
+
+**How to trigger.** Authenticate as any user, then `Subscribe("chat.room.>")`. You will receive `chat.room.<any_room_id>.event` payloads for every channel-room on the supercluster.
+
+**Recommendation.** Either (a) move per-room delivery onto a user-scoped subject (`chat.user.{account}.event.room.<roomID>`) so the existing `chat.user.{account}.>` grant is sufficient, or (b) move to per-room JWT scoping driven by subscriptions (issue/renew JWTs on subscribe/unsubscribe). Option (a) is simpler and aligns with how DMs already work. Encryption is not a substitute — it doesn't cover envelope metadata and depends on a config flag that defaults off.
 
 ### 1.2 `http.Server` missing `ReadHeaderTimeout` / `IdleTimeout` — **Low**
 
@@ -459,10 +476,10 @@ Five workers (`broadcast-worker`, `notification-worker`, `inbox-worker`, `messag
 
 Order by impact:
 
-1. **Fix #1 (auth-service `chat.room.>`).** This is a live authorization bypass. Highest priority regardless of severity perception.
-2. **Fix #3 (inbox-worker UpsertRoom clobber).** Latent data loss on every federation event; mitigated only by how rare `room_sync` is in practice.
-3. **Fix #2 (broadcast-worker UpdateRoomLastMessage guard) + #7 (fanOutKey error propagation).** Both compound under load.
-4. **Fix #4/#8.1 (history-service edit/delete dedup).** Switch publisher to JetStream `WithMsgID`.
-5. **Fix #5 (notification-worker event filter).** One-line filter; ships a quieter UX immediately.
+1. **Fix #3 (inbox-worker UpsertRoom clobber).** Latent data loss on every federation event; mitigated only by how rare `room_sync` is in practice.
+2. **Fix #2 (broadcast-worker UpdateRoomLastMessage guard) + #7 (fanOutKey error propagation).** Both compound under load.
+3. **Fix #4/#8.1 (history-service edit/delete dedup).** Switch publisher to JetStream `WithMsgID`.
+4. **Fix #5 (notification-worker event filter).** One-line filter; ships a quieter UX immediately.
+5. **Fix #1 (auth-service `chat.room.>`).** Real authorization weakness; encryption mitigates body disclosure but envelope metadata (room names, mentions, timing) still leaks. Promote back to top of list if `ENCRYPTION_ENABLED` is ever off in prod or if metadata leakage is in scope of your threat model.
 6. **Fix #9 (Nak-on-any-error) once and apply to all five workers using `room-worker`'s `errPermanent` pattern.**
 7. **Audit follow-up:** `mention.ResolveFromParsed` empty-map behavior (#C.4) and a deeper read of `pkg/roomkeysender` for the `keySender.Send` reliability story (relevant to #7).
