@@ -199,13 +199,19 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 | `createdByAccount` | string   | yes      | Account name of the creator. Used for the owner subscription. |
 | `siteId`           | string   | yes      | The site that will own this room. |
 | `members`          | string[] | no       | Required exactly **one** entry when `type=dm` (the other user's ID); ignored otherwise. |
+| `users`            | string[] | no       | `channel` only. Internal user IDs (or accounts) to enroll as members at creation time. Rejected with `"user not found"` if any entry has no matching user document. |
+| `orgs`             | string[] | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Rejected with `"invalid org"` if any entry matches zero users. |
+| `channels`         | array<ChannelRef> | no | `channel` only. Other channels whose members should be copied in. Each entry is `{ "roomId": string, "siteId": string }`. |
 
 ```json
 {
   "name": "engineering-announcements",
   "type": "channel",
   "createdByAccount": "alice",
-  "siteId": "siteA"
+  "siteId": "siteA",
+  "users": ["bob"],
+  "orgs": ["org-eng"],
+  "channels": []
 }
 ```
 
