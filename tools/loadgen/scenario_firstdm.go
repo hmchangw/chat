@@ -79,7 +79,7 @@ const (
 // before FIFO eviction kicks in.
 const firstDMTrackerCap = 16384
 
-// firstDMStageTimeout bounds how long sendFirstDM waits for the four stages
+// firstDMStageTimeout bounds how long sendFirstDM waits for the three stages
 // to land before giving up. Set to 10s so a stuck pipeline doesn't pile up
 // goroutines under sustained load — anything slower than this is a SUT
 // issue, not a measurement issue.
@@ -616,10 +616,13 @@ func (a *subscribersAdapter) SubscribeData(subj string, handler func([]byte)) er
 		}
 		handler(m.Data)
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("subscribe %s: %w", subj, err)
+	}
+	return nil
 }
 
-// setupFirstDMSubscriptions installs the four observer subscriptions on subs
+// setupFirstDMSubscriptions installs the three observer subscriptions on subs
 // that feed the per-stage events into tracker. siteID scopes the room-
 // canonical and message-canonical subjects to the local site.
 func setupFirstDMSubscriptions(subs firstDMSubscriber, tracker *firstDMTracker, siteID string) error {

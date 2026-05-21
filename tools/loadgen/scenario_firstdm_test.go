@@ -102,7 +102,7 @@ func TestAugmentWithFirstDMFixtures_PopulatesUserFields(t *testing.T) {
 }
 
 // TestFirstDMTracker_RecordsAllStages exercises the happy path: a tracker
-// receives the four stage observations in order and Lags returns the correct
+// receives the three stage observations in order and Lags returns the correct
 // per-stage durations against the recorded publishedAt anchor.
 func TestFirstDMTracker_RecordsAllStages(t *testing.T) {
 	tr := newFirstDMTracker()
@@ -391,8 +391,8 @@ func TestRunIteration_DMRoomIDMatchesIdgen(t *testing.T) {
 
 // TestSendFirstDM_HappyPath exercises the full sendFirstDM path with mocked
 // Requester + Publisher. Stage observations are fed into the tracker from a
-// helper goroutine to simulate the four observer callbacks; the test
-// verifies that the returned lag map covers all four stages and that the
+// helper goroutine to simulate the three observer callbacks; the test
+// verifies that the returned lag map covers all three stages and that the
 // Requester + Publisher were invoked with the expected subjects.
 func TestSendFirstDM_HappyPath(t *testing.T) {
 	deps := newFakeFirstDMDeps()
@@ -487,7 +487,7 @@ func TestWaitForStages_TimeoutReturnsPartial(t *testing.T) {
 	lags := gen.waitForStages(ctx, roomID, publishedAt)
 	_, hasRoom := lags[firstDMStageRoom]
 	assert.True(t, hasRoom, "the room stage should still be present after timeout")
-	assert.NotEqual(t, 4, len(lags), "incomplete iteration must not return all 4 stages")
+	assert.NotEqual(t, 3, len(lags), "incomplete iteration must not return all 3 stages")
 }
 
 // TestCollectLags_UnknownRoom returns an empty (non-nil) map.

@@ -366,6 +366,8 @@ Triage with the outcome counter — `loadgen_search_index_visible_total{outcome}
 
 ### large-room-broadcast
 
+**Status: SKELETON — see `scenario_largeroom.go` for what's stubbed.** The completion tracker is initialized and the publish path runs, but no per-member long-lived NATS subscriptions are installed yet (would overwhelm NATS without ConnPool fan-out, which is the Phase 3.2 follow-up). As a result `loadgen_large_room_*` histograms will be empty; a run against this scenario today exercises only the canonical publish, not real fan-out latency.
+
 Sends to rooms with hundreds–thousands of members. Measures fan-out latency and broadcast worker throughput.
 
 Presets: `announce-room`, `firehose-room`, `bot-room`.
@@ -390,6 +392,8 @@ Publishes messages and measures notification delivery latency per recipient.
 Deep dive: [docs/scenarios/notification-fanout.md](docs/scenarios/notification-fanout.md).
 
 ### message-mutate
+
+**Status: SKELETON — see `scenario_mutate.go` for what's stubbed.** The Run loop ticks and parses the flag-driven typo/correction distribution, but the actual `chat.msg.canonical.{siteID}.edited`/`.deleted` publishes are TODO. Histogram observations will be empty; the scenario currently exercises only flag parsing + RNG selection of mutation targets.
 
 Issues edit and delete operations against recent messages. Flags: `--mutate-rate`, `--edit-age-distribution`.
 

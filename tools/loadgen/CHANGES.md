@@ -46,10 +46,12 @@ appear silently missing in the verdict.
 
 - `seed` and `teardown` connect to Valkey via `connectKeyStore` and persist
   per-room keypairs through `pkg/roomkeystore`.
-- `VALKEY_ADDR` is read from the environment. It is NOT marked `,required`
-  so chaos / discoverability subcommands (which do not touch the keystore)
-  still parse the config; the seed and teardown handlers emit an actionable
-  "set VALKEY_ADDR" error and exit 2 if the address is missing.
+- `VALKEY_ADDRS` (comma-separated cluster seed list, renamed from the old
+  single-string `VALKEY_ADDR` by PR #199's cluster work) is read from the
+  environment. It is NOT marked `,required` so chaos / discoverability
+  subcommands (which do not touch the keystore) still parse the config;
+  the seed and teardown handlers emit an actionable "set VALKEY_ADDRS"
+  error and exit 2 if the address list is empty.
 - New exported helpers in `pkg/`-facing surface: `Fixtures.RoomKeys`,
   `SeedRoomKeys`, `TeardownRoomKeys` (see `seed.go`).
 - The Makefile `run` target now depends on `seed` so a fresh stack never
