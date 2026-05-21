@@ -178,3 +178,58 @@ No findings. The change is a correct, complete mechanical rename with no omissio
 Logically sound and well-tested for happy and most error paths. The TOCTOU window in the two-stage subscription lookup, the stale `Action` enum comment (a client-facing contract), and the missing outbox-failure test case should all be addressed before merge.
 
 ---
+
+## Test automation
+
+### Mock staleness check
+
+`make generate SERVICE=room-service` and `make generate SERVICE=inbox-worker` both produced **zero diff**. Mocks are fresh. Working tree clean after the check.
+
+### TDD compliance for new exported functions
+
+| New exported function | Test |
+|---|---|
+| `subject.MuteToggle` | `TestMuteToggle` ✓ |
+| `subject.MuteToggleWildcard` | `TestMuteToggleWildcard` ✓ |
+| `model.MuteToggleResponse` | `TestMuteToggleResponseJSON` ✓ |
+| `model.SubscriptionMuteToggledEvent` | `TestSubscriptionMuteToggledEventJSON` ✓ |
+| `model.OutboxSubscriptionMuteToggled` const | `TestOutboxSubscriptionMuteToggledConst` ✓ |
+| `MongoStore.ToggleSubscriptionMute` (room-service) | `TestMongoStore_ToggleSubscriptionMute` ✓ |
+| `mongoInboxStore.UpdateSubscriptionMute` (inbox-worker) | **MISSING — see [low] below** |
+
+All other new functions are unexported. TDD compliance: PASS at the unit level, partial gap at integration level.
+
+### Findings
+
+**[medium]** `room-service/handler_test.go` — `handleMuteToggle`'s `GetSubscription` **generic** error arm (`case err != nil` at `handler.go:1249`, returns `"get subscription: %w"`) has no test. `TestHandler_MuteToggle_NotRoomMember` covers `ErrSubscriptionNotFound` but the generic-error path is untested. The analogous `TestHandler_MessageRead_GetRoomError` shows the expected pattern.
+
+**[medium]** `room-service/handler_test.go` — `handleMuteToggle`'s **cross-site outbox `publishToStream` failure** is untested. The handler returns a hard error (`"publish mute-toggled outbox: %w"`) at line 1308; `TestHandler_MuteToggle_CrossSitePublishesOutbox` only covers success. See `TestHandler_MessageRead_CrossSite_PublishFailureAborts` for the pattern.
+
+**[low]** `room-service/handler_test.go` — `GetUserSiteID` non-fatal soft path untested. When `GetUserSiteID` returns an error, the handler logs a warning and still returns `"ok"`. This unusual "success despite store error" behaviour deserves a test to pin the intent, especially since it's inconsistent with `handleMessageRead`'s hard-error treatment of the same call.
+
+**[low]** `room-service/handler_test.go` — `publishCore` non-fatal failure untested. Line 1275-1277 swallows the error with `slog.Error` and continues. No test asserts that the handler still returns `"ok"` when `publishCore` fails.
+
+**[low]** `inbox-worker/handler_test.go` — `UpdateSubscriptionMute` **store-error propagation** untested. `handleSubscriptionMuteToggled` (line 217) wraps store errors and returns them. The existing pattern in the same file uses small embedded-stub types (e.g. `errorDeleteStore`, `errorThreadSubStore`) to inject store errors. Missing: a `TestHandler_SubscriptionMuteToggled_StoreError` analogue.
+
+**[low]** `inbox-worker/integration_test.go` — `mongoInboxStore.UpdateSubscriptionMute` has no integration test. All other `mongoInboxStore` methods have counterpart integration tests; this method was added to `main.go` without one. Below the 80% coverage floor required by CLAUDE.md §4 for new Mongo code paths.
+
+**[nitpick]** `room-service/handler_test.go:3205-3360` — Five flat `TestHandler_MuteToggle_*` functions could be a single table-driven test. They share the same call site (`h.handleMuteToggle`) and differ only in setup/expectation. The file already shows the table-driven style (`TestHandler_handleMessageReadReceipt` at line 2800).
+
+### Coverage depth
+
+- `handleMuteToggle` (5 tests): ~70-75% branch coverage. Missing: `GetSubscription` generic error, `GetUserSiteID` error (non-fatal), `publishCore` failure, `publishToStream` failure (cross-site). Below the 90% target for core handler logic.
+- `handleSubscriptionMuteToggled` (3 tests): ~75% branch coverage. Missing: store error propagation.
+- `TestMongoStore_ToggleSubscriptionMute`: solid — covers false→true, persistence, true→false, not-found sentinel.
+
+### Mock/integration discipline + race detector
+
+- Unit tests use gomock in `room-service`, hand-written stubs in `inbox-worker` — both correct for their service's existing convention.
+- No inline `testcontainers` added.
+- `TestMain` already exists in both `integration_test.go` packages.
+- No raw `go test` invocations added — everything runs through `make test` which already passes `-race`.
+
+### Verdict
+
+No `critical` or `high` findings. Mocks are fresh, TDD discipline followed at the exported-function level, all tests pass with `-race`. The two `medium` gaps (`GetSubscription` generic error + `publishToStream` cross-site failure) bring effective handler branch coverage below the 90% target — each is a small mechanical addition following patterns already in the same file.
+
+---
