@@ -2224,6 +2224,43 @@ func TestMessageTypeAndAsyncJobStatusConstants(t *testing.T) {
 	assert.Equal(t, "error", model.AsyncJobStatusError)
 }
 
+func TestMuteToggleResponseJSON(t *testing.T) {
+	src := model.MuteToggleResponse{
+		Status:               "ok",
+		DisableNotifications: true,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "ok", raw["status"])
+	assert.Equal(t, true, raw["disableNotifications"])
+}
+
+func TestSubscriptionMuteToggledEventJSON(t *testing.T) {
+	src := model.SubscriptionMuteToggledEvent{
+		Account:              "alice",
+		RoomID:               "r1",
+		DisableNotifications: true,
+		Timestamp:            1234567890,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.SubscriptionMuteToggledEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestOutboxSubscriptionMuteToggledConst(t *testing.T) {
+	assert.Equal(t, model.OutboxEventType("subscription_mute_toggled"), model.OutboxSubscriptionMuteToggled)
+}
+
 func TestSyncCreateDMRequestJSON(t *testing.T) {
 	src := model.SyncCreateDMRequest{
 		RoomType:         model.RoomTypeDM,

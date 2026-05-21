@@ -82,6 +82,7 @@ const (
 	OutboxMemberAdded                OutboxEventType = "member_added"
 	OutboxMemberRemoved              OutboxEventType = "member_removed"
 	OutboxSubscriptionRead           OutboxEventType = "subscription_read"
+	OutboxSubscriptionMuteToggled    OutboxEventType = "subscription_mute_toggled"
 	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
 )
 
@@ -208,6 +209,24 @@ type RoomKeyEnsureRequest struct {
 type RoomKeyEnsureResponse struct {
 	RoomID  string `json:"roomId"`
 	Version int    `json:"version"`
+}
+
+// MuteToggleResponse is the sync reply for the mute.toggle RPC. DisableNotifications
+// carries the resulting value of the toggle (post-flip).
+type MuteToggleResponse struct {
+	Status               string `json:"status"`
+	DisableNotifications bool   `json:"disableNotifications"`
+}
+
+// SubscriptionMuteToggledEvent is the OutboxEvent.Payload for type
+// "subscription_mute_toggled". Sent from a room's home site to the user's home
+// site whenever a user flips DisableNotifications via the mute.toggle RPC; the
+// destination updates its local subscription mirror.
+type SubscriptionMuteToggledEvent struct {
+	Account              string `json:"account"              bson:"account"`
+	RoomID               string `json:"roomId"               bson:"roomId"`
+	DisableNotifications bool   `json:"disableNotifications" bson:"disableNotifications"`
+	Timestamp            int64  `json:"timestamp"            bson:"timestamp"`
 }
 
 type MemberRemoveEvent struct {
