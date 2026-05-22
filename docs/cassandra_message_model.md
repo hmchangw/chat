@@ -67,6 +67,8 @@ deterministically from `created_at` via `pkg/msgbucket.Sizer`. The window size
 is configured per service via `MESSAGE_BUCKET_HOURS` (default 24); all services
 that read or write these tables MUST be configured with the same window.
 
+*Applies to `messages_by_room` and `thread_messages_by_room` only. NOT to `message_reactions` (which has no bucketing).*
+
 #### messages_by_room
 ```cql
 CREATE TABLE IF NOT EXISTS messages_by_room(
@@ -88,7 +90,6 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -116,7 +117,6 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -141,7 +141,6 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -171,7 +170,6 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -184,3 +182,33 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   PRIMARY KEY(message_id,created_at)
 )WITH CLUSTERING ORDER BY (created_at DESC);
 ```
+
+## Reaction table
+
+### `message_reactions`
+
+```cql
+CREATE TABLE IF NOT EXISTS message_reactions(
+  message_id TEXT,
+  emoji TEXT,
+  users SET<FROZEN<"Participant">>,
+  PRIMARY KEY((message_id), emoji)
+)WITH CLUSTERING ORDER BY (emoji ASC);
+```
+
+| Column     | Type                          | Notes                             |
+|------------|-------------------------------|-----------------------------------|
+| message_id | TEXT                          | Partition key. Unique site-wide.  |
+| emoji      | TEXT                          | Clustering key.                   |
+| users      | SET<FROZEN<"Participant">>    | Outer SET unfrozen for `+`/`-`.   |
+
+`PRIMARY KEY ((message_id), emoji)` — partition-per-message. LCS compaction.
+
+**Bucketing:** none. `MESSAGE_BUCKET_HOURS` does NOT apply to this table.
+`created_at` is deliberately excluded from the PK — no time-range queries
+on reactions.
+
+**Read pattern:** history-service hydrates reactions at read time via
+parallel single-partition queries (errgroup, token-aware routing). One
+side table covers both regular messages and thread replies — message IDs
+are unique site-wide.
