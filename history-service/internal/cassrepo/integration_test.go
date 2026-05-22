@@ -123,6 +123,13 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		PRIMARY KEY ((room_id), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
 
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.message_reactions (
+		message_id TEXT,
+		emoji      TEXT,
+		users      SET<FROZEN<"Participant">>,
+		PRIMARY KEY ((message_id), emoji)
+	) WITH compaction = {'class': 'LeveledCompactionStrategy'}`)).Exec())
+
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
 	cluster.DisableInitialHostLookup = true
