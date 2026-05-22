@@ -963,7 +963,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 | `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. Map of `emoji → Participant[]`. |
+| `reactions` | object | Optional. Map of `emoji → Participant[]`. Populated server-side via hydration; never written by clients. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
