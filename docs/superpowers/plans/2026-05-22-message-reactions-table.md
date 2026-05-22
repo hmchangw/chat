@@ -21,8 +21,7 @@
 - `history-service/internal/cassrepo/message_reactions.go`
 - `history-service/internal/cassrepo/message_reactions_integration_test.go`
 - `history-service/internal/cassrepo/message_reactions_bench_test.go`
-- `history-service/internal/service/reactions.go` (the `hydrateReactions` helper)
-- `history-service/internal/service/reactions_test.go`
+(no new service-layer file — the `hydrateReactions` helper lives in the existing `service/messages.go`)
 
 **Modified files:**
 - `docker-local/cassandra/init/10-table-messages_by_room.cql` (drop `reactions` column)
@@ -772,12 +771,14 @@ interface that handlers consume. Mocks regenerated."
 ## Task 10: `hydrateReactions` service helper (TDD)
 
 **Files:**
-- Create: `history-service/internal/service/reactions.go`
-- Create: `history-service/internal/service/reactions_test.go`
+- Modify: `history-service/internal/service/messages.go` (append the helper)
+- Modify: `history-service/internal/service/messages_test.go` (append the unit tests)
+
+The helper is ~12 lines, private, single-responsibility, called only from handlers in `messages.go` and `threads.go`. Co-locate it with its biggest set of callers rather than spinning a dedicated file.
 
 - [ ] **Step 1: Write the failing unit tests first**
 
-Create `history-service/internal/service/reactions_test.go`:
+Append to `history-service/internal/service/messages_test.go`:
 ```go
 package service
 
@@ -847,7 +848,7 @@ func TestHydrateReactions_RepoError_Wraps(t *testing.T) {
 }
 ```
 
-> **Note on `Message` struct shape:** `internal/models/message.go` likely defines `models.Message` as a type alias or thin wrapper of `cassandra.Message`. If it's a direct alias (`type Message = cassandra.Message`), the literal `models.Message{ID: "m1"}` works directly. If it embeds the struct, use the shape shown above. Check before writing the test.
+> **Note on `Message` struct shape:** `internal/models/message.go:5` defines `type Message = cassandra.Message` (direct alias), so `models.Message{ID: "m1"}` works directly via the promoted `ID` field on `cassandra.Message`. No struct embedding needed.
 
 - [ ] **Step 2: Run tests, confirm they fail**
 
@@ -858,17 +859,8 @@ Expected: FAIL with `svc.hydrateReactions undefined`.
 
 - [ ] **Step 3: Implement the helper**
 
-Create `history-service/internal/service/reactions.go`:
+Append to `history-service/internal/service/messages.go`:
 ```go
-package service
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/hmchangw/chat/history-service/internal/models"
-)
-
 // hydrateReactions fills msgs[i].Reactions from the message_reactions side
 // table via a bounded errgroup fan-out. Messages with no reactions are left
 // with a nil Reactions map (callers and JSON encoding must treat nil as
@@ -905,11 +897,12 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add history-service/internal/service/reactions.go history-service/internal/service/reactions_test.go
+git add history-service/internal/service/messages.go history-service/internal/service/messages_test.go
 git commit -m "feat(history-service): add hydrateReactions service helper
 
 Centralised fan-out used by every handler that returns Messages.
-Empty input short-circuits, repo errors wrap with context."
+Empty input short-circuits, repo errors wrap with context.
+Lives in messages.go alongside its biggest set of callers."
 ```
 
 ---
@@ -1214,9 +1207,9 @@ Expected: every command exits 0.
 
 ```bash
 go test -tags=integration -coverprofile=coverage.out ./history-service/internal/cassrepo/ ./history-service/internal/service/
-go tool cover -func=coverage.out | grep -E 'message_reactions|reactions\.go|hydrateReactions'
+go tool cover -func=coverage.out | grep -E 'message_reactions|hydrateReactions|GetReactionsByMessage'
 ```
-Expected: each new file ≥80% (target ≥90% on `message_reactions.go` and `reactions.go`). If below, add tests for the missing branches before proceeding.
+Expected: ≥80% on new code (target ≥90% on `cassrepo/message_reactions.go` and the `hydrateReactions` helper). If below, add tests for the missing branches before proceeding.
 
 - [ ] **Step 3: Drop any session review reports per CLAUDE.md §5**
 
@@ -1245,7 +1238,7 @@ Open the PR with a description that references `docs/specs/message-reactions-tab
 
 - [ ] All 6 history handlers (LoadHistory, LoadNextMessages, LoadSurroundingMessages, GetMessageByID, GetThreadMessages, GetThreadParentMessages) hydrate reactions.
 - [ ] Integration tests cover sparse, empty, full pages, ctx-cancel, `-race` parallelism.
-- [ ] ≥80% coverage on new code; ≥90% target on `cassrepo/message_reactions.go` and `service.reactions.go`.
+- [ ] ≥80% coverage on new code; ≥90% target on `cassrepo/message_reactions.go` and the `hydrateReactions` helper in `service/messages.go`.
 - [ ] `make lint`, `make test`, `make test-integration SERVICE=history-service`, `make sast` all green.
 - [ ] `docs/cassandra_message_model.md` and `docs/client-api.md` updated in the same PR.
 - [ ] `docs/reviews/` empty before opening PR.
