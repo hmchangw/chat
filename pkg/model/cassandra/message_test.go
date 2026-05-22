@@ -154,9 +154,8 @@ func TestMessage_JSON(t *testing.T) {
 			Sender:    Participant{ID: "u5", Account: "eve"},
 			CreatedAt: now.Add(-30 * time.Minute), Msg: "original",
 		},
-		VisibleTo:    "u1",
-		Reactions:    map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
-		Deleted:      false,
+		VisibleTo: "u1",
+		Deleted:   false,
 		Type:         "user_joined",
 		SysMsgData:   []byte(`{"userId":"u3"}`),
 		SiteID:       "site-remote",
@@ -182,7 +181,6 @@ func TestMessage_JSON(t *testing.T) {
 	require.NotNil(t, got.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", got.QuotedParentMessage.MessageID)
 	assert.Equal(t, "u1", got.VisibleTo)
-	assert.Len(t, got.Reactions["thumbsup"], 1)
 	assert.Equal(t, "user_joined", got.Type)
 	assert.Equal(t, "site-remote", got.SiteID)
 	assert.Equal(t, edited, *got.EditedAt)
