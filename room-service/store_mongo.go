@@ -810,8 +810,8 @@ func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account
 	filter := bson.M{"roomId": roomID, "u.account": account}
 	update := mongo.Pipeline{
 		bson.D{{Key: "$set", Value: bson.M{
-			"disableNotifications": bson.M{"$not": bson.M{
-				"$ifNull": bson.A{"$disableNotifications", false},
+			"disableNotifications": bson.M{"$not": bson.A{
+				bson.M{"$ifNull": bson.A{"$disableNotifications", false}},
 			}},
 		}}},
 	}
