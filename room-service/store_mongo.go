@@ -95,10 +95,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,name) index: %w", err)
 	}
-	// Lookup index for GetThreadSubscriptionByParent. Non-unique because the
-	// existing (threadRoomId, userAccount) unique index already protects
-	// against duplicate thread subscriptions; this index only needs to
-	// satisfy the (parentMessageId, userAccount) equality predicate.
+	// Non-unique: the (threadRoomId, userAccount) unique index already prevents duplicates.
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
 	}); err != nil {
@@ -812,10 +809,6 @@ func (s *MongoStore) ListReadReceipts(
 	return rows, nil
 }
 
-// GetThreadSubscriptionByParent looks up the user's ThreadSubscription
-// by (parentMessageID, account, roomID). The roomID is a defensive
-// correctness filter: the supplied threadId must belong to the room
-// named in the request subject.
 func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error) {
 	var ts model.ThreadSubscription
 	err := s.threadSubscriptions.FindOne(ctx, bson.M{
@@ -834,9 +827,7 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// UpdateSubscriptionThreadRead overwrites threadUnread and alert. When
-// threadUnread is empty, the field is $unset so it round-trips through
-// JSON as nil (matching the Subscription struct's omitempty tag).
+// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
 func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
 	filter := bson.M{"roomId": roomID, "u.account": account}
 	var update bson.M
@@ -859,10 +850,7 @@ func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, a
 	return nil
 }
 
-// UpdateThreadSubscriptionRead sets lastSeenAt, updatedAt and clears
-// hasMention. No order-safety guard on the source-site write — time.Now()
-// is monotonically increasing within a process. The $lt guard exists
-// only on the inbox-worker side where federation can deliver out-of-order.
+// No order-safety guard on the source-site write; the $lt guard lives on the inbox-worker side.
 func (s *MongoStore) UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error {
 	filter := bson.M{"threadRoomId": threadRoomID, "userAccount": account}
 	update := bson.M{"$set": bson.M{

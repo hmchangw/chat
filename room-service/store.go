@@ -96,26 +96,13 @@ type RoomStore interface {
 	// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName, filtered by RoomType.
 	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 
-	// GetThreadSubscriptionByParent looks up the user's ThreadSubscription
-	// by (parentMessageID, account) and additionally enforces that the
-	// matched document's roomId equals the supplied roomID. The roomID
-	// filter is a defensive correctness check — it prevents a client from
-	// pairing a roomID in the request subject with a threadId belonging
-	// to a different room. Returns model.ErrThreadSubscriptionNotFound
-	// (wrapped) when no document matches the full tuple.
+	// GetThreadSubscriptionByParent enforces (parentMessageID, account, roomID); the roomID
+	// filter rejects a threadId that belongs to a different room than the request subject.
 	GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error)
 
-	// UpdateSubscriptionThreadRead overwrites threadUnread and alert on
-	// the subscription keyed by (roomID, account). When threadUnread is
-	// empty, the field is $unset so JSON round-trip matches the omitempty
-	// contract documented in pkg/model. Returns model.ErrSubscriptionNotFound
-	// (wrapped) when no subscription matches.
+	// UpdateSubscriptionThreadRead overwrites threadUnread + alert; empty threadUnread is $unset.
 	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error
 
-	// UpdateThreadSubscriptionRead sets lastSeenAt, updatedAt and
-	// hasMention=false on the ThreadSubscription keyed by
-	// (threadRoomID, userAccount). Returns
-	// model.ErrThreadSubscriptionNotFound (wrapped) when no document matches.
 	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
 }
 

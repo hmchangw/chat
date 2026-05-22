@@ -67,8 +67,6 @@ type DMSubscription struct {
 }
 
 // MessageThreadReadRequest is the body of the message.thread.read RPC.
-// The subject already carries account and roomID; only the thread's
-// ParentMessageID is supplied in the body.
 type MessageThreadReadRequest struct {
 	ThreadID string `json:"threadId"`
 }

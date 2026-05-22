@@ -181,8 +181,6 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 	return nil
 }
 
-// ApplyThreadRead mirrors a remote site's thread-read on the local cache.
-// See the InboxStore interface comment for behavioural details.
 func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error {
 	subFilter := bson.M{"roomId": roomID, "u.account": account}
 	var subUpdate bson.M

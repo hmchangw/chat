@@ -99,12 +99,8 @@ type SubscriptionReadEvent struct {
 	Timestamp  int64  `json:"timestamp"  bson:"timestamp"`
 }
 
-// ThreadReadEvent is the OutboxEvent.Payload for type "thread_read".
-// Sent from the room's home site to the user's home site when a user
-// marks a thread as read. The source site computes the authoritative
-// result (NewThreadUnread, Alert); the destination applies values
-// directly rather than re-deriving. LastSeenAt is UnixMilli (UTC);
-// Timestamp is the publish time (UnixMilli, UTC).
+// ThreadReadEvent is the OutboxEvent.Payload for type "thread_read". The source site
+// ships the authoritative NewThreadUnread+Alert; the destination applies them as-is.
 type ThreadReadEvent struct {
 	Account         string   `json:"account"`
 	RoomID          string   `json:"roomId"`

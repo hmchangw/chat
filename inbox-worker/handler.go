@@ -29,15 +29,8 @@ type InboxStore interface {
 	// silent no-ops. Missing-subscription is also a silent no-op.
 	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
-	// ApplyThreadRead mirrors a remote site's thread-read on the local cache.
-	// Subscription: authoritative overwrite of threadUnread + alert
-	// (idempotent under repeated delivery — the source ships the resulting
-	// state). When newThreadUnread is empty, threadUnread is $unset to match
-	// the omitempty contract. ThreadSubscription: sets lastSeenAt, updatedAt,
-	// hasMention=false, guarded by $lt lastSeenAt so out-of-order deliveries
-	// cannot regress. Missing documents on either side are silent no-ops
-	// (replays may arrive before the corresponding member_added /
-	// thread_subscription_upserted has been processed).
+	// ApplyThreadRead overwrites Subscription threadUnread+alert and guards ThreadSubscription
+	// lastSeenAt with $lt; missing documents are silent no-ops (replay may precede member_added).
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
 }
 

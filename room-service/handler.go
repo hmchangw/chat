@@ -1191,12 +1191,7 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		return nil, errInvalidThreadID
 	}
 
-	// Concurrent reads: room-sub, thread-sub, and the user's home site.
-	// All three depend only on values known at parse time, so prefetching
-	// userSiteID here saves a Mongo round-trip later (we'd otherwise serialize
-	// it after the writes). Manual error inspection after Wait() enforces
-	// priority: errNotRoomMember > errThreadSubNotFound > internal errors,
-	// regardless of goroutine completion order.
+	// Manual priority after Wait(): errNotRoomMember > errThreadSubNotFound > internal errors.
 	var (
 		sub                          *model.Subscription
 		tsub                         *model.ThreadSubscription
