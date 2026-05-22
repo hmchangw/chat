@@ -23,6 +23,8 @@ type MessageReader interface {
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
 	GetThreadMessages(ctx context.Context, roomID, threadRoomID string, before, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error)
+	GetReactionsByMessageID(ctx context.Context, messageID string) (cassrepo.ReactionMap, error)
+	GetReactionsByMessageIDs(ctx context.Context, messageIDs []string) (map[string]cassrepo.ReactionMap, error)
 }
 
 type MessageWriter interface {
