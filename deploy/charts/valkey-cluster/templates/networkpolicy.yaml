@@ -1,0 +1,71 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  policyTypes:
+    - Ingress
+    - Egress
+  podSelector:
+    matchLabels:
+      {{- include "valkey-cluster.selectorLabels" . | nindent 6 }}
+  ingress:
+    # Cluster bus (gossip): only between Valkey pods of this release.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "valkey-cluster.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cluster.busPort }}
+        - protocol: TCP
+          port: {{ .Values.cluster.clientPort }}
+    {{- if .Values.networkPolicy.allowedClients }}
+    # Client traffic on the data port.
+    - from:
+        {{- toYaml .Values.networkPolicy.allowedClients | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cluster.clientPort }}
+    {{- end }}
+    {{- if .Values.metrics.enabled }}
+    # Prometheus scrape on metrics port: allow all namespaces by default.
+    # Tighten with allowedClients-style selector if your Prom lives elsewhere.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+    {{- end }}
+  egress:
+    # DNS — always needed.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Intra-cluster gossip / replication.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "valkey-cluster.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cluster.clientPort }}
+        - protocol: TCP
+          port: {{ .Values.cluster.busPort }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

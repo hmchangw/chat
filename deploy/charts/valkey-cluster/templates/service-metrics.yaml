@@ -1,0 +1,23 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "valkey-cluster.metricsServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with (merge .Values.service.metrics.annotations .Values.commonAnnotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "valkey-cluster.selectorLabels" . | nindent 4 }}
+{{- end }}
