@@ -1,0 +1,123 @@
+{{- if .Values.cluster.init.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-cluster-create
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-init
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.jobs.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.jobs.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.jobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "valkey-cluster.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cluster-init
+    spec:
+      serviceAccountName: {{ include "valkey-cluster.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cluster-create
+          image: {{ include "valkey-cluster.jobImage" . }}
+          imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
+          env:
+            {{- if .Values.auth.enabled }}
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "valkey-cluster.secretName" . }}
+                  key: {{ include "valkey-cluster.secretPasswordKey" . }}
+            {{- end }}
+            - name: TOTAL_NODES
+              value: {{ include "valkey-cluster.totalNodes" . | quote }}
+            - name: MASTERS
+              value: {{ .Values.cluster.masters | quote }}
+            - name: REPLICAS_PER_MASTER
+              value: {{ .Values.cluster.replicasPerMaster | quote }}
+            - name: CLIENT_PORT
+              value: {{ .Values.cluster.clientPort | quote }}
+            - name: READY_TIMEOUT
+              value: {{ .Values.cluster.init.podReadyTimeoutSeconds | quote }}
+            - name: HEADLESS_SVC
+              value: {{ include "valkey-cluster.headlessServiceName" . | quote }}
+            - name: STS_NAME
+              value: {{ include "valkey-cluster.fullname" . | quote }}
+            - name: POD_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              AUTH=""
+              [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+
+              # Wait for every pod's client port to be reachable.
+              deadline=$(( $(date +%s) + READY_TIMEOUT ))
+              i=0
+              while [ "$i" -lt "$TOTAL_NODES" ]; do
+                host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+                echo "waiting for ${host}:${CLIENT_PORT}"
+                while ! valkey-cli -h "${host}" -p "${CLIENT_PORT}" ${AUTH} PING >/dev/null 2>&1; do
+                  if [ "$(date +%s)" -ge "$deadline" ]; then
+                    echo "timeout waiting for ${host}"
+                    exit 1
+                  fi
+                  sleep 2
+                done
+                i=$(( i + 1 ))
+              done
+
+              # Idempotency: if any node already reports cluster_enabled with
+              # slots assigned, assume cluster is already formed and exit.
+              first="${STS_NAME}-0.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+              slots=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r' || echo 0)
+              if [ "${slots:-0}" -ge 16384 ]; then
+                echo "cluster already initialized (cluster_slots_assigned=${slots}), skipping CLUSTER CREATE"
+                exit 0
+              fi
+
+              # Build node list and run CLUSTER CREATE.
+              nodes=""
+              i=0
+              while [ "$i" -lt "$TOTAL_NODES" ]; do
+                nodes="${nodes} ${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local:${CLIENT_PORT}"
+                i=$(( i + 1 ))
+              done
+
+              echo "creating cluster: masters=${MASTERS} replicas/master=${REPLICAS_PER_MASTER}"
+              # shellcheck disable=SC2086
+              valkey-cli ${AUTH} --cluster create ${nodes} \
+                --cluster-replicas "${REPLICAS_PER_MASTER}" \
+                --cluster-yes
+
+              # Verify
+              valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO
+          resources:
+            {{- toYaml .Values.jobs.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+{{- end }}

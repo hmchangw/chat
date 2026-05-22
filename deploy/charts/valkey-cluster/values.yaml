@@ -1,0 +1,365 @@
+# ---------------------------------------------------------------------------
+# Identity & labels
+# ---------------------------------------------------------------------------
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Used as app.kubernetes.io/part-of on every resource.
+partOf: "valkey"
+
+# Extra labels / annotations applied to every chart-managed resource.
+commonLabels: {}
+commonAnnotations: {}
+
+# Pod-only labels / annotations (kept separate so other selectors stay clean).
+podLabels: {}
+podAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
+
+image:
+  registry: docker.io
+  repository: valkey/valkey
+  tag: "8.1.4-alpine"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+  # - name: registry-credentials
+
+# ---------------------------------------------------------------------------
+# Cluster topology
+# ---------------------------------------------------------------------------
+
+cluster:
+  # Number of master shards. Total pods = masters * (1 + replicasPerMaster).
+  masters: 3
+  # Replicas per master. 1 is the standard production layout (3+3 = 6 pods).
+  replicasPerMaster: 1
+
+  # Slot migration / failover timing.
+  nodeTimeoutMs: 15000
+  requireFullCoverage: true
+
+  # Bus port: client port + 10000. Do not change unless you know why.
+  busPort: 16379
+  clientPort: 6379
+
+  # Initial bootstrap (CLUSTER CREATE). Disable only if creating manually.
+  init:
+    enabled: true
+    # Wait for at most this long for all pods to be Ready before bootstrapping.
+    podReadyTimeoutSeconds: 300
+
+  # Post-upgrade scale automation. When masters/replicasPerMaster grow,
+  # the scale Job adds new nodes and reshards slots automatically.
+  scaleAutomation:
+    enabled: true
+    # Slots per move during reshard. Lower = more, smaller moves (safer under load).
+    slotsPerMove: 100
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+auth:
+  enabled: true
+
+  # Preferred: pre-create a Secret out-of-band and reference it here.
+  # If existingSecret is set, password and tls.* below are ignored.
+  existingSecret: ""
+  existingSecretPasswordKey: "valkey-password"
+
+  # Only used when existingSecret is empty. Leave empty to auto-generate
+  # on first install (NOTE: rotates on `helm upgrade` — pre-create a Secret
+  # for any production deployment).
+  password: ""
+
+  # TLS stub — off by default. Wire-up scaffolding only; templates do not
+  # yet generate certs or configure TLS. Reserved for a future change.
+  tls:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Valkey configuration
+# ---------------------------------------------------------------------------
+
+config:
+  # maxmemory in bytes or with unit suffix (e.g. "1gb"). Empty = no cap
+  # (Valkey will use until OOM-killed). ALWAYS set this in production.
+  maxmemory: ""
+  # Eviction policy when maxmemory is reached. Recommended:
+  #   - cache:     allkeys-lru
+  #   - state/kv:  noeviction (rejects writes, no silent data loss)
+  maxmemoryPolicy: "noeviction"
+
+  # Persistence. AOF gives the strongest durability for cache+state mixes.
+  appendOnly: true
+  appendFsync: "everysec"   # always | everysec | no
+
+  # RDB snapshot schedule. Empty list disables RDB snapshots.
+  save:
+    - "900 1"
+    - "300 10"
+    - "60 10000"
+
+  # Raw extra config appended verbatim to valkey.conf. Use for anything
+  # not exposed as a top-level value.
+  extra: |
+    # tcp-keepalive 300
+    # timeout 0
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+persistence:
+  enabled: true
+  storageClass: ""   # empty = cluster default
+  accessModes:
+    - ReadWriteOnce
+  size: "8Gi"
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Probes
+# ---------------------------------------------------------------------------
+
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    enabled: true
+    # Allows up to 5 minutes to load a large RDB / AOF on cold start.
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 60
+
+# ---------------------------------------------------------------------------
+# Lifecycle: preStop slot handoff before pod termination
+# ---------------------------------------------------------------------------
+
+lifecycle:
+  # Run CLUSTER FAILOVER on masters before terminating, so the replica
+  # takes over before the master goes away. Replicas just shut down cleanly.
+  gracefulShutdown:
+    enabled: true
+    # How long to wait for failover + slot migration to complete.
+    timeoutSeconds: 60
+
+# terminationGracePeriodSeconds must exceed lifecycle.gracefulShutdown.timeoutSeconds.
+terminationGracePeriodSeconds: 90
+
+# ---------------------------------------------------------------------------
+# Security context
+# ---------------------------------------------------------------------------
+
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  fsGroupChangePolicy: "OnRootMismatch"
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+  runAsNonRoot: true
+
+# ---------------------------------------------------------------------------
+# ServiceAccount
+# ---------------------------------------------------------------------------
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Init containers (off by default — enable only if your environment needs them)
+# ---------------------------------------------------------------------------
+
+initContainers:
+  # Run chown on the PVC when the storage class doesn't honor fsGroup
+  # (some NFS provisioners, certain CSI drivers).
+  volumePermissions:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: busybox
+      tag: "1.36.1"
+      pullPolicy: IfNotPresent
+    resources:
+      requests: { cpu: "10m", memory: "16Mi" }
+      limits:   { cpu: "100m", memory: "64Mi" }
+
+  # Tune kernel parameters before Valkey starts (overcommit, somaxconn).
+  # Requires the node to allow privileged init containers.
+  sysctl:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: busybox
+      tag: "1.36.1"
+      pullPolicy: IfNotPresent
+    resources:
+      requests: { cpu: "10m", memory: "16Mi" }
+      limits:   { cpu: "100m", memory: "64Mi" }
+    commands:
+      - "sysctl -w vm.overcommit_memory=1"
+      - "sysctl -w net.core.somaxconn=1024"
+
+# ---------------------------------------------------------------------------
+# Scheduling
+# ---------------------------------------------------------------------------
+
+# soft | hard | "" (disabled). hard requires nodes >= total pods.
+podAntiAffinityPreset: "hard"
+
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: valkey-cluster
+
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+# ---------------------------------------------------------------------------
+# Disruption budget
+# ---------------------------------------------------------------------------
+
+pdb:
+  enabled: true
+  # Use maxUnavailable so node drains can proceed one pod at a time.
+  maxUnavailable: 1
+  # minAvailable: ""
+
+# ---------------------------------------------------------------------------
+# Network policy
+# ---------------------------------------------------------------------------
+
+networkPolicy:
+  enabled: true
+
+  # Who can talk to Valkey on the client port (6379).
+  # Empty list = deny all client ingress (safe initial deploy).
+  # Each entry is a standard NetworkPolicyPeer.
+  allowedClients: []
+    # - namespaceSelector:
+    #     matchLabels:
+    #       kubernetes.io/metadata.name: chat-services
+    # - podSelector:
+    #     matchLabels:
+    #       app.kubernetes.io/part-of: chat
+
+  # Extra egress beyond DNS + intra-cluster gossip. Almost never needed.
+  extraEgress: []
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+
+service:
+  # Headless service: stable per-pod DNS for cluster bus + client discovery.
+  headless:
+    annotations: {}
+  # Metrics service: only created when metrics.enabled = true.
+  metrics:
+    annotations: {}
+
+# ---------------------------------------------------------------------------
+# Metrics (Prometheus)
+# ---------------------------------------------------------------------------
+
+metrics:
+  enabled: true
+
+  image:
+    registry: docker.io
+    repository: oliver006/redis_exporter
+    tag: "v1.66.0-alpine"
+    pullPolicy: IfNotPresent
+
+  port: 9121
+
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits:   { cpu: "200m", memory: "128Mi" }
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: "30s"
+    scrapeTimeout: "10s"
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
+    additionalRules: []
+
+# ---------------------------------------------------------------------------
+# Bootstrap & scale Job hardening
+# ---------------------------------------------------------------------------
+
+jobs:
+  # Pinned valkey-cli image for the cluster-create / scale jobs.
+  # Defaults to the same image as the data plane.
+  image:
+    registry: ""        # empty = inherit from .Values.image.registry
+    repository: ""      # empty = inherit from .Values.image.repository
+    tag: ""             # empty = inherit from .Values.image.tag
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
+
+  # backoffLimit for cluster-create and cluster-scale Jobs.
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600

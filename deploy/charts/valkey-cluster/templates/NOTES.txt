@@ -1,0 +1,49 @@
+Valkey cluster "{{ include "valkey-cluster.fullname" . }}" deployed in namespace {{ .Release.Namespace }}.
+
+Topology
+  masters:            {{ .Values.cluster.masters }}
+  replicas/master:    {{ .Values.cluster.replicasPerMaster }}
+  total pods:         {{ include "valkey-cluster.totalNodes" . }}
+  image:              {{ include "valkey-cluster.image" . }}
+
+Connect from in-cluster clients
+  Cluster-aware client seed address:
+    {{ include "valkey-cluster.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.cluster.clientPort }}
+
+  Example (go-redis):
+    redis.NewClusterClient(&redis.ClusterOptions{
+      Addrs:    []string{"{{ include "valkey-cluster.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.cluster.clientPort }}"},
+      Password: <password from secret "{{ include "valkey-cluster.secretName" . }}", key "{{ include "valkey-cluster.secretPasswordKey" . }}">,
+    })
+
+Verify cluster health
+  kubectl -n {{ .Release.Namespace }} exec {{ include "valkey-cluster.fullname" . }}-0 -- \
+    valkey-cli -a "$(kubectl -n {{ .Release.Namespace }} get secret {{ include "valkey-cluster.secretName" . }} -o jsonpath='{.data.{{ include "valkey-cluster.secretPasswordKey" . }}}' | base64 -d)" \
+    cluster info
+
+  Expect:
+    cluster_state:ok
+    cluster_slots_assigned:16384
+    cluster_known_nodes:{{ include "valkey-cluster.totalNodes" . }}
+    cluster_size:{{ .Values.cluster.masters }}
+
+{{- if not .Values.networkPolicy.allowedClients }}
+
+WARNING: networkPolicy.allowedClients is empty. No client pods can reach
+Valkey on port {{ .Values.cluster.clientPort }} until you add selectors. See
+deploy/charts/valkey-cluster/values.yaml for examples.
+{{- end }}
+
+{{- if and (not .Values.auth.existingSecret) (not .Values.auth.password) }}
+
+WARNING: A password was auto-generated. It will rotate on the next
+`helm upgrade`. For production, pre-create a Secret and set
+auth.existingSecret in values.
+{{- end }}
+
+{{- if not .Values.config.maxmemory }}
+
+WARNING: config.maxmemory is empty. Valkey will use all available memory
+and risk being OOM-killed by the kubelet. Set a maxmemory below the
+container memory limit (leave 20–30% headroom for replication buffers).
+{{- end }}
