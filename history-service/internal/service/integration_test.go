@@ -48,7 +48,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
+		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id, bucket), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
@@ -61,7 +61,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
+		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, created_at TIMESTAMP,
 		updated_at TIMESTAMP, pinned_at TIMESTAMP, pinned_by FROZEN<"Participant">,
 		PRIMARY KEY (message_id, created_at)
@@ -75,7 +75,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>, deleted BOOLEAN,
+		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id, bucket), thread_room_id, created_at, message_id)
 	) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`)).Exec())
