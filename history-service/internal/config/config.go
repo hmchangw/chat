@@ -36,9 +36,10 @@ type Config struct {
 	Cassandra               CassandraConfig `envPrefix:"CASSANDRA_"`
 	Mongo                   MongoConfig     `envPrefix:"MONGO_"`
 	NATS                    NATSConfig      `envPrefix:"NATS_"`
-	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"       envDefault:"72"`
-	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"   envDefault:"122"`
-	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS" envDefault:"365"`
+	MessageBucketHours        int `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
+	MessageReadMaxBuckets     int `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
+	MessageHistoryFloorDays   int `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
+	ReactionsFetchConcurrency int `env:"REACTIONS_FETCH_CONCURRENCY" envDefault:"50"`
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.
