@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-connection-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helm-test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- with .Values.image.pullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: test
+      image: {{ include "valkey-cluster.jobImage" . }}
+      imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
+      env:
+        {{- if .Values.auth.enabled }}
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "valkey-cluster.secretName" . }}
+              key: {{ include "valkey-cluster.secretPasswordKey" . }}
+        {{- end }}
+        - name: HOST
+          value: {{ include "valkey-cluster.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+        - name: PORT
+          value: {{ .Values.cluster.clientPort | quote }}
+        - name: EXPECTED_MASTERS
+          value: {{ .Values.cluster.masters | quote }}
+        - name: EXPECTED_TOTAL
+          value: {{ include "valkey-cluster.totalNodes" . | quote }}
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          AUTH=""
+          [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+
+          # cluster_state must be ok
+          state=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_state:/ {print $2}' | tr -d '\r')
+          [ "${state}" = "ok" ] || { echo "FAIL: cluster_state=${state}"; exit 1; }
+
+          # slot coverage must be full
+          slots=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r')
+          [ "${slots}" = "16384" ] || { echo "FAIL: cluster_slots_assigned=${slots}"; exit 1; }
+
+          # node and master counts match the chart's intent
+          known=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
+          [ "${known}" = "${EXPECTED_TOTAL}" ] || { echo "FAIL: cluster_known_nodes=${known} expected=${EXPECTED_TOTAL}"; exit 1; }
+
+          size=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
+          [ "${size}" = "${EXPECTED_MASTERS}" ] || { echo "FAIL: cluster_size=${size} expected=${EXPECTED_MASTERS}"; exit 1; }
+
+          # Basic set/get round-trip through a cluster-aware connection.
+          key="helm-test-$(date +%s)"
+          valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} SET "${key}" "ok" >/dev/null
+          got=$(valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} GET "${key}")
+          [ "${got}" = "ok" ] || { echo "FAIL: get returned '${got}' expected 'ok'"; exit 1; }
+          valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} DEL "${key}" >/dev/null
+
+          echo "PASS: cluster_state=ok slots=16384 known=${known} size=${size} set/get round-trip ok"
+      resources:
+        {{- toYaml .Values.jobs.resources | nindent 8 }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        runAsNonRoot: true

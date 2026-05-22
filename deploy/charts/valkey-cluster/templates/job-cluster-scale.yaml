@@ -1,0 +1,160 @@
+{{- if and .Values.cluster.scaleAutomation.enabled .Values.cluster.init.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-cluster-scale-{{ now | unixEpoch }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-scale
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.jobs.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.jobs.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.jobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "valkey-cluster.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cluster-scale
+    spec:
+      serviceAccountName: {{ include "valkey-cluster.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cluster-scale
+          image: {{ include "valkey-cluster.jobImage" . }}
+          imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
+          env:
+            {{- if .Values.auth.enabled }}
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "valkey-cluster.secretName" . }}
+                  key: {{ include "valkey-cluster.secretPasswordKey" . }}
+            {{- end }}
+            - name: DESIRED_TOTAL
+              value: {{ include "valkey-cluster.totalNodes" . | quote }}
+            - name: DESIRED_MASTERS
+              value: {{ .Values.cluster.masters | quote }}
+            - name: REPLICAS_PER_MASTER
+              value: {{ .Values.cluster.replicasPerMaster | quote }}
+            - name: CLIENT_PORT
+              value: {{ .Values.cluster.clientPort | quote }}
+            - name: READY_TIMEOUT
+              value: {{ .Values.cluster.init.podReadyTimeoutSeconds | quote }}
+            - name: HEADLESS_SVC
+              value: {{ include "valkey-cluster.headlessServiceName" . | quote }}
+            - name: STS_NAME
+              value: {{ include "valkey-cluster.fullname" . | quote }}
+            - name: POD_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: SLOTS_PER_MOVE
+              value: {{ .Values.cluster.scaleAutomation.slotsPerMove | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              AUTH=""
+              [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+
+              first="${STS_NAME}-0.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+
+              # Discover current cluster state.
+              current_known=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
+              current_size=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
+
+              echo "current: known_nodes=${current_known} masters=${current_size}"
+              echo "desired: total=${DESIRED_TOTAL} masters=${DESIRED_MASTERS}"
+
+              if [ "${current_known}" = "${DESIRED_TOTAL}" ] && [ "${current_size}" = "${DESIRED_MASTERS}" ]; then
+                echo "topology matches desired, nothing to do"
+                exit 0
+              fi
+
+              if [ "${current_known}" -gt "${DESIRED_TOTAL}" ] || [ "${current_size}" -gt "${DESIRED_MASTERS}" ]; then
+                echo "scale-DOWN is not automated. Use the runbook at runbooks/scale-down.md."
+                echo "this Job will exit 0 to not block helm upgrade."
+                exit 0
+              fi
+
+              # ---- SCALE-UP --------------------------------------------------
+              # Wait for new pods to be Ready.
+              deadline=$(( $(date +%s) + READY_TIMEOUT ))
+              i=0
+              while [ "$i" -lt "$DESIRED_TOTAL" ]; do
+                host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+                while ! valkey-cli -h "${host}" -p "${CLIENT_PORT}" ${AUTH} PING >/dev/null 2>&1; do
+                  if [ "$(date +%s)" -ge "$deadline" ]; then
+                    echo "timeout waiting for ${host}"
+                    exit 1
+                  fi
+                  sleep 2
+                done
+                i=$(( i + 1 ))
+              done
+
+              # Identify new masters (the first DESIRED_MASTERS - current_size new pods that aren't yet in the cluster).
+              # Pods 0..(current_known-1) are existing nodes; pods current_known..(DESIRED_TOTAL-1) are new.
+              # Of the new pods, the first (DESIRED_MASTERS - current_size) become masters, the rest become replicas.
+              new_masters_count=$(( DESIRED_MASTERS - current_size ))
+              echo "scale-up: adding ${new_masters_count} master(s) and the corresponding replicas"
+
+              i=${current_known}
+              added_masters=0
+              while [ "$i" -lt "$DESIRED_TOTAL" ]; do
+                new_host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+                if [ "${added_masters}" -lt "${new_masters_count}" ]; then
+                  echo "adding ${new_host} as MASTER"
+                  valkey-cli ${AUTH} --cluster add-node \
+                    "${new_host}:${CLIENT_PORT}" "${first}:${CLIENT_PORT}"
+                  added_masters=$(( added_masters + 1 ))
+                else
+                  # Find the master with the fewest replicas to balance.
+                  master_id=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER NODES \
+                    | awk '/master/ && !/fail/ {print $1}' | head -n 1)
+                  echo "adding ${new_host} as REPLICA of ${master_id}"
+                  valkey-cli ${AUTH} --cluster add-node \
+                    --cluster-slave --cluster-master-id "${master_id}" \
+                    "${new_host}:${CLIENT_PORT}" "${first}:${CLIENT_PORT}"
+                fi
+                # Give gossip a moment to propagate.
+                sleep 5
+                i=$(( i + 1 ))
+              done
+
+              # Rebalance slots across all masters (online reshard).
+              if [ "${new_masters_count}" -gt 0 ]; then
+                echo "rebalancing slots across ${DESIRED_MASTERS} masters"
+                valkey-cli ${AUTH} --cluster rebalance \
+                  --cluster-use-empty-masters \
+                  --cluster-pipeline "${SLOTS_PER_MOVE}" \
+                  "${first}:${CLIENT_PORT}"
+              fi
+
+              echo "scale-up complete"
+              valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO
+          resources:
+            {{- toYaml .Values.jobs.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+{{- end }}

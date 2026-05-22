@@ -1,0 +1,90 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}
+  namespace: {{ default .Release.Namespace .Values.metrics.prometheusRule.namespace }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: {{ include "valkey-cluster.fullname" . }}
+      rules:
+        - alert: ValkeyClusterDown
+          expr: redis_up{service="{{ include "valkey-cluster.metricsServiceName" . }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey pod {{ "{{ $labels.pod }}" }} is down"
+            description: "redis_exporter cannot reach Valkey on {{ "{{ $labels.pod }}" }} for >2m."
+
+        - alert: ValkeyClusterStateNotOk
+          expr: redis_cluster_state{service="{{ include "valkey-cluster.metricsServiceName" . }}"} != 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey cluster_state != ok on {{ "{{ $labels.pod }}" }}"
+            description: "Cluster reports a non-ok state. Check `valkey-cli cluster info` and `cluster nodes`."
+
+        - alert: ValkeyClusterSlotsUnassigned
+          expr: redis_cluster_slots_assigned{service="{{ include "valkey-cluster.metricsServiceName" . }}"} < 16384
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Valkey cluster has unassigned slots"
+            description: "Slots assigned = {{ "{{ $value }}" }} (expected 16384). Resharding or recovery may be needed."
+
+        - alert: ValkeyMasterMissingReplica
+          expr: |
+            (count by (service) (redis_instance_info{role="master", service="{{ include "valkey-cluster.metricsServiceName" . }}"})
+             - on(service) count by (service) (redis_instance_info{role="slave", service="{{ include "valkey-cluster.metricsServiceName" . }}"})) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "A Valkey master has no live replica"
+            description: "At least one master in this cluster has no replica. Failover protection is degraded."
+
+        - alert: ValkeyReplicationLagHigh
+          expr: redis_connected_slave_lag_seconds{service="{{ include "valkey-cluster.metricsServiceName" . }}"} > 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey replication lag > 30s on {{ "{{ $labels.pod }}" }}"
+            description: "Replica is {{ "{{ $value }}" }}s behind its master. Check network or replica CPU."
+
+        - alert: ValkeyMemoryNearLimit
+          expr: |
+            (redis_memory_used_bytes{service="{{ include "valkey-cluster.metricsServiceName" . }}"}
+             / redis_memory_max_bytes{service="{{ include "valkey-cluster.metricsServiceName" . }}"}) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey memory >90% of maxmemory on {{ "{{ $labels.pod }}" }}"
+            description: "Approaching maxmemory. Eviction will start under noeviction policy this causes write rejections."
+
+        - alert: ValkeyRejectedConnections
+          expr: increase(redis_rejected_connections_total{service="{{ include "valkey-cluster.metricsServiceName" . }}"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Valkey rejecting connections on {{ "{{ $labels.pod }}" }}"
+            description: "{{ "{{ $value }}" }} connections rejected in the last 5m. Bump maxclients or investigate flood."
+
+        {{- with .Values.metrics.prometheusRule.additionalRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
