@@ -1788,7 +1788,7 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 		JoinedAt:             time.Now().UTC(),
 		DisableNotifications: false,
 	}
-	require.NoError(t, store.CreateSubscription(ctx, sub))
+	mustInsertSub(t, db, sub)
 
 	got, err := store.ToggleSubscriptionMute(ctx, "r1", "alice")
 	require.NoError(t, err)
