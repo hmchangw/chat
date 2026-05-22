@@ -1242,6 +1242,13 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		return nil, fmt.Errorf("invalid mute-toggle subject: %s", subj)
 	}
 
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+		)
+	}
+
 	sub, err := h.store.GetSubscription(ctx, account, roomID)
 	switch {
 	case errors.Is(err, model.ErrSubscriptionNotFound):
