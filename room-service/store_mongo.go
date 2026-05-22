@@ -804,14 +804,14 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 	return nil
 }
 
-// ToggleSubscriptionMute atomically flips disableNotifications via FindOneAndUpdate.
+// ToggleSubscriptionMute atomically flips muted via FindOneAndUpdate.
 // $ifNull treats absent field as false so legacy docs toggle to true on first call.
 func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
 	update := mongo.Pipeline{
 		bson.D{{Key: "$set", Value: bson.M{
-			"disableNotifications": bson.M{"$not": bson.A{
-				bson.M{"$ifNull": bson.A{"$disableNotifications", false}},
+			"muted": bson.M{"$not": bson.A{
+				bson.M{"$ifNull": bson.A{"$muted", false}},
 			}},
 		}}},
 	}

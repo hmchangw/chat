@@ -3395,11 +3395,11 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(&model.Subscription{
-			ID:                   "s1",
-			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:               "r1",
-			SiteID:               "site-a",
-			DisableNotifications: true,
+			ID:     "s1",
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
 		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
@@ -3428,7 +3428,7 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	var got model.MuteToggleResponse
 	require.NoError(t, json.Unmarshal(resp, &got))
 	assert.Equal(t, "ok", got.Status)
-	assert.True(t, got.DisableNotifications)
+	assert.True(t, got.Muted)
 
 	require.Len(t, coreSubjects, 1)
 	assert.Equal(t, subject.SubscriptionUpdate("alice"), coreSubjects[0])
@@ -3436,7 +3436,7 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	var evt model.SubscriptionUpdateEvent
 	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
 	assert.Equal(t, "mute_toggled", evt.Action)
-	assert.True(t, evt.Subscription.DisableNotifications)
+	assert.True(t, evt.Subscription.Muted)
 	assert.Equal(t, "alice", evt.Subscription.User.Account)
 }
 
@@ -3447,10 +3447,10 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(&model.Subscription{
-			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:               "r1",
-			SiteID:               "site-a",
-			DisableNotifications: true,
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
 		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
@@ -3484,7 +3484,7 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	require.NoError(t, json.Unmarshal(outbox.Payload, &payload))
 	assert.Equal(t, "alice", payload.Account)
 	assert.Equal(t, "r1", payload.RoomID)
-	assert.True(t, payload.DisableNotifications)
+	assert.True(t, payload.Muted)
 	assert.NotZero(t, payload.Timestamp)
 }
 
@@ -3572,10 +3572,10 @@ func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(&model.Subscription{
-			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:               "r1",
-			SiteID:               "site-a",
-			DisableNotifications: true,
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
 		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
@@ -3605,10 +3605,10 @@ func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(&model.Subscription{
-			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:               "r1",
-			SiteID:               "site-a",
-			DisableNotifications: true,
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
 		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
@@ -3632,5 +3632,5 @@ func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 	var got model.MuteToggleResponse
 	require.NoError(t, json.Unmarshal(resp, &got))
 	assert.Equal(t, "ok", got.Status)
-	assert.True(t, got.DisableNotifications)
+	assert.True(t, got.Muted)
 }

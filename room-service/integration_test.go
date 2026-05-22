@@ -1779,32 +1779,32 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	ctx := context.Background()
 
 	sub := &model.Subscription{
-		ID:                   idgen.GenerateUUIDv7(),
-		User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID:               "r1",
-		RoomType:             model.RoomTypeChannel,
-		SiteID:               "site-a",
-		Roles:                []model.Role{model.RoleMember},
-		JoinedAt:             time.Now().UTC(),
-		DisableNotifications: false,
+		ID:       idgen.GenerateUUIDv7(),
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+		Muted:    false,
 	}
 	mustInsertSub(t, db, sub)
 
 	got, err := store.ToggleSubscriptionMute(ctx, "r1", "alice")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.True(t, got.DisableNotifications)
+	assert.True(t, got.Muted)
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
 	persisted, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
-	assert.True(t, persisted.DisableNotifications)
+	assert.True(t, persisted.Muted)
 
 	got, err = store.ToggleSubscriptionMute(ctx, "r1", "alice")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.False(t, got.DisableNotifications)
+	assert.False(t, got.Muted)
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 

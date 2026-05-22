@@ -1344,10 +1344,10 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 	}
 	if userSiteID != "" && userSiteID != h.siteID {
 		payload := model.SubscriptionMuteToggledEvent{
-			Account:              account,
-			RoomID:               roomID,
-			DisableNotifications: sub.DisableNotifications,
-			Timestamp:            now.UnixMilli(),
+			Account:   account,
+			RoomID:    roomID,
+			Muted:     sub.Muted,
+			Timestamp: now.UnixMilli(),
 		}
 		payloadData, err := json.Marshal(payload)
 		if err != nil {
@@ -1369,5 +1369,5 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		}
 	}
 
-	return json.Marshal(model.MuteToggleResponse{Status: "ok", DisableNotifications: sub.DisableNotifications})
+	return json.Marshal(model.MuteToggleResponse{Status: "ok", Muted: sub.Muted})
 }

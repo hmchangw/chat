@@ -29,8 +29,8 @@ type InboxStore interface {
 	// silent no-ops. Missing-subscription is also a silent no-op.
 	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
-	// UpdateSubscriptionMute sets disableNotifications by (roomID, account); missing-sub is a silent no-op for federation races.
-	UpdateSubscriptionMute(ctx context.Context, roomID, account string, disableNotifications bool) error
+	// UpdateSubscriptionMute sets muted by (roomID, account); missing-sub is a silent no-op for federation races.
+	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -209,7 +209,7 @@ func (h *Handler) handleSubscriptionMuteToggled(ctx context.Context, evt *model.
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal subscription_mute_toggled payload: %w", err)
 	}
-	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.DisableNotifications); err != nil {
+	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted); err != nil {
 		return fmt.Errorf("update subscription mute for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil

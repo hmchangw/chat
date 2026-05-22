@@ -143,12 +143,12 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 	return nil
 }
 
-func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, disableNotifications bool) error {
+func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, muted bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
-			s.subscriptions[i].DisableNotifications = disableNotifications
+			s.subscriptions[i].Muted = muted
 			return nil
 		}
 	}
@@ -1215,7 +1215,7 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 	h := NewHandler(store)
 
 	payload, err := json.Marshal(model.SubscriptionMuteToggledEvent{
-		Account: "alice", RoomID: "r1", DisableNotifications: true, Timestamp: 12345,
+		Account: "alice", RoomID: "r1", Muted: true, Timestamp: 12345,
 	})
 	require.NoError(t, err)
 	evt, err := json.Marshal(model.OutboxEvent{
@@ -1228,7 +1228,7 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 
 	subs := store.getSubscriptions()
 	require.Len(t, subs, 1)
-	assert.True(t, subs[0].DisableNotifications)
+	assert.True(t, subs[0].Muted)
 }
 
 func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {
@@ -1236,7 +1236,7 @@ func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {
 	h := NewHandler(store)
 
 	payload, err := json.Marshal(model.SubscriptionMuteToggledEvent{
-		Account: "ghost", RoomID: "r1", DisableNotifications: true, Timestamp: 12345,
+		Account: "ghost", RoomID: "r1", Muted: true, Timestamp: 12345,
 	})
 	require.NoError(t, err)
 	evt, err := json.Marshal(model.OutboxEvent{

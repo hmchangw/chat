@@ -211,16 +211,16 @@ type RoomKeyEnsureResponse struct {
 
 // MuteToggleResponse is the sync reply for the mute.toggle RPC.
 type MuteToggleResponse struct {
-	Status               string `json:"status"`
-	DisableNotifications bool   `json:"disableNotifications"`
+	Status string `json:"status"`
+	Muted  bool   `json:"muted"`
 }
 
 // SubscriptionMuteToggledEvent is the OutboxEvent.Payload for type "subscription_mute_toggled".
 type SubscriptionMuteToggledEvent struct {
-	Account              string `json:"account"              bson:"account"`
-	RoomID               string `json:"roomId"               bson:"roomId"`
-	DisableNotifications bool   `json:"disableNotifications" bson:"disableNotifications"`
-	Timestamp            int64  `json:"timestamp"            bson:"timestamp"`
+	Account   string `json:"account"              bson:"account"`
+	RoomID    string `json:"roomId"               bson:"roomId"`
+	Muted     bool   `json:"muted" bson:"muted"`
+	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
 }
 
 type MemberRemoveEvent struct {
