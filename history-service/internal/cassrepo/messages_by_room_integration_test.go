@@ -50,7 +50,7 @@ func seedMessage(t *testing.T, session *gocql.Session, roomID, messageID string,
 
 func TestRepository_GetMessagesBefore(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -66,7 +66,7 @@ func TestRepository_GetMessagesBefore(t *testing.T) {
 
 func TestRepository_GetMessagesBetweenDesc(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -82,7 +82,7 @@ func TestRepository_GetMessagesBetweenDesc(t *testing.T) {
 
 func TestRepository_GetMessagesAfter(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -98,7 +98,7 @@ func TestRepository_GetMessagesAfter(t *testing.T) {
 
 func TestRepository_GetAllMessagesAsc(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedMessages(t, session, "r1", base, 5)
@@ -115,7 +115,7 @@ func TestRepository_GetAllMessagesAsc(t *testing.T) {
 
 func TestRepository_GetMessagesBefore_ThreadRoomID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 
 	sizer := msgbucket.New(24 * time.Hour)
@@ -140,7 +140,7 @@ func TestRepository_GetMessagesBefore_ThreadRoomID(t *testing.T) {
 
 func TestGetMessagesBefore_CrossBucketWalkDESC(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 
 	roomID := "room-walk-desc"
@@ -171,7 +171,7 @@ func TestGetMessagesBefore_CrossBucketWalkDESC(t *testing.T) {
 
 func TestGetMessagesBefore_FloorTerminates(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	ctx := context.Background()
 
 	roomID := "room-floor"
@@ -189,7 +189,7 @@ func TestGetMessagesBefore_FloorTerminates(t *testing.T) {
 
 func TestGetMessagesBefore_MaxBucketsCap(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 2) // cap at 2 buckets
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 2, 50) // cap at 2 buckets
 	ctx := context.Background()
 
 	roomID := "room-cap"

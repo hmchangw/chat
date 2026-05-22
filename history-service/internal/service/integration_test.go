@@ -137,7 +137,7 @@ func (stubRoomRepo) GetRoomTimes(_ context.Context, _ string) (lastMsgAt, create
 
 func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	pub := &recordingPublisher{}
 	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
@@ -200,7 +200,7 @@ func TestEditMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	pub := &recordingPublisher{}
 	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
@@ -260,7 +260,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
 	pub := &recordingPublisher{}
 	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
