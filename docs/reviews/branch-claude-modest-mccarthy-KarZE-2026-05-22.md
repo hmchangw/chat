@@ -76,3 +76,65 @@ The implementation itself is small (~1–2 days for one engineer) once the spec 
 
 **N3.** §14 line 180 "~5ms p99" cites no benchmark. Drop the number or substantiate.
 
+---
+
+## Go-Code Lens
+
+### critical
+
+**C1. Return-type leak — `LoadReactionsForMessages` signature exposes raw `cassandra.Participant`.** §7.1 declares `map[string]map[string][]Participant` without specifying the import. Every existing repo method in `history-service/internal/cassrepo` returns `models.Message` (alias to `cassandra.Message`), never bare `cassandra.Participant`. Today `pkg/model.Message` already pulls `cassandra.Participant` transitively (`pkg/model/message.go:15`), but a method that *returns* `cassandra.Participant` directly is new surface area. The spec must either explicitly state `cassandra.Participant` or define a named alias in `cassrepo` (`type ReactionMap = map[string][]cassandra.Participant`) and use it consistently — matches the existing `type Message = cassandra.Message` alias pattern in `internal/models/message.go:5`.
+
+**C2. Removing the `cql:"reactions"` tag from `Message.Reactions` — spec misses the consequence for existing tests.** `pkg/model/cassandra/message_test.go:185,212` round-trip the field via gocql UDT/bson marshalers. After tag removal the field still round-trips via `json`/`bson`, so behavior is preserved, but the spec should explicitly direct an update to these tests rather than only "add roundtrip test cases" (§3).
+
+**C3. `MessageReactionRow` should NOT have a `bson` tag (CLAUDE.md §3 carve-out).** CLAUDE.md says "All model structs get both `json` and `bson` tags" — but every existing type in `pkg/model/cassandra/` (`Participant`, `File`, `Card`, …) carries `json` + `cql` only, no `bson`. The spec is correct by precedent; **call it out explicitly** to forestall reviewer churn. Also: spec is missing `json` tags on `MessageReactionRow` — add them mirroring `Participant` at `pkg/model/cassandra/message.go:12-20`. Suggested form:
+```go
+MessageID string `json:"messageId" cql:"message_id"`
+Emoji     string `json:"emoji"     cql:"emoji"`
+Users     []Participant `json:"users" cql:"users"`
+```
+
+### high
+
+**H1. `structScan` silently tolerates untagged fields — verified, but the spec doesn't cite this.** `cassrepo/utils.go:120-123` skips fields where `tag == ""`, so dropping the `cql` tag from `Message.Reactions` is safe with the existing scan helper. Add a one-liner to §3: *"safe because `structScan` (cassrepo/utils.go:120) ignores fields without a `cql` tag."* Without the cite a reviewer can't tell whether dropping the tag will break scans of `messages_by_room` rows.
+
+**H2. No existing semaphore convention in `history-service` to reuse.** Verified: only two errgroup sites in the service (`messages.go:72,229`), both fan-out-2 (no semaphore). The CLAUDE.md JetStream-worker semaphore pattern targets workers, not read-path fan-out. Spec's "reuse if present; otherwise 50" is fine, but the cap should be **configurable via env var** (e.g., `REACTIONS_FETCH_CONCURRENCY`, default 50) per CLAUDE.md §6 "Configuration." Hard-coded 50 will be regretted when page size tops 100.
+
+**H3. Method naming breaks `Get…` convention.** Every read method on `*Repository` uses `Get`: `GetMessagesBefore`, `GetMessageByID`, `GetMessagesByIDs`, `GetThreadMessages` (`service.go:18-26`). Switching to `Load` breaks the convention and suggests in-place mutation. Rename:
+- `LoadReactionsForMessages` → `GetReactionsByMessageIDs`
+- `LoadReactionsForMessage` → `GetReactionsByMessageID`
+
+This matches `GetMessagesByIDs` / `GetMessageByID` exactly.
+
+**H4. Mockgen is required (not conditional) — `MessageReader` will be extended.** `service.go:16` declares `//go:generate mockgen ... MessageReader,...`. The `MessageReader` interface (`service.go:18-26`) is what handlers consume. The new repo methods belong on `MessageReader` (read-only, co-located with message reads). Spec §10's "if the handler's store interface is extended" is misleading — it **will** be extended. Strike the conditional. Also remind the implementer to commit the regenerated `internal/service/mocks/mock_repository.go`.
+
+### medium
+
+**M1. Hydration location — spec leaves a design choice ambiguous.** §7.3 sketches per-handler hydration in service code. Five (possibly six — see M2) call sites makes duplication a real risk. Two cleaner options:
+- (a) Repo-level `GetMessagesWithReactions(ctx, page) (Page[Message], error)` — clean for callers, bloats `MessageReader`.
+- (b) Service-layer helper `(s *HistoryService) hydrateReactions(ctx, []models.Message) error` — single point of error handling and metrics.
+
+Recommend (b). Pick one in the spec; "described prose-only" invites five subtly different implementations.
+
+**M2. Spec missed `GetThreadParentMessages` (`service.go:111`).** That handler also returns `Message`s (via `thread_parent.go:19 ParentMessages []Message`). Either it routes through `GetMessagesByIDs` (implicitly covered) or it needs its own hydration call. Confirm or list it in §7.3.
+
+**M3. Error-wrap pattern omitted.** CLAUDE.md §3 mandates `fmt.Errorf("doing X: %w", err)`. Spec shows no examples. Existing style: `"querying messages by IDs: %w"` (`messages_by_id.go:41`). Spec should prescribe exact phrasing — e.g. `"loading reactions for message %s: %w"` — to prevent drift.
+
+**M4. errgroup cancellation semantics not stated.** §7.1 says "fan out parallel … errgroup" but doesn't say *first error cancels siblings*. At 50-wide fan-out a slow coordinator on one shard shouldn't keep 49 goroutines running. Add: *"All goroutines receive the errgroup-derived context; first error cancels siblings."*
+
+### low
+
+**L1.** Empty-input godoc absent. Spec §7.1 says empty slice short-circuits, but the godoc on the spec'd signature doesn't mention it. Per Go convention and CLAUDE.md §3, the godoc must say so explicitly. Mirror `GetMessagesByIDs` godoc at `messages_by_id.go:30-33`.
+
+**L2.** "Missing message_id returns nothing for that id" — both "no reactions" and "id never queried" surface as missing map key. Correct, but document in the godoc explicitly so handlers don't treat absence as error.
+
+**L3.** Compile-time interface check at `service.go:115` (`var _ MessageRepository = (*cassrepo.Repository)(nil)`) — after adding methods to `MessageReader`, this will fail-fast on compile if anything is missed. Safety net exists; spec doesn't need changes.
+
+### nitpick
+
+**N1.** "Fail the request (do not return a partial page)" (§7.3) — agree, but specify the error matches handler conventions (`natsrouter.ErrInternal("failed to load message history")` style, `messages.go:102`).
+
+**N2.** Spec §3 line-number reference `message.go:93` is correct. Keep this — citations matter.
+
+**N3.** §10 should also mention re-running `make lint` after `make generate` (generated mock signatures may need import additions).
+
+
