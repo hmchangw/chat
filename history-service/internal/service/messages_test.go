@@ -72,11 +72,16 @@ func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockM
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
 		MinTimes(0)
-	// Permissive default for reaction hydration: every multi-message handler
-	// invokes GetReactionsByMessageIDs after page assembly. Tests asserting
-	// hydration behavior should construct the service without this default
+	// Permissive default for reaction hydration: GetMessageByID invokes
+	// GetReactionsByMessageID (singular), and multi-message handlers invoke
+	// GetReactionsByMessageIDs (plural) after page assembly. Tests asserting
+	// hydration behavior should construct the service without these defaults
 	// (see newServiceNoReactionDefault) since gomock's callset is FIFO-matched
-	// and an AnyTimes default would shadow any strict follow-up expectation.
+	// and AnyTimes defaults would shadow any strict follow-up expectations.
+	msgs.EXPECT().
+		GetReactionsByMessageID(gomock.Any(), gomock.Any()).
+		Return(cassrepo.ReactionMap{}, nil).
+		AnyTimes()
 	msgs.EXPECT().
 		GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).
 		Return(map[string]cassrepo.ReactionMap{}, nil).
@@ -1012,6 +1017,24 @@ func TestHistoryService_GetMessageByID_NotSubscribed(t *testing.T) {
 	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not subscribed to room")
+}
+
+func TestHistoryService_GetMessageByID_HydratesReactions(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	createdAt := joinTime.Add(1 * time.Minute)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msg := &models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: createdAt}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m1").Return(msg, nil)
+
+	alice := cassandra.Participant{ID: "u1", Account: "alice"}
+	msgs.EXPECT().GetReactionsByMessageID(gomock.Any(), "m1").Return(
+		cassrepo.ReactionMap{"👍": {alice}}, nil)
+
+	result, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]cassandra.Participant{"👍": {alice}}, result.Reactions)
 }
 
 // --- EditMessage ---

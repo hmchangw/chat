@@ -299,6 +299,13 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 		return nil, natsrouter.ErrForbidden("message is outside access window")
 	}
 
+	reactions, err := s.msgReader.GetReactionsByMessageID(c, msg.MessageID)
+	if err != nil {
+		slog.Error("get message by id: fetch reactions", "error", err, "messageID", msg.MessageID)
+		return nil, natsrouter.ErrInternal("failed to retrieve reactions")
+	}
+	msg.Reactions = reactions
+
 	redactUnavailableQuote(msg, accessSince)
 	return msg, nil
 }
