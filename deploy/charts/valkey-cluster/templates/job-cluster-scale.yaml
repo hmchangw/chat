@@ -2,7 +2,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "valkey-cluster.fullname" . }}-cluster-scale-{{ now | unixEpoch }}
+  name: {{ include "valkey-cluster.clusterScaleJobName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "valkey-cluster.labels" . | nindent 4 }}
@@ -70,14 +70,31 @@ spec:
             - |
               set -eu
 
-              AUTH=""
-              [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+              vc() {
+                _host=$1; shift
+                if [ -n "${VALKEY_PASSWORD:-}" ]; then
+                  valkey-cli -h "${_host}" -p "${CLIENT_PORT}" -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+                else
+                  valkey-cli -h "${_host}" -p "${CLIENT_PORT}" "$@"
+                fi
+              }
+
+              # vc_cluster ARGS...: cluster admin subcommands that take a node:port
+              # argument internally (e.g. --cluster add-node, --cluster rebalance).
+              vc_cluster() {
+                if [ -n "${VALKEY_PASSWORD:-}" ]; then
+                  valkey-cli -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+                else
+                  valkey-cli "$@"
+                fi
+              }
 
               first="${STS_NAME}-0.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
 
               # Discover current cluster state.
-              current_known=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
-              current_size=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
+              cluster_info=$(vc "${first}" CLUSTER INFO 2>/dev/null || true)
+              current_known=$(echo "${cluster_info}" | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
+              current_size=$(echo "${cluster_info}" | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
 
               echo "current: known_nodes=${current_known} masters=${current_size}"
               echo "desired: total=${DESIRED_TOTAL} masters=${DESIRED_MASTERS}"
@@ -88,7 +105,7 @@ spec:
               fi
 
               if [ "${current_known}" -gt "${DESIRED_TOTAL}" ] || [ "${current_size}" -gt "${DESIRED_MASTERS}" ]; then
-                echo "scale-DOWN is not automated. Use the runbook at runbooks/scale-down.md."
+                echo "scale-DOWN is not automated. Use the runbook at runbooks/scale-out.md (reverse procedure)."
                 echo "this Job will exit 0 to not block helm upgrade."
                 exit 0
               fi
@@ -99,7 +116,7 @@ spec:
               i=0
               while [ "$i" -lt "$DESIRED_TOTAL" ]; do
                 host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
-                while ! valkey-cli -h "${host}" -p "${CLIENT_PORT}" ${AUTH} PING >/dev/null 2>&1; do
+                while ! vc "${host}" PING >/dev/null 2>&1; do
                   if [ "$(date +%s)" -ge "$deadline" ]; then
                     echo "timeout waiting for ${host}"
                     exit 1
@@ -109,9 +126,10 @@ spec:
                 i=$(( i + 1 ))
               done
 
-              # Identify new masters (the first DESIRED_MASTERS - current_size new pods that aren't yet in the cluster).
-              # Pods 0..(current_known-1) are existing nodes; pods current_known..(DESIRED_TOTAL-1) are new.
-              # Of the new pods, the first (DESIRED_MASTERS - current_size) become masters, the rest become replicas.
+              # Pods 0..(current_known-1) are existing nodes; pods
+              # current_known..(DESIRED_TOTAL-1) are new. The first
+              # (DESIRED_MASTERS - current_size) of the new pods become masters,
+              # the rest become replicas.
               new_masters_count=$(( DESIRED_MASTERS - current_size ))
               echo "scale-up: adding ${new_masters_count} master(s) and the corresponding replicas"
 
@@ -121,15 +139,16 @@ spec:
                 new_host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
                 if [ "${added_masters}" -lt "${new_masters_count}" ]; then
                   echo "adding ${new_host} as MASTER"
-                  valkey-cli ${AUTH} --cluster add-node \
+                  vc_cluster --cluster add-node \
                     "${new_host}:${CLIENT_PORT}" "${first}:${CLIENT_PORT}"
                   added_masters=$(( added_masters + 1 ))
                 else
-                  # Find the master with the fewest replicas to balance.
-                  master_id=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER NODES \
+                  # Pick any healthy master to attach the new replica to;
+                  # rebalance below redistributes slots.
+                  master_id=$(vc "${first}" CLUSTER NODES \
                     | awk '/master/ && !/fail/ {print $1}' | head -n 1)
                   echo "adding ${new_host} as REPLICA of ${master_id}"
-                  valkey-cli ${AUTH} --cluster add-node \
+                  vc_cluster --cluster add-node \
                     --cluster-slave --cluster-master-id "${master_id}" \
                     "${new_host}:${CLIENT_PORT}" "${first}:${CLIENT_PORT}"
                 fi
@@ -141,14 +160,14 @@ spec:
               # Rebalance slots across all masters (online reshard).
               if [ "${new_masters_count}" -gt 0 ]; then
                 echo "rebalancing slots across ${DESIRED_MASTERS} masters"
-                valkey-cli ${AUTH} --cluster rebalance \
+                vc_cluster --cluster rebalance \
                   --cluster-use-empty-masters \
                   --cluster-pipeline "${SLOTS_PER_MOVE}" \
                   "${first}:${CLIENT_PORT}"
               fi
 
               echo "scale-up complete"
-              valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO
+              vc "${first}" CLUSTER INFO
           resources:
             {{- toYaml .Values.jobs.resources | nindent 12 }}
           securityContext:

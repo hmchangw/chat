@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: {{ include "valkey-cluster.fullname" . }}-connection-test
+  name: {{ include "valkey-cluster.connectionTestPodName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "valkey-cluster.labels" . | nindent 4 }}
@@ -44,30 +44,44 @@ spec:
         - -c
         - |
           set -eu
-          AUTH=""
-          [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
 
-          # cluster_state must be ok
-          state=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_state:/ {print $2}' | tr -d '\r')
+          vc() {
+            if [ -n "${VALKEY_PASSWORD:-}" ]; then
+              valkey-cli -h "${HOST}" -p "${PORT}" -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+            else
+              valkey-cli -h "${HOST}" -p "${PORT}" "$@"
+            fi
+          }
+
+          vcc() {
+            # cluster-aware (-c): follow MOVED/ASK redirects.
+            if [ -n "${VALKEY_PASSWORD:-}" ]; then
+              valkey-cli -c -h "${HOST}" -p "${PORT}" -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+            else
+              valkey-cli -c -h "${HOST}" -p "${PORT}" "$@"
+            fi
+          }
+
+          # Snapshot CLUSTER INFO once and parse multiple fields off it.
+          cluster_info=$(vc CLUSTER INFO)
+          state=$(echo "${cluster_info}" | awk -F: '/^cluster_state:/ {print $2}' | tr -d '\r')
           [ "${state}" = "ok" ] || { echo "FAIL: cluster_state=${state}"; exit 1; }
 
-          # slot coverage must be full
-          slots=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r')
+          slots=$(echo "${cluster_info}" | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r')
           [ "${slots}" = "16384" ] || { echo "FAIL: cluster_slots_assigned=${slots}"; exit 1; }
 
-          # node and master counts match the chart's intent
-          known=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
+          known=$(echo "${cluster_info}" | awk -F: '/^cluster_known_nodes:/ {print $2}' | tr -d '\r')
           [ "${known}" = "${EXPECTED_TOTAL}" ] || { echo "FAIL: cluster_known_nodes=${known} expected=${EXPECTED_TOTAL}"; exit 1; }
 
-          size=$(valkey-cli -h "${HOST}" -p "${PORT}" ${AUTH} CLUSTER INFO | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
+          size=$(echo "${cluster_info}" | awk -F: '/^cluster_size:/ {print $2}' | tr -d '\r')
           [ "${size}" = "${EXPECTED_MASTERS}" ] || { echo "FAIL: cluster_size=${size} expected=${EXPECTED_MASTERS}"; exit 1; }
 
-          # Basic set/get round-trip through a cluster-aware connection.
+          # set/get round-trip through a cluster-aware connection.
           key="helm-test-$(date +%s)"
-          valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} SET "${key}" "ok" >/dev/null
-          got=$(valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} GET "${key}")
+          vcc SET "${key}" "ok" >/dev/null
+          got=$(vcc GET "${key}")
           [ "${got}" = "ok" ] || { echo "FAIL: get returned '${got}' expected 'ok'"; exit 1; }
-          valkey-cli -c -h "${HOST}" -p "${PORT}" ${AUTH} DEL "${key}" >/dev/null
+          vcc DEL "${key}" >/dev/null
 
           echo "PASS: cluster_state=ok slots=16384 known=${known} size=${size} set/get round-trip ok"
       resources:

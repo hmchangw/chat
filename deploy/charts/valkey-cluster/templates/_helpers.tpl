@@ -63,6 +63,28 @@
 {{- end -}}
 {{- end -}}
 
+{{/* Suffixed names — Jobs/Pods spawn pods with a hash suffix, so the
+     job/pod name must fit in 63 - <hash> chars. We aggressively truncate
+     the base fullname to leave room for the suffix. */}}
+
+{{- define "valkey-cluster.clusterCreateJobName" -}}
+{{- /* "-cluster-create" = 15 chars, pod-hash suffix needs ~6 → base ≤ 42 */ -}}
+{{- $base := include "valkey-cluster.fullname" . | trunc 42 | trimSuffix "-" -}}
+{{- printf "%s-cluster-create" $base -}}
+{{- end -}}
+
+{{- define "valkey-cluster.clusterScaleJobName" -}}
+{{- /* "-scale-" + 14-char date stamp = 21 chars, pod-hash ~6 → base ≤ 36 */ -}}
+{{- $base := include "valkey-cluster.fullname" . | trunc 36 | trimSuffix "-" -}}
+{{- printf "%s-scale-%s" $base (now | date "20060102150405") -}}
+{{- end -}}
+
+{{- define "valkey-cluster.connectionTestPodName" -}}
+{{- /* helm-test Pod is not spawned by a Job, so the 63 limit applies directly */ -}}
+{{- $base := include "valkey-cluster.fullname" . | trunc 47 | trimSuffix "-" -}}
+{{- printf "%s-connection-test" $base -}}
+{{- end -}}
+
 {{/* ------------------------------------------------------------------------
      Labels
    ------------------------------------------------------------------------ */}}

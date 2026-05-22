@@ -2,7 +2,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "valkey-cluster.fullname" . }}-cluster-create
+  name: {{ include "valkey-cluster.clusterCreateJobName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "valkey-cluster.labels" . | nindent 4 }}
@@ -68,8 +68,15 @@ spec:
             - |
               set -eu
 
-              AUTH=""
-              [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+              # vc HOST [args...]: valkey-cli against HOST:CLIENT_PORT, with auth iff a password is set.
+              vc() {
+                _host=$1; shift
+                if [ -n "${VALKEY_PASSWORD:-}" ]; then
+                  valkey-cli -h "${_host}" -p "${CLIENT_PORT}" -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+                else
+                  valkey-cli -h "${_host}" -p "${CLIENT_PORT}" "$@"
+                fi
+              }
 
               # Wait for every pod's client port to be reachable.
               deadline=$(( $(date +%s) + READY_TIMEOUT ))
@@ -77,7 +84,7 @@ spec:
               while [ "$i" -lt "$TOTAL_NODES" ]; do
                 host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
                 echo "waiting for ${host}:${CLIENT_PORT}"
-                while ! valkey-cli -h "${host}" -p "${CLIENT_PORT}" ${AUTH} PING >/dev/null 2>&1; do
+                while ! vc "${host}" PING >/dev/null 2>&1; do
                   if [ "$(date +%s)" -ge "$deadline" ]; then
                     echo "timeout waiting for ${host}"
                     exit 1
@@ -87,16 +94,16 @@ spec:
                 i=$(( i + 1 ))
               done
 
-              # Idempotency: if any node already reports cluster_enabled with
-              # slots assigned, assume cluster is already formed and exit.
+              # Idempotency: if any node already reports slots assigned, assume the
+              # cluster is already formed and exit.
               first="${STS_NAME}-0.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
-              slots=$(valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r' || echo 0)
+              slots=$(vc "${first}" CLUSTER INFO 2>/dev/null | awk -F: '/^cluster_slots_assigned:/ {print $2}' | tr -d '\r' || echo 0)
               if [ "${slots:-0}" -ge 16384 ]; then
                 echo "cluster already initialized (cluster_slots_assigned=${slots}), skipping CLUSTER CREATE"
                 exit 0
               fi
 
-              # Build node list and run CLUSTER CREATE.
+              # Build space-separated node list for --cluster create.
               nodes=""
               i=0
               while [ "$i" -lt "$TOTAL_NODES" ]; do
@@ -105,13 +112,20 @@ spec:
               done
 
               echo "creating cluster: masters=${MASTERS} replicas/master=${REPLICAS_PER_MASTER}"
-              # shellcheck disable=SC2086
-              valkey-cli ${AUTH} --cluster create ${nodes} \
-                --cluster-replicas "${REPLICAS_PER_MASTER}" \
-                --cluster-yes
+              if [ -n "${VALKEY_PASSWORD:-}" ]; then
+                # shellcheck disable=SC2086  # nodes is intentionally word-split
+                valkey-cli -a "${VALKEY_PASSWORD}" --no-auth-warning --cluster create ${nodes} \
+                  --cluster-replicas "${REPLICAS_PER_MASTER}" \
+                  --cluster-yes
+              else
+                # shellcheck disable=SC2086
+                valkey-cli --cluster create ${nodes} \
+                  --cluster-replicas "${REPLICAS_PER_MASTER}" \
+                  --cluster-yes
+              fi
 
               # Verify
-              valkey-cli -h "${first}" -p "${CLIENT_PORT}" ${AUTH} CLUSTER INFO
+              vc "${first}" CLUSTER INFO
           resources:
             {{- toYaml .Values.jobs.resources | nindent 12 }}
           securityContext:

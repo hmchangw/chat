@@ -74,16 +74,27 @@ data:
 
   liveness.sh: |
     #!/bin/sh
-    AUTH=""
-    [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
-    response=$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} PING 2>&1)
+    # vc: invoke valkey-cli against localhost with auth iff a password is set.
+    vc() {
+      if [ -n "${VALKEY_PASSWORD:-}" ]; then
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+      else
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} "$@"
+      fi
+    }
+    response=$(vc PING 2>&1)
     [ "${response}" = "PONG" ] || [ "${response}" = "LOADING Valkey is loading the dataset in memory" ]
 
   readiness.sh: |
     #!/bin/sh
-    AUTH=""
-    [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
-    response=$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} PING 2>&1)
+    vc() {
+      if [ -n "${VALKEY_PASSWORD:-}" ]; then
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+      else
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} "$@"
+      fi
+    }
+    response=$(vc PING 2>&1)
     [ "${response}" = "PONG" ]
 
   pre-stop.sh: |
@@ -91,19 +102,24 @@ data:
     # Graceful shutdown: if this pod is a master, ask the cluster to fail
     # over to a replica before we go away. Replicas just exit cleanly.
     set -eu
-    AUTH=""
-    [ -n "${VALKEY_PASSWORD:-}" ] && AUTH="-a ${VALKEY_PASSWORD} --no-auth-warning"
+    vc() {
+      if [ -n "${VALKEY_PASSWORD:-}" ]; then
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+      else
+        valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} "$@"
+      fi
+    }
 
-    role=$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
+    role=$(vc INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
     if [ "${role}" = "master" ]; then
       echo "preStop: triggering CLUSTER FAILOVER for master ${POD_NAME}"
-      valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} CLUSTER FAILOVER || true
+      vc CLUSTER FAILOVER || true
 
-      # Wait for slot ownership to leave this node, up to gracefulShutdown.timeoutSeconds.
+      # Wait until role flips to replica (failover propagated), bounded by
+      # lifecycle.gracefulShutdown.timeoutSeconds.
       deadline=$(( $(date +%s) + {{ .Values.lifecycle.gracefulShutdown.timeoutSeconds }} ))
       while [ "$(date +%s)" -lt "${deadline}" ]; do
-        owned=$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} CLUSTER COUNT-FAILURE-REPORTS "$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} CLUSTER MYID 2>/dev/null | tr -d '\r')" 2>/dev/null || echo 0)
-        role=$(valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} ${AUTH} INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
+        role=$(vc INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
         if [ "${role}" = "slave" ]; then
           echo "preStop: failover complete, now a replica"
           break
