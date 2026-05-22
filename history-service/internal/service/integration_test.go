@@ -43,7 +43,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// messages_by_room
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 		room_id TEXT, bucket BIGINT, created_at TIMESTAMP, message_id TEXT, thread_room_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
@@ -56,7 +56,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// messages_by_id
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
 		message_id TEXT, room_id TEXT, thread_room_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
@@ -70,7 +70,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// thread_messages_by_room — needed by TestDeleteMessage_ParentWithReplies_NoCascade
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room (
 		room_id TEXT, bucket BIGINT, thread_room_id TEXT, created_at TIMESTAMP, message_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
@@ -102,14 +102,15 @@ type recordingPublisher struct {
 type recordedMessage struct {
 	Subject string
 	Data    []byte
+	MsgID   string
 }
 
-func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte, msgID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	p.sent = append(p.sent, recordedMessage{Subject: subj, Data: cp})
+	p.sent = append(p.sent, recordedMessage{Subject: subj, Data: cp, MsgID: msgID})
 	return nil
 }
 

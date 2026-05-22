@@ -107,7 +107,6 @@ export interface Room {
   id: string
   name: string
   type: RoomType
-  createdBy: string
   siteId: string
   userCount: number
   appCount: number
@@ -259,6 +258,19 @@ export interface SubscriptionUpdateEvent {
   userId: string
   subscription: DMSubscription
   action: SubscriptionUpdateAction
+  timestamp: number
+}
+
+/**
+ * Mirrors pkg/model.RoomKeyEvent — payload of
+ * chat.user.{account}.event.room.key. PrivateKey is base64-encoded on
+ * the wire (Go's encoding/json default for []byte). PublicKey is
+ * omitted from the client wire payload.
+ */
+export interface RoomKeyEvent {
+  roomId: string
+  version: number
+  privateKey: string  // base64
   timestamp: number
 }
 
