@@ -3594,3 +3594,43 @@ func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "publish mute-toggled outbox")
 }
+
+// publishCore failure is intentionally non-fatal: the DB write is the source
+// of truth and other client sessions reconcile on their next subscription
+// refetch. The handler must still reply ok.
+func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:               "r1",
+			SiteID:               "site-a",
+			DisableNotifications: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishCore: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("core nats down")
+		},
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site mute toggle")
+			return nil
+		},
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	resp, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err, "publishCore failure must be non-fatal — DB write is the source of truth")
+
+	var got model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.DisableNotifications)
+}
