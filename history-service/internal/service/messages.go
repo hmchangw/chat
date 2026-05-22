@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -454,4 +456,28 @@ func (s *HistoryService) publishCanonicalBestEffort(c *natsrouter.Context, subj 
 		slog.Warn("canonical publish failed",
 			"error", err, "subject", subj, "messageID", evt.Message.ID, "roomID", evt.Message.RoomID)
 	}
+}
+
+// hydrateReactions fills msgs[i].Reactions from the message_reactions side
+// table. Messages with no reactions are left with a nil Reactions map
+// (callers and JSON encoding must treat nil as "no reactions"). Returns the
+// wrapped repo error on failure; on success msgs is mutated in place.
+func (s *HistoryService) hydrateReactions(ctx context.Context, msgs []models.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(msgs))
+	for i := range msgs {
+		ids[i] = msgs[i].MessageID
+	}
+	reactions, err := s.msgReader.GetReactionsByMessageIDs(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("hydrating reactions: %w", err)
+	}
+	for i := range msgs {
+		if r, ok := reactions[msgs[i].MessageID]; ok {
+			msgs[i].Reactions = r
+		}
+	}
+	return nil
 }
