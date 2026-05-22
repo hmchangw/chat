@@ -29,9 +29,7 @@ type InboxStore interface {
 	// silent no-ops. Missing-subscription is also a silent no-op.
 	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
-	// ApplyThreadRead updates ThreadSubscription lastSeenAt/updatedAt/hasMention=false guarded
-	// by $lt lastSeenAt; only when that guard accepts does it then overwrite the Subscription's
-	// threadUnread+alert. Stale or missing thread-subs are silent no-ops on both rows.
+	// ApplyThreadRead writes ThreadSubscription under a $lt lastSeenAt guard, then the Subscription only if the guard accepted.
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
 }
 

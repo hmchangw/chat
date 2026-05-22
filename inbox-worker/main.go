@@ -182,10 +182,7 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 }
 
 func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error {
-	// Apply the guarded ThreadSubscription update first. If the $lt guard
-	// rejects the event as stale (or the row is missing), skip the
-	// Subscription update too — otherwise an out-of-order event would
-	// regress threadUnread/alert even while the thread-sub is protected.
+	// Guarded thread-sub update first; same gate then protects the Subscription overwrite.
 	tsFilter := bson.M{
 		"threadRoomId": threadRoomID,
 		"userAccount":  account,
