@@ -75,9 +75,10 @@ type RoomStore interface {
 	// ToggleSubscriptionMute atomically flips disableNotifications on the
 	// subscription keyed by (roomID, account) using a single aggregation-pipeline
 	// FindOneAndUpdate so concurrent toggles cannot deadlock or read-modify-write
-	// race. Returns the resulting value of disableNotifications post-flip.
+	// race. Returns the full post-flip subscription document so callers do not
+	// need a separate read to populate event payloads.
 	// Returns model.ErrSubscriptionNotFound (wrapped) when no subscription matches.
-	ToggleSubscriptionMute(ctx context.Context, roomID, account string) (bool, error)
+	ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error)
 	// GetUserSiteID returns the home site of a user looked up by account.
 	// Returns ("", nil) when the user is not found locally; callers treat
 	// that as "skip cross-site outbox".

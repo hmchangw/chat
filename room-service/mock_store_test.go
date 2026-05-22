@@ -312,10 +312,10 @@ func (mr *MockRoomStoreMockRecorder) MinSubscriptionLastSeenByRoomID(ctx, roomID
 }
 
 // ToggleSubscriptionMute mocks base method.
-func (m *MockRoomStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (bool, error) {
+func (m *MockRoomStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ToggleSubscriptionMute", ctx, roomID, account)
-	ret0, _ := ret[0].(bool)
+	ret0, _ := ret[0].(*model.Subscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

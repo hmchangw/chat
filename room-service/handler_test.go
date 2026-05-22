@@ -3207,16 +3207,14 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{
-			ID:     "s1",
-			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID: "r1",
-			SiteID: "site-a",
-		}, nil)
-	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
-		Return(true, nil)
+		Return(&model.Subscription{
+			ID:                   "s1",
+			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:               "r1",
+			SiteID:               "site-a",
+			DisableNotifications: true,
+		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("site-a", nil) // same site → no outbox publish
@@ -3261,14 +3259,13 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{
-			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID: "r1", SiteID: "site-a",
-		}, nil)
-	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
-		Return(true, nil)
+		Return(&model.Subscription{
+			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:               "r1",
+			SiteID:               "site-a",
+			DisableNotifications: true,
+		}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("site-b", nil)
@@ -3310,7 +3307,7 @@ func TestHandler_MuteToggle_NotRoomMember(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(nil, model.ErrSubscriptionNotFound)
 
 	h := &Handler{
@@ -3340,13 +3337,8 @@ func TestHandler_MuteToggle_StoreError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{
-			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
-		}, nil)
-	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
-		Return(false, fmt.Errorf("db down"))
+		Return(nil, fmt.Errorf("db down"))
 
 	h := &Handler{
 		store: store, siteID: "site-a",
@@ -3364,13 +3356,10 @@ func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		GetSubscription(gomock.Any(), "alice", "r1").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
 		Return(&model.Subscription{
 			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		}, nil)
-	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
-		Return(true, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("", fmt.Errorf("mongo down"))

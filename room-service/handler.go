@@ -1249,15 +1249,7 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		)
 	}
 
-	sub, err := h.store.GetSubscription(ctx, account, roomID)
-	switch {
-	case errors.Is(err, model.ErrSubscriptionNotFound):
-		return nil, errNotRoomMember
-	case err != nil:
-		return nil, fmt.Errorf("get subscription: %w", err)
-	}
-
-	newVal, err := h.store.ToggleSubscriptionMute(ctx, roomID, account)
+	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
@@ -1267,11 +1259,9 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 
 	now := time.Now().UTC()
 
-	updatedSub := *sub
-	updatedSub.DisableNotifications = newVal
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID:       sub.User.ID,
-		Subscription: updatedSub,
+		Subscription: *sub,
 		Action:       "mute_toggled",
 		Timestamp:    now.UnixMilli(),
 	}
@@ -1292,7 +1282,7 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		payload := model.SubscriptionMuteToggledEvent{
 			Account:              account,
 			RoomID:               roomID,
-			DisableNotifications: newVal,
+			DisableNotifications: sub.DisableNotifications,
 			Timestamp:            now.UnixMilli(),
 		}
 		payloadData, err := json.Marshal(payload)
@@ -1315,5 +1305,5 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		}
 	}
 
-	return json.Marshal(model.MuteToggleResponse{Status: "ok", DisableNotifications: newVal})
+	return json.Marshal(model.MuteToggleResponse{Status: "ok", DisableNotifications: sub.DisableNotifications})
 }
