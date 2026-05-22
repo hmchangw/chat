@@ -3358,3 +3358,34 @@ func TestHandler_MuteToggle_StoreError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "toggle subscription mute")
 }
+
+func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{
+			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		}, nil)
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(true, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("", fmt.Errorf("mongo down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called when GetUserSiteID fails")
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get user siteId")
+}

@@ -1286,8 +1286,7 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 
 	userSiteID, err := h.store.GetUserSiteID(ctx, account)
 	if err != nil {
-		slog.Warn("get user siteId failed; skipping outbox", "error", err, "account", account)
-		return json.Marshal(model.MuteToggleResponse{Status: "ok", DisableNotifications: newVal})
+		return nil, fmt.Errorf("get user siteId: %w", err)
 	}
 	if userSiteID != "" && userSiteID != h.siteID {
 		payload := model.SubscriptionMuteToggledEvent{
