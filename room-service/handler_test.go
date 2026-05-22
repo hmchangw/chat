@@ -3194,6 +3194,26 @@ func TestHandler_MessageThreadRead_ThreadSubNotFound(t *testing.T) {
 	assert.Equal(t, 0, f.publishCalls)
 }
 
+// Regression for the errgroup.WithContext bug: against real Mongo, when one
+// goroutine fails with ErrThreadSubscriptionNotFound, an errgroup.WithContext
+// cancels the others, causing them to return context.Canceled. Earlier code
+// then matched `case subErr != nil` first and surfaced the wrapped
+// context.Canceled as "internal error" instead of errThreadSubNotFound.
+// Simulate by returning context.Canceled on the siblings.
+func TestHandler_MessageThreadRead_ThreadSubNotFound_SiblingsCancelled(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, context.Canceled).AnyTimes()
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(nil, model.ErrThreadSubscriptionNotFound)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").
+		Return("", context.Canceled).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.ErrorIs(t, err, errThreadSubNotFound)
+}
+
 func TestHandler_MessageThreadRead_BothMiss_RoomNotMemberWins(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		f := newThreadReadFixture(t)

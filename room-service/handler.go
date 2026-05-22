@@ -1192,36 +1192,40 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 	}
 
 	// Manual priority after Wait(): errNotRoomMember > errThreadSubNotFound > internal errors.
+	// Plain errgroup.Group (not WithContext) so a NotFound from one goroutine does NOT cancel
+	// the siblings — otherwise context.Canceled in subErr/userSiteErr would outrank tsubErr.
 	var (
 		sub                          *model.Subscription
 		tsub                         *model.ThreadSubscription
 		userSiteID                   string
 		subErr, tsubErr, userSiteErr error
 	)
-	g, gctx := errgroup.WithContext(ctx)
+	var g errgroup.Group
 	g.Go(func() error {
-		s, err := h.store.GetSubscription(gctx, account, roomID)
+		s, err := h.store.GetSubscription(ctx, account, roomID)
 		sub, subErr = s, err
 		return err
 	})
 	g.Go(func() error {
-		t, err := h.store.GetThreadSubscriptionByParent(gctx, account, req.ThreadID, roomID)
+		t, err := h.store.GetThreadSubscriptionByParent(ctx, account, req.ThreadID, roomID)
 		tsub, tsubErr = t, err
 		return err
 	})
 	g.Go(func() error {
-		s, err := h.store.GetUserSiteID(gctx, account)
+		s, err := h.store.GetUserSiteID(ctx, account)
 		userSiteID, userSiteErr = s, err
 		return err
 	})
 	_ = g.Wait()
+	// Specific NotFound sentinels first so they always outrank any sibling
+	// goroutine's generic error (defends against accidental ctx cancellation).
 	switch {
 	case errors.Is(subErr, model.ErrSubscriptionNotFound):
 		return nil, errNotRoomMember
-	case subErr != nil:
-		return nil, fmt.Errorf("get subscription: %w", subErr)
 	case errors.Is(tsubErr, model.ErrThreadSubscriptionNotFound):
 		return nil, errThreadSubNotFound
+	case subErr != nil:
+		return nil, fmt.Errorf("get subscription: %w", subErr)
 	case tsubErr != nil:
 		return nil, fmt.Errorf("get thread subscription: %w", tsubErr)
 	case userSiteErr != nil:
