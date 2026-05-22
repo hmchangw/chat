@@ -3378,3 +3378,33 @@ func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get user siteId")
 }
+
+func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:                 model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:               "r1",
+			SiteID:               "site-a",
+			DisableNotifications: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("nats unavailable")
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish mute-toggled outbox")
+}
