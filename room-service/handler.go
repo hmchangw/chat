@@ -30,7 +30,7 @@ import (
 
 type Handler struct {
 	store RoomStore
-	// keyStore is set when VALKEY_ADDR is configured (always in production; tests may pass nil).
+	// keyStore is set when VALKEY_ADDRS is configured (always in production; tests may pass nil).
 	keyStore          RoomKeyStore
 	memberListClient  MemberListClient
 	msgReader         MessageReader
@@ -98,6 +98,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	}
 	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
 		return fmt.Errorf("subscribe org members: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
+		return fmt.Errorf("subscribe room key ensure: %w", err)
 	}
 	return nil
 }
@@ -311,6 +314,16 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 		return nil, errEmptyCreateRequest
 	}
 
+	// Reject phantom orgs before sizing/publishing, same reason as
+	// handleAddMembers: the worker writes room_members + sys-msg without
+	// rechecking org validity.
+	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
+		return nil, err
+	}
+	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+		return nil, err
+	}
+
 	// Pass requesterAccount as excludeAccount: the requester was stripped from
 	// allUsers but can still be re-added by org expansion (when their account
 	// is in any of the resolved orgs). Excluding them from the count lets us
@@ -356,11 +369,10 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		if err != nil {
 			return nil, fmt.Errorf("generate room key: %w", err)
 		}
-		if _, err := h.keyStore.Set(ctx, req.RoomID, pair); err != nil {
+		if _, err := h.keyStore.Set(ctx, req.RoomID, *pair); err != nil {
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return nil, fmt.Errorf("store room key: %w", err)
 		}
-		roomkeymetrics.KeyGenerated.Add(ctx, 1)
 	}
 
 	payload, err := json.Marshal(req)
@@ -537,18 +549,6 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	// Stable seed for room-worker's deterministic system-message IDs across JetStream redeliveries.
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
-	// Stamp current Valkey version so room-worker's skip-rotation guard can detect already-rotated redeliveries.
-	if h.keyStore != nil {
-		current, err := h.keyStore.Get(ctx, req.RoomID)
-		if err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-			return nil, fmt.Errorf("get current room key: %w", err)
-		}
-		if current != nil {
-			req.BaseKeyVersion = current.Version
-		}
-	}
-
 	// Publish to ROOMS stream for room-worker processing.
 	data, err = json.Marshal(req)
 	if err != nil {
@@ -714,6 +714,19 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
 	allUsers := dedup(append(req.Users, channelAccounts...))
 
+	// 6a. Reject phantom orgs up front. Without this, room-worker writes a
+	// room_members row for the bogus orgId and fans out a "members added"
+	// sys-msg even though no user matches the org.
+	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
+		return nil, err
+	}
+	// 6b. Reject phantom users symmetrically — a typo'd account would be
+	// silently dropped by the candidates pipeline and the async job would
+	// still report success.
+	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+		return nil, err
+	}
+
 	// 7. Count net-new members (count-only — actual list materialized in room-worker)
 	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID, "")
 	if err != nil {
@@ -745,6 +758,60 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 
 	// 10. Reply accepted
 	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+// validateAccountsExist wraps errUserNotFound with the first phantom account
+// (via fmt.Errorf("user %q: %w", …)) when any account has no matching user
+// document; errors.Is(err, errUserNotFound) holds. Without this gate a typo'd
+// account is silently dropped and the async job reports success.
+func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	existing, err := h.store.FindExistingAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("validate accounts: %w", err)
+	}
+	if len(existing) == len(accounts) {
+		return nil
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, a := range existing {
+		have[a] = struct{}{}
+	}
+	for _, a := range accounts {
+		if _, ok := have[a]; !ok {
+			return fmt.Errorf("user %q: %w", a, errUserNotFound)
+		}
+	}
+	return nil
+}
+
+// validateOrgIDs wraps errInvalidOrg with the first phantom orgID (via
+// fmt.Errorf("org %q: %w", …)) when any orgID has zero backing users
+// (no user with sectId==orgID or deptId==orgID); errors.Is(err, errInvalidOrg)
+// holds. No-op when orgIDs is empty.
+func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
+	if len(orgIDs) == 0 {
+		return nil
+	}
+	existing, err := h.store.FindExistingOrgIDs(ctx, orgIDs)
+	if err != nil {
+		return fmt.Errorf("validate org ids: %w", err)
+	}
+	if len(existing) == len(orgIDs) {
+		return nil
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, id := range existing {
+		have[id] = struct{}{}
+	}
+	for _, id := range orgIDs {
+		if _, ok := have[id]; !ok {
+			return fmt.Errorf("org %q: %w", id, errInvalidOrg)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {
@@ -1288,4 +1355,59 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
+// NatsHandleEnsureRoomKey handles server-to-server requests to ensure a room
+// has an encryption key pair in Valkey. Generates and stores a new pair if
+// missing. The reply confirms the room and version but does not return key
+// bytes — encryption/decryption is performed by broadcast-worker and clients,
+// which read keys from Valkey directly.
+func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Data)
+	if err != nil {
+		slog.Error("ensure room key failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to ensure room key", "error", err)
+	}
+}
+
+func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte, error) {
+	if h.keyStore == nil {
+		return nil, fmt.Errorf("ensure room key: key store not configured")
+	}
+	var req model.RoomKeyEnsureRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("ensure room key: decode request: %w", err)
+	}
+	if req.RoomID == "" {
+		return nil, fmt.Errorf("ensure room key: roomId is required")
+	}
+
+	existing, err := h.keyStore.Get(ctx, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: get: %w", err)
+	}
+	if existing != nil {
+		return json.Marshal(model.RoomKeyEnsureResponse{
+			RoomID:  req.RoomID,
+			Version: existing.Version,
+		})
+	}
+
+	newPair, err := roomkeystore.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: generate key pair: %w", err)
+	}
+	ver, err := h.keyStore.Set(ctx, req.RoomID, *newPair)
+	if err != nil {
+		return nil, fmt.Errorf("ensure room key: set: %w", err)
+	}
+	return json.Marshal(model.RoomKeyEnsureResponse{
+		RoomID:  req.RoomID,
+		Version: ver,
+	})
 }

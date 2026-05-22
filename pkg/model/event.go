@@ -203,12 +203,23 @@ type RoomEvent struct {
 }
 
 type RoomKeyEvent struct {
-	RoomID  string `json:"roomId"`
-	Version int    `json:"version"`
-	// PublicKey is server-side only; omitted from the client wire payload (clients only need PrivateKey).
-	PublicKey  []byte `json:"publicKey,omitempty"`
+	RoomID     string `json:"roomId"`
+	Version    int    `json:"version"`
 	PrivateKey []byte `json:"privateKey"`
 	Timestamp  int64  `json:"timestamp" bson:"timestamp"`
+}
+
+// RoomKeyEnsureRequest is the payload for the room key ensure RPC.
+type RoomKeyEnsureRequest struct {
+	RoomID string `json:"roomId"`
+}
+
+// RoomKeyEnsureResponse is the reply from the room key ensure RPC. It confirms
+// the room has a key pair in Valkey at the given Version. Key bytes are not
+// returned — the caller only needs to know the key exists.
+type RoomKeyEnsureResponse struct {
+	RoomID  string `json:"roomId"`
+	Version int    `json:"version"`
 }
 
 type MemberRemoveEvent struct {

@@ -31,7 +31,7 @@ func (p *mockPublisher) publishCount() int {
 }
 
 // stubRoomKeyStore is a zero-config RoomKeyStore for tests that don't exercise
-// key behavior (production now requires Valkey via the VALKEY_ADDR=required
+// key behavior (production now requires Valkey via the VALKEY_ADDRS=required
 // gate, so the Handler can no longer be constructed with a nil keyStore).
 // Tests that DO exercise key behavior should build their own MockRoomKeyStore
 // with explicit EXPECTations rather than using this stub.
@@ -46,7 +46,6 @@ func (stubRoomKeyStore) Get(_ context.Context, _ string) (*roomkeystore.Versione
 	return &roomkeystore.VersionedKeyPair{
 		Version: 0,
 		KeyPair: roomkeystore.RoomKeyPair{
-			PublicKey:  bytes.Repeat([]byte{0x04}, 65),
 			PrivateKey: bytes.Repeat([]byte{0x05}, 32),
 		},
 	}, nil
@@ -54,6 +53,10 @@ func (stubRoomKeyStore) Get(_ context.Context, _ string) (*roomkeystore.Versione
 
 func (stubRoomKeyStore) Set(_ context.Context, _ string, _ roomkeystore.RoomKeyPair) (int, error) {
 	return 0, nil
+}
+
+func (stubRoomKeyStore) SetWithVersion(_ context.Context, _ string, _ roomkeystore.RoomKeyPair, _ int) error {
+	return nil
 }
 
 func (stubRoomKeyStore) Rotate(_ context.Context, _ string, _ roomkeystore.RoomKeyPair) (int, error) {

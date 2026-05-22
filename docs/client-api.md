@@ -25,7 +25,6 @@ paths.
    - [3.1 room-service](#31-room-service)
    - [3.2 history-service](#32-history-service)
    - [3.3 search-service](#33-search-service)
-   - [3.4 user-service (mock)](#34-user-service-mock)
 4. [Message Send](#4-message-send)
 5. [Server-Pushed Events](#5-server-pushed-events)
    - [5.1 Room Encryption Keys](#51-room-encryption-keys)
@@ -197,18 +196,22 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 |--------------------|----------|----------|-------|
 | `name`             | string   | yes      | Room name. |
 | `type`             | string   | yes      | One of `channel`, `dm`, `botDM`, `discussion`. |
-| `createdBy`        | string   | yes      | Internal user ID of the creator. |
-| `createdByAccount` | string   | yes      | Account name of the creator. Used for the owner subscription. |
 | `siteId`           | string   | yes      | The site that will own this room. |
 | `members`          | string[] | no       | Required exactly **one** entry when `type=dm` (the other user's ID); ignored otherwise. |
+| `users`            | string[] | no       | `channel` only. Internal user IDs (or accounts) to enroll as members at creation time. Rejected with `"user not found"` if any entry has no matching user document. |
+| `orgs`             | string[] | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Rejected with `"invalid org"` if any entry matches zero users. |
+| `channels`         | array<ChannelRef> | no | `channel` only. Other channels whose members should be copied in. Each entry is `{ "roomId": string, "siteId": string }`. |
+
+The creator's account is taken from the `{account}` segment of the subject (`chat.user.{account}.request.rooms.create`); the client does not pass it in the body.
 
 ```json
 {
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
-  "createdByAccount": "alice",
-  "siteId": "siteA"
+  "siteId": "siteA",
+  "users": ["bob"],
+  "orgs": ["org-eng"],
+  "channels": []
 }
 ```
 
@@ -221,9 +224,8 @@ The created `Room` object.
 | `id`                | string  | Room ID. 17-char base62 for channels; sorted concat of two accounts for DMs. |
 | `name`              | string  |       |
 | `type`              | string  | Same values as request. |
-| `createdBy`         | string  |       |
 | `siteId`            | string  |       |
-| `userCount`         | number  | `1` immediately after creation (the owner). |
+| `userCount`         | number  | `1` for owner-only creates; higher when initial members were enrolled at creation via `users` / `orgs` / `channels`. |
 | `lastMsgAt`         | string  | Optional. RFC 3339 timestamp; absent until first message. |
 | `lastMsgId`         | string  | Empty until first message. |
 | `lastMentionAllAt`  | string  | Optional. RFC 3339 timestamp. |
@@ -239,7 +241,6 @@ The created `Room` object.
   "id": "01970a4f8c2d7c9aQ",
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "siteId": "siteA",
   "userCount": 1,
   "lastMsgId": "",
@@ -250,7 +251,7 @@ The created `Room` object.
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference).
+See [Error envelope](#6-error-envelope-reference). Channel creates also reject any `orgs` entry that matches zero users with `"invalid org"` and any `users` entry without a matching user document with `"user not found"` (same gates as Add Members — phantom org IDs or accounts do not create a room).
 
 ```json
 { "error": "DM requires exactly one other member, got 0" }
@@ -258,7 +259,7 @@ See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
-`None — reply only.` Member additions are a separate RPC (Add Members); creating a room only enrolls the owner.
+`None — reply only.` Creation enrolls the owner (from the subject's `{account}`) plus any members supplied via `users` / `orgs` / `channels` per the request schema above. Adding members to an existing room is a separate RPC (Add Members).
 
 ##### Triggered events — error path
 
@@ -292,7 +293,6 @@ Empty. Send `{}` or no payload.
       "id": "01970a4f8c2d7c9aQ",
       "name": "engineering-announcements",
       "type": "channel",
-      "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
       "siteId": "siteA",
       "userCount": 12,
       "lastMsgAt": "2026-05-06T07:55:00Z",
@@ -342,7 +342,6 @@ A single `Room` object. See [Create Room](#create-room) for the `Room` schema.
   "id": "01970a4f8c2d7c9aQ",
   "name": "engineering-announcements",
   "type": "channel",
-  "createdBy": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "siteId": "siteA",
   "userCount": 12,
   "lastMsgAt": "2026-05-06T07:55:00Z",
@@ -412,7 +411,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner).
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `"invalid org"`, and any `users` entry that has no matching user document is rejected with `"user not found"` — in both cases the request is not queued and no members are added.
 
 ```json
 { "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
@@ -919,7 +918,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 **Subject:** `chat.user.{account}.request.orgs.{orgID}.members`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-The org ID is the second-to-last subject segment — there is no request body.
+The org ID is the second-to-last subject segment — there is no request body. `orgID` matches a user's `sectId` OR `deptId`; the response includes every user whose either field equals `orgID`. This mirrors the dept-aware org membership pipelines on the server side (a room may be added by sect-level or dept-level org and either form resolves through this endpoint).
 
 ##### Request body
 
@@ -990,7 +989,6 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `messageId` | string | 17- or 20-char base62. |
 | `sender` | object | A `Participant` — see below. |
 | `msg` | string | The message body. |
-| `targetUser` | object | Optional. `Participant` — set for direct/system messages addressed to a specific user. |
 | `mentions` | array<Participant> | Optional. |
 | `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
 | `file` | object | Optional. `{id, name, type}`. |
@@ -1790,44 +1788,6 @@ The response is a top-level JSON array of `SearchUser` objects (no wrapping obje
 
 ---
 
-### 3.4 user-service (mock)
-
-> **Dev-only.** Implemented by `mock-user-service` with hardcoded
-> responses. Subjects and shapes are stable; switch to a real
-> implementation later by swapping the handler bodies.
-
-All subjects share the prefix `chat.user.{account}.request.user.{siteID}.`
-unless noted. siteID must match the deployed mock's `SITE_ID`; otherwise
-the reply is `{"error":"unknown site","code":"not_found"}`.
-
-| # | Suffix | Builder | Request | Response |
-|---|---|---|---|---|
-| 1 | `status.getByName` | `subject.UserStatusGetByName(account, siteID)` | `{"name": "<string>"}` | `{"name": "<echoed>", "statusText": "available", "statusIsShow": true}` |
-| 2 | `status.set` | `subject.UserStatusSet(account, siteID)` | `{"statusText": "<string>", "statusIsShow": <bool>}` | `{"success": true}` |
-| 3 | `profile.getByName` | `subject.UserProfileGetByName(account, siteID)` | `{"name": "<string>"}` | `{"name": "<echoed>", "displayName": "Mock User", "email": "mock@example.test"}` |
-| 4 | `subscription.getCurrent` | `subject.UserSubscriptionGetCurrent(account, siteID)` | `{"favorite": <bool?>, "membersContain": <string[]?>, "accountNames": <string[]?>}` | `{"subscriptions": [<Subscription>, <Subscription>], "total": 2}` |
-| 5 | `subscription.getRooms` | `subject.UserSubscriptionGetRooms(account, siteID)` | same as #4 | same as #4 |
-| 6 | `subscription.getChannels` | `subject.UserSubscriptionGetChannels(account, siteID)` | same as #4 | same as #4 |
-| 7 | `subscription.getDM` | `subject.UserSubscriptionGetDM(account, siteID)` | `{"targetAccount": "<string>"}` | `{"subscription": <Subscription with User.Account == targetAccount>}` |
-| 8 | `subscription.getApps` | `subject.UserSubscriptionGetApps(account, siteID)` | `{"favorite": <bool?>}` | `{"subscriptions": [<Subscription>, <Subscription>], "total": 2}` |
-| 9 | `subscription.subscribeApp` | `subject.UserSubscriptionSubscribeApp(account, siteID)` | `{"appId": "<string>"}` | `{"success": true}` |
-| 10 | `subscription.unsubscribeApp` | `subject.UserSubscriptionUnsubscribeApp(account, siteID)` | `{"appId": "<string>"}` | `{"success": true}` |
-| 11 | `room.{roomID}.subscription.get` | `subject.UserRoomSubscriptionGet(account, siteID, roomID)` | _no body_ | `{"subscription": <Subscription with RoomID == roomID>}` |
-| 12 | `apps.list` | `subject.UserAppsList(account, siteID)` | _no body_ | `{"apps": [<App>, <App>], "total": 2}` |
-| 13 | `subscription.count` | `subject.UserSubscriptionCount(account, siteID)` | `{"unread": <bool>}` | `{"count": 42}` |
-
-`<Subscription>` and `<App>` are the standard `pkg/model.Subscription`
-and `pkg/model.App` JSON shapes. Filter fields on request bodies (`favorite`,
-`membersContain`, `accountNames`, `unread`) are accepted and ignored by the
-mock — every list endpoint returns the same two mock entries regardless of
-input, and `subscription.count` always returns `42`.
-
-**Error envelope:** all routes return the standard `{"error": "...", "code": "..."}`
-shape on failure. The only error returned by the mock is `unknown site`
-(`code: not_found`).
-
----
-
 ## 4. Message Send
 
 ### Send Message
@@ -1945,7 +1905,7 @@ A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscrib
 | `mentionAll` | boolean | Optional. `true` if the message mentioned `@all` or `@here`. |
 | `hasMention` | boolean | Optional. Per-recipient flag (DM event only). Always absent on channel events. |
 | `message` | object | Optional. The `ClientMessage` (see [Message schema](#message-schema) plus a `sender` Participant). Set for unencrypted rooms. |
-| `encryptedMessage` | object | Optional. Raw `roomcrypto.EncryptedMessage` JSON. Set for encrypted (channel) rooms. Use the room's current key to decrypt. |
+| `encryptedMessage` | object | Optional. The room ciphertext envelope `{version, nonce, ciphertext}` (see [§5.1](#51-room-encryption-keys)). Set for encrypted (channel) rooms. Clients decrypt by deriving the AES-256-GCM key from the room private key for `version` and unsealing with `nonce` + `ciphertext`. |
 
 ```json
 {
@@ -1959,9 +1919,9 @@ A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscrib
   "lastMsgAt": "2026-05-06T07:55:00Z",
   "lastMsgId": "01970a4f8c2d7c9aQRST",
   "encryptedMessage": {
-    "v": 3,
-    "ciphertext": "<base64>",
-    "nonce": "<base64>"
+    "version": 3,
+    "nonce": "<base64-12-bytes>",
+    "ciphertext": "<base64-content-plus-16-byte-tag>"
   }
 }
 ```
@@ -2041,7 +2001,7 @@ Server-pushed events are delivered to clients on NATS subjects the client is alr
 
 ### 5.1 Room Encryption Keys
 
-Each room has a P-256 keypair generated server-side at create time. Channel rooms use the key for end-to-end message encryption: `broadcast-worker` populates `encryptedMessage` on channel events (§4.1) and clients use the private key to decrypt. DM and botDM rooms still receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+Each room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
 
 #### Subject
 
@@ -2057,17 +2017,21 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 {
   "roomId": "<room id>",
   "version": 0,
-  "privateKey": "<base64-encoded 32-byte P-256 scalar>",
+  "privateKey": "<base64-encoded 32-byte room secret>",
   "timestamp": 1747000000000
 }
 ```
 
-`[]byte` fields marshal to standard base64 in JSON. The room's public key is server-side only (used by `broadcast-worker` to encrypt outgoing messages) and is not transmitted to clients — clients only need the private key to decrypt incoming ciphertext.
+`[]byte` fields marshal to standard base64 in JSON. The `privateKey` is the 32-byte room secret used directly as the AES-256-GCM key; no public key field is transmitted.
 
 #### Client behavior
 
 1. On every `RoomKeyEvent`, store the key under `(roomId, version) → privateKey`.
-2. When decrypting an incoming message, use the `version` stamped in the encrypted payload to look up the corresponding private key.
+2. To decrypt an incoming `encryptedMessage` payload:
+   - Look up `privateKey` for `(roomId, encryptedMessage.version)`.
+   - Use the 32-byte `privateKey` directly as the AES-256-GCM key (no key derivation step).
+   - Decrypt: `AES-GCM-Decrypt(privateKey, nonce, ciphertext, aad=empty)`. The ciphertext already includes the 16-byte GCM tag at the end (Go `cipher.AEAD.Seal` format).
+   - The plaintext is a UTF-8-encoded JSON `ClientMessage` (for `encryptedMessage`) or a UTF-8 string (for `messageEdited.encryptedNewContent`).
 3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
 #### When clients receive `RoomKeyEvent`s
@@ -2077,6 +2041,8 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 - **Remove member (channels only):** the server rotates the room key. Surviving members receive a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving events for the room.
 
 Removed members keep prior keys for decrypting historical messages but cannot decrypt anything published after the rotation.
+
+**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to will be delivered as part of the `subscription.get*` RPC family (see user-service — to be documented). Until that extension lands, clients receive keys only via live events.
 
 ---
 

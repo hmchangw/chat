@@ -29,13 +29,23 @@ func TestUserJSON(t *testing.T) {
 	roundTrip(t, &u, &model.User{})
 }
 
+func TestUserJSON_WithSectAndDept(t *testing.T) {
+	u := model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a",
+		SectID: "S", SectName: "Sect", SectTCName: "部",
+		DeptID: "D", DeptName: "Dept", DeptTCName: "處",
+		EngName: "Alice", ChineseName: "爱丽丝",
+	}
+	roundTrip(t, &u, &model.User{})
+}
+
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	minSeen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 5,
+		SiteID: "site-a", UserCount: 5,
 		LastMsgAt:         &lastMsg,
 		LastMsgID:         "m1",
 		LastMentionAllAt:  &lastMention,
@@ -49,7 +59,7 @@ func TestRoomJSON(t *testing.T) {
 func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		SiteID: "site-a", UserCount: 1,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -78,7 +88,7 @@ func TestRoomJSON_NilTimestampsOmitted(t *testing.T) {
 func TestRoomJSON_WithDMParticipants(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "dm", Type: model.RoomTypeDM,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 2,
+		SiteID: "site-a", UserCount: 2,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UIDs:      []string{"u1", "u2"},
@@ -90,7 +100,7 @@ func TestRoomJSON_WithDMParticipants(t *testing.T) {
 func TestRoomJSON_NilDMParticipantsOmitted(t *testing.T) {
 	r := model.Room{
 		ID: "r1", Name: "general", Type: model.RoomTypeChannel,
-		CreatedBy: "u1", SiteID: "site-a", UserCount: 1,
+		SiteID: "site-a", UserCount: 1,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -869,7 +879,6 @@ func TestRoomKeyEventJSON(t *testing.T) {
 	src := model.RoomKeyEvent{
 		RoomID:     "room-1",
 		Version:    42,
-		PublicKey:  []byte{0x04, 0x01, 0x02, 0x03},
 		PrivateKey: []byte{0x0a, 0x0b, 0x0c},
 		Timestamp:  1735689600000,
 	}
@@ -885,6 +894,16 @@ func TestRoomKeyEventJSON(t *testing.T) {
 	if !reflect.DeepEqual(src, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
+}
+
+func TestRoomKeyEnsureRequestJSON(t *testing.T) {
+	src := model.RoomKeyEnsureRequest{RoomID: "room-abc"}
+	roundTrip(t, &src, &model.RoomKeyEnsureRequest{})
+}
+
+func TestRoomKeyEnsureResponseJSON(t *testing.T) {
+	src := model.RoomKeyEnsureResponse{RoomID: "room-abc", Version: 3}
+	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
 }
 
 func TestNotificationEventJSON(t *testing.T) {
@@ -1079,11 +1098,6 @@ func TestRemoveMemberRequestJSON(t *testing.T) {
 		assert.False(t, hasOrgID, "orgId should be omitted when empty")
 	})
 
-	t.Run("RemoveMemberRequest with BaseKeyVersion", func(t *testing.T) {
-		r := model.RemoveMemberRequest{RoomID: "r1", Requester: "alice", Account: "bob",
-			Timestamp: 1700000000000, BaseKeyVersion: 3}
-		roundTrip(t, &r, &model.RemoveMemberRequest{})
-	})
 }
 
 func TestMemberRemoveEventJSON(t *testing.T) {

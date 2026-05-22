@@ -1,6 +1,6 @@
 //go:build integration
 
-package service_test
+package service
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -44,7 +43,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// messages_by_room
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_room (
 		room_id TEXT, bucket BIGINT, created_at TIMESTAMP, message_id TEXT, thread_room_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
@@ -57,7 +56,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// messages_by_id
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
 		message_id TEXT, room_id TEXT, thread_room_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
@@ -71,7 +70,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 	// thread_messages_by_room — needed by TestDeleteMessage_ParentWithReplies_NoCascade
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room (
 		room_id TEXT, bucket BIGINT, thread_room_id TEXT, created_at TIMESTAMP, message_id TEXT,
-		sender FROZEN<"Participant">, target_user FROZEN<"Participant">, msg TEXT,
+		sender FROZEN<"Participant">, msg TEXT,
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
@@ -103,14 +102,15 @@ type recordingPublisher struct {
 type recordedMessage struct {
 	Subject string
 	Data    []byte
+	MsgID   string
 }
 
-func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte) error {
+func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte, msgID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	p.sent = append(p.sent, recordedMessage{Subject: subj, Data: cp})
+	p.sent = append(p.sent, recordedMessage{Subject: subj, Data: cp, MsgID: msgID})
 	return nil
 }
 
@@ -139,7 +139,7 @@ func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-integ"
@@ -202,7 +202,7 @@ func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-del-integ"
@@ -262,7 +262,7 @@ func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
 	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	pub := &recordingPublisher{}
-	svc := service.New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-parent-cascade"
