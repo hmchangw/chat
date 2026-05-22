@@ -182,20 +182,10 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 }
 
 func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error {
-	subFilter := bson.M{"roomId": roomID, "u.account": account}
-	var subUpdate bson.M
-	if len(newThreadUnread) == 0 {
-		subUpdate = bson.M{
-			"$set":   bson.M{"alert": alert},
-			"$unset": bson.M{"threadUnread": ""},
-		}
-	} else {
-		subUpdate = bson.M{"$set": bson.M{"threadUnread": newThreadUnread, "alert": alert}}
-	}
-	if _, err := s.subCol.UpdateOne(ctx, subFilter, subUpdate); err != nil {
-		return fmt.Errorf("apply thread read on subscription for %q in room %q: %w", account, roomID, err)
-	}
-
+	// Apply the guarded ThreadSubscription update first. If the $lt guard
+	// rejects the event as stale (or the row is missing), skip the
+	// Subscription update too — otherwise an out-of-order event would
+	// regress threadUnread/alert even while the thread-sub is protected.
 	tsFilter := bson.M{
 		"threadRoomId": threadRoomID,
 		"userAccount":  account,
@@ -209,9 +199,27 @@ func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoo
 		"updatedAt":  lastSeenAt,
 		"hasMention": false,
 	}}
-	if _, err := s.threadSubCol.UpdateOne(ctx, tsFilter, tsUpdate); err != nil {
+	tsRes, err := s.threadSubCol.UpdateOne(ctx, tsFilter, tsUpdate)
+	if err != nil {
 		return fmt.Errorf("apply thread read on thread subscription for %q in thread room %q: %w",
 			account, threadRoomID, err)
+	}
+	if tsRes.MatchedCount == 0 {
+		return nil
+	}
+
+	subFilter := bson.M{"roomId": roomID, "u.account": account}
+	var subUpdate bson.M
+	if len(newThreadUnread) == 0 {
+		subUpdate = bson.M{
+			"$set":   bson.M{"alert": alert},
+			"$unset": bson.M{"threadUnread": ""},
+		}
+	} else {
+		subUpdate = bson.M{"$set": bson.M{"threadUnread": newThreadUnread, "alert": alert}}
+	}
+	if _, err := s.subCol.UpdateOne(ctx, subFilter, subUpdate); err != nil {
+		return fmt.Errorf("apply thread read on subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
 }

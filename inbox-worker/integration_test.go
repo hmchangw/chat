@@ -680,6 +680,7 @@ func TestInboxStore_ApplyThreadRead_EmptyArrayUnsetsField(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	// Seed both rows so the thread-sub gate passes and the Subscription update fires.
 	seedSub := model.Subscription{
 		ID: "sub-1", RoomID: "r1", SiteID: "site-b",
 		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -688,7 +689,16 @@ func TestInboxStore_ApplyThreadRead_EmptyArrayUnsetsField(t *testing.T) {
 	_, err := db.Collection("subscriptions").InsertOne(ctx, &seedSub)
 	require.NoError(t, err)
 
-	require.NoError(t, store.ApplyThreadRead(ctx, "r1", "tr-missing", "alice", nil, false, time.Now().UTC()))
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	seedTS := model.ThreadSubscription{
+		ID: "tsub-1", ParentMessageID: "p1", RoomID: "r1",
+		ThreadRoomID: "tr1", UserAccount: "alice", SiteID: "site-b",
+		HasMention: true, CreatedAt: created, UpdatedAt: created,
+	}
+	_, err = db.Collection("thread_subscriptions").InsertOne(ctx, &seedTS)
+	require.NoError(t, err)
+
+	require.NoError(t, store.ApplyThreadRead(ctx, "r1", "tr1", "alice", nil, false, time.Now().UTC()))
 
 	var raw bson.M
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"_id": "sub-1"}).Decode(&raw))
@@ -697,6 +707,9 @@ func TestInboxStore_ApplyThreadRead_EmptyArrayUnsetsField(t *testing.T) {
 	assert.Equal(t, false, raw["alert"])
 }
 
+// Stale event: thread-sub's lastSeenAt is newer than the incoming event.
+// Both the ThreadSubscription guard AND (via the same gate) the Subscription
+// overwrite must be skipped.
 func TestInboxStore_ApplyThreadRead_OutOfOrderThreadSub(t *testing.T) {
 	db := setupMongo(t)
 	store := &mongoInboxStore{
@@ -726,13 +739,14 @@ func TestInboxStore_ApplyThreadRead_OutOfOrderThreadSub(t *testing.T) {
 
 	require.NoError(t, store.ApplyThreadRead(ctx, "r1", "tr1", "alice", []string{"p2"}, false, t1))
 
-	// Subscription IS overwritten (no guard).
+	// Subscription is NOT overwritten: the thread-sub guard rejected the stale
+	// event, and the same gate now protects the Subscription write.
 	var gotSub model.Subscription
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"_id": "sub-1"}).Decode(&gotSub))
-	assert.Equal(t, []string{"p2"}, gotSub.ThreadUnread)
-	assert.False(t, gotSub.Alert)
+	assert.Equal(t, []string{"p1", "p2"}, gotSub.ThreadUnread)
+	assert.True(t, gotSub.Alert)
 
-	// ThreadSubscription is NOT regressed (guard works).
+	// ThreadSubscription is NOT regressed.
 	var gotTS model.ThreadSubscription
 	require.NoError(t, db.Collection("thread_subscriptions").FindOne(ctx, bson.M{"_id": "tsub-1"}).Decode(&gotTS))
 	require.NotNil(t, gotTS.LastSeenAt)
@@ -763,6 +777,8 @@ func TestInboxStore_ApplyThreadRead_MissingSubscription_NoError(t *testing.T) {
 	assert.False(t, gotTS.HasMention)
 }
 
+// Missing thread-sub: the gate filter doesn't match, so the Subscription update
+// is skipped too. Both rows stay at their seeded state — no error.
 func TestInboxStore_ApplyThreadRead_MissingThreadSubscription_NoError(t *testing.T) {
 	db := setupMongo(t)
 	store := &mongoInboxStore{
@@ -783,6 +799,6 @@ func TestInboxStore_ApplyThreadRead_MissingThreadSubscription_NoError(t *testing
 
 	var gotSub model.Subscription
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"_id": "sub-1"}).Decode(&gotSub))
-	assert.Nil(t, gotSub.ThreadUnread)
-	assert.False(t, gotSub.Alert)
+	assert.Equal(t, []string{"p1"}, gotSub.ThreadUnread)
+	assert.True(t, gotSub.Alert)
 }

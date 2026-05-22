@@ -98,7 +98,18 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,name) index: %w", err)
 	}
-	// Non-unique: the (threadRoomId, userAccount) unique index already prevents duplicates.
+	// Unique key for thread subscriptions; matches the index message-worker /
+	// history-service also create on the shared collection. Mongo treats
+	// index creation as idempotent when the spec matches, so re-creation
+	// across services is safe — but in test environments where this service
+	// owns its own database the constraint would otherwise be absent.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userAccount) unique index: %w", err)
+	}
+	// Lookup index for GetThreadSubscriptionByParent.
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
 	}); err != nil {
