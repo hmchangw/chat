@@ -137,4 +137,53 @@ Recommend (b). Pick one in the spec; "described prose-only" invites five subtly 
 
 **N3.** §10 should also mention re-running `make lint` after `make generate` (generated mock signatures may need import additions).
 
+---
+
+## Project-Conventions Lens (CLAUDE.md adherence)
+
+### critical
+
+**C1. Client-API doc rule violated (CLAUDE.md §5).** Spec §6 declares "no change" to `docs/client-api.md`. CLAUDE.md §5 is unambiguous: *any* PR touching a handler whose subject begins with `chat.user.{account}.request.…` MUST update `docs/client-api.md` in the same PR. The five handlers in §7.3 are documented at `client-api.md:989, 1052, 1113, 1172, 1356` and the `Message` schema entry for `reactions` lives at `client-api.md:949`. Even with identical wire shape, the read-path behaviour (error-on-hydration-failure → whole request fails, per spec §7.3 line 110) and "populated server-side via hydration" are details clients should know. Either update the doc or get an explicit exemption written into CLAUDE.md.
+
+### high
+
+**H1. TDD Red phase not mandated.** Spec §8 lists tests but never says "write tests first, confirm they fail, then implement." CLAUDE.md §4 calls Red-Green-Refactor mandatory with "no exceptions." Add an explicit ordering instruction to §8 and §13.
+
+**H2. Coverage wording wrong.** Spec §8 line 135: *"Coverage target ≥90% on new code per CLAUDE.md §4."* CLAUDE.md actually mandates **≥80% floor (MUST NOT merge below)** AND **≥90% target for core business logic**. The spec conflates target with floor. Rewrite: *"≥80% floor required; ≥90% target on new repository/handler code."*
+
+**H3. Unit-test scenarios incomplete.** Spec §8 misses: invalid/empty `messageIDs` slice argument validation, context cancellation mid-fan-out, partial errgroup failure (one of N goroutines errors — does it cancel siblings?), duplicate `messageIDs` in input, and `gocql.ErrNotFound` vs. empty-result distinction. Add these.
+
+**H4. Federation divergence not flagged.** Spec §11 marks federation out of scope, but doesn't acknowledge the user-visible consequence: reactions written on site A will be invisible on site B even though the underlying message replicates via OUTBOX/INBOX. Add to §11: *"Until federation lands, reactions are site-local; the same `message_id` will show different reaction sets per site."*
+
+### medium
+
+**M1. Error-wrap pattern omitted.** CLAUDE.md §3 mandates `fmt.Errorf("doing X: %w", err)`. Spec gives signatures but no examples. Add: *"All errors wrap with `fmt.Errorf(\"loading reactions for message %s: %w\", id, err)` per CLAUDE.md §3."*
+
+**M2. Logging discipline silent.** Spec doesn't specify whether `LoadReactionsForMessages` logs the fan-out or errors. Mandate slog-JSON structured logging with `requestID` field on errors; empty-result path stays silent.
+
+**M3. Request-ID propagation unspecified.** Per CLAUDE.md §3 "Request Logging & Tracing." Worth stating: child goroutines inherit `ctx` (request ID survives via context), no manual re-injection needed.
+
+**M4. `MESSAGE_BUCKET_HOURS` carve-out in CLAUDE.md not flagged.** Spec correctly drops bucketing (§14 line 180), but CLAUDE.md's Cassandra section still describes `MESSAGE_BUCKET_HOURS` as if applying to all message-related tables. Spec should add a note: "Update CLAUDE.md Cassandra section to clarify bucket math applies to `messages_by_room` / `thread_messages_by_room` only, NOT `message_reactions`."
+
+### low
+
+**L1.** `internal/cassrepo/` and `internal/service/` already violate CLAUDE.md §1 "flat `package main`, no `internal/`". Pre-existing; `history-service` is grandfathered. No action, worth noting in the PR description.
+
+**L2.** Mockgen scope conditional (Spec §10 line 145). Strike "if" — `MessageReader` extension is unconditional given the new methods are called from handlers.
+
+**L3.** `docs/specs/` is a new convention. No prior `docs/specs/` directory existed (only `docs/reviews/`, `docs/superpowers/`, …). Spec silently introduces it. Either codify in CLAUDE.md §1 or move to `docs/` flat.
+
+**L4.** Naming OK. `message_reactions` (snake table), `MessageReactionRow` (PascalCase struct), `LoadReactionsForMessages` (verb-first method) all conform to CLAUDE.md §3 — except the verb choice (see Go lens H3).
+
+**L5.** SSOT triple-mirror check: spec covers all three required mirrors (`docs/cassandra_message_model.md` §5, `pkg/model/cassandra/` §3, `docker-local/cassandra/init/` §4). Good.
+
+### nitpick
+
+**N1.** §7.1 line 92 — "cap at 50 in-flight" is a magic number. Make it a named const in the repo (and configurable per Go lens H2).
+
+**N2.** §9 line 139 — referencing line numbers in `message-worker/integration_test.go` (50, 67, 86) will rot; describe by symbol instead.
+
+**N3.** File naming `internal/cassrepo/message_reactions.go` is consistent with existing siblings (`messages_by_room.go`, `messages_by_id.go`, `thread_messages.go`). Fine.
+
+
 
