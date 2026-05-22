@@ -111,6 +111,10 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	}
 
 	redactUnavailableQuotes(page.Data, accessSince)
+	if err := s.hydrateReactions(c, page.Data); err != nil {
+		slog.Error("load history: hydrate reactions", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load message history")
+	}
 	return &models.LoadHistoryResponse{
 		Messages:          page.Data,
 		MinUserLastSeenAt: minMs,
@@ -163,6 +167,10 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	}
 
 	redactUnavailableQuotes(page.Data, accessSince)
+	if err := s.hydrateReactions(c, page.Data); err != nil {
+		slog.Error("load next messages: hydrate reactions", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load messages")
+	}
 	return &models.LoadNextMessagesResponse{
 		Messages:   page.Data,
 		NextCursor: page.NextCursor,
@@ -262,6 +270,10 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	messages = append(messages, afterPage.Data...)
 
 	redactUnavailableQuotes(messages, accessSince)
+	if err := s.hydrateReactions(c, messages); err != nil {
+		slog.Error("load surrounding messages: hydrate reactions", "error", err, "roomID", roomID)
+		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
+	}
 	return &models.LoadSurroundingMessagesResponse{
 		Messages:   messages,
 		MoreBefore: beforePage.HasNext,
