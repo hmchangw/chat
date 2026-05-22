@@ -100,7 +100,7 @@ func EnsureCassandra() error { _, _, err := ensureCassandraSession(); return err
 
 // CassandraKeyspace creates an isolated keyspace for the test (SimpleStrategy, RF=1).
 // Returns the keyspace name, an admin session for DDL, and the container host.
-func CassandraKeyspace(t *testing.T, prefix string) (keyspace string, admin *gocql.Session, hostAddr string) {
+func CassandraKeyspace(t testing.TB, prefix string) (keyspace string, admin *gocql.Session, hostAddr string) {
 	t.Helper()
 	h, s, err := ensureCassandraSession()
 	if err != nil {

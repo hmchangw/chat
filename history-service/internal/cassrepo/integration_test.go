@@ -13,10 +13,8 @@ import (
 )
 
 func setupCassandra(t testing.TB) *gocql.Session {
-	// Cast to *testing.T for testutil functions that require it
-	tt := t.(*testing.T)
-	tt.Helper()
-	keyspace, adminSession, host := testutil.CassandraKeyspace(tt, "history_service_test")
+	t.Helper()
+	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "history_service_test")
 	cql := func(format string) string { return fmt.Sprintf(format, keyspace) }
 
 	for _, stmt := range []string{
