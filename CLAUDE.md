@@ -194,6 +194,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Never commit `.env` files
 - Never merge code directly into `master` or `main` — always create a PR for review first
 - If your changes touch a client-facing handler (any handler registered with `nc.QueueSubscribe` or `natsrouter.Register` whose subject begins with `chat.user.{account}.request.…` or `chat.user.{account}.room.{roomID}.{siteID}.msg.send`, or any HTTP route in `auth-service`), update `docs/client-api.md` in the same PR to reflect the new request/response schema, error cases, and triggered events.
+- `docs/reviews/` holds session-scoped multi-agent review reports (output of the `branch_review` skill). Delete every file under `docs/reviews/` from the branch just before creating the PR — these reports are working notes for the author, not shippable artifacts.
 
 ### Before Editing
 - Always read a file before modifying it — understand existing code before suggesting changes
