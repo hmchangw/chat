@@ -225,6 +225,71 @@ Recommend (b). Pick one in the spec; "described prose-only" invites five subtly 
 
 **N2.** No `testdata/` mention — fine, existing cassrepo tests don't use fixtures, no reason to start now.
 
+---
+
+## Scope & Risk Lens
+
+### critical
+
+**C1. SET frozenness must be made explicit.** §2 declares `users SET<FROZEN<"Participant">>`. §11's write path `SET users = users + {?}` only works on an **unfrozen** outer SET (incremental update of FROZEN collections is not supported in CQL). The shape as written IS unfrozen outer + frozen inner UDT, which is correct — but the embedded model used `FROZEN<SET<FROZEN<"Participant">>>` (cassandra_message_model.md:91), so a copy/paste regression would silently break the future writer. Add one line to §2: *"outer SET is intentionally UNFROZEN so incremental `+ {?}` / `- {?}` updates are supported."*
+
+### high
+
+**H1. Local-dev rollout will break existing dev Cassandra.** Spec claims "no production data" but ignores developer laptops. Dropping a column from 4 tables on an existing local keyspace requires `ALTER TABLE … DROP reactions` — the init `.cql` files only run on a *fresh* keyspace. Devs who pulled prior schema will have stale `reactions` columns. Rollout §13 should explicitly direct: "drop and recreate the local keyspace, or run a one-shot `ALTER TABLE … DROP reactions` migration script."
+
+**H2. Federation user-visible divergence unflagged.** Until cross-site reaction federation lands, site A and site B will show different reaction state for the same federated message. UX consequence, not implementation detail. Add to §11 as a "Known limitation until federation lands."
+
+**H3. No acceptance criteria.** Spec lacks an explicit definition-of-done. Add: all 5 history handlers hydrate reactions; integration tests cover sparse/empty/full pages; ≥80% coverage on new code (≥90% target); `make lint`, `make test`, `make test-integration SERVICE=history-service`, `make sast` all green; `docs/cassandra_message_model.md` updated.
+
+### medium
+
+**M1. Reversibility / rollback not addressed.** If reverted, the dropped `reactions` column must be re-added on 4 tables. Cheap *today* (no live writers) — but the spec should say so explicitly: *"Rollback window: until the first `addReaction` writer ships. After that, rollback requires backfill from `message_reactions` into the embedded column on 4 tables."*
+
+**M2. Tombstone problem partially relocated, not eliminated (§14).** Cross-cuts with Cassandra-lens C1. §14 cites tombstones as the motivation, but `SET<...> - {?}` removes still generate tombstones in the side-table partition. The win is real (tombstones isolated to a small single-message partition) but the spec overstates by implying the problem is *solved*. Reword to "tombstones isolated to a small partition that's only read on demand."
+
+**M3. Message ID uniqueness assumption.** Spec asserts message IDs are unique across the site, justifying one table for regular + thread messages. `idgen.GenerateMessageID()` produces 20-char base62 — collision-resistant, ~119 bits entropy. Worth one explicit line: *"Assumption: message IDs are globally unique by construction; federation imports do not rewrite IDs."*
+
+**M4. p99 claim unsubstantiated (§14).** §14 line 180 says "~5ms p99 difference" — no benchmark cited. Either link a benchmark or soften to "expected single-digit ms" and add a post-rollout measurement target.
+
+### low
+
+**L1. Read amplification not budgeted.** Up to ~50 parallel single-partition reads per `LoadHistory` page (default page size?). Spec caps concurrency at 50 but doesn't say what happens when page size > 50, or what the per-message timeout is. Add per-message context with a short deadline, and explicit page-size assumption.
+
+**L2. Mocks step (§10) conditional and vague.** "If the handler's store interface is extended" — given §7.3 adds new repo methods called from handlers, the interface almost certainly *is* extended. Make this unconditional. Cross-cuts with Test-lens H3, Conventions-lens L2.
+
+**L3. Frontend coordination (§6).** Client API already documents `reactions` as Optional (`client-api.md:949`) — confirm in §6: "Clients already treat `reactions` as optional; no frontend change required."
+
+### nitpick
+
+**N1.** §14 "Decisions Walked Back" is useful — keep it. Saves future reviewers from re-litigating the bucketed-schema idea.
+
+**N2.** Time estimate. Optional: a 1-line "~1–2 days for one engineer" helps scheduling.
+
+**N3.** Cross-team handoff is fine. history-service can ship first with empty `message_reactions` — current state of the world. §13 ordering is correct.
+
+---
+
+## Prioritized Action List
+
+Top items across all lenses, ordered by severity then impact ÷ effort:
+
+| # | Sev | Action | Where | Why |
+|---|---|---|---|---|
+| 1 | critical | Rewrite the tombstone motivation in §14 — drop "eliminates tombstones," replace with "isolates tombstones to small on-demand partitions." | spec §14 line 181; cassandra-lens C1 + scope-lens M2 | The stated reason for the whole refactor is partly wrong; reviewers will catch it. |
+| 2 | critical | Add `docs/client-api.md` update (one-line clarification on the five affected handlers + Message schema entry) OR get an explicit exemption written into CLAUDE.md §5. | spec §6; client-api.md:949,989,1052,1113,1172,1356 | CLAUDE.md §5 is a hard rule, no "wire shape unchanged" carve-out. |
+| 3 | critical | Make SET frozenness explicit ("outer SET intentionally UNFROZEN"). | spec §2 line 19 | Prevents a silent copy/paste regression that would break the addReaction writer. |
+| 4 | critical | Pin the empty-set cleanup strategy (CAS vs accept tombstone vs follow-up DELETE) in this spec, not the addReaction PR. | spec §11 line 162; cassandra-lens C2 | Constrains the schema (LWT requires `IF` semantics on the same partition). Cannot be deferred. |
+| 5 | critical | Specify the `testutil.CassandraKeyspace` contract for the new integration test (prefix `"history_service_test"`, reuse `setupCassandra(t)`). | spec §8; test-lens C1 | Otherwise the implementer spins a custom container and breaks the shared-container pattern. |
+| 6 | critical | Add explicit `-race` parallelism test AND ctx-cancellation test for the errgroup fan-out. | spec §8; test-lens C2 | CLAUDE.md §3 "Concurrency" + §4 require both. |
+| 7 | high | Switch method naming from `Load*` to `Get*` (`GetReactionsByMessageIDs` / `GetReactionsByMessageID`). | spec §7.1; go-lens H3 | Matches existing repo convention (`GetMessagesByIDs`, `GetMessageByID`). |
+| 8 | high | Make the concurrency cap configurable via `REACTIONS_FETCH_CONCURRENCY` env var (default 50). | spec §7.1 line 92; go-lens H2 + conventions M3 | CLAUDE.md §6 requires env-driven config; hardcoded magic numbers don't survive page-size growth. |
+| 9 | high | Evaluate (and either adopt or explicitly reject in §14) the row-per-reactor alternative `PRIMARY KEY ((message_id), emoji, user_id)`. | spec §14; cassandra-lens H1 | Eliminates SET-size hot-spotting on viral messages; the spec doesn't even mention it. |
+| 10 | high | Add LCS compaction (`WITH compaction = {'class': 'LeveledCompactionStrategy'}`) to the CREATE TABLE in §2. | spec §2 line 16; cassandra-lens H3 | STCS is wrong for this workload; decision can't wait for the addReaction PR. |
+| 11 | high | Add a federation paragraph: "Reactions are site-local until federation lands; the same `message_id` will show different reaction sets per site." | spec §11; cassandra-lens H2 + scope-lens H2 + conventions H4 | Three lenses raised it — load-bearing UX consequence. |
+| 12 | high | Fix coverage wording: "≥80% floor required; ≥90% target on new repository/handler code." | spec §8 line 135; conventions H2 | Spec conflates target with floor. |
+| 13 | high | Local-dev migration note: "drop+recreate keyspace OR run `ALTER TABLE … DROP reactions` on existing dev DBs." | spec §13; scope-lens H1 | Otherwise developers will silently diverge. |
+
+
 
 
 
