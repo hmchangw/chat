@@ -20,6 +20,9 @@ type Repository struct {
 // returning a non-terminal cursor. reactionsConcurrency caps the per-request
 // fan-out when loading reactions for a batch of messages.
 func NewRepository(session *gocql.Session, bucket msgbucket.Sizer, maxBuckets, reactionsConcurrency int) *Repository {
+	if reactionsConcurrency < 1 {
+		reactionsConcurrency = 1
+	}
 	return &Repository{
 		session:              session,
 		bucket:               bucket,
