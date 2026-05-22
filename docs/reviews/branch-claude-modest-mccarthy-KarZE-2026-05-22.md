@@ -185,5 +185,46 @@ Recommend (b). Pick one in the spec; "described prose-only" invites five subtly 
 
 **N3.** File naming `internal/cassrepo/message_reactions.go` is consistent with existing siblings (`messages_by_room.go`, `messages_by_id.go`, `thread_messages.go`). Fine.
 
+---
+
+## Test-Strategy Lens
+
+### critical
+
+**C1. Spec §8 fails to specify the `testutil.CassandraKeyspace` contract for the new integration test.** CLAUDE.md §4 ("Containers come from `pkg/testutil`") makes this mandatory, and every existing sibling test follows the pattern — see `history-service/internal/cassrepo/integration_test.go:17` (`testutil.CassandraKeyspace(t, "history_service_test")`). The spec must explicitly require: (a) reuse of `setupCassandra(t)` in `integration_test.go:15`, extended with the new `message_reactions` table DDL, and (b) the keyspace prefix convention (`"history_service_test"`, identical to siblings — not `t.Name()`-derived; the helper already hashes `t.Name()` internally at `pkg/testutil/cassandra.go:110`).
+
+**C2. §7.1 under-specifies concurrency testing.** Per CLAUDE.md §4 General ("ALWAYS use the `-race` flag"), the errgroup fan-out *must* have an explicit race-detector integration test asserting actual parallelism (seed 100 messages with reactions, assert all return correctly under `-race`, and assert the in-flight cap of 50 is respected — e.g. via an injectable hook or by counting concurrent gocql sessions). The spec's "concurrent fan-out" bullet at §8 is too vague to verify the bound. **Also missing: a context-cancellation test** (cancel ctx mid-fan-out, assert `LoadReactionsForMessages` returns `ctx.Err()` and goroutines exit cleanly — required to prove no goroutine leak per CLAUDE.md §3 "Concurrency").
+
+### high
+
+**H1. No `TestMain` guidance for new test file.** §8 introduces `internal/cassrepo/message_reactions_integration_test.go` but doesn't note `TestMain` is already satisfied by `cassrepo/main_test.go:11` (`testutil.RunTests(m)`). Fine in practice, but the spec should say "new file lives in package `cassrepo`, reusing the existing `TestMain`" so an implementer doesn't add a duplicate `TestMain`.
+
+**H2. Empty-input short-circuit assertion missing.** §7.3 says "Empty page → skip the call entirely", but §8 unit tests list only "empty page → reactions store not called" without specifying *how* it's asserted. Mockgen's `EXPECT().LoadReactionsForMessages(...).Times(0)` is the correct form — should be in the spec verbatim, otherwise implementers tend to write `gomock.Any()` and accidentally accept zero-length calls.
+
+**H3. Mock regeneration step buried.** §10 says "Run `make generate SERVICE=history-service`" but doesn't enumerate which interface gets the new method. The new method `LoadReactionsForMessages` only belongs on `MessageReader` (read path) at `internal/service/service.go:18–26` — adding it to `MessageWriter` or `MessageRepository` directly would be wrong. Spec must name `MessageReader` explicitly, and remind the implementer to commit the regenerated `internal/service/mocks/mock_repository.go`.
+
+**H4. Removing assertions risks coverage loss.** §8 says "remove embedded-reactions seed data and assertions" — but `cassrepo/messages_by_id_integration_test.go:165-169` and `thread_messages_integration_test.go:301-305` are full row-round-trip tests where reactions are one of ~20 fields verified. Pure deletion is fine *only if* the test still asserts every other column. Spec should explicitly direct: "Delete the reactions seed/assert blocks. Do not delete the surrounding row-round-trip assertions. Do not delete the test cases entirely."
+
+### medium
+
+**M1. No backward-compat test for empty reactions wire shape.** Per spec §6 ("wire shape stays identical"), one handler test per endpoint should assert that a message with zero reactions still serialises as `"reactions": {}` (not `null`, not omitted) after JSON marshal. Trivial, prevents a real client-API regression.
+
+**M2. No federation/site-leak test.** Since `message_reactions` partitions by `message_id` alone (no `site_id`), at minimum add an integration test asserting `LoadReactionsForMessage("known-id")` returns the expected payload from the *local* keyspace only.
+
+**M3. No benchmark.** The whole motivation (§14) is read-path performance. Add a `BenchmarkLoadReactionsForMessages` (e.g. 50 messages, 5 reactions each) so the next refactor has a baseline. Non-blocking, nice-to-have.
+
+### low
+
+**L1.** Defensive "missing message_id" covered (§8 bullet 5), but no test for nil/empty `[]string{}` slice. Add a repo-level unit: `LoadReactionsForMessages(ctx, nil)` and `(ctx, []string{})` both return `(map{}, nil)` with zero queries dispatched.
+
+**L2.** Single message with reactions vs none — not in §8. Add to handler unit tests as a distinct table row from "happy path with reactions on some messages" — page-size-1 edge often breaks fan-out loops.
+
+### nitpick
+
+**N1.** §9 (message-worker DDL fix) doesn't mention the same `reactions MAP<...>` strings exist at `history-service/internal/cassrepo/integration_test.go:49,76,105` and `internal/service/integration_test.go:51,64,78` — six call sites total in history-service alone. List them so nothing's missed.
+
+**N2.** No `testdata/` mention — fine, existing cassrepo tests don't use fixtures, no reason to start now.
+
+
 
 
