@@ -211,17 +211,13 @@ type RoomKeyEnsureResponse struct {
 	Version int    `json:"version"`
 }
 
-// MuteToggleResponse is the sync reply for the mute.toggle RPC. DisableNotifications
-// carries the resulting value of the toggle (post-flip).
+// MuteToggleResponse is the sync reply for the mute.toggle RPC.
 type MuteToggleResponse struct {
 	Status               string `json:"status"`
 	DisableNotifications bool   `json:"disableNotifications"`
 }
 
-// SubscriptionMuteToggledEvent is the OutboxEvent.Payload for type
-// "subscription_mute_toggled". Sent from a room's home site to the user's home
-// site whenever a user flips DisableNotifications via the mute.toggle RPC; the
-// destination updates its local subscription mirror.
+// SubscriptionMuteToggledEvent is the OutboxEvent.Payload for type "subscription_mute_toggled".
 type SubscriptionMuteToggledEvent struct {
 	Account              string `json:"account"              bson:"account"`
 	RoomID               string `json:"roomId"               bson:"roomId"`

@@ -115,8 +115,7 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	return nil
 }
 
-// UpdateSubscriptionMute sets disableNotifications on the subscription keyed
-// by (roomID, account). Missing-subscription is a silent no-op.
+// UpdateSubscriptionMute sets disableNotifications by (roomID, account); missing is a silent no-op.
 func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, disableNotifications bool) error {
 	_, err := s.subCol.UpdateOne(ctx,
 		bson.M{"roomId": roomID, "u.account": account},

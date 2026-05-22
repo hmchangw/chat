@@ -1553,7 +1553,6 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	}
 	require.NoError(t, store.CreateSubscription(ctx, sub))
 
-	// First toggle: false → true.
 	got, err := store.ToggleSubscriptionMute(ctx, "r1", "alice")
 	require.NoError(t, err)
 	require.NotNil(t, got)
@@ -1561,12 +1560,10 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	// Verify persisted.
 	persisted, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
 	assert.True(t, persisted.DisableNotifications)
 
-	// Second toggle: true → false.
 	got, err = store.ToggleSubscriptionMute(ctx, "r1", "alice")
 	require.NoError(t, err)
 	require.NotNil(t, got)
@@ -1574,7 +1571,6 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	// Not-found case.
 	gotNil, err := store.ToggleSubscriptionMute(ctx, "missing", "alice")
 	assert.Nil(t, gotNil)
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)

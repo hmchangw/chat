@@ -362,7 +362,6 @@ func MessageReadReceiptWildcard(siteID string) string {
 }
 
 // MuteToggle returns the concrete subject for the per-user mute.toggle RPC.
-// Pair with MuteToggleWildcard for room-service's QueueSubscribe.
 func MuteToggle(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.mute.toggle", account, roomID, siteID)
 }

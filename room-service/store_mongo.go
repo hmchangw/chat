@@ -678,11 +678,8 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 	return nil
 }
 
-// ToggleSubscriptionMute atomically flips disableNotifications via an
-// aggregation-pipeline FindOneAndUpdate. The $ifNull guard treats a missing
-// field as false so legacy documents toggle to true on the first call.
-// Returns the full post-flip subscription document, or model.ErrSubscriptionNotFound
-// when no subscription matches.
+// ToggleSubscriptionMute atomically flips disableNotifications via FindOneAndUpdate.
+// $ifNull treats absent field as false so legacy docs toggle to true on first call.
 func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
 	update := mongo.Pipeline{
