@@ -195,7 +195,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 
 	sender := models.Participant{ID: "u1", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false, Account: "alice"}
 	mentionUser := models.Participant{ID: "u3", Account: "charlie"}
-	reactUser := models.Participant{ID: "u4", Account: "dave"}
 	file := models.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
 	card := models.Card{Template: "approval", Data: []byte("card-data")}
 	cardAction := models.CardAction{Verb: "approve", Text: "Approve", CardID: "c1", DisplayText: "Click", HideExecLog: true, CardTmID: "tm1", Data: []byte("action-data")}
@@ -208,9 +207,9 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	insertCQL := `INSERT INTO thread_messages_by_room (
         room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id,
         sender, msg, mentions, attachments, file, card, card_action,
-        quoted_parent_message, visible_to, reactions, deleted,
+        quoted_parent_message, visible_to, deleted,
         type, sys_msg_data, site_id, edited_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-thread-full", bucket, "tr-full", ts, "m-reply-full", "m-thread-parent",
 		sender, "thread reply body",
@@ -218,7 +217,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
 		quotedMsg, "u1",
-		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
 	}
@@ -297,12 +295,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
 	assert.Equal(t, "site-remote", msg.SiteID)
-
-	// Reactions (MAP<TEXT, FROZEN<SET<FROZEN<Participant>>>>)
-	require.Contains(t, msg.Reactions, "thumbsup")
-	require.Len(t, msg.Reactions["thumbsup"], 1)
-	assert.Equal(t, "u4", msg.Reactions["thumbsup"][0].ID)
-	assert.Equal(t, "dave", msg.Reactions["thumbsup"][0].Account)
 
 	// Timestamps
 	require.NotNil(t, msg.EditedAt)

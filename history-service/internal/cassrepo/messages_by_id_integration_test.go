@@ -56,7 +56,6 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 
 	sender := models.Participant{ID: "u1", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false, Account: "alice"}
 	mentionUser := models.Participant{ID: "u3", Account: "charlie"}
-	reactUser := models.Participant{ID: "u4", Account: "dave"}
 	file := models.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
 	card := models.Card{Template: "approval", Data: []byte("card-data")}
 	cardAction := models.CardAction{Verb: "approve", Text: "Approve", CardID: "c1", DisplayText: "Click", HideExecLog: true, CardTmID: "tm1", Data: []byte("action-data")}
@@ -68,7 +67,7 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	pinnedAt := ts.Add(2 * time.Hour)
 	pinnedBy := models.Participant{ID: "u9", Account: "pinner"}
 
-	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-full", ts, "m-full",
 		sender, "hello world",
@@ -76,7 +75,6 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
 		true, "m-parent", threadParent, quotedMsg, "u1",
-		map[string][]models.Participant{"thumbsup": {reactUser}},
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
 		"N/A", pinnedAt, pinnedBy,
@@ -161,12 +159,6 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
-
-	// Reactions (MAP<TEXT, FROZEN<SET<FROZEN<Participant>>>>)
-	require.Contains(t, msg.Reactions, "thumbsup")
-	require.Len(t, msg.Reactions["thumbsup"], 1)
-	assert.Equal(t, "u4", msg.Reactions["thumbsup"][0].ID)
-	assert.Equal(t, "dave", msg.Reactions["thumbsup"][0].Account)
 
 	// messages_by_id extra columns
 	assert.Equal(t, "N/A", msg.ThreadRoomID)
