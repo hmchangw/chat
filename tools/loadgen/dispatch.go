@@ -227,10 +227,25 @@ func dispatchSeedSearchSyncACL(
 		slog.Error("search-sync ACL seed", "error", err)
 		return 1
 	}
+	// Record a Mongo marker (in SharedLockDBName/search_sync_acl_markers) so
+	// the subsequent `loadgen run --scenario=search-sync-lag` can auto-detect
+	// the seeded ACL and skip the run-time bootstrap without operators having
+	// to remember `--search-sync-skip-acl-bootstrap`. Best-effort: if the
+	// marker write fails we still return success (the bootstrap itself
+	// landed) — the cost is just paying the 35s in-Run wait next time.
+	markerClient, markerErr := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	if markerErr == nil {
+		defer mongoutil.Disconnect(context.Background(), markerClient)
+		if werr := WriteSearchSyncACLMarker(ctx, markerClient.Database(SharedLockDBName), cfg.SiteID); werr != nil {
+			slog.Warn("search-sync-lag ACL marker write failed (in-Run bootstrap fallback still works)", "error", werr)
+		}
+	} else {
+		slog.Warn("search-sync-lag ACL marker mongo connect failed (in-Run bootstrap fallback still works)", "error", markerErr)
+	}
 	slog.Info("search-sync-lag ACL seeded",
 		"pairs", pairs,
 		"acl_wait", wait.String(),
-		"hint", "pair with `loadgen run --scenario=search-sync-lag --search-sync-skip-acl-bootstrap` to avoid the redundant Run-time bootstrap")
+		"hint", "subsequent `loadgen run --scenario=search-sync-lag` auto-detects this and skips the in-Run bootstrap (no flag needed)")
 	return 0
 }
 
@@ -488,6 +503,23 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	defer mongoutil.Disconnect(context.Background(), mongoClient)
 
 	lockDB := mongoClient.Database(SharedLockDBName)
+
+	// search-sync-lag auto-skip: if a recent seed-time bootstrap left a
+	// marker in lockDB, flip rf.SearchSync.SkipACLBootstrap to true so the
+	// scenario doesn't redundantly re-publish the same OutboxMemberAdded
+	// events + wait the 35s ACL window. Operator can still force the in-Run
+	// bootstrap to fire by passing --search-sync-skip-acl-bootstrap=false
+	// explicitly (the flag is a bool so the explicit-false case overrides
+	// the auto-detect). Skipping on a stale marker would risk an empty
+	// histogram, so HasFreshSearchSyncACLMarker bounds at 24h.
+	if rf.Scenario == "search-sync-lag" && !rf.SearchSync.SkipACLBootstrap {
+		if HasFreshSearchSyncACLMarker(ctx, lockDB, cfg.SiteID) {
+			slog.Info("search-sync-lag: detected recent seed-time ACL bootstrap (Mongo marker); auto-skipping in-Run bootstrap",
+				"hint", "pass --search-sync-skip-acl-bootstrap=false to force the in-Run bootstrap")
+			rf.SearchSync.SkipACLBootstrap = true
+		}
+	}
+
 	runLock := NewRunLock(lockDB, cfg.NatsURL, rf.RunTTL)
 	lp := &RunLockParams{
 		Lock:            runLock,

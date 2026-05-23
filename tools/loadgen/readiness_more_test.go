@@ -25,6 +25,11 @@ type fakeScenarioDeps struct {
 	// injectMode lets a test override InjectMode(); zero-value preserves the
 	// historical InjectFrontdoor behavior for tests that don't set it.
 	injectMode InjectMode
+	// runID and runsDir are populated only by tests that exercise the
+	// per-run artifact path (e.g., search-sync-lag bootstrap_error
+	// marker). Zero-values disable artifact writing.
+	runID   string
+	runsDir string
 }
 
 func (f *fakeScenarioDeps) Publisher() Publisher {
@@ -65,6 +70,8 @@ func (f *fakeScenarioDeps) WarmupDeadline() time.Time { return f.warmupDeadline 
 func (f *fakeScenarioDeps) MessageIDs() []string      { return f.msgIDs }
 func (f *fakeScenarioDeps) Sites() []SiteDeps         { return nil }
 func (f *fakeScenarioDeps) Subscribers() *Subscribers { return nil }
+func (f *fakeScenarioDeps) RunID() string             { return f.runID }
+func (f *fakeScenarioDeps) RunsDir() string           { return f.runsDir }
 
 // TestScenarioReadiness_RegistryBased verifies that the three read scenarios
 // implement ReadinessProber and messaging-pipeline does not, using the registry.

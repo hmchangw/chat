@@ -539,6 +539,26 @@ Key fields:
 | `--liveness-failures` | 3 | Consecutive failures to trigger abort |
 | `--liveness-timeout` | 5s | Per-probe timeout |
 
+### Readiness probe
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--skip-readiness` | false | Skip the pre-run readiness probe (read scenarios only) |
+| `--readiness-timeout` | 30s | Deadline for the readiness probe to succeed |
+
+### Output / observability
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--csv` | (none) | Optional per-sample CSV export path (alongside the run summary) |
+| `--progress-interval` | 10s | Live progress log interval; 0 disables |
+
+### Connectivity / credentials
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--nats-creds-dir` | (none) | Directory of `*.creds` files; data connections rotate through them (auth-service must be in the compose stack for SUT-side validation) |
+
 ### Run isolation
 
 | Flag | Default | Notes |
@@ -698,9 +718,9 @@ Quick check: `cat runs/<run_id>/summary.json | jq '.issues'`
 async drain timed out → see USAGE.md#drain-timeout
 ```
 
-The harness publishes asynchronously. After the measured window ended, it waited up to `--async-drain-timeout` for all pending JetStream acks — and the timer expired with acks outstanding.
+The harness publishes asynchronously. After the measured window ended, the post-run drain (`run.go::drainTrailingReplies`, fixed 5s window) waited for all pending JetStream acks — and the timer expired with acks outstanding.
 
-Fix: increase `--async-drain-timeout`, or reduce `--rate` to fit the SUT's actual capacity.
+Fix: reduce `--rate` to fit the SUT's actual capacity, or lower `--js-async-max-pending` so fewer acks are in flight at end-of-run. (There is no operator-configurable `--async-drain-timeout`; the drain window is hard-coded at 5s in `run.go`. If you genuinely need it longer for a slow SUT, file a follow-up rather than working around it — sustained ack-drain at end-of-run indicates the rate exceeds SUT capacity.)
 
 ### measured-too-short
 

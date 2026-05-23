@@ -118,3 +118,5 @@ func (f *fakeFederationDeps) WarmupDeadline() time.Time  { return time.Time{} }
 func (f *fakeFederationDeps) MessageIDs() []string       { return nil }
 func (f *fakeFederationDeps) Sites() []SiteDeps          { return f.sites }
 func (f *fakeFederationDeps) Subscribers() *Subscribers  { return nil }
+func (f *fakeFederationDeps) RunID() string              { return "" }
+func (f *fakeFederationDeps) RunsDir() string            { return "" }

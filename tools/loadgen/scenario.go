@@ -85,6 +85,13 @@ type ScenarioDeps interface {
 	// 3.2 large-room scenario registers one inbox sub per fixture user here so
 	// subscriptions survive for the duration of the run.
 	Subscribers() *Subscribers
+	// RunID returns the UUIDv7 run identifier. Scenarios use it to write
+	// per-run artifacts (e.g., bootstrap_error markers) under RunsDir.
+	RunID() string
+	// RunsDir returns the artifact-bundle root directory (RUNS_DIR env).
+	// Empty when artifact bundling is disabled — scenarios that write
+	// per-run markers should no-op when this is "".
+	RunsDir() string
 }
 
 // Runner is a constructed load generator. Run blocks until ctx is cancelled or

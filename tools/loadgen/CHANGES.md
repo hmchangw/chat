@@ -234,24 +234,45 @@ None (v1's flag set is preserved; v2 only adds).
 Tracked here so future operators / contributors know what's deliberately
 deferred rather than missed:
 
-- **Build-tag-gated scenarios** (`presence-typing`, `notif_routing` for
-  push/email). Both wait for the SUT to expose subjects that don't exist
-  yet (`subject.PresenceWildcard`, `subject.NotificationPushPattern`).
-  When the SUT adds those builders, removing the build tag and finishing
-  the scenarios is the work.
-- **ACL doc auto-detection in `search-sync-lag` Run**. Currently the
-  Run-time bootstrap publishes its events regardless of whether the seed
-  step already populated the ACL doc; operators are expected to pass
-  `--search-sync-skip-acl-bootstrap` after a `--with-search-sync-acl`
-  seed. A probe against `search.messages` at Run start could
-  auto-detect the doc and skip the redundant publishes. Marginal value
-  vs. operator awareness; not implemented.
+- **Build-tag-gated scenarios** (`presence-typing` behind `presence_ready`,
+  push/email `notif_routing` behind `notif_routing_ready`). Both wait for
+  the SUT to expose subjects that don't exist in `pkg/subject/subject.go`
+  yet. Specifically:
+    - `presence-typing` needs a per-user typing/presence subject builder
+      (suggested name: `subject.PresenceTyping(account)` or a wildcard
+      `subject.PresenceWildcard()`). The build-tagged scenario reads from
+      it; without the builder it would need to construct subjects via
+      `fmt.Sprintf`, which violates CLAUDE.md §6's pkg/subject rule.
+    - `notif_routing` push/email needs the corresponding NATS subjects
+      that notification-worker (or its push/email follow-on services)
+      will publish on. Suggested: `subject.NotificationPush(account)` +
+      `subject.NotificationEmail(account)` + their `*Pattern` wildcards.
+  Unblock work when the SUT lands those builders: remove the build tag
+  from the two `scenario_*` files + the matching `_test.go` files, swap
+  the local stub subject strings for the pkg/subject helpers, then run
+  the existing test suites. Both compile under their tags today
+  (`go build -tags "presence_ready notif_routing_ready" ./tools/loadgen/...`).
+- **ACL doc auto-detection in `search-sync-lag` Run**: **landed** in
+  the deferred-items pass that produced this section. `loadgen seed
+  --with-search-sync-acl` now writes a Mongo marker (collection
+  `search_sync_acl_markers` in `loadgen_shared`) and `runRun` reads it
+  before constructing the runtime. When the marker is fresh (≤ 24h),
+  `runRun` flips `SkipACLBootstrap` to true with a slog.Info, so
+  operators no longer need to pass `--search-sync-skip-acl-bootstrap`
+  manually after a seed. Operators can still force the in-Run bootstrap
+  by passing `--search-sync-skip-acl-bootstrap=false` explicitly.
 - **Painless-guard wording in commit `a7e74d2`**. The commit message
   said equal-timestamp writes are a no-op; the actual guard is strictly
   `>`, so equal-timestamp writes ARE applied (idempotent in practice
   because the doc content is identical). Wording is slightly wrong;
   history not rewritten to avoid force-push churn.
-- **bootstrap_error observability**. On bootstrap failure the scenario
-  now holds the process open for 20s (one Prometheus scrape cycle) so
-  the metric is observable before exit. A more robust pattern (write
-  the failure to `runs/<run_id>/` for offline triage) is a follow-up.
+- **bootstrap_error observability**: **landed**. The 20s
+  Prometheus-scrape hold (so the in-RAM counter is observable in live
+  dashboards) is retained, plus the scenario now also writes a
+  `bootstrap_error.json` artifact under
+  `${RUNS_DIR}/${runID}/bootstrap_error.json` when bootstrap fails.
+  The file carries scenario name, failure timestamp, error string,
+  run ID, and a resolution pointer into the runbook — durable across
+  process exits so an operator triaging an empty dashboard after a
+  fast-failing run still has the failure context. No-op when
+  `RUNS_DIR` is unset (artifact bundling disabled).

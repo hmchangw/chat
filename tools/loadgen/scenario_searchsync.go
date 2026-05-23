@@ -57,6 +57,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -178,14 +180,22 @@ func (g *searchSyncGenerator) Run(ctx context.Context) error {
 		pairCount, err := bootstrapSearchSyncACL(ctx, publisher, siteID, subs)
 		if err != nil {
 			metrics.SearchIndexVisible.WithLabelValues("bootstrap_error").Inc()
+			// Persist a per-run marker to disk so a Prometheus scrape gap
+			// (scrape interval > process lifetime) doesn't lose the failure
+			// signal. The marker survives the process exit and lets an
+			// operator triaging an empty dashboard see exactly what
+			// happened. Best-effort: marker-write errors are logged but
+			// don't change the run's exit path.
+			if markerErr := writeBootstrapErrorMarker(g.deps, err); markerErr != nil {
+				slog.Warn("bootstrap_error marker write failed (Prometheus hold is the fallback)", "error", markerErr)
+			}
 			// Hold the process open long enough for one Prometheus scrape
-			// cycle so the bootstrap_error counter is actually observable
-			// in the dashboard. The increment fires <1s into Run; default
-			// scrape interval is 15s — without this delay the metric would
-			// be set and immediately dropped on process exit, leaving the
-			// dashboard silent. 20s comfortably exceeds 15s + jitter while
-			// staying below the operator's patience threshold for a
-			// fast-failing run. Honors ctx so SIGINT still exits promptly.
+			// cycle so the bootstrap_error counter is also observable in
+			// live dashboards (in addition to the on-disk marker). The
+			// increment fires <1s into Run; default scrape interval is 15s
+			// — 20s comfortably exceeds 15s + jitter while staying below
+			// the operator's patience threshold for a fast-failing run.
+			// Honors ctx so SIGINT still exits promptly.
 			scrapeHold := 20 * time.Second
 			slog.Warn("holding open for one Prometheus scrape so bootstrap_error is observable",
 				"hold", scrapeHold.String())
@@ -462,4 +472,56 @@ func searchSyncMessageContentWithToken(token string) string {
 	// padding mimics realistic message length so analyzer-side cost reflects
 	// typical traffic (one alpha word + a token).
 	return "search-sync-probe " + token
+}
+
+// writeBootstrapErrorMarker writes a small JSON file to
+// `${RunsDir}/${runID}/bootstrap_error.json` recording the failure so an
+// operator triaging an empty dashboard later can see exactly what happened
+// — useful when the Prometheus scrape interval was wider than the
+// scenario's 20s hold-open window and the in-RAM counter was missed.
+// No-op when RunsDir is empty (artifact bundling disabled — RUNS_DIR env
+// is unset). All error returns are wrapped with context per CLAUDE.md §3.
+func writeBootstrapErrorMarker(deps ScenarioDeps, bootstrapErr error) error {
+	runsDir := deps.RunsDir()
+	if runsDir == "" {
+		// No artifact root configured — operator must rely on the
+		// Prometheus scrape hold alone.
+		return nil
+	}
+	runID := deps.RunID()
+	if runID == "" {
+		return errors.New("bootstrap error marker skipped: empty runID")
+	}
+	dir := filepath.Join(runsDir, runID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create runs dir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "bootstrap_error.json")
+	body, err := json.Marshal(struct {
+		Scenario      string    `json:"scenario"`
+		FailedAt      time.Time `json:"failedAt"`
+		Error         string    `json:"error"`
+		RunID         string    `json:"runId"`
+		Resolution    string    `json:"resolution"`
+		MetricCounter string    `json:"metricCounter"`
+	}{
+		Scenario:      "search-sync-lag",
+		FailedAt:      time.Now().UTC(),
+		Error:         bootstrapErr.Error(),
+		RunID:         runID,
+		Resolution:    "Operator: see docs/runbooks/loadgen-search-sync-zero-observations.md §1 (bootstrap_error). Common causes: NATS unreachable, JetStream INBOX subject not configured, missing publish permission.",
+		MetricCounter: "loadgen_search_index_visible_total{outcome=\"bootstrap_error\"} — also persisted in-RAM via Prometheus, but this file is the durable record across process exits.",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal bootstrap_error marker: %w", err)
+	}
+	// File is operator-readable (0644). Contains no secrets — just the
+	// scenario name, timestamp, error string, runID, and resolution hint.
+	// #nosec G306 -- bootstrap_error marker is intentionally world-readable; no secrets
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return fmt.Errorf("write bootstrap_error marker %s: %w", path, err)
+	}
+	slog.Info("bootstrap_error marker written for offline triage",
+		"path", path)
+	return nil
 }

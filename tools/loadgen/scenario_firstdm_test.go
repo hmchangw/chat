@@ -558,6 +558,8 @@ func (f *fakeFirstDMDeps) WarmupDeadline() time.Time  { return time.Time{} }
 func (f *fakeFirstDMDeps) MessageIDs() []string       { return nil }
 func (f *fakeFirstDMDeps) Sites() []SiteDeps          { return nil }
 func (f *fakeFirstDMDeps) Subscribers() *Subscribers  { return nil }
+func (f *fakeFirstDMDeps) RunID() string              { return "" }
+func (f *fakeFirstDMDeps) RunsDir() string            { return "" }
 
 type fakeFirstDMPublisher struct {
 	mu     sync.Mutex

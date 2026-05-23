@@ -896,6 +896,8 @@ func (d *runDeps) WarmupDeadline() time.Time  { return d.warmupDeadline }
 func (d *runDeps) MessageIDs() []string       { return d.msgIDs }
 func (d *runDeps) Sites() []SiteDeps          { return d.rt.Sites() }
 func (d *runDeps) Subscribers() *Subscribers  { return d.rt.Subscribers() }
+func (d *runDeps) RunID() string              { return d.rt.RunID() }
+func (d *runDeps) RunsDir() string            { return d.rt.cfg.RunsDir }
 
 // ConnIDFor maps a userID to the index of the data connection that
 // publishes on its behalf. Used by the messaging-pipeline scenario.
