@@ -99,8 +99,10 @@ data:
 
   pre-stop.sh: |
     #!/bin/sh
-    # Graceful shutdown: if this pod is a master, ask the cluster to fail
-    # over to a replica before we go away. Replicas just exit cleanly.
+    # Graceful shutdown: if this pod is a master, instruct one of its
+    # replicas to take over BEFORE this pod terminates. CLUSTER FAILOVER
+    # must be issued ON the replica, not on the master being demoted.
+    # Replicas just exit cleanly with no extra work.
     set -eu
     vc() {
       if [ -n "${VALKEY_PASSWORD:-}" ]; then
@@ -109,22 +111,50 @@ data:
         valkey-cli -h 127.0.0.1 -p {{ .Values.cluster.clientPort }} "$@"
       fi
     }
+    # vc_remote HOST PORT [args...]: run a command against a different node.
+    vc_remote() {
+      _h=$1; _p=$2; shift 2
+      if [ -n "${VALKEY_PASSWORD:-}" ]; then
+        valkey-cli -h "${_h}" -p "${_p}" -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+      else
+        valkey-cli -h "${_h}" -p "${_p}" "$@"
+      fi
+    }
 
     role=$(vc INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
-    if [ "${role}" = "master" ]; then
-      echo "preStop: triggering CLUSTER FAILOVER for master ${POD_NAME}"
-      vc CLUSTER FAILOVER || true
-
-      # Wait until role flips to replica (failover propagated), bounded by
-      # lifecycle.gracefulShutdown.timeoutSeconds.
-      deadline=$(( $(date +%s) + {{ .Values.lifecycle.gracefulShutdown.timeoutSeconds }} ))
-      while [ "$(date +%s)" -lt "${deadline}" ]; do
-        role=$(vc INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
-        if [ "${role}" = "slave" ]; then
-          echo "preStop: failover complete, now a replica"
-          break
-        fi
-        sleep 2
-      done
+    if [ "${role}" != "master" ]; then
+      echo "preStop: ${POD_NAME} is a replica, exiting cleanly"
+      exit 0
     fi
+
+    my_id=$(vc CLUSTER MYID 2>/dev/null | tr -d '\r')
+    echo "preStop: ${POD_NAME} is a master (id=${my_id}), looking for a replica to promote"
+
+    # Find a healthy replica whose master is THIS node. CLUSTER NODES columns:
+    # <id> <ip:port@bus,hostname> <flags> <master> ... — flags include "slave".
+    target=$(vc CLUSTER NODES 2>/dev/null \
+      | awk -v mid="${my_id}" '$0 ~ "slave" && $4 == mid && $0 !~ "fail" {print $2; exit}')
+
+    if [ -z "${target}" ]; then
+      echo "preStop: no healthy replica found, exiting without failover"
+      exit 0
+    fi
+
+    # target is "host:port@bus,hostname" — strip everything after ":" then ","
+    target_host=$(echo "${target}" | sed 's/[:,].*//')
+    target_port=$(echo "${target}" | sed 's/.*://;s/@.*//')
+    echo "preStop: triggering CLUSTER FAILOVER on replica ${target_host}:${target_port}"
+    vc_remote "${target_host}" "${target_port}" CLUSTER FAILOVER || true
+
+    # Wait until OUR role flips to slave, bounded by gracefulShutdown.timeoutSeconds.
+    deadline=$(( $(date +%s) + {{ .Values.lifecycle.gracefulShutdown.timeoutSeconds }} ))
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+      role=$(vc INFO replication 2>/dev/null | awk -F: '/^role:/ {print $2}' | tr -d '\r')
+      if [ "${role}" = "slave" ]; then
+        echo "preStop: failover complete, ${POD_NAME} is now a replica"
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "preStop: failover did not complete within timeout, proceeding with termination"
     exit 0
