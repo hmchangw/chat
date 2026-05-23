@@ -16,6 +16,9 @@ type ReactionMap = map[string][]cassandra.Participant
 // GetReactionsByMessageID returns all reactions on a single message as
 // emoji -> users. Returns an empty ReactionMap (not nil) when the message
 // has no reactions; never returns gocql.ErrNotFound for an empty partition.
+//
+// The singular variant exists alongside GetReactionsByMessageIDs to skip the
+// errgroup + semaphore setup on the hot single-message path (GetMessageByID).
 func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID string) (ReactionMap, error) {
 	iter := r.session.Query(
 		`SELECT emoji, users FROM message_reactions WHERE message_id = ?`,
@@ -27,7 +30,7 @@ func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID stri
 	var users []cassandra.Participant
 	for iter.Scan(&emoji, &users) {
 		out[emoji] = users
-		users = nil // gocql reuses the slice header otherwise
+		users = nil // gocql reuses the backing array otherwise
 	}
 	if err := iter.Close(); err != nil {
 		return nil, fmt.Errorf("loading reactions for message %s: %w", messageID, err)
@@ -51,7 +54,7 @@ func (r *Repository) GetReactionsByMessageIDs(ctx context.Context, messageIDs []
 
 	// Dedupe.
 	seen := make(map[string]struct{}, len(messageIDs))
-	ids := messageIDs[:0:0]
+	ids := make([]string, 0, len(messageIDs))
 	for _, id := range messageIDs {
 		if _, ok := seen[id]; ok {
 			continue
@@ -76,7 +79,7 @@ func (r *Repository) GetReactionsByMessageIDs(ctx context.Context, messageIDs []
 
 			reactions, err := r.GetReactionsByMessageID(gctx, id)
 			if err != nil {
-				return fmt.Errorf("loading reactions for message %s: %w", id, err)
+				return err
 			}
 			if len(reactions) == 0 {
 				return nil

@@ -73,31 +73,34 @@ type QuotedParentMessage struct {
 // to map returned Cassandra columns to struct fields by name, eliminating
 // positional scan maintenance.
 type Message struct {
-	RoomID                string                   `json:"roomId"                          cql:"room_id"`
-	Bucket                int64                    `json:"-"                                cql:"bucket"`
-	CreatedAt             time.Time                `json:"createdAt"                       cql:"created_at"`
-	MessageID             string                   `json:"messageId"                       cql:"message_id"`
-	Sender                Participant              `json:"sender"                          cql:"sender"`
-	Msg                   string                   `json:"msg"                             cql:"msg"`
-	Mentions              []Participant            `json:"mentions,omitempty"              cql:"mentions"`
-	Attachments           [][]byte                 `json:"attachments,omitempty"           cql:"attachments"`
-	File                  *File                    `json:"file,omitempty"                  cql:"file"`
-	Card                  *Card                    `json:"card,omitempty"                  cql:"card"`
-	CardAction            *CardAction              `json:"cardAction,omitempty"            cql:"card_action"`
-	TShow                 bool                     `json:"tshow,omitempty"                 cql:"tshow"`
-	TCount                *int                     `json:"tcount,omitempty"                cql:"tcount"`
-	ThreadParentID        string                   `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
-	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
-	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
-	VisibleTo             string                   `json:"visibleTo,omitempty"             cql:"visible_to"`
-	Reactions             map[string][]Participant `json:"reactions,omitempty"`
-	Deleted               bool                     `json:"deleted,omitempty"               cql:"deleted"`
-	Type                  string                   `json:"type,omitempty"                  cql:"type"`
-	SysMsgData            []byte                   `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
-	SiteID                string                   `json:"siteId,omitempty"                cql:"site_id"`
-	EditedAt              *time.Time               `json:"editedAt,omitempty"              cql:"edited_at"`
-	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"             cql:"updated_at"`
-	ThreadRoomID          string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
-	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
-	PinnedBy              *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
+	RoomID                string               `json:"roomId"                          cql:"room_id"`
+	Bucket                int64                `json:"-"                                cql:"bucket"`
+	CreatedAt             time.Time            `json:"createdAt"                       cql:"created_at"`
+	MessageID             string               `json:"messageId"                       cql:"message_id"`
+	Sender                Participant          `json:"sender"                          cql:"sender"`
+	Msg                   string               `json:"msg"                             cql:"msg"`
+	Mentions              []Participant        `json:"mentions,omitempty"              cql:"mentions"`
+	Attachments           [][]byte             `json:"attachments,omitempty"           cql:"attachments"`
+	File                  *File                `json:"file,omitempty"                  cql:"file"`
+	Card                  *Card                `json:"card,omitempty"                  cql:"card"`
+	CardAction            *CardAction          `json:"cardAction,omitempty"            cql:"card_action"`
+	TShow                 bool                 `json:"tshow,omitempty"                 cql:"tshow"`
+	TCount                *int                 `json:"tcount,omitempty"                cql:"tcount"`
+	ThreadParentID        string               `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
+	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
+	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
+	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
+	// Reactions is populated server-side by history-service via the
+	// message_reactions side table. Nil = no reactions (omitted from JSON);
+	// the field is never scanned from a Cassandra column directly.
+	Reactions    map[string][]Participant `json:"reactions,omitempty"`
+	Deleted      bool                     `json:"deleted,omitempty"               cql:"deleted"`
+	Type         string                   `json:"type,omitempty"                  cql:"type"`
+	SysMsgData   []byte                   `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
+	SiteID       string                   `json:"siteId,omitempty"                cql:"site_id"`
+	EditedAt     *time.Time               `json:"editedAt,omitempty"              cql:"edited_at"`
+	UpdatedAt    *time.Time               `json:"updatedAt,omitempty"             cql:"updated_at"`
+	ThreadRoomID string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
+	PinnedAt     *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
+	PinnedBy     *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
 }
