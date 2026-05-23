@@ -11,15 +11,15 @@ The branch implements the **message reactions side-table** feature per the spec 
 
 Six expert lenses ran in parallel against the rebased branch.
 
-### Findings by severity *(pending test-automation lens)*
+### Findings by severity
 
 | Severity | history-service | Go | Tests | Bug/Sec | Perf | Obs | **Total** |
 |---|---|---|---|---|---|---|---|
-| critical | 0 | 0 | _pending_ | 0 | 0 | 0 | **0** |
-| high | 1 | 2 | _pending_ | 0 | 0 | 0 | **3+** |
-| medium | 4 | 4 | _pending_ | 0 | 2 | 2 | **12+** |
-| low | 4 | 4 | _pending_ | 1 | 3 | 1 | **13+** |
-| nitpick | 1 | 6 | _pending_ | 3 | 2 | 1 | **13+** |
+| critical | 0 | 0 | 0 | 0 | 0 | 0 | **0** |
+| high | 1 | 2 | 0 | 0 | 0 | 0 | **3** |
+| medium | 4 | 4 | 0 | 0 | 2 | 2 | **12** |
+| low | 4 | 4 | 3 | 1 | 3 | 1 | **16** |
+| nitpick | 1 | 6 | 0 | 3 | 2 | 1 | **13** |
 
 ### Top-line risk assessment
 
