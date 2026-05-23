@@ -76,3 +76,47 @@ Hydration is post-auth in all 6 sites (`messages.go:114,170,273,303`; `threads.g
 - **low — large mock regeneration**: 30+ method signatures changed in `mock_repository.go` because of a pre-existing `cassandra.Message` → `models.Message` type rename surfaced by `make generate`. Confirm no behaviour change beyond type swap.
 - **nitpick — bench concurrency hardcoded**: `message_reactions_bench_test.go:18` uses `50`. Worth `b.Run` sub-benches at 1/10/50/200 to show the scaling curve since "default 50" is now a load-bearing config decision.
 
+---
+
+## Go Expert Lens
+
+### high
+
+**H1 — Double-wrap of "loading reactions for message X" loses signal** — `message_reactions.go:79` and `:91`. Inner call already returns `fmt.Errorf("loading reactions for message %s: %w", messageID, err)` (line 33); the per-goroutine site at :79 re-wraps with the *same* string ("loading reactions for message %s"), and `g.Wait()` is then wrapped again at :91 with "loading reactions for messages". Final error reads: `loading reactions for messages: loading reactions for message m1: loading reactions for message m1: <gocql err>`. Drop the :79 wrap (just `return err`) — the inner wrap already names the message and the outer wrap already names the batch.
+
+**H2 — `messageIDs[:0:0]` mutation footgun + missing WHY comment** — `message_reactions.go:48`. `ids := messageIDs[:0:0]` is non-obvious enough to warrant the comment CLAUDE.md §3 calls for. The three-arg slice with zero cap *forces* a fresh backing array on first `append`, so callers' slices are safe today — but a reader can't tell that without re-deriving it. Either add `// fresh backing array; capacity 0 forces append to allocate, never aliasing caller's slice` or just `ids := make([]string, 0, len(messageIDs))` — equally cheap, no aliasing trap.
+
+### medium
+
+**M1 — Per-goroutine `fmt.Errorf` *inside* the lambda happens even on `gctx.Done()`** — `message_reactions.go:73-80`. When the parent context is canceled, every queued goroutine returns `fmt.Errorf("loading reactions for message %s: %w", id, ctx.Canceled)`, and `errgroup.Wait` returns the *first* such error. The handler at `messages.go:114` then logs `error=loading reactions for message <some-random-id>: context canceled` — misleading; the cancellation didn't originate from any specific message. Use `if err != nil { return err }` (see H1) and the leaf wrap at :33 stays meaningful when it's a real Cassandra error.
+
+**M2 — `MessageReader` interface bloat** — `service/service.go:18-29`. Adding two reaction methods to `MessageReader` couples every consumer of message reads to reactions. A `ReactionReader` interface (consumer-defined, two methods) composed into `MessageRepository` would respect ISP and the project's "interfaces in the consumer" rule (CLAUDE.md §3). Worth splitting before more side-table reads land (pins, bookmarks, etc.).
+
+**M3 — `GetReactionsByMessageID` is redundant** — `message_reactions.go:18-35`. Trivially derivable from `GetReactionsByMessageIDs([]string{id})[id]`. Two methods on the interface and two mock setups in every test for negligible benefit. Either drop it and have `GetMessageByID` use the plural form, or document why the singular path exists (avoids errgroup/semaphore overhead for the hot single-message path — plausible, but say so).
+
+**M4 — Wrap-phrasing inconsistency: gerund vs imperative** — `messages.go:494` (`"hydrating reactions: %w"`) and `message_reactions.go:33,79,91` (`"loading reactions for …"`). Project pattern elsewhere is imperative-noun (`"get room times"`, `"persist message"`). Minor, but inconsistent.
+
+### low
+
+**L1 — `ReactionMap` alias invites confusion** — `message_reactions.go:13`. `type ReactionMap = map[string][]cassandra.Participant` (alias, no methods, no identity). Fine choice — readers see `ReactionMap` and the underlying type in error messages — but consider whether `service/service.go` should re-export it as `service.ReactionMap` since the interface signature uses `cassrepo.ReactionMap`, leaking the repo package into every consumer's type vocabulary.
+
+**L2 — `omitempty` on `Message.Reactions` is correct but subtle** — `pkg/model/cassandra/message.go:93`. Nil map serializes as absent; empty map `{}` would serialize. Hydration leaves nil for "no reactions" (`messages.go:498`), so wire payload matches old `cql:"reactions"` behavior. Worth a one-liner doc on the field.
+
+**L3 — `MessageReactionRow` `Row` suffix breaks `pkg/model/cassandra/` convention** — `pkg/model/cassandra/reaction.go:6`. Sibling carriers (`Message`, `Participant`, `File`, `Card`, `QuotedParentMessage`) have no suffix. Either drop the suffix (`MessageReaction`) or accept it as deliberate disambiguation from a future API-level type — note the choice in the comment.
+
+**L4 — `var _ MessageRepository = (*cassrepo.Repository)(nil)` lives in `service.go:117`** — should live next to the implementation (`cassrepo/repository.go`) so a breaking change to `Repository` fails the build in the package owning it, not in `service`. The current placement also forces `service` to import `cassrepo` purely for the assertion.
+
+### nitpick
+
+**N1 — `newServiceNoReactionDefault`** — `messages_test.go:107`. Name reads as "no reaction default" (no default reaction?). Suggest `newServiceStrictReactions` or `newServiceWithoutReactionStubs`.
+
+**N2 — `users = nil // gocql reuses the slice header otherwise`** — `message_reactions.go:30`. Good comment; exactly the WHY style CLAUDE.md §3 prescribes (slight correction: gocql reuses the backing *array*, not the header).
+
+**N3 — `for i := range msgs` loop** — `messages.go:486,500`. No comment on the `rangeValCopy` motivation. One-line note `// index loop avoids copying 440-byte Message struct (gocritic rangeValCopy)` would help future readers resist "fixing" it.
+
+**N4 — `slog.Error` vs `slog.ErrorContext`** — all 5 hydration sites (`messages.go:114,170,273`; `threads.go:104,208`) plus `GetMessageByID:303` use `slog.Error(...)` not `slog.ErrorContext(c, ...)`. If the project's slog handler reads ctx-attached attrs (e.g. requestID), `slog.Error` skips them. Worth confirming with the router middleware pattern.
+
+**N5 — `testing.TB` widening of `CassandraKeyspace`** — `pkg/testutil/cassandra.go:103`. Safe; body uses only TB methods. Backward-compatible.
+
+**N6 — Bench `b.ReportAllocs()` missing** — `message_reactions_bench_test.go`. Worth adding to surface GC-pressure changes alongside ns/op.
+
