@@ -120,3 +120,54 @@ Hydration is post-auth in all 6 sites (`messages.go:114,170,273,303`; `threads.g
 
 **N6 — Bench `b.ReportAllocs()` missing** — `message_reactions_bench_test.go`. Worth adding to surface GC-pressure changes alongside ns/op.
 
+---
+
+## Test-Automation Lens
+
+### Verdict
+All new exported and internal functions ship with tests. Mocks are current. `-race` is wired (`Makefile:59,61`). No `high`-severity findings.
+
+### TDD coverage (CLAUDE.md §4)
+
+| Symbol | Test |
+|---|---|
+| `cassrepo.GetReactionsByMessageID` | `message_reactions_integration_test.go:24-54` (happy + empty partition) |
+| `cassrepo.GetReactionsByMessageIDs` | `message_reactions_integration_test.go:56-138` (happy / nil-empty / dedup / 100-fan-out / ctx-cancel) |
+| `cassrepo.ReactionMap` (alias) | exercised transitively |
+| `cassandra.MessageReactionRow` | `pkg/model/cassandra/reaction_test.go:10-25` (JSON round-trip) |
+| `cassrepo.NewRepository` (4-arg) | `repository_test.go:11-19` (clamps `-1`, `0`; passthrough `50`) |
+| `service.hydrateReactions` | `service/reactions_test.go:18-66` (empty / populates-matching / error-wraps) |
+
+`TestMain` is present at `cassrepo/main_test.go:1-11`. `testutil.RunTests` wires `TerminateAll` per CLAUDE.md §4.
+
+### Mock staleness
+`make generate SERVICE=history-service` regenerates only a one-line header comment on `mocks/mock_repository.go` (path string change due to `go generate` cwd), not the interface body. The new `MessageReader` methods are already wired through the mock (used at `reactions_test.go:21`, `threads_test.go:627`, `messages_test.go:1032`). **Not stale.** Reverted with `git checkout`.
+
+### Coverage (function-level, unit pass)
+
+```
+service/messages.go:484           hydrateReactions          100.0%
+cassrepo/repository.go:22         NewRepository             100.0%
+cassrepo/message_reactions.go:19  GetReactionsByMessageID     0.0%  (integration-only)
+cassrepo/message_reactions.go:46  GetReactionsByMessageIDs    0.0%  (integration-only)
+```
+Service package = **89.7%** (above 80% floor). Cassrepo aggregate 15.3% is expected — repo methods are intentionally covered by `//go:build integration` testcontainers, per CLAUDE.md §4.
+
+### Findings
+
+**low — no test exercises errgroup partial-failure sibling cancellation.** `message_reactions_integration_test.go:121-137` covers pre-cancelled context, but nothing forces one of N goroutines to return a gocql error and asserts siblings observe `gctx.Done()`. Hard to provoke deterministically against a real cluster; acceptable gap.
+
+**low — no test asserts the concurrency cap is honored under load.** `LargeFanOut` (line 102-119) sends 100 IDs with `reactionsConcurrency=50` but only asserts the result map size, not that in-flight count never exceeded 50. Would need an instrumented session wrapper; out of scope for repo tests.
+
+**low — `iter.Close()` error propagation untested.** `GetReactionsByMessageID` wraps `iter.Close()` errors at `message_reactions.go:33`. No test injects a Close error (would require a fault-injecting session). Acceptable.
+
+**info — permissive `AnyTimes()` reaction defaults in `newServiceWithRoomMock`** (`messages_test.go:81-89`) could mask a regression where a handler silently stops hydrating. Mitigated by `newServiceNoReactionDefault` and routing all "HydratesReactions" assertions through it (`messages_test.go:303,331,359,1023`; `threads_test.go:611,642`). Reasonable trade-off.
+
+**info — `reactionsConcurrency=50` passthrough test** is a single assertion, but the function body has no other branches after the clamp; equivalence-class coverage complete.
+
+### Other checks
+- `setupCassandra` widened to `testing.TB` — bench file uses it cleanly with `*testing.B`.
+- All new integration tests use `testutil.CassandraKeyspace` via the existing `setupCassandra` helper — no inline `testcontainers.GenericContainer`. Compliant with CLAUDE.md §4.
+- Table-driven structure used where appropriate.
+- `MessageReactionRow` has JSON round-trip test only (no BSON tag in struct, so BSON test unnecessary — `reaction.go:5` comment is explicit).
+
