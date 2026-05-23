@@ -84,9 +84,17 @@ spec:
               while [ "$i" -lt "$TOTAL_NODES" ]; do
                 host="${STS_NAME}-${i}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
                 echo "waiting for ${host}:${CLIENT_PORT}"
-                while ! vc "${host}" PING >/dev/null 2>&1; do
+                # valkey-cli returns exit 0 even on auth failure / NOAUTH, so we
+                # must inspect the body. Only "PONG" means we're really up + authed.
+                last_err=""
+                while true; do
+                  resp=$(vc "${host}" PING 2>&1 | tr -d '\r' | grep -v '^$' | tail -1)
+                  if [ "${resp}" = "PONG" ]; then
+                    break
+                  fi
+                  last_err="${resp}"
                   if [ "$(date +%s)" -ge "$deadline" ]; then
-                    echo "timeout waiting for ${host}"
+                    echo "timeout waiting for ${host} (last response: ${last_err})"
                     exit 1
                   fi
                   sleep 2

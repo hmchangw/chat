@@ -1,8 +1,15 @@
 # Runtime test report — `valkey-cluster` chart
 
-Date: 2026-05-23  
-Chart version: 0.1.0  
-Chart commit at test time: `98057c6` (pre-fix) → updated to fix bug found here  
+Last updated: 2026-05-23 (second testing pass)
+
+Two testing passes against `valkey/valkey:8.1.4-alpine`:
+
+| Pass | Setup | Scenarios | Bugs found |
+|---|---|---|---|
+| 1 | 6 valkey containers on docker network, docker-adapted entrypoint | T1–T11 | 1 (preStop sent FAILOVER to self) |
+| 2 | Same setup but using the chart's **unmodified rendered entrypoint** via `/etc/hosts` shim, simulating K8s DNS | T1–T13 (extended) | 1 (auth-failure wait-loop accepted `exit 0` from valkey-cli) |
+
+Both bugs found and fixed in this branch. Total commits: 7.  
 Image under test: `valkey/valkey:8.1.4-alpine`, `oliver006/redis_exporter:v1.66.0-alpine`
 
 ## Why no Kubernetes cluster
@@ -89,6 +96,65 @@ exit=0
 
 After: valkey-0 was a `slave`, valkey-4 (its previous replica) was the
 new `master`, `cluster_state` remained `ok` throughout.
+
+## Bug found in pass 2: wait-loop accepted auth failure as "ready"
+
+**Symptom:** Running `job-cluster-create.sh` with a wrong `VALKEY_PASSWORD`
+caused the "wait for all pods to PING" loop to silently complete in seconds
+(even though every PING was actually returning a `NOAUTH` error). The script
+then proceeded to `--cluster create`, which failed with a confusing
+`WRONGPASS invalid username-password pair` deep in valkey-cli output.
+
+**Root cause:** `valkey-cli ... PING` returns **exit code 0 even on
+authentication failure** (the connection succeeded; only the response is
+an error string). The original wait loop used `while ! vc "${host}" PING
+>/dev/null 2>&1`, which only inspects the exit code.
+
+**Reproduction:**
+
+```
+$ valkey-cli -h valkey-0 -p 6379 -a WRONG --no-auth-warning PING
+AUTH failed: WRONGPASS invalid username-password pair or user is disabled.
+NOAUTH Authentication required.
+$ echo $?
+0
+```
+
+**Fix:** Inspect the response body, not the exit code. Updated both
+`job-cluster-create.sh` and `job-cluster-scale.sh`:
+
+```sh
+last_err=""
+while true; do
+  resp=$(vc "${host}" PING 2>&1 | tr -d '\r' | grep -v '^$' | tail -1)
+  if [ "${resp}" = "PONG" ]; then break; fi
+  last_err="${resp}"
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "timeout waiting for ${host} (last response: ${last_err})"
+    exit 1
+  fi
+  sleep 2
+done
+```
+
+The `grep -v '^$'` is necessary because valkey-cli's PING output ends with
+a trailing blank line, so `tail -1` would otherwise return an empty string.
+
+**Verification of fix:**
+
+```
+$ docker run ... -e VALKEY_PASSWORD=WRONG-PASSWORD ... sh /scripts/job-create.sh
+waiting for valkey-0.valkey-headless.test.svc.cluster.local:6379
+timeout waiting for valkey-0.valkey-headless.test.svc.cluster.local
+  (last response: NOAUTH Authentication required.)
+```
+
+Correct password still works:
+
+```
+waiting for valkey-5.valkey-headless.test.svc.cluster.local:6379
+cluster already initialized (cluster_slots_assigned=16384), skipping CLUSTER CREATE
+```
 
 ## Test matrix executed
 
@@ -250,6 +316,157 @@ template yet (as documented).
 
 **Result:** ✅ PASS — exactly 1 Job rendered (cluster-create), no
 cluster-scale Job.
+
+## Pass 2: extended scenarios (chart's rendered entrypoint via `/etc/hosts` shim)
+
+In pass 2, every container ran the chart's **unmodified rendered
+entrypoint.sh**, with `/etc/hosts` patched inside each pod so the
+K8s-style FQDN `valkey-N.valkey-headless.test.svc.cluster.local`
+resolves. This is the closest practical simulation of K8s in-cluster
+DNS without an actual K8s cluster.
+
+### T1' — Cluster bootstrap with full K8s FQDNs
+
+**Result:** ✅ PASS. Each node announces itself as
+`valkey-N.valkey-headless.test.svc.cluster.local` (not just `valkey-N`),
+and `CLUSTER NODES` shows the FQDN in the `,hostname` field for every
+node. Cluster reaches `cluster_state:ok` in ~5s.
+
+### T2' — preStop with FQDN-based replica discovery (new)
+
+In pass 1 we used the docker-adapted entrypoint where
+`cluster-announce-hostname` was just `valkey-N`. In pass 2 it's the full
+K8s FQDN. preStop has to parse `host:port,hostname` and contact the
+replica via its FQDN.
+
+**Result:** ✅ PASS. preStop on valkey-0 identified its replica
+(172.19.0.6 → valkey-4 FQDN), sent CLUSTER FAILOVER, valkey-0 demoted to
+replica.
+
+### T6 — helm-test through FQDN with cluster-aware redirects
+
+In pass 1 we connected via `HOST=valkey-0` (short name). With cluster-aware
+mode, the client follows `MOVED` redirects to other nodes by their
+announced address. If the announced address is an FQDN, the client must
+be able to resolve it.
+
+**Result:** ✅ PASS with `/etc/hosts` shim. The helm test pod's `set/get`
+round-trip works correctly when DNS resolves the announced FQDNs — which
+is the default state in any K8s cluster with kube-dns / CoreDNS.
+
+### T7 — extraContainers sidecar rendering
+
+```yaml
+extraContainers:
+  - name: log-tail
+    image: valkey/valkey:8.1.4-alpine
+    command: ["/bin/sh", "-c", "sleep 3600"]
+```
+
+**Result:** ✅ PASS. Rendered StatefulSet pod containers list:
+`[valkey, log-tail, metrics]`. The sidecar appears between the main
+container and the metrics exporter.
+
+### T8 — Scale-down detection
+
+Live cluster has 6 nodes / 3 masters. Ran scale Job with
+`DESIRED_TOTAL=4 DESIRED_MASTERS=2`.
+
+**Result:** ✅ PASS. Output:
+
+```
+current: known_nodes=6 masters=3
+desired: total=4 masters=2
+scale-DOWN is not automated. Use the runbook at runbooks/scale-out.md (reverse procedure).
+this Job will exit 0 to not block helm upgrade.
+```
+
+The Job correctly refused the unsafe operation and exited 0 so a
+`helm upgrade` that mistakenly shrinks topology doesn't block.
+
+### T9 — extraContainers sidecar actually runs
+
+Launched a Valkey pod with a separate sidecar container on the same
+network. Confirmed both run in parallel: valkey logs show normal
+startup, sidecar logs show `[sidecar] heartbeat` every 5s.
+
+**Result:** ✅ PASS.
+
+### T10' — AOF persistence on disk
+
+Wrote a key, verified `/data/appendonlydir/appendonly.aof.1.incr.aof`
+contains the operation.
+
+**Result:** ✅ PASS. AOF files present on master + replica, both showing
+non-zero size; replication is mirroring writes to the AOF on replicas.
+
+### T11' — cluster-create with wrong password (originally found bug)
+
+**Pass 1 of test (before fix):** ❌ silently accepted exit-0 from
+`valkey-cli PING` despite auth failure. See "Bug found in pass 2"
+section above.
+
+**Pass 2 (after fix):** ✅ Wait loop now times out with clear error:
+
+```
+waiting for valkey-0.valkey-headless.test.svc.cluster.local:6379
+timeout waiting for valkey-0.valkey-headless.test.svc.cluster.local
+  (last response: NOAUTH Authentication required.)
+```
+
+### T12 — Replication health
+
+Picked an arbitrary master, ran `INFO replication`.
+
+**Result:** ✅ PASS.
+
+```
+role:master
+connected_slaves:1
+slave0:ip=172.19.0.7,port=6379,state=online,offset=108074847,lag=0,type=replica
+```
+
+`lag=0` confirms replication is current. The metrics exporter exposes
+this as `redis_connected_slave_lag_seconds` for the alert rule.
+
+### T13 — Full cluster restart with persistent /data (the critical PVC test)
+
+Bootstrapped a 6-node cluster with each node's `/data` bind-mounted to
+a host directory (simulating PVC retention). Recorded all 6 node IDs.
+Then:
+
+1. `docker stop` all 6 containers in parallel
+2. `docker rm` all 6 (simulating pod deletion)
+3. `docker run` all 6 again with the **same** `/data` mounts (simulating
+   StatefulSet recreating pods, K8s reattaching the same PVCs)
+4. Waited 8s, checked cluster state and node IDs
+
+**Result:** ✅ PASS.
+
+- All 6 node IDs identical before vs. after restart
+- `cluster_state:ok`, `cluster_slots_assigned:16384`
+- New SET/GET round-trip works (the cluster came back as a working unit,
+  not just as 6 isolated nodes)
+- AOF files survived and replication continued
+
+This is the closest sandbox-runnable test to "PVC retention across pod
+delete-recreate in a StatefulSet," and it passed cleanly.
+
+### T14 — Memory eviction under load
+
+Configured `maxmemory: 100mb`, `maxmemoryPolicy: allkeys-lru`. Filled
+one master with ~50KB-each random keys until it exceeded the cap.
+
+**Result:** ✅ PASS.
+
+```
+valkey-1 (master): used=99.88M  evicted=506
+valkey-5 (replica): used=99.89M  evicted=0
+```
+
+The master evicted 506 LRU keys as memory hit the cap. The replica
+mirrors memory pressure (same used_memory) but doesn't evict locally
+because evictions are propagated as `DEL` via replication.
 
 ## Static analysis (re-run after fix)
 
