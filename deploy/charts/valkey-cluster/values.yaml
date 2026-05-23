@@ -239,6 +239,47 @@ initContainers:
       - "sysctl -w net.core.somaxconn=1024"
 
 # ---------------------------------------------------------------------------
+# Extension points (escape hatches — use sparingly)
+# ---------------------------------------------------------------------------
+
+# Extra env vars added to the Valkey container. Supports both inline values and
+# valueFrom references (secrets, configMaps, downward API).
+extraEnvVars: []
+  # - name: TZ
+  #   value: "UTC"
+  # - name: SOME_TOKEN
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: token
+
+# Mounted into the Valkey container at the specified mountPath.
+extraVolumeMounts: []
+  # - name: ca-bundle
+  #   mountPath: /etc/ssl/certs/ca-bundle.crt
+  #   subPath: ca-bundle.crt
+  #   readOnly: true
+
+# Extra volumes added to the pod (paired with extraVolumeMounts).
+extraVolumes: []
+  # - name: ca-bundle
+  #   configMap:
+  #     name: company-ca-bundle
+
+# Additional containers in every Valkey pod (sidecars).
+extraContainers: []
+  # - name: log-shipper
+  #   image: my-registry/log-shipper:1.0
+  #   ...
+
+# Additional init containers, run before Valkey starts (after the chart's own
+# volume-permissions / sysctl init containers, if those are enabled).
+extraInitContainers: []
+  # - name: warm-cache
+  #   image: my-registry/cache-warmer:1.0
+  #   ...
+
+# ---------------------------------------------------------------------------
 # Scheduling
 # ---------------------------------------------------------------------------
 

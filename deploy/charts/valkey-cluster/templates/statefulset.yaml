@@ -95,6 +95,12 @@ spec:
             {{- toYaml .Values.initContainers.sysctl.resources | nindent 12 }}
         {{- end }}
       {{- end }}
+      {{- with .Values.extraInitContainers }}
+      {{- if not (or $.Values.initContainers.volumePermissions.enabled $.Values.initContainers.sysctl.enabled) }}
+      initContainers:
+      {{- end }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: valkey
           image: {{ include "valkey-cluster.image" . }}
@@ -122,6 +128,9 @@ spec:
                 secretKeyRef:
                   name: {{ include "valkey-cluster.secretName" . }}
                   key: {{ include "valkey-cluster.secretPasswordKey" . }}
+            {{- end }}
+            {{- with .Values.extraEnvVars }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- if .Values.lifecycle.gracefulShutdown.enabled }}
           lifecycle:
@@ -173,6 +182,12 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if .Values.metrics.enabled }}
         - name: metrics
           image: {{ include "valkey-cluster.metricsImage" . }}
@@ -225,6 +240,9 @@ spec:
         {{- if not .Values.persistence.enabled }}
         - name: data
           emptyDir: {}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
   {{- if .Values.persistence.enabled }}
   volumeClaimTemplates:
