@@ -1,0 +1,260 @@
+# ===========================================================================
+# values-test-valkey.yaml  —  a single, self-contained, annotated config for
+# learning the valkey-cluster chart on a LOCAL kind cluster.
+#
+# Unlike a normal override file (which only lists what differs from the
+# chart's values.yaml), this file spells out EVERY important knob — including
+# ones that would otherwise be inherited as defaults — so you can read it
+# top-to-bottom and understand exactly what gets deployed and why.
+#
+# This is tuned for a 3-worker kind cluster on a laptop. It is NOT a prod
+# config; for production start from values-production.yaml.
+#
+# Deploy:
+#   kubectl create namespace valkey
+#   kubectl -n valkey create secret generic valkey-cluster-auth \
+#     --from-literal=valkey-password="$(openssl rand -base64 24)"
+#   helm install valkey ./deploy/charts/valkey-cluster \
+#     -n valkey -f deploy/charts/valkey-cluster/values-test-valkey.yaml \
+#     --wait --timeout 6m
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 1. IMAGE — the Valkey data-plane container.
+#
+# The SAME valkey/valkey image runs standalone OR in cluster mode; the image
+# is just the binary. Cluster mode is turned on later by the rendered
+# valkey.conf (cluster-enabled yes) + the post-install "cluster create" Job.
+# We pre-loaded this exact tag into the kind nodes.
+# ---------------------------------------------------------------------------
+image:
+  registry: docker.io
+  repository: valkey/valkey
+  tag: "8.1.4-alpine"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+
+# ---------------------------------------------------------------------------
+# 2. CLUSTER TOPOLOGY — how many shards and replicas.
+#
+# total pods = masters * (1 + replicasPerMaster)
+#            = 3 * (1 + 1) = 6 pods  (3 masters + 3 replicas)
+#
+# Valkey cluster shards the 16384 hash slots across the masters; each master
+# gets ~5461 slots and each replica mirrors one master for failover.
+# ---------------------------------------------------------------------------
+cluster:
+  masters: 3
+  replicasPerMaster: 1
+
+  nodeTimeoutMs: 15000        # how long before a silent node is deemed failed
+  requireFullCoverage: true   # refuse writes if any slot is unowned (safe)
+
+  clientPort: 6379            # normal client traffic
+  busPort: 16379              # cluster gossip bus (clientPort + 10000)
+
+  # Post-install bootstrap: runs `valkey-cli --cluster create` once all pods
+  # are Ready. Idempotent — re-runs are a no-op if slots are already assigned.
+  init:
+    enabled: true
+    podReadyTimeoutSeconds: 300
+
+  # Post-upgrade scale automation: when you bump `masters`, a Job adds the new
+  # nodes and reshards slots online. Scale-DOWN is intentionally refused
+  # (manual reshard required — see runbooks/scale-out.md).
+  scaleAutomation:
+    enabled: true
+    slotsPerMove: 100
+
+
+# ---------------------------------------------------------------------------
+# 3. AUTH — password protection.
+#
+# We reference a Secret created out-of-band (kubectl create secret …) instead
+# of letting the chart generate one. Benefit: `helm upgrade` never rotates the
+# password, and you own the value. The chart wires this same password into
+# both `requirepass` (clients) and `masterauth` (replica→master replication).
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  existingSecret: valkey-cluster-auth     # created via kubectl before install
+  existingSecretPasswordKey: valkey-password
+  # password: ""        # only used when existingSecret is empty
+  tls:
+    enabled: false       # stub only in this chart — not wired up yet
+
+
+# ---------------------------------------------------------------------------
+# 4. VALKEY RUNTIME CONFIG — becomes lines in valkey.conf.
+#
+# Small memory cap so a runaway loop can't OOM your laptop. noeviction =
+# reject writes when full (no silent data loss); use allkeys-lru for a pure
+# cache. AOF + RDB give durability so data survives restarts (test T6).
+# ---------------------------------------------------------------------------
+config:
+  maxmemory: "100mb"
+  maxmemoryPolicy: "noeviction"
+
+  appendOnly: true          # AOF: log every write
+  appendFsync: "everysec"   # fsync once/sec — good durability/perf balance
+
+  save:                     # RDB snapshot triggers: <seconds> <changes>
+    - "900 1"
+    - "300 10"
+    - "60 10000"
+
+  extra: ""                 # any raw valkey.conf lines you want appended
+
+
+# ---------------------------------------------------------------------------
+# 5. RESOURCES — tiny so 6 pods + metrics sidecars fit in ~2 GiB.
+# limit > request  =>  Kubernetes QoS class "Burstable".
+# For "Guaranteed" QoS, set limits == requests.
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: "100m"
+    memory: "192Mi"
+  limits:
+    cpu: "500m"
+    memory: "384Mi"
+
+
+# ---------------------------------------------------------------------------
+# 6. PERSISTENCE — one PVC per pod via volumeClaimTemplates.
+# Uses the cluster's default StorageClass (local-path on kind). Keep enabled
+# so you can watch data survive pod delete/recreate.
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: true
+  storageClass: ""          # "" = cluster default
+  accessModes:
+    - ReadWriteOnce
+  size: "1Gi"
+
+
+# ---------------------------------------------------------------------------
+# 7. PROBES — how Kubernetes decides a pod is alive/ready/started.
+# Defaults are sensible; shown here so you know they exist. Startup probe
+# gives a cold pod up to ~5 min to load a large AOF/RDB before liveness kicks
+# in (failureThreshold 60 * periodSeconds 5).
+# ---------------------------------------------------------------------------
+probes:
+  liveness:
+    enabled: true
+  readiness:
+    enabled: true
+  startup:
+    enabled: true
+
+
+# ---------------------------------------------------------------------------
+# 8. LIFECYCLE — graceful shutdown.
+# On termination, a master runs a preStop hook that fails over to a replica
+# FIRST, so the replica is promoted before the master disappears (no write
+# blip). terminationGracePeriodSeconds must exceed the failover timeout.
+# ---------------------------------------------------------------------------
+lifecycle:
+  gracefulShutdown:
+    enabled: true
+    timeoutSeconds: 60
+terminationGracePeriodSeconds: 90
+
+
+# ---------------------------------------------------------------------------
+# 9. SECURITY CONTEXT — runs as non-root, read-only root FS, drops all caps.
+# Defaults already harden this; shown so you can see the posture.
+# ---------------------------------------------------------------------------
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+
+# ---------------------------------------------------------------------------
+# 10. SCHEDULING — anti-affinity (READ THIS).
+#
+# "hard" forbids any two of this release's pods from sharing a node. With 6
+# pods and only 3 kind workers, 3 pods would be stuck Pending. So on a
+# 3-worker cluster we use "soft" (best-effort spread). In production with
+# >= 6 worker nodes, switch back to "hard".
+# ---------------------------------------------------------------------------
+podAntiAffinityPreset: "soft"
+
+
+# ---------------------------------------------------------------------------
+# 11. POD DISRUPTION BUDGET — at most one pod down during voluntary drains.
+# Lets node drains / rolling updates proceed one pod at a time.
+# ---------------------------------------------------------------------------
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+
+# ---------------------------------------------------------------------------
+# 12. NETWORK POLICY — on + deny-by-default.
+# We allow clients in the "valkey" namespace to reach port 6379. NOTE: kind's
+# default CNI (kindnet) does NOT enforce NetworkPolicy, so this is a no-op on
+# kind unless you install Calico/Cilium — but it shows the intended shape.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  allowedClients:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: valkey
+
+
+# ---------------------------------------------------------------------------
+# 13. METRICS — Prometheus exporter sidecar.
+# A redis_exporter container scrapes each pod on :9121. We turn OFF the
+# ServiceMonitor and PrometheusRule because kind has no Prometheus Operator
+# (their CRDs wouldn't exist). You can still curl /metrics via port-forward.
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: oliver006/redis_exporter
+    tag: "v1.66.0-alpine"
+    pullPolicy: IfNotPresent
+  port: 9121
+  resources:
+    requests:
+      cpu: "20m"
+      memory: "32Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+  serviceMonitor:
+    enabled: false        # needs prometheus-operator CRDs (absent on kind)
+  prometheusRule:
+    enabled: false        # ditto
+
+
+# ---------------------------------------------------------------------------
+# 14. JOB HARDENING — the cluster-create / scale Jobs.
+# By default these reuse the data-plane image (jobs.image.* blank = inherit
+# from .image above), so no extra image to load. Shown for completeness.
+# ---------------------------------------------------------------------------
+jobs:
+  image:
+    registry: ""          # blank = inherit image.registry
+    repository: ""        # blank = inherit image.repository
+    tag: ""               # blank = inherit image.tag
+    pullPolicy: IfNotPresent
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600

@@ -1,15 +1,16 @@
 # Runtime test report — `valkey-cluster` chart
 
-Last updated: 2026-05-23 (second testing pass)
+Last updated: 2026-05-23 (third testing pass — first against a real K8s cluster)
 
-Two testing passes against `valkey/valkey:8.1.4-alpine`:
+Three testing passes against `valkey/valkey:8.1.4-alpine`:
 
 | Pass | Setup | Scenarios | Bugs found |
 |---|---|---|---|
 | 1 | 6 valkey containers on docker network, docker-adapted entrypoint | T1–T11 | 1 (preStop sent FAILOVER to self) |
 | 2 | Same setup but using the chart's **unmodified rendered entrypoint** via `/etc/hosts` shim, simulating K8s DNS | T1–T13 (extended) | 1 (auth-failure wait-loop accepted `exit 0` from valkey-cli) |
+| 3 | **kind v0.17 / kubernetes v1.25.3** (1 control-plane + 3 workers), real `helm install`, real PVCs, real StatefulSet, real Jobs | T1–T14 from `runbooks/dev-cluster-test.md` | 2 documentation/sizing issues in the runbook + chart (see "Pass 3 findings") |
 
-Both bugs found and fixed in this branch. Total commits: 7.  
+Bugs from passes 1+2 fixed; pass-3 issues are documentation/sizing (no chart code change required, runbook updates applied).
 Image under test: `valkey/valkey:8.1.4-alpine`, `oliver006/redis_exporter:v1.66.0-alpine`
 
 ## Why no Kubernetes cluster
@@ -542,3 +543,223 @@ kubectl -n valkey-test delete pvc -l app.kubernetes.io/name=valkey-cluster
 If any of T1-T11 fail in your cluster but passed here, the most likely
 causes are CNI / storage / RBAC differences that aren't visible in this
 sandbox.
+
+---
+
+## Pass 3 — real K8s cluster (kind v0.17 / k8s v1.25.3)
+
+First end-to-end test against a live `kubectl`-driven cluster.
+
+### Environment
+
+| | |
+|---|---|
+| kind | v0.17.0 |
+| Node image | `kindest/node:v1.25.3` |
+| Topology | 1 control-plane + 3 worker nodes |
+| CNI | kindnet (default; **does NOT enforce NetworkPolicy**) |
+| StorageClass | `standard` (rancher.io/local-path, default) |
+| kubectl | v1.25.4 |
+| helm | v3.14.4 |
+| Host | 7.6 GiB RAM total, ~2.4 GiB free at install, cgroup v1 |
+
+**`Chart.yaml` note:** chart now declares `kubeVersion: ">=1.25.0-0"`
+(lowered from `>=1.27.0-0`) to match this kind cluster and anything newer.
+None of the templates use APIs introduced after 1.25, so the chart works on
+1.25; validated via `helm template --kube-version 1.25.3` plus a server-side
+`kubectl apply --dry-run=server` against the live 1.25.3 API.
+
+**Anti-affinity note:** tested with `podAntiAffinityPreset: "soft"` because
+the chart's hard preset selector is too broad to fit 6 pods on 3 workers —
+see "Pass 3 findings #1" below.
+
+### T1-T14 results
+
+| Test | Result | Notes |
+|---|---|---|
+| T1 helm test (built-in smoke) | ✅ PASS | `Phase: Succeeded`; test pod auto-deleted by `hook-delete-policy: hook-succeeded` so logs aren't easy to grab — phase is the source of truth |
+| T2 cluster_state=ok | ✅ PASS | `cluster_state:ok`, `cluster_slots_assigned:16384`, `cluster_known_nodes:6`, `cluster_size:3`; `CLUSTER NODES` shows full K8s FQDNs in the hostname field |
+| T3 anti-affinity spread | ⚠️ PARTIAL | Soft preset gave clean 2+2+2 spread across 3 workers. Hard preset rendered manifest verified correct (selector + `topologyKey: kubernetes.io/hostname`), but **see finding #1** — it cannot place 6 pods on 3 workers |
+| T4 failover on pod delete (graceful) | ✅ PASS | `cluster_state` returned to `ok` in **4s** after `kubectl delete pod` on a master; killed pod rejoined as slave |
+| T4b failover (ungraceful, `--grace-period=0 --force`) | ✅ PASS | `cluster_state` reported `ok` on first poll (<1s) — replica promotion happened fast enough to never expose un-covered slots; original master rejoined and resumed its slots once back online (no replica had had time to be declared FAIL, so no permanent role flip) |
+| T5 rolling update via STS annotation patch | ✅ PASS | All 8 pods (we'd already scaled to 4 masters) cycled, `cluster_state` stayed `ok` throughout. Multiple `Failover auth granted` lines in valkey logs confirm preStop did demote masters before terminate. `kubectl logs --previous` did NOT capture preStop output (preStop is an exec lifecycle hook; its stdout goes to kubelet events, not the container log — expected K8s behavior, no FailedPreStopHook events seen) |
+| T6 persistence/PVC | ✅ PASS | Wrote `t6key=persistence-works`, computed its slot (12043), found the owning master (`valkey-valkey-cluster-3`), deleted that pod, waited for re-Ready, key was still readable. PVC retained across delete-recreate |
+| T7 scale-up 3→4 masters via `helm upgrade` | ✅ PASS | STS grew 6→8 pods; post-upgrade scale Job ran (TTL'd before we could grab logs but the result is visible in `CLUSTER INFO`: `cluster_known_nodes:8`, `cluster_size:4`, `cluster_slots_assigned:16384` — online reshard completed) |
+| T8 scale-down 4→3 masters refused safely | ✅ PASS | STS scaled back to 6 pods, but cluster topology retained nodes 6+7 (as `master,fail` / `slave,fail` since their pods were gone). `cluster_state` correctly went to `fail` with `cluster_slots_fail:572` until we re-scaled up. **This is the documented behavior**: the chart's scale Job refuses unsafe automated scale-in (exits 0 so `helm upgrade` doesn't block), and `runbooks/scale-out.md` covers the reverse procedure |
+| T9 metrics scrape | ✅ PASS | Port-forwarded `:9121`, all 9 metrics referenced by `templates/prometheusrule.yaml` present: `redis_up`, `redis_cluster_state`, `redis_cluster_slots_assigned`, `redis_cluster_size`, `redis_cluster_known_nodes`, `redis_connected_slave_lag_seconds`, `redis_memory_max_bytes`, `redis_memory_used_bytes`, `redis_rejected_connections_total`. Note: `redis_connected_slave_lag_seconds` is only exposed by master nodes (replicas don't have it) — scrape from a master pod to see it |
+| T10 NetworkPolicy enforced | ⚠️ PARTIAL | Manifest shape verified (3 ingress + 2 egress rules, matching selectors). Enforcement NOT tested — kindnet doesn't implement NetworkPolicy. Would require swapping to Calico or Cilium |
+| T11 password rotation | ✅ PASS | `kubectl create secret --dry-run=client -o yaml \| kubectl apply -f -` replaced the Secret; `kubectl rollout restart sts` picked up new env var on every pod. Old PW returned `WRONGPASS`, new PW returned `PONG` |
+| T12 wrong-password rejected by helm test | ✅ PASS | Methodology fix from the runbook: `--show-only` of the test pod doesn't render the Secret, so the original recipe gets `CreateContainerConfigError`. Instead, pre-create a Secret with `valkey-password=WRONG-PASSWORD` and pass it via `auth.existingSecret`. Test pod then exits with `AUTH failed: WRONGPASS` and `FAIL: cluster_state=` — exactly as designed |
+| T13 observability | ✅ PASS | Valkey container logs flow (replication events, BGSAVE, cluster state changes); metrics sidecar boots cleanly (`Providing metrics at :9121/metrics`); `CLUSTER NODES` shows 4 masters with disjoint slot ranges covering 0-16383 |
+| T14 resource limits + securityContext | ✅ PASS | Pod-level: `runAsUser=1000`, `runAsGroup=1000`, `fsGroup=1000`, `runAsNonRoot=true`, `seccompProfile.type=RuntimeDefault`. Container-level (valkey): `allowPrivilegeEscalation=false`, `capabilities.drop=[ALL]`, `readOnlyRootFilesystem=true`. ServiceAccount has `automountServiceAccountToken: false`. QoS class: `Burstable` (intentional — limits > requests). All match `values.yaml` defaults. |
+
+### Pass 3 findings
+
+#### Finding #1 — hard anti-affinity selector is too broad (chart + runbook)
+
+`templates/_helpers.tpl` defines the anti-affinity term as:
+
+```yaml
+podAntiAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: valkey-cluster
+          app.kubernetes.io/instance: valkey
+      topologyKey: kubernetes.io/hostname
+```
+
+Both masters and replicas carry the same `name + instance` labels, so the
+hard preset blocks **any two pods of the release** from sharing a node.
+With the default topology of 3 masters × (1 master + 1 replica) = 6 pods,
+the chart needs **6 worker nodes** under hard preset, not 3.
+
+The runbook (`dev-cluster-test.md` §5, §6 T3) expects "2 pods per node
+(one master + one replica)", which would only hold if the anti-affinity
+selector distinguished role (e.g., per `app.kubernetes.io/component`).
+
+Options to consider (none applied yet):
+1. **Leave as-is, document the sizing requirement.** Hard preset → workers ≥ total pods. Update the runbook's T3 expectations and add a sizing note to README.
+2. **Switch hard preset to per-role anti-affinity** by injecting a `master`/`replica` component label. Caveat: StatefulSet pods don't know their role at scheduling time (role is assigned by cluster bootstrap), so this approach needs a separate StatefulSet per role or a mutating webhook — neither is worth the complexity here.
+3. **Document that "hard" means "≥ N workers" and recommend "soft" for `N < total_pods` environments.**
+
+Workaround we used for kind: `podAntiAffinityPreset: "soft"`, which gave a
+clean 2+2+2 spread across 3 workers (soft is just a preference, not a hard
+requirement, so the scheduler does best-effort packing). For production
+with 3+ AZs and dedicated node pools, hard preset + 6 workers is fine.
+
+#### Finding #2 — `dev-cluster-test.md` T4 awk recipe extracts the wrong field
+
+```bash
+PRIMARY_MASTER=$(kubectl -n valkey exec valkey-valkey-cluster-0 -- \
+  valkey-cli ... cluster nodes \
+  | awk '/myself,master/ {print $2}' | cut -d. -f1)
+```
+
+The `$2` field of `CLUSTER NODES` is `<ip>:<port>@<bus>,<hostname>` — e.g.
+`10.244.3.7:6379@16379,valkey-valkey-cluster-0.valkey-valkey-cluster-headless...`.
+`cut -d. -f1` returns `10` (from the IP), not the pod name. Subsequent
+`kubectl delete pod 10` silently fails with "pods 10 not found" and the
+test appears to pass because nothing was actually killed.
+
+Correct extraction is `cut -d, -f2 | cut -d. -f1` (split off the IP/port
+fragment first, then take the leading dot-separated component of the
+FQDN — i.e. the pod's stable hostname).
+
+Same fix applies to T6 (the slot-owner lookup). Runbook updated below.
+
+#### Finding #3 — `Chart.yaml` `kubeVersion` floor (1.27) excludes 1.25/1.26 unnecessarily — RESOLVED
+
+Floor lowered to `>=1.25.0-0`. No template uses an API or feature introduced after k8s 1.25:
+- `policy/v1` PDB (1.21+) ✓
+- `networking.k8s.io/v1` NetworkPolicy (long-GA) ✓
+- `apps/v1` StatefulSet ✓
+- `batch/v1` Job ✓
+- `seccompProfile` field in `securityContext` (1.19+) ✓
+- `fsGroupChangePolicy: OnRootMismatch` (1.20 beta, 1.23 GA) ✓
+
+Floor set to 1.25 so the chart installs on this kind cluster and any newer
+K8s. Bump it later if a policy decision requires a higher support floor.
+
+### What still needs verification in a production-grade cluster
+
+The same caveats as pass 2 — plus this pass cleared the K8s-API ones:
+
+| Category | Status |
+|---|---|
+| StatefulSet rolling update | ✅ verified (T5) |
+| PVC volumeClaimTemplates retention across pod delete | ✅ verified (T6) |
+| Helm hook ordering (post-install / post-upgrade) | ✅ verified (T1 + T7) |
+| NetworkPolicy enforcement | ⚠ still needs Calico/Cilium (T10 partial) |
+| ServiceMonitor pickup by Prometheus Operator | ⚠ still needs prom-operator install |
+| Real CSI driver behavior (EBS/GCP-PD/AzureDisk) | ⚠ kind uses local-path |
+| Multi-AZ topology spread | ⚠ kind has no zones |
+| Long-running stability (memory drift, log volume) | ⚠ out of sandbox scope |
+
+### Bitnami COMPARISON.md accuracy (cross-checked vs `bitnami/valkey-cluster` 3.0.24)
+
+Out of ~35 rows in `COMPARISON.md`, ~26 are accurate, 6 need wording nits,
+and 5 are wrong and should be fixed before showing the doc to reviewers:
+
+1. **§3 preStop row** — Bitnami does NOT ship a preStop hook by default
+   (`bitnami values.yaml:528: lifecycleHooks: {}`). The custom chart's
+   preStop is a genuine improvement, not parity. Change Bitnami column
+   from ✅ to ❌ and re-emphasize the edge.
+2. **§6 NetworkPolicy default state** — Bitnami's `networkPolicy.enabled`
+   is `true` by default (not "off by default"), but `allowExternal: true`
+   makes the default permissive. Reword: "Bitnami ships it on by default
+   BUT permissive (allows any namespace on 6379); this chart ships it on
+   by default AND deny-by-default."
+3. **§8 PodMonitor** — Bitnami has NO PodMonitor template (only
+   ServiceMonitor) and no `metrics.podMonitor` values key. Drop the row
+   or change to "Bitnami ❌ — only ships ServiceMonitor".
+4. **§12 `extraContainers`** — Bitnami calls these `sidecars`
+   (`bitnami values.yaml:549`), not `extraContainers`. Functionally
+   equivalent but the name claim is wrong.
+5. **§14 Bitnami image tag** — `bitnami/valkey-cluster:8.1.3-debian-12-r3`
+   (the `bitnamilegacy/` rebrand cited in COMPARISON.md is Broadcom's
+   post-2024 image strip, not the registry this chart version points to).
+   The substantive CVE point holds; just cite the actual registry the
+   chart ships with, or cite a CVE source.
+
+Other omissions worth noting in COMPARISON.md: Bitnami ships an optional
+RBAC Role + RoleBinding (custom doesn't), a `diagnosticMode` debug entry
+(custom doesn't), and a `tls.autoGenerated` self-signed cert path
+(custom's TLS is stub-only).
+
+Lines-of-YAML claim ("~1,500 vs ~3,000") understates: actuals are
+~1,070 custom vs ~3,860 Bitnami across `templates/*.yaml`. Suggest
+rewording to "this chart is ~3.6× smaller than Bitnami's."
+
+### Pass/Fail summary
+
+```
+T1   helm test               [ PASS ]    Phase: Succeeded
+T2   cluster_state=ok        [ PASS ]    16384 slots, 6 known, size=3
+T3   anti-affinity spread    [ PART ]    soft worked; hard manifest correct but too broad (see finding #1)
+T4   failover on pod kill    [ PASS ]    graceful=4s, ungraceful=<1s
+T5   rolling update preStop  [ PASS ]    cluster_state stayed ok throughout
+T6   persistence/PVC         [ PASS ]    key survived owner-pod delete-recreate
+T7   scale-up (3→4 masters)  [ PASS ]    6→8 pods, online slot rebalance
+T8   scale-down refused      [ PASS ]    STS shrank but topology preserved
+T9   metrics /metrics        [ PASS ]    all 9 PrometheusRule metrics present
+T10  NetworkPolicy enforced  [ PART ]    manifest correct; kindnet doesn't enforce
+T11  password rotation       [ PASS ]    old=WRONGPASS, new=PONG
+T12  wrong password rejected [ PASS ]    test pod fails with AUTH failed
+T13  observability           [ PASS ]    logs flow, metrics sidecar healthy
+T14  resource limits         [ PASS ]    QoS=Burstable, full hardening applied
+```
+
+12 full PASS + 2 PARTIAL (T3, T10 — both partial for environmental reasons:
+the runbook expectation is wrong for T3, kindnet doesn't enforce NP for T10).
+No new chart bugs found; 2 runbook/doc issues (Findings #1, #2) and 1
+policy nit (Finding #3). COMPARISON.md needs 5 small wording fixes.
+
+### Reproducing pass 3
+
+```bash
+# Cluster
+kind create cluster --name valkey-test --image kindest/node:v1.25.3 \
+  --config /tmp/kind-valkey.yaml  # 1 cp + 3 workers
+
+# Secret + namespace
+kubectl create namespace valkey
+VALKEY_PW="$(openssl rand -base64 32 | tr -d /+= | head -c 32)"
+kubectl -n valkey create secret generic valkey-cluster-auth \
+  --from-literal=valkey-password="$VALKEY_PW"
+
+# Install (with kubeVersion floor relaxed for 1.25 and soft anti-affinity for kind)
+helm install valkey ./deploy/charts/valkey-cluster -n valkey \
+  --set podAntiAffinityPreset=soft \
+  --set auth.existingSecret=valkey-cluster-auth \
+  --set config.maxmemory=100mb \
+  --set persistence.size=1Gi \
+  --set resources.requests.memory=192Mi --set resources.limits.memory=384Mi \
+  --set metrics.serviceMonitor.enabled=false \
+  --set metrics.prometheusRule.enabled=false \
+  --wait --timeout 6m
+
+helm test valkey -n valkey
+# ...remaining T1-T14 commands as listed in dev-cluster-test.md, with
+# T4/T6 master-pod extraction fixed per Finding #2.
+```

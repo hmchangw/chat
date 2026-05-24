@@ -33,7 +33,7 @@ you pulled, appVersion `8.1.3`) versus this chart at the head of branch
 | External access (NodePort/LoadBalancer per pod) | 🔵 Intentionally omitted — in-cluster only |
 | Sentinel bridge migration mode | 🔵 Omitted — not applicable to greenfield |
 | Resource presets (nano/micro/small/...) | 🔵 Omitted — set `resources` directly |
-| Lines of YAML | ➕ ~1,500 vs Bitnami's ~3,000 |
+| Lines of YAML (templates/*.yaml) | ➕ ~1,070 vs Bitnami's ~3,860 (≈3.6× smaller) |
 
 If TLS in transit isn't required by your compliance team, this chart is
 production-ready. If TLS is required, we either implement it (~150 LOC) or
@@ -70,7 +70,7 @@ fall back to Bitnami Secure Images.
 | Liveness probe (PING) | ✅ | 🟢 | |
 | Readiness probe (PING) | ✅ | 🟢 | |
 | Startup probe (slow restart from large RDB) | ✅ | 🟢 | |
-| `preStop` hook: failover before terminate | ✅ | 🟢 | **Found and fixed a real bug here during testing** — original sent `CLUSTER FAILOVER` to self (which Valkey rejects); now finds a healthy replica and issues failover there. See test-report.md. |
+| `preStop` hook: failover before terminate | ❌ (no default; `valkey.lifecycleHooks: {}` opt-in only) | ➕ 🟢 default-on | **This chart wins outright** — Bitnami ships no default preStop, leaving every termination to gossip. Custom chart's preStop performs graceful failover before terminate. **Found and fixed a real bug here during testing** — original sent `CLUSTER FAILOVER` to self (which Valkey rejects); now finds a healthy replica and issues failover there. See test-report.md. |
 | `terminationGracePeriodSeconds` matched to preStop timeout | ✅ | 🟢 | Default 90s > 60s graceful shutdown |
 | Lifecycle hook timeout configurable | ✅ | 🟢 | `lifecycle.gracefulShutdown.timeoutSeconds` |
 
@@ -104,7 +104,7 @@ fall back to Bitnami Secure Images.
 | Anti-affinity (soft / hard) | ✅ | 🟢 | `podAntiAffinityPreset: hard\|soft\|""` |
 | TopologySpreadConstraints | ✅ | 🟢 | `topologySpreadConstraints` passes through |
 | Tolerations / nodeSelector / priorityClassName | ✅ | 🟢 | All pass through |
-| NetworkPolicy | ✅ (off by default) | 🟢 ➕ **on by default, deny-by-default ingress** | This is *stricter* than Bitnami — until you populate `networkPolicy.allowedClients`, no client traffic is allowed. Bitnami leaves it open until you opt in. |
+| NetworkPolicy | ✅ on by default BUT permissive (`allowExternal: true` lets any namespace reach 6379) | 🟢 ➕ **on by default AND deny-by-default ingress** | This is *stricter* than Bitnami — until you populate `networkPolicy.allowedClients`, no client traffic is allowed. Bitnami's default NP is shipped but effectively a no-op until you flip `allowExternal: false`. |
 
 ## 7. Init containers
 
@@ -122,7 +122,7 @@ fall back to Bitnami Secure Images.
 | Metrics ClusterIP Service | ✅ | 🟢 | Distinct service, labeled `app.kubernetes.io/component=metrics` |
 | ServiceMonitor (Prometheus Operator) | ✅ | 🟢 | Opt-in via `metrics.serviceMonitor.enabled` |
 | PrometheusRule | ❌ Bitnami does NOT ship one | ➕ Ships **7 ready-made alerts** | `ValkeyClusterDown`, `ValkeyClusterStateNotOk`, `ValkeyClusterSlotsUnassigned`, `ValkeyMasterMissingReplica`, `ValkeyReplicationLagHigh`, `ValkeyMemoryNearLimit`, `ValkeyRejectedConnections`. All metric names verified against `oliver006/redis_exporter` v1.66.0 source. |
-| PodMonitor | ✅ | 🔵 omitted | ServiceMonitor is the more standard option; we use that |
+| PodMonitor | ❌ (Bitnami only ships ServiceMonitor) | 🔵 same | Both charts ship ServiceMonitor only — no asymmetry. |
 | Helm test pod | ❌ Bitnami does NOT ship one | ➕ `helm test` validates cluster_state, slot coverage, node count, and a set/get round-trip on every install/upgrade |
 
 ## 9. Scaling
@@ -165,7 +165,7 @@ solve in a values file.
 |---|---|---|---|
 | `extraEnvVars` | ✅ | 🟢 | Both inline and `valueFrom` references |
 | `extraVolumes` + `extraVolumeMounts` | ✅ | 🟢 | |
-| `extraContainers` (sidecars) | ✅ | 🟢 | Logging, debug, audit sidecars |
+| Sidecar containers | ✅ as `valkey.sidecars` | 🟢 as `extraContainers` | Functionally equivalent; naming differs (Bitnami: `sidecars`, this chart: `extraContainers`). |
 | `extraInitContainers` | ✅ | 🟢 | Run after chart's own init containers (volumePermissions, sysctl) |
 | `extraDeploy` (arbitrary K8s objects from the chart) | ✅ | 🔵 omitted | If you need arbitrary objects, manage them in a separate Helm release or with Kustomize — keeping them out of this chart keeps templates clean |
 | `commonLabels` / `commonAnnotations` | ✅ | 🟢 | Applied to every resource |
@@ -195,7 +195,7 @@ requirements.
 
 | Concern | Bitnami chart 3.0.24 | This chart |
 |---|---|---|
-| Data plane image | `bitnamilegacy/valkey-cluster:8.1.3-debian-12-r3` (frozen, has known critical CVEs incl. BIT-valkey-2025-49844) | `valkey/valkey:8.1.4-alpine` (upstream, current) |
+| Data plane image | `docker.io/bitnami/valkey-cluster:8.1.3-debian-12-r3` (the image actually shipped by chart 3.0.24; inherits the frozen `bitnami/*` legacy CVE set including BIT-valkey-2025-49844 after Broadcom's 2024 Bitnami repackaging) | `valkey/valkey:8.1.4-alpine` (upstream, current) |
 | Image patch flow | Build a layer on top of the frozen image, manually patch apt + recompile Valkey + patch the Bitnami SBOM — per CVE cycle | Bump `image.tag` in values, `helm upgrade` |
 | Maintenance work per CVE cycle | High and growing | Effectively zero |
 | Vendor lock-in | High — chart and image are coupled | None — chart works with any upstream Valkey image |

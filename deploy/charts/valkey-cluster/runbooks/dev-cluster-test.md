@@ -333,7 +333,22 @@ Expect 3 lines marked `master` (each with a slot range) and 3 lines marked `slav
 kubectl -n valkey get pods -o wide --sort-by=.spec.nodeName
 ```
 
-With hard anti-affinity and 3 worker nodes, you should see 2 pods per node (one master + one replica). No node should have 3 pods.
+**Sizing constraint:** the chart's `podAntiAffinityPreset: "hard"` uses a
+selector of `app.kubernetes.io/name` + `app.kubernetes.io/instance`. Both
+masters and replicas carry these labels, so hard preset blocks any two
+pods of the release from sharing a node. With 3 masters × (1 master + 1
+replica) = 6 pods, hard preset requires **6 worker nodes**, not 3.
+
+What to expect:
+- **3 workers + soft preset (or no anti-affinity):** scheduler spreads
+  best-effort, typically 2 pods per worker.
+- **3 workers + hard preset:** only 3 pods schedule; 3 stay `Pending`
+  with `didn't match pod anti-affinity rules`.
+- **6 workers + hard preset:** 1 pod per worker (the production target).
+
+For this kind run on 3 workers, set `podAntiAffinityPreset: "soft"` in
+the values file. For production, plan worker count ≥ total pod count if
+you want hard preset.
 
 ### T4. Failover via pod deletion
 
@@ -341,7 +356,9 @@ With hard anti-affinity and 3 worker nodes, you should see 2 pods per node (one 
 # Identify a master
 PRIMARY_MASTER=$(kubectl -n valkey exec valkey-valkey-cluster-0 -- \
   valkey-cli -a "$VALKEY_PW" --no-auth-warning cluster nodes \
-  | awk '/myself,master/ {print $2}' | cut -d. -f1)
+  | awk '/myself,master/ {print $2}' | cut -d, -f2 | cut -d. -f1)
+# The $2 field is "<ip>:<port>@<bus>,<fqdn>"; cut -d, -f2 strips the
+# IP/port half, then cut -d. -f1 takes the leading pod hostname.
 echo "Killing $PRIMARY_MASTER"
 
 # Watch nodes while the failover happens (run in a separate terminal)
@@ -411,8 +428,17 @@ echo "Key t6key is in slot $SLOT"
 
 OWNER=$(kubectl -n valkey exec valkey-valkey-cluster-0 -- \
   valkey-cli -a "$VALKEY_PW" --no-auth-warning CLUSTER NODES \
-  | awk -v slot="$SLOT" '$3 ~ /master/ {split($NF, r, "-"); split(r[1], lo, ":"); if (slot >= lo[1] && slot <= r[2]) print $2}' \
-  | head -1 | cut -d. -f1)
+  | awk -v slot="$SLOT" '
+      $3 ~ /master/ {
+        # last field is the slot range like "0-5460"
+        n = split($NF, parts, "-")
+        if (n == 2 && slot+0 >= parts[1]+0 && slot+0 <= parts[2]+0) {
+          # $2 = "<ip>:<port>@<bus>,<fqdn>"; pull the fqdn and take the leading hostname.
+          split($2, a, ",")
+          split(a[2], b, ".")
+          print b[1]
+        }
+      }' | head -1)
 echo "Owner pod: $OWNER"
 
 kubectl -n valkey delete pod "$OWNER"
@@ -579,20 +605,32 @@ echo "$VALKEY_PW" > /tmp/valkey-pw.txt
 ### T12. Wrong password is rejected by helm test
 
 Simulate a misconfiguration: deploy the test pod with a wrong password.
+`--show-only` renders only the test Pod, NOT the Secret it references —
+so we must pre-create a wrong-password Secret and point the test pod at
+it via `auth.existingSecret`.
 
 ```bash
-# (The helm test pod uses the Secret directly, so to test "wrong password"
-# we render it manually with a bad value)
+# 1. Create a Secret with the wrong password
+kubectl -n valkey create secret generic valkey-wrong-auth \
+  --from-literal=valkey-password="WRONG-PASSWORD"
+
+# 2. Render only the test pod, with the test pointed at the bad Secret
 helm template valkey ./deploy/charts/valkey-cluster -n valkey \
   -f /tmp/values-kind.yaml \
-  --set auth.existingSecret="" --set auth.password="WRONG-PASSWORD" \
+  --set auth.existingSecret="valkey-wrong-auth" \
   --show-only templates/tests/connection-test.yaml \
   | kubectl apply -n valkey -f -
 
 kubectl -n valkey wait --for=condition=PodScheduled pod/valkey-valkey-cluster-connection-test --timeout=30s
+sleep 10
 kubectl -n valkey logs pod/valkey-valkey-cluster-connection-test
-# expect: "AUTH failed: WRONGPASS ..." then "FAIL: cluster_state="
+# expect:
+#   AUTH failed: WRONGPASS invalid username-password pair or user is disabled.
+#   FAIL: cluster_state=
+
+# 3. Cleanup
 kubectl -n valkey delete pod valkey-valkey-cluster-connection-test
+kubectl -n valkey delete secret valkey-wrong-auth
 ```
 
 ### T13. Pod logs and observability
