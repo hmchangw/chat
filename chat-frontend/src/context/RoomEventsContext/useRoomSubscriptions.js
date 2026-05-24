@@ -163,8 +163,8 @@ export function useRoomSubscriptions(
 
     // Translate a wire-level event to room+thread dispatches for edit/delete.
     const handleMutationEvent = (evt) => {
-      if (evt?.type === 'message_edited' && evt.messageEdited?.messageId) {
-        const { messageId, newContent, editedAt } = evt.messageEdited
+      if (evt?.type === 'message_edited' && evt.messageId) {
+        const { messageId, newContent, editedAt } = evt
         // Drop edits without a plaintext body. Encrypted channel rooms emit
         // `encryptedNewContent` instead; blanking the existing content to ''
         // would silently wipe the message until decryption is implemented.
@@ -181,8 +181,8 @@ export function useRoomSubscriptions(
         fanThreadMutation({ kind: 'edited', messageId, content: newContent, editedAt: editedAtIso })
         return true
       }
-      if (evt?.type === 'message_deleted' && evt.messageDeleted?.messageId) {
-        const { messageId } = evt.messageDeleted
+      if (evt?.type === 'message_deleted' && evt.messageId) {
+        const { messageId } = evt
         safeDispatch({ type: 'MESSAGE_DELETED', roomId: evt.roomId, messageId })
         fanThreadMutation({ kind: 'deleted', messageId })
         return true
@@ -235,7 +235,7 @@ export function useRoomSubscriptions(
     // Decrypt encrypted fields on an event, then call finalize(decoded).
     // Handles two cases:
     //   1. encryptedMessage (new_message with no plaintext body yet)
-    //   2. messageEdited.encryptedNewContent (edit events in encrypted rooms)
+    //   2. encryptedNewContent (edit events in encrypted rooms)
     // Returns null on the key-not-yet-available path — the caller passes
     // the event through unchanged and the reducer's placeholder branch
     // handles the missing body gracefully.
@@ -258,9 +258,9 @@ export function useRoomSubscriptions(
             }
           }
         }
-        // Handle encrypted message edits.
-        if (decoded.messageEdited && decoded.messageEdited.encryptedNewContent && !decoded.messageEdited.newContent) {
-          const enc = decoded.messageEdited.encryptedNewContent
+        // Handle encrypted message edits (flattened edit event).
+        if (decoded.type === 'message_edited' && decoded.encryptedNewContent && !decoded.newContent) {
+          const enc = decoded.encryptedNewContent
           if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
             const plaintext = await decryptRef.current({
               roomId: decoded.roomId,
@@ -269,10 +269,7 @@ export function useRoomSubscriptions(
               ciphertextB64: enc.ciphertext,
             })
             if (plaintext != null) {
-              decoded = {
-                ...decoded,
-                messageEdited: { ...decoded.messageEdited, newContent: plaintext, encryptedNewContent: undefined },
-              }
+              decoded = { ...decoded, newContent: plaintext, encryptedNewContent: undefined }
             }
           }
         }

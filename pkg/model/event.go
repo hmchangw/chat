@@ -157,28 +157,9 @@ const (
 	RoomEventMessageDeleted RoomEventType = "message_deleted"
 )
 
-// MessageEditedPayload carries the per-edit fields on a RoomEvent of type
-// RoomEventMessageEdited. For encrypted channel rooms NewContent is empty and
-// EncryptedNewContent carries the ciphertext; otherwise NewContent is the
-// plaintext edit content.
-type MessageEditedPayload struct {
-	MessageID           string          `json:"messageId"`
-	NewContent          string          `json:"newContent,omitempty"`
-	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty"`
-	EditedBy            string          `json:"editedBy"`
-	EditedAt            time.Time       `json:"editedAt"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
-}
-
-// MessageDeletedPayload carries the per-delete fields on a RoomEvent of type
-// RoomEventMessageDeleted.
-type MessageDeletedPayload struct {
-	MessageID string    `json:"messageId"`
-	DeletedBy string    `json:"deletedBy"`
-	DeletedAt time.Time `json:"deletedAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
+// RoomEvent is the live fan-out event for a newly created message
+// (RoomEventNewMessage). Edits and deletes use the flattened EditRoomEvent /
+// DeleteRoomEvent so clients are not handed zero-valued base fields.
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
 	RoomID    string        `json:"roomId"`
@@ -198,9 +179,36 @@ type RoomEvent struct {
 
 	Message          *ClientMessage  `json:"message,omitempty"`
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
+}
 
-	MessageEdited  *MessageEditedPayload  `json:"messageEdited,omitempty"`
-	MessageDeleted *MessageDeletedPayload `json:"messageDeleted,omitempty"`
+// EditRoomEvent is the live event published when a message is edited. Fields are
+// flat (no zero-valued RoomEvent base fields). For encrypted channel rooms
+// NewContent is empty and EncryptedNewContent carries the ciphertext; otherwise
+// NewContent holds the plaintext edit.
+type EditRoomEvent struct {
+	Type                RoomEventType   `json:"type"`
+	RoomID              string          `json:"roomId"`
+	SiteID              string          `json:"siteId"`
+	Timestamp           int64           `json:"timestamp" bson:"timestamp"`
+	MessageID           string          `json:"messageId"`
+	NewContent          string          `json:"newContent,omitempty"`
+	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty"`
+	EditedBy            string          `json:"editedBy"`
+	EditedAt            time.Time       `json:"editedAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
+}
+
+// DeleteRoomEvent is the live event published when a message is deleted. Fields
+// are flat (no zero-valued RoomEvent base fields).
+type DeleteRoomEvent struct {
+	Type      RoomEventType `json:"type"`
+	RoomID    string        `json:"roomId"`
+	SiteID    string        `json:"siteId"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	MessageID string        `json:"messageId"`
+	DeletedBy string        `json:"deletedBy"`
+	DeletedAt time.Time     `json:"deletedAt"`
+	UpdatedAt time.Time     `json:"updatedAt"`
 }
 
 type RoomKeyEvent struct {

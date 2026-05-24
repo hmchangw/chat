@@ -125,13 +125,29 @@ func (h *Handler) handleUpdated(ctx context.Context, evt *model.MessageEvent) er
 	if msg.EditedAt == nil || msg.UpdatedAt == nil {
 		return fmt.Errorf("updated event missing EditedAt or UpdatedAt: %s", msg.ID)
 	}
-	return h.fanOutMutationEvent(ctx, evt, model.RoomEventMessageEdited, &model.MessageEditedPayload{
+
+	room, err := h.store.GetRoom(ctx, msg.RoomID)
+	if err != nil {
+		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
+	}
+
+	edit := model.EditRoomEvent{
+		Type:       model.RoomEventMessageEdited,
+		RoomID:     room.ID,
+		SiteID:     room.SiteID,
+		Timestamp:  evt.Timestamp,
 		MessageID:  msg.ID,
 		NewContent: msg.Content,
 		EditedBy:   msg.UserAccount,
 		EditedAt:   *msg.EditedAt,
 		UpdatedAt:  *msg.UpdatedAt,
-	}, nil)
+	}
+	if room.Type == model.RoomTypeChannel && h.encrypt {
+		if err := h.encryptEditedContent(ctx, room.ID, &edit); err != nil {
+			return err
+		}
+	}
+	return h.publishMutation(ctx, room, model.RoomEventMessageEdited, msg.ID, &edit)
 }
 
 func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) error {
@@ -139,57 +155,39 @@ func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) er
 	if msg.UpdatedAt == nil {
 		return fmt.Errorf("deleted event missing UpdatedAt: %s", msg.ID)
 	}
-	return h.fanOutMutationEvent(ctx, evt, model.RoomEventMessageDeleted, nil, &model.MessageDeletedPayload{
-		MessageID: msg.ID,
-		DeletedBy: msg.UserAccount,
-		DeletedAt: *msg.UpdatedAt,
-		UpdatedAt: *msg.UpdatedAt,
-	})
-}
-
-// fanOutMutationEvent routes the live event by room type, same as the create
-// path. Exactly one of edited/deleted is non-nil.
-func (h *Handler) fanOutMutationEvent(
-	ctx context.Context,
-	evt *model.MessageEvent,
-	roomEvtType model.RoomEventType,
-	edited *model.MessageEditedPayload,
-	deleted *model.MessageDeletedPayload,
-) error {
-	msg := evt.Message
 
 	room, err := h.store.GetRoom(ctx, msg.RoomID)
 	if err != nil {
 		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
 	}
 
-	roomEvt := model.RoomEvent{
-		Type:           roomEvtType,
-		RoomID:         room.ID,
-		Timestamp:      evt.Timestamp,
-		SiteID:         room.SiteID,
-		MessageEdited:  edited,
-		MessageDeleted: deleted,
+	del := model.DeleteRoomEvent{
+		Type:      model.RoomEventMessageDeleted,
+		RoomID:    room.ID,
+		SiteID:    room.SiteID,
+		Timestamp: evt.Timestamp,
+		MessageID: msg.ID,
+		DeletedBy: msg.UserAccount,
+		DeletedAt: *msg.UpdatedAt,
+		UpdatedAt: *msg.UpdatedAt,
+	}
+	return h.publishMutation(ctx, room, model.RoomEventMessageDeleted, msg.ID, &del)
+}
+
+// publishMutation marshals a flattened edit/delete event and routes it by room
+// type: channel events go to the room stream, DM/botDM events fan out per
+// non-bot member. evt must marshal to the wire payload for roomEvtType.
+func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvtType model.RoomEventType, messageID string, evt any) error {
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal %s event: %w", roomEvtType, err)
 	}
 
 	switch room.Type {
 	case model.RoomTypeChannel:
-		if h.encrypt && edited != nil {
-			if err := h.encryptEditedContent(ctx, room.ID, edited); err != nil {
-				return err
-			}
-		}
-		payload, err := json.Marshal(&roomEvt)
-		if err != nil {
-			return fmt.Errorf("marshal %s channel event: %w", roomEvtType, err)
-		}
 		return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
 
 	case model.RoomTypeDM, model.RoomTypeBotDM:
-		payload, err := json.Marshal(&roomEvt)
-		if err != nil {
-			return fmt.Errorf("marshal %s DM event: %w", roomEvtType, err)
-		}
 		for _, account := range room.Accounts {
 			if isBot(account) {
 				continue
@@ -199,7 +197,7 @@ func (h *Handler) fanOutMutationEvent(
 					"error", err,
 					"type", roomEvtType,
 					"account", account,
-					"messageID", msg.ID,
+					"messageID", messageID,
 					"roomID", room.ID,
 				)
 			}
@@ -212,7 +210,7 @@ func (h *Handler) fanOutMutationEvent(
 	}
 }
 
-func (h *Handler) encryptEditedContent(ctx context.Context, roomID string, edited *model.MessageEditedPayload) error {
+func (h *Handler) encryptEditedContent(ctx context.Context, roomID string, edited *model.EditRoomEvent) error {
 	key, err := h.currentRoomKey(ctx, roomID)
 	if err != nil {
 		return err

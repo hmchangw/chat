@@ -2379,36 +2379,36 @@ func TestSearchUserJSON_OmitEmpty(t *testing.T) {
 	assert.NotContains(t, got, "chineseName", "empty ChineseName must be omitted")
 }
 
-func TestRoomEventMessageEditedJSON(t *testing.T) {
+func TestEditRoomEventJSON(t *testing.T) {
 	editedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
 	updatedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageEdited,
-		RoomID: "r1",
-		MessageEdited: &model.MessageEditedPayload{
-			MessageID:  "msg-uuid",
-			NewContent: "hello (edited)",
-			EditedBy:   "alice",
-			EditedAt:   editedAt,
-			UpdatedAt:  updatedAt,
-		},
+	evt := model.EditRoomEvent{
+		Type:       model.RoomEventMessageEdited,
+		RoomID:     "r1",
+		SiteID:     "site-a",
+		Timestamp:  1746518700123,
+		MessageID:  "msg-uuid",
+		NewContent: "hello (edited)",
+		EditedBy:   "alice",
+		EditedAt:   editedAt,
+		UpdatedAt:  updatedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.EditRoomEvent{})
 }
 
-func TestRoomEventMessageDeletedJSON(t *testing.T) {
+func TestDeleteRoomEventJSON(t *testing.T) {
 	deletedAt := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageDeleted,
-		RoomID: "r1",
-		MessageDeleted: &model.MessageDeletedPayload{
-			MessageID: "msg-uuid",
-			DeletedBy: "alice",
-			DeletedAt: deletedAt,
-			UpdatedAt: deletedAt,
-		},
+	evt := model.DeleteRoomEvent{
+		Type:      model.RoomEventMessageDeleted,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1746518800123,
+		MessageID: "msg-uuid",
+		DeletedBy: "alice",
+		DeletedAt: deletedAt,
+		UpdatedAt: deletedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.DeleteRoomEvent{})
 }
 
 func TestMessageThreadReadRequestJSON(t *testing.T) {
