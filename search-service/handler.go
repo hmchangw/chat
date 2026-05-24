@@ -12,6 +12,10 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// defaultUsersLimit is the page size forwarded to the HR endpoint when the
+// search-users request omits limit (or sends 0).
+const defaultUsersLimit = 25
+
 // handlerConfig carries knobs read per request. `RequestTimeout` of zero
 // disables the context deadline so tests can skip wiring it.
 type handlerConfig struct {
@@ -255,11 +259,21 @@ func (h *handler) searchUsers(c *natsrouter.Context, req model.SearchUsersReques
 	if query == "" {
 		return nil, natsrouter.ErrBadRequest("query is required")
 	}
+	if req.Offset < 0 || req.Limit < 0 {
+		return nil, natsrouter.ErrBadRequest("offset and limit must be non-negative")
+	}
+	limit := req.Limit
+	if limit == 0 {
+		limit = defaultUsersLimit
+	}
+	if limit > h.cfg.MaxDocCounts {
+		limit = h.cfg.MaxDocCounts
+	}
 
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
-	users, err := h.users.SearchUsers(ctx, query)
+	users, err := h.users.SearchUsers(ctx, query, req.Offset, limit)
 	if err != nil {
 		slog.Error("user search backend failed", "account", account, "error", err)
 		return nil, natsrouter.ErrInternal("user search backend unavailable")
