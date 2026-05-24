@@ -68,12 +68,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, h.natsCreateRoom); err != nil {
 		return fmt.Errorf("subscribe room.create: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
-		return err
-	}
-	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
-		return err
-	}
 	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
@@ -140,28 +134,6 @@ func (h *Handler) replyDMExists(msg *nats.Msg, existingRoomID string) {
 	if err := msg.Respond(body); err != nil {
 		slog.Error("failed to respond DM exists", "error", err)
 	}
-}
-
-func (h *Handler) natsListRooms(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	rooms, err := h.store.ListRooms(ctx)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
-}
-
-func (h *Handler) natsGetRoom(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	parts := strings.Split(m.Msg.Subject, ".")
-	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, room)
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte) ([]byte, error) {

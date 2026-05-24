@@ -29,10 +29,6 @@ type Room struct {
 	Accounts          []string   `json:"accounts,omitempty" bson:"accounts,omitempty"`
 }
 
-type ListRoomsResponse struct {
-	Rooms []Room `json:"rooms"`
-}
-
 // RoomsInfoBatchRequest is the NATS request body for the batch room info RPC.
 type RoomsInfoBatchRequest struct {
 	RoomIDs []string `json:"roomIds"`

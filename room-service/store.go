@@ -42,7 +42,6 @@ type ReadReceiptRow struct {
 
 type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
-	ListRooms(ctx context.Context) ([]model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)

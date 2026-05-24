@@ -121,18 +121,6 @@ func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error
 	return &room, nil
 }
 
-func (s *MongoStore) ListRooms(ctx context.Context) ([]model.Room, error) {
-	cursor, err := s.rooms.Find(ctx, bson.M{})
-	if err != nil {
-		return nil, err
-	}
-	var rooms []model.Room
-	if err := cursor.All(ctx, &rooms); err != nil {
-		return nil, err
-	}
-	return rooms, nil
-}
-
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
 	filter := bson.M{"u.account": account, "roomId": roomID}

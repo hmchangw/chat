@@ -103,12 +103,6 @@ func TestMongoStore_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "general", got.Name)
 
-	// Test ListRooms
-	mustInsertRoom(t, db, &model.Room{ID: "r2", Name: "random", Type: model.RoomTypeChannel})
-	rooms, err := store.ListRooms(ctx)
-	require.NoError(t, err)
-	assert.Len(t, rooms, 2)
-
 	// Test CreateSubscription and GetSubscription
 	sub := model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}
 	mustInsertSub(t, db, &sub)
