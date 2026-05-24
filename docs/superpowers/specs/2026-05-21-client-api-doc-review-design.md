@@ -148,3 +148,89 @@ corrections.
   `client-api.md` (either under the triggering RPC's "Triggered events" or
   under §5 Server-Pushed Events).
 - User-approved diff committed to `claude/client-api-doc-review-Rz70X`.
+
+---
+
+## Revision 2 — scope expansion (2026-05-21)
+
+After reviewing the consolidated changeset, the user expanded scope from
+**doc-only** to **code + doc**, restructured the doc, and made these
+decisions. This revision supersedes the "No code changes" statements above.
+
+### A/B/C decisions
+
+- **A (List Rooms / Get Room membership filter):** Remove BOTH `rooms.list`
+  and `rooms.get` client RPCs from the codebase and the doc. `rooms.list`
+  is unused by the frontend; `rooms.get` is used in two live frontend paths
+  (`MessageActionMenu` recipient count, `useRoomSubscriptions` metadata
+  fetch), so the frontend is rewired off `getRoom` as part of this work.
+  `store.GetRoom` stays — four other handlers depend on it internally.
+- **B (sanitizeError allow-list):** Fix the code, not the doc. Add the
+  remove-member validation errors and the list-members `limit`/`offset`
+  errors to the room-service sanitizer allow-list so they reach the wire
+  verbatim, then document them.
+- **C (edit/delete zero-valued base fields):** Fix the code. Introduce
+  dedicated flattened event structs for message-edited and message-deleted
+  in `broadcast-worker` (only the fields a client needs) so the wire payload
+  no longer carries zero-valued `RoomEvent` base fields. Document the new
+  shape.
+
+### Code changes in scope (each TDD: Red → Green → Refactor → commit)
+
+1. **room-service** — remove `natsListRooms` + `natsGetRoom` handlers, their
+   `RoomCreateWildcard`-style subscriptions, `store.ListRooms`,
+   `model.ListRoomsResponse`, and the `RoomsList*`/`RoomsGet*` subject
+   builders. Keep `store.GetRoom` (used by member add/remove/role handlers).
+2. **room-service** — add remove-member errors (`exactly one of account or
+   orgId must be set`, `cannot remove the last member of the room`, `last
+   owner cannot leave the room`, `org members cannot leave individually`,
+   `room ID mismatch`, `remove-member only supported on channel rooms`) and
+   list-members errors (`limit must be > 0`, `offset must be >= 0`) to the
+   `sanitizeError` allow-list. Prefer sentinel + `errors.Is` over substring
+   matching per CLAUDE.md.
+3. **message-gatekeeper** — add a `requestId` validation check, then run the
+   `/simplify` command on the touched code. Update the doc to match the new
+   behavior.
+4. **broadcast-worker + pkg/model** — define `EditRoomEvent` /
+   `DeleteRoomEvent` (flattened, only needed fields), publish those instead
+   of the generic `RoomEvent` for mutation fan-out.
+5. **search-service** — add `offset` and `limit` to the search-users request
+   (`SearchUsersRequest` + forward to the HR client), documented with an
+   example.
+6. **chat-frontend** — remove `getRoom` usage in `MessageActionMenu` and
+   `useRoomSubscriptions`; delete the `getRoom` api module + `roomsGet` /
+   `roomsList` subject builders.
+
+### Doc restructure (beyond field/error/event corrections)
+
+- **Remove** all backend-internal / cross-site / federation content — the
+  frontend never observes it.
+- **Remove** the Dev mode subsection from `POST /auth`.
+- **Remove** server-to-server RPCs (`chat.server.>`) entirely.
+- **Remove** the standalone Room schema; document each RPC's actual handler
+  response shape, verified against code.
+- **Remove** the List Rooms / Get Room sections.
+- **Restructure §5:** delete the standalone "Server-Pushed Events" section;
+  move each `RoomKeyEvent` into the triggering RPC's "Triggered events"
+  (Create Room, Add Members, Remove Member). Keep a dedicated **Room
+  Encryption** section that explains *client decryption behavior* only.
+- **Message-send fan-out:** the client receives broadcast-worker's
+  `publishChannelEvent` / `publishDMEvents` output; the message JSON is built
+  by broadcast-worker's `buildClientMessage`. Verify and document the real
+  payload + example. Drop the notification-worker event (not part of the
+  current design).
+
+### Verification mandate
+
+Before documenting any RPC response, read the handler and its response
+struct to confirm the exact wire shape (subjects, field names, types,
+optionality). Do not document from the doc's prior claims.
+
+### Updated risks
+
+| Risk | Mitigation |
+|------|------------|
+| Removing `rooms.get` breaks the live frontend. | Rewire the two frontend call sites and run the frontend test suite before committing. |
+| Code changes break CI (lint, tests, SAST). | Run `make lint` + `make test SERVICE=<svc>` after each change; TDD each one. |
+| `/simplify` alters behavior of the requestId check. | Re-run gatekeeper unit tests after `/simplify`; confirm the validation still holds. |
+| Flattened edit/delete structs break existing consumers (frontend decoder, tests). | Grep for consumers of `messageEdited`/`messageDeleted` payloads; update or confirm none depend on the base fields. |

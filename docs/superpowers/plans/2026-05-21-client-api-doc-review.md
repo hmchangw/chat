@@ -397,9 +397,133 @@ Expected: `Your branch is up to date with 'origin/claude/client-api-doc-review-R
 
 ## Out of scope (do NOT do)
 
-- Code changes of any kind.
-- Restructuring `docs/client-api.md` beyond what corrections require.
 - Opening a PR (the user will do that separately, or request it explicitly).
 - Re-running the agents (each report is single-shot research; conflicts go through the user via Task 2 Step 3).
 - Editing `nats-subject-naming.md`, `cassandra_message_model.md`, or any other doc.
 - Adding rate limiting, attachment validation, mention validation, or duplicate-id checks to gatekeeper — those are absent by design and the doc should reflect that absence, not fix it.
+
+---
+
+# Revision 2 — code + doc execution (supersedes Tasks 3–10 above)
+
+Scope expanded to code + doc per the spec's Revision 2. Tasks 2-doc (the
+consolidated changeset) are still valid as the source of doc edits, but the
+"no code changes" / "single file" framing is replaced by the phases below.
+Execute phases in order. Each code task is TDD (Red → Green → Refactor →
+commit) and must pass `make lint` + `make test SERVICE=<svc>` before commit.
+
+## Phase A — room-service: remove List Rooms + Get Room RPCs
+
+**Files:** `room-service/handler.go`, `room-service/store.go`,
+`room-service/store_mongo.go`, `pkg/subject/subject.go`,
+`pkg/model/room.go` (ListRoomsResponse), `room-service/handler_test.go`,
+`room-service/*_test.go`.
+
+- [ ] Remove `natsListRooms`, `natsGetRoom` handlers + their `QueueSubscribe`
+  lines in `RegisterCRUD`.
+- [ ] Remove `store.ListRooms` interface method + Mongo impl. KEEP
+  `store.GetRoom` (used at handler.go:491,589,671,1075) and `ListRoomsByIDs`.
+- [ ] Remove `RoomsList`, `RoomsListWildcard`, `RoomsGet`, `RoomsGetWildcard`
+  subject builders. KEEP parsing helpers if still referenced.
+- [ ] Remove `model.ListRoomsResponse` if unused elsewhere.
+- [ ] Regenerate mocks (`make generate SERVICE=room-service`) — store iface changed.
+- [ ] Delete/adjust tests referencing the removed handlers.
+- [ ] `make lint` + `make test SERVICE=room-service`; commit.
+
+## Phase B — room-service: sanitizeError allow-list
+
+**Files:** `room-service/helper.go`, `room-service/handler.go`,
+`room-service/helper_test.go` (or handler_test.go).
+
+- [ ] RED: add a table test asserting `sanitizeError` returns the verbatim
+  message for each of: `exactly one of account or orgId must be set`,
+  `cannot remove the last member of the room`, `last owner cannot leave the
+  room`, `org members cannot leave individually`, `room ID mismatch`,
+  `remove-member only supported on channel rooms, got X`, `limit must be > 0`,
+  `offset must be >= 0`. Confirm it fails (returns "internal error").
+- [ ] GREEN: introduce sentinels for the exact-match strings, wrap the
+  formatted one (`remove-member only supported...: got %s`) with `%w`, change
+  the call sites (handler.go:460,463,503,513,529,532,496,485,583,688) to
+  return the sentinels, add them to the `errors.Is` block in `sanitizeError`.
+- [ ] `make lint` + `make test SERVICE=room-service`; commit.
+
+## Phase C — message-gatekeeper: requestId validation + /simplify
+
+**Files:** `message-gatekeeper/handler.go`, `message-gatekeeper/handler_test.go`.
+
+- [ ] Read `processMessage` / `sendReply` to see how `requestId` is consumed
+  (handler.go:103-117) and where validation should live.
+- [ ] RED: add tests for the new validation (empty requestId, non-UUID
+  requestId) asserting the chosen behavior. Confirm fail.
+- [ ] GREEN: implement the requestId validation check (validate it is a
+  non-empty valid UUID via `idgen.IsValidUUID`; on invalid, take the agreed
+  action). Confirm tests pass.
+- [ ] Run `/simplify` on the touched gatekeeper code; re-run tests.
+- [ ] `make lint` + `make test SERVICE=message-gatekeeper`; commit.
+
+## Phase D — broadcast-worker + pkg/model: flattened edit/delete events
+
+**Files:** `pkg/model/event.go`, `pkg/model/model_test.go`,
+`broadcast-worker/handler.go`, `broadcast-worker/handler_test.go`,
+`chat-frontend` decoder if it consumes these.
+
+- [ ] Grep consumers of `messageEdited`/`messageDeleted` (frontend, tests) to
+  learn the required fields.
+- [ ] RED: model round-trip test for `EditRoomEvent` / `DeleteRoomEvent`
+  (flattened: type, roomId, timestamp, siteId, + edit/delete fields only).
+- [ ] GREEN: define the structs; update `fanOutMutationEvent` to publish them
+  on `chat.room.{roomID}.event` (channel) and `chat.user.{recipient}.event.room`
+  (DM/botDM). Confirm tests pass.
+- [ ] Update frontend decoder + its tests if needed.
+- [ ] `make lint` + `make test SERVICE=broadcast-worker` + model tests; commit.
+
+## Phase E — search-service: offset/limit on search users
+
+**Files:** `pkg/model/search.go` (SearchUsersRequest),
+`search-service/handler.go`, `search-service/users_client.go`,
+`search-service/*_test.go`.
+
+- [ ] RED: test that the users client forwards `offset`/`limit` (default
+  0/25) to the HR endpoint payload.
+- [ ] GREEN: add `offset`/`limit` to `SearchUsersRequest`, normalize, forward
+  in `users_client.go`. Confirm tests pass.
+- [ ] `make lint` + `make test SERVICE=search-service`; commit.
+
+## Phase F — chat-frontend: remove getRoom usage
+
+**Files:** `chat-frontend/src/components/.../MessageActionMenu/MessageActionMenu.jsx`
+(+ test), `chat-frontend/src/context/RoomEventsContext/useRoomSubscriptions.js`,
+`chat-frontend/src/api/getRoom/` (delete), `chat-frontend/src/api/index.ts`,
+`chat-frontend/src/api/_transport/subjects.ts` (remove `roomsGet`/`roomsList`).
+
+- [ ] Investigate both call sites; pick replacement source for userCount
+  (MessageActionMenu already has `room.userCount` prop) and for the
+  subscription-update metadata fetch (the subscription.update event payload).
+- [ ] Update tests first (RED), then implementation (GREEN).
+- [ ] `npm run typecheck` + `npm test` in chat-frontend; commit.
+
+## Phase G — doc rewrite
+
+**Files:** `docs/client-api.md` only.
+
+- [ ] Apply ALL field/error/event/subject corrections from the Task-2 changeset.
+- [ ] Remove federation/cross-site/backend-internal content (§1 and inline).
+- [ ] Remove Dev mode from §2.2.
+- [ ] Remove server-to-server (`chat.server.>`) RPCs.
+- [ ] Remove the standalone Room schema; replace each RPC's response with the
+  verified handler shape.
+- [ ] Remove List Rooms / Get Room sections.
+- [ ] Restructure: delete §5; move each `RoomKeyEvent` into Create/Add/Remove
+  member "Triggered events"; add a "Room Encryption" client-behavior section.
+- [ ] Rewrite §4 message-send fan-out from `publishChannelEvent` /
+  `publishDMEvents` / `buildClientMessage`; drop the notification event.
+- [ ] Rewrite Create Room (subject, request, `CreateRoomSyncReply`, dm-exists).
+- [ ] Fix AsyncJobResult schema, subscription `id`/`u` keys, edit/delete shapes.
+- [ ] Verify EVERY remaining RPC response against its handler before writing.
+- [ ] Show full diff; commit.
+
+## Phase H — final verification + push
+
+- [ ] `make lint` + `make test` (all) green.
+- [ ] `git diff` review of every changed file.
+- [ ] Show diffs to user; on approval `git push -u origin claude/client-api-doc-review-Rz70X`.
