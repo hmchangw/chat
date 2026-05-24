@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import {
   fetchSidebarBuckets,
-  getRoom,
   markRoomRead,
   subscribeToRoomEvents,
   subscribeToRoomMetadataUpdates,
@@ -66,9 +65,8 @@ export function useRoomSubscriptions(
   decrypt = async () => null,
 ) {
   const { user } = nats
-  // Keep a live ref to `nats` so long-lived subscription callbacks
-  // (subUpdate's getRoom call, listRooms inside the effect body) see
-  // the latest connection without forcing the effect to re-run.
+  // Keep a live ref to `nats` so long-lived subscription callbacks see the
+  // latest connection without forcing the effect to re-run.
   const natsRef = useRef(nats)
   natsRef.current = nats
 
@@ -341,19 +339,20 @@ export function useRoomSubscriptions(
         // hasMention / alert state. The full payload is what room-worker
         // emits on `subscription.update`.
         safeDispatch({ type: 'SUBSCRIPTION_UPSERTED', subscription: evt.subscription })
-        getRoom(natsRef.current, { roomId: evt.subscription.roomId })
-          .then((room) => {
-            if (cancelledRef.current || !room) return
-            // DM rooms have no canonical Room.Name server-side — the friendly
-            // text lives on the user's Subscription. Stash that here so the
-            // sidebar + header can fall back to it via roomDisplayName(room).
-            const merged = evt.subscription?.name
-              ? { ...room, subscriptionName: evt.subscription.name }
-              : room
-            safeDispatch({ type: 'ROOM_ADDED', room: merged })
-            if (room.type === 'channel') openChannelSub(room.id)
-          })
-          .catch(() => {})
+        // Build the sidebar room straight from the subscription record — it
+        // carries roomId, roomType, siteId, and the per-user friendly name.
+        // Room-level metadata (userCount, lastMsgAt) is absent here and lands
+        // via subsequent ROOM_METADATA_UPDATED / MESSAGE_RECEIVED events.
+        const sub = evt.subscription
+        const room = {
+          id: sub.roomId,
+          type: sub.roomType,
+          siteId: sub.siteId,
+          name: sub.name,
+          subscriptionName: sub.name,
+        }
+        safeDispatch({ type: 'ROOM_ADDED', room })
+        if (sub.roomType === 'channel') openChannelSub(sub.roomId)
       } else if (evt.action === 'removed') {
         const roomId = evt.subscription?.roomId
         if (!roomId) return
