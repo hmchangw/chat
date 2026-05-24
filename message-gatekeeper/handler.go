@@ -131,6 +131,15 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, fmt.Errorf("unmarshal send message request: %w", err)
 	}
 
+	// Validate requestId is a hyphenated UUID. It is required: the async reply
+	// is published to chat.user.{account}.response.{requestId}, so an empty or
+	// malformed value would leave the client unable to correlate (or receive)
+	// the reply. Rejecting here fails fast instead of publishing an
+	// unacknowledgeable message to MESSAGES_CANONICAL.
+	if !idgen.IsValidUUID(req.RequestID) {
+		return nil, fmt.Errorf("invalid requestId %q: must be a hyphenated UUID", req.RequestID)
+	}
+
 	// Validate ID is a valid 20-char base62 message ID
 	if !idgen.IsValidMessageID(req.ID) {
 		return nil, fmt.Errorf("invalid message ID %q: must be a 20-char base62 string", req.ID)
