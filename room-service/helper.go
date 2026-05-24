@@ -47,6 +47,18 @@ var (
 	errMessageNotFound     = errors.New("message not found")
 	errMessageRoomMismatch = errors.New("message does not belong to this room")
 	errNotMessageSender    = errors.New("only the message sender can view read receipts")
+
+	// Sentinels for remove-member validation (surfaced to the client verbatim).
+	errRemoveTargetAmbiguous    = errors.New("exactly one of account or orgId must be set")
+	errCannotRemoveLastMember   = errors.New("cannot remove the last member of the room")
+	errLastOwnerCannotLeave     = errors.New("last owner cannot leave the room")
+	errOrgMemberCannotLeaveSolo = errors.New("org members cannot leave individually")
+	errRoomIDMismatch           = errors.New("room ID mismatch")
+	errRemoveChannelOnly        = errors.New("remove-member only supported on channel rooms")
+
+	// Sentinels for list-members pagination validation.
+	errListLimitInvalid  = errors.New("limit must be > 0")
+	errListOffsetInvalid = errors.New("offset must be >= 0")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -199,6 +211,14 @@ func sanitizeError(err error) string {
 		errors.Is(err, errNotMessageSender),
 		errors.Is(err, errInvalidThreadID),
 		errors.Is(err, errThreadSubNotFound),
+		errors.Is(err, errRemoveTargetAmbiguous),
+		errors.Is(err, errCannotRemoveLastMember),
+		errors.Is(err, errLastOwnerCannotLeave),
+		errors.Is(err, errOrgMemberCannotLeaveSolo),
+		errors.Is(err, errRoomIDMismatch),
+		errors.Is(err, errRemoveChannelOnly),
+		errors.Is(err, errListLimitInvalid),
+		errors.Is(err, errListOffsetInvalid),
 		errors.Is(err, &dmExistsError{}),
 		errors.Is(err, &channelExpandTimeoutError{}):
 		return err.Error()

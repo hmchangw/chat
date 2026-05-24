@@ -438,10 +438,10 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 		}
 	}
 	if req.Limit != nil && *req.Limit <= 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("limit must be > 0")
+		return model.ListRoomMembersResponse{}, errListLimitInvalid
 	}
 	if req.Offset != nil && *req.Offset < 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("offset must be >= 0")
+		return model.ListRoomMembersResponse{}, errListOffsetInvalid
 	}
 
 	members, err := h.store.ListRoomMembers(ctx, roomID, req.Limit, req.Offset, req.Enrich)
@@ -463,7 +463,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("room ID mismatch")
+		return nil, errRoomIDMismatch
 	}
 	req.RoomID = roomID
 	req.Requester = requesterAccount
@@ -474,14 +474,14 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, fmt.Errorf("remove-member only supported on channel rooms, got %s", room.Type)
+		return nil, fmt.Errorf("%w, got %s", errRemoveChannelOnly, room.Type)
 	}
 	// Carry room type to room-worker to avoid a redundant GetRoom round-trip there.
 	req.RoomType = room.Type
 
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
-		return nil, fmt.Errorf("exactly one of account or orgId must be set")
+		return nil, errRemoveTargetAmbiguous
 	}
 
 	// Permission + last-member checks. Dual-membership / no-actual-removal detection moves to room-worker (it owns deletion).
@@ -491,7 +491,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("get target subscription: %w", err)
 		}
 		if target.HasOrgMembership && !target.HasIndividualMembership {
-			return nil, fmt.Errorf("org members cannot leave individually")
+			return nil, errOrgMemberCannotLeaveSolo
 		}
 		if req.Account != requesterAccount {
 			requesterSub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -507,10 +507,10 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("count members: %w", err)
 		}
 		if counts.MemberCount <= 1 {
-			return nil, fmt.Errorf("cannot remove the last member of the room")
+			return nil, errCannotRemoveLastMember
 		}
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
-			return nil, fmt.Errorf("last owner cannot leave the room")
+			return nil, errLastOwnerCannotLeave
 		}
 	} else {
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
