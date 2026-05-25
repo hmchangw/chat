@@ -1,0 +1,11 @@
+# Shared dev image for `make up-dev` — Go toolchain + air for hot reload.
+# Built once via `make dev-image`; consumed by docker-local/compose.services.dev.yaml.
+# NOT a production artifact — never used by prod compose / Dockerfiles.
+FROM golang:1.25.10-alpine
+
+RUN apk add --no-cache git ca-certificates
+
+# air-verse/air = the hot-reload tool. Pinned to a release for reproducibility.
+RUN go install github.com/air-verse/air@v1.62.0
+
+WORKDIR /src

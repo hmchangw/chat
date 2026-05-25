@@ -1,11 +1,15 @@
 .PHONY: lint fmt test test-integration generate build deps-up deps-down up down \
+        up-dev down-dev dev-image \
         tools sast sast-gosec sast-vuln sast-semgrep
 
-DEPS_COMPOSE     := docker-local/compose.deps.yaml
-SERVICES_COMPOSE := docker-local/compose.services.yaml
-NATS_CREDS       := docker-local/backend.creds
-NATS_CONF        := docker-local/nats.conf
-NATS_CONTAINER   := chat-local-nats
+DEPS_COMPOSE         := docker-local/compose.deps.yaml
+SERVICES_COMPOSE     := docker-local/compose.services.yaml
+SERVICES_COMPOSE_DEV := docker-local/compose.services.dev.yaml
+DEV_DOCKERFILE       := docker-local/Dockerfile.dev
+DEV_IMAGE            := chat-dev:latest
+NATS_CREDS           := docker-local/backend.creds
+NATS_CONF            := docker-local/nats.conf
+NATS_CONTAINER       := chat-local-nats
 
 # --- SAST / dev tooling ------------------------------------------------------
 # Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with
@@ -126,6 +130,53 @@ ifdef SERVICE
 	docker compose -f $(SERVICE)/deploy/docker-compose.yml down
 else
 	docker compose -f $(SERVICES_COMPOSE) down
+endif
+
+# --- Dev hot-reload targets ---------------------------------------------------
+# `up-dev` runs every service from the bind-mounted repo via `air` for hot
+# reload — edit any .go file and that service rebuilds in-place in ~1-3s
+# without restarting compose or rebuilding images. No `docker build` per
+# code change. Prefer this over `make up` while iterating.
+#
+# First-time setup:
+#   make deps-up      # third-party deps once
+#   make dev-image    # build shared dev image once (golang + air)
+#   make up-dev       # boot all services in hot-reload mode
+#
+# After changing go.mod / Dockerfile.dev itself, re-run `make dev-image`.
+# `make up` / `make down` are unaffected — they remain the prod-parity
+# build flow for verifying Dockerfiles.
+
+# Build the shared dev image (golang:1.25.10-alpine + air). One-time;
+# rebuild only when Dockerfile.dev changes. Image: $(DEV_IMAGE).
+dev-image:
+	docker build -t $(DEV_IMAGE) -f $(DEV_DOCKERFILE) docker-local
+
+# Start microservices with hot reload. Layers the dev override on top of
+# the base services compose; `image:` from the override wins over `build:`
+# so no per-service docker build happens. Foreground; Ctrl-C stops.
+up-dev:
+	@docker container inspect -f '{{.State.Running}}' $(NATS_CONTAINER) 2>/dev/null | grep -q true || { \
+	  echo "Deps are not running. Run 'make deps-up' first."; exit 1; \
+	}
+	@test -f $(NATS_CREDS) && test -f $(NATS_CONF) || { \
+	  echo "Missing $(NATS_CREDS) or $(NATS_CONF). Run './docker-local/setup.sh'."; exit 1; \
+	}
+	@docker image inspect $(DEV_IMAGE) >/dev/null 2>&1 || { \
+	  echo "Dev image $(DEV_IMAGE) missing. Run 'make dev-image' first."; exit 1; \
+	}
+ifdef SERVICE
+	docker compose -f $(SERVICES_COMPOSE) -f $(SERVICES_COMPOSE_DEV) up $(SERVICE)
+else
+	docker compose -f $(SERVICES_COMPOSE) -f $(SERVICES_COMPOSE_DEV) up
+endif
+
+# Stop hot-reload microservices. Mirrors `down`.
+down-dev:
+ifdef SERVICE
+	docker compose -f $(SERVICES_COMPOSE) -f $(SERVICES_COMPOSE_DEV) down $(SERVICE)
+else
+	docker compose -f $(SERVICES_COMPOSE) -f $(SERVICES_COMPOSE_DEV) down
 endif
 
 # --- SAST -------------------------------------------------------------------

@@ -34,6 +34,9 @@ go.work.sum
 # Build output
 bin/
 
+# air hot-reload build artifacts (make up-dev)
+tmp/
+
 # Editor/IDE
 # .idea/
 # .vscode/

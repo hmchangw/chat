@@ -1,0 +1,70 @@
+name: chat-local-services
+
+# Dev-only override. Layered on top of compose.services.yaml via:
+#   docker compose -f compose.services.yaml -f compose.services.dev.yaml up
+# (see `make up-dev`). Replaces every service's prod-style image build with a
+# bind-mounted repo + `air` for hot reload — code changes rebuild in-place
+# (~1-3s) without `docker build` or container restart.
+#
+# Requires the shared dev image — build once with `make dev-image`.
+#
+# Compose merge rules: `image:` here wins over the base `build:` (we pre-build
+# the dev image, so compose never re-builds). `volumes:` and `environment:`
+# are merged (additive) with the base service definitions.
+
+x-dev-service: &dev-service
+  image: chat-dev:latest
+  working_dir: /src
+  volumes:
+    - ..:/src
+    - chat-go-mod-cache:/go/pkg/mod
+    - chat-go-build-cache:/root/.cache/go-build
+
+services:
+  auth-service:
+    <<: *dev-service
+    command: ["air", "-c", "auth-service/.air.toml"]
+
+  broadcast-worker:
+    <<: *dev-service
+    command: ["air", "-c", "broadcast-worker/.air.toml"]
+
+  history-service:
+    <<: *dev-service
+    command: ["air", "-c", "history-service/.air.toml"]
+
+  inbox-worker:
+    <<: *dev-service
+    command: ["air", "-c", "inbox-worker/.air.toml"]
+
+  message-gatekeeper:
+    <<: *dev-service
+    command: ["air", "-c", "message-gatekeeper/.air.toml"]
+
+  message-worker:
+    <<: *dev-service
+    command: ["air", "-c", "message-worker/.air.toml"]
+
+  notification-worker:
+    <<: *dev-service
+    command: ["air", "-c", "notification-worker/.air.toml"]
+
+  room-service:
+    <<: *dev-service
+    command: ["air", "-c", "room-service/.air.toml"]
+
+  room-worker:
+    <<: *dev-service
+    command: ["air", "-c", "room-worker/.air.toml"]
+
+  search-service:
+    <<: *dev-service
+    command: ["air", "-c", "search-service/.air.toml"]
+
+  search-sync-worker:
+    <<: *dev-service
+    command: ["air", "-c", "search-sync-worker/.air.toml"]
+
+volumes:
+  chat-go-mod-cache:
+  chat-go-build-cache:
