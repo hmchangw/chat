@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -251,4 +252,12 @@ func TestHandler_AppsList(t *testing.T) {
 		_, err := h.appsList(c)
 		require.Error(t, err)
 	})
+}
+
+func TestBuildMockUser_AdminRole(t *testing.T) {
+	admin := buildMockUser("admin1", "site-a")
+	assert.Equal(t, []model.UserRole{model.UserRoleAdmin}, admin.Roles)
+
+	normal := buildMockUser("alice", "site-a")
+	assert.Equal(t, []model.UserRole{model.UserRoleUser}, normal.Roles)
 }
