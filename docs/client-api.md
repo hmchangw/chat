@@ -579,6 +579,195 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 ---
 
+#### Rename Room
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.room.rename`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual rename runs asynchronously in `room-worker`. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for rename — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
+
+Only channel rooms may be renamed. Only owners or admins of the room may call this RPC.
+
+##### Request body
+
+| Field     | Type   | Required | Notes |
+|-----------|--------|----------|-------|
+| `roomId`  | string | yes      | Must match the `{roomID}` in the subject. |
+| `newName` | string | yes      | New room name. 1–100 characters after trimming whitespace. |
+
+```json
+{ "roomId": "01970a4f8c2d7c9aQ", "newName": "engineering-general" }
+```
+
+##### Success response
+
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `status`   | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+| `requestId`| string | The 36-char hyphenated UUID for this operation (echoes `X-Request-ID` when set; server-generated otherwise). |
+
+```json
+{ "status": "accepted", "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f" }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors:
+
+- `"invalid name"` — `newName` is empty after trimming, or exceeds 100 characters.
+- `"room not found"` — no room matches the subject `{roomID}`.
+- `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
+- `"only owners or admins can rename a channel"` — the requester does not hold an `owner` or `admin` role in the room.
+- `"invalid request"` — body is malformed or `roomId` does not match the subject.
+- `"missing X-Request-ID header"` — the NATS header is absent.
+- `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
+
+```json
+{ "error": "rename is only allowed in channel rooms" }
+```
+
+##### Triggered events — success path
+
+**1. `chat.room.{roomID}.event`** — a canonical `room_renamed` system message fanned out by `broadcast-worker` to every client subscribed to the room.
+
+Recipients: all room members on all sites.
+
+The event shape follows the standard `RoomEvent` envelope (see [Message schema](#message-schema)) with `type: "room_renamed"` and the human-readable system-message body in `msg`.
+
+**2. `chat.user.{memberAccount}.event.subscription.update`** — one event per subscription.
+
+Recipients: every member (one `SubscriptionUpdateEvent` per individual subscription, including the requester).
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The member's internal user ID. |
+| `subscription` | object | The updated `Subscription` record reflecting the new room name. |
+| `action`       | string | `"renamed"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel",
+    "siteId": "siteA",
+    "roles": ["owner", "member"],
+    "joinedAt": "2026-05-06T08:01:23Z"
+  },
+  "action": "renamed",
+  "timestamp": 1746518483000
+}
+```
+
+**3. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
+
+---
+
+#### Set Room Visibility
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.room.visibility`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual visibility change runs asynchronously in `room-worker`. No `AsyncJobResult` event is published for this RPC.
+
+Only channel rooms may have their visibility changed. Only admins of the room may call this RPC.
+
+Setting `restricted=true` restricts the room (members-only, no public join). Setting `restricted=false` opens the room. The `externalAccess` flag controls whether cross-site (federated) members can see the room. When transitioning from `restricted=false` to `restricted=true`, `ownerAccount` is required and becomes the sole owner of the restricted room.
+
+##### Request body
+
+| Field           | Type    | Required | Notes |
+|-----------------|---------|----------|-------|
+| `roomId`        | string  | yes      | Must match the `{roomID}` in the subject. |
+| `restricted`    | boolean | yes      | `true` to restrict (members-only); `false` to open. |
+| `externalAccess`| boolean | yes      | `true` to allow cross-site (federated) member access; `false` to block. |
+| `ownerAccount`  | string  | conditional | Required when transitioning from unrestricted (`false`) to restricted (`true`). When supplied alongside `restricted=true`, the supplied account becomes the sole owner of the room. |
+
+```json
+{
+  "roomId": "01970a4f8c2d7c9aQ",
+  "restricted": true,
+  "externalAccess": false,
+  "ownerAccount": "alice"
+}
+```
+
+##### Success response
+
+| Field       | Type   | Notes |
+|-------------|--------|-------|
+| `status`    | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+| `requestId` | string | The 36-char hyphenated UUID for this operation (echoes `X-Request-ID` when set; server-generated otherwise). |
+
+```json
+{ "status": "accepted", "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f" }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors:
+
+- `"only admins can change room visibility"` — the requester does not hold an `admin` role.
+- `"room not found"` — no room matches the subject `{roomID}`.
+- `"visibility change is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
+- `"owner account is required when restricting a room"` — `restricted=true` but `ownerAccount` was not supplied.
+- `"owner account is not a member of this room"` — the supplied `ownerAccount` has no active subscription.
+- `"not enough members to restrict (need at least N)"` — the room has fewer members than the minimum required to restrict.
+- `"invalid request"` — body is malformed or `roomId` does not match the subject.
+- `"missing X-Request-ID header"` — the NATS header is absent.
+- `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
+
+```json
+{ "error": "owner account is required when restricting a room" }
+```
+
+##### Triggered events — success path
+
+**`chat.user.{memberAccount}.event.subscription.update`** — one event per subscription.
+
+Recipients: every member (one `SubscriptionUpdateEvent` per individual subscription).
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The member's internal user ID. |
+| `subscription` | object | The updated `Subscription` record carrying the new `restricted`, `externalAccess` flags and updated `roles` array. |
+| `action`       | string | `"visibility_changed"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel",
+    "siteId": "siteA",
+    "roles": ["owner", "member"],
+    "joinedAt": "2026-05-06T08:01:23Z"
+  },
+  "action": "visibility_changed",
+  "timestamp": 1746518483000
+}
+```
+
+**Note:** No system message is published for visibility changes — only the `subscription.update` events above.
+
+**Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the visibility change.
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
+
+---
+
 #### List Members
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.list`
