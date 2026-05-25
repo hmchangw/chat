@@ -831,22 +831,22 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.Len(t, pubsC, 1)
 	assert.Empty(t, pubsA, "no member_added outbox to home site-A")
 
-	// Decode site-B event.
+	// Post Task 11 retrofit: each remote site receives the full account list;
+	// destination's FindUsersByAccounts filters out foreign accounts naturally.
 	var envB model.OutboxEvent
 	require.NoError(t, json.Unmarshal(pubsB[0].data, &envB))
 	var evtB model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envB.Payload, &evtB))
-	assert.ElementsMatch(t, []string{"bob"}, evtB.Accounts)
+	assert.ElementsMatch(t, []string{"bob", "ian"}, evtB.Accounts)
 	assert.Equal(t, roomName, evtB.RoomName)
 	assert.Equal(t, "site-A", evtB.SiteID)
 	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
 
-	// Decode site-C event.
 	var envC model.OutboxEvent
 	require.NoError(t, json.Unmarshal(pubsC[0].data, &envC))
 	var evtC model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envC.Payload, &evtC))
-	assert.ElementsMatch(t, []string{"ian"}, evtC.Accounts)
+	assert.ElementsMatch(t, []string{"bob", "ian"}, evtC.Accounts)
 	assert.Equal(t, roomName, evtC.RoomName)
 	assert.Equal(t, "site-A", evtC.SiteID)
 	assert.Equal(t, reqID+":site-C", pubsC[0].msgID)
