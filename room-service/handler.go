@@ -130,6 +130,12 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.FavoriteToggleWildcard(h.siteID), queue, h.natsFavoriteToggle); err != nil {
 		return fmt.Errorf("subscribe favorite toggle: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.RoomRenameWildcard(h.siteID), queue, h.natsRoomRename); err != nil {
+		return fmt.Errorf("subscribe room rename: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomVisibilityWildcard(h.siteID), queue, h.natsRoomVisibility); err != nil {
+		return fmt.Errorf("subscribe room visibility: %w", err)
+	}
 	return nil
 }
 
@@ -1547,6 +1553,170 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 		RoomID:  req.RoomID,
 		Version: ver,
 	})
+}
+
+var (
+	errInvalidRenameSubject     = errors.New("invalid rename subject")
+	errInvalidVisibilitySubject = errors.New("invalid visibility subject")
+)
+
+func (h *Handler) natsRoomRename(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleRoomRename(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to rename", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", errInvalidRenameSubject, subj)
+	}
+	requestID := natsutil.RequestIDFromContext(ctx)
+
+	var req model.RenameRoomRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
+	}
+	if req.Account != "" && req.Account != account {
+		return nil, fmt.Errorf("invalid request: account mismatch")
+	}
+	req.RoomID, req.Account = roomID, account
+
+	name := strings.TrimSpace(req.NewName)
+	if name == "" || len(name) > 100 {
+		return nil, errInvalidName
+	}
+	req.NewName = name
+
+	requesterUser, err := h.store.GetUser(ctx, account)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, errRenameChannelOnly
+	}
+
+	if !isPlatformAdmin(requesterUser) {
+		sub, subErr := h.store.GetSubscription(ctx, account, roomID)
+		if subErr != nil || !hasRole(sub.Roles, model.RoleOwner) {
+			return nil, errOnlyOwnersOrAdmins
+		}
+	}
+
+	req.Timestamp = time.Now().UTC().UnixMilli()
+	out, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal rename request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.rename"), out); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
+}
+
+func (h *Handler) natsRoomVisibility(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleRoomVisibility(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to visibility", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomVisibility(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", errInvalidVisibilitySubject, subj)
+	}
+	requestID := natsutil.RequestIDFromContext(ctx)
+
+	var req model.RoomVisibilityRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.RoomID != "" && req.RoomID != roomID {
+		return nil, fmt.Errorf("invalid request: room ID mismatch")
+	}
+	if req.Account != "" && req.Account != account {
+		return nil, fmt.Errorf("invalid request: account mismatch")
+	}
+	req.RoomID, req.Account = roomID, account
+
+	requesterUser, err := h.store.GetUser(ctx, account)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	if !isPlatformAdmin(requesterUser) {
+		return nil, errOnlyAdmins
+	}
+
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, errVisibilityChannelOnly
+	}
+
+	isTransition := req.Restricted && !room.Restricted
+
+	if req.Restricted && req.OwnerAccount != "" {
+		if _, subErr := h.store.GetSubscription(ctx, req.OwnerAccount, roomID); subErr != nil {
+			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
+				return nil, errOwnerNotMember
+			}
+			return nil, fmt.Errorf("get owner subscription: %w", subErr)
+		}
+	}
+	if isTransition {
+		if req.OwnerAccount == "" {
+			return nil, errOwnerAccountRequired
+		}
+		if room.UserCount < h.restrictedRoomMinMembers {
+			return nil, fmt.Errorf("%w (need at least %d)", errNotEnoughMembers, h.restrictedRoomMinMembers)
+		}
+	}
+
+	req.Timestamp = time.Now().UTC().UnixMilli()
+	out, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal visibility request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.visibility"), out); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
 }
 
 func (h *Handler) natsMuteToggle(m otelnats.Msg) {

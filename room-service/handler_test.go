@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/errcode"
@@ -4166,6 +4167,291 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.JSONEq(t, tc.want.replyJSON, string(resp))
+		})
+	}
+}
+
+// --- RoomRename tests ---
+
+func TestHandleRoomRename_Validation(t *testing.T) {
+	const validReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+	tests := []struct {
+		name       string
+		subj       string
+		body       []byte
+		ctx        context.Context
+		setupStore func(*MockRoomStore)
+		wantErr    error
+	}{
+		{
+			name:    "invalid subject",
+			subj:    "bad.subject",
+			body:    mustJSON(t, model.RenameRoomRequest{NewName: "new"}),
+			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
+			wantErr: errInvalidRenameSubject,
+		},
+		{
+			name:    "blank name after trim",
+			subj:    subject.RoomRename("alice", "r1", "site-a"),
+			body:    mustJSON(t, model.RenameRoomRequest{NewName: "   "}),
+			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
+			wantErr: errInvalidName,
+		},
+		{
+			name:    "name too long (>100 chars)",
+			subj:    subject.RoomRename("alice", "r1", "site-a"),
+			body:    mustJSON(t, model.RenameRoomRequest{NewName: strings.Repeat("x", 101)}),
+			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
+			wantErr: errInvalidName,
+		},
+		{
+			name: "room not found",
+			subj: subject.RoomRename("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, mongo.ErrNoDocuments)
+			},
+			wantErr: errRoomNotFound,
+		},
+		{
+			name: "wrong room type (DM)",
+			subj: subject.RoomRename("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeDM}, nil)
+			},
+			wantErr: errRenameChannelOnly,
+		},
+		{
+			name: "non-admin non-owner",
+			subj: subject.RoomRename("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+				// GetSubscription returns member-only role
+				s.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+					&model.Subscription{Roles: []model.Role{model.RoleMember}}, nil,
+				)
+			},
+			wantErr: errOnlyOwnersOrAdmins,
+		},
+		{
+			name: "owner subscription allowed",
+			subj: subject.RoomRename("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+					&model.Subscription{Roles: []model.Role{model.RoleOwner}}, nil,
+				)
+			},
+			wantErr: nil,
+		},
+		{
+			name: "admin allowed without subscription",
+			subj: subject.RoomRename("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+				// No GetSubscription call expected for admin
+			},
+			wantErr: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			if tt.setupStore != nil {
+				tt.setupStore(store)
+			}
+			h := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, 5,
+				func(_ context.Context, _ string, _ []byte) error { return nil }, nil)
+
+			_, err := h.handleRoomRename(tt.ctx, tt.subj, tt.body)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// --- RoomVisibility tests ---
+
+func TestHandleRoomVisibility_Validation(t *testing.T) {
+	const validReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+	tests := []struct {
+		name       string
+		subj       string
+		body       []byte
+		ctx        context.Context
+		setupStore func(*MockRoomStore)
+		wantErr    error
+	}{
+		{
+			name:    "invalid subject",
+			subj:    "bad.subject",
+			body:    mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
+			wantErr: errInvalidVisibilitySubject,
+		},
+		{
+			name: "non-admin requester",
+			subj: subject.RoomVisibility("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
+			},
+			wantErr: errOnlyAdmins,
+		},
+		{
+			name: "room not found",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, mongo.ErrNoDocuments)
+			},
+			wantErr: errRoomNotFound,
+		},
+		{
+			name: "non-channel room",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeDM}, nil)
+			},
+			wantErr: errVisibilityChannelOnly,
+		},
+		{
+			name: "restricted=true + ownerAccount given + owner not a member",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted:   true,
+				OwnerAccount: "nonmember",
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				// room already restricted so this is an owner change, not a transition
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 10}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "nonmember", "r1").Return(nil, mongo.ErrNoDocuments)
+			},
+			wantErr: errOwnerNotMember,
+		},
+		{
+			name: "transition false→true without ownerAccount",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted: true,
+				// OwnerAccount intentionally empty
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: false, UserCount: 10}, nil)
+			},
+			wantErr: errOwnerAccountRequired,
+		},
+		{
+			name: "transition with UserCount < 5 (need at least 5)",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted:   true,
+				OwnerAccount: "owner1",
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: false, UserCount: 3}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "owner1", "r1").Return(&model.Subscription{}, nil)
+			},
+			wantErr: errNotEnoughMembers,
+		},
+		{
+			name: "transition success (admin + ownerAccount + UserCount >= 5)",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted:   true,
+				OwnerAccount: "owner1",
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: false, UserCount: 10}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "owner1", "r1").Return(&model.Subscription{}, nil)
+			},
+			wantErr: nil,
+		},
+		{
+			name: "unrestrict (no owner/threshold checks)",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted: false,
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 10}, nil)
+				// No GetSubscription expected for unrestrict
+			},
+			wantErr: nil,
+		},
+		{
+			name: "already-restricted owner change success",
+			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomVisibilityRequest{
+				Restricted:   true,
+				OwnerAccount: "owner2",
+			}),
+			ctx: natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
+				// room already restricted → isTransition=false; no threshold check
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 2}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "owner2", "r1").Return(&model.Subscription{}, nil)
+			},
+			wantErr: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			if tt.setupStore != nil {
+				tt.setupStore(store)
+			}
+			h := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, 5,
+				func(_ context.Context, _ string, _ []byte) error { return nil }, nil)
+
+			_, err := h.handleRoomVisibility(tt.ctx, tt.subj, tt.body)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
 		})
 	}
 }
