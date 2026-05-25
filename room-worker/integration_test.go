@@ -1974,11 +1974,11 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	store := NewMongoStore(db)
 
 	const (
-		siteID   = "site-a"
+		siteID     = "site-a"
 		remoteSite = "site-b"
-		roomID   = "r-rename-1"
-		oldName  = "old-name"
-		newName  = "new-name"
+		roomID     = "r-rename-1"
+		oldName    = "old-name"
+		newName    = "new-name"
 	)
 
 	// Seed: channel room + 2 local subs + 1 remote sub + 3 users.

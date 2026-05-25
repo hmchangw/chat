@@ -660,11 +660,10 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			{Account: "bob", HasSubscription: false, HasIndividualRoomMember: false},
 			{Account: "charlie", HasSubscription: false, HasIndividualRoomMember: false},
 		}, nil)
-	// FindUsersByAccounts is called twice: initial user lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-b", EngName: "Charlie", ChineseName: "查"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -735,11 +734,10 @@ func TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey(t *t
 			{Account: "bob", HasSubscription: false, HasIndividualRoomMember: false},
 			{Account: "charlie", HasSubscription: false, HasIndividualRoomMember: false},
 		}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts (no remote sites, returns empty).
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -787,10 +785,9 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -854,11 +851,10 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 		Return([]AddMemberCandidate{
 			{Account: "bob"}, {Account: "charlie"},
 		}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "charlie"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-b", EngName: "Charlie", ChineseName: "查"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -919,10 +915,9 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -959,10 +954,9 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// First call: initial user lookup for sub/IRM creation.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
-	}, nil).Times(2) // Times(2): initial lookup + findRemoteSitesForAccounts(actualAccounts=["bob"])
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -1106,8 +1100,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 		{ID: "u2", Account: "bob", SiteID: "site-b", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-c", EngName: "Charlie", ChineseName: "查"},
 	}
-	// First call: initial user lookup for sub creation; second call: findRemoteSitesForAccounts.
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return(allUsers, nil).Times(2)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return(allUsers, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-b", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -1414,10 +1407,9 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site-a", EngName: "Bob", ChineseName: "鮑"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -1623,10 +1615,9 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u2", Account: "bob", SiteID: "site1", EngName: "Bob", ChineseName: "鮑"},
-	}, nil).Times(2)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site1", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -1797,8 +1788,7 @@ func setupAddMembersHappyPath(t *testing.T, mockStore *MockSubscriptionStore, ac
 	for i, a := range accounts {
 		users[i] = model.User{ID: "u_" + a, Account: a, SiteID: "site-A", EngName: "X", ChineseName: "X"}
 	}
-	// Times(2): initial lookup + findRemoteSitesForAccounts (all on site-A, no remote outbox).
-	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), accounts).Return(users, nil).Times(2)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), accounts).Return(users, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A", EngName: "Alice", ChineseName: "愛麗絲",
 	}, nil)
@@ -1847,10 +1837,9 @@ func TestProcessAddMembers_PopulatesSubName(t *testing.T) {
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
-	}, nil).Times(2)
+	}, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A", EngName: "Alice", ChineseName: "愛麗絲",
 	}, nil)
@@ -1888,10 +1877,9 @@ func TestProcessAddMembers_HistoryNone_NoTimestamp(t *testing.T) {
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
-	}, nil).Times(2)
+	}, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A", EngName: "Alice", ChineseName: "愛麗絲",
 	}, nil)
@@ -1929,10 +1917,9 @@ func TestProcessAddMembers_NoHistoryConfig_LeavesNil(t *testing.T) {
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u_bob", Account: "bob", SiteID: "site-A", EngName: "X", ChineseName: "X"},
-	}, nil).Times(2)
+	}, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A", EngName: "Alice", ChineseName: "愛麗絲",
 	}, nil)
@@ -1970,10 +1957,9 @@ func TestProcessAddMembers_OutboxCarriesRoomName(t *testing.T) {
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
 		{ID: "u_bob", Account: "bob", SiteID: "site-B", EngName: "Bob", ChineseName: "鲍勃"},
-	}, nil).Times(2)
+	}, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-A", EngName: "Alice", ChineseName: "愛麗絲",
 	}, nil)
@@ -3641,10 +3627,9 @@ func TestProcessAddMembers_FansOutKeyToNewAccountsOnly(t *testing.T) {
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
 		Return([]AddMemberCandidate{{Account: "charlie"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"charlie"}).Return([]model.User{
 		{ID: "u_charlie", Account: "charlie", SiteID: "site-a", EngName: "Charlie", ChineseName: "查"},
-	}, nil).Times(2)
+	}, nil)
 	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u_alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -3811,9 +3796,8 @@ func TestHandler_ProcessAddMembers_BackfillRunsOnFirstOrgTransition(t *testing.T
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
-	// Times(2): initial user lookup + findRemoteSitesForAccounts(actualAccounts=["u_new"]).
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u_new"}).
-		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil).Times(2)
+		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil) // first org
@@ -3914,9 +3898,8 @@ func TestHandler_ProcessAddMembers_BackfillSkippedWhenRoomAlreadyHasOrgs(t *test
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o_new"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
-	// Times(2): initial user lookup + findRemoteSitesForAccounts(actualAccounts=["u_new"]).
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u_new"}).
-		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil).Times(2)
+		Return([]model.User{{ID: "u_new", Account: "u_new", SiteID: "site-a", EngName: "New", ChineseName: "新"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	// Restructured code calls HasOrgRoomMembers unconditionally.
@@ -3953,12 +3936,11 @@ func TestHandler_ProcessAddMembers_IndividualFilter_DirectAndOrgOverlap(t *testi
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}, {Account: "u2"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1", "u2"}).
 		Return([]model.User{
 			{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"},
 			{ID: "u2_id", Account: "u2", SiteID: "site-a", EngName: "U2", ChineseName: "二"},
-		}, nil).Times(2)
+		}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
@@ -4008,9 +3990,8 @@ func TestHandler_ProcessAddMembers_IndividualFilter_OrgOnly(t *testing.T) {
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
-		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil).Times(2)
+		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
@@ -4165,9 +4146,8 @@ func TestHandler_ProcessAddMembers_Content_Single(t *testing.T) {
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
-		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil).Times(2)
+		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
@@ -4203,12 +4183,11 @@ func TestHandler_ProcessAddMembers_Content_Multi(t *testing.T) {
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1", "u2"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}, {Account: "u2"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1", "u2"}).
 		Return([]model.User{
 			{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"},
 			{ID: "u2_id", Account: "u2", SiteID: "site-a", EngName: "U2", ChineseName: "二"},
-		}, nil).Times(2)
+		}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
@@ -4597,9 +4576,8 @@ func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *test
 	// req.Users is empty; org "eng" expands to one user "u1".
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
-	// Times(2): initial lookup + findRemoteSitesForAccounts.
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"u1"}).
-		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil).Times(2)
+		Return([]model.User{{ID: "u1_id", Account: "u1", SiteID: "site-a", EngName: "U1", ChineseName: "一"}}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), roomID).Return(false, nil)
@@ -4986,6 +4964,19 @@ func TestFindRemoteSitesForAccounts(t *testing.T) {
 	})
 }
 
+func TestFindRemoteSitesForAccounts_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo timeout"))
+
+	h := &Handler{store: store, siteID: "site-a"}
+	got, err := h.findRemoteSitesForAccounts(context.Background(), []string{"alice"})
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Contains(t, err.Error(), "find users by accounts")
+}
+
 func TestPublishSubscriptionEvents(t *testing.T) {
 	var got []model.SubscriptionUpdateEvent
 	publish := func(_ context.Context, _ string, data []byte, _ string) error {
@@ -5003,6 +4994,24 @@ func TestPublishSubscriptionEvents(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "renamed", got[0].Action)
 	assert.Equal(t, "alice", got[0].Subscription.User.Account)
+}
+
+func TestPublishSubscriptionEvents_PublishErrorContinues(t *testing.T) {
+	callCount := 0
+	publish := func(_ context.Context, _ string, _ []byte, _ string) error {
+		callCount++
+		if callCount == 1 {
+			return errors.New("nats down")
+		}
+		return nil
+	}
+	h := &Handler{siteID: "site-a", publish: publish}
+	subs := []model.Subscription{
+		{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
+		{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
+	}
+	h.publishSubscriptionEvents(context.Background(), subs, "renamed")
+	assert.Equal(t, 2, callCount, "loop should continue past failures")
 }
 
 // --- processRoomRename tests ---
@@ -5374,7 +5383,36 @@ func TestProcessRoomVisibility_RoomNotFound(t *testing.T) {
 	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
 }
 
-// Test 5: Happy path no remote sites — UpdateRoomVisibility, ApplySubscriptionVisibility,
+// Test 5: UpdateRoomVisibility returns ErrNotChannelRoom → permanent + AsyncJobResult error.
+func TestProcessRoomVisibility_NotChannelRoom(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	store.EXPECT().UpdateRoomVisibility(gomock.Any(), "r1", true, false).Return(ErrNotChannelRoom)
+
+	var asyncResults []model.AsyncJobResult
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		if subj == subject.UserResponse("alice", requestID) {
+			var r model.AsyncJobResult
+			require.NoError(t, json.Unmarshal(data, &r))
+			asyncResults = append(asyncResults, r)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomVisibility(ctx, body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+	require.Len(t, asyncResults, 1)
+	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
+}
+
+// Test 6: Happy path no remote sites — UpdateRoomVisibility, ApplySubscriptionVisibility,
 // ListByRoom, publishSubscriptionEvents, AsyncJobResult ok. No sys message published.
 func TestProcessRoomVisibility_HappyPathNoRemoteSites(t *testing.T) {
 	ctrl := gomock.NewController(t)

@@ -1048,7 +1048,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	historySharedSince := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
 	if len(actualAccounts) > 0 || len(req.Orgs) > 0 {
 		memberAddEvt := model.MemberAddEvent{
-			Type:               "member_added",
+			Type:               model.OutboxMemberAdded,
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
@@ -1070,7 +1070,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 
 		if len(actualAccounts) > 0 {
 			inboxOutbox := model.OutboxEvent{
-				Type:       "member_added",
+				Type:       model.OutboxMemberAdded,
 				SiteID:     room.SiteID,
 				DestSiteID: room.SiteID,
 				Payload:    memberAddData,
@@ -1125,13 +1125,29 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	// 10. Outbox for cross-site members — one event per destination site.
-	remoteSites, err := h.findRemoteSitesForAccounts(ctx, actualAccounts)
-	if err != nil {
-		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
+	// Bucket remote sites from the already-fetched users (no second DB round-trip).
+	var remoteSites []string
+	{
+		seenSites := make(map[string]struct{})
+		for acc := range userMap {
+			siteID := userMap[acc].SiteID
+			if siteID == h.siteID {
+				continue
+			}
+			if _, dup := seenSites[siteID]; dup {
+				continue
+			}
+			seenSites[siteID] = struct{}{}
+			remoteSites = append(remoteSites, siteID)
+		}
 	}
+	// Each remote site receives the full account list. Destination inbox-worker
+	// filters foreign accounts via FindUsersByAccounts (a site only knows users
+	// homed there); cross-site subscription leakage is impossible by that
+	// invariant. See inbox-worker/handler.go handleMemberAdded.
 	for _, destSiteID := range remoteSites {
 		siteEvt := model.MemberAddEvent{
-			Type:               "member_added",
+			Type:               model.OutboxMemberAdded,
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
@@ -1144,13 +1160,13 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
 		outbox := model.OutboxEvent{
-			Type: "member_added", SiteID: room.SiteID, DestSiteID: destSiteID,
+			Type: model.OutboxMemberAdded, SiteID: room.SiteID, DestSiteID: destSiteID,
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
 		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
 		dedupID := natsutil.OutboxDedupID(ctx, destSiteID, payloadSeed)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, "member_added"), outboxData, dedupID); err != nil {
+		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.OutboxMemberAdded), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}
@@ -1845,6 +1861,7 @@ func (h *Handler) findRemoteSitesForAccounts(ctx context.Context, accounts []str
 // Best-effort: errors are logged, not returned.
 func (h *Handler) publishSubscriptionEvents(ctx context.Context, subs []model.Subscription, action string) {
 	now := time.Now().UTC().UnixMilli()
+	var failures int
 	for i := range subs {
 		evt := model.SubscriptionUpdateEvent{
 			UserID:       subs[i].User.ID,
@@ -1854,12 +1871,18 @@ func (h *Handler) publishSubscriptionEvents(ctx context.Context, subs []model.Su
 		}
 		data, err := json.Marshal(evt)
 		if err != nil {
+			failures++
 			slog.Error("marshal subscription update", "error", err, "account", subs[i].User.Account, "action", action)
 			continue
 		}
 		if err := h.publish(ctx, subject.SubscriptionUpdate(subs[i].User.Account), data, ""); err != nil {
+			failures++
 			slog.Error("publish subscription update", "error", err, "account", subs[i].User.Account, "action", action)
 		}
+	}
+	if failures > 0 {
+		slog.Warn("subscription event fan-out had failures",
+			"action", action, "failures", failures, "total", len(subs))
 	}
 }
 
@@ -1882,6 +1905,11 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 		return newPermanent("unmarshal rename request: %s", err.Error())
 	}
 	requesterAccount, roomID = req.Account, req.RoomID
+	slog.Info("processing room.rename",
+		"op", model.AsyncJobOpRoomRename,
+		"requester", req.Account,
+		"roomID", req.RoomID,
+		"requestID", requestID)
 
 	if err = h.store.UpdateRoomName(ctx, req.RoomID, req.NewName); err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
@@ -1927,16 +1955,16 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 	if err != nil {
 		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
 	}
+	renamedPayload, err := json.Marshal(model.RoomRenamedOutboxPayload{
+		RoomID: req.RoomID, NewName: req.NewName, Timestamp: req.Timestamp,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal rename outbox payload: %w", err)
+	}
 	for _, remoteSiteID := range remoteSites {
-		payload, mErr := json.Marshal(model.RoomRenamedOutboxPayload{
-			RoomID: req.RoomID, NewName: req.NewName, Timestamp: req.Timestamp,
-		})
-		if mErr != nil {
-			return fmt.Errorf("marshal rename outbox payload: %w", mErr)
-		}
 		evt := model.OutboxEvent{
 			Type: model.OutboxRoomRenamed, SiteID: h.siteID, DestSiteID: remoteSiteID,
-			Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+			Payload: renamedPayload, Timestamp: time.Now().UTC().UnixMilli(),
 		}
 		evtData, mErr := json.Marshal(evt)
 		if mErr != nil {
@@ -1970,6 +1998,11 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 		return newPermanent("unmarshal visibility request: %s", err.Error())
 	}
 	requesterAccount, roomID = req.Account, req.RoomID
+	slog.Info("processing room.visibility",
+		"op", model.AsyncJobOpRoomVisibility,
+		"requester", req.Account,
+		"roomID", req.RoomID,
+		"requestID", requestID)
 
 	if err = h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
@@ -1998,20 +2031,20 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 	if err != nil {
 		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
 	}
+	visibilityPayload, err := json.Marshal(model.RoomVisibilityOutboxPayload{
+		RoomID:         req.RoomID,
+		Restricted:     req.Restricted,
+		ExternalAccess: req.ExternalAccess,
+		OwnerAccount:   req.OwnerAccount,
+		Timestamp:      req.Timestamp,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal visibility outbox payload: %w", err)
+	}
 	for _, remoteSiteID := range remoteSites {
-		payload, mErr := json.Marshal(model.RoomVisibilityOutboxPayload{
-			RoomID:         req.RoomID,
-			Restricted:     req.Restricted,
-			ExternalAccess: req.ExternalAccess,
-			OwnerAccount:   req.OwnerAccount,
-			Timestamp:      req.Timestamp,
-		})
-		if mErr != nil {
-			return fmt.Errorf("marshal visibility outbox payload: %w", mErr)
-		}
 		evt := model.OutboxEvent{
 			Type: model.OutboxRoomVisibilityChanged, SiteID: h.siteID, DestSiteID: remoteSiteID,
-			Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+			Payload: visibilityPayload, Timestamp: time.Now().UTC().UnixMilli(),
 		}
 		evtData, mErr := json.Marshal(evt)
 		if mErr != nil {
