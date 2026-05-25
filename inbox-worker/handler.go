@@ -15,6 +15,8 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+//go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
+
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
@@ -36,6 +38,14 @@ type InboxStore interface {
 	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
 	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
 	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
+
+	// UpdateSubscriptionNamesForRoom mass-renames subscription mirrors on this site.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+
+	// ApplySubscriptionVisibility mirrors room-worker's counterpart (same 3 branches).
+	// On a remote site this only updates mirrored subs whose users are homed here;
+	// OwnerAccount is load-bearing so $cond can promote the chosen owner's local mirror.
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.

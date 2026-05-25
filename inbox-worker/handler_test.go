@@ -245,6 +245,14 @@ func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
 	return cp
 }
 
+func (s *stubInboxStore) UpdateSubscriptionNamesForRoom(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s *stubInboxStore) ApplySubscriptionVisibility(_ context.Context, _ string, _, _ bool, _ string) error {
+	return nil
+}
+
 // --- Tests ---
 
 func TestHandleEvent_MemberAdded(t *testing.T) {

@@ -206,6 +206,14 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 	return nil
 }
 
+func (s *mongoInboxStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+	panic("not implemented: Task 6")
+}
+
+func (s *mongoInboxStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
+	panic("not implemented: Task 6")
+}
+
 func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error {
 	// Guarded thread-sub update first; same gate then protects the Subscription overwrite.
 	tsFilter := bson.M{
