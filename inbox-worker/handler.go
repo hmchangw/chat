@@ -107,6 +107,10 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
 	case "thread_read":
 		return h.handleThreadRead(ctx, &evt)
+	case "room_renamed":
+		return h.handleRoomRenamed(ctx, &evt)
+	case "room_visibility_changed":
+		return h.handleRoomVisibilityChanged(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -298,6 +302,28 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
 		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
 			e.RoomID, e.ParentMessageID, e.Account, err)
+	}
+	return nil
+}
+
+func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent) error {
+	var payload model.RoomRenamedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return newPermanent("unmarshal room_renamed payload: %s", err.Error())
+	}
+	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, payload.RoomID, payload.NewName); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", payload.RoomID, err)
+	}
+	return nil
+}
+
+func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.OutboxEvent) error {
+	var payload model.RoomVisibilityOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return newPermanent("unmarshal room_visibility_changed payload: %s", err.Error())
+	}
+	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
+		return fmt.Errorf("apply visibility for room %s: %w", payload.RoomID, err)
 	}
 	return nil
 }

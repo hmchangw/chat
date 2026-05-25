@@ -127,6 +127,20 @@ func (mr *MockInboxStoreMockRecorder) FindUsersByAccounts(ctx, accounts any) *go
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindUsersByAccounts", reflect.TypeOf((*MockInboxStore)(nil).FindUsersByAccounts), ctx, accounts)
 }
 
+// UpdateSubscriptionFavorite mocks base method.
+func (m *MockInboxStore) UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateSubscriptionFavorite", ctx, roomID, account, favorite)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateSubscriptionFavorite indicates an expected call of UpdateSubscriptionFavorite.
+func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionFavorite(ctx, roomID, account, favorite any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionFavorite", reflect.TypeOf((*MockInboxStore)(nil).UpdateSubscriptionFavorite), ctx, roomID, account, favorite)
+}
+
 // UpdateSubscriptionMute mocks base method.
 func (m *MockInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error {
 	m.ctrl.T.Helper()

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -1424,6 +1425,54 @@ func TestHandler_SubscriptionFavoriteToggled(t *testing.T) {
 	subs := store.getSubscriptions()
 	require.Len(t, subs, 1)
 	assert.True(t, subs[0].Favorite)
+}
+
+func TestHandleRoomRenamed_HappyPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "new").Return(nil)
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 1700000000000})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload, Timestamp: 1700000000000})
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+}
+
+func TestHandleRoomRenamed_PermanentOnUnmarshal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	h := NewHandler(store)
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: []byte("not json")})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent))
+}
+
+func TestHandleRoomVisibilityChanged_HappyPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", true, false, "bob").Return(nil)
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomVisibilityOutboxPayload{
+		RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+	})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomVisibilityChanged, Payload: payload, Timestamp: 1700000000000})
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+}
+
+func TestHandleRoomVisibilityChanged_PermanentOnUnmarshal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	h := NewHandler(store)
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomVisibilityChanged, Payload: []byte("not json")})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent))
 }
 
 func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.T) {
