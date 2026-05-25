@@ -34,6 +34,7 @@ func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID stri
 	return out, nil
 }
 
+// Client-side parallel fan-out spreads load across replicas; avoids the coordinator scatter that a multi-partition IN would incur.
 // GetReactionsByMessageIDs fans out token-aware single-partition reads via errgroup, bounded by reactionsConcurrency.
 // Messages without reactions are omitted; nil/empty input skips Cassandra; duplicates are deduped.
 func (r *Repository) GetReactionsByMessageIDs(ctx context.Context, messageIDs []string) (map[string]ReactionMap, error) {
