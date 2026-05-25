@@ -1120,22 +1120,18 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	// 10. Outbox for cross-site members — batched by destination site
-	remoteSiteMembers := make(map[string][]string)
-	for _, sub := range subs {
-		user, ok := userMap[sub.User.Account]
-		if !ok || user.SiteID == room.SiteID {
-			continue
-		}
-		remoteSiteMembers[user.SiteID] = append(remoteSiteMembers[user.SiteID], sub.User.Account)
+	// 10. Outbox for cross-site members — one event per destination site.
+	remoteSites, err := h.findRemoteSitesForAccounts(ctx, actualAccounts)
+	if err != nil {
+		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
 	}
-	for destSiteID, accounts := range remoteSiteMembers {
+	for _, destSiteID := range remoteSites {
 		siteEvt := model.MemberAddEvent{
 			Type:               "member_added",
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
-			Accounts:           accounts,
+			Accounts:           actualAccounts,
 			SiteID:             room.SiteID,
 			RequesterAccount:   req.RequesterAccount,
 			JoinedAt:           req.Timestamp,
@@ -1812,6 +1808,53 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 		if err := h.publish(ctx, subject.SubscriptionUpdate(sub.User.Account), data, ""); err != nil {
 			slog.ErrorContext(ctx, "sync DM: publish subscription.update failed",
 				"error", err, "account", sub.User.Account, "request_id", requestID)
+		}
+	}
+}
+
+// findRemoteSitesForAccounts looks up the home site of each account and returns
+// the deduplicated set of remote sites (siteID != h.siteID). Empty in → empty out.
+func (h *Handler) findRemoteSitesForAccounts(ctx context.Context, accounts []string) ([]string, error) {
+	if len(accounts) == 0 {
+		return []string{}, nil
+	}
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return nil, fmt.Errorf("find users by accounts: %w", err)
+	}
+	seen := make(map[string]struct{}, len(users))
+	out := make([]string, 0, len(users))
+	for i := range users {
+		if users[i].SiteID == h.siteID {
+			continue
+		}
+		if _, dup := seen[users[i].SiteID]; dup {
+			continue
+		}
+		seen[users[i].SiteID] = struct{}{}
+		out = append(out, users[i].SiteID)
+	}
+	return out, nil
+}
+
+// publishSubscriptionEvents fans out one SubscriptionUpdateEvent per subscription.
+// Best-effort: errors are logged, not returned.
+func (h *Handler) publishSubscriptionEvents(ctx context.Context, subs []model.Subscription, action string) {
+	now := time.Now().UTC().UnixMilli()
+	for i := range subs {
+		evt := model.SubscriptionUpdateEvent{
+			UserID:       subs[i].User.ID,
+			Subscription: subs[i],
+			Action:       action,
+			Timestamp:    now,
+		}
+		data, err := json.Marshal(evt)
+		if err != nil {
+			slog.Error("marshal subscription update", "error", err, "account", subs[i].User.Account, "action", action)
+			continue
+		}
+		if err := h.publish(ctx, subject.SubscriptionUpdate(subs[i].User.Account), data, ""); err != nil {
+			slog.Error("publish subscription update", "error", err, "account", subs[i].User.Account, "action", action)
 		}
 	}
 }
