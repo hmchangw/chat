@@ -90,9 +90,7 @@ type Message struct {
 	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
 	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
-	// Reactions is populated server-side by history-service via the
-	// message_reactions side table. Nil = no reactions (omitted from JSON);
-	// the field is never scanned from a Cassandra column directly.
+	// Reactions is hydrated server-side from the message_reactions side table; nil = no reactions.
 	Reactions    map[string][]Participant `json:"reactions,omitempty"`
 	Deleted      bool                     `json:"deleted,omitempty"               cql:"deleted"`
 	Type         string                   `json:"type,omitempty"                  cql:"type"`

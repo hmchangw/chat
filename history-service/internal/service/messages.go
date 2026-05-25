@@ -477,10 +477,7 @@ func (s *HistoryService) publishCanonicalBestEffort(c *natsrouter.Context, subj 
 	}
 }
 
-// hydrateReactions fills msgs[i].Reactions from the message_reactions side
-// table. Messages with no reactions are left with a nil Reactions map
-// (callers and JSON encoding must treat nil as "no reactions"). Returns the
-// wrapped repo error on failure; on success msgs is mutated in place.
+// hydrateReactions populates msgs[i].Reactions in place from the side table.
 func (s *HistoryService) hydrateReactions(ctx context.Context, msgs []models.Message) error {
 	if len(msgs) == 0 {
 		return nil

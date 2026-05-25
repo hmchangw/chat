@@ -10,15 +10,11 @@ import (
 	"github.com/hmchangw/chat/pkg/model/cassandra"
 )
 
-// ReactionMap is a per-message reactions view: emoji -> users who reacted.
+// ReactionMap is emoji → users who reacted.
 type ReactionMap = map[string][]cassandra.Participant
 
-// GetReactionsByMessageID returns all reactions on a single message as
-// emoji -> users. Returns an empty ReactionMap (not nil) when the message
-// has no reactions; never returns gocql.ErrNotFound for an empty partition.
-//
-// The singular variant exists alongside GetReactionsByMessageIDs to skip the
-// errgroup + semaphore setup on the hot single-message path (GetMessageByID).
+// GetReactionsByMessageID returns reactions for one message as emoji → users; always non-nil.
+// Singular variant exists so GetMessageByID can skip errgroup/semaphore overhead.
 func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID string) (ReactionMap, error) {
 	iter := r.session.Query(
 		`SELECT emoji, users FROM message_reactions WHERE message_id = ?`,
@@ -38,21 +34,14 @@ func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID stri
 	return out, nil
 }
 
-// GetReactionsByMessageIDs fans out parallel single-partition reads via
-// errgroup. Each goroutine reads one message's reactions partition directly
-// from the replica that owns it (token-aware routing). Returns
-// messageID -> ReactionMap. Messages with no reactions are omitted from
-// the returned map (callers treat absence as "no reactions"). Empty
-// messageIDs returns an empty map without contacting Cassandra. Duplicate
-// IDs in input are deduplicated before fan-out. First goroutine error
-// cancels siblings via the errgroup-derived context.
+// GetReactionsByMessageIDs fans out token-aware single-partition reads via errgroup, bounded by reactionsConcurrency.
+// Messages without reactions are omitted; nil/empty input skips Cassandra; duplicates are deduped.
 func (r *Repository) GetReactionsByMessageIDs(ctx context.Context, messageIDs []string) (map[string]ReactionMap, error) {
 	out := make(map[string]ReactionMap)
 	if len(messageIDs) == 0 {
 		return out, nil
 	}
 
-	// Dedupe.
 	seen := make(map[string]struct{}, len(messageIDs))
 	ids := make([]string, 0, len(messageIDs))
 	for _, id := range messageIDs {

@@ -15,10 +15,8 @@ type Repository struct {
 	reactionsConcurrency int
 }
 
-// NewRepository wires a session, bucket sizer, and max-walk depth.
-// maxBuckets caps how far a paginated read walks through empty buckets before
-// returning a non-terminal cursor. reactionsConcurrency caps the per-request
-// fan-out when loading reactions for a batch of messages.
+// NewRepository wires a session, bucket sizer, max-walk depth, and reactions fan-out cap.
+// reactionsConcurrency < 1 is clamped to 1 (avoids deadlocked unbuffered semaphore).
 func NewRepository(session *gocql.Session, bucket msgbucket.Sizer, maxBuckets, reactionsConcurrency int) *Repository {
 	if reactionsConcurrency < 1 {
 		reactionsConcurrency = 1

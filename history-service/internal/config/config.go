@@ -39,9 +39,7 @@ type Config struct {
 	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
 	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
 	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
-	// ReactionsFetchConcurrency caps the per-request errgroup fan-out in
-	// GetReactionsByMessageIDs. The cap is per request, not global — under N
-	// concurrent NATS reads the in-flight Cassandra ceiling is N × this value.
+	// ReactionsFetchConcurrency caps per-request fan-out in GetReactionsByMessageIDs (per-request, not global).
 	ReactionsFetchConcurrency int `env:"REACTIONS_FETCH_CONCURRENCY" envDefault:"50"`
 }
 
