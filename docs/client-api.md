@@ -189,6 +189,8 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 **Subject:** `chat.user.{account}.request.room.{siteID}.create`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The room is created asynchronously in `room-worker`, which publishes the events under "Triggered events" below. The client **must** set an `X-Request-ID` NATS header — Create Room rejects requests without it, and the header value is echoed as the `requestId` on the `AsyncJobResult` event.
 
 The room **type is inferred server-side** from the payload shape — the client does not send it:
@@ -218,7 +220,7 @@ The creator's account and the site come from the subject (`chat.user.{account}.r
 
 ##### Success response
 
-A `CreateRoomSyncReply` — **not** the full room. The room object is never returned; it is created asynchronously.
+**Not** the full room — the room object is never returned; it is created asynchronously.
 
 | Field      | Type   | Notes |
 |------------|--------|-------|
@@ -275,6 +277,8 @@ For **channel** rooms, the first messages (`type: "room_created"`, then `type: "
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.add`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member adds run asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
@@ -393,6 +397,8 @@ A `members_added` system message also flows through the message pipeline and arr
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.remove`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member removal runs asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
 ##### Request body
@@ -464,6 +470,8 @@ A `member_left` / `member_removed` system message also flows through the message
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.role-update`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is an **async-job RPC**. The synchronous reply confirms acceptance; the actual role change runs in `room-worker` and emits the event below. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for role updates — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
 
@@ -538,6 +546,8 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.list`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 ##### Request body
 
@@ -617,6 +627,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only room me
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is a **synchronous RPC** — `room-service` performs all writes inline before replying. The handler validates room membership, recomputes the per-subscription `alert` flag, persists the new `lastSeenAt` and `alert` on the user's `Subscription`, and optionally recomputes `Room.MinUserLastSeenAt`.
 
@@ -722,6 +734,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.mute.toggle`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Synchronous RPC. `room-service` flips `Subscription.muted` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, fans out a `subscription.update` event to the user's other client sessions, and (for cross-site users) publishes a `subscription_mute_toggled` outbox event so `inbox-worker` mirrors the change on the user's home site.
 
 Idempotency: this is a toggle, not a set — every successful call flips the bit. Clients must debounce the user-visible action; redelivery of the same RPC will flip back.
@@ -770,6 +784,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 A **synchronous, sender-only** RPC. Returns the list of users on the local site whose `subscription.lastSeenAt` is at or after the target message's `createdAt`. Only the message author may call it. The author is excluded from the result.
 
@@ -991,6 +1007,8 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 ##### Request body
 
 | Field | Type | Required | Notes |
@@ -1054,6 +1072,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Fetches messages newer than a cursor — the forward-pagination counterpart to Load History.
 
 ##### Request body
@@ -1115,6 +1135,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Fetches messages around a target message — useful for "jump to this message" navigation. Returns up to `limit` messages total, centered on `messageId`.
 
 ##### Request body
@@ -1174,6 +1196,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 ##### Request body
 
 | Field | Type | Required | Notes |
@@ -1220,6 +1244,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 Only the original sender may edit a message.
 
@@ -1302,6 +1328,8 @@ The payload is flat (no zero-valued room fields):
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Soft-deletes a message (sets `deleted=true` on the row; row is preserved for audit). Only the original sender may delete. Idempotent — re-deleting an already-deleted message returns success without re-publishing the event.
 
 ##### Request body
@@ -1376,6 +1404,8 @@ The payload is flat:
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Returns the replies in a thread. The thread parent's `messageId` is supplied in the request.
 
 ##### Request body
@@ -1436,6 +1466,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 Lists the parent messages of threads the user has subscribed to (or all threads, depending on filter). Use this to drive a "Threads" tab in the client.
 
@@ -1764,6 +1796,8 @@ The response is a top-level JSON array of `SearchUser` objects (no wrapping obje
 
 **Subject:** `chat.user.{account}.room.{roomID}.{siteID}.msg.send`
 **Reply subject:** `chat.user.{account}.response.{requestID}` — the client must subscribe to `chat.user.{account}.>` (the user wildcard) to receive it. The `{requestID}` value is the `requestId` field from the request body.
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This RPC uses the **publish + async-reply** pattern, not the standard NATS request/reply. The client publishes to the `msg.send` subject (no `_INBOX.>` reply expected). `message-gatekeeper` validates the request, publishes the canonical message to `MESSAGES_CANONICAL`, and replies to `chat.user.{account}.response.{requestID}` with the persisted `Message` (or an error envelope on failure).
 
