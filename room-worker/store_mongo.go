@@ -471,20 +471,76 @@ func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, request
 	return requesterSub, counterpartSub, nil
 }
 
-// --- rename/visibility stubs (Task 4 replaces these with real implementations) ---
-
-func (s *MongoStore) UpdateRoomName(_ context.Context, _, _ string) error {
-	panic("not implemented: Task 4")
+func (s *MongoStore) UpdateRoomName(ctx context.Context, roomID, newName string) error {
+	return s.updateChannelRoom(ctx, roomID, bson.M{
+		"$set": bson.M{"name": newName, "updatedAt": time.Now().UTC()},
+	})
 }
 
-func (s *MongoStore) UpdateRoomVisibility(_ context.Context, _ string, _, _ bool) error {
-	panic("not implemented: Task 4")
+func (s *MongoStore) UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error {
+	return s.updateChannelRoom(ctx, roomID, bson.M{
+		"$set": bson.M{
+			"restricted":     restricted,
+			"externalAccess": externalAccess,
+			"updatedAt":      time.Now().UTC(),
+		},
+	})
 }
 
-func (s *MongoStore) UpdateSubscriptionNamesForRoom(_ context.Context, _, _ string) error {
-	panic("not implemented: Task 4")
+// updateChannelRoom enforces type=channel and disambiguates not-found vs wrong-type.
+func (s *MongoStore) updateChannelRoom(ctx context.Context, roomID string, update bson.M) error {
+	res, err := s.rooms.UpdateOne(ctx,
+		bson.M{"_id": roomID, "type": model.RoomTypeChannel}, update)
+	if err != nil {
+		return fmt.Errorf("update channel room %s: %w", roomID, err)
+	}
+	if res.MatchedCount > 0 {
+		return nil
+	}
+	var probe model.Room
+	if probeErr := s.rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&probe); probeErr != nil {
+		if errors.Is(probeErr, mongo.ErrNoDocuments) {
+			return ErrRoomNotFound
+		}
+		return fmt.Errorf("probe room type: %w", probeErr)
+	}
+	return ErrNotChannelRoom
 }
 
-func (s *MongoStore) ApplySubscriptionVisibility(_ context.Context, _ string, _, _ bool, _ string) error {
-	panic("not implemented: Task 4")
+func (s *MongoStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+	if _, err := s.subscriptions.UpdateMany(ctx,
+		bson.M{"roomId": roomID},
+		bson.M{"$set": bson.M{"name": newName}}); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
+	filter := bson.M{"roomId": roomID}
+
+	if restricted && ownerAccount != "" {
+		pipeline := mongo.Pipeline{
+			bson.D{{Key: "$set", Value: bson.M{
+				"restricted":     true,
+				"externalAccess": externalAccess,
+				"roles": bson.M{"$cond": bson.M{
+					"if":   bson.M{"$eq": bson.A{"$u.account", ownerAccount}},
+					"then": bson.A{string(model.RoleOwner)},
+					"else": bson.A{string(model.RoleMember)},
+				}},
+			}}},
+		}
+		if _, err := s.subscriptions.UpdateMany(ctx, filter, pipeline); err != nil {
+			return fmt.Errorf("apply visibility (restrict+rewrite): %w", err)
+		}
+		return nil
+	}
+
+	if _, err := s.subscriptions.UpdateMany(ctx, filter, bson.M{
+		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess},
+	}); err != nil {
+		return fmt.Errorf("apply visibility (flags only): %w", err)
+	}
+	return nil
 }

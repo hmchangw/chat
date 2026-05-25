@@ -1743,6 +1743,148 @@ func TestHandler_ProcessCreateRoom_DMConcurrentByCounterpart_Integration(t *test
 	}
 }
 
+func newSubFixture(id, userID, account, roomID, name string) model.Subscription {
+	s := newSubFixtureWithRoles(id, userID, account, roomID, []model.Role{model.RoleMember})
+	s.Name = name
+	return s
+}
+
+func newSubFixtureWithRoles(id, userID, account, roomID string, roles []model.Role) model.Subscription {
+	return model.Subscription{
+		ID:       id,
+		User:     model.SubscriptionUser{ID: userID, Account: account},
+		RoomID:   roomID,
+		SiteID:   "site-a",
+		Name:     "n",
+		Roles:    roles,
+		RoomType: model.RoomTypeChannel,
+		JoinedAt: time.Now().UTC(),
+	}
+}
+
+func TestMongoStore_UpdateRoomName(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-rename")
+	store := NewMongoStore(db)
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r1", Name: "old", Type: model.RoomTypeChannel, SiteID: "site-a",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateRoomName(ctx, "r1", "new"))
+	got, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Equal(t, "new", got.Name)
+
+	assert.ErrorIs(t, store.UpdateRoomName(ctx, "missing", "x"), ErrRoomNotFound)
+
+	_, err = db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "dm1", Type: model.RoomTypeDM, SiteID: "site-a",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	assert.ErrorIs(t, store.UpdateRoomName(ctx, "dm1", "x"), ErrNotChannelRoom)
+}
+
+func TestMongoStore_UpdateRoomVisibility(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-visibility")
+	store := NewMongoStore(db)
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", true, true))
+	got, _ := store.GetRoom(ctx, "r1")
+	assert.True(t, got.Restricted)
+	assert.True(t, got.ExternalAccess)
+
+	// Idempotent + flip
+	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", true, true))
+	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", false, false))
+	got, _ = store.GetRoom(ctx, "r1")
+	assert.False(t, got.Restricted)
+	assert.False(t, got.ExternalAccess)
+}
+
+func TestMongoStore_UpdateSubscriptionNamesForRoom(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-sub-name")
+	store := NewMongoStore(db)
+
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
+		newSubFixture("s1", "u1", "alice", "r1", "old"),
+		newSubFixture("s2", "u2", "bob", "r1", "old"),
+		newSubFixture("s3", "u3", "carol", "other", "untouched"),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new"))
+	all, _ := store.ListByRoom(ctx, "r1")
+	for _, sub := range all {
+		assert.Equal(t, "new", sub.Name, "sub %s", sub.ID)
+	}
+	other, _ := store.ListByRoom(ctx, "other")
+	require.Len(t, other, 1)
+	assert.Equal(t, "untouched", other[0].Name)
+}
+
+func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
+	seed := func(t *testing.T, db *mongo.Database) {
+		t.Helper()
+		_, err := db.Collection("subscriptions").InsertMany(context.Background(), []any{
+			newSubFixtureWithRoles("s1", "u1", "alice", "r1", []model.Role{model.RoleOwner}),
+			newSubFixtureWithRoles("s2", "u2", "bob", "r1", []model.Role{model.RoleMember}),
+			newSubFixtureWithRoles("s3", "u3", "carol", "r1", []model.Role{model.RoleMember}),
+		})
+		require.NoError(t, err)
+	}
+	rolesByAccount := func(t *testing.T, store *MongoStore) map[string][]model.Role {
+		t.Helper()
+		subs, _ := store.ListByRoom(context.Background(), "r1")
+		out := map[string][]model.Role{}
+		for _, sub := range subs {
+			out[sub.User.Account] = sub.Roles
+		}
+		return out
+	}
+
+	t.Run("restrict transition with ownerAccount rewrites roles", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-worker-visibility-restrict")
+		store := NewMongoStore(db)
+		seed(t, db)
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, false, "bob"))
+		roles := rolesByAccount(t, store)
+		assert.Equal(t, []model.Role{model.RoleOwner}, roles["bob"])
+		assert.Equal(t, []model.Role{model.RoleMember}, roles["alice"])
+		assert.Equal(t, []model.Role{model.RoleMember}, roles["carol"])
+		// Idempotent
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, false, "bob"))
+		assert.Equal(t, roles, rolesByAccount(t, store))
+	})
+
+	t.Run("flags only when ownerAccount empty (roles untouched)", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-worker-visibility-flags")
+		store := NewMongoStore(db)
+		seed(t, db)
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, true, ""))
+		roles := rolesByAccount(t, store)
+		assert.Equal(t, []model.Role{model.RoleOwner}, roles["alice"])
+	})
+
+	t.Run("unrestrict ignores ownerAccount", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-worker-visibility-unrestrict")
+		store := NewMongoStore(db)
+		seed(t, db)
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", false, false, "bob"))
+		roles := rolesByAccount(t, store)
+		assert.Equal(t, []model.Role{model.RoleOwner}, roles["alice"])
+	})
+}
+
 // TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash exercises the
 // recovery path when a worker crashed AFTER CreateRoom succeeded but BEFORE
 // BulkCreateSubscriptions wrote any subs. JetStream redelivers the canonical
