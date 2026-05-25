@@ -2459,3 +2459,42 @@ func TestOutboxEventJSON_ThreadRead(t *testing.T) {
 	require.NoError(t, json.Unmarshal(dst.Payload, &gotPayload))
 	assert.Equal(t, payload, gotPayload)
 }
+
+func TestSubscriptionRemovedEventJSON(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		UserID: "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{ID: "01970a4f8c2d7c9a01970a4f8c2d7c9a", Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	roundTrip(t, &evt, &model.SubscriptionRemovedEvent{})
+}
+
+func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	sub := raw["subscription"]
+	require.NotNil(t, sub)
+	var subRaw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(sub, &subRaw))
+	// The lean ref must NOT carry the full Subscription's fields.
+	for _, leaked := range []string{"roles", "name", "joinedAt", "alert", "muted", "siteId", "id"} {
+		_, present := subRaw[leaked]
+		assert.False(t, present, "removed event subscription must not carry %q", leaked)
+	}
+}
