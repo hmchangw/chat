@@ -1802,8 +1802,13 @@ func TestMongoStore_UpdateRoomVisibility(t *testing.T) {
 	assert.True(t, got.Restricted)
 	assert.True(t, got.ExternalAccess)
 
-	// Idempotent + flip
+	// Idempotent re-apply — state must remain true/true.
 	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", true, true))
+	got, _ = store.GetRoom(ctx, "r1")
+	assert.True(t, got.Restricted, "idempotent re-apply preserved restricted")
+	assert.True(t, got.ExternalAccess, "idempotent re-apply preserved externalAccess")
+
+	// Flip to false/false.
 	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", false, false))
 	got, _ = store.GetRoom(ctx, "r1")
 	assert.False(t, got.Restricted)
@@ -1861,6 +1866,12 @@ func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
 		assert.Equal(t, []model.Role{model.RoleOwner}, roles["bob"])
 		assert.Equal(t, []model.Role{model.RoleMember}, roles["alice"])
 		assert.Equal(t, []model.Role{model.RoleMember}, roles["carol"])
+		subs, err := store.ListByRoom(context.Background(), "r1")
+		require.NoError(t, err)
+		for _, sub := range subs {
+			assert.True(t, sub.Restricted, "sub %s restricted", sub.ID)
+			assert.False(t, sub.ExternalAccess, "sub %s externalAccess", sub.ID)
+		}
 		// Idempotent
 		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, false, "bob"))
 		assert.Equal(t, roles, rolesByAccount(t, store))
@@ -1873,6 +1884,12 @@ func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
 		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, true, ""))
 		roles := rolesByAccount(t, store)
 		assert.Equal(t, []model.Role{model.RoleOwner}, roles["alice"])
+		subs, err := store.ListByRoom(context.Background(), "r1")
+		require.NoError(t, err)
+		for _, sub := range subs {
+			assert.True(t, sub.Restricted, "sub %s restricted", sub.ID)
+			assert.True(t, sub.ExternalAccess, "sub %s externalAccess", sub.ID)
+		}
 	})
 
 	t.Run("unrestrict ignores ownerAccount", func(t *testing.T) {
@@ -1882,6 +1899,12 @@ func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
 		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", false, false, "bob"))
 		roles := rolesByAccount(t, store)
 		assert.Equal(t, []model.Role{model.RoleOwner}, roles["alice"])
+		subs, err := store.ListByRoom(context.Background(), "r1")
+		require.NoError(t, err)
+		for _, sub := range subs {
+			assert.False(t, sub.Restricted, "sub %s restricted", sub.ID)
+			assert.False(t, sub.ExternalAccess, "sub %s externalAccess", sub.ID)
+		}
 	})
 }
 
