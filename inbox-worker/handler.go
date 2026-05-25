@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,28 @@ import (
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
+
+// errPermanent marks non-retryable errors (caller Acks instead of Nak).
+var errPermanent = errors.New("permanent")
+
+type permanentError struct {
+	msg   string
+	cause error
+}
+
+func newPermanent(format string, args ...any) error {
+	return &permanentError{msg: fmt.Sprintf(format, args...)}
+}
+
+func (e *permanentError) Error() string { return e.msg }
+func (e *permanentError) Unwrap() error { return e.cause }
+func (e *permanentError) Is(target error) bool {
+	if target == errPermanent {
+		return true
+	}
+	_, ok := target.(*permanentError)
+	return ok
+}
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
 

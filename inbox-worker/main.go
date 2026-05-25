@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -282,6 +283,21 @@ func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoo
 	return nil
 }
 
+type ackAction int
+
+const (
+	ackActionNak ackAction = iota
+	ackActionAck
+)
+
+// dispatchAckPolicy decides Ack (poison; stop redelivering) vs Nak (transient; retry).
+func dispatchAckPolicy(err error) ackAction {
+	if err == nil || errors.Is(err, errPermanent) {
+		return ackActionAck
+	}
+	return ackActionNak
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -360,10 +376,6 @@ func main() {
 			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)
 			}
-			return
-		}
-		if err := m.Ack(); err != nil {
-			slog.Error("failed to ack message", "error", err)
 		}
 	})
 	if err != nil {
