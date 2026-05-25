@@ -31,7 +31,50 @@ The branch is in good shape post-feedback. Several pre-existing inconsistencies 
 
 ## Service: history-service
 
-*Pending — generalist agent still running.*
+*Generalist agent failed twice with 529 Overloaded; chapter synthesised inline from cross-lens findings.*
+
+### (a) Diff correctness vs existing conventions
+
+`GetReactionsByMessageID` (`cassrepo/message_reactions.go:19-35`) uses a raw `iter.Scan(&emoji, &users)` loop instead of the `structScan` + `scanMsgsFromIter` pattern used by `messages_by_id.go` / `messages_by_room.go`. Acceptable because the scan target is a 2-column `(emoji, users)` pair, not a row struct — no `cql`-tagged struct exists. The `iter.Close()` error wrap (`message_reactions.go:32`) follows the existing style (`messages_by_id.go:22` uses `"querying message by id %s: %w"`).
+
+### (b) Scope drift
+
+- `messages.go` shrunk from 502 → ~485 lines after extracting `hydrateReactions` into its own `reactions.go`. Cohesion improved.
+- `threads.go` gained a single `hydrateReactions` call + error wrapper, ~6 net lines. No bloat.
+- `service.go` `MessageReader` interface gained 2 methods (now 9 total). Worth tracking — if a third side-table reader joins, split into `ReactionReader` interface.
+
+### (c) Abstractions
+
+- **`ReactionMap = map[string][]cassandra.Participant` alias** (`message_reactions.go:13`) earns its keep at the return type; doesn't earn it for the outer `map[string]cassrepo.ReactionMap` (no alias there — asymmetric). Cross-references Go-lens L3.
+- **`hydrateReactions` helper** in `service/reactions.go` is justified (5 call sites across `messages.go` + `threads.go`).
+- **4-arg `NewRepository(session, bucket, maxBuckets, reactionsConcurrency)`** — positional `int, int` adjacency is fragile. 30+ test call sites pass `365, 50`; nothing prevents future swap. Worth a config struct or functional options as a follow-up.
+- **`GetReactionsByMessageID` vs plural** — singular kept to skip errgroup+semaphore overhead on the hot `GetMessageByID` path. Justified, but worth a doc-comment note.
+
+### (d) Design coherence
+
+Reactions hydration is read-only and stays inside history-service. Fits the service's job (read-only history queries). No unrelated concerns bolted on.
+
+### (e) Project-pattern adherence
+
+- Error wrapping consistent with `messages_by_id.go:41` style. ✓
+- Concurrency cap env-driven (`REACTIONS_FETCH_CONCURRENCY`), clamped ≥1. ✓
+- Generated mocks not hand-edited (header refers to `mockgen` invocation). ✓
+- `natsutil.RequestIDFromContext(c)` used per CLAUDE.md §3 in all 6 new error logs. ✓
+- **`pkg/subject` / `pkg/stream` / `pkg/idgen` / outbox pattern** — not applicable to this diff (no new subjects, streams, IDs, or cross-site events).
+
+### (f) Client-API doc rule (CLAUDE.md §5)
+
+All 6 affected handlers register on `chat.user.{account}.…` subjects. `docs/client-api.md:998` adds a one-line clause to the existing `reactions` field description ("Reactions are stored server-side in a dedicated `message_reactions` side table…"). **Sufficient** because the wire shape is unchanged — no new request/response schemas, no new error cases, no new event types. The CLAUDE.md rule's intent (clients understand the contract) is met.
+
+### Other findings
+
+**medium — Asymmetric failure-path test coverage.** `threads_test.go` has new `*_HydrateReactionsError` tests for the 2 thread handlers; `messages_test.go` has NO equivalent for the 4 message handlers (`LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`). All 4 production paths return `ErrInternal` on hydration failure but only happy-path tests cover the new error branch. Cross-references Test-lens medium.
+
+**low — Existing sibling `slog.Error` calls in same files lack `request_id`.** New hydration logs include it; pre-existing logs in the same handlers (e.g. `"loading history"`, `"loading thread messages"`) don't. Creates a half-instrumented state. CLAUDE.md §3 mandates `request_id` everywhere — pre-existing violation, not this branch's fault. Cross-references Obs-lens L1.
+
+**low — `90-migrate-drop-old-reactions-column.cql`** is idempotent (`DROP IF EXISTS`), runs after the new-table create (`14-table-…cql`), and is safe on fresh keyspaces (column never existed). For local dev only. Perf-lens N4 notes that DROP COLUMN in production has gc_grace_seconds + schema-disagreement caveats — if this file is ever cargo-culted into prod migrations, it needs a runbook.
+
+**Verdict:** No critical / high findings. The medium items are follow-up work (symmetric failure-path tests, sibling `request_id` propagation) that can land in subsequent PRs.
 
 ---
 
