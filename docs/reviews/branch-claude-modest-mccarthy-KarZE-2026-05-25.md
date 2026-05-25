@@ -70,3 +70,93 @@ The branch is in good shape post-feedback. Several pre-existing inconsistencies 
 - `make([]string, 0, len(messageIDs))` dedupe — avoids the `[:0:0]` aliasing footgun.
 
 **Verdict:** no critical / high findings. Branch meets a senior-shop bar with the medium / low cleanups above.
+
+---
+
+## Test-Automation Lens
+
+*Pending — agent still running.*
+
+---
+
+## Bug & Security Lens
+
+*Pending — agent still running.*
+
+---
+
+## Performance Lens
+
+**Caveat:** Docker unavailable in this environment, so `BenchmarkGetReactionsByMessageIDs` could not be executed. All claims below are static analysis only.
+
+### high
+
+**H1 — Per-request concurrency cap is multiplicative under load** — `cassrepo/repository.go:15-29`, `config/config.go:42-43`. `reactionsConcurrency` (default 50) is enforced **per call** to `GetReactionsByMessageIDs`. With Go's NATS worker pool processing K concurrent paged-history requests, in-flight single-partition reactions reads scale as `K × 50`. gocql defaults to `NumConns=8` per host; a burst can saturate the connection pool and queue requests behind it, inflating p99 well beyond what a single-request benchmark shows. Either (a) document this as a deployment knob and tune to `~numConns × hosts / expectedQPS`, or (b) move to a service-global semaphore (sized once at `NewRepository`). The `< 1 → 1` clamp at `repository.go:21` is good; the absent upper bound is the gap.
+
+### medium
+
+**M1 — N+1 round-trips per page** — `cassrepo/message_reactions.go:40-87`. For `maxPageSize=100` page (`messages.go:22`), hydration fires up to 100 single-partition reads. Spec §14 chose this over `WHERE message_id IN (…)` to avoid coordinator scatter — sound trade — but the latency floor is now `ceil(100/50) × replica_rtt + Cassandra coordinator overhead`. The bench uses 50 IDs × 5 emojis on a single-node container, so it underestimates p99 against a multi-DC cluster.
+
+**M2 — Hydration is unconditional even when no reactions exist** — `service/reactions.go:11-29`. Every page issues N reads regardless of whether any message has reactions. For rooms that rarely use reactions this is pure overhead. Cheap future mitigation: a `has_reactions bool` (or `reaction_count`) on the message row to skip IDs with zero. Not required for v1; the single highest-leverage future optimization.
+
+**M3 — Synchronous hydration adds to client-visible latency** — `messages.go:112,168,271`, `threads.go:104,208`, `messages.go:300`. Five paged read paths now block on Cassandra fan-out after the message page returns. The two existing parallel sections (`g, gctx := errgroup.WithContext(c)` at `messages.go:72` and `messages.go:237`) issue page + receipt-floor concurrently — reactions could join that errgroup with the receipt-floor read, removing one serial RTT from the critical path.
+
+### low
+
+**L1 — Map allocation in singular path could be lazy** — `message_reactions.go:24`. `make(ReactionMap)` is allocated before the iter loop. For messages with no reactions (likely the common case) this is a wasted alloc returned as a non-nil empty map. Acceptable for API ergonomics (`msg.Reactions != nil` is meaningful).
+
+**L2 — `users = nil` after each scan** — `message_reactions.go:29`. Required for correctness (avoids gocql backing-array aliasing). Cost: one fresh allocation per emoji (<10 per message). Leave as is.
+
+### nitpick
+
+**N1 — `id := id` shadow** — `message_reactions.go:61`. Redundant under Go 1.22+; project pins Go 1.25. Cross-references Go-lens M1.
+
+**N2 — `RequestIDFromContext` cost on error path** — Single `ctx.Value` + type assert (sub-microsecond). 6 new sites only fire on error logging. Negligible.
+
+**N3 — Mutex vs sharded map** — `message_reactions.go:58,77-79`. With concurrency=50 and fast critical sections, single-mutex contention unlikely to dominate. Pre-allocating `out` to `len(ids)` (`line 41`) would avoid map growth.
+
+**N4 — Operational DDL note** — `docker-local/cassandra/init/90-migrate-drop-old-reactions-column.cql`. `DROP COLUMN` on Cassandra tombstones data (gc_grace_seconds default 10d) and triggers schema disagreement across nodes mid-rollout. Fine for local dev (single node, throwaway). If this file is ever cargo-culted into prod migrations, needs a wrapping run-book.
+
+### What can't be measured here
+
+- Actual hydration p50/p99 against multi-node Cassandra.
+- gocql connection-pool saturation under K concurrent requests.
+- Whether `REACTIONS_FETCH_CONCURRENCY=50` is the right default vs `NUM_CONNS=8`.
+
+Recommend running `BenchmarkGetReactionsByMessageIDs` with varying `-cpu` and a multi-node Cassandra ring before finalizing the default.
+
+---
+
+## Observability Lens
+
+### low
+
+**L1 — `request_id` not propagated to sibling slog.Error sites in same files**:
+- `messages.go:101` `"loading history"` — no `request_id`.
+- `messages.go:163` `"loading next messages"` — no `request_id`.
+- `messages.go:246,254` `"loading surrounding messages"` — no `request_id`.
+- `threads.go:99` `"loading thread messages"` — no `request_id`.
+- `threads.go:157,178` thread MongoDB / Cassandra hydration errors — no `request_id`.
+
+When a single request fails in both hydration and a sibling path, ops can correlate the hydration error to a request but not the upstream error. This branch creates a half-instrumented set of handlers. Recommendation: either extend this PR by ~6 lines to add `"request_id", natsutil.RequestIDFromContext(c)` to the siblings, OR file a follow-up issue. CLAUDE.md §3 says "include in all log lines" — the existing sites are arguably already violating that; the new code is correct.
+
+### nitpick
+
+**N1 — request-id key naming mixed across repo (not introduced here)** — Most services use `"request_id"` (snake); `room-worker` uses `"requestID"` (camel). New code matches the dominant convention (4 services vs 1) and the `natsutil` package convention. Worth a follow-up normalization PR.
+
+**N2 — Mixed casing for entity vs request_id keys on same log line** — Example: `messages.go:113` `"request_id"` (snake) next to `"roomID"` (camel). Pre-existing repo-wide inconsistency, not a regression. Worth a separate normalization PR; do not gate this branch on it.
+
+**N3 — No sub-span around `hydrateReactions`** — `reactions.go:11` fan-outs N single-partition Cassandra reads via errgroup. With no service-layer span, in Tempo/Jaeger these appear as N peer spans under the NATS root with no logical grouping. Matches pre-existing convention in this service.
+
+**N4 — No Prometheus metrics on the new hydration path** — No counter (success/failure) and no histogram (latency, fan-out size). Same gap as the rest of the service. Useful future additions: `history_reactions_hydrate_total{result}`, `history_reactions_hydrate_duration_seconds`, `history_reactions_fanout_size`.
+
+### Verified clean
+
+- No `fmt.Println` / `log.Println` / text-format loggers anywhere in the diff.
+- No secrets in any new log line — only `roomID`, `messageID`, `threadRoomID`, `request_id`, and wrapped errors.
+- All `slog` calls use structured key-value pairs.
+- Helpers (`hydrateReactions`, `GetReactionsByMessageID*`) wrap errors and let the caller log once at the handler boundary — no double-logging.
+- Empty-input short-circuit produces no log noise.
+- `natsutil.RequestIDFromContext(c)` returns `""` on miss — graceful per `pkg/natsutil/request_id_test.go:32`.
+
+**Verdict:** approve from an observability lens. No criticals / highs. Net improvement: 6 new error sites all carry `request_id`.
