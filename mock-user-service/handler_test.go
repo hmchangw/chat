@@ -254,10 +254,47 @@ func TestHandler_AppsList(t *testing.T) {
 	})
 }
 
+// buildMockUser returns a User with Roles seeded. admin1 → admin; others → user.
+func buildMockUser(account, siteID string) model.User {
+	roles := []model.UserRole{model.UserRoleUser}
+	if account == "admin1" {
+		roles = []model.UserRole{model.UserRoleAdmin}
+	}
+	return model.User{
+		ID:      "mock-user-" + account,
+		Account: account,
+		SiteID:  siteID,
+		Roles:   roles,
+	}
+}
+
 func TestBuildMockUser_AdminRole(t *testing.T) {
 	admin := buildMockUser("admin1", "site-a")
 	assert.Equal(t, []model.UserRole{model.UserRoleAdmin}, admin.Roles)
 
 	normal := buildMockUser("alice", "site-a")
 	assert.Equal(t, []model.UserRole{model.UserRoleUser}, normal.Roles)
+}
+
+func TestBuildMockUser_AdminRoleBoundary(t *testing.T) {
+	cases := []struct {
+		account   string
+		wantAdmin bool
+	}{
+		{"admin1", true},
+		{"admin", false},   // similar but not exact
+		{"admin11", false}, // suffix doesn't trigger
+		{"Admin1", false},  // case-sensitive
+		{"", false},
+	}
+	for _, tt := range cases {
+		t.Run(tt.account, func(t *testing.T) {
+			u := buildMockUser(tt.account, "site-a")
+			if tt.wantAdmin {
+				assert.Equal(t, []model.UserRole{model.UserRoleAdmin}, u.Roles)
+			} else {
+				assert.Equal(t, []model.UserRole{model.UserRoleUser}, u.Roles)
+			}
+		})
+	}
 }

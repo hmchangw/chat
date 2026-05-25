@@ -22,5 +22,5 @@ type User struct {
 	EngName     string     `json:"engName"      bson:"engName"`
 	ChineseName string     `json:"chineseName"  bson:"chineseName"`
 	EmployeeID  string     `json:"employeeId"   bson:"employeeId"`
-	Roles       []UserRole `json:"roles"        bson:"roles"`
+	Roles       []UserRole `json:"roles,omitempty"        bson:"roles,omitempty"`
 }

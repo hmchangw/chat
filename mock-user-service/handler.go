@@ -132,20 +132,6 @@ func buildMockApp(id, name string) model.App {
 	return model.App{ID: id, Name: name}
 }
 
-// buildMockUser returns a User with Roles seeded. admin1 → admin; others → user.
-func buildMockUser(account, siteID string) model.User {
-	roles := []model.UserRole{model.UserRoleUser}
-	if account == "admin1" {
-		roles = []model.UserRole{model.UserRoleAdmin}
-	}
-	return model.User{
-		ID:      "mock-user-" + account,
-		Account: account,
-		SiteID:  siteID,
-		Roles:   roles,
-	}
-}
-
 func (h *Handler) statusGetByName(c *natsrouter.Context, req statusGetByNameReq) (*statusResp, error) {
 	if err := h.checkSite(c); err != nil {
 		return nil, err
