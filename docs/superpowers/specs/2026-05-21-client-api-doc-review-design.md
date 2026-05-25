@@ -109,6 +109,17 @@ For each RPC, the agent verifies:
 | Triggered events (success) | Every `nats.Publish` / `js.Publish` / `PublishMsg` to a `chat.user.*` or `chat.room.*` subject is listed; subject patterns and payload types match; events attributed to the right service. |
 | Triggered events (error) | Same. |
 
+For each HTTP route (e.g. `POST /auth`), the agent verifies:
+
+| Element | Verification |
+|---------|--------------|
+| Method + path | Literal match against the router registration in code (and any path params). |
+| Auth requirements | Documented auth mechanism / required headers / SSO-token claims match middleware + handler. |
+| Request body fields | Name, type, required-flag, validation, defaults match the request binding struct. |
+| Success response | Status code + response schema (fields/types/optionality) match handler output. |
+| Error response | Each documented status code + error string appears in code and is client-reachable. |
+| Triggered events | Any client-visible publish originating from the HTTP handler is listed with subject + payload shape. |
+
 For each worker, the agent enumerates every publish call and classifies
 its subject as client-visible (`chat.user.*` / `chat.room.*`) or
 backend-internal (`outbox.*`, `chat.server.*`, internal streams), then

@@ -351,11 +351,11 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | Field          | Type   | Notes |
 |----------------|--------|-------|
 | `userId`       | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
-| `subscription` | object | The `Subscription` record (see below). |
-| `action`       | string | `"added"`, `"removed"`, or `"role_updated"`. |
+| `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
+| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, or `"mute_toggled"`. |
 | `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
 
-The embedded `Subscription` object serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `disableNotification`) are always present; on `removed` events only `roomId`, `roomType`, and `u` are meaningfully populated.
+On `added` / `role_updated` / `mute_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
@@ -431,7 +431,20 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 **1. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the removal finishes (requires `X-Request-ID`). `operation` is `"room.member.remove"` for single-account removal, `"room.member.remove_org"` for org removal.
 
-**2. `chat.user.{removedAccount}.event.subscription.update`** — one per removed account, `action: "removed"`. See the [subscription.update schema](#subscriptionupdate-event). On the **org-removal** path `userId` is omitted (only `subscription.u.account` is set). The embedded `Subscription` on a removal carries only `roomId`, `roomType`, and `u`; other fields are zero values.
+**2. `chat.user.{removedAccount}.event.subscription.update`** — one per removed account, `action: "removed"`. The payload is a dedicated `SubscriptionRemovedEvent` (not the full `SubscriptionUpdateEvent`): its `subscription` carries **only** `roomId`, `roomType`, and `u` so no zero-valued `Subscription` fields are sent. On the **org-removal** path `userId` is omitted (only `subscription.u.account` is set).
+
+```json
+{
+  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+  "subscription": {
+    "roomId": "01970a4f8c2d7c9aQ",
+    "roomType": "channel",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" }
+  },
+  "action": "removed",
+  "timestamp": 1746518483000
+}
+```
 
 **3. `chat.user.{survivor}.event.room.key`** — on a channel removal the room key is **rotated**; every surviving member receives a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving key events. See [§5 Room Encryption](#5-room-encryption).
 
@@ -636,7 +649,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - **Alert recomputation:** new `alert = oldSub.alert && len(oldSub.threadUnread) > 0`. Reading the room clears the alert when there are no unread thread mentions; it stays set when thread-level unreads remain.
 - **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so that a newly-invited member's joinedAt cannot keep `room.minUserLastSeenAt` pinned to a stale value.
-- **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is the `MIN(lastSeenAt)` across subscriptions that have been read; reading a room can advance it. Never-read subscriptions are excluded.
+- **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is the `MIN(lastSeenAt)` over **only** subscriptions whose `lastSeenAt` is set (`> 0`). Subscriptions that have never been read (a member invited but who has never opened the room) are **excluded** from the MIN — a single never-read member does **not** force the floor to null. `minUserLastSeenAt` is `$unset` (null) only when **no** subscription in the room has a usable `lastSeenAt` (nobody has ever read). Reading a room can advance the floor.
 - **No system message, no fan-out events:** read receipts are silent; only the requester receives the `accepted` reply.
 
 ##### Triggered events — success path
@@ -901,7 +914,14 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 | Field | Type | Notes |
 |-------|------|-------|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | object | Optional client hint `{ "lastMsgAt"?: number, "createdAt"?: number }` (UTC ms). Lets the server skip a metadata lookup when paging. Sanitized server-side (out-of-range values are ignored), so it is safe to omit. |
+| `meta` | object | Optional. `{ "lastMsgAt"?: number, "createdAt"?: number }`, both UTC milliseconds. |
+
+**What to pass for `meta`:** the server needs the room's `lastMsgAt` and `createdAt` to pick the Cassandra time-bucket window to scan. `meta` lets the client supply the values it already holds so the server can skip a MongoDB lookup:
+
+- `meta.lastMsgAt` — the room's most-recent-message time, as the client knows it from the room summary (the same `lastMsgAt` carried on `RoomEvent`s / the sidebar). Use the room's last-activity timestamp; for an empty room use its `createdAt`.
+- `meta.createdAt` — the room's creation time from the room summary.
+
+Both are **hints, not authority**: the server sanitizes them (ignores values that are negative, in the future, or mutually inconsistent) and falls back to a MongoDB fetch when a value is missing or fails sanitization. A client that does not have these values should omit `meta` entirely — correctness is unaffected, only an extra lookup is incurred.
 
 Common error strings across these RPCs: `"not subscribed to room"`, `"unable to verify room access"`, `"room not found"`, `"invalid pagination cursor"`, `"message not found"`, and (for access-restricted readers) `"message is outside access window"` / `"thread is outside access window"`.
 
@@ -1794,23 +1814,21 @@ The same subject and request body cover three send variants: plain message, thre
 
 #### Success response
 
-Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message`.
+Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message` as the gatekeeper builds it. Only the fields below are populated — the same shape for plain, thread, and quoted sends (the optional fields appear only for their variant):
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `id` | string |       |
-| `roomId` | string |       |
-| `userId` | string | Sender's internal user ID. |
+| `id` | string | Echoes the request `id`. |
+| `roomId` | string | Derived from the request subject. |
+| `userId` | string | Sender's internal user ID (resolved from the sender's subscription). |
 | `userAccount` | string | Sender's account. |
-| `content` | string | The message body. |
-| `mentions` | array<Participant> | Optional. |
-| `createdAt` | string | RFC 3339. |
-| `threadParentMessageId` | string | Optional. Set for thread replies. |
-| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
-| `tshow` | boolean | Optional. |
-| `type` | string | Optional. |
-| `sysMsgData` | string | Optional. Base64. |
-| `quotedParentMessage` | object | Optional. Snapshot of the quoted message. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+| `content` | string | The message body, exactly as sent. |
+| `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
+| `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
+| `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
+| `quotedParentMessage` | object | Present only for a quoted send — the server-fetched snapshot of the quoted parent. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+
+The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
 
 ```json
 {
@@ -1839,7 +1857,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6
 | `posting is restricted to owners and admins in this room` | `large_room_post_restricted` | Non-owner/admin/bot posting a top-level message in a room above the large-room threshold (thread replies are exempt). |
 | `quoted parent {id} thread context mismatch: …` | — | A quoted message must be in the same thread context (main-room or the same thread) as the new message. |
 
-**No-reply cases:** a malformed `msg.send` subject, a `siteID` mismatch, or an infrastructure failure (store/publish error) does **not** produce a reply on the response subject — the client must rely on a request timeout and retry.
+**Delivery guarantee:** every validation/authorization failure — including a `siteID` mismatch and a malformed `msg.send` subject — is replied to the client on the response subject and the JetStream message is acked (not retried). The error reply requires a routable response subject, so it can only be sent when the `{account}` segment is recoverable from the subject and the payload carries a valid hyphenated-UUID `requestId`; if neither is recoverable (a truly malformed subject or missing/invalid `requestId`) no reply is possible and the client falls back to a request timeout. **Only infrastructure failures** (store/publish errors) are nak'd and **redelivered by JetStream** — these produce no immediate reply.
 
 ```json
 { "error": "content must not be empty" }
@@ -1847,7 +1865,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6
 
 #### Triggered events — success path
 
-After a successful send, `broadcast-worker` fans out a `RoomEvent`. The subject depends on room type. (`botDM` rooms receive **no** `new_message` fan-out — bot integrations consume messages through a separate backend path.)
+After a successful send, `broadcast-worker` fans out a `RoomEvent`. The subject depends on room type. **`botDM` rooms receive no `new_message` fan-out at all:** `broadcast-worker` only handles `channel` and `dm` room types, so a `botDM` falls through to the default branch and is skipped — the human participant in a `botDM` does **not** receive a `new_message` room event from this pipeline. (Bot integrations consume `botDM` messages through a separate backend path.)
 
 **1. For channel rooms — `chat.room.{roomID}.event`** (`publishChannelEvent`)
 
@@ -1966,7 +1984,9 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
    - Look up `privateKey` for `(roomId, encryptedMessage.version)`.
    - Use the 32-byte `privateKey` directly as the AES-256-GCM key (no key derivation step).
    - Decrypt: `AES-GCM-Decrypt(privateKey, nonce, ciphertext, aad=empty)`. The ciphertext already includes the 16-byte GCM tag at the end (Go `cipher.AEAD.Seal` format).
-   - The plaintext is a UTF-8-encoded JSON `ClientMessage` (for a new-message `encryptedMessage`) or a UTF-8 string (for an edit event's `encryptedNewContent`).
+   - **The cipher is identical for both event kinds (same `roomcrypto` AES-256-GCM seal); only the plaintext payload differs**, because each event encrypts exactly what the client needs:
+     - **`encryptedMessage`** (new message) decrypts to a UTF-8-encoded JSON `ClientMessage` — a brand-new message the client has never seen, so the whole object (sender, timestamps, thread/quote fields) is sealed.
+     - **`encryptedNewContent`** (edit) decrypts to a plain UTF-8 content **string** — the client already has the original message rendered, and an edit only replaces its `content`, so just the new body is sealed (the surrounding message metadata is unchanged and already known).
 3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
 #### When clients receive `RoomKeyEvent`s
