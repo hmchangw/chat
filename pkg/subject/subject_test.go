@@ -116,6 +116,14 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
 		{"RoomKeyGet", subject.RoomKeyGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.key.get"},
+		{"RoomRename", subject.RoomRename("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.room.rename"},
+		{"RoomRenameWildcard", subject.RoomRenameWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.room.rename"},
+		{"RoomVisibility", subject.RoomVisibility("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.room.visibility"},
+		{"RoomVisibilityWildcard", subject.RoomVisibilityWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.room.visibility"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -69,6 +69,16 @@ func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
 
+// RoomRename is the request/reply subject for the rename RPC (owner or admin).
+func RoomRename(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.rename", account, roomID, siteID)
+}
+
+// RoomVisibility is the request/reply subject for the visibility RPC (admin only).
+func RoomVisibility(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.visibility", account, roomID, siteID)
+}
+
 func MemberRemove(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
 }
@@ -221,6 +231,16 @@ func MsgSendWildcard(siteID string) string {
 
 func MemberRoleUpdateWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
+}
+
+// RoomRenameWildcard is the queue-subscribe pattern on a site.
+func RoomRenameWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.rename", siteID)
+}
+
+// RoomVisibilityWildcard is the queue-subscribe pattern on a site.
+func RoomVisibilityWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.visibility", siteID)
 }
 
 func MemberRemoveWildcard(siteID string) string {
