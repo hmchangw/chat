@@ -75,13 +75,78 @@ The branch is in good shape post-feedback. Several pre-existing inconsistencies 
 
 ## Test-Automation Lens
 
-*Pending — agent still running.*
+### TDD compliance & mock status
+- `NewRepository` clamp: covered (`repository_test.go:11-19`, 100% func cov).
+- `GetReactionsByMessageID` / `GetReactionsByMessageIDs`: covered by integration tests at `message_reactions_integration_test.go:25,47,56,78,93,109,128` (happy / not-found / empty+nil / dedup / large fan-out / context-cancel). Unit-cov 0.0% because they live behind `//go:build integration` — expected.
+- `service.hydrateReactions`: covered (`reactions_test.go:18,28,54` — empty input, populate, error wrapping). 100% func cov.
+- `cassandra.MessageReaction` rename: roundtrip covered at `message_test.go:19+`.
+- **Mock staleness:** `make generate` couldn't run in this sandbox (mockgen toolchain mismatch — env, not a defect). Inspecting the committed `mock_repository.go:6` shows it was regenerated on this branch and matches the new interface signatures. Recommend CI confirm on a Go 1.25 image. Severity: **low**.
+
+### Coverage on new symbols
+- `NewRepository` 100% • `hydrateReactions` 100%.
+- `GetReactionsByMessageID` / `GetReactionsByMessageIDs` 0% on unit pass; fully exercised under `-tags=integration`.
+- Service pkg overall **90.6%**; cassrepo unit-only 15.3% (integration-tested code dominates — expected).
+
+### Flagged gaps
+
+**medium — Asymmetric hydrate-error coverage.** `threads_test.go:662,682` added `*_HydrateReactionsError` for both thread handlers, but **no equivalents exist for `LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`** despite the production paths all returning `ErrInternal` on hydration failure (`messages.go:112-115, 168-171, 271-274, 300-304`). Only happy-path `*_HydratesReactions` tests cover those branches. Add four symmetric error-path tests to close the gap.
+
+**medium — Partial-errgroup failure not tested.** `GetReactionsByMessageIDs` (`message_reactions.go:60-82`) fans out N goroutines but no test exercises "one of N fails → others cancel via `gctx.Done()`". `ContextCancellation` (line 128) cancels before-call; that's not equivalent.
+
+**medium — Permissive `AnyTimes()` reaction default in `newServiceWithRoomMock`** (`messages_test.go:84,86`). A handler that *should* hydrate but silently doesn't would still pass any test using `newServiceWithRoomMock`. `newServiceNoReactionDefault` mitigates for the 4 hydrate-assertion tests. **Recommendation:** flip the default — make the strict variant the default, opt-in to permissive. Otherwise a future "forgot to hydrate" regression in non-hydrate tests goes undetected.
+
+**low — Concurrency cap not asserted.** `reactionsConcurrency` clamp is unit-tested, but no test asserts in-flight count ≤ cap. Could add a fake session injecting a barrier counter into the LargeFanOut integration test.
+
+**low — `gocql.ErrNotFound` vs empty contract not pinned.** `GetReactionsByMessageID_NotFound` (line 47) returns empty map. Single-row reads via `iter.Scan`+`iter.Close` won't surface `ErrNotFound`, but no test pins this contract — worth an assertion comment.
+
+**low — Bench fan-out variance.** `b.ReportAllocs()` present (`:35`) but tests only a single fixed fan-out (50 messages × 5 emojis). Recommend `b.Run(fmt.Sprintf("ids=%d", n), …)` over `{10, 50, 200}` to characterize scaling.
+
+### Verified clean
+- `-race` flag wired via Makefile.
+- Repo methods → integration; service helper + handlers → gomock unit. CLAUDE.md §4 compliant.
+- `testutil.CassandraKeyspace` (now `testing.TB`) used correctly.
+- New integration test files rely on existing `TestMain`.
+
+**Verdict:** no critical/high findings. 3 medium and 3 low gaps; the asymmetric hydrate-error coverage is the most worthwhile follow-up.
 
 ---
 
 ## Bug & Security Lens
 
-*Pending — agent still running.*
+### SAST
+
+```
+gosec       = PASS  (severity medium, confidence medium, ./...)
+govulncheck = PASS  (0 affected; 18 module advisories not called)
+semgrep     = FAIL  (pyo3_runtime.PanicException — broken local Python cryptography binding; environment, not a finding)
+```
+
+Environment-level semgrep failure only; treat as infra issue. CI's pinned semgrep environment is the §5 gate of record.
+
+### Findings
+
+**nitpick — `id := id` loop-var shadow on Go 1.25** (`message_reactions.go:60-82`). Harmless cargo-culting. Cross-references Go-lens M1.
+
+**nitpick — Semaphore acquire inside `g.Go`** (`message_reactions.go:62-67`). When `len(ids) > reactionsConcurrency` all goroutines spawn upfront and block on `sem`. Bounded by `reactionsConcurrency=50` × `maxPageSize=100`, so worst case is ~100 cheap goroutines holding a single string — well within budget. Acquiring before `g.Go` would invert the cancellation guarantee. No change.
+
+**nitpick — `GetMessageByID` error vocabulary** (`messages.go:300-305`, `threads.go:104-107`). `ErrInternal("failed to retrieve reactions")` preserves the bounded error vocabulary; `request_id` is logged.
+
+### Confirmed clean
+
+- **Fan-out race** — `out` map mutated only under `mu`; not read until after `g.Wait()`.
+- **`reactionsConcurrency` immutability** — set once in `NewRepository`, no setter; clamp ≥1 verified by test.
+- **`GetReactionsByMessageID` gocql aliasing** — `users = nil` reset between `iter.Scan` calls is required and present; `iter.Close()` always evaluated.
+- **`hydrateReactions` in-place mutation** — only mutates `msgs[i].Reactions`; each handler owns its own `page.Data` slice.
+- **Errgroup cancellation** — first error cancels siblings; `g.Wait()` always called; semaphore release via `defer`.
+- **CQL injection** — all queries use `?` placeholders. `90-migrate-drop-old-reactions-column.cql` uses fixed-table-name DDL.
+- **Idempotent migration** — `DROP IF EXISTS column` is C* 5+ only (documented in file header); no-op on fresh keyspaces. SELECTs in `messages_by_room.go` and `thread_messages.go` both have `reactions` removed from `baseColumns`, so the dropped column is never referenced.
+- **`pkg/testutil/cassandra.go`** widened to `testing.TB`; existing callers compile (covariant).
+- **Logging discipline (§3)** — all new sites use structured `slog` with `request_id` from `natsutil.RequestIDFromContext(c)`. No secrets, no full message bodies.
+- **Error wrapping (§3)** — `message_reactions.go:32,84` wrap with `fmt.Errorf("loading reactions for …: %w", err)`. No bare returns.
+- **Resource leaks** — `iter.Close()` on every path; semaphore released via `defer`.
+- **DOS / unbounded fan-out** — bounded by config × upstream page cap.
+
+**Verdict:** No critical/high/medium/low findings. SAST clean (modulo broken-env semgrep — CI is the gate of record).
 
 ---
 
