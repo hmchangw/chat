@@ -96,7 +96,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 
 	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, ceiling, floor, pageReq)
 	if err != nil {
-		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
+		slog.Error("loading thread messages", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")
 	}
 
@@ -154,7 +154,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("unhandled thread filter")
 	}
 	if err != nil {
-		slog.Error("loading thread rooms from MongoDB", "error", err, "roomID", roomID, "filter", filter)
+		slog.Error("loading thread rooms from MongoDB", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "filter", filter)
 		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
 	}
 
@@ -175,7 +175,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 
 	cassMessages, err := s.msgReader.GetMessagesByIDs(c, parentIDs)
 	if err != nil {
-		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "roomID", roomID)
+		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
 	}
 

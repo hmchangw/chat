@@ -37,7 +37,7 @@ func (r *Repository) GetReactionsByMessageID(ctx context.Context, messageID stri
 // GetReactionsByMessageIDs fans out N token-aware single-partition reads via errgroup (avoids the multi-partition IN coordinator scatter), bounded by reactionsConcurrency.
 // Missing messages are omitted from the result; nil/empty input skips Cassandra; duplicates deduped.
 func (r *Repository) GetReactionsByMessageIDs(ctx context.Context, messageIDs []string) (map[string]ReactionMap, error) {
-	out := make(map[string]ReactionMap)
+	out := make(map[string]ReactionMap, len(messageIDs))
 	if len(messageIDs) == 0 {
 		return out, nil
 	}

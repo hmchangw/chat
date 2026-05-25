@@ -91,14 +91,14 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	g.Go(func() error {
 		t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
 		if rErr != nil {
-			slog.Warn("loading minUserLastSeenAt", "error", rErr, "roomID", roomID)
+			slog.Warn("loading minUserLastSeenAt", "error", rErr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 			return nil
 		}
 		lastSeenFloor = t
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		slog.Error("loading history", "error", err, "roomID", roomID)
+		slog.Error("loading history", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 
@@ -160,7 +160,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		page, err = s.msgReader.GetMessagesAfter(c, roomID, lowerBound, ceiling, pageReq)
 	}
 	if err != nil {
-		slog.Error("loading next messages", "error", err, "roomID", roomID)
+		slog.Error("loading next messages", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 
@@ -243,7 +243,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 			beforePage, berr = s.msgReader.GetMessagesBetweenDesc(gctx, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 		}
 		if berr != nil {
-			slog.Error("loading surrounding messages", "error", berr, "roomID", roomID, "direction", "before")
+			slog.Error("loading surrounding messages", "error", berr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "direction", "before")
 		}
 		return berr
 	})
@@ -251,7 +251,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		var aerr error
 		afterPage, aerr = s.msgReader.GetMessagesAfter(gctx, roomID, centralMsg.CreatedAt, ceiling, afterPageReq)
 		if aerr != nil {
-			slog.Error("loading surrounding messages", "error", aerr, "roomID", roomID, "direction", "after")
+			slog.Error("loading surrounding messages", "error", aerr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "direction", "after")
 		}
 		return aerr
 	})

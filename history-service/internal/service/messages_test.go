@@ -325,6 +325,22 @@ func TestHistoryService_LoadHistory_HydratesReactions(t *testing.T) {
 	assert.Nil(t, resp.Messages[1].Reactions)
 }
 
+func TestHistoryService_LoadHistory_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	pageMessages := []models.Message{
+		{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load message history")
+}
+
 // TestHistoryService_LoadNextMessages_HydratesReactions asserts the handler
 // invokes GetReactionsByMessageIDs on the assembled page and attaches the
 // result to each message's Reactions field.
@@ -351,6 +367,22 @@ func TestHistoryService_LoadNextMessages_HydratesReactions(t *testing.T) {
 	require.Len(t, resp.Messages, 2)
 	assert.Nil(t, resp.Messages[0].Reactions)
 	assert.Equal(t, map[string][]cassandra.Participant{"❤️": {alice}}, resp.Messages[1].Reactions)
+}
+
+func TestHistoryService_LoadNextMessages_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	pageMessages := []models.Message{
+		{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(time.Minute)},
+	}
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", joinTime, gomock.Any(), gomock.Any()).Return(makePage(pageMessages, false), nil)
+	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load messages")
 }
 
 // TestHistoryService_LoadSurroundingMessages_HydratesReactions asserts the
@@ -385,6 +417,22 @@ func TestHistoryService_LoadSurroundingMessages_HydratesReactions(t *testing.T) 
 	assert.Nil(t, resp.Messages[0].Reactions)
 	assert.Equal(t, map[string][]cassandra.Participant{"🎉": {alice}}, resp.Messages[1].Reactions)
 	assert.Nil(t, resp.Messages[2].Reactions)
+}
+
+func TestHistoryService_LoadSurroundingMessages_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	centralMsg := &models.Message{MessageID: "m5", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m5").Return(centralMsg, nil)
+	msgs.EXPECT().GetMessagesBetweenDesc(gomock.Any(), "r1", joinTime, centralMsg.CreatedAt, gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetMessagesAfter(gomock.Any(), "r1", centralMsg.CreatedAt, gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.LoadSurroundingMessages(c, models.LoadSurroundingMessagesRequest{MessageID: "m5", Limit: 6})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load surrounding messages")
 }
 
 func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
@@ -1035,6 +1083,20 @@ func TestHistoryService_GetMessageByID_HydratesReactions(t *testing.T) {
 	result, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.NoError(t, err)
 	assert.Equal(t, map[string][]cassandra.Participant{"👍": {alice}}, result.Reactions)
+}
+
+func TestHistoryService_GetMessageByID_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	createdAt := joinTime.Add(time.Minute)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m1").Return(&models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: createdAt}, nil)
+	msgs.EXPECT().GetReactionsByMessageID(gomock.Any(), "m1").Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to retrieve reactions")
 }
 
 // --- EditMessage ---

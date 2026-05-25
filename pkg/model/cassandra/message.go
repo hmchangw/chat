@@ -1,3 +1,5 @@
+// Package cassandra holds Cassandra-only row and UDT carriers.
+// No bson tags — these types never reach MongoDB (Mongo-bound types live in pkg/model).
 package cassandra
 
 import (
