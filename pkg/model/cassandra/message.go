@@ -66,6 +66,13 @@ type QuotedParentMessage struct {
 	ThreadParentCreatedAt *time.Time `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
+// MessageReaction maps to the chat.message_reactions Cassandra table.
+type MessageReaction struct {
+	MessageID string        `json:"messageId" cql:"message_id"`
+	Emoji     string        `json:"emoji"     cql:"emoji"`
+	Users     []Participant `json:"users"     cql:"users"`
+}
+
 // Message represents a message row in the Cassandra message tables
 // (messages_by_room, messages_by_id, thread_messages_by_room).
 //
@@ -101,11 +108,4 @@ type Message struct {
 	ThreadRoomID string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
 	PinnedAt     *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
 	PinnedBy     *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
-}
-
-// MessageReactionRow maps to the chat.message_reactions Cassandra table.
-type MessageReactionRow struct {
-	MessageID string        `json:"messageId" cql:"message_id"`
-	Emoji     string        `json:"emoji"     cql:"emoji"`
-	Users     []Participant `json:"users"     cql:"users"`
 }

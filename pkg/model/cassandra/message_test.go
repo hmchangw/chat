@@ -220,8 +220,8 @@ func TestMessage_JSON_Minimal(t *testing.T) {
 	assert.Nil(t, got.PinnedBy)
 }
 
-func TestMessageReactionRow_JSONRoundTrip(t *testing.T) {
-	original := MessageReactionRow{
+func TestMessageReaction_JSONRoundTrip(t *testing.T) {
+	original := MessageReaction{
 		MessageID: "msg-123",
 		Emoji:     "👍",
 		Users: []Participant{
@@ -232,7 +232,7 @@ func TestMessageReactionRow_JSONRoundTrip(t *testing.T) {
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
 
-	var decoded MessageReactionRow
+	var decoded MessageReaction
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	require.Equal(t, original, decoded)
 }
