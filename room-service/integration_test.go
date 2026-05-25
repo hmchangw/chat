@@ -15,6 +15,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -25,6 +26,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
@@ -1326,7 +1328,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, 5, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -2143,4 +2145,318 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *te
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "Y", got[0].Member.SectName, "no matching users → falls back to member.id")
+}
+
+// setupRoomsStream creates the ROOMS_{siteID} JetStream stream and returns a JetStream
+// client. The stream captures all chat.room.canonical.{siteID}.* events published by
+// the handler's publishToStream closure.
+func setupRoomsStream(t *testing.T, nc *nats.Conn, siteID string) jetstream.JetStream {
+	t.Helper()
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	cfg := stream.Rooms(siteID)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     cfg.Name,
+		Subjects: cfg.Subjects,
+	})
+	require.NoError(t, err)
+	return js
+}
+
+// drainJetStreamMsg fetches the first available message from a JetStream consumer
+// with a deadline, then acks it and returns the raw data.
+func drainJetStreamMsg(t *testing.T, cons jetstream.Consumer, timeout time.Duration) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(timeout))
+	require.NoError(t, err)
+	select {
+	case msg := <-msgs.Messages():
+		require.NotNil(t, msg)
+		require.NoError(t, msg.Ack())
+		return msg.Data()
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for JetStream message")
+		return nil
+	}
+}
+
+// TestIntegration_RoomRename exercises the room.rename RPC end-to-end through NATS.
+func TestIntegration_RoomRename(t *testing.T) {
+	const siteID = "site-rename"
+
+	t.Run("owner can rename a channel — canonical event published", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-rename")
+		store := NewMongoStore(db)
+		ctx := context.Background()
+
+		natsURL := setupNATS(t)
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { clientNC.Drain() })
+
+		// Set up the ROOMS stream so publishToStream can land events.
+		js := setupRoomsStream(t, clientNC, siteID)
+
+		// Wire a JetStream-backed publishToStream on the handler.
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		handlerJS, err := jetstream.New(handlerNC.NatsConn())
+		require.NoError(t, err)
+
+		publishToStream := func(pCtx context.Context, subj string, data []byte) error {
+			msg := natsutil.NewMsg(pCtx, subj, data)
+			_, err := handlerJS.PublishMsg(pCtx, msg)
+			return err
+		}
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			publishToStream, func(context.Context, string, []byte) error { return nil })
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		// Seed: channel room + alice as owner.
+		const roomID = "room-rename-1"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "old-name", Type: model.RoomTypeChannel, SiteID: siteID})
+		mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+			Roles: []model.Role{model.RoleOwner},
+		})
+
+		// Set up a JetStream consumer to catch the canonical event.
+		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
+			Durable:        "test-rename-consumer",
+			AckPolicy:      jetstream.AckExplicitPolicy,
+			FilterSubject:  subject.RoomCanonical(siteID, "room.rename"),
+		})
+		require.NoError(t, err)
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RenameRoomRequest{NewName: "new-name"})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRename("alice", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		// Assert accepted response.
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(reply.Data, &resp))
+		assert.Equal(t, "accepted", resp["status"])
+		assert.Equal(t, reqID, resp["requestId"])
+
+		// Assert canonical event landed on the stream.
+		raw := drainJetStreamMsg(t, cons, 5*time.Second)
+		var event model.RenameRoomRequest
+		require.NoError(t, json.Unmarshal(raw, &event))
+		assert.Equal(t, roomID, event.RoomID)
+		assert.Equal(t, "new-name", event.NewName)
+		assert.Equal(t, "alice", event.Account)
+		assert.NotZero(t, event.Timestamp)
+	})
+
+	t.Run("non-admin non-owner is rejected", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-rename-reject")
+		store := NewMongoStore(db)
+
+		natsURL := setupNATS(t)
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { clientNC.Drain() })
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			func(context.Context, string, []byte) error { return nil },
+			func(context.Context, string, []byte) error { return nil })
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		const roomID = "room-rename-2"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "my-channel", Type: model.RoomTypeChannel, SiteID: siteID})
+		// bob is a plain member, not an owner or platform admin.
+		mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+			Roles: []model.Role{model.RoleMember},
+		})
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RenameRoomRequest{NewName: "hacked-name"})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRename("bob", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		var errResp model.ErrorResponse
+		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+		assert.Contains(t, errResp.Error, "only owners or admins can rename a channel")
+	})
+}
+
+// TestIntegration_RoomVisibility exercises the room.visibility RPC end-to-end through NATS.
+func TestIntegration_RoomVisibility(t *testing.T) {
+	const siteID = "site-visibility"
+
+	t.Run("admin can set visibility — canonical event published", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-visibility")
+		store := NewMongoStore(db)
+		ctx := context.Background()
+
+		natsURL := setupNATS(t)
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { clientNC.Drain() })
+
+		// Set up the ROOMS stream so publishToStream can land events.
+		js := setupRoomsStream(t, clientNC, siteID)
+
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		handlerJS, err := jetstream.New(handlerNC.NatsConn())
+		require.NoError(t, err)
+
+		publishToStream := func(pCtx context.Context, subj string, data []byte) error {
+			msg := natsutil.NewMsg(pCtx, subj, data)
+			_, err := handlerJS.PublishMsg(pCtx, msg)
+			return err
+		}
+
+		keyStore := setupValkey(t)
+		// restrictedRoomMinMembers=5; seed UserCount=5 to pass the transition guard.
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			publishToStream, func(context.Context, string, []byte) error { return nil })
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		// Seed: channel room with 5 members; admin1 is platform admin.
+		const roomID = "room-vis-1"
+		mustInsertRoom(t, db, &model.Room{
+			ID: roomID, Name: "big-channel", Type: model.RoomTypeChannel,
+			SiteID: siteID, UserCount: 5,
+		})
+		mustInsertUser(t, db, &model.User{
+			ID: "u-admin1", Account: "admin1", SiteID: siteID,
+			Roles: []model.UserRole{model.UserRoleAdmin},
+		})
+		// Seed 5 subscriptions so CountNewMembers/GetSubscription work if needed.
+		for i := 0; i < 5; i++ {
+			mustInsertSub(t, db, &model.Subscription{
+				ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+				User: model.SubscriptionUser{
+					ID:      fmt.Sprintf("u-member-%d", i),
+					Account: fmt.Sprintf("member%d", i),
+				},
+				Roles: []model.Role{model.RoleMember},
+			})
+		}
+		// admin1 must also be a member (for OwnerAccount validation path).
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-admin1", Account: "admin1"},
+			Roles: []model.Role{model.RoleMember},
+		})
+
+		// Set up a JetStream consumer to catch the canonical event.
+		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
+			Durable:        "test-vis-consumer",
+			AckPolicy:      jetstream.AckExplicitPolicy,
+			FilterSubject:  subject.RoomCanonical(siteID, "room.visibility"),
+		})
+		require.NoError(t, err)
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RoomVisibilityRequest{
+			Restricted:   true,
+			OwnerAccount: "admin1",
+		})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomVisibility("admin1", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		// Assert accepted response.
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(reply.Data, &resp))
+		assert.Equal(t, "accepted", resp["status"])
+		assert.Equal(t, reqID, resp["requestId"])
+
+		// Assert canonical event landed on the stream.
+		raw := drainJetStreamMsg(t, cons, 5*time.Second)
+		var event model.RoomVisibilityRequest
+		require.NoError(t, json.Unmarshal(raw, &event))
+		assert.Equal(t, roomID, event.RoomID)
+		assert.Equal(t, "admin1", event.Account)
+		assert.True(t, event.Restricted)
+		assert.NotZero(t, event.Timestamp)
+	})
+
+	t.Run("non-admin requester is rejected", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-visibility-reject")
+		store := NewMongoStore(db)
+
+		natsURL := setupNATS(t)
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { clientNC.Drain() })
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			func(context.Context, string, []byte) error { return nil },
+			func(context.Context, string, []byte) error { return nil })
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		const roomID = "room-vis-2"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "my-channel", Type: model.RoomTypeChannel, SiteID: siteID, UserCount: 5})
+		// carol is not a platform admin.
+		mustInsertUser(t, db, &model.User{ID: "u-carol", Account: "carol", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RoomVisibilityRequest{Restricted: true})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomVisibility("carol", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		var errResp model.ErrorResponse
+		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+		assert.Contains(t, errResp.Error, "only admins can change room visibility")
+	})
 }
