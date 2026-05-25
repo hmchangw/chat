@@ -30,6 +30,13 @@ type Message struct {
 	PinnedBy                     *Participant                   `json:"pinnedBy,omitempty"                     bson:"pinnedBy,omitempty"`
 }
 
+// RoomRenamedSysData is the JSON payload stored in Message.SysMsgData
+// for a room_renamed system message.
+type RoomRenamedSysData struct {
+	NewName   string `json:"newName"   bson:"newName"`
+	ByAccount string `json:"byAccount" bson:"byAccount"`
+}
+
 type SendMessageRequest struct {
 	ID                           string `json:"id"`
 	Content                      string `json:"content"`

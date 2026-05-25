@@ -42,6 +42,12 @@ type Subscription struct {
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
 	Favorite           bool             `json:"favorite" bson:"favorite"`
+	// Denormalized from Room.Restricted / Room.ExternalAccess so a single
+	// SubscriptionUpdateEvent carries every client-facing room field.
+	// Readers MUST treat missing as false. Room remains the access-control
+	// source of truth.
+	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
+	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a

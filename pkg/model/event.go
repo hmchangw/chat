@@ -88,6 +88,8 @@ const (
 	OutboxSubscriptionFavoriteToggled OutboxEventType = "subscription_favorite_toggled"
 	OutboxThreadSubscriptionUpserted  OutboxEventType = "thread_subscription_upserted"
 	OutboxThreadRead                  OutboxEventType = "thread_read"
+	OutboxRoomRenamed                 OutboxEventType = "room_renamed"
+	OutboxRoomVisibilityChanged       OutboxEventType = "room_visibility_changed"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -357,6 +359,8 @@ const (
 	AsyncJobOpRoomMemberRemove     = "room.member.remove"
 	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
+	AsyncJobOpRoomRename           = "room.rename"
+	AsyncJobOpRoomVisibility       = "room.visibility"
 )
 
 const (
@@ -368,6 +372,8 @@ const (
 	MessageTypeMemberRemoved = "member_removed"
 	// MessageTypeMemberLeft is the system-message type emitted when a member self-leaves.
 	MessageTypeMemberLeft = "member_left"
+	// MessageTypeRoomRenamed is the system-message type emitted when a channel is renamed.
+	MessageTypeRoomRenamed = "room_renamed"
 )
 
 const (
@@ -390,3 +396,21 @@ const CreateRoomReplyAccepted = "accepted"
 // CreateRoomStatusExists indicates the requested DM already existed; RoomID is
 // the existing room. Clients treat it as success and open that room.
 const CreateRoomStatusExists = "exists"
+
+// RoomRenamedOutboxPayload is wrapped in OutboxEvent.Payload for OutboxRoomRenamed.
+type RoomRenamedOutboxPayload struct {
+	RoomID    string `json:"roomId"    bson:"roomId"`
+	NewName   string `json:"newName"   bson:"newName"`
+	Timestamp int64  `json:"timestamp" bson:"timestamp"`
+}
+
+// RoomVisibilityOutboxPayload is wrapped in OutboxEvent.Payload for
+// OutboxRoomVisibilityChanged. When OwnerAccount is non-empty AND Restricted
+// is true, the destination $cond promotes that account to sole owner.
+type RoomVisibilityOutboxPayload struct {
+	RoomID         string `json:"roomId"                 bson:"roomId"`
+	Restricted     bool   `json:"restricted"             bson:"restricted"`
+	ExternalAccess bool   `json:"externalAccess"         bson:"externalAccess"`
+	OwnerAccount   string `json:"ownerAccount,omitempty" bson:"ownerAccount,omitempty"`
+	Timestamp      int64  `json:"timestamp"              bson:"timestamp"`
+}
