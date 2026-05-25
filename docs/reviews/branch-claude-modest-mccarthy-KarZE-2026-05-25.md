@@ -11,15 +11,15 @@ Second-round review after addressing CodeRabbit feedback, doing two refactors (`
 
 Six expert lenses ran in parallel against the rebased branch.
 
-### Findings by severity *(test-automation, bug/sec, history-service-generalist pending)*
+### Findings by severity
 
 | Severity | history-svc | Go | Tests | Bug/Sec | Perf | Obs | **Total** |
 |---|---|---|---|---|---|---|---|
-| critical | _pending_ | 0 | _pending_ | _pending_ | 0 | 0 | **0+** |
-| high | _pending_ | 0 | _pending_ | _pending_ | 1 | 0 | **1+** |
-| medium | _pending_ | 2 | _pending_ | _pending_ | 3 | 0 | **5+** |
-| low | _pending_ | 3 | _pending_ | _pending_ | 2 | 1 | **6+** |
-| nitpick | _pending_ | 3 | _pending_ | _pending_ | 4 | 4 | **11+** |
+| critical | 0 | 0 | 0 | 0 | 0 | 0 | **0** |
+| high | 0 | 0 | 0 | 0 | 1 | 0 | **1** |
+| medium | 1 | 2 | 3 | 0 | 3 | 0 | **9** |
+| low | 2 | 3 | 3 | 0 | 2 | 1 | **11** |
+| nitpick | 0 | 3 | 0 | 3 | 4 | 4 | **14** |
 
 ### Top-line risk assessment
 
@@ -268,3 +268,22 @@ When a single request fails in both hydration and a sibling path, ops can correl
 - `natsutil.RequestIDFromContext(c)` returns `""` on miss — graceful per `pkg/natsutil/request_id_test.go:32`.
 
 **Verdict:** approve from an observability lens. No criticals / highs. Net improvement: 6 new error sites all carry `request_id`.
+
+---
+
+## Prioritized Action List
+
+Top items across all lenses, ordered by severity then impact ÷ effort. **No criticals.** Single `high` is operational, not a code defect.
+
+| # | Sev | Action | Where | Why |
+|---|---|---|---|---|
+| 1 | high | Decide: document `REACTIONS_FETCH_CONCURRENCY` as a per-request knob to tune to `~numConns × hosts / expectedQPS`, OR move to a service-global semaphore sized once at `NewRepository`. | `cassrepo/repository.go:15-29`, `config.go:42-43` | Per-request cap is multiplicative under N concurrent NATS requests (K × 50 in-flight reads); gocql `NumConns=8` default can saturate under burst load. Perf-lens H1. |
+| 2 | medium | Add symmetric failure-path tests for the 4 `messages.go` handlers' hydration step (`LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`), mirroring the 2 new tests in `threads_test.go`. | `service/messages_test.go` | Production paths return `ErrInternal` on hydration failure; only happy-path tests cover that branch today. Test-lens medium + history-svc medium. |
+| 3 | medium | Add a partial-errgroup-failure integration test: stub gocql to make 1 of N goroutines fail, assert siblings observe `gctx.Done()` and the call returns the wrapped error. | `cassrepo/message_reactions_integration_test.go` | `ContextCancellation` test only covers pre-cancelled ctx, not mid-flight cancellation triggered by a sibling error. Test-lens medium. |
+| 4 | medium | Flip the `newServiceWithRoomMock` mock default: make the strict (no `AnyTimes()` reaction stub) variant the default; opt-in to permissive. | `service/messages_test.go:84,86` | A future regression where a handler silently stops hydrating would still pass any test using the current default. Test-lens medium. |
+| 5 | low | Reorder the doc block on `GetReactionsByMessageIDs` — godoc-style sentence starting with the identifier first, rationale paragraph second. | `cassrepo/message_reactions.go:37-39` | Go convention. Go-lens L1. |
+| 6 | low | Add `make([]string, 0, len(ids))` capacity hint to `out` map in `GetReactionsByMessageIDs`. Also consider pre-allocating `out` to `len(ids)`. | `message_reactions.go:41` | Avoids map growth as goroutines insert. Perf nitpick. |
+| 7 | low | Replace `id := id` loop-var shadow with bare `for _, id := range ids` (Go 1.22+ has per-iteration scope; project pins Go 1.25). | `message_reactions.go:60-61` | Dead defensiveness; signals code drift to future readers. Go-lens M1, Bug-lens nitpick, Perf-lens N1. |
+| 8 | low | Either extend this PR by ~6 lines to add `request_id` to the **sibling** pre-existing `slog.Error` calls in `messages.go` / `threads.go`, OR file a follow-up issue. | `messages.go:101,163,246,254`; `threads.go:99,157,178` | This branch creates half-instrumented handlers (new hydration logs have request_id; siblings don't). Obs-lens L1. |
+| 9 | nitpick | Vary `BenchmarkGetReactionsByMessageIDs` fan-out via `b.Run("ids=N", …)` for {10, 50, 200}. | `message_reactions_bench_test.go:17` | Characterise scaling; the single-point benchmark doesn't capture the cap saturation curve. Test-lens low. |
+| 10 | nitpick | Add a one-line package doc to `pkg/model/cassandra/` explaining the "no bson tags" carve-out (Cassandra-only carriers, never Mongo-bound). | `pkg/model/cassandra/message.go` | Forestalls future "did you forget the bson tag?" review questions. Go-lens N1. |
