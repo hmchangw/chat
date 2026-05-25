@@ -659,6 +659,40 @@ func TestHistoryService_GetThreadParentMessages_HydratesReactions(t *testing.T) 
 	assert.Nil(t, resp.ParentMessages[1].Reactions)
 }
 
+func TestHistoryService_GetThreadMessages_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1"}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(time.Minute)},
+	}
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load thread messages")
+}
+
+func TestHistoryService_GetThreadParentMessages_HydrateReactionsError(t *testing.T) {
+	svc, msgs, subs, _, threadRooms := newServiceNoReactionDefault(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	threadRooms.EXPECT().GetThreadRooms(gomock.Any(), "r1", nil, gomock.Any()).Return(makeThreadPage(2), nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(makeCassMessages(), nil)
+	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
+
+	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Filter: models.ThreadFilterAll, Limit: 20})
+	require.Error(t, err)
+	assertInternalErr(t, err, "failed to load thread parent messages")
+}
+
 func TestHistoryService_GetThreadParentMessages_PostHydrationAccessCheck(t *testing.T) {
 	svc, msgs, subs, _, threadRooms := newService(t)
 	c := testContext()

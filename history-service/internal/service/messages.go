@@ -110,7 +110,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 
 	redactUnavailableQuotes(page.Data, accessSince)
 	if err := s.hydrateReactions(c, page.Data); err != nil {
-		slog.Error("load history: hydrate reactions", "error", err, "roomID", roomID)
+		slog.Error("load history: hydrate reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load message history")
 	}
 	return &models.LoadHistoryResponse{
@@ -166,7 +166,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 
 	redactUnavailableQuotes(page.Data, accessSince)
 	if err := s.hydrateReactions(c, page.Data); err != nil {
-		slog.Error("load next messages: hydrate reactions", "error", err, "roomID", roomID)
+		slog.Error("load next messages: hydrate reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load messages")
 	}
 	return &models.LoadNextMessagesResponse{
@@ -269,7 +269,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 
 	redactUnavailableQuotes(messages, accessSince)
 	if err := s.hydrateReactions(c, messages); err != nil {
-		slog.Error("load surrounding messages: hydrate reactions", "error", err, "roomID", roomID)
+		slog.Error("load surrounding messages: hydrate reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 	return &models.LoadSurroundingMessagesResponse{
@@ -299,7 +299,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 
 	reactions, err := s.msgReader.GetReactionsByMessageID(c, msg.MessageID)
 	if err != nil {
-		slog.Error("get message by id: fetch reactions", "error", err, "messageID", msg.MessageID)
+		slog.Error("get message by id: fetch reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "messageID", msg.MessageID)
 		return nil, natsrouter.ErrInternal("failed to retrieve reactions")
 	}
 	msg.Reactions = reactions

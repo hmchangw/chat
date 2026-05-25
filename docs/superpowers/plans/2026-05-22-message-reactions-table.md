@@ -62,7 +62,7 @@
 - [ ] **Step 1: Delete the `reactions MAP<...>` line from each of the four init `.cql` files**
 
 In each file, find and delete the line:
-```
+```cql
 reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
 ```
 (Watch for the trailing comma — leave the surrounding columns syntactically valid.)
@@ -1057,9 +1057,8 @@ import (
 )
 
 func BenchmarkGetReactionsByMessageIDs(b *testing.B) {
-	session := setupCassandraBench(b)
-	repo, _ := newReactionsRepo(t)
-	_ = session // session is provided via the helper; ignore the second return if not needed
+	repo, session := newReactionsRepo(b)
+	_ = session
 	ctx := context.Background()
 
 	alice := cassandra.Participant{ID: "u1", Account: "alice"}
@@ -1169,7 +1168,7 @@ add a Reaction table section, clarify MESSAGE_BUCKET_HOURS scope."
 - [ ] **Step 1: Add the hydration note**
 
 In `docs/client-api.md`, find the `reactions` field description near line 949:
-```
+```markdown
 | `reactions` | object | Optional. Map of `emoji → Participant[]`. |
 ```
 Append `Populated server-side via hydration; never written by clients.` to that description (or insert as a new line directly after, matching the file's formatting).

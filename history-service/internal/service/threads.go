@@ -102,7 +102,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 
 	redactUnavailableQuotes(page.Data, accessSince)
 	if err := s.hydrateReactions(c, page.Data); err != nil {
-		slog.Error("get thread messages: hydrate reactions", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
+		slog.Error("get thread messages: hydrate reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")
 	}
 	return &models.GetThreadMessagesResponse{
@@ -206,7 +206,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 
 	redactUnavailableQuotes(parentMessages, accessSince)
 	if err := s.hydrateReactions(c, parentMessages); err != nil {
-		slog.Error("get thread parent messages: hydrate reactions", "error", err, "roomID", roomID)
+		slog.Error("get thread parent messages: hydrate reactions", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
 	}
 	return &models.GetThreadParentMessagesResponse{ParentMessages: parentMessages, Total: threadPage.Total}, nil
