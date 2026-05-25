@@ -178,6 +178,10 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		err = h.processRemoveMember(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".create"):
 		err = h.processCreateRoom(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".room.rename"):
+		err = h.processRoomRename(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".room.visibility"):
+		err = h.processRoomVisibility(ctx, msg.Data())
 	default:
 		slog.WarnContext(ctx, "unknown member operation", "subject", subj)
 	}
@@ -1942,6 +1946,81 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRenamed),
 			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, seed)); err != nil {
 			return fmt.Errorf("publish rename outbox to %s: %w", remoteSiteID, err)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err error) {
+	var requesterAccount, roomID string
+	defer func() {
+		h.publishAsyncJobResult(ctx, requesterAccount, model.AsyncJobOpRoomVisibility, roomID, err)
+	}()
+
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return newPermanent("missing X-Request-ID")
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
+	}
+
+	var req model.RoomVisibilityRequest
+	if err = json.Unmarshal(data, &req); err != nil {
+		return newPermanent("unmarshal visibility request: %s", err.Error())
+	}
+	requesterAccount, roomID = req.Account, req.RoomID
+
+	if err = h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
+		if errors.Is(err, ErrRoomNotFound) {
+			return newPermanent("room not found")
+		}
+		if errors.Is(err, ErrNotChannelRoom) {
+			return newPermanent("visibility change is only allowed in channel rooms")
+		}
+		return fmt.Errorf("update room visibility: %w", err)
+	}
+	if err = h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+		return fmt.Errorf("apply subscription visibility: %w", err)
+	}
+
+	subs, err := h.store.ListByRoom(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("list subscriptions: %w", err)
+	}
+	h.publishSubscriptionEvents(ctx, subs, "visibility_changed")
+
+	accounts := make([]string, 0, len(subs))
+	for i := range subs {
+		accounts = append(accounts, subs[i].User.Account)
+	}
+	remoteSites, err := h.findRemoteSitesForAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
+	}
+	for _, remoteSiteID := range remoteSites {
+		payload, mErr := json.Marshal(model.RoomVisibilityOutboxPayload{
+			RoomID:         req.RoomID,
+			Restricted:     req.Restricted,
+			ExternalAccess: req.ExternalAccess,
+			OwnerAccount:   req.OwnerAccount,
+			Timestamp:      req.Timestamp,
+		})
+		if mErr != nil {
+			return fmt.Errorf("marshal visibility outbox payload: %w", mErr)
+		}
+		evt := model.OutboxEvent{
+			Type: model.OutboxRoomVisibilityChanged, SiteID: h.siteID, DestSiteID: remoteSiteID,
+			Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+		}
+		evtData, mErr := json.Marshal(evt)
+		if mErr != nil {
+			return fmt.Errorf("marshal visibility outbox event: %w", mErr)
+		}
+		seed := fmt.Sprintf("%s:%t:%t:%d", req.RoomID, req.Restricted, req.ExternalAccess, req.Timestamp)
+		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomVisibilityChanged),
+			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, seed)); err != nil {
+			return fmt.Errorf("publish visibility outbox to %s: %w", remoteSiteID, err)
 		}
 	}
 	return nil

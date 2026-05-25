@@ -1967,3 +1967,209 @@ func TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, room.UserCount, "ReconcileMemberCounts ran on retry")
 }
+
+func TestIntegration_ProcessRoomRename(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-rename-integ")
+	store := NewMongoStore(db)
+
+	const (
+		siteID   = "site-a"
+		remoteSite = "site-b"
+		roomID   = "r-rename-1"
+		oldName  = "old-name"
+		newName  = "new-name"
+	)
+
+	// Seed: channel room + 2 local subs + 1 remote sub + 3 users.
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: oldName, Type: model.RoomTypeChannel, SiteID: siteID,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleOwner}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertUser(t, db, &model.User{ID: "u1", Account: "alice", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u2", Account: "bob", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u3", Account: "carol", SiteID: remoteSite})
+
+	cap := &publishCapture{}
+	h := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+	const reqID = "01970a4f-8c2d-7c9a-abcd-e0123456789a"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.RenameRoomRequest{
+		RoomID:    roomID,
+		NewName:   newName,
+		Account:   "alice",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	// Room name updated in Mongo.
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, newName, room.Name, "room name must be updated")
+
+	// All subscriptions renamed.
+	subs, err := store.ListByRoom(ctx, roomID)
+	require.NoError(t, err)
+	for _, sub := range subs {
+		assert.Equal(t, newName, sub.Name, "sub %s name must be updated", sub.User.Account)
+	}
+
+	// One sys message published to canonical.
+	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated(siteID))
+	require.Len(t, sysPubs, 1, "exactly one sys message published for room rename")
+	var sysEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
+	assert.Equal(t, model.MessageTypeRoomRenamed, sysEvt.Message.Type)
+	assert.Equal(t, "alice", sysEvt.Message.UserAccount)
+
+	// Two subscription update events (one per local + remote subs).
+	cap.mu.Lock()
+	subUpdateCount := 0
+	for _, p := range cap.captured {
+		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
+			subUpdateCount++
+		}
+	}
+	cap.mu.Unlock()
+	assert.GreaterOrEqual(t, subUpdateCount, 2, "at least 2 subscription update events published")
+
+	// One outbox publish to remote site-b.
+	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRenamed))
+	require.Len(t, outboxPubs, 1, "exactly one outbox publish to remote site-b")
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxPubs[0].data, &outboxEvt))
+	var outboxPayload model.RoomRenamedOutboxPayload
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
+	assert.Equal(t, roomID, outboxPayload.RoomID)
+	assert.Equal(t, newName, outboxPayload.NewName)
+}
+
+func TestIntegration_ProcessRoomVisibility(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-visibility-integ")
+	store := NewMongoStore(db)
+
+	const (
+		siteID     = "site-a"
+		remoteSite = "site-b"
+		roomID     = "r-vis-1"
+	)
+
+	// Seed: channel room starting unrestricted + subs + users.
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: "vis-room", Type: model.RoomTypeChannel, SiteID: siteID,
+		Restricted: false, ExternalAccess: false,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: roomID, SiteID: siteID, Name: "vis-room", RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: roomID, SiteID: siteID, Name: "vis-room", RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: roomID, SiteID: siteID, Name: "vis-room", RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertUser(t, db, &model.User{ID: "u1", Account: "alice", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u2", Account: "bob", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u3", Account: "carol", SiteID: remoteSite})
+
+	cap := &publishCapture{}
+	h := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+	const reqID = "01970a4f-8c2d-7c9a-abcd-e0123456789b"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.RoomVisibilityRequest{
+		RoomID:         roomID,
+		Restricted:     true,
+		ExternalAccess: true,
+		OwnerAccount:   "bob",
+		Account:        "admin1",
+		Timestamp:      time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processRoomVisibility(ctx, body))
+
+	// Room has Restricted=true, ExternalAccess=true.
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.True(t, room.Restricted, "room must be restricted after visibility change")
+	assert.True(t, room.ExternalAccess, "room must have externalAccess after visibility change")
+
+	// Subscription roles rewritten: bob → owner, others → member.
+	subs, err := store.ListByRoom(ctx, roomID)
+	require.NoError(t, err)
+	rolesByAccount := map[string][]model.Role{}
+	for _, sub := range subs {
+		rolesByAccount[sub.User.Account] = sub.Roles
+		assert.True(t, sub.Restricted, "sub %s restricted must be true", sub.User.Account)
+		assert.True(t, sub.ExternalAccess, "sub %s externalAccess must be true", sub.User.Account)
+	}
+	assert.Equal(t, []model.Role{model.RoleOwner}, rolesByAccount["bob"], "bob must be promoted to owner")
+	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["alice"], "alice must remain member")
+	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["carol"], "carol must remain member")
+
+	// No sys message published for visibility change.
+	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated(siteID))
+	assert.Empty(t, sysPubs, "visibility change must not publish a sys message")
+
+	// Subscription update events published.
+	cap.mu.Lock()
+	subUpdateCount := 0
+	for _, p := range cap.captured {
+		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
+			subUpdateCount++
+		}
+	}
+	cap.mu.Unlock()
+	assert.GreaterOrEqual(t, subUpdateCount, 2, "at least 2 subscription update events published")
+
+	// Outbox published to remote site-b carrying RoomVisibilityOutboxPayload with OwnerAccount.
+	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomVisibilityChanged))
+	require.Len(t, outboxPubs, 1, "exactly one outbox publish to remote site-b")
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxPubs[0].data, &outboxEvt))
+	var outboxPayload model.RoomVisibilityOutboxPayload
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
+	assert.Equal(t, roomID, outboxPayload.RoomID)
+	assert.True(t, outboxPayload.Restricted)
+	assert.True(t, outboxPayload.ExternalAccess)
+	assert.Equal(t, "bob", outboxPayload.OwnerAccount, "OwnerAccount must be carried in outbox payload")
+	// AsyncJobResult published to admin1.
+	cap.mu.Lock()
+	var asyncResult *model.AsyncJobResult
+	for _, p := range cap.captured {
+		if p.subject == subject.UserResponse("admin1", reqID) {
+			var r model.AsyncJobResult
+			if jsonErr := json.Unmarshal(p.data, &r); jsonErr == nil {
+				asyncResult = &r
+			}
+		}
+	}
+	cap.mu.Unlock()
+	require.NotNil(t, asyncResult, "AsyncJobResult must be published to admin1")
+	assert.Equal(t, model.AsyncJobStatusOK, asyncResult.Status)
+}
