@@ -14,6 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // errPermanent marks non-retryable errors so the cons.Consume callback Acks
@@ -339,7 +340,8 @@ func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent)
 	slog.Info("processing room_renamed",
 		"op", "room_renamed",
 		"roomID", payload.RoomID,
-		"newName", payload.NewName)
+		"newName", payload.NewName,
+		"requestID", natsutil.RequestIDFromContext(ctx))
 	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, payload.RoomID, payload.NewName); err != nil {
 		return fmt.Errorf("update subscription names for room %s: %w", payload.RoomID, err)
 	}
@@ -356,7 +358,8 @@ func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.Ou
 		"roomID", payload.RoomID,
 		"restricted", payload.Restricted,
 		"externalAccess", payload.ExternalAccess,
-		"ownerAccount", payload.OwnerAccount)
+		"ownerAccount", payload.OwnerAccount,
+		"requestID", natsutil.RequestIDFromContext(ctx))
 	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
 		return fmt.Errorf("apply visibility for room %s: %w", payload.RoomID, err)
 	}
