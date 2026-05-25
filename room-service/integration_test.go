@@ -1652,40 +1652,53 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	mid := earliest.Add(15 * time.Minute)
 	latest := earliest.Add(45 * time.Minute)
 
-	// Two subs with explicit lastSeenAt + one sub that has never been read
-	// (no lastSeenAt). The unread sub MUST be excluded — being invited into a
-	// room doesn't mean the user has read anything, so its joinedAt must not
-	// pull the room floor down.
+	// Room "all-read": every subscription has a usable lastSeenAt, so the floor
+	// is the MIN across all of them.
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &mid,
+		RoomID: "all-read", JoinedAt: earliest, LastSeenAt: &mid,
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
-		RoomID: "r1", JoinedAt: earliest, LastSeenAt: &latest,
-	})
-	// Never-read sub: joined at `earliest` but never opened the room.
-	mustInsertSub(t, db, &model.Subscription{
-		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
-		RoomID: "r1", JoinedAt: earliest,
+		RoomID: "all-read", JoinedAt: earliest, LastSeenAt: &latest,
 	})
 
-	got, err := store.MinSubscriptionLastSeenByRoomID(ctx, "r1")
+	got, err := store.MinSubscriptionLastSeenByRoomID(ctx, "all-read")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.WithinDuration(t, mid, *got, time.Second)
 
-	// Room with subs but none has lastSeenAt — return nil so the caller can
-	// $unset rooms.minUserLastSeenAt.
+	// Room "one-unread": two members have read, one was invited but has never
+	// opened the room. Under the strict floor a single never-read member forces
+	// nil — "not everyone has read".
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: "one-unread", JoinedAt: earliest, LastSeenAt: &mid,
+	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s4", User: model.SubscriptionUser{ID: "u4", Account: "dave"},
-		RoomID: "r2", JoinedAt: earliest,
+		RoomID: "one-unread", JoinedAt: earliest, LastSeenAt: &latest,
 	})
-	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "r2")
+	// Never-read sub: joined but never opened the room.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s5", User: model.SubscriptionUser{ID: "u5", Account: "erin"},
+		RoomID: "one-unread", JoinedAt: earliest,
+	})
+
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "one-unread")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	// Empty room → nil.
+	// Room "none-read": a single sub that has never been read → nil.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s6", User: model.SubscriptionUser{ID: "u6", Account: "frank"},
+		RoomID: "none-read", JoinedAt: earliest,
+	})
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "none-read")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// Room with no subscriptions at all → nil.
 	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "empty")
 	require.NoError(t, err)
 	assert.Nil(t, got)
