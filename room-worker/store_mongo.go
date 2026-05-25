@@ -470,3 +470,21 @@ func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, request
 	}
 	return requesterSub, counterpartSub, nil
 }
+
+// --- rename/visibility stubs (Task 4 replaces these with real implementations) ---
+
+func (s *MongoStore) UpdateRoomName(_ context.Context, _, _ string) error {
+	panic("not implemented: Task 4")
+}
+
+func (s *MongoStore) UpdateRoomVisibility(_ context.Context, _ string, _, _ bool) error {
+	panic("not implemented: Task 4")
+}
+
+func (s *MongoStore) UpdateSubscriptionNamesForRoom(_ context.Context, _, _ string) error {
+	panic("not implemented: Task 4")
+}
+
+func (s *MongoStore) ApplySubscriptionVisibility(_ context.Context, _ string, _, _ bool, _ string) error {
+	panic("not implemented: Task 4")
+}

@@ -11,6 +11,11 @@ import (
 // ErrUserNotFound is returned by GetUser when the account does not exist.
 var ErrUserNotFound = errors.New("user not found")
 
+var (
+	ErrRoomNotFound   = errors.New("room not found")
+	ErrNotChannelRoom = errors.New("not a channel room")
+)
+
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore,RoomKeyStore
 
 // UserWithMembership is the result of the GetUserWithMembership aggregation pipeline.
@@ -103,6 +108,27 @@ type SubscriptionStore interface {
 	// passes the requester's account so they aren't materialized as a regular
 	// member in addition to being added separately as the owner.
 	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
+
+	// Rename/visibility operations.
+
+	// UpdateRoomName sets {name, updatedAt} on the channel-typed room doc.
+	// Returns ErrRoomNotFound or ErrNotChannelRoom; both are package sentinels in store.go.
+	UpdateRoomName(ctx context.Context, roomID, newName string) error
+
+	// UpdateRoomVisibility sets {restricted, externalAccess, updatedAt}; same
+	// not-found / wrong-type semantics as UpdateRoomName.
+	UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error
+
+	// UpdateSubscriptionNamesForRoom updateMany on subscriptions matching {roomId: roomID}.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+
+	// ApplySubscriptionVisibility updateMany matching {roomId: roomID}. Three branches:
+	//   restricted=true && ownerAccount!="" → aggregation pipeline rewriting roles
+	//     ($cond: u.account == ownerAccount → ["owner"] else ["member"]) and flipping flags.
+	//   restricted=true && ownerAccount=="" → $set flags only.
+	//   restricted=false → $set flags only (ownerAccount ignored).
+	// All branches idempotent on retry.
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
 }
 
 // Key store used by room-worker: reads for fan-out, writes for rotation.
