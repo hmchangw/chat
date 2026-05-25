@@ -90,12 +90,12 @@ type RoomStore interface {
 	// Returns ("", nil) when the user is not found locally; callers treat
 	// that as "skip cross-site outbox".
 	GetUserSiteID(ctx context.Context, account string) (string, error)
-	// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across
-	// the room's subscriptions, considering only subscriptions that have a
-	// non-nil, non-zero lastSeenAt. Subscriptions whose lastSeenAt has never
-	// been written (e.g. the user was invited but has never opened the room)
-	// are excluded entirely. Returns nil when no subscription has a usable
-	// lastSeenAt.
+	// MinSubscriptionLastSeenByRoomID returns the room's strict read floor:
+	// the MIN(lastSeenAt) across ALL of the room's subscriptions, but only
+	// when every subscription has a usable lastSeenAt (> zero). Returns nil if
+	// any subscription has never been read (missing/null/zero lastSeenAt) or if
+	// the room has no subscriptions. Bots are counted, so a botDM room always
+	// resolves to nil.
 	MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error)
 	// UpdateRoomMinUserLastSeenAt writes rooms.minUserLastSeenAt for roomID.
 	// A nil value clears the field via $unset; a non-nil value writes via $set.

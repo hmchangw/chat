@@ -846,26 +846,31 @@ func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string,
 	return doc.SiteID, nil
 }
 
-// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across the
-// room's subscriptions, considering only subscriptions that have a non-nil,
-// non-zero lastSeenAt. Subscriptions whose lastSeenAt has never been written
-// (e.g. the user was invited but has never opened the room) are excluded
-// entirely. Returns nil when no subscription has a usable lastSeenAt — the
-// caller should then $unset rooms.minUserLastSeenAt rather than pinning the
-// floor to a value that doesn't represent any real read activity.
+// MinSubscriptionLastSeenByRoomID returns the room's strict read floor: the
+// minimum lastSeenAt across ALL of the room's subscriptions, but only when
+// EVERY subscription has a usable lastSeenAt (> zero). If any subscription has
+// no usable lastSeenAt — missing, null, or the BSON zero date, i.e. a member
+// who was invited but has never opened the room — it returns nil, meaning "not
+// everyone has read yet". It also returns nil for a room with no subscriptions.
+// Bots are ordinary subscriptions and are counted: a botDM room (the bot never
+// reads) therefore always resolves to nil. The caller $unsets
+// rooms.minUserLastSeenAt on a nil result.
 func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
 	zeroTime := time.Time{}
 	pipeline := mongo.Pipeline{
-		// $gt:zeroTime excludes both missing/null lastSeenAt and the BSON
-		// zero date that legacy documents may carry. MongoDB's $gt against
-		// a missing field is false, so this filter naturally drops never-read
-		// subs without an explicit existence check.
-		{{Key: "$match", Value: bson.M{
-			"roomId":     roomID,
-			"lastSeenAt": bson.M{"$gt": zeroTime},
-		}}},
+		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		// total counts every subscription in the room. readCount counts those
+		// with a usable lastSeenAt — $gt:zeroTime is false for missing/null
+		// (BSON null sorts before dates) and for the legacy zero date, so it
+		// matches our definition of "has read". min is only consumed when
+		// readCount == total, where every doc has lastSeenAt > zero, so $min
+		// (which ignores missing/null) yields the true minimum.
 		{{Key: "$group", Value: bson.M{
-			"_id": nil,
+			"_id":   nil,
+			"total": bson.M{"$sum": 1},
+			"readCount": bson.M{"$sum": bson.M{"$cond": bson.A{
+				bson.M{"$gt": bson.A{"$lastSeenAt", zeroTime}}, 1, 0,
+			}}},
 			"min": bson.M{"$min": "$lastSeenAt"},
 		}}},
 	}
@@ -878,13 +883,19 @@ func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID
 		if err := cursor.Err(); err != nil {
 			return nil, fmt.Errorf("iterate min lastSeenAt for room %q: %w", roomID, err)
 		}
-		return nil, nil
+		return nil, nil // no subscriptions in the room
 	}
 	var result struct {
-		Min time.Time `bson:"min"`
+		Total     int       `bson:"total"`
+		ReadCount int       `bson:"readCount"`
+		Min       time.Time `bson:"min"`
 	}
 	if err := cursor.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode min lastSeenAt for room %q: %w", roomID, err)
+	}
+	// Strict floor: only return the MIN when every subscription has read.
+	if result.Total == 0 || result.ReadCount != result.Total {
+		return nil, nil
 	}
 	return &result.Min, nil
 }
