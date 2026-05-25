@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -281,21 +280,6 @@ func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoo
 		return fmt.Errorf("apply thread read on subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
-}
-
-type ackAction int
-
-const (
-	ackActionNak ackAction = iota
-	ackActionAck
-)
-
-// dispatchAckPolicy decides Ack (poison; stop redelivering) vs Nak (transient; retry).
-func dispatchAckPolicy(err error) ackAction {
-	if err == nil || errors.Is(err, errPermanent) {
-		return ackActionAck
-	}
-	return ackActionNak
 }
 
 func main() {
