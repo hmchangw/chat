@@ -1186,3 +1186,66 @@ func TestHandler_marshalErrorReply(t *testing.T) {
 		assert.Equal(t, "large_room_post_restricted", got.Code)
 	})
 }
+
+func TestAccountFromSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		subj string
+		want string
+	}{
+		{"valid send subject", "chat.user.alice.room.r1.site-a.msg.send", "alice"},
+		{"minimal recoverable", "chat.user.bob", "bob"},
+		{"not chat.user", "foo.bar.baz", ""},
+		{"too short", "chat.user", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, accountFromSubject(tt.subj))
+		})
+	}
+}
+
+func TestHandler_sendReply(t *testing.T) {
+	newHandlerWithReply := func(captured *[]*nats.Msg) *Handler {
+		reply := func(_ context.Context, msg *nats.Msg) error {
+			*captured = append(*captured, msg)
+			return nil
+		}
+		return NewHandler(nil, nil, reply, "site-a", nil, 500)
+	}
+
+	mk := func(requestID string) []byte {
+		b, _ := json.Marshal(model.SendMessageRequest{ID: "id", Content: "c", RequestID: requestID})
+		return b
+	}
+
+	t.Run("valid UUID requestId publishes a reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{"ok":true}`))
+		require.Len(t, captured, 1)
+		assert.Equal(t, "chat.user.alice.response.01970a4f-8c2d-7c9a-abcd-e0123456789f", captured[0].Subject)
+	})
+
+	t.Run("empty requestId skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk(""), []byte(`{}`))
+		assert.Empty(t, captured)
+	})
+
+	t.Run("malformed (non-UUID) requestId skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk("req-1"), []byte(`{}`))
+		assert.Empty(t, captured, "unroutable requestId must not be published to")
+	})
+
+	t.Run("empty account skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{}`))
+		assert.Empty(t, captured)
+	})
+}
