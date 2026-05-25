@@ -24,9 +24,9 @@ type Room struct {
 	MinUserLastSeenAt *time.Time `json:"minUserLastSeenAt,omitempty" bson:"minUserLastSeenAt,omitempty"`
 	CreatedAt         time.Time  `json:"createdAt" bson:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt" bson:"updatedAt"`
-	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
-	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
-	UIDs              []string   `json:"uids,omitempty"     bson:"uids,omitempty"`
+	Restricted        bool       `json:"restricted,omitempty" bson:"restricted,omitempty"`
+	ExternalAccess    bool       `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
+	UIDs              []string   `json:"uids,omitempty" bson:"uids,omitempty"`
 	Accounts          []string   `json:"accounts,omitempty" bson:"accounts,omitempty"`
 }
 

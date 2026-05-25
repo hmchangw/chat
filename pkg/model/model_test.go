@@ -2707,8 +2707,8 @@ func TestRoomVisibilityOutboxPayloadJSON(t *testing.T) {
 
 func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
 	assert.Equal(t, "room_renamed", model.MessageTypeRoomRenamed)
-	assert.Equal(t, "room_renamed", string(model.OutboxRoomRenamed))
-	assert.Equal(t, "room_visibility_changed", string(model.OutboxRoomVisibilityChanged))
+	assert.Equal(t, "room_renamed", model.OutboxRoomRenamed)
+	assert.Equal(t, "room_visibility_changed", model.OutboxRoomVisibilityChanged)
 	assert.Equal(t, "room.rename", model.AsyncJobOpRoomRename)
 	assert.Equal(t, "room.visibility", model.AsyncJobOpRoomVisibility)
 }
