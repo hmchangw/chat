@@ -1859,6 +1859,94 @@ func (h *Handler) publishSubscriptionEvents(ctx context.Context, subs []model.Su
 	}
 }
 
+func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error) {
+	var requesterAccount, roomID string
+	defer func() {
+		h.publishAsyncJobResult(ctx, requesterAccount, model.AsyncJobOpRoomRename, roomID, err)
+	}()
+
+	requestID := natsutil.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return newPermanent("missing X-Request-ID")
+	}
+	if !idgen.IsValidUUID(requestID) {
+		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
+	}
+
+	var req model.RenameRoomRequest
+	if err = json.Unmarshal(data, &req); err != nil {
+		return newPermanent("unmarshal rename request: %s", err.Error())
+	}
+	requesterAccount, roomID = req.Account, req.RoomID
+
+	if err = h.store.UpdateRoomName(ctx, req.RoomID, req.NewName); err != nil {
+		if errors.Is(err, ErrRoomNotFound) {
+			return newPermanent("room not found")
+		}
+		if errors.Is(err, ErrNotChannelRoom) {
+			return newPermanent("rename is only allowed in channel rooms")
+		}
+		return fmt.Errorf("update room name: %w", err)
+	}
+	if err = h.store.UpdateSubscriptionNamesForRoom(ctx, req.RoomID, req.NewName); err != nil {
+		return fmt.Errorf("update subscription names: %w", err)
+	}
+
+	sysData, err := json.Marshal(model.RoomRenamedSysData{NewName: req.NewName, ByAccount: req.Account})
+	if err != nil {
+		return fmt.Errorf("marshal sys data: %w", err)
+	}
+	msg := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "room_renamed"),
+		RoomID:      req.RoomID,
+		UserAccount: req.Account,
+		Type:        model.MessageTypeRoomRenamed,
+		Content:     fmt.Sprintf("%s renamed the channel to %q", req.Account, req.NewName),
+		SysMsgData:  sysData,
+		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
+	}
+	if err = h.publishCanonical(ctx, &msg, h.siteID, time.Now().UTC()); err != nil {
+		return fmt.Errorf("publish room_renamed sys message: %w", err)
+	}
+
+	subs, err := h.store.ListByRoom(ctx, req.RoomID)
+	if err != nil {
+		return fmt.Errorf("list subscriptions: %w", err)
+	}
+	h.publishSubscriptionEvents(ctx, subs, "renamed")
+
+	accounts := make([]string, 0, len(subs))
+	for i := range subs {
+		accounts = append(accounts, subs[i].User.Account)
+	}
+	remoteSites, err := h.findRemoteSitesForAccounts(ctx, accounts)
+	if err != nil {
+		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
+	}
+	for _, remoteSiteID := range remoteSites {
+		payload, mErr := json.Marshal(model.RoomRenamedOutboxPayload{
+			RoomID: req.RoomID, NewName: req.NewName, Timestamp: req.Timestamp,
+		})
+		if mErr != nil {
+			return fmt.Errorf("marshal rename outbox payload: %w", mErr)
+		}
+		evt := model.OutboxEvent{
+			Type: model.OutboxRoomRenamed, SiteID: h.siteID, DestSiteID: remoteSiteID,
+			Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+		}
+		evtData, mErr := json.Marshal(evt)
+		if mErr != nil {
+			return fmt.Errorf("marshal rename outbox event: %w", mErr)
+		}
+		seed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.NewName, req.Timestamp)
+		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRenamed),
+			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, seed)); err != nil {
+			return fmt.Errorf("publish rename outbox to %s: %w", remoteSiteID, err)
+		}
+	}
+	return nil
+}
+
 func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, requester, other *model.User, joinedAt time.Time) error {
 	if other.SiteID == "" || other.SiteID == h.siteID {
 		return nil
