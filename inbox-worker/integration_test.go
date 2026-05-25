@@ -901,6 +901,115 @@ func TestMongoInboxStore_ApplySubscriptionVisibility(t *testing.T) {
 	})
 }
 
+func TestIntegration_HandleRoomRenamed(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "inbox-worker-rename-handler")
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+	h := NewHandler(store)
+
+	// Seed two subscription mirrors for room r1 with old name.
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
+		newSubFixture("s1", "u1", "alice", "r1", "old-name"),
+		newSubFixture("s2", "u2", "bob", "r1", "old-name"),
+	})
+	require.NoError(t, err)
+
+	// Construct and marshal the outbox event.
+	renamePayload := model.RoomRenamedOutboxPayload{
+		RoomID:    "r1",
+		NewName:   "renamed",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	payloadData, err := json.Marshal(renamePayload)
+	require.NoError(t, err)
+	evt := model.OutboxEvent{
+		Type:       string(model.OutboxRoomRenamed),
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    payloadData,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	evtData, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(ctx, evtData))
+
+	// All subscriptions for r1 must have Name updated to "renamed".
+	cur, err := db.Collection("subscriptions").Find(ctx, bson.M{"roomId": "r1"})
+	require.NoError(t, err)
+	var subs []model.Subscription
+	require.NoError(t, cur.All(ctx, &subs))
+	require.Len(t, subs, 2)
+	for _, sub := range subs {
+		assert.Equal(t, "renamed", sub.Name, "sub %s Name should be updated", sub.ID)
+	}
+}
+
+func TestIntegration_HandleRoomVisibilityChanged(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "inbox-worker-visibility-handler")
+	store := &mongoInboxStore{
+		subCol:  db.Collection("subscriptions"),
+		roomCol: db.Collection("rooms"),
+		userCol: db.Collection("users"),
+	}
+	h := NewHandler(store)
+
+	// Seed: alice=owner, bob=member, carol=member.
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
+		newSubFixtureWithRoles("s1", "u1", "alice", "r1", []model.Role{model.RoleOwner}),
+		newSubFixtureWithRoles("s2", "u2", "bob", "r1", []model.Role{model.RoleMember}),
+		newSubFixtureWithRoles("s3", "u3", "carol", "r1", []model.Role{model.RoleMember}),
+	})
+	require.NoError(t, err)
+
+	// Construct and marshal the outbox event: bob becomes new owner.
+	visPayload := model.RoomVisibilityOutboxPayload{
+		RoomID:         "r1",
+		Restricted:     true,
+		ExternalAccess: false,
+		OwnerAccount:   "bob",
+		Timestamp:      time.Now().UTC().UnixMilli(),
+	}
+	payloadData, err := json.Marshal(visPayload)
+	require.NoError(t, err)
+	evt := model.OutboxEvent{
+		Type:       string(model.OutboxRoomVisibilityChanged),
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    payloadData,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	evtData, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(ctx, evtData))
+
+	// Load all subs for r1 and build a role map.
+	cur, err := db.Collection("subscriptions").Find(ctx, bson.M{"roomId": "r1"})
+	require.NoError(t, err)
+	var subs []model.Subscription
+	require.NoError(t, cur.All(ctx, &subs))
+	require.Len(t, subs, 3)
+
+	rolesByAccount := map[string][]model.Role{}
+	for _, sub := range subs {
+		rolesByAccount[sub.User.Account] = sub.Roles
+		// All subs must have Restricted=true and ExternalAccess=false.
+		assert.True(t, sub.Restricted, "sub %s Restricted should be true", sub.ID)
+		assert.False(t, sub.ExternalAccess, "sub %s ExternalAccess should be false", sub.ID)
+	}
+
+	// bob promoted to owner, alice demoted to member, carol stays member.
+	assert.Equal(t, []model.Role{model.RoleOwner}, rolesByAccount["bob"], "bob should be owner")
+	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["alice"], "alice should be member")
+	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["carol"], "carol should be member")
+}
+
 // Missing thread-sub: gate doesn't match, Subscription is skipped too.
 func TestInboxStore_ApplyThreadRead_MissingThreadSubscription_NoError(t *testing.T) {
 	db := setupMongo(t)
