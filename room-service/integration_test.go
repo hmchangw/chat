@@ -2232,9 +2232,9 @@ func TestIntegration_RoomRename(t *testing.T) {
 
 		// Set up a JetStream consumer to catch the canonical event.
 		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
-			Durable:        "test-rename-consumer",
-			AckPolicy:      jetstream.AckExplicitPolicy,
-			FilterSubject:  subject.RoomCanonical(siteID, "room.rename"),
+			Durable:       "test-rename-consumer",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			FilterSubject: subject.RoomCanonical(siteID, "room.rename"),
 		})
 		require.NoError(t, err)
 
@@ -2381,9 +2381,9 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 
 		// Set up a JetStream consumer to catch the canonical event.
 		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
-			Durable:        "test-vis-consumer",
-			AckPolicy:      jetstream.AckExplicitPolicy,
-			FilterSubject:  subject.RoomCanonical(siteID, "room.visibility"),
+			Durable:       "test-vis-consumer",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			FilterSubject: subject.RoomCanonical(siteID, "room.visibility"),
 		})
 		require.NoError(t, err)
 

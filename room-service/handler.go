@@ -1555,11 +1555,6 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 	})
 }
 
-var (
-	errInvalidRenameSubject     = errors.New("invalid rename subject")
-	errInvalidVisibilitySubject = errors.New("invalid visibility subject")
-)
-
 func (h *Handler) natsRoomRename(m otelnats.Msg) {
 	ctx, err := wrappedCtx(m)
 	if err != nil {
@@ -1595,8 +1590,14 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	}
 	req.RoomID, req.Account = roomID, account
 
+	slog.Info("processing room.rename",
+		"op", model.AsyncJobOpRoomRename,
+		"requester", account,
+		"roomID", roomID,
+		"requestID", requestID)
+
 	name := strings.TrimSpace(req.NewName)
-	if name == "" || len(name) > 100 {
+	if name == "" || utf8.RuneCountInString(name) > 100 {
 		return nil, errInvalidName
 	}
 	req.NewName = name
@@ -1619,7 +1620,13 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 
 	if !isPlatformAdmin(requesterUser) {
 		sub, subErr := h.store.GetSubscription(ctx, account, roomID)
-		if subErr != nil || !hasRole(sub.Roles, model.RoleOwner) {
+		if subErr != nil {
+			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
+				return nil, errOnlyOwnersOrAdmins
+			}
+			return nil, fmt.Errorf("get requester subscription: %w", subErr)
+		}
+		if !hasRole(sub.Roles, model.RoleOwner) && !hasRole(sub.Roles, model.RoleAdmin) {
 			return nil, errOnlyOwnersOrAdmins
 		}
 	}
@@ -1669,6 +1676,12 @@ func (h *Handler) handleRoomVisibility(ctx context.Context, subj string, data []
 		return nil, fmt.Errorf("invalid request: account mismatch")
 	}
 	req.RoomID, req.Account = roomID, account
+
+	slog.Info("processing room.visibility",
+		"op", model.AsyncJobOpRoomVisibility,
+		"requester", account,
+		"roomID", roomID,
+		"requestID", requestID)
 
 	requesterUser, err := h.store.GetUser(ctx, account)
 	if err != nil && !errors.Is(err, ErrUserNotFound) {
