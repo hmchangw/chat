@@ -76,8 +76,9 @@ export default function MessageActionMenu({ message, room }) {
   const X = readers?.length ?? 0
   // Recipient count Y is the room's member count minus the sender, sourced
   // from the room summary's userCount (room-worker maintains it by
-  // aggregating the per-user subscriptions, with orgs expanded).
-  const Y = Math.max(0, (room?.userCount ?? 1) - 1)
+  // aggregating the per-user subscriptions, with orgs expanded). Clamp to at
+  // least X so a stale/missing userCount never renders "Read by 2 of 0".
+  const Y = Math.max(X, Math.max(0, (room?.userCount ?? 1) - 1))
   const hasReaders = readers != null && X > 0
 
   return (

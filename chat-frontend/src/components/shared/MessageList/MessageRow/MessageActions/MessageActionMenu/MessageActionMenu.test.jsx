@@ -319,6 +319,23 @@ describe('MessageActionMenu recipient count (Y) sourcing', () => {
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     expect(await screen.findByText('Read by 0 of 0')).toBeInTheDocument()
   })
+
+  it('clamps Y up to X when userCount is stale/missing (never shows X > Y)', async () => {
+    const request = mkRequest([
+      { userId: 'u1', account: 'bob', engName: 'Bob' },
+      { userId: 'u2', account: 'carol', engName: 'Carol' },
+    ])
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
+    render(
+      <MessageActionMenu
+        message={msg}
+        room={{ id: 'r1', siteId: 'siteA', userCount: 0 }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    // userCount 0 → Y would be 0, but 2 readers clamp Y up to 2.
+    expect(await screen.findByText('Read by 2 of 2')).toBeInTheDocument()
+  })
 })
 
 describe('MessageActionMenu reader sub-tooltip', () => {
