@@ -1698,6 +1698,18 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
+	// Room "legacy-zero": a sub carrying the BSON zero-date (a legacy document
+	// whose lastSeenAt was written as the zero time rather than omitted) counts
+	// as unread just like a missing field → nil.
+	zeroTime := time.Time{}
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s7", User: model.SubscriptionUser{ID: "u7", Account: "grace"},
+		RoomID: "legacy-zero", JoinedAt: earliest, LastSeenAt: &zeroTime,
+	})
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "legacy-zero")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
 	// Room with no subscriptions at all → nil.
 	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "empty")
 	require.NoError(t, err)
