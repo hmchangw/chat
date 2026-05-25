@@ -135,7 +135,7 @@ func (h *Handler) handleUpdated(ctx context.Context, evt *model.MessageEvent) er
 		Type:       model.RoomEventMessageEdited,
 		RoomID:     room.ID,
 		SiteID:     room.SiteID,
-		Timestamp:  evt.Timestamp,
+		Timestamp:  time.Now().UTC().UnixMilli(),
 		MessageID:  msg.ID,
 		NewContent: msg.Content,
 		EditedBy:   msg.UserAccount,
@@ -165,7 +165,7 @@ func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) er
 		Type:      model.RoomEventMessageDeleted,
 		RoomID:    room.ID,
 		SiteID:    room.SiteID,
-		Timestamp: evt.Timestamp,
+		Timestamp: time.Now().UTC().UnixMilli(),
 		MessageID: msg.ID,
 		DeletedBy: msg.UserAccount,
 		DeletedAt: *msg.UpdatedAt,
@@ -185,7 +185,10 @@ func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvt
 
 	switch room.Type {
 	case model.RoomTypeChannel:
-		return h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload)
+		if err := h.pub.Publish(ctx, subject.RoomEvent(room.ID), payload); err != nil {
+			return fmt.Errorf("publish %s event for room %s message %s: %w", roomEvtType, room.ID, messageID, err)
+		}
+		return nil
 
 	case model.RoomTypeDM, model.RoomTypeBotDM:
 		for _, account := range room.Accounts {
