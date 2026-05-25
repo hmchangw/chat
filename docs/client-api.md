@@ -648,8 +648,9 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 ##### Behaviour notes
 
 - **Alert recomputation:** new `alert = oldSub.alert && len(oldSub.threadUnread) > 0`. Reading the room clears the alert when there are no unread thread mentions; it stays set when thread-level unreads remain.
-- **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so that a newly-invited member's joinedAt cannot keep `room.minUserLastSeenAt` pinned to a stale value.
-- **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is the `MIN(lastSeenAt)` over **only** subscriptions whose `lastSeenAt` is set (`> 0`). Subscriptions that have never been read (a member invited but who has never opened the room) are **excluded** from the MIN — a single never-read member does **not** force the floor to null. `minUserLastSeenAt` is `$unset` (null) only when **no** subscription in the room has a usable `lastSeenAt` (nobody has ever read). Reading a room can advance the floor.
+- **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so a member who has just read for the first time is reflected in the floor.
+- **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is a **strict "everyone has read" marker**: `MIN(lastSeenAt)` across **all** of the room's subscriptions, set **only when every subscription has a usable `lastSeenAt`**. If **any** member has never read the room (no/zero `lastSeenAt` — e.g. invited but never opened), the floor is `$unset` (null). Bots are counted like any other member, so a **botDM room — where the bot never reads — always has a null floor**. Reading a room can advance the floor (or, if this was the last unread member, raise it from null to a value).
+- **Recompute trigger & a known gap:** the floor is recomputed only on this Mark Read path, and only when the caller was not already past `room.lastMsgAt` (the early-return above). Adding a member does not itself recompute the floor, so a newly-invited, never-read member will not flip an existing non-null floor to null until the next recompute is triggered (e.g. that member reads, or another member reads while the room has content).
 - **No system message, no fan-out events:** read receipts are silent; only the requester receives the `accepted` reply.
 
 ##### Triggered events — success path
@@ -1009,7 +1010,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | Field | Type | Notes |
 |-------|------|-------|
 | `messages` | array<Message> | Most-recent first. See [Message schema](#message-schema). |
-| `minUserLastSeenAt` | number | Optional. UTC milliseconds since Unix epoch. The room's read floor — `MIN(lastSeenAt)` across all subscribers whose `lastSeenAt` is set. Absent when no member has read yet, when the latest read is past `room.lastMsgAt`, or when the value cannot be retrieved (treated as best-effort; messages still load). See the Message Read RPC for the semantics of how this floor is recomputed. |
+| `minUserLastSeenAt` | number | Optional. UTC milliseconds since Unix epoch. The room's **strict read floor** — `MIN(lastSeenAt)` across all subscribers, present **only when every member has read** the room. Absent (null) when any member has not read yet (so botDM rooms, where the bot never reads, never set it), when the most recent read is already past `room.lastMsgAt` (recompute is skipped), or when the value cannot be retrieved (best-effort; messages still load). See the Message Read RPC for how this floor is recomputed. |
 
 ```json
 {
