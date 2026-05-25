@@ -1710,6 +1710,21 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
+	// Room "botdm": a human who has read plus a bot that never reads. Bots are
+	// not special-cased — the bot counts as an unread member, so a botDM room
+	// always resolves to nil even though the human is fully caught up.
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s8", User: model.SubscriptionUser{ID: "u8", Account: "heidi"},
+		RoomID: "botdm", JoinedAt: earliest, LastSeenAt: &latest,
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: "s9", User: model.SubscriptionUser{ID: "bot1", Account: "assistant", IsBot: true},
+		RoomID: "botdm", JoinedAt: earliest,
+	})
+	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "botdm")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
 	// Room with no subscriptions at all → nil.
 	got, err = store.MinSubscriptionLastSeenByRoomID(ctx, "empty")
 	require.NoError(t, err)
