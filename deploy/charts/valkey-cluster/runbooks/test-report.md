@@ -1,17 +1,45 @@
 # Runtime test report — `valkey-cluster` chart
 
-Last updated: 2026-05-23 (third testing pass — first against a real K8s cluster)
+Last updated: 2026-05-24 (fourth pass — re-validated on the new default image)
 
-Three testing passes against `valkey/valkey:8.1.4-alpine`:
+Four testing passes against the upstream `valkey/valkey` image:
 
 | Pass | Setup | Scenarios | Bugs found |
 |---|---|---|---|
 | 1 | 6 valkey containers on docker network, docker-adapted entrypoint | T1–T11 | 1 (preStop sent FAILOVER to self) |
 | 2 | Same setup but using the chart's **unmodified rendered entrypoint** via `/etc/hosts` shim, simulating K8s DNS | T1–T13 (extended) | 1 (auth-failure wait-loop accepted `exit 0` from valkey-cli) |
 | 3 | **kind v0.17 / kubernetes v1.25.3** (1 control-plane + 3 workers), real `helm install`, real PVCs, real StatefulSet, real Jobs | T1–T14 from `runbooks/dev-cluster-test.md` | 2 documentation/sizing issues in the runbook + chart (see "Pass 3 findings") |
+| 4 | docker-network re-run on the **new default image** `valkey/valkey:8.1.7-alpine3.23` (chart default bumped from `8.1.4-alpine` for CVE hygiene) | T1–T7 (bootstrap, health, helm test, preStop failover, scale-up, persistence, auth rejection) | 0 |
 
-Bugs from passes 1+2 fixed; pass-3 issues are documentation/sizing (no chart code change required, runbook updates applied).
-Image under test: `valkey/valkey:8.1.4-alpine`, `oliver006/redis_exporter:v1.66.0-alpine`
+Bugs from passes 1+2 fixed; pass-3 issues are documentation/sizing (no chart
+code change required). Pass-4 confirms the image bump is a clean drop-in.
+
+Current default image: `valkey/valkey:8.1.7-alpine3.23`
+(was `8.1.4-alpine`; bumped because that tag was a 7-month-old build on
+Alpine 3.22.1 and had accumulated base-OS CVEs. The new tag is Valkey 8.1.7
+on the current Alpine 3.23.4.)
+Metrics image: `oliver006/redis_exporter:v1.66.0-alpine`
+
+## Pass 4 — re-validation on `valkey/valkey:8.1.7-alpine3.23`
+
+Confirmed `valkey_version:8.1.7` on the running cluster (the `redis_version:7.2.4`
+field is Valkey's Redis-compat shim, unchanged). All scenarios behave
+identically to 8.1.4 — the image bump required **no chart code change**, only
+the `image.tag` / `appVersion` values.
+
+| Test | Result | Evidence |
+|---|---|---|
+| T1 bootstrap (rendered `job-create.sh`) | ✅ | `[OK] All 16384 slots covered.` |
+| T2 cluster health | ✅ | `cluster_state:ok`, 16384 slots, 6 nodes, size 3 |
+| T3 helm test (set/get round-trip) | ✅ | `PASS: cluster_state=ok slots=16384 known=6 size=3 set/get round-trip ok` |
+| T4 preStop failover | ✅ | valkey-0 master → demoted to slave, replica promoted, `cluster_state` stayed ok |
+| T5 scale-up 6→8 (3→4 masters) | ✅ | online reshard moved 1366 slots; `cluster_known_nodes:8 cluster_size:4` |
+| T6 persistence (cluster-aware write/read) | ✅ | `SET t6` → `GET t6` = `persisted817` |
+| T7 wrong-password rejection (auth-loop fix) | ✅ | `timeout waiting for ... (last response: NOAUTH Authentication required.)` |
+
+Static re-validation after the bump: `helm lint` clean, `helm template`
+renders `docker.io/valkey/valkey:8.1.7-alpine3.23`, `kubeconform -strict`
+12/12 valid at k8s 1.25.
 
 ## Why no Kubernetes cluster
 

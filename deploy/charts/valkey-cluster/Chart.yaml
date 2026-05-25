@@ -6,7 +6,7 @@ description: |
   NetworkPolicy that defaults to deny-all and is opt-in per release.
 type: application
 version: 0.1.0
-appVersion: "8.1.4"
+appVersion: "8.1.7"
 kubeVersion: ">=1.25.0-0"
 home: https://valkey.io
 sources:
