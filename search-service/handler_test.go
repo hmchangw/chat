@@ -568,15 +568,26 @@ func TestHandler_SearchUsers_ForwardsOffsetAndLimit(t *testing.T) {
 }
 
 func TestHandler_SearchUsers_NegativePaginationRejected(t *testing.T) {
-	fu := &fakeUsers{}
-	h := newTestHandler(nil, nil, fu, newFakeCache())
+	tests := []struct {
+		name string
+		req  model.SearchUsersRequest
+	}{
+		{"negative offset", model.SearchUsersRequest{Query: "al", Offset: -1}},
+		{"negative limit", model.SearchUsersRequest{Query: "al", Limit: -1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fu := &fakeUsers{}
+			h := newTestHandler(nil, nil, fu, newFakeCache())
 
-	_, err := h.searchUsers(ctxWithAccount("alice"), model.SearchUsersRequest{Query: "al", Offset: -1})
-	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
-	assert.Empty(t, fu.calls, "backend must not be called on invalid pagination")
+			_, err := h.searchUsers(ctxWithAccount("alice"), tt.req)
+			require.Error(t, err)
+			var rerr *natsrouter.RouteError
+			require.True(t, errors.As(err, &rerr))
+			assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+			assert.Empty(t, fu.calls, "backend must not be called on invalid pagination")
+		})
+	}
 }
 
 func TestHandler_SearchUsers_EmptyQueryRejected(t *testing.T) {
