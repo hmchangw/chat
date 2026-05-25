@@ -38,29 +38,31 @@ type Handler struct {
 	// at-rest DEK creation at room-create time (message-worker's lazy create
 	// still covers remote sites and pre-rollout rooms). Injected as a field
 	// rather than a constructor arg to avoid churning every NewHandler caller.
-	dekProvisioner    DEKProvisioner
-	memberListClient  MemberListClient
-	msgReader         MessageReader
-	siteID            string
-	maxRoomSize       int
-	maxBatchSize      int
-	memberListTimeout time.Duration
-	publishToStream   func(ctx context.Context, subj string, data []byte) error
-	publishCore       func(ctx context.Context, subj string, data []byte) error
+	dekProvisioner           DEKProvisioner
+	memberListClient         MemberListClient
+	msgReader                MessageReader
+	siteID                   string
+	maxRoomSize              int
+	maxBatchSize             int
+	memberListTimeout        time.Duration
+	publishToStream          func(ctx context.Context, subj string, data []byte) error
+	publishCore              func(ctx context.Context, subj string, data []byte) error
+	restrictedRoomMinMembers int
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, restrictedRoomMinMembers int, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
 	return &Handler{
-		store:             store,
-		keyStore:          keyStore,
-		memberListClient:  memberListClient,
-		msgReader:         msgReader,
-		siteID:            siteID,
-		maxRoomSize:       maxRoomSize,
-		maxBatchSize:      maxBatchSize,
-		memberListTimeout: memberListTimeout,
-		publishToStream:   publishToStream,
-		publishCore:       publishCore,
+		store:                    store,
+		keyStore:                 keyStore,
+		memberListClient:         memberListClient,
+		msgReader:                msgReader,
+		siteID:                   siteID,
+		maxRoomSize:              maxRoomSize,
+		maxBatchSize:             maxBatchSize,
+		memberListTimeout:        memberListTimeout,
+		restrictedRoomMinMembers: restrictedRoomMinMembers,
+		publishToStream:          publishToStream,
+		publishCore:              publishCore,
 	}
 }
 
