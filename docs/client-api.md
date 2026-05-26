@@ -584,9 +584,9 @@ When the synchronous reply is an error envelope, no events follow. The async job
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.room.rename`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual rename runs asynchronously in `room-worker`. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for rename — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual rename runs asynchronously in `room-worker`, which publishes an `AsyncJobResult` on `chat.user.{requesterAccount}.response.{requestID}` when the job finishes. To receive this event the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
-Only channel rooms may be renamed. Only owners or admins of the room may call this RPC.
+Only channel rooms may be renamed. This RPC may be called by a **platform admin** (`model.UserRoleAdmin`) or by a room member who holds the **room owner** (`model.RoleOwner`) or **room admin** (`model.RoleAdmin`) role. Platform admins bypass the room-membership check entirely.
 
 ##### Request body
 
@@ -617,7 +617,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"invalid name"` — `newName` is empty after trimming, or exceeds 100 characters.
 - `"room not found"` — no room matches the subject `{roomID}`.
 - `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
-- `"only owners or admins can rename a channel"` — the requester does not hold an `owner` or `admin` role in the room.
+- `"only owners or admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` or `admin` role in the room.
 - `"invalid request"` — body is malformed or `roomId` does not match the subject.
 - `"missing X-Request-ID header"` — the NATS header is absent.
 - `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
@@ -662,7 +662,9 @@ Recipients: every member (one `SubscriptionUpdateEvent` per individual subscript
 }
 ```
 
-**3. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
+**3. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
+
+**4. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
 
 ##### Triggered events — error path
 
@@ -675,9 +677,9 @@ When the synchronous reply is an error envelope, the request was rejected before
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.room.visibility`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual visibility change runs asynchronously in `room-worker`. No `AsyncJobResult` event is published for this RPC.
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual visibility change runs asynchronously in `room-worker`, which publishes an `AsyncJobResult` on `chat.user.{requesterAccount}.response.{requestID}` when the job finishes. To receive this event the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
-Only channel rooms may have their visibility changed. Only admins of the room may call this RPC.
+Only channel rooms may have their visibility changed. This RPC is **platform-admin only** (`model.UserRoleAdmin`); room-level owners and admins cannot call this RPC.
 
 Setting `restricted=true` restricts the room (members-only, no public join). Setting `restricted=false` opens the room. The `externalAccess` flag controls whether cross-site (federated) members can see the room. When transitioning from `restricted=false` to `restricted=true`, `ownerAccount` is required and becomes the sole owner of the restricted room.
 
@@ -714,7 +716,7 @@ Setting `restricted=true` restricts the room (members-only, no public join). Set
 
 See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors:
 
-- `"only admins can change room visibility"` — the requester does not hold an `admin` role.
+- `"only admins can change room visibility"` — the requester is not a platform admin (`model.UserRoleAdmin`). Room-level roles are not sufficient.
 - `"room not found"` — no room matches the subject `{roomID}`.
 - `"visibility change is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
 - `"owner account is required when restricting a room"` — `restricted=true` but `ownerAccount` was not supplied.
@@ -759,6 +761,8 @@ Recipients: every member (one `SubscriptionUpdateEvent` per individual subscript
 ```
 
 **Note:** No system message is published for visibility changes — only the `subscription.update` events above.
+
+**`chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the visibility change finishes (requires `X-Request-ID`). `operation` is `"room.visibility"`. `status` is `"ok"` on success or `"error"` if the async job fails.
 
 **Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the visibility change.
 
