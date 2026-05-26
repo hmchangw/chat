@@ -1102,6 +1102,37 @@ Preflight (already in the Makefile) gets one new check: every
 container named in `catalogs/services/*.yaml`'s `container:` field
 must be present in `docker ps`. Mishap runs fail fast otherwise.
 
+### 4.8 Scenario execution — sequential, one at a time
+
+Scenarios run **sequentially, one at a time.** No cross-scenario
+parallelism in Part-2. The runner's outermost loop iterates the
+scenario list in catalog order; each scenario fully completes
+(every case in its grid runs, every retry exhausts, every Cleanup
+fires) before the next scenario begins.
+
+Rationale:
+
+- **The docker-local stack is shared.** Two scenarios running in
+  parallel would step on each other's mishaps — Scenario A's
+  `docker restart room-worker` would disrupt Scenario B's reads
+  from room-worker, producing spurious "anomaly" entries with no
+  attribution. The whole point of mishaps is *controlled*
+  perturbation; uncontrolled cross-traffic defeats the property
+  under test.
+- **`performance.json` writes serialize naturally.** A single
+  writer per run means no in-process locking.
+- **Wall-clock estimates compose by addition.** §4.5's per-scenario
+  budget figures sum directly: total run time ≈ sum across all
+  scenarios, no contention discount or amplification.
+
+Trade-off: cross-scenario parallelism would speed up large suites,
+but it requires either per-scenario isolated stacks (out of scope —
+the suite owns no infrastructure per §1) or a much more complex
+mishap-coordination layer. Neither is justified at Part-2 scenario
+counts (~6 scenarios for the initial Part-2; ~20 for Part-2.5).
+Part-3 may revisit this if the suite grows beyond what sequential
+execution can absorb in CI wall-clock budgets.
+
 ---
 
 ## 5. Reporting
