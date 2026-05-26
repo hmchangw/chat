@@ -1,0 +1,26 @@
+name: site-a-services
+
+# Aggregates every microservice's deploy/docker-compose.yml as the site-a
+# instance. Per-site variation (SITE_ID, NATS_HOST, host ports,
+# AUTH_SIGNING_KEY) comes from docker-local/site-a.env — pass it via
+# `docker compose --env-file docker-local/site-a.env -f <this-file> up`.
+# The included composes default to site-a, so without the env-file this
+# file behaves identically to compose.services.yaml.
+#
+# Expects the shared third-party deps (NATS-a, NATS-b, MongoDB, Cassandra,
+# Elasticsearch, Valkey, Keycloak) to already be running on the chat-local
+# network — start them via `make deps-up`.
+
+include:
+  - ../auth-service/deploy/docker-compose.yml
+  - ../broadcast-worker/deploy/docker-compose.yml
+  - ../history-service/deploy/docker-compose.yml
+  - ../inbox-worker/deploy/docker-compose.yml
+  - ../message-gatekeeper/deploy/docker-compose.yml
+  - ../message-worker/deploy/docker-compose.yml
+  - ../mock-user-service/deploy/docker-compose.yml
+  - ../notification-worker/deploy/docker-compose.yml
+  - ../room-service/deploy/docker-compose.yml
+  - ../room-worker/deploy/docker-compose.yml
+  - ../search-service/deploy/docker-compose.yml
+  - ../search-sync-worker/deploy/docker-compose.yml

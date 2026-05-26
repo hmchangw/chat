@@ -1,0 +1,33 @@
+name: chat-local-federation
+
+# One-shot container that wires cross-site JetStream sources between
+# site-a's and site-b's NATSes. Run AFTER both sites' inbox-workers have
+# created their INBOX_<site> streams (federation-init waits for them).
+#
+# Run via:
+#   docker compose -f docker-local/compose.federation.yaml --profile init \
+#                  run --rm federation-init
+
+services:
+  federation-init:
+    build:
+      context: ../..
+      dockerfile: tools/federation-init/deploy/Dockerfile
+    container_name: chat-local-federation-init
+    profiles: ["init"]
+    environment:
+      - SITE_A_ID=site-a
+      - SITE_A_NATS_URL=nats://nats-a:4222
+      - SITE_A_CREDS=/creds/site-a/backend.creds
+      - SITE_B_ID=site-b
+      - SITE_B_NATS_URL=nats://nats-b:4222
+      - SITE_B_CREDS=/creds/site-b/backend.creds
+    volumes:
+      - ./site-a/backend.creds:/creds/site-a/backend.creds:ro
+      - ./site-b/backend.creds:/creds/site-b/backend.creds:ro
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

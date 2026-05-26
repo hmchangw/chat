@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Generates per-site NATS operator + account keys and writes nats.conf,
-# backend.creds, account.seed, and <site>.env for the two local-dev NATS
-# instances (site-a, site-b). Uses the nats-box Docker image so it works on
-# any OS without requiring local nsc/nk installation.
+# Generates per-site NATS operator + account keys for the two local-dev NATS
+# instances (site-a, site-b) and writes their nats.conf, backend.creds,
+# leaf.creds, account.seed, and per-site env files. Uses the nats-box Docker
+# image so it works on any OS without requiring local nsc/nk installation.
 #
-# Also writes legacy single-site artifacts (docker-local/{nats.conf,
-# backend.creds,.env}) as copies of site-a's, so service composes that still
-# reference them keep working during the multi-site transition. Stage 4 of
-# the multisite rollout removes these legacy files.
+# Each site's nats.conf includes a leafnode remote pointing at the other
+# site's NATS, using the peer's leaf user creds (mounted into the container
+# by compose.deps.yaml). The leafnode bridges the chatapp account between
+# the two NATSes so JetStream stream sources can pull across them; the
+# actual cross-site source wiring is applied by tools/federation-init.
 #
 # Run once before `make deps-up`.
 #
@@ -20,8 +21,8 @@ FRONTEND_ENV_FILE="$REPO_ROOT/chat-frontend/.env.local"
 NATS_BOX_IMAGE="natsio/nats-box:latest"
 
 # Per-site host port assignments. Site-a keeps the historical defaults so
-# standalone `docker compose -f <service>/deploy/docker-compose.yml up` still
-# matches today's behavior; site-b shifts by 1 on each exposed service.
+# standalone `docker compose -f <service>/deploy/docker-compose.yml up`
+# still matches today's behavior; site-b shifts on each exposed service.
 SITE_A_AUTH_PORT=8080
 SITE_B_AUTH_PORT=8081
 SITE_A_HISTORY_PORT=8082
@@ -43,19 +44,12 @@ if ! command -v docker &>/dev/null; then
   exit 1
 fi
 
-# generate_site SITE NATS_HOST AUTH_PORT HISTORY_PORT ROOM_PORT SEARCH_PORT MOCK_USER_PORT SEARCH_METRICS_PORT
-generate_site() {
+# gen_keys <site>: generates an operator + chatapp account + backend user +
+# leaf user inside a nats-box container, then copies the artifacts into
+# docker-local/<site>/.
+gen_keys() {
   local site="$1"
-  local nats_host="$2"
-  local auth_port="$3"
-  local history_port="$4"
-  local room_port="$5"
-  local search_port="$6"
-  local mock_user_port="$7"
-  local search_metrics_port="$8"
-
   local site_dir="$SCRIPT_DIR/$site"
-  local env_file="$SCRIPT_DIR/${site}.env"
   mkdir -p "$site_dir"
 
   echo "--- Generating $site keys ---"
@@ -93,26 +87,52 @@ generate_site() {
       fi
       cat "$SEED_FILE" > /output/account_seed.txt
 
+      # backend user: read/write everywhere; used by every microservice.
       nsc add user --account chatapp --name backend
       nsc edit user --account chatapp --name backend --allow-sub ">" --allow-pub ">"
       nsc generate creds --account chatapp --name backend > /output/backend.creds
+
+      # leaf user: identical permissions, but used by the PEER site as a
+      # leafnode remote credential so it can connect into this account.
+      # Separate from backend so revoking the leaf bridge does not also
+      # log every microservice out.
+      nsc add user --account chatapp --name leaf
+      nsc edit user --account chatapp --name leaf --allow-sub ">" --allow-pub ">"
+      nsc generate creds --account chatapp --name leaf > /output/leaf.creds
     '
 
-  cp "$tmpdir/backend.creds" "$site_dir/backend.creds"
+  cp "$tmpdir/operator.jwt"     "$site_dir/operator.jwt"
+  cp "$tmpdir/account.jwt"      "$site_dir/account.jwt"
+  cp "$tmpdir/sys.jwt"          "$site_dir/sys.jwt"
+  cp "$tmpdir/account_pub.txt"  "$site_dir/account_pub.txt"
+  cp "$tmpdir/sys_pub.txt"      "$site_dir/sys_pub.txt"
+  cp "$tmpdir/backend.creds"    "$site_dir/backend.creds"
+  cp "$tmpdir/leaf.creds"       "$site_dir/leaf.creds"
   cp "$tmpdir/account_seed.txt" "$site_dir/account.seed"
-  # 0644 on backend.creds: service containers run as non-root (uid 10001)
-  # and bind-mount it read-only — the in-container user must read it.
-  # Acceptable only because this is a throwaway local-dev credential.
-  chmod 644 "$site_dir/backend.creds"
+  # 0644 on creds: service containers run as non-root (uid 10001) and
+  # bind-mount these read-only — the in-container user must read them.
+  # Acceptable only because these are throwaway local-dev credentials.
+  chmod 644 "$site_dir/backend.creds" "$site_dir/leaf.creds"
   chmod 600 "$site_dir/account.seed"
 
-  local op_jwt acc_jwt sys_jwt acc_pub sys_pub acc_seed
-  op_jwt=$(cat "$tmpdir/operator.jwt")
-  acc_jwt=$(cat "$tmpdir/account.jwt")
-  sys_jwt=$(cat "$tmpdir/sys.jwt")
-  acc_pub=$(cat "$tmpdir/account_pub.txt")
-  sys_pub=$(cat "$tmpdir/sys_pub.txt")
-  acc_seed=$(cat "$tmpdir/account_seed.txt")
+  rm -rf "$tmpdir"
+}
+
+# write_nats_conf <site> <peer_nats_host>: writes <site>/nats.conf with a
+# JetStream domain matching <site> and a leafnode remote pointing at
+# <peer_nats_host>:7422 using the peer's leaf.creds (mounted as
+# /etc/nats/peer.creds in the NATS container).
+write_nats_conf() {
+  local site="$1"
+  local peer_nats_host="$2"
+  local site_dir="$SCRIPT_DIR/$site"
+
+  local op_jwt acc_jwt sys_jwt acc_pub sys_pub
+  op_jwt=$(cat "$site_dir/operator.jwt")
+  acc_jwt=$(cat "$site_dir/account.jwt")
+  sys_jwt=$(cat "$site_dir/sys.jwt")
+  acc_pub=$(cat "$site_dir/account_pub.txt")
+  sys_pub=$(cat "$site_dir/sys_pub.txt")
 
   cat > "$site_dir/nats.conf" <<EOF
 # Generated by docker-local/setup.sh — do not commit this file.
@@ -131,6 +151,9 @@ resolver_preload {
 }
 
 jetstream {
+  # Domain-scoped so tools/federation-init can address streams on the
+  # peer site as OUTBOX_<peer>@<peer>-domain.
+  domain: ${site}
   store_dir: /data/jetstream
   max_mem: 1G
   max_file: 10G
@@ -140,7 +163,38 @@ websocket {
   port: 9222
   no_tls: true
 }
+
+# Leafnode bridge to the peer site. The peer's leaf.creds is mounted at
+# /etc/nats/peer.creds by compose.deps.yaml; binding it to THIS site's
+# chatapp account lets JetStream sources pull OUTBOX_<peer> across the
+# bridge with no External config.
+leafnodes {
+  port: 7422
+  remotes: [
+    {
+      url: "nats-leaf://${peer_nats_host}:7422"
+      credentials: "/etc/nats/peer.creds"
+      account: "${acc_pub}"
+    }
+  ]
+}
 EOF
+}
+
+# write_env <site> <nats_host> <ports…>
+write_env() {
+  local site="$1"
+  local nats_host="$2"
+  local auth_port="$3"
+  local history_port="$4"
+  local room_port="$5"
+  local search_port="$6"
+  local mock_user_port="$7"
+  local search_metrics_port="$8"
+  local env_file="$SCRIPT_DIR/${site}.env"
+
+  local acc_seed
+  acc_seed=$(cat "$SCRIPT_DIR/$site/account.seed")
 
   cat > "$env_file" <<EOF
 # Generated by docker-local/setup.sh — do not commit this file.
@@ -165,27 +219,26 @@ MOCK_USER_HOST_PORT=${mock_user_port}
 SEARCH_METRICS_HOST_PORT=${search_metrics_port}
 EOF
   chmod 600 "$env_file"
-
-  echo "  Account Public Key: $acc_pub"
-  echo "  Wrote $site_dir/nats.conf"
-  echo "  Wrote $site_dir/backend.creds"
-  echo "  Wrote $site_dir/account.seed"
-  echo "  Wrote $env_file"
-  echo ""
-
-  rm -rf "$tmpdir"
 }
 
-generate_site site-a nats-a \
+# --- Pass 1: generate keys for both sites --------------------------------
+gen_keys site-a
+gen_keys site-b
+
+# --- Pass 2: write nats.conf with cross-site leafnode refs ---------------
+write_nats_conf site-a nats-b
+write_nats_conf site-b nats-a
+
+# --- Pass 3: write per-site env files ------------------------------------
+write_env site-a nats-a \
   "$SITE_A_AUTH_PORT" "$SITE_A_HISTORY_PORT" "$SITE_A_ROOM_PORT" \
   "$SITE_A_SEARCH_PORT" "$SITE_A_MOCK_USER_PORT" "$SITE_A_SEARCH_METRICS_PORT"
 
-generate_site site-b nats-b \
+write_env site-b nats-b \
   "$SITE_B_AUTH_PORT" "$SITE_B_HISTORY_PORT" "$SITE_B_ROOM_PORT" \
   "$SITE_B_SEARCH_PORT" "$SITE_B_MOCK_USER_PORT" "$SITE_B_SEARCH_METRICS_PORT"
 
-# Clean up legacy single-site artifacts (no service compose references them
-# anymore after stage 2). Safe to delete unconditionally.
+# Drop any pre-multisite single-site shims; no compose references them.
 rm -f "$SCRIPT_DIR/.env" "$SCRIPT_DIR/nats.conf" "$SCRIPT_DIR/backend.creds"
 
 # chat-frontend/.env.local feeds `npm run dev` (Vite). Written only on first
@@ -198,6 +251,7 @@ VITE_DEFAULT_SITE_ID=site-a
 EOF
 fi
 
+echo ""
 echo "=== Ready! ==="
 echo ""
 echo "  # Start third-party deps (both NATSes + shared Mongo/Cassandra/ES/etc.)"

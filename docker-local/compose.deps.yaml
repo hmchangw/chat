@@ -10,6 +10,8 @@ services:
   # site-a's NATS. Also reachable under the legacy alias "nats" so service
   # composes still using NATS_URL=nats://nats:4222 keep working during the
   # multi-site transition; the alias is removed in stage 4.
+  # Mounts site-b's leaf.creds as /etc/nats/peer.creds so the leafnode block
+  # in site-a/nats.conf can authenticate its outbound connection to nats-b.
   nats-a:
     image: nats:2.11-alpine
     container_name: chat-local-nats-a
@@ -19,6 +21,7 @@ services:
       - "9222:9222"
     volumes:
       - ./site-a/nats.conf:/etc/nats/nats.conf:ro
+      - ./site-b/leaf.creds:/etc/nats/peer.creds:ro
       - nats-a-data:/data/jetstream
     command: ["-c", "/etc/nats/nats.conf"]
     healthcheck:
@@ -33,7 +36,8 @@ services:
           - nats
 
   # site-b's NATS. Independent JetStream domain; host ports shifted by 100
-  # on client/monitor/ws ports to coexist with nats-a.
+  # on client/monitor/ws ports to coexist with nats-a. Symmetric leaf.creds
+  # mount points the leafnode remote at nats-a.
   nats-b:
     image: nats:2.11-alpine
     container_name: chat-local-nats-b
@@ -43,6 +47,7 @@ services:
       - "9322:9222"
     volumes:
       - ./site-b/nats.conf:/etc/nats/nats.conf:ro
+      - ./site-a/leaf.creds:/etc/nats/peer.creds:ro
       - nats-b-data:/data/jetstream
     command: ["-c", "/etc/nats/nats.conf"]
     healthcheck:
