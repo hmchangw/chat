@@ -650,6 +650,23 @@ func TestUserServiceBuildersRejectWildcardAccounts(t *testing.T) {
 	}
 }
 
+func TestRoomRenameVisibility_RejectWildcardAccounts(t *testing.T) {
+	builders := []struct {
+		name string
+		fn   func()
+	}{
+		{"RoomRename star", func() { subject.RoomRename("*", "r1", "site-a") }},
+		{"RoomRename tail", func() { subject.RoomRename(">", "r1", "site-a") }},
+		{"RoomVisibility star", func() { subject.RoomVisibility("*", "r1", "site-a") }},
+		{"RoomVisibility tail", func() { subject.RoomVisibility(">", "r1", "site-a") }},
+	}
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			assert.Panics(t, b.fn)
+		})
+	}
+}
+
 func TestParseUserSubject_RejectsWildcardAccount(t *testing.T) {
 	bad := []string{
 		"chat.user.*.request.user.s1.status.getByName",

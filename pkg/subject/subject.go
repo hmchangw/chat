@@ -71,11 +71,17 @@ func MemberRoleUpdate(account, roomID, siteID string) string {
 
 // RoomRename is the request/reply subject for the rename RPC (owner or admin).
 func RoomRename(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.rename", account, roomID, siteID)
 }
 
 // RoomVisibility is the request/reply subject for the visibility RPC (admin only).
 func RoomVisibility(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.visibility", account, roomID, siteID)
 }
 
