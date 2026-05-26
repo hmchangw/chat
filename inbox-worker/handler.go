@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -16,53 +15,6 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
-
-// errPermanent marks non-retryable errors so the cons.Consume callback Acks
-// instead of Naks. Only the room_renamed / room_visibility_changed handlers
-// (and the new dispatch tests) wrap their unmarshal failures in newPermanent
-// today; older handlers (member_added, role_updated, …) still return plain
-// fmt.Errorf and will Nak on poison messages. Extending classification to
-// the older handlers is a follow-up.
-var errPermanent = errors.New("permanent")
-
-// permanentError marks a non-retryable handler error. The Is method makes
-// errors.Is(err, errPermanent) match so the consume loop can decide Ack vs Nak.
-type permanentError struct {
-	msg string
-}
-
-// newPermanent returns a permanent (non-retryable) error. Callers typically
-// build the message with "%s", err.Error() rather than "%w", err to avoid
-// exposing internal error chains through errors.Is(err, errPermanent) checks —
-// permanent classification is intentional and shouldn't depend on what the
-// underlying cause's error chain matches.
-func newPermanent(format string, args ...any) error {
-	return &permanentError{msg: fmt.Sprintf(format, args...)}
-}
-
-func (e *permanentError) Error() string { return e.msg }
-func (e *permanentError) Is(target error) bool {
-	if target == errPermanent {
-		return true
-	}
-	_, ok := target.(*permanentError)
-	return ok
-}
-
-type ackAction int
-
-const (
-	ackActionNak ackAction = iota
-	ackActionAck
-)
-
-// dispatchAckPolicy decides Ack (poison; stop redelivering) vs Nak (transient; retry).
-func dispatchAckPolicy(err error) ackAction {
-	if err == nil || errors.Is(err, errPermanent) {
-		return ackActionAck
-	}
-	return ackActionNak
-}
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
 
@@ -335,7 +287,7 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent) error {
 	var payload model.RoomRenamedOutboxPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return newPermanent("unmarshal room_renamed payload: %s", err.Error())
+		return fmt.Errorf("unmarshal room_renamed payload: %w", err)
 	}
 	slog.Info("processing room_renamed",
 		"op", "room_renamed",
@@ -351,7 +303,7 @@ func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent)
 func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.OutboxEvent) error {
 	var payload model.RoomVisibilityOutboxPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return newPermanent("unmarshal room_visibility_changed payload: %s", err.Error())
+		return fmt.Errorf("unmarshal room_visibility_changed payload: %w", err)
 	}
 	slog.Info("processing room_visibility_changed",
 		"op", "room_visibility_changed",

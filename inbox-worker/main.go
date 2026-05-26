@@ -360,6 +360,10 @@ func main() {
 			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)
 			}
+			return
+		}
+		if err := m.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
 		}
 	})
 	if err != nil {

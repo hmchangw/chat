@@ -1439,7 +1439,7 @@ func TestHandleRoomRenamed_HappyPath(t *testing.T) {
 	require.NoError(t, h.HandleEvent(context.Background(), data))
 }
 
-func TestHandleRoomRenamed_PermanentOnUnmarshal(t *testing.T) {
+func TestHandleRoomRenamed_ErrorOnUnmarshal(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockInboxStore(ctrl)
@@ -1447,7 +1447,6 @@ func TestHandleRoomRenamed_PermanentOnUnmarshal(t *testing.T) {
 	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: []byte("not json")})
 	err := h.HandleEvent(context.Background(), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errPermanent))
 }
 
 func TestHandleRoomVisibilityChanged_HappyPath(t *testing.T) {
@@ -1464,7 +1463,7 @@ func TestHandleRoomVisibilityChanged_HappyPath(t *testing.T) {
 	require.NoError(t, h.HandleEvent(context.Background(), data))
 }
 
-func TestHandleRoomVisibilityChanged_PermanentOnUnmarshal(t *testing.T) {
+func TestHandleRoomVisibilityChanged_ErrorOnUnmarshal(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockInboxStore(ctrl)
@@ -1472,7 +1471,6 @@ func TestHandleRoomVisibilityChanged_PermanentOnUnmarshal(t *testing.T) {
 	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomVisibilityChanged, Payload: []byte("not json")})
 	err := h.HandleEvent(context.Background(), data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errPermanent))
 }
 
 func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.T) {
@@ -1503,4 +1501,34 @@ func TestHandler_SubscriptionFavoriteToggled_MalformedPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Error(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandleRoomRenamed_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "new").Return(errors.New("mongo timeout"))
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 1700000000000})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update subscription names")
+}
+
+func TestHandleRoomVisibilityChanged_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", true, false, "bob").Return(errors.New("mongo timeout"))
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomVisibilityOutboxPayload{
+		RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+	})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomVisibilityChanged, Payload: payload})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "apply visibility")
 }
