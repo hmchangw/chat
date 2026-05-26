@@ -1,14 +1,12 @@
 .PHONY: lint fmt test test-integration generate build deps-up deps-down up down \
-        tools sast sast-gosec sast-vuln sast-semgrep
+        logs federation-up tools sast sast-gosec sast-vuln sast-semgrep
 
-DEPS_COMPOSE     := docker-local/compose.deps.yaml
-SERVICES_COMPOSE := docker-local/compose.services.yaml
-# Stage 4 of the multisite rollout reworks these for two-site UX; for now
-# they point at site-a so the single-site `make deps-up` / `make up` flow
-# keeps working off the new per-site artifacts.
-NATS_CREDS       := docker-local/site-a/backend.creds
-NATS_CONF        := docker-local/site-a/nats.conf
-NATS_CONTAINER   := chat-local-nats-a
+DEPS_COMPOSE   := docker-local/compose.deps.yaml
+SITE_A_COMPOSE := docker-local/compose.services.site-a.yaml
+SITE_B_COMPOSE := docker-local/compose.services.site-b.yaml
+FED_COMPOSE    := docker-local/compose.federation.yaml
+SITE_A_ENV     := docker-local/site-a.env
+SITE_B_ENV     := docker-local/site-b.env
 
 # --- SAST / dev tooling ------------------------------------------------------
 # Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with
@@ -92,12 +90,13 @@ else
 endif
 
 # --- Local dev docker targets -------------------------------------------------
-# Start third-party deps (NATS, Mongo, Cassandra, ES, Keycloak) in the background.
-# Runs setup.sh on first use. Blocks until every dep's healthcheck passes,
-# then runs the cassandra-init one-shot to create the keyspace + tables.
+# Start third-party deps (both NATSes + shared Mongo/Cassandra/ES/Valkey/
+# Keycloak) in the background. Runs setup.sh on first use to generate the
+# per-site NATS creds + configs. Blocks until every dep's healthcheck
+# passes, then runs cassandra-init to create both keyspaces.
 deps-up:
-	@if [ ! -f $(NATS_CREDS) ] || [ ! -f $(NATS_CONF) ]; then \
-	  echo "First-time setup: generating nats.conf + backend.creds..."; \
+	@if [ ! -d docker-local/site-a ] || [ ! -d docker-local/site-b ]; then \
+	  echo "First-time setup: generating per-site NATS creds + configs..."; \
 	  ./docker-local/setup.sh; \
 	fi
 	docker compose -f $(DEPS_COMPOSE) up -d --wait
@@ -107,29 +106,43 @@ deps-up:
 deps-down:
 	docker compose -f $(DEPS_COMPOSE) down
 
-# Start microservices. With SERVICE=<name>, starts just that service's compose;
-# without, starts every service via compose.services.yaml. Foreground either way
-# so container logs stream to the terminal; Ctrl-C stops.
+# Start every microservice for BOTH sites detached, run the one-shot
+# federation-init to wire cross-site JetStream sources, then tail both
+# sites' logs in the foreground (Ctrl-C detaches; containers keep running
+# until `make down`). Use `make logs SITE=a` or `=b` for one side only.
 up:
-	@docker container inspect -f '{{.State.Running}}' $(NATS_CONTAINER) 2>/dev/null | grep -q true || { \
+	@docker container inspect -f '{{.State.Running}}' chat-local-nats-a 2>/dev/null | grep -q true || { \
 	  echo "Deps are not running. Run 'make deps-up' first."; exit 1; \
 	}
-	@test -f $(NATS_CREDS) && test -f $(NATS_CONF) || { \
-	  echo "Missing $(NATS_CREDS) or $(NATS_CONF). Run './docker-local/setup.sh'."; exit 1; \
+	@docker container inspect -f '{{.State.Running}}' chat-local-nats-b 2>/dev/null | grep -q true || { \
+	  echo "nats-b is not running. Run 'make deps-up' first."; exit 1; \
 	}
-ifdef SERVICE
-	docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
-else
-	docker compose -f $(SERVICES_COMPOSE) up --build
-endif
+	docker compose --env-file $(SITE_A_ENV) -f $(SITE_A_COMPOSE) up -d --build
+	docker compose --env-file $(SITE_B_ENV) -f $(SITE_B_COMPOSE) up -d --build
+	docker compose -f $(FED_COMPOSE) --profile init run --rm federation-init
+	@echo ""
+	@echo "==> Both sites up. Tailing logs (Ctrl-C detaches; containers keep running)."
+	@echo ""
+	docker compose --env-file $(SITE_A_ENV) -f $(SITE_A_COMPOSE) \
+	               --env-file $(SITE_B_ENV) -f $(SITE_B_COMPOSE) logs -f
 
-# Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
+# Stop microservices for both sites. Deps stay up — use `make deps-down`.
 down:
-ifdef SERVICE
-	docker compose -f $(SERVICE)/deploy/docker-compose.yml down
-else
-	docker compose -f $(SERVICES_COMPOSE) down
+	docker compose --env-file $(SITE_B_ENV) -f $(SITE_B_COMPOSE) down
+	docker compose --env-file $(SITE_A_ENV) -f $(SITE_A_COMPOSE) down
+
+# Tail one site's logs only. Required: SITE=a or SITE=b.
+logs:
+ifndef SITE
+	$(error SITE is required. Usage: make logs SITE=a|b)
 endif
+	docker compose --env-file docker-local/site-$(SITE).env \
+	               -f docker-local/compose.services.site-$(SITE).yaml logs -f
+
+# Re-run the federation-init one-shot (idempotent). Useful after
+# rebuilding inbox-worker or recreating an INBOX stream.
+federation-up:
+	docker compose -f $(FED_COMPOSE) --profile init run --rm federation-init
 
 # --- SAST -------------------------------------------------------------------
 # Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
