@@ -14,11 +14,11 @@ services:
       context: ../../..
       dockerfile: tools/loadgen/deploy/Dockerfile
     environment:
-      - NATS_URL=nats://nats:4222
+      - SITE_ID=${SITE_ID:-site-a}
+      - NATS_URL=nats://${NATS_HOST:-nats-a}:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
-      - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=chat_${SITE_ID:-site-a}
       - VALKEY_ADDR=valkey:6379
       - METRICS_ADDR=:9099
       # Worker-pool cap for concurrent publishes. Set to 0 to publish
@@ -29,7 +29,7 @@ services:
       # profiling.
       # - PPROF_ADDR=:6060
     volumes:
-      - ../../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ../../../docker-local/${SITE_ID:-site-a}/backend.creds:/etc/nats/backend.creds:ro
     ports:
       - "9099:9099"
     entrypoint: ["sleep", "infinity"]

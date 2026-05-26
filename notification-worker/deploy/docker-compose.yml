@@ -1,19 +1,20 @@
-name: notification-worker
+name: ${SITE_ID:-site-a}-notification-worker
 
 services:
   notification-worker:
     build:
       context: ../..
       dockerfile: notification-worker/deploy/Dockerfile
+    container_name: ${SITE_ID:-site-a}-notification-worker
     environment:
-      - NATS_URL=nats://nats:4222
+      - SITE_ID=${SITE_ID:-site-a}
+      - NATS_URL=nats://${NATS_HOST:-nats-a}:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
-      - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=chat_${SITE_ID:-site-a}
       - BOOTSTRAP_STREAMS=true
     volumes:
-      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ../../docker-local/${SITE_ID:-site-a}/backend.creds:/etc/nats/backend.creds:ro
     networks:
       - chat-local
 

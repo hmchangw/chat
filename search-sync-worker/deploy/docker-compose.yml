@@ -1,22 +1,23 @@
-name: search-sync-worker
+name: ${SITE_ID:-site-a}-search-sync-worker
 
 services:
   search-sync-worker:
     build:
       context: ../..
       dockerfile: search-sync-worker/deploy/Dockerfile
+    container_name: ${SITE_ID:-site-a}-search-sync-worker
     environment:
-      - NATS_URL=nats://nats:4222
+      - SITE_ID=${SITE_ID:-site-a}
+      - NATS_URL=nats://${NATS_HOST:-nats-a}:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
-      - SITE_ID=site-local
       - SEARCH_URL=http://elasticsearch:9200
       - SEARCH_BACKEND=elasticsearch
-      - MSG_INDEX_PREFIX=messages-site-local-v1
-      - SPOTLIGHT_INDEX=spotlight-site-local-v1
-      - USER_ROOM_INDEX=user-room-mv-site-local
+      - MSG_INDEX_PREFIX=messages-${SITE_ID:-site-a}-v1
+      - SPOTLIGHT_INDEX=spotlight-${SITE_ID:-site-a}-v1
+      - USER_ROOM_INDEX=user-room-mv-${SITE_ID:-site-a}
       - BOOTSTRAP_STREAMS=true
     volumes:
-      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ../../docker-local/${SITE_ID:-site-a}/backend.creds:/etc/nats/backend.creds:ro
     networks:
       - chat-local
 

@@ -3,9 +3,12 @@
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
-NATS_CREDS       := docker-local/backend.creds
-NATS_CONF        := docker-local/nats.conf
-NATS_CONTAINER   := chat-local-nats
+# Stage 4 of the multisite rollout reworks these for two-site UX; for now
+# they point at site-a so the single-site `make deps-up` / `make up` flow
+# keeps working off the new per-site artifacts.
+NATS_CREDS       := docker-local/site-a/backend.creds
+NATS_CONF        := docker-local/site-a/nats.conf
+NATS_CONTAINER   := chat-local-nats-a
 
 # --- SAST / dev tooling ------------------------------------------------------
 # Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with

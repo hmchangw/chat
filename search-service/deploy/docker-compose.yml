@@ -1,20 +1,21 @@
-name: search-service
+name: ${SITE_ID:-site-a}-search-service
 
 services:
   search-service:
     build:
       context: ../..
       dockerfile: search-service/deploy/Dockerfile
+    container_name: ${SITE_ID:-site-a}-search-service
     environment:
-      - NATS_URL=nats://nats:4222
+      - SITE_ID=${SITE_ID:-site-a}
+      - NATS_URL=nats://${NATS_HOST:-nats-a}:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
-      - SITE_ID=site-local
       - SEARCH_URL=http://elasticsearch:9200
       - SEARCH_BACKEND=elasticsearch
       - VALKEY_ADDRS=valkey:6379
       - VALKEY_PASSWORD=
       - MONGO_URI=mongodb://mongodb:27017
-      - MONGO_DB=chat
+      - MONGO_DB=chat_${SITE_ID:-site-a}
       - USERS_API_URL=http://users-api-mock:8080
       - USERS_API_TIMEOUT=5s
       - SEARCH_DOC_COUNTS=25
@@ -24,15 +25,15 @@ services:
       - SEARCH_REQUEST_TIMEOUT=10s
       - SEARCH_METRICS_ADDR=:9090
       # Local dev pins to site-suffixed indices; prod uses aliases owned by ops/IaC.
-      - SEARCH_USER_ROOM_INDEX=user-room-mv-site-local
-      - SEARCH_SPOTLIGHT_INDEX=spotlight-site-local-v1
+      - SEARCH_USER_ROOM_INDEX=user-room-mv-${SITE_ID:-site-a}
+      - SEARCH_SPOTLIGHT_INDEX=spotlight-${SITE_ID:-site-a}-v1
     ports:
       # Expose /metrics so Prometheus / curl can scrape from the host
       # during local dev. The listener is bound on 0.0.0.0:9090 inside
       # the container.
-      - "9090:9090"
+      - "${SEARCH_METRICS_HOST_PORT:-9090}:9090"
     volumes:
-      - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
+      - ../../docker-local/${SITE_ID:-site-a}/backend.creds:/etc/nats/backend.creds:ro
     networks:
       - chat-local
 

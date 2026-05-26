@@ -4,7 +4,7 @@ set -eu
 
 : "${AUTH_URL:=http://localhost:8080}"
 : "${NATS_URL:=ws://localhost:9222}"
-: "${DEFAULT_SITE_ID:=site-local}"
+: "${DEFAULT_SITE_ID:=site-a}"
 : "${DEV_MODE:=false}"
 : "${OIDC_ISSUER_URL:=}"
 : "${OIDC_CLIENT_ID:=nats-chat}"

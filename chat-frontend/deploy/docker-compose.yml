@@ -8,7 +8,7 @@ services:
     environment:
       AUTH_URL: ${AUTH_URL:-http://localhost:8080}
       NATS_URL: ${NATS_URL:-ws://localhost:9222}
-      DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-site-local}
+      DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-site-a}
       # OIDC values are only consumed when DEV_MODE=false. The Keycloak
       # realm at OIDC_ISSUER_URL must serve OIDC_CLIENT_ID with a redirect
       # URI matching this frontend's /oidc-callback.
