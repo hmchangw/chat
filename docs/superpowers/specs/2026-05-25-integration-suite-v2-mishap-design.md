@@ -1428,18 +1428,6 @@ happen is a coverage gap.
    / sequence-level) extends naturally — per-site-pair is just a
    third category.
 
-5. **Trigger reliability.** The trigger fires on the first in-trace
-   event owned by the target pod. If the scenario never produces
-   such an event (the cascade dies before reaching the pod, e.g.
-   because a *prior* pod crashed), the trigger never fires and the
-   per-pod perturbation never runs. The case still completes —
-   classifier sees missing reads → fails — but for an attribution
-   reason that may confuse a reviewer ("did we even test what we
-   said?"). The reporter MUST distinguish "perturbation fired but
-   reads missing" from "perturbation never fired because cascade
-   died upstream"; we add a `mishap_fired: bool` per executor in the
-   case record.
-
 ---
 
 ## 8. Build order
