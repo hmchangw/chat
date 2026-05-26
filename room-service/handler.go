@@ -68,12 +68,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, h.natsCreateRoom); err != nil {
 		return fmt.Errorf("subscribe room.create: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
-		return err
-	}
-	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
-		return err
-	}
 	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
 	}
@@ -140,28 +134,6 @@ func (h *Handler) replyDMExists(msg *nats.Msg, existingRoomID string) {
 	if err := msg.Respond(body); err != nil {
 		slog.Error("failed to respond DM exists", "error", err)
 	}
-}
-
-func (h *Handler) natsListRooms(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	rooms, err := h.store.ListRooms(ctx)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
-}
-
-func (h *Handler) natsGetRoom(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	parts := strings.Split(m.Msg.Subject, ".")
-	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, room)
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte) ([]byte, error) {
@@ -466,10 +438,10 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 		}
 	}
 	if req.Limit != nil && *req.Limit <= 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("limit must be > 0")
+		return model.ListRoomMembersResponse{}, errListLimitInvalid
 	}
 	if req.Offset != nil && *req.Offset < 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("offset must be >= 0")
+		return model.ListRoomMembersResponse{}, errListOffsetInvalid
 	}
 
 	members, err := h.store.ListRoomMembers(ctx, roomID, req.Limit, req.Offset, req.Enrich)
@@ -491,7 +463,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("room ID mismatch")
+		return nil, errRoomIDMismatch
 	}
 	req.RoomID = roomID
 	req.Requester = requesterAccount
@@ -502,14 +474,14 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, fmt.Errorf("remove-member only supported on channel rooms, got %s", room.Type)
+		return nil, fmt.Errorf("%w, got %s", errRemoveChannelOnly, room.Type)
 	}
 	// Carry room type to room-worker to avoid a redundant GetRoom round-trip there.
 	req.RoomType = room.Type
 
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
-		return nil, fmt.Errorf("exactly one of account or orgId must be set")
+		return nil, errRemoveTargetAmbiguous
 	}
 
 	// Permission + last-member checks. Dual-membership / no-actual-removal detection moves to room-worker (it owns deletion).
@@ -519,7 +491,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("get target subscription: %w", err)
 		}
 		if target.HasOrgMembership && !target.HasIndividualMembership {
-			return nil, fmt.Errorf("org members cannot leave individually")
+			return nil, errOrgMemberCannotLeaveSolo
 		}
 		if req.Account != requesterAccount {
 			requesterSub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -535,10 +507,10 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("count members: %w", err)
 		}
 		if counts.MemberCount <= 1 {
-			return nil, fmt.Errorf("cannot remove the last member of the room")
+			return nil, errCannotRemoveLastMember
 		}
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
-			return nil, fmt.Errorf("last owner cannot leave the room")
+			return nil, errLastOwnerCannotLeave
 		}
 	} else {
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -67,6 +68,12 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
+		// Best-effort error reply so the client doesn't hang waiting for a
+		// response it will never get. Recover the account segment if the
+		// subject is at least chat.user.{account}.…; sendReply no-ops when the
+		// account or requestId is unusable. Ack regardless — a malformed
+		// subject is not retryable, so JetStream must not redeliver it.
+		h.sendReply(ctx, accountFromSubject(msg.Subject()), msg.Data(), natsutil.MarshalError("invalid message subject"))
 		if err := msg.Ack(); err != nil {
 			slog.Error("failed to ack message", "error", err)
 		}
@@ -101,12 +108,18 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 // sendReply extracts the requestID from the raw message data and publishes the
 // reply payload to the user's response subject.
 func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) {
+	if account == "" {
+		return
+	}
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(rawData, &req); err != nil {
 		slog.Error("unmarshal request for reply", "error", err)
 		return
 	}
-	if req.RequestID == "" {
+	// Skip when requestId is missing or not a valid hyphenated UUID — the reply
+	// subject chat.user.{account}.response.{requestId} would be unroutable, and
+	// processMessage already rejects such requests upstream.
+	if req.RequestID == "" || !idgen.IsValidUUID(req.RequestID) {
 		return
 	}
 	respSubj := subject.UserResponse(account, req.RequestID)
@@ -114,6 +127,17 @@ func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte,
 	if err := h.reply(ctx, replyMsg); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)
 	}
+}
+
+// accountFromSubject best-effort extracts the {account} token from a
+// chat.user.{account}.… subject. Returns "" when the subject is too malformed
+// to recover an account, in which case no error reply can be addressed.
+func accountFromSubject(subj string) string {
+	parts := strings.Split(subj, ".")
+	if len(parts) >= 3 && parts[0] == "chat" && parts[1] == "user" {
+		return parts[2]
+	}
+	return ""
 }
 
 // processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGES_CANONICAL.
@@ -129,6 +153,15 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	var req model.SendMessageRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("unmarshal send message request: %w", err)
+	}
+
+	// Validate requestId is a hyphenated UUID. It is required: the async reply
+	// is published to chat.user.{account}.response.{requestId}, so an empty or
+	// malformed value would leave the client unable to correlate (or receive)
+	// the reply. Rejecting here fails fast instead of publishing an
+	// unacknowledgeable message to MESSAGES_CANONICAL.
+	if !idgen.IsValidUUID(req.RequestID) {
+		return nil, fmt.Errorf("invalid requestId %q: must be a hyphenated UUID", req.RequestID)
 	}
 
 	// Validate ID is a valid 20-char base62 message ID

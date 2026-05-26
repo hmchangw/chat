@@ -283,21 +283,6 @@ func (mr *MockRoomStoreMockRecorder) ListRoomMembers(ctx, roomID, limit, offset,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRoomMembers", reflect.TypeOf((*MockRoomStore)(nil).ListRoomMembers), ctx, roomID, limit, offset, enrich)
 }
 
-// ListRooms mocks base method.
-func (m *MockRoomStore) ListRooms(ctx context.Context) ([]model.Room, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListRooms", ctx)
-	ret0, _ := ret[0].([]model.Room)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListRooms indicates an expected call of ListRooms.
-func (mr *MockRoomStoreMockRecorder) ListRooms(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRooms", reflect.TypeOf((*MockRoomStore)(nil).ListRooms), ctx)
-}
-
 // ListRoomsByIDs mocks base method.
 func (m *MockRoomStore) ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error) {
 	m.ctrl.T.Helper()

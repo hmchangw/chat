@@ -175,18 +175,6 @@ func RoomKeyUpdate(account string) string {
 
 // --- Room CRUD request builders ---
 
-func RoomsCreate(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.create", account)
-}
-
-func RoomsList(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.list", account)
-}
-
-func RoomsGet(account, roomID string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", account, roomID)
-}
-
 // RoomsInfoBatch is the server-to-server request subject for batch room info lookups.
 func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
@@ -266,18 +254,6 @@ func MsgCanonicalWildcard(siteID string) string {
 
 func OutboxWildcard(siteID string) string {
 	return fmt.Sprintf("outbox.%s.>", siteID)
-}
-
-func RoomsCreateWildcard() string {
-	return "chat.user.*.request.rooms.create"
-}
-
-func RoomsListWildcard() string {
-	return "chat.user.*.request.rooms.list"
-}
-
-func RoomsGetWildcard() string {
-	return "chat.user.*.request.rooms.get.*"
 }
 
 // RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.

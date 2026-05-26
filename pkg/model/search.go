@@ -92,10 +92,11 @@ type SearchAppsResponse struct {
 }
 
 // SearchUsersRequest is the NATS payload for `chat.user.{account}.request.search.users`.
-//
-// No pagination — the third-party HR endpoint hardcodes offset=0, limit=25.
+// Offset/Limit page the third-party HR endpoint; Limit defaults to 25 when 0.
 type SearchUsersRequest struct {
-	Query string `json:"query"`
+	Query  string `json:"query"`
+	Offset int    `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 // SearchUser is a single user result returned by the `search.users` RPC.

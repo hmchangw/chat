@@ -413,12 +413,12 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 
 	// Subscription update event. RoomType is fixed to channel: room-service
 	// rejects member.remove for any other room kind.
-	subEvt := model.SubscriptionUpdateEvent{
+	subEvt := model.SubscriptionRemovedEvent{
 		UserID: user.ID,
-		Subscription: model.Subscription{
+		Subscription: model.RemovedSubscriptionRef{
 			RoomID:   req.RoomID,
 			RoomType: model.RoomTypeChannel,
-			User:     model.SubscriptionUser{ID: user.ID, Account: req.Account},
+			U:        model.SubscriptionUser{ID: user.ID, Account: req.Account},
 		},
 		Action:    "removed",
 		Timestamp: now.UnixMilli(),
@@ -623,11 +623,11 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 
 	// Publish per-account subscription update and collect cross-site accounts
 	for _, m := range toRemove {
-		subEvt := model.SubscriptionUpdateEvent{
-			Subscription: model.Subscription{
+		subEvt := model.SubscriptionRemovedEvent{
+			Subscription: model.RemovedSubscriptionRef{
 				RoomID:   req.RoomID,
 				RoomType: model.RoomTypeChannel,
-				User:     model.SubscriptionUser{Account: m.Account},
+				U:        model.SubscriptionUser{Account: m.Account},
 			},
 			Action:    "removed",
 			Timestamp: now.UnixMilli(),

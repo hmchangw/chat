@@ -2379,36 +2379,36 @@ func TestSearchUserJSON_OmitEmpty(t *testing.T) {
 	assert.NotContains(t, got, "chineseName", "empty ChineseName must be omitted")
 }
 
-func TestRoomEventMessageEditedJSON(t *testing.T) {
+func TestEditRoomEventJSON(t *testing.T) {
 	editedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
 	updatedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageEdited,
-		RoomID: "r1",
-		MessageEdited: &model.MessageEditedPayload{
-			MessageID:  "msg-uuid",
-			NewContent: "hello (edited)",
-			EditedBy:   "alice",
-			EditedAt:   editedAt,
-			UpdatedAt:  updatedAt,
-		},
+	evt := model.EditRoomEvent{
+		Type:       model.RoomEventMessageEdited,
+		RoomID:     "r1",
+		SiteID:     "site-a",
+		Timestamp:  1746518700123,
+		MessageID:  "msg-uuid",
+		NewContent: "hello (edited)",
+		EditedBy:   "alice",
+		EditedAt:   editedAt,
+		UpdatedAt:  updatedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.EditRoomEvent{})
 }
 
-func TestRoomEventMessageDeletedJSON(t *testing.T) {
+func TestDeleteRoomEventJSON(t *testing.T) {
 	deletedAt := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageDeleted,
-		RoomID: "r1",
-		MessageDeleted: &model.MessageDeletedPayload{
-			MessageID: "msg-uuid",
-			DeletedBy: "alice",
-			DeletedAt: deletedAt,
-			UpdatedAt: deletedAt,
-		},
+	evt := model.DeleteRoomEvent{
+		Type:      model.RoomEventMessageDeleted,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1746518800123,
+		MessageID: "msg-uuid",
+		DeletedBy: "alice",
+		DeletedAt: deletedAt,
+		UpdatedAt: deletedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.DeleteRoomEvent{})
 }
 
 func TestMessageThreadReadRequestJSON(t *testing.T) {
@@ -2458,4 +2458,43 @@ func TestOutboxEventJSON_ThreadRead(t *testing.T) {
 	var gotPayload model.ThreadReadEvent
 	require.NoError(t, json.Unmarshal(dst.Payload, &gotPayload))
 	assert.Equal(t, payload, gotPayload)
+}
+
+func TestSubscriptionRemovedEventJSON(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		UserID: "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{ID: "01970a4f8c2d7c9a01970a4f8c2d7c9a", Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	roundTrip(t, &evt, &model.SubscriptionRemovedEvent{})
+}
+
+func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	sub := raw["subscription"]
+	require.NotNil(t, sub)
+	var subRaw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(sub, &subRaw))
+	// The lean ref must NOT carry the full Subscription's fields.
+	for _, leaked := range []string{"roles", "name", "joinedAt", "alert", "muted", "siteId", "id"} {
+		_, present := subRaw[leaked]
+		assert.False(t, present, "removed event subscription must not carry %q", leaked)
+	}
 }

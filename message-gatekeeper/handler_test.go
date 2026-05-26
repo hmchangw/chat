@@ -47,6 +47,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	validSiteID := "site-a"
 	validRoomID := "room-1"
 	validAccount := "alice"
+	validRequestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 
 	sub := &model.Subscription{
 		User:   model.SubscriptionUser{ID: "u1", Account: validAccount},
@@ -75,7 +76,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -112,6 +113,42 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 		},
 		{
+			name:    "missing requestId — rejected before publish",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				return []byte(fmt.Sprintf(`{"id":%q,"content":%q}`, validID, validContent))
+			},
+			setupStore: func(s *MockStore) {},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr:       true,
+			wantInfra:     false,
+			wantNoPublish: true,
+		},
+		{
+			name:    "malformed requestId — rejected before publish",
+			account: validAccount,
+			roomID:  validRoomID,
+			siteID:  validSiteID,
+			buildData: func() []byte {
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: "req-1"}
+				data, _ := json.Marshal(req)
+				return data
+			},
+			setupStore: func(s *MockStore) {},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			wantErr:       true,
+			wantInfra:     false,
+			wantNoPublish: true,
+		},
+		{
 			name:    "happy path with thread parent",
 			account: validAccount,
 			roomID:  validRoomID,
@@ -120,8 +157,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				parentID := idgen.GenerateMessageID()
 				parentMillis := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC).UnixMilli()
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
-					validID, validContent, parentID, parentMillis,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
+					validID, validContent, validRequestID, parentID, parentMillis,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -163,7 +200,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				req := model.SendMessageRequest{
 					ID:                    validID,
 					Content:               validContent,
-					ThreadParentMessageID: "parent-msg-uuid",
+					RequestID:             validRequestID,
+					ThreadParentMessageID: idgen.GenerateMessageID(),
 				}
 				data, _ := json.Marshal(req)
 				return data
@@ -181,7 +219,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: "not-a-uuid", Content: validContent}
+				req := model.SendMessageRequest{ID: "not-a-uuid", Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -198,7 +236,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: ""}
+				req := model.SendMessageRequest{ID: validID, Content: "", RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -215,7 +253,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: strings.Repeat("x", 20*1024+1)}
+				req := model.SendMessageRequest{ID: validID, Content: strings.Repeat("x", 20*1024+1), RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -232,7 +270,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -253,7 +291,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -274,7 +312,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -313,7 +351,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  "site-b",
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -330,7 +368,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -358,7 +396,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -386,7 +424,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -414,7 +452,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -446,7 +484,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -473,7 +511,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -500,7 +538,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -535,8 +573,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				parentID := idgen.GenerateMessageID()
 				parentMillis := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC).UnixMilli()
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
-					idgen.GenerateMessageID(), validContent, parentID, parentMillis,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
+					idgen.GenerateMessageID(), validContent, validRequestID, parentID, parentMillis,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -563,7 +601,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -596,7 +634,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -623,7 +661,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent}
+				req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -717,6 +755,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 	req := model.SendMessageRequest{
 		ID:                           idgen.GenerateMessageID(),
 		Content:                      "reply",
+		RequestID:                    "01970a4f-8c2d-7c9a-abcd-e0123456789f",
 		ThreadParentMessageID:        "not-a-valid-msg-id",
 		ThreadParentMessageCreatedAt: &parentTs,
 	}
@@ -744,7 +783,7 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	h := NewHandler(store, pub, reply, "site1", nil, 500)
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
-	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello"}
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	data, _ := json.Marshal(req)
 
 	_, err := h.processMessage(ctx, "alice", "room-1", "site1", data)
@@ -759,6 +798,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 	validSiteID := "site-a"
 	validRoomID := "room-1"
 	validAccount := "alice"
+	validRequestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	parentMessageID := idgen.GenerateMessageID()
 
 	sub := &model.Subscription{
@@ -820,6 +860,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				req := model.SendMessageRequest{
 					ID:                    validID,
 					Content:               validContent,
+					RequestID:             validRequestID,
 					QuotedParentMessageID: parentMessageID,
 				}
 				data, _ := json.Marshal(req)
@@ -853,6 +894,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				req := model.SendMessageRequest{
 					ID:                    validID,
 					Content:               validContent,
+					RequestID:             validRequestID,
 					QuotedParentMessageID: parentMessageID,
 				}
 				data, _ := json.Marshal(req)
@@ -876,8 +918,8 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			name: "thread T msg quoting another reply in thread T — snapshot embedded",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
-					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadParentTS.UnixMilli(), parentMessageID,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -905,6 +947,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				req := model.SendMessageRequest{
 					ID:                    validID,
 					Content:               validContent,
+					RequestID:             validRequestID,
 					QuotedParentMessageID: parentMessageID,
 				}
 				data, _ := json.Marshal(req)
@@ -928,8 +971,8 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			name: "thread T msg quoting main-room parent — request fails (strict)",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
-					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadParentTS.UnixMilli(), parentMessageID,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -949,8 +992,8 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			name: "thread T msg quoting reply in different thread T' — request fails",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":"req-1","threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
-					validID, validContent, threadID, threadParentTS.UnixMilli(), parentMessageID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadParentTS.UnixMilli(), parentMessageID,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -969,7 +1012,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 		{
 			name: "no quote field — fetcher not called",
 			buildData: func() []byte {
-				req := model.SendMessageRequest{ID: validID, Content: validContent}
+				req := model.SendMessageRequest{ID: validID, Content: validContent, RequestID: validRequestID}
 				data, _ := json.Marshal(req)
 				return data
 			},
@@ -994,6 +1037,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				req := model.SendMessageRequest{
 					ID:                    validID,
 					Content:               validContent,
+					RequestID:             validRequestID,
 					QuotedParentMessageID: parentMessageID,
 				}
 				data, _ := json.Marshal(req)
@@ -1140,5 +1184,68 @@ func TestHandler_marshalErrorReply(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &got))
 		assert.Equal(t, "posting is restricted to owners and admins in this room", got.Error)
 		assert.Equal(t, "large_room_post_restricted", got.Code)
+	})
+}
+
+func TestAccountFromSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		subj string
+		want string
+	}{
+		{"valid send subject", "chat.user.alice.room.r1.site-a.msg.send", "alice"},
+		{"minimal recoverable", "chat.user.bob", "bob"},
+		{"not chat.user", "foo.bar.baz", ""},
+		{"too short", "chat.user", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, accountFromSubject(tt.subj))
+		})
+	}
+}
+
+func TestHandler_sendReply(t *testing.T) {
+	newHandlerWithReply := func(captured *[]*nats.Msg) *Handler {
+		reply := func(_ context.Context, msg *nats.Msg) error {
+			*captured = append(*captured, msg)
+			return nil
+		}
+		return NewHandler(nil, nil, reply, "site-a", nil, 500)
+	}
+
+	mk := func(requestID string) []byte {
+		b, _ := json.Marshal(model.SendMessageRequest{ID: "id", Content: "c", RequestID: requestID})
+		return b
+	}
+
+	t.Run("valid UUID requestId publishes a reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{"ok":true}`))
+		require.Len(t, captured, 1)
+		assert.Equal(t, "chat.user.alice.response.01970a4f-8c2d-7c9a-abcd-e0123456789f", captured[0].Subject)
+	})
+
+	t.Run("empty requestId skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk(""), []byte(`{}`))
+		assert.Empty(t, captured)
+	})
+
+	t.Run("malformed (non-UUID) requestId skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "alice", mk("req-1"), []byte(`{}`))
+		assert.Empty(t, captured, "unroutable requestId must not be published to")
+	})
+
+	t.Run("empty account skips reply", func(t *testing.T) {
+		var captured []*nats.Msg
+		h := newHandlerWithReply(&captured)
+		h.sendReply(context.Background(), "", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{}`))
+		assert.Empty(t, captured)
 	})
 }
