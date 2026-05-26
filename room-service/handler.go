@@ -1626,7 +1626,7 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 			}
 			return nil, fmt.Errorf("get requester subscription: %w", subErr)
 		}
-		if !hasRole(sub.Roles, model.RoleOwner) && !hasRole(sub.Roles, model.RoleAdmin) {
+		if !hasRole(sub.Roles, model.RoleOwner) {
 			return nil, errOnlyOwnersOrAdmins
 		}
 	}

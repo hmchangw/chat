@@ -4257,6 +4257,20 @@ func TestHandleRoomRename_Validation(t *testing.T) {
 			wantErr: nil,
 		},
 		{
+			name: "room admin rejected (only owner or platform admin allowed)",
+			subj: subject.RoomRename("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
+			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
+				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
+				s.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(
+					&model.Subscription{Roles: []model.Role{model.RoleAdmin}}, nil,
+				)
+			},
+			wantErr: errOnlyOwnersOrAdmins,
+		},
+		{
 			name: "admin allowed without subscription",
 			subj: subject.RoomRename("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RenameRoomRequest{NewName: "new-name"}),
@@ -4264,7 +4278,7 @@ func TestHandleRoomRename_Validation(t *testing.T) {
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
-				// No GetSubscription call expected for admin
+				// No GetSubscription call expected for platform admin
 			},
 			wantErr: nil,
 		},

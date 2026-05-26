@@ -2195,7 +2195,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 		natsURL := setupNATS(t)
 		clientNC, err := nats.Connect(natsURL)
 		require.NoError(t, err)
-		t.Cleanup(func() { clientNC.Drain() })
+		t.Cleanup(func() { _ = clientNC.Drain() })
 
 		// Set up the ROOMS stream so publishToStream can land events.
 		js := setupRoomsStream(t, clientNC, siteID)
@@ -2277,7 +2277,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 
 		clientNC, err := nats.Connect(natsURL)
 		require.NoError(t, err)
-		t.Cleanup(func() { clientNC.Drain() })
+		t.Cleanup(func() { _ = clientNC.Drain() })
 
 		keyStore := setupValkey(t)
 		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
@@ -2326,7 +2326,7 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 		natsURL := setupNATS(t)
 		clientNC, err := nats.Connect(natsURL)
 		require.NoError(t, err)
-		t.Cleanup(func() { clientNC.Drain() })
+		t.Cleanup(func() { _ = clientNC.Drain() })
 
 		// Set up the ROOMS stream so publishToStream can land events.
 		js := setupRoomsStream(t, clientNC, siteID)
@@ -2429,7 +2429,7 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 
 		clientNC, err := nats.Connect(natsURL)
 		require.NoError(t, err)
-		t.Cleanup(func() { clientNC.Drain() })
+		t.Cleanup(func() { _ = clientNC.Drain() })
 
 		keyStore := setupValkey(t)
 		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,

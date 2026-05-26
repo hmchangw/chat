@@ -59,6 +59,10 @@ func main() {
 		slog.Error("invalid MEMBER_LIST_TIMEOUT: must be > 0", "value", cfg.MemberListTimeout)
 		os.Exit(1)
 	}
+	if cfg.RestrictedRoomMinMembers <= 0 {
+		slog.Error("invalid RESTRICTED_ROOM_MIN_MEMBERS: must be > 0", "value", cfg.RestrictedRoomMinMembers)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 

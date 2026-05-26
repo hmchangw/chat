@@ -586,7 +586,7 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual rename runs asynchronously in `room-worker`, which publishes an `AsyncJobResult` on `chat.user.{requesterAccount}.response.{requestID}` when the job finishes. To receive this event the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
-Only channel rooms may be renamed. This RPC may be called by a **platform admin** (`model.UserRoleAdmin`) or by a room member who holds the **room owner** (`model.RoleOwner`) or **room admin** (`model.RoleAdmin`) role. Platform admins bypass the room-membership check entirely.
+Only channel rooms may be renamed. This RPC may be called by a **platform admin** (`model.UserRoleAdmin`) or by a room member who holds the **room owner** (`model.RoleOwner`) role. Platform admins bypass the room-membership check entirely.
 
 ##### Request body
 
@@ -617,7 +617,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"invalid name"` — `newName` is empty after trimming, or exceeds 100 characters.
 - `"room not found"` — no room matches the subject `{roomID}`.
 - `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
-- `"only owners or admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` or `admin` role in the room.
+- `"only owners or admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` role in the room.
 - `"invalid request"` — body is malformed or `roomId` does not match the subject.
 - `"missing X-Request-ID header"` — the NATS header is absent.
 - `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
