@@ -205,8 +205,8 @@ The creator's account and the site come from the subject (`chat.user.{account}.r
 | Field      | Type              | Required | Notes |
 |------------|-------------------|----------|-------|
 | `name`     | string            | channels | Channel name (≤ 100 chars). Required to create a channel; leave empty for a DM/botDM. |
-| `users`    | string[]          | no       | Internal user IDs (or accounts) to enroll. For a DM, exactly one entry (the other user). Channel creates reject a bot account here with `"bots cannot be added to a channel"`, and any account with no matching user document with `"user not found"`. |
-| `orgs`     | string[]          | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Any entry matching zero users is rejected with `"invalid org"`. |
+| `users`    | string[]          | no       | Internal user IDs (or accounts) to enroll. For a DM, exactly one entry (the other user). Channel creates reject a bot account here with `"bots cannot be added to a channel"`, and any account with no matching user document with `user "<account>": user not found`. |
+| `orgs`     | string[]          | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Any entry matching zero users is rejected with `org "<orgId>": invalid org`. |
 | `channels` | array<ChannelRef> | no       | `channel` only. Other channels whose members are copied in. Each entry is `{ "roomId": string, "siteId": string }`. |
 
 ```json
@@ -247,7 +247,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously on val
 - `"channel name is required"` / `"channel name must be at most 100 characters"`
 - `"cannot create a DM with yourself"`
 - `"bots cannot be added to a channel"` / `"bot not available"` (botDM target whose assistant is disabled)
-- `"user not found"` / `"invalid org"`
+- `user "<account>": user not found` / `org "<orgId>": invalid org` (each wrapped with the offending account/org ID)
 - `"user is missing required name fields"`
 - `"exceeds maximum capacity (N): would create M members"`
 
@@ -317,7 +317,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `"invalid org"`, and any `users` entry that has no matching user document is rejected with `"user not found"` — in both cases the request is not queued and no members are added.
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner, or a `users` entry is a bot — rejected with `"bots cannot be added to a channel"`). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `org "<orgId>": invalid org`, and any `users` entry that has no matching user document is rejected with `user "<account>": user not found` (each wrapped with the offending account/org ID) — in both cases the request is not queued and no members are added.
 
 ```json
 { "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
@@ -409,7 +409,7 @@ This is an **async-job RPC**: the synchronous reply only confirms acceptance. Th
 | `orgId`   | string | no       | Remove all users in this org. Mutually exclusive with `account`. |
 | `roomId`  | string | no       | Server derives from subject; non-matching values are rejected. |
 
-Exactly one of `account` or `orgId` must be set. The fields `requester` and `timestamp` on the Go `RemoveMemberRequest` are server-set — the client should omit them.
+Exactly one of `account` or `orgId` must be set. The fields `requester`, `roomType`, and `timestamp` on the Go `RemoveMemberRequest` are server-set — the client should omit them.
 
 ```json
 { "account": "bob" }
@@ -651,7 +651,7 @@ The subject already carries `account` and `roomID`, so no body fields are requir
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
-- `"invalid message-read subject: …"` — the subject is malformed.
+- A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 
 ```json
 { "error": "only room members can list members" }
@@ -736,7 +736,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
-Synchronous RPC. `room-service` flips `Subscription.muted` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, fans out a `subscription.update` event to the user's other client sessions, and (for cross-site users) publishes a `subscription_mute_toggled` outbox event so `inbox-worker` mirrors the change on the user's home site.
+Synchronous RPC. `room-service` flips `Subscription.muted` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, and fans out a `subscription.update` event to the user's other client sessions.
 
 Idempotency: this is a toggle, not a set — every successful call flips the bit. Clients must debounce the user-visible action; redelivery of the same RPC will flip back.
 
@@ -775,7 +775,6 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Behaviour notes
 
-- **Cross-site federation:** if the user's home site (`users.siteId`) differs from the handler's site, a `subscription_mute_toggled` outbox event is published to `outbox.{handlerSite}.to.{userSite}.subscription_mute_toggled` with payload `{account, roomId, muted, timestamp}`. The destination `inbox-worker` applies an unconditional `$set` on the local subscription mirror.
 - **Notification delivery:** `notification-worker` does **not** yet consult `muted` before sending. End-to-end mute behaviour is wired only as far as the persisted flag; honouring it in fan-out is a follow-up.
 
 ---
@@ -835,7 +834,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - `"message not found"` — no message matches `messageId`.
 - `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
 - `"only the message sender can view read receipts"` — requester is not the author of `messageId`.
-- `"invalid message-read-receipt subject: …"` — the subject is malformed.
+- A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 - `"invalid request: messageId is required"` — empty `messageId`.
 
 ```json
@@ -1001,6 +1000,8 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `messageLink` | string | Optional. |
 | `threadParentId` | string | Optional. Set if the quoted message itself is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
+
+When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
 
 #### Load History
 

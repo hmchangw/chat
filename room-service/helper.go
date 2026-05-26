@@ -224,7 +224,7 @@ func sanitizeError(err error) string {
 		return err.Error()
 	default:
 		msg := err.Error()
-		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "requester not in room", "invalid request", "remote member.list:", "invalid mute-toggle subject"} {
+		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "exceeds maximum capacity", "requester not in room", "invalid request", "remote member.list:", "invalid mute-toggle subject"} {
 			if strings.Contains(msg, safe) {
 				return msg
 			}

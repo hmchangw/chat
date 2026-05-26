@@ -63,6 +63,7 @@ func TestSanitizeError(t *testing.T) {
 		{"safe owner message", errors.New("only owners can add members"), "only owners can add members"},
 		{"safe cannot add", errors.New("cannot add members to a DM room"), "cannot add members to a DM room"},
 		{"safe capacity", errors.New("room is at maximum capacity (1000)"), "room is at maximum capacity (1000)"},
+		{"safe exceeds capacity", errors.New("exceeds maximum capacity (1000): would create 1001 members"), "exceeds maximum capacity (1000): would create 1001 members"},
 		{"safe requester", errors.New("requester not in room: not found"), "requester not in room: not found"},
 		{"safe invalid", errors.New("invalid request: bad json"), "invalid request: bad json"},
 		{"passes through invalid mute-toggle subject", fmt.Errorf("invalid mute-toggle subject: chat.user.alice.foo"), "invalid mute-toggle subject: chat.user.alice.foo"},
