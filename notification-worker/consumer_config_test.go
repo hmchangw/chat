@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/hmchangw/chat/pkg/stream"
-	"github.com/hmchangw/chat/pkg/subject"
 )
 
 func TestBuildConsumerConfig(t *testing.T) {
@@ -18,7 +17,7 @@ func TestBuildConsumerConfig(t *testing.T) {
 			MaxDeliver:    5,
 			MaxWaiting:    512,
 			MaxAckPending: 1000,
-		}, "site-a")
+		})
 
 		assert.Equal(t, "notification-worker", cc.Durable)
 		assert.Equal(t, 1000, cc.MaxAckPending)
@@ -35,18 +34,12 @@ func TestBuildConsumerConfig(t *testing.T) {
 			MaxDeliver:    3,
 			MaxWaiting:    256,
 			MaxAckPending: 500,
-		}, "site-a")
+		})
 
 		assert.Equal(t, "notification-worker", cc.Durable)
 		assert.Equal(t, 500, cc.MaxAckPending)
 		assert.Equal(t, 45*time.Second, cc.AckWait)
 		assert.Equal(t, 3, cc.MaxDeliver)
 		assert.Equal(t, 256, cc.MaxWaiting)
-	})
-
-	t.Run("filter subject restricts to .created", func(t *testing.T) {
-		cc := buildConsumerConfig(stream.ConsumerSettings{}, "site-a")
-		assert.Equal(t, subject.MsgCanonicalCreated("site-a"), cc.FilterSubject,
-			"notification-worker must only consume canonical .created subjects: notifications are 'new_message' only, edits/deletes must not fan out as new notifications")
 	})
 }
