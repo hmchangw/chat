@@ -135,7 +135,7 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 |---------------------|--------|-------|
 | `natsJwt`           | string | Signed NATS user JWT. Use as the user JWT when connecting to NATS. |
 | `user.email`        | string | OIDC email claim. |
-| `user.account`      | string | The `{account}` value used in every NATS subject. Derived from `preferred_username` (falls back to `name`). |
+| `user.account`      | string | The `{account}` value used in every NATS subject. Derived from `preferred_username` (falls back to `name`). Must be 1–64 chars of `[A-Za-z0-9_-]`; SSO claims that resolve to anything else are rejected with 401. |
 | `user.employeeId`   | string | Parsed from the SSO `description` claim. |
 | `user.engName`      | string | Parsed from the SSO `description` claim. |
 | `user.chineseName`  | string | Parsed from the SSO `description` claim. |
@@ -163,8 +163,8 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 | Status | Meaning | Example body |
 |--------|---------|--------------|
-| 400    | Missing or malformed fields, or invalid `natsPublicKey`. | `{ "error": "ssoToken and natsPublicKey are required" }` |
-| 401    | SSO token expired or invalid. | `{ "error": "SSO token has expired, please re-login" }` |
+| 400    | Missing or malformed fields, or invalid `natsPublicKey`. In dev mode, also returned for an `account` that is empty, longer than 64 characters, or contains any character outside `[A-Za-z0-9_-]`. | `{ "error": "ssoToken and natsPublicKey are required" }` |
+| 401    | SSO token expired or invalid, or SSO claims resolve to an account that is empty, longer than 64 characters, or contains any character outside `[A-Za-z0-9_-]`. | `{ "error": "SSO token has expired, please re-login" }` |
 | 500    | Server-side JWT signing failure. | `{ "error": "failed to generate NATS token" }` |
 
 #### Triggered events — success path

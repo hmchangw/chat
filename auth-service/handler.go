@@ -16,6 +16,32 @@ import (
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
+const maxAccountLength = 64
+
+// validateAccount ensures the account name is safe to interpolate into NATS
+// subject permission patterns. NATS subjects use '.', '*', '>' as delimiters
+// and wildcards; any of those characters in an account would widen the
+// issued JWT's permissions beyond the intended user namespace.
+func validateAccount(account string) error {
+	if account == "" {
+		return errors.New("account is empty")
+	}
+	if len(account) > maxAccountLength {
+		return fmt.Errorf("account exceeds %d characters", maxAccountLength)
+	}
+	for _, r := range account {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return fmt.Errorf("account contains unsupported character %q", r)
+		}
+	}
+	return nil
+}
+
 // TokenValidator validates an SSO token and returns OIDC claims.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (pkgoidc.Claims, error)
@@ -101,6 +127,11 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 	if account == "" {
 		account = claims.Name
 	}
+	if err := validateAccount(account); err != nil {
+		slog.Warn("oidc claims produced invalid account", "error", err, "subject", claims.Subject)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user account is invalid"})
+		return
+	}
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {
@@ -139,6 +170,11 @@ func (h *AuthHandler) handleDevAuth(c *gin.Context) {
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		return
+	}
+
+	if err := validateAccount(req.Account); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account"})
 		return
 	}
 
