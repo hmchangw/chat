@@ -1532,3 +1532,81 @@ func TestHandleRoomVisibilityChanged_StoreError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "apply visibility")
 }
+
+func TestHandleRoomRenamed_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload model.RoomRenamedOutboxPayload
+	}{
+		{
+			name:    "empty room ID propagates to store call",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "", NewName: "new", Timestamp: 1700000000000},
+		},
+		{
+			name:    "empty new name propagates to store call",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "", Timestamp: 1700000000000},
+		},
+		{
+			name:    "zero timestamp accepted (inbox handler does not validate)",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 0},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockInboxStore(ctrl)
+			store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), tt.payload.RoomID, tt.payload.NewName).Return(nil)
+
+			h := NewHandler(store)
+			payload, _ := json.Marshal(tt.payload)
+			data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload})
+			require.NoError(t, h.HandleEvent(context.Background(), data))
+		})
+	}
+}
+
+func TestHandleRoomVisibilityChanged_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload model.RoomVisibilityOutboxPayload
+	}{
+		{
+			name: "empty room ID propagates to store call",
+			payload: model.RoomVisibilityOutboxPayload{
+				RoomID: "", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "missing owner account on restrict propagates to store (branch (b) flags-only)",
+			payload: model.RoomVisibilityOutboxPayload{
+				RoomID: "r1", Restricted: true, ExternalAccess: true, OwnerAccount: "", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "missing owner account on unrestrict propagates to store (branch (c) flags-only)",
+			payload: model.RoomVisibilityOutboxPayload{
+				RoomID: "r1", Restricted: false, ExternalAccess: false, OwnerAccount: "", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "zero timestamp accepted (inbox handler does not validate)",
+			payload: model.RoomVisibilityOutboxPayload{
+				RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 0,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockInboxStore(ctrl)
+			store.EXPECT().ApplySubscriptionVisibility(
+				gomock.Any(), tt.payload.RoomID, tt.payload.Restricted, tt.payload.ExternalAccess, tt.payload.OwnerAccount,
+			).Return(nil)
+
+			h := NewHandler(store)
+			payload, _ := json.Marshal(tt.payload)
+			data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomVisibilityChanged, Payload: payload})
+			require.NoError(t, h.HandleEvent(context.Background(), data))
+		})
+	}
+}
