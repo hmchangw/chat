@@ -12,8 +12,9 @@ import (
 var ErrUserNotFound = errors.New("user not found")
 
 var (
-	ErrRoomNotFound   = errors.New("room not found")
-	ErrNotChannelRoom = errors.New("not a channel room")
+	ErrRoomNotFound       = errors.New("room not found")
+	ErrNotChannelRoom     = errors.New("not a channel room")
+	ErrOwnerNotSubscribed = errors.New("owner account is no longer subscribed")
 )
 
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore,RoomKeyStore

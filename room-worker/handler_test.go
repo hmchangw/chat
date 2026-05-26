@@ -4939,11 +4939,9 @@ func TestRunJobWithRecovery_PanicAcksAndDoesNotCrash(t *testing.T) {
 }
 
 func TestFindRemoteSitesForAccounts(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	store := NewMockSubscriptionStore(ctrl)
-
 	t.Run("dedupes remote, drops local, preserves siteIDs", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockSubscriptionStore(ctrl)
 		store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "carol", "dave"}).Return([]model.User{
 			{Account: "alice", SiteID: "site-a"}, // local
 			{Account: "bob", SiteID: "site-b"},   // remote
@@ -4957,6 +4955,8 @@ func TestFindRemoteSitesForAccounts(t *testing.T) {
 	})
 
 	t.Run("empty input returns empty slice", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockSubscriptionStore(ctrl)
 		h := &Handler{store: store, siteID: "site-a"}
 		got, err := h.findRemoteSitesForAccounts(context.Background(), nil)
 		require.NoError(t, err)
@@ -4966,7 +4966,6 @@ func TestFindRemoteSitesForAccounts(t *testing.T) {
 
 func TestFindRemoteSitesForAccounts_StoreError(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo timeout"))
 
@@ -5065,9 +5064,10 @@ func TestProcessRoomRename_UnmarshalFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 	// requesterAccount is empty after unmarshal failure, so publishAsyncJobResult must not publish.
-	requesterSubj := subject.UserResponse("alice", requestID)
 	for _, s := range publishedSubjects {
-		assert.NotEqual(t, requesterSubj, s, "should not publish AsyncJobResult when requesterAccount is empty")
+		assert.False(t,
+			strings.HasPrefix(s, "chat.user.") && strings.Contains(s, ".response."+requestID),
+			"should not publish AsyncJobResult on unmarshal failure: got %s", s)
 	}
 }
 
@@ -5348,9 +5348,10 @@ func TestProcessRoomVisibility_UnmarshalFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 	// requesterAccount is empty after unmarshal failure, so publishAsyncJobResult must not publish.
-	requesterSubj := subject.UserResponse("alice", requestID)
 	for _, s := range publishedSubjects {
-		assert.NotEqual(t, requesterSubj, s, "should not publish AsyncJobResult when requesterAccount is empty")
+		assert.False(t,
+			strings.HasPrefix(s, "chat.user.") && strings.Contains(s, ".response."+requestID),
+			"should not publish AsyncJobResult on unmarshal failure: got %s", s)
 	}
 }
 

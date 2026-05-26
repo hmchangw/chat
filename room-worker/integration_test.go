@@ -1798,19 +1798,22 @@ func TestMongoStore_UpdateRoomVisibility(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", true, true))
-	got, _ := store.GetRoom(ctx, "r1")
+	got, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
 	assert.True(t, got.Restricted)
 	assert.True(t, got.ExternalAccess)
 
 	// Idempotent re-apply — state must remain true/true.
 	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", true, true))
-	got, _ = store.GetRoom(ctx, "r1")
+	got, err = store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
 	assert.True(t, got.Restricted, "idempotent re-apply preserved restricted")
 	assert.True(t, got.ExternalAccess, "idempotent re-apply preserved externalAccess")
 
 	// Flip to false/false.
 	require.NoError(t, store.UpdateRoomVisibility(ctx, "r1", false, false))
-	got, _ = store.GetRoom(ctx, "r1")
+	got, err = store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
 	assert.False(t, got.Restricted)
 	assert.False(t, got.ExternalAccess)
 }
@@ -1828,11 +1831,13 @@ func TestMongoStore_UpdateSubscriptionNamesForRoom(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new"))
-	all, _ := store.ListByRoom(ctx, "r1")
+	all, err := store.ListByRoom(ctx, "r1")
+	require.NoError(t, err)
 	for _, sub := range all {
 		assert.Equal(t, "new", sub.Name, "sub %s", sub.ID)
 	}
-	other, _ := store.ListByRoom(ctx, "other")
+	other, err := store.ListByRoom(ctx, "other")
+	require.NoError(t, err)
 	require.Len(t, other, 1)
 	assert.Equal(t, "untouched", other[0].Name)
 }
@@ -1849,7 +1854,8 @@ func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
 	}
 	rolesByAccount := func(t *testing.T, store *MongoStore) map[string][]model.Role {
 		t.Helper()
-		subs, _ := store.ListByRoom(context.Background(), "r1")
+		subs, err := store.ListByRoom(context.Background(), "r1")
+		require.NoError(t, err)
 		out := map[string][]model.Role{}
 		for _, sub := range subs {
 			out[sub.User.Account] = sub.Roles
@@ -1906,6 +1912,27 @@ func TestMongoStore_ApplySubscriptionVisibility(t *testing.T) {
 			assert.False(t, sub.ExternalAccess, "sub %s externalAccess", sub.ID)
 		}
 	})
+}
+
+// TestMongoStore_ApplySubscriptionVisibility_OwnerRemoved verifies that
+// ApplySubscriptionVisibility returns ErrOwnerNotSubscribed when the
+// designated ownerAccount has no subscription in the room, so that the
+// role-rewrite branch cannot leave the channel with zero owners.
+func TestMongoStore_ApplySubscriptionVisibility_OwnerRemoved(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-visibility-owner-removed")
+	store := NewMongoStore(db)
+
+	// Seed subscriptions WITHOUT the designated owner ("charlie").
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
+		newSubFixtureWithRoles("s1", "u1", "alice", "r1", []model.Role{model.RoleMember}),
+		newSubFixtureWithRoles("s2", "u2", "bob", "r1", []model.Role{model.RoleMember}),
+	})
+	require.NoError(t, err)
+
+	err = store.ApplySubscriptionVisibility(ctx, "r1", true, false, "charlie")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrOwnerNotSubscribed, "expected ErrOwnerNotSubscribed when owner has no subscription")
 }
 
 // TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash exercises the
@@ -2039,16 +2066,19 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	assert.Equal(t, model.MessageTypeRoomRenamed, sysEvt.Message.Type)
 	assert.Equal(t, "alice", sysEvt.Message.UserAccount)
 
-	// Two subscription update events (one per local + remote subs).
+	// Exactly one subscription update event per subscriber (alice, bob, carol).
 	cap.mu.Lock()
-	subUpdateCount := 0
+	var subUpdateAccounts []string
 	for _, p := range cap.captured {
 		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
-			subUpdateCount++
+			parts := strings.Split(p.subject, ".")
+			if len(parts) > 2 {
+				subUpdateAccounts = append(subUpdateAccounts, parts[2])
+			}
 		}
 	}
 	cap.mu.Unlock()
-	assert.GreaterOrEqual(t, subUpdateCount, 2, "at least 2 subscription update events published")
+	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, subUpdateAccounts, "expected subscription update per subscriber")
 
 	// One outbox publish to remote site-b.
 	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRenamed))
@@ -2136,16 +2166,19 @@ func TestIntegration_ProcessRoomVisibility(t *testing.T) {
 	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated(siteID))
 	assert.Empty(t, sysPubs, "visibility change must not publish a sys message")
 
-	// Subscription update events published.
+	// Exactly one subscription update event per subscriber (alice, bob, carol).
 	cap.mu.Lock()
-	subUpdateCount := 0
+	var visSubUpdateAccounts []string
 	for _, p := range cap.captured {
 		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
-			subUpdateCount++
+			parts := strings.Split(p.subject, ".")
+			if len(parts) > 2 {
+				visSubUpdateAccounts = append(visSubUpdateAccounts, parts[2])
+			}
 		}
 	}
 	cap.mu.Unlock()
-	assert.GreaterOrEqual(t, subUpdateCount, 2, "at least 2 subscription update events published")
+	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, visSubUpdateAccounts, "expected subscription update per subscriber")
 
 	// Outbox published to remote site-b carrying RoomVisibilityOutboxPayload with OwnerAccount.
 	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomVisibilityChanged))

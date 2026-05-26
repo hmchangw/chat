@@ -2014,6 +2014,9 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 		return fmt.Errorf("update room visibility: %w", err)
 	}
 	if err = h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+		if errors.Is(err, ErrOwnerNotSubscribed) {
+			return newPermanent("owner account %s is no longer subscribed to room %s", req.OwnerAccount, req.RoomID)
+		}
 		return fmt.Errorf("apply subscription visibility: %w", err)
 	}
 

@@ -520,6 +520,15 @@ func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID str
 	filter := bson.M{"roomId": roomID}
 
 	if restricted && ownerAccount != "" {
+		// Pre-check: the designated owner must still be subscribed, else the
+		// role rewrite would leave the channel with zero owners.
+		n, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "u.account": ownerAccount})
+		if err != nil {
+			return fmt.Errorf("count owner subscription: %w", err)
+		}
+		if n == 0 {
+			return ErrOwnerNotSubscribed
+		}
 		pipeline := mongo.Pipeline{
 			bson.D{{Key: "$set", Value: bson.M{
 				"restricted":     true,
