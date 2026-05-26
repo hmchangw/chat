@@ -528,6 +528,45 @@ RegisterPodPredicate("mongo-using-pods", func(p ServiceProfile) bool {
 })
 ```
 
+### 4.1.1 Scenario YAML extension
+
+This spec adds **one new top-level field** to the Part-1 scenario
+YAML schema (defined in
+`tools/integration-suite-v2/internal/scenario/types.go`): an
+optional `mishaps:` block carrying a single `ignore:` list.
+
+```yaml
+# tools/integration-suite-v2/scenarios/.../<scenario>.yaml
+id:           …                          # (Part-1 fields unchanged)
+title:        …
+cited_promises: […]
+cast:         …
+seed:         …
+sequence:     …
+
+mishaps:                                 # ← optional; this spec
+  ignore:
+    - crash                              #   shorthand: drop: false
+    - kind: mongo-pause-500ms            #   rich form
+      drop: true
+```
+
+Both forms are valid in the same list; a bare string `<kind>` is
+exactly equivalent to `{kind: <kind>, drop: false}`. Unknown kinds
+fail validation at scenario load — the validator cross-checks each
+entry against the registered mishap catalog.
+
+**That's the entire extension.** Scenarios cannot set parameters
+on a mishap kind, cannot override its `eligible:` predicate, cannot
+introduce new kinds inline. Per §1 non-goals, mishaps live in a
+closed catalog reviewed and added deliberately. The only
+per-scenario lever is "don't run this kind for this scenario."
+
+Semantics — history-aware ignore (preserve existing rows as
+`skipped (ignored: <kind>)`, omit rows that never existed,
+`drop: true` purges history) — are defined in §4.3.3. This
+subsection covers only the schema.
+
 ### 4.2 Service ability profile additions
 
 Two fields are added to every `catalogs/services/<name>.yaml`:
