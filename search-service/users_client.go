@@ -36,18 +36,20 @@ func newHTTPUsersClient(rc *resty.Client, token string) *httpUsersClient {
 // SearchUser. Any non-2xx status is treated as a backend error — 4xx
 // responses from the third party are not forwarded to the NATS caller;
 // they are logged by the handler and converted to ErrInternal.
-func (c *httpUsersClient) SearchUsers(ctx context.Context, query string) ([]model.SearchUser, error) {
+func (c *httpUsersClient) SearchUsers(ctx context.Context, query string, offset, limit int) ([]model.SearchUser, error) {
 	// TODO(searchUsers-thirdparty): replace the request body struct and URL
 	// path below with the real third-party contract. The response type
 	// ([]model.SearchUser) is stable; adjust model.SearchUser's field list
 	// in pkg/model/search.go to match the actual response shape.
 	type requestBody struct {
-		Query string `json:"query"`
+		Query  string `json:"query"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 
 	req := c.rc.R().
 		SetContext(ctx).
-		SetBody(requestBody{Query: query}).
+		SetBody(requestBody{Query: query, Offset: offset, Limit: limit}).
 		SetResult(&[]model.SearchUser{})
 
 	if c.token != "" {

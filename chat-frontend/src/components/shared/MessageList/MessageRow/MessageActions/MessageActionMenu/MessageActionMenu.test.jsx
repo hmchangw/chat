@@ -6,7 +6,6 @@ import MessageActionMenu from './MessageActionMenu'
 // the format ever changes both the production code and this string
 // need to flip together.
 const READ_RECEIPT_SUBJECT = 'chat.user.alice.request.room.r1.siteA.message.read-receipt'
-const ROOMS_GET_SUBJECT = 'chat.user.alice.request.rooms.get.r1'
 
 vi.mock('@/context/NatsContext', () => ({
   useNats: vi.fn(),
@@ -190,8 +189,6 @@ describe('MessageActionMenu read-receipt RPC', () => {
   })
 
   it('refetches the RPC every time the menu is reopened', async () => {
-    // The kebab fires two RPCs per open (read-receipt + member.list); route
-    // by subject so a sequence-of-once mock isn't fragile to call order.
     let receiptCalls = 0
     const request = vi.fn((subj) => {
       if (subj.includes('read-receipt')) {
@@ -199,13 +196,6 @@ describe('MessageActionMenu read-receipt RPC', () => {
         return receiptCalls === 1
           ? Promise.resolve({ readers: [] })
           : Promise.resolve({ readers: [{ userId: 'u1', account: 'bob', engName: 'Bob', chineseName: '' }] })
-      }
-      if (subj.includes('rooms.get')) {
-        return Promise.resolve({
-          id: 'r1', name: 'general', type: 'channel', createdBy: 'alice',
-          siteId: 'siteA', userCount: 4, appCount: 0, lastMsgId: '',
-          createdAt: '', updatedAt: '',
-        })
       }
       return Promise.reject(new Error('unexpected subject: ' + subj))
     })
@@ -264,58 +254,33 @@ describe('MessageActionMenu read-receipt RPC', () => {
 describe('MessageActionMenu recipient count (Y) sourcing', () => {
   const msg = { id: 'm1', sender: { account: 'alice' } }
 
-  function mkRequest({ readers, roomResp, roomError }) {
+  // Y is the room summary's userCount minus the sender. The kebab only
+  // issues the read-receipt RPC; the denominator comes from the room prop.
+  function mkRequest(readers) {
     return vi.fn((subj) => {
       if (subj.includes('read-receipt')) return Promise.resolve({ readers })
-      if (subj.includes('rooms.get')) {
-        if (roomError) return Promise.reject(roomError)
-        return Promise.resolve(roomResp)
-      }
       return Promise.reject(new Error('unexpected subject: ' + subj))
     })
   }
 
-  it('derives Y from getRoom.userCount - 1 even when room prop userCount is stale', async () => {
-    // Regression: after Alice logs out and back in, the room summary's
-    // userCount can be hydrated from a record that doesn't carry the
-    // field, so it collapses to 0. The kebab must still show the right
-    // denominator by fetching getRoom itself.
-    //
-    // This test ALSO covers the org-expansion bug: getRoom.userCount is
-    // the canonical recipient count (room-worker aggregates over the
-    // per-user `subscriptions` collection, with orgs expanded), so it
-    // works correctly whether members are individuals or orgs.
-    const request = mkRequest({
-      readers: [
-        { userId: 'u1', account: 'bob', engName: 'Bob' },
-        { userId: 'u2', account: 'carol', engName: 'Carol' },
-      ],
-      roomResp: {
-        id: 'r1', name: 'general', type: 'channel', createdBy: 'alice',
-        siteId: 'siteA', userCount: 5, appCount: 0, lastMsgId: '',
-        createdAt: '', updatedAt: '',
-      },
-    })
+  it('derives Y from the room prop userCount minus the sender', async () => {
+    const request = mkRequest([
+      { userId: 'u1', account: 'bob', engName: 'Bob' },
+      { userId: 'u2', account: 'carol', engName: 'Carol' },
+    ])
     useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
     render(
       <MessageActionMenu
         message={msg}
-        room={{ id: 'r1', siteId: 'siteA', userCount: 0 }}
+        room={{ id: 'r1', siteId: 'siteA', userCount: 5 }}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     expect(await screen.findByText('Read by 2 of 4')).toBeInTheDocument()
   })
 
-  it('calls getRoom on the rooms.get subject with the room id', async () => {
-    const request = mkRequest({
-      readers: [],
-      roomResp: {
-        id: 'r1', name: 'general', type: 'channel', createdBy: 'alice',
-        siteId: 'siteA', userCount: 4, appCount: 0, lastMsgId: '',
-        createdAt: '', updatedAt: '',
-      },
-    })
+  it('issues only the read-receipt RPC (no rooms.get)', async () => {
+    const request = mkRequest([])
     useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
     render(
       <MessageActionMenu
@@ -324,37 +289,13 @@ describe('MessageActionMenu recipient count (Y) sourcing', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
-    expect(request).toHaveBeenCalledWith(ROOMS_GET_SUBJECT, {})
+    await screen.findByText('Read by 0 of 3')
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith(READ_RECEIPT_SUBJECT, { messageId: 'm1' })
   })
 
-  it('falls back to room prop userCount - 1 when getRoom rejects', async () => {
-    // getRoom failure is non-blocking: Y degrades to the prior behavior
-    // so the X side of the menu still renders. The room prop's userCount
-    // can be stale in some flows, but it's the best best-effort we have.
-    const request = mkRequest({
-      readers: [{ userId: 'u1', account: 'bob', engName: 'Bob' }],
-      roomError: new Error('getRoom down'),
-    })
-    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
-    render(
-      <MessageActionMenu
-        message={msg}
-        room={{ id: 'r1', siteId: 'siteA', userCount: 4 }}
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
-    expect(await screen.findByText('Read by 1 of 3')).toBeInTheDocument()
-  })
-
-  it('clamps Y at 0 when getRoom.userCount is 1 (sender only)', async () => {
-    const request = mkRequest({
-      readers: [],
-      roomResp: {
-        id: 'r1', name: 'general', type: 'channel', createdBy: 'alice',
-        siteId: 'siteA', userCount: 1, appCount: 0, lastMsgId: '',
-        createdAt: '', updatedAt: '',
-      },
-    })
+  it('clamps Y at 0 when room userCount is 1 (sender only)', async () => {
+    const request = mkRequest([])
     useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
     render(
       <MessageActionMenu
@@ -366,15 +307,8 @@ describe('MessageActionMenu recipient count (Y) sourcing', () => {
     expect(await screen.findByText('Read by 0 of 0')).toBeInTheDocument()
   })
 
-  it('clamps Y at 0 when getRoom.userCount is 0 (edge case)', async () => {
-    const request = mkRequest({
-      readers: [],
-      roomResp: {
-        id: 'r1', name: 'general', type: 'channel', createdBy: 'alice',
-        siteId: 'siteA', userCount: 0, appCount: 0, lastMsgId: '',
-        createdAt: '', updatedAt: '',
-      },
-    })
+  it('clamps Y at 0 when room userCount is 0 (edge case)', async () => {
+    const request = mkRequest([])
     useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
     render(
       <MessageActionMenu
@@ -384,6 +318,23 @@ describe('MessageActionMenu recipient count (Y) sourcing', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
     expect(await screen.findByText('Read by 0 of 0')).toBeInTheDocument()
+  })
+
+  it('clamps Y up to X when userCount is stale/missing (never shows X > Y)', async () => {
+    const request = mkRequest([
+      { userId: 'u1', account: 'bob', engName: 'Bob' },
+      { userId: 'u2', account: 'carol', engName: 'Carol' },
+    ])
+    useNats.mockReturnValue({ user: { account: 'alice', siteId: 'siteA' }, request })
+    render(
+      <MessageActionMenu
+        message={msg}
+        room={{ id: 'r1', siteId: 'siteA', userCount: 0 }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Message actions/i }))
+    // userCount 0 → Y would be 0, but 2 readers clamp Y up to 2.
+    expect(await screen.findByText('Read by 2 of 2')).toBeInTheDocument()
   })
 })
 

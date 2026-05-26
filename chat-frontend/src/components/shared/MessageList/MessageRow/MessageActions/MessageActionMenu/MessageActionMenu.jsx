@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNats } from '@/context/NatsContext'
-import { fetchReadReceipt, getRoom } from '@/api'
+import { fetchReadReceipt } from '@/api'
 import './style.css'
 
 function formatReaderName(r) {
@@ -15,13 +15,6 @@ export default function MessageActionMenu({ message, room }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [readers, setReaders] = useState(null)
-  // Recipient count sourced from getRoom.userCount when the kebab opens.
-  // Falls back to the room prop's userCount when the RPC fails or hasn't
-  // resolved — the prop can be stale (0) after a cold-start re-login.
-  // getRoom is preferred over listRoomMembers because the latter counts
-  // membership rows (one per org, regardless of expansion) and would
-  // under-report Y in rooms containing an org as a member.
-  const [recipientCount, setRecipientCount] = useState(null)
   const [tooltipOpen, setTooltipOpen] = useState(false)
   const rootRef = useRef(null)
   const mountedRef = useRef(true)
@@ -34,7 +27,6 @@ export default function MessageActionMenu({ message, room }) {
     setLoading(false)
     setError(null)
     setReaders(null)
-    setRecipientCount(null)
   }, [])
 
   useEffect(() => {
@@ -59,7 +51,6 @@ export default function MessageActionMenu({ message, room }) {
     setLoading(true)
     setError(null)
     setReaders(null)
-    setRecipientCount(null)
     setTooltipOpen(false)
     const siteId = room?.siteId ?? user.siteId
     // History-loaded messages (pkg/model/cassandra.Message) serialize their
@@ -67,26 +58,10 @@ export default function MessageActionMenu({ message, room }) {
     // remaps these to `id`, but the fallback keeps the menu working if any
     // pre-normalization path is ever introduced (e.g. quoted-parent snapshots).
     const messageId = message.id ?? message.messageId
-    // getRoom returns the canonical userCount (room-worker maintains it
-    // by aggregating over the per-user `subscriptions` collection, with
-    // orgs expanded). This is correct for org-containing rooms where
-    // listRoomMembers would under-count. Failure is non-blocking — the
-    // read-receipt side still renders and Y degrades to room.userCount - 1.
-    const memberCountP = Promise.resolve(
-      getRoom(nats, { roomId: room.id }),
-    )
-      .then((resp) => (typeof resp?.userCount === 'number' ? resp.userCount : null))
-      .catch(() => null)
-    Promise.all([
-      fetchReadReceipt(nats, { roomId: room.id, siteId, messageId }),
-      memberCountP,
-    ])
-      .then(([receipt, memberCount]) => {
+    fetchReadReceipt(nats, { roomId: room.id, siteId, messageId })
+      .then((receipt) => {
         if (!mountedRef.current) return
         setReaders(receipt?.readers ?? [])
-        if (memberCount != null) {
-          setRecipientCount(Math.max(0, memberCount - 1))
-        }
         setLoading(false)
       })
       .catch((err) => {
@@ -99,7 +74,11 @@ export default function MessageActionMenu({ message, room }) {
   if (!isOwnMessage || !room?.id) return null
 
   const X = readers?.length ?? 0
-  const Y = recipientCount ?? Math.max(0, (room?.userCount ?? 1) - 1)
+  // Recipient count Y is the room's member count minus the sender, sourced
+  // from the room summary's userCount (room-worker maintains it by
+  // aggregating the per-user subscriptions, with orgs expanded). Clamp to at
+  // least X so a stale/missing userCount never renders "Read by 2 of 0".
+  const Y = Math.max(X, Math.max(0, (room?.userCount ?? 1) - 1))
   const hasReaders = readers != null && X > 0
 
   return (

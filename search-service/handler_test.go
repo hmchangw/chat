@@ -521,13 +521,17 @@ func TestHandler_SearchMessages_ScopedPartitioning(t *testing.T) {
 
 // fakeUsers is a test double for SearchUsersClient.
 type fakeUsers struct {
-	calls   []string // queries received
-	results []model.SearchUser
-	err     error
+	calls      []string // queries received
+	lastOffset int
+	lastLimit  int
+	results    []model.SearchUser
+	err        error
 }
 
-func (f *fakeUsers) SearchUsers(_ context.Context, query string) ([]model.SearchUser, error) {
+func (f *fakeUsers) SearchUsers(_ context.Context, query string, offset, limit int) ([]model.SearchUser, error) {
 	f.calls = append(f.calls, query)
+	f.lastOffset = offset
+	f.lastLimit = limit
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -549,6 +553,41 @@ func TestHandler_SearchUsers_Happy(t *testing.T) {
 
 	require.Len(t, fu.calls, 1)
 	assert.Equal(t, "alice", fu.calls[0])
+	assert.Equal(t, 0, fu.lastOffset)
+	assert.Equal(t, defaultUsersLimit, fu.lastLimit, "limit defaults to 25 when omitted")
+}
+
+func TestHandler_SearchUsers_ForwardsOffsetAndLimit(t *testing.T) {
+	fu := &fakeUsers{results: []model.SearchUser{}}
+	h := newTestHandler(nil, nil, fu, newFakeCache())
+
+	_, err := h.searchUsers(ctxWithAccount("alice"), model.SearchUsersRequest{Query: "al", Offset: 10, Limit: 5})
+	require.NoError(t, err)
+	assert.Equal(t, 10, fu.lastOffset)
+	assert.Equal(t, 5, fu.lastLimit)
+}
+
+func TestHandler_SearchUsers_NegativePaginationRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		req  model.SearchUsersRequest
+	}{
+		{"negative offset", model.SearchUsersRequest{Query: "al", Offset: -1}},
+		{"negative limit", model.SearchUsersRequest{Query: "al", Limit: -1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fu := &fakeUsers{}
+			h := newTestHandler(nil, nil, fu, newFakeCache())
+
+			_, err := h.searchUsers(ctxWithAccount("alice"), tt.req)
+			require.Error(t, err)
+			var rerr *natsrouter.RouteError
+			require.True(t, errors.As(err, &rerr))
+			assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+			assert.Empty(t, fu.calls, "backend must not be called on invalid pagination")
+		})
+	}
 }
 
 func TestHandler_SearchUsers_EmptyQueryRejected(t *testing.T) {

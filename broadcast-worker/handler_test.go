@@ -758,18 +758,17 @@ func TestHandleUpdated_ChannelRoomScopedPublish(t *testing.T) {
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
 	c := pub.records[0]
 	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
-	var roomEvt model.RoomEvent
+	var roomEvt model.EditRoomEvent
 	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 	assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
 	assert.Equal(t, roomID, roomEvt.RoomID)
 	assert.Equal(t, "site-a", roomEvt.SiteID)
-	require.NotNil(t, roomEvt.MessageEdited)
-	assert.Equal(t, "msg-1", roomEvt.MessageEdited.MessageID)
-	assert.Equal(t, "updated content", roomEvt.MessageEdited.NewContent)
-	assert.Empty(t, roomEvt.MessageEdited.EncryptedNewContent)
-	assert.Equal(t, "alice", roomEvt.MessageEdited.EditedBy)
-	assert.True(t, roomEvt.MessageEdited.EditedAt.Equal(edited))
-	assert.True(t, roomEvt.MessageEdited.UpdatedAt.Equal(edited))
+	assert.Equal(t, "msg-1", roomEvt.MessageID)
+	assert.Equal(t, "updated content", roomEvt.NewContent)
+	assert.Empty(t, roomEvt.EncryptedNewContent)
+	assert.Equal(t, "alice", roomEvt.EditedBy)
+	assert.True(t, roomEvt.EditedAt.Equal(edited))
+	assert.True(t, roomEvt.UpdatedAt.Equal(edited))
 }
 
 func TestHandleUpdated_EncryptedChannel_EncryptsContent(t *testing.T) {
@@ -806,13 +805,12 @@ func TestHandleUpdated_EncryptedChannel_EncryptsContent(t *testing.T) {
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
 	c := pub.records[0]
 	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
-	var roomEvt model.RoomEvent
+	var roomEvt model.EditRoomEvent
 	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
-	require.NotNil(t, roomEvt.MessageEdited)
-	assert.Empty(t, roomEvt.MessageEdited.NewContent, "plaintext must be cleared when encrypted")
-	require.NotEmpty(t, roomEvt.MessageEdited.EncryptedNewContent)
+	assert.Empty(t, roomEvt.NewContent, "plaintext must be cleared when encrypted")
+	require.NotEmpty(t, roomEvt.EncryptedNewContent)
 	var env roomcrypto.EncryptedMessage
-	require.NoError(t, json.Unmarshal(roomEvt.MessageEdited.EncryptedNewContent, &env))
+	require.NoError(t, json.Unmarshal(roomEvt.EncryptedNewContent, &env))
 	assert.Equal(t, key.Version, env.Version)
 	plaintext, err := decryptForTest(&env, key.KeyPair.PrivateKey)
 	require.NoError(t, err)
@@ -877,16 +875,15 @@ func TestHandleDeleted_ChannelRoomScopedPublish(t *testing.T) {
 	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
 	c := pub.records[0]
 	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
-	var roomEvt model.RoomEvent
+	var roomEvt model.DeleteRoomEvent
 	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 	assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
 	assert.Equal(t, roomID, roomEvt.RoomID)
 	assert.Equal(t, "site-a", roomEvt.SiteID)
-	require.NotNil(t, roomEvt.MessageDeleted)
-	assert.Equal(t, "msg-1", roomEvt.MessageDeleted.MessageID)
-	assert.Equal(t, "alice", roomEvt.MessageDeleted.DeletedBy)
-	assert.True(t, roomEvt.MessageDeleted.DeletedAt.Equal(deletedAt))
-	assert.True(t, roomEvt.MessageDeleted.UpdatedAt.Equal(deletedAt))
+	assert.Equal(t, "msg-1", roomEvt.MessageID)
+	assert.Equal(t, "alice", roomEvt.DeletedBy)
+	assert.True(t, roomEvt.DeletedAt.Equal(deletedAt))
+	assert.True(t, roomEvt.UpdatedAt.Equal(deletedAt))
 }
 
 func TestHandleDeleted_MissingUpdatedAt_ReturnsError(t *testing.T) {
@@ -955,17 +952,16 @@ func TestHandleUpdated_DMRoom_FansOutToBothMembers(t *testing.T) {
 	subjects := map[string]bool{}
 	for _, c := range pub.records {
 		subjects[c.subject] = true
-		var roomEvt model.RoomEvent
+		var roomEvt model.EditRoomEvent
 		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
 		assert.Equal(t, roomID, roomEvt.RoomID)
 		assert.Equal(t, "site-a", roomEvt.SiteID)
-		require.NotNil(t, roomEvt.MessageEdited)
-		assert.Equal(t, "msg-1", roomEvt.MessageEdited.MessageID)
-		assert.Equal(t, "updated content", roomEvt.MessageEdited.NewContent)
-		assert.Equal(t, "alice", roomEvt.MessageEdited.EditedBy)
-		assert.True(t, roomEvt.MessageEdited.EditedAt.Equal(edited))
-		assert.True(t, roomEvt.MessageEdited.UpdatedAt.Equal(edited))
+		assert.Equal(t, "msg-1", roomEvt.MessageID)
+		assert.Equal(t, "updated content", roomEvt.NewContent)
+		assert.Equal(t, "alice", roomEvt.EditedBy)
+		assert.True(t, roomEvt.EditedAt.Equal(edited))
+		assert.True(t, roomEvt.UpdatedAt.Equal(edited))
 	}
 	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])
@@ -1011,16 +1007,15 @@ func TestHandleDeleted_DMRoom_FansOutToBothMembers(t *testing.T) {
 	subjects := map[string]bool{}
 	for _, c := range pub.records {
 		subjects[c.subject] = true
-		var roomEvt model.RoomEvent
+		var roomEvt model.DeleteRoomEvent
 		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
 		assert.Equal(t, roomID, roomEvt.RoomID)
 		assert.Equal(t, "site-a", roomEvt.SiteID)
-		require.NotNil(t, roomEvt.MessageDeleted)
-		assert.Equal(t, "msg-1", roomEvt.MessageDeleted.MessageID)
-		assert.Equal(t, "alice", roomEvt.MessageDeleted.DeletedBy)
-		assert.True(t, roomEvt.MessageDeleted.DeletedAt.Equal(deletedAt))
-		assert.True(t, roomEvt.MessageDeleted.UpdatedAt.Equal(deletedAt))
+		assert.Equal(t, "msg-1", roomEvt.MessageID)
+		assert.Equal(t, "alice", roomEvt.DeletedBy)
+		assert.True(t, roomEvt.DeletedAt.Equal(deletedAt))
+		assert.True(t, roomEvt.UpdatedAt.Equal(deletedAt))
 	}
 	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])
