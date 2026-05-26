@@ -1215,15 +1215,10 @@ func TestHandler_sendReply(t *testing.T) {
 		return NewHandler(nil, nil, reply, "site-a", nil, 500)
 	}
 
-	mk := func(requestID string) []byte {
-		b, _ := json.Marshal(model.SendMessageRequest{ID: "id", Content: "c", RequestID: requestID})
-		return b
-	}
-
 	t.Run("valid UUID requestId publishes a reply", func(t *testing.T) {
 		var captured []*nats.Msg
 		h := newHandlerWithReply(&captured)
-		h.sendReply(context.Background(), "alice", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{"ok":true}`))
+		h.sendReply(context.Background(), "alice", "01970a4f-8c2d-7c9a-abcd-e0123456789f", []byte(`{"ok":true}`))
 		require.Len(t, captured, 1)
 		assert.Equal(t, "chat.user.alice.response.01970a4f-8c2d-7c9a-abcd-e0123456789f", captured[0].Subject)
 	})
@@ -1231,21 +1226,44 @@ func TestHandler_sendReply(t *testing.T) {
 	t.Run("empty requestId skips reply", func(t *testing.T) {
 		var captured []*nats.Msg
 		h := newHandlerWithReply(&captured)
-		h.sendReply(context.Background(), "alice", mk(""), []byte(`{}`))
+		h.sendReply(context.Background(), "alice", "", []byte(`{}`))
 		assert.Empty(t, captured)
 	})
 
 	t.Run("malformed (non-UUID) requestId skips reply", func(t *testing.T) {
 		var captured []*nats.Msg
 		h := newHandlerWithReply(&captured)
-		h.sendReply(context.Background(), "alice", mk("req-1"), []byte(`{}`))
+		h.sendReply(context.Background(), "alice", "req-1", []byte(`{}`))
 		assert.Empty(t, captured, "unroutable requestId must not be published to")
 	})
 
 	t.Run("empty account skips reply", func(t *testing.T) {
 		var captured []*nats.Msg
 		h := newHandlerWithReply(&captured)
-		h.sendReply(context.Background(), "", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{}`))
+		h.sendReply(context.Background(), "", "01970a4f-8c2d-7c9a-abcd-e0123456789f", []byte(`{}`))
 		assert.Empty(t, captured)
+	})
+}
+
+func TestExtractRequestID(t *testing.T) {
+	t.Run("extracts requestId from full request body", func(t *testing.T) {
+		b, _ := json.Marshal(model.SendMessageRequest{
+			ID:        "id",
+			Content:   "hello",
+			RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+		})
+		assert.Equal(t, "01970a4f-8c2d-7c9a-abcd-e0123456789f", extractRequestID(b))
+	})
+
+	t.Run("returns empty on missing requestId field", func(t *testing.T) {
+		assert.Equal(t, "", extractRequestID([]byte(`{"id":"x","content":"y"}`)))
+	})
+
+	t.Run("returns empty on malformed JSON", func(t *testing.T) {
+		assert.Equal(t, "", extractRequestID([]byte(`not json`)))
+	})
+
+	t.Run("returns empty on empty input", func(t *testing.T) {
+		assert.Equal(t, "", extractRequestID(nil))
 	})
 }

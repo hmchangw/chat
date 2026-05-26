@@ -65,6 +65,12 @@ func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
+	// Extract requestID once from the raw payload — passed to every sendReply
+	// call below so we do not re-unmarshal the full request just to address the
+	// reply subject. processMessage performs its own (single) full unmarshal
+	// for validation.
+	requestID := extractRequestID(msg.Data())
+
 	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
@@ -73,7 +79,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		// subject is at least chat.user.{account}.…; sendReply no-ops when the
 		// account or requestId is unusable. Ack regardless — a malformed
 		// subject is not retryable, so JetStream must not redeliver it.
-		h.sendReply(ctx, accountFromSubject(msg.Subject()), msg.Data(), natsutil.MarshalError("invalid message subject"))
+		h.sendReply(ctx, accountFromSubject(msg.Subject()), requestID, natsutil.MarshalError("invalid message subject"))
 		if err := msg.Ack(); err != nil {
 			slog.Error("failed to ack message", "error", err)
 		}
@@ -90,7 +96,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 			}
 		} else {
 			// Validation error: reply with error and ack.
-			h.sendReply(ctx, account, msg.Data(), h.marshalErrorReply(err))
+			h.sendReply(ctx, account, requestID, h.marshalErrorReply(err))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
 			}
@@ -98,31 +104,40 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	h.sendReply(ctx, account, msg.Data(), replyData)
+	h.sendReply(ctx, account, requestID, replyData)
 
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
 	}
 }
 
-// sendReply extracts the requestID from the raw message data and publishes the
-// reply payload to the user's response subject.
-func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) {
-	if account == "" {
-		return
+// extractRequestID does a minimal JSON decode to pull out only the requestId
+// field, avoiding a full SendMessageRequest unmarshal on the reply path.
+// Returns "" on parse failure or when the field is absent.
+func extractRequestID(data []byte) string {
+	var partial struct {
+		RequestID string `json:"requestId"`
 	}
-	var req model.SendMessageRequest
-	if err := json.Unmarshal(rawData, &req); err != nil {
-		slog.Error("unmarshal request for reply", "error", err)
+	if err := json.Unmarshal(data, &partial); err != nil {
+		return ""
+	}
+	return partial.RequestID
+}
+
+// sendReply publishes the reply payload to the user's response subject.
+// Skips when account or requestID is unusable (the reply subject would be
+// unroutable in either case).
+func (h *Handler) sendReply(ctx context.Context, account, requestID string, replyData []byte) {
+	if account == "" {
 		return
 	}
 	// Skip when requestId is missing or not a valid hyphenated UUID — the reply
 	// subject chat.user.{account}.response.{requestId} would be unroutable, and
 	// processMessage already rejects such requests upstream.
-	if req.RequestID == "" || !idgen.IsValidUUID(req.RequestID) {
+	if requestID == "" || !idgen.IsValidUUID(requestID) {
 		return
 	}
-	respSubj := subject.UserResponse(account, req.RequestID)
+	respSubj := subject.UserResponse(account, requestID)
 	replyMsg := natsutil.NewMsg(ctx, respSubj, replyData)
 	if err := h.reply(ctx, replyMsg); err != nil {
 		slog.Error("reply to client failed", "error", err, "subject", respSubj)

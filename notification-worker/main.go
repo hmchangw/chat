@@ -21,6 +21,7 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type config struct {
@@ -100,7 +101,7 @@ func main() {
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer))
+	cons, err := js.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer, cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -181,10 +182,13 @@ func (p *natsPublisher) Publish(ctx context.Context, subject string, data []byte
 	return nil
 }
 
-// buildConsumerConfig returns the durable consumer config for
-// notification-worker. Centralized so it is unit-testable without NATS.
-func buildConsumerConfig(s stream.ConsumerSettings) jetstream.ConsumerConfig {
+// buildConsumerConfig restricts the consumer to canonical .created subjects:
+// the handler always emits a "new_message" notification regardless of event
+// type, so consuming .edited/.deleted would fan out incorrect notifications
+// and waste CPU on every edit/delete.
+func buildConsumerConfig(s stream.ConsumerSettings, siteID string) jetstream.ConsumerConfig {
 	cc := stream.DurableConsumerDefaults(s)
 	cc.Durable = "notification-worker"
+	cc.FilterSubject = subject.MsgCanonicalCreated(siteID)
 	return cc
 }
