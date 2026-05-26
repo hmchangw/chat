@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# Generates NATS operator + account keys and writes nats.conf, backend.creds,
-# and .env for the shared local-dev NATS instance.
+# Generates per-site NATS operator + account keys and writes nats.conf,
+# backend.creds, account.seed, and <site>.env for the two local-dev NATS
+# instances (site-a, site-b). Uses the nats-box Docker image so it works on
+# any OS without requiring local nsc/nk installation.
 #
-# Uses the nats-box Docker image so it works on any OS (Mac, Ubuntu, etc.)
-# without requiring local nsc/nk installation.
+# Also writes legacy single-site artifacts (docker-local/{nats.conf,
+# backend.creds,.env}) as copies of site-a's, so service composes that still
+# reference them keep working during the multi-site transition. Stage 4 of
+# the multisite rollout removes these legacy files.
 #
 # Run once before `make deps-up`.
 #
@@ -12,13 +16,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-NATS_CONF="$SCRIPT_DIR/nats.conf"
-BACKEND_CREDS="$SCRIPT_DIR/backend.creds"
 FRONTEND_ENV_FILE="$REPO_ROOT/chat-frontend/.env.local"
 NATS_BOX_IMAGE="natsio/nats-box:latest"
 
-echo "=== docker-local — Shared NATS Setup ==="
+# Per-site host port assignments. Site-a keeps the historical defaults so
+# standalone `docker compose -f <service>/deploy/docker-compose.yml up` still
+# matches today's behavior; site-b shifts by 1 on each exposed service.
+SITE_A_AUTH_PORT=8080
+SITE_B_AUTH_PORT=8081
+SITE_A_HISTORY_PORT=8082
+SITE_B_HISTORY_PORT=8083
+SITE_A_ROOM_PORT=8084
+SITE_B_ROOM_PORT=8085
+SITE_A_SEARCH_PORT=8086
+SITE_B_SEARCH_PORT=8087
+SITE_A_MOCK_USER_PORT=8088
+SITE_B_MOCK_USER_PORT=8089
+
+echo "=== docker-local — Multi-site NATS setup (site-a + site-b) ==="
 echo ""
 
 if ! command -v docker &>/dev/null; then
@@ -26,110 +41,90 @@ if ! command -v docker &>/dev/null; then
   exit 1
 fi
 
-echo "Generating NATS operator + account keys via nats-box..."
-echo ""
+# generate_site SITE NATS_HOST AUTH_PORT HISTORY_PORT ROOM_PORT SEARCH_PORT MOCK_USER_PORT
+generate_site() {
+  local site="$1"
+  local nats_host="$2"
+  local auth_port="$3"
+  local history_port="$4"
+  local room_port="$5"
+  local search_port="$6"
+  local mock_user_port="$7"
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+  local site_dir="$SCRIPT_DIR/$site"
+  local env_file="$SCRIPT_DIR/${site}.env"
+  mkdir -p "$site_dir"
 
-docker run --rm \
-  -v "$TMPDIR:/output" \
-  "$NATS_BOX_IMAGE" \
-  sh -c '
-    set -e
+  echo "--- Generating $site keys ---"
+  local tmpdir
+  tmpdir=$(mktemp -d)
 
-    nsc add operator --name localdev --sys 2>&1 | sed "s/^/  /"
-    nsc env -o localdev >/dev/null 2>&1
+  docker run --rm \
+    -v "$tmpdir:/output" \
+    -e SITE="$site" \
+    "$NATS_BOX_IMAGE" \
+    sh -c '
+      set -e
 
-    nsc add account --name chatapp 2>&1 | sed "s/^/  /"
-    nsc edit account chatapp --js-mem-storage 512M --js-disk-storage 5G --js-streams 10 2>&1 | sed "s/^/  /"
+      nsc add operator --name "localdev-${SITE}" --sys 2>&1 | sed "s/^/  /"
+      nsc env -o "localdev-${SITE}" >/dev/null 2>&1
 
-    nsc describe operator --raw > /output/operator.jwt
-    nsc describe account chatapp --raw > /output/account.jwt
-    nsc describe account SYS --raw > /output/sys.jwt
+      nsc add account --name chatapp 2>&1 | sed "s/^/  /"
+      nsc edit account chatapp --js-mem-storage 512M --js-disk-storage 5G --js-streams 10 2>&1 | sed "s/^/  /"
 
-    nsc describe account chatapp 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/account_pub.txt
-    nsc describe account SYS 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/sys_pub.txt
+      nsc describe operator --raw > /output/operator.jwt
+      nsc describe account chatapp --raw > /output/account.jwt
+      nsc describe account SYS --raw > /output/sys.jwt
 
-    ACCOUNT_PUB=$(cat /output/account_pub.txt)
-    SEED_FILE=$(find /root/.local/share/nats/nsc/keys -name "${ACCOUNT_PUB}.nk" 2>/dev/null | head -1)
-    if [ -z "$SEED_FILE" ]; then
-      SEED_FILE=$(find /nsc -name "${ACCOUNT_PUB}.nk" 2>/dev/null | head -1)
-    fi
-    if [ -z "$SEED_FILE" ]; then
-      echo "ERROR: Could not find account seed for ${ACCOUNT_PUB}"
-      exit 1
-    fi
-    cat "$SEED_FILE" > /output/account_seed.txt
+      nsc describe account chatapp 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/account_pub.txt
+      nsc describe account SYS 2>/dev/null | grep "Account ID" | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" > /output/sys_pub.txt
 
-    nsc add user --account chatapp --name backend
-    nsc edit user --account chatapp --name backend --allow-sub ">" --allow-pub ">"
-    nsc generate creds --account chatapp --name backend > /output/backend.creds
-  '
+      ACCOUNT_PUB=$(cat /output/account_pub.txt)
+      SEED_FILE=$(find /root/.local/share/nats/nsc/keys -name "${ACCOUNT_PUB}.nk" 2>/dev/null | head -1)
+      if [ -z "$SEED_FILE" ]; then
+        SEED_FILE=$(find /nsc -name "${ACCOUNT_PUB}.nk" 2>/dev/null | head -1)
+      fi
+      if [ -z "$SEED_FILE" ]; then
+        echo "ERROR: Could not find account seed for ${ACCOUNT_PUB}"
+        exit 1
+      fi
+      cat "$SEED_FILE" > /output/account_seed.txt
 
-cp "$TMPDIR/backend.creds" "$BACKEND_CREDS"
-# 0644, not 0600: service containers run as non-root (uid 10001) and
-# bind-mount this file read-only at /etc/nats/backend.creds, so the
-# in-container user must be able to read it. Acceptable only because
-# this is a throwaway local-dev credential generated by this script.
-chmod 644 "$BACKEND_CREDS"
+      nsc add user --account chatapp --name backend
+      nsc edit user --account chatapp --name backend --allow-sub ">" --allow-pub ">"
+      nsc generate creds --account chatapp --name backend > /output/backend.creds
+    '
 
-OPERATOR_JWT=$(cat "$TMPDIR/operator.jwt")
-ACCOUNT_JWT=$(cat "$TMPDIR/account.jwt")
-SYS_JWT=$(cat "$TMPDIR/sys.jwt")
-ACCOUNT_PUB_KEY=$(cat "$TMPDIR/account_pub.txt")
-SYS_PUB_KEY=$(cat "$TMPDIR/sys_pub.txt")
-ACCOUNT_SEED=$(cat "$TMPDIR/account_seed.txt")
+  cp "$tmpdir/backend.creds" "$site_dir/backend.creds"
+  cp "$tmpdir/account_seed.txt" "$site_dir/account.seed"
+  # 0644 on backend.creds: service containers run as non-root (uid 10001)
+  # and bind-mount it read-only — the in-container user must read it.
+  # Acceptable only because this is a throwaway local-dev credential.
+  chmod 644 "$site_dir/backend.creds"
+  chmod 600 "$site_dir/account.seed"
 
-echo ""
-echo "  Operator JWT:       ${OPERATOR_JWT:0:50}..."
-echo "  Account Public Key: $ACCOUNT_PUB_KEY"
-echo "  Account Seed:       <hidden — written to $ENV_FILE>"
-echo "  SYS Public Key:     $SYS_PUB_KEY"
-echo "  Backend creds:      $BACKEND_CREDS"
-echo ""
+  local op_jwt acc_jwt sys_jwt acc_pub sys_pub acc_seed
+  op_jwt=$(cat "$tmpdir/operator.jwt")
+  acc_jwt=$(cat "$tmpdir/account.jwt")
+  sys_jwt=$(cat "$tmpdir/sys.jwt")
+  acc_pub=$(cat "$tmpdir/account_pub.txt")
+  sys_pub=$(cat "$tmpdir/sys_pub.txt")
+  acc_seed=$(cat "$tmpdir/account_seed.txt")
 
-cat > "$ENV_FILE" <<EOF
-# Generated by docker-local/setup.sh — do not commit this file.
-# Regenerate with: ./docker-local/setup.sh
-
-# Auth-service signs user JWTs with the chatapp account nkey (the private seed).
-# All other microservices authenticate with backend.creds via NATS_CREDS_FILE.
-AUTH_SIGNING_KEY=${ACCOUNT_SEED}
-
-# Shared NATS endpoint inside the chat-local docker network.
-NATS_URL=nats://nats:4222
-NATS_CREDS_FILE=/etc/nats/backend.creds
-
-# Bypass OIDC in auth-service; flip to false to test the OIDC flow.
-DEV_MODE=true
-EOF
-chmod 600 "$ENV_FILE"
-
-# chat-frontend/.env.local feeds `npm run dev` (Vite). Written only on first
-# run so devs can edit it (e.g. point at staging) without losing changes.
-if [ ! -f "$FRONTEND_ENV_FILE" ]; then
-  cat > "$FRONTEND_ENV_FILE" <<EOF
-VITE_AUTH_URL=http://localhost:8080
-VITE_NATS_URL=ws://localhost:9222
-VITE_DEFAULT_SITE_ID=site-local
-EOF
-fi
-
-cat > "$NATS_CONF" <<EOF
+  cat > "$site_dir/nats.conf" <<EOF
 # Generated by docker-local/setup.sh — do not commit this file.
 # Regenerate with: ./docker-local/setup.sh
 
 port: 4222
 http_port: 8222
 
-operator: ${OPERATOR_JWT}
+operator: ${op_jwt}
 
 resolver: MEMORY
 
 resolver_preload {
-  ${ACCOUNT_PUB_KEY}: ${ACCOUNT_JWT}
-  ${SYS_PUB_KEY}: ${SYS_JWT}
+  ${acc_pub}: ${acc_jwt}
+  ${sys_pub}: ${sys_jwt}
 }
 
 jetstream {
@@ -144,22 +139,89 @@ websocket {
 }
 EOF
 
-echo "Wrote $NATS_CONF"
-echo "Wrote $BACKEND_CREDS"
-echo "Wrote $ENV_FILE"
-echo "Wrote $FRONTEND_ENV_FILE (preserved if it already existed)"
-echo ""
+  cat > "$env_file" <<EOF
+# Generated by docker-local/setup.sh — do not commit this file.
+# Regenerate with: ./docker-local/setup.sh
+
+SITE_ID=${site}
+NATS_HOST=${nats_host}
+
+# auth-service signs user JWTs with the chatapp account nkey (private seed).
+# All other microservices authenticate with backend.creds via NATS_CREDS_FILE.
+AUTH_SIGNING_KEY=${acc_seed}
+
+# Bypass OIDC in auth-service; flip to false to test the OIDC flow.
+DEV_MODE=true
+
+# Host port mappings for services that publish a port on the host.
+AUTH_HOST_PORT=${auth_port}
+HISTORY_HOST_PORT=${history_port}
+ROOM_HOST_PORT=${room_port}
+SEARCH_HOST_PORT=${search_port}
+MOCK_USER_HOST_PORT=${mock_user_port}
+EOF
+  chmod 600 "$env_file"
+
+  echo "  Account Public Key: $acc_pub"
+  echo "  Wrote $site_dir/nats.conf"
+  echo "  Wrote $site_dir/backend.creds"
+  echo "  Wrote $site_dir/account.seed"
+  echo "  Wrote $env_file"
+  echo ""
+
+  rm -rf "$tmpdir"
+}
+
+generate_site site-a nats-a \
+  "$SITE_A_AUTH_PORT" "$SITE_A_HISTORY_PORT" "$SITE_A_ROOM_PORT" \
+  "$SITE_A_SEARCH_PORT" "$SITE_A_MOCK_USER_PORT"
+
+generate_site site-b nats-b \
+  "$SITE_B_AUTH_PORT" "$SITE_B_HISTORY_PORT" "$SITE_B_ROOM_PORT" \
+  "$SITE_B_SEARCH_PORT" "$SITE_B_MOCK_USER_PORT"
+
+# --- Legacy single-site shims --------------------------------------------
+# Service composes that still hard-code the pre-multisite paths
+# (docker-local/.env, backend.creds, nats.conf) keep working by aliasing
+# site-a's artifacts here. Removed in stage 4 of the multisite rollout
+# once every service compose has been switched to the per-site env files.
+cp "$SCRIPT_DIR/site-a/backend.creds" "$SCRIPT_DIR/backend.creds"
+cp "$SCRIPT_DIR/site-a/nats.conf"     "$SCRIPT_DIR/nats.conf"
+chmod 644 "$SCRIPT_DIR/backend.creds"
+
+SITE_A_SEED=$(cat "$SCRIPT_DIR/site-a/account.seed")
+cat > "$SCRIPT_DIR/.env" <<EOF
+# Generated by docker-local/setup.sh — do not commit this file.
+# Legacy single-site shim aliased to site-a; removed in multisite rollout
+# stage 4. See docs/multisite-local-dev-plan.md.
+
+AUTH_SIGNING_KEY=${SITE_A_SEED}
+NATS_URL=nats://nats-a:4222
+NATS_CREDS_FILE=/etc/nats/backend.creds
+DEV_MODE=true
+EOF
+chmod 600 "$SCRIPT_DIR/.env"
+
+# chat-frontend/.env.local feeds `npm run dev` (Vite). Written only on first
+# run so devs can edit it (e.g. point at staging) without losing changes.
+if [ ! -f "$FRONTEND_ENV_FILE" ]; then
+  cat > "$FRONTEND_ENV_FILE" <<EOF
+VITE_AUTH_URL=http://localhost:${SITE_A_AUTH_PORT}
+VITE_NATS_URL=ws://localhost:9222
+VITE_DEFAULT_SITE_ID=site-a
+EOF
+fi
+
 echo "=== Ready! ==="
 echo ""
-echo "  # Start all third-party deps (NATS, Mongo, Cassandra, ES, Keycloak)"
+echo "  # Start third-party deps (both NATSes + shared Mongo/Cassandra/ES/etc.)"
 echo "  make deps-up"
 echo ""
-echo "  # Start every microservice (foreground, streams logs)"
+echo "  # Start every microservice for both sites (foreground, streams logs)"
 echo "  make up"
 echo ""
 echo "  ──────────────────────────────────────"
-echo "  NATS:             nats://localhost:4222"
-echo "  NATS Monitoring:  http://localhost:8222"
-echo "  NATS WebSocket:   ws://localhost:9222"
+echo "  site-a NATS:        nats://localhost:4222   (ws: 9222, monitor: 8222)"
+echo "  site-b NATS:        nats://localhost:4322   (ws: 9322, monitor: 8322)"
 echo "  ──────────────────────────────────────"
 echo ""

@@ -1,4 +1,4 @@
-CREATE TYPE IF NOT EXISTS chat."Participant" (
+CREATE TYPE IF NOT EXISTS __KEYSPACE__."Participant" (
   id           TEXT,
   eng_name     TEXT,
   company_name TEXT, // need to change internal

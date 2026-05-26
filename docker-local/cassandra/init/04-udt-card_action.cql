@@ -1,4 +1,4 @@
-CREATE TYPE IF NOT EXISTS chat."CardAction" (
+CREATE TYPE IF NOT EXISTS __KEYSPACE__."CardAction" (
   verb          TEXT,
   text          TEXT,
   card_id       TEXT,

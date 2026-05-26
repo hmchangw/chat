@@ -1,4 +1,4 @@
-CREATE TYPE IF NOT EXISTS chat."QuotedParentMessage" (
+CREATE TYPE IF NOT EXISTS __KEYSPACE__."QuotedParentMessage" (
   message_id              TEXT,
   room_id                 TEXT,
   sender                  FROZEN<"Participant">,

@@ -7,16 +7,43 @@ name: chat-local-deps
 # Stop:   make deps-down
 
 services:
-  nats:
+  # site-a's NATS. Also reachable under the legacy alias "nats" so service
+  # composes still using NATS_URL=nats://nats:4222 keep working during the
+  # multi-site transition; the alias is removed in stage 4.
+  nats-a:
     image: nats:2.11-alpine
-    container_name: chat-local-nats
+    container_name: chat-local-nats-a
     ports:
       - "4222:4222"
       - "8222:8222"
       - "9222:9222"
     volumes:
-      - ./nats.conf:/etc/nats/nats.conf:ro
-      - nats-data:/data/jetstream
+      - ./site-a/nats.conf:/etc/nats/nats.conf:ro
+      - nats-a-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      chat-local:
+        aliases:
+          - nats
+
+  # site-b's NATS. Independent JetStream domain; host ports shifted by 100
+  # on client/monitor/ws ports to coexist with nats-a.
+  nats-b:
+    image: nats:2.11-alpine
+    container_name: chat-local-nats-b
+    ports:
+      - "4322:4222"
+      - "8322:8222"
+      - "9322:9222"
+    volumes:
+      - ./site-b/nats.conf:/etc/nats/nats.conf:ro
+      - nats-b-data:/data/jetstream
     command: ["-c", "/etc/nats/nats.conf"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
@@ -88,9 +115,16 @@ services:
       - |
         set -euo pipefail
         shopt -s nullglob
-        for f in /init/*.cql; do
-          echo "==> applying $$f"
-          cqlsh cassandra -f "$$f"
+        # Apply each *.cql once per keyspace, substituting the __KEYSPACE__
+        # placeholder. The legacy `chat` keyspace is still created so any
+        # compose / test still pointed at the pre-multisite default keeps
+        # working during the multi-site transition; removed in stage 4.
+        for ks in chat_site_a chat_site_b chat; do
+          echo "==> keyspace=$$ks"
+          for f in /init/*.cql; do
+            echo "  applying $$(basename $$f)"
+            sed "s/__KEYSPACE__/$$ks/g" "$$f" | cqlsh cassandra
+          done
         done
         echo "Schema initialized successfully"
     networks:
@@ -208,7 +242,8 @@ services:
       - chat-local
 
 volumes:
-  nats-data:
+  nats-a-data:
+  nats-b-data:
   mongo-data:
   cassandra-data:
   es-data:

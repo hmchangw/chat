@@ -1,4 +1,4 @@
-CREATE TYPE IF NOT EXISTS chat."Card" (
+CREATE TYPE IF NOT EXISTS __KEYSPACE__."Card" (
   template TEXT,
   data     BLOB
 );

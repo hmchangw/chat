@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS chat.messages_by_id (
+CREATE TABLE IF NOT EXISTS __KEYSPACE__.messages_by_id (
   message_id               TEXT,
   room_id                  TEXT,
   thread_room_id           TEXT,
