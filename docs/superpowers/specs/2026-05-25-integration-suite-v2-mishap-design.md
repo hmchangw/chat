@@ -1143,6 +1143,53 @@ counts (~6 scenarios for the initial Part-2; ~20 for Part-2.5).
 Part-3 may revisit this if the suite grows beyond what sequential
 execution can absorb in CI wall-clock budgets.
 
+### 4.9 Configuration knobs
+
+Timing values in the verdict layer (§4.6) are **configurable via
+environment variables**, following the repo-wide convention
+(CLAUDE.md §Configuration: env vars via `caarlos0/env`, no config
+files). Defaults match the spec body verbatim; CI runs with
+defaults; a dev investigating a flaky case can override locally
+without touching code or YAML.
+
+Additions to the existing Part-1 runtime `Config` struct (in
+`tools/integration-suite-v2/internal/runtime/config.go` or
+equivalent):
+
+```go
+// Quiet-detection windows (§4.6)
+QuietGraceHappyMs   int `env:"QUIET_GRACE_HAPPY_MS"   envDefault:"200"`
+QuietGraceMishapMs  int `env:"QUIET_GRACE_MISHAP_MS"  envDefault:"1000"`
+
+// Anomaly relaxation under x≠None (§4.6)
+AnomalyRelaxMs      int `env:"ANOMALY_RELAX_MS"       envDefault:"100"`
+```
+
+Override example:
+
+```
+QUIET_GRACE_MISHAP_MS=3000 make -C tools/integration-suite-v2 local
+```
+
+**Not configurable on purpose:**
+
+- **Retry budget (3 attempts, §4.6.1).** Design rule, not a tuning
+  knob. Making it env-var tunable would invite drift between runs
+  and undermine the principled choice (one initial + two retries =
+  enough to disambiguate flake from defect without wall-clock
+  blow-up). If a specific run needs different behavior, that's a
+  deliberate code change.
+- **Case-grid shape (`c`, `m`, `x` axis values).** Determined by
+  scenario sequence + service ability profiles per §4.3.
+  Per-scenario opt-out is via `mishaps.ignore` (§4.3.3); there's
+  no env-var override.
+- **Skip-rule semantics (H/X/M/P).** Hardcoded. Skip rules ARE the
+  design.
+
+The intent: tune the **observation layer** (timing) for environment
+quirks; don't tune the **design layer** (rule semantics, retry
+budget, case-grid shape).
+
 ---
 
 ## 5. Reporting
