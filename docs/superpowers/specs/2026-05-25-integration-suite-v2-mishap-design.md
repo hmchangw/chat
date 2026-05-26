@@ -1051,6 +1051,16 @@ c=0, three new traceIDs under c=1), and Cleanup runs between
 attempts so the system starts each retry from a known state. No
 attempt observes another attempt's events.
 
+Fresh traceIDs are not a separate mechanism — they come **for
+free** from the existing Part-1 dispatcher, which generates a new
+W3C traceparent on every `Fire` / `FireWithActor` invocation. The
+runner just calls `Fire` again for each attempt; the new traceID
+follows automatically. Observer registrations are keyed on
+`(traceID, ownerPod)` tuples (§2.2), so prior-attempt events
+collected under stale traceIDs cannot match new-attempt
+registrations — cross-attempt event leakage is structurally
+impossible.
+
 **What retries.** Only `fail` triggers retry. `skipped` doesn't
 (nothing ran). `pass-with-relaxation` doesn't (it's a pass for skip
 purposes — the relaxation is auditable but the system did handle
