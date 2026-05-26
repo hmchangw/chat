@@ -1,0 +1,42 @@
+[
+  {
+    "id": "u-alice",
+    "account": "alice",
+    "siteId": "site-local",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Alice",
+    "chineseName": "爱丽丝",
+    "employeeId": ""
+  },
+  {
+    "id": "u-bob",
+    "account": "bob",
+    "siteId": "site-local",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Bob",
+    "chineseName": "鮑勃",
+    "employeeId": ""
+  },
+  {
+    "id": "u-carol",
+    "account": "carol",
+    "siteId": "site-local",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Carol",
+    "chineseName": "卡羅爾",
+    "employeeId": ""
+  },
+  {
+    "id": "u-dave",
+    "account": "dave",
+    "siteId": "site-local",
+    "sectId": "",
+    "sectName": "",
+    "engName": "Dave",
+    "chineseName": "戴夫",
+    "employeeId": ""
+  }
+]

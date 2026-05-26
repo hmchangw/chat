@@ -1,0 +1,26 @@
+[
+  {
+    "id": "r-engineering",
+    "name": "engineering",
+    "type": "channel",
+    "createdBy": "alice",
+    "siteId": "site-local",
+    "userCount": 2,
+    "appCount": 0,
+    "lastMsgId": "",
+    "createdAt": "2025-01-01T00:00:00Z",
+    "updatedAt": "2025-01-01T00:00:00Z"
+  },
+  {
+    "id": "r-design",
+    "name": "design",
+    "type": "channel",
+    "createdBy": "carol",
+    "siteId": "site-local",
+    "userCount": 2,
+    "appCount": 0,
+    "lastMsgId": "",
+    "createdAt": "2025-01-01T00:00:00Z",
+    "updatedAt": "2025-01-01T00:00:00Z"
+  }
+]

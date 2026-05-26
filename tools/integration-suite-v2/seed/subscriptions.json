@@ -1,0 +1,54 @@
+[
+  {
+    "id": "sub-alice-r-engineering",
+    "u": { "id": "u-alice", "account": "alice" },
+    "roomId": "r-engineering",
+    "siteId": "site-local",
+    "roles": ["owner"],
+    "name": "engineering",
+    "roomType": "channel",
+    "joinedAt": "2025-01-01T00:00:00Z",
+    "hasMention": false,
+    "alert": false,
+    "disableNotification": false
+  },
+  {
+    "id": "sub-alice-r-design",
+    "u": { "id": "u-alice", "account": "alice" },
+    "roomId": "r-design",
+    "siteId": "site-local",
+    "roles": ["member"],
+    "name": "design",
+    "roomType": "channel",
+    "joinedAt": "2025-01-01T00:00:00Z",
+    "hasMention": false,
+    "alert": false,
+    "disableNotification": false
+  },
+  {
+    "id": "sub-bob-r-engineering",
+    "u": { "id": "u-bob", "account": "bob" },
+    "roomId": "r-engineering",
+    "siteId": "site-local",
+    "roles": ["member"],
+    "name": "engineering",
+    "roomType": "channel",
+    "joinedAt": "2025-01-01T00:00:00Z",
+    "hasMention": false,
+    "alert": false,
+    "disableNotification": false
+  },
+  {
+    "id": "sub-carol-r-design",
+    "u": { "id": "u-carol", "account": "carol" },
+    "roomId": "r-design",
+    "siteId": "site-local",
+    "roles": ["owner"],
+    "name": "design",
+    "roomType": "channel",
+    "joinedAt": "2025-01-01T00:00:00Z",
+    "hasMention": false,
+    "alert": false,
+    "disableNotification": false
+  }
+]

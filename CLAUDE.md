@@ -53,6 +53,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate` | Regenerate all mocks |
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
+| `make -C tools/integration-suite local` | Run the integration suite against the docker-local single-site stack (auto-fills env; assumes `make deps-up && make up` ran). See Section 6 + `tools/integration-suite/Makefile` for the full target list. |
 | `make tools` | Install pinned dev/SAST tooling (`golangci-lint`, `gosec`, `govulncheck`, `semgrep`) |
 | `make sast` | Run all SAST scans (`gosec`, `govulncheck`, `semgrep`); fails on medium+ |
 | `make sast-gosec` / `make sast-vuln` / `make sast-semgrep` | Run a single SAST scan |
@@ -306,3 +307,13 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
 - HTTP services cleanup order: `nc.Drain()` → disconnect databases
 - Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)
+
+### Integration Test Suite (`tools/integration-suite/`)
+- A scenario-driven black-box test **platform** — distinct from per-service `integration_test.go` (which test code) and `tools/loadgen/` (which measures capacity). It tests the assembled system against the architecture, to find behavioral regressions.
+- godog (Cucumber for Go) drives Gherkin `.feature` files under `features/<scope>/`. Layout: reusable harness logic (config, world, classifier, reporter, coverage, …) lives in `tools/integration-suite/internal/harness/` (package `harness`); godog entrypoint + step definitions stay at the top level (`main_test.go`, `*_steps_test.go`, package `integrationsuite`). Run via `go test` behind the suite's **self-contained Makefile** (`make -C tools/integration-suite local` from repo root, or `cd tools/integration-suite && make local`) — never raw `go test`, never via the root Makefile (root stays clean).
+- **Owns no infrastructure.** Connects to whatever URLs env vars provide (`SITES`, `PRIMARY_SITE`, `AUTH_SERVICE_URL_<SITE>`, `NATS_URL_<SITE>`, …). Bring up kind infra + docker-compose services yourself.
+- **Dual transport, chosen by architecture not preference.** `auth-service` is the only HTTP service — the suite POSTs `/auth` with a generated nkey public key to mint a NATS JWT. Every other service is NATS-only; the suite opens a per-user NATS connection (JWT+seed) and uses request/reply on subjects like `chat.user.<account>.request.rooms.create`. Step authors pick the verb; `LastResponse.Class()` dispatches assertions by transport (`ClassifyHTTP`/`ClassifyNATS`).
+- **Scoring:** `@status:approved` scenarios form the authoritative CI-gating score; everything else is informational DRAFT. `@blindspot:<slug>` forces failure (undocumented behavior) and must have a matching entry in `docs/integration-suite-v1/blindspots.md` (enforced by `make -C tools/integration-suite-lint`). Per-run summary lands in `docs/integration-suite-v1/last-run.md`; `reports/` holds gitignored cucumber JSON + JUnit XML.
+- **Coverage register:** `docs/integration-suite-v1/coverage.md` catalogs documented behavior cases (each citing a real Source). A scenario claims a case with `@covers:<case-id>`; a case counts covered only when a `@covers` scenario actually passed, blindspot entries count as known-gap, everything else uncovered. `make -C tools/integration-suite-coverage` scores it without re-running tests. Report-only — low coverage never fails a run.
+- **Authoring rules** (humans and AI alike) are in `tools/integration-suite/AUTHORING.md`: expected behavior must come from a cited design doc, never invented; reuse registered step phrasings; scenarios are independently true with run-prefixed (`it-<runID>-<scenarioID>-`) IDs.
+- v1 (Part 1) ships the framework + HTTP/NATS primitives + one `service/` smoke feature. Part 2 adds Mongo/Cassandra/JetStream observation steps, the other scopes, and chaos injection. Plan: `docs/superpowers/plans/2026-05-12-integration-test-suite-part1.md`; spec: `docs/superpowers/specs/2026-05-12-integration-test-suite-design.md`.

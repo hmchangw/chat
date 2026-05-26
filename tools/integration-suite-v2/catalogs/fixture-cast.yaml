@@ -1,0 +1,66 @@
+# Fixture cast — annotation of the static seed under `seed/*.json`.
+#
+# The seed JSON files (`seed/users.json`, `seed/rooms.json`,
+# `seed/subscriptions.json`) are the source of truth: they define what
+# entities exist in the test world after `seed.LoadAll`. This catalog
+# annotates those entities with predicate tags so scenarios can pick
+# fixtures by ROLE rather than by name. Edit the JSON and this file
+# together in the same PR (see `seed/README.md`).
+#
+# Predicate tags (used by scenarios in `placeholders[].predicate`):
+#   verified         — user has completed nkey + JWT handshake; the
+#                      seeder mints credentials for them via
+#                      auth-service /auth at startup.
+#   has_user_record  — there is a `users` row in Mongo for this account
+#                      (the seed JSON populates it). Required for any
+#                      handler that calls GetUser, e.g. the requester
+#                      lookup at room-service/handler.go:179.
+#
+# Credential strategies:
+#   generate-and-auth — at seed time the seeder generates a fresh nkey
+#                       keypair and POSTs the public key to auth-service
+#                       /auth, recording the returned JWT + seed for the
+#                       user. Dev mode only.
+#
+# Relationship facts live in `subscriptions:` below (Shape B from the
+# corrections spec §3.0). Future scenarios that need role-aware
+# predicates (e.g. `{ owner_of: $target_room.id }`) will walk this
+# section; for Part-1 the scenario resolver only reads `users[].tags`.
+
+users:
+  - id: alice
+    tags: [verified, has_user_record]
+    credentials:
+      strategy: generate-and-auth
+      account: alice
+  - id: bob
+    tags: [verified, has_user_record]
+    credentials:
+      strategy: generate-and-auth
+      account: bob
+  - id: carol
+    tags: [verified, has_user_record]
+    credentials:
+      strategy: generate-and-auth
+      account: carol
+  - id: dave
+    tags: [verified, has_user_record]
+    credentials:
+      strategy: generate-and-auth
+      account: dave
+
+rooms:
+  - id: r-engineering
+    tags: [channel, public]
+  - id: r-design
+    tags: [channel, public]
+
+subscriptions:
+  - { user: alice, room: r-engineering, roles: [owner] }
+  - { user: alice, room: r-design,      roles: [member] }
+  - { user: bob,   room: r-engineering, roles: [member] }
+  - { user: carol, room: r-design,      roles: [owner] }
+
+# Reserved for future placeholder types. Will be populated when the
+# scenario resolver gains support for picking non-user entities.
+messages: []

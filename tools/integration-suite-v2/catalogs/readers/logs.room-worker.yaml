@@ -1,0 +1,18 @@
+# Reader: logs.room-worker
+#
+# Mirrors `logs.room-service` for the room-worker service. Tails the
+# room-worker container's stdout, parses each line as slog JSON, and
+# emits an event per log entry. See `logs.room-service.yaml` for the
+# emit-shape and pairing-with-matchers detail — both readers share
+# the same ContainerLogsReader executor.
+#
+# Choose this location ONLY for behavior the service contractually
+# logs (per CLAUDE.md §3 request logging & tracing). Do NOT use it to
+# assert on internal state — Mongo / Cassandra / JetStream readers
+# exist for that.
+
+location: logs.room-worker
+owners:    [room-worker]
+timestamp_source: log line's "time" field (slog JSON)
+shape:    structured log entry (map[string]any)
+executor: ContainerLogsReader[room-worker]

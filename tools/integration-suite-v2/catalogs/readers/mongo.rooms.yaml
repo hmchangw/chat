@@ -1,0 +1,43 @@
+# Reader: mongo.rooms
+#
+# Polls the `rooms` collection in the operational Mongo (100ms ticker,
+# `_id`-dedup map; see `tools/integration-suite-v2/internal/readers/mongo_rooms.go`).
+# Emits one event per inserted document with `createdAt >= start`.
+# Pre-existing rooms seeded by `seed.LoadAll` are excluded by
+# timestamp: the seed JSON pins `createdAt: 2025-01-01T00:00:00Z`,
+# guaranteed older than any scenario `start`. Scenario-created rooms
+# pass the filter because their `createdAt` is set by room-worker to
+# the current time.
+#
+# Emit shape (one event per inserted document):
+#   document    — the full model.Room. Per `pkg/model/room.go:14-31`
+#                 the bson-tagged fields are: _id, name, type,
+#                 createdBy, siteId, userCount, appCount, lastMsgAt,
+#                 lastMsgId, lastMentionAllAt, minUserLastSeenAt,
+#                 createdAt, updatedAt, restricted, uids, accounts.
+#                 (No `members` field — membership lives in the
+#                 `subscriptions` collection.)
+#   timestamp   — the document's createdAt field (NOT the Mongo write
+#                 timestamp). The reader's fetch filter at
+#                 `mongo_rooms.go:69-72` requires `createdAt >= start`,
+#                 which assumes the writer's clock is roughly aligned
+#                 with the suite's clock; multi-host deployments with
+#                 measurable clock skew may drop late writes with
+#                 `createdAt < T_open`. Docker-local single-host is
+#                 unaffected.
+#
+# Choose this location when the scenario asserts on persistence side
+# effects. Pair with `count_eq` for "exactly N new rooms" or
+# `matches_shape` for "a room with these specific fields landed".
+#
+# Owners: room-worker is the actual Mongo writer for create
+# (`room-worker/store_mongo.go:132-133`); room-service publishes the
+# canonical event but does not write Mongo on this path. If a future
+# service (e.g. dm-bootstrapper) starts writing rooms, add it here so
+# the classifier accepts its writes as in-cascade.
+
+location: mongo.rooms
+owners:    [room-worker]
+timestamp_source: createdAt
+shape:    model.Room
+executor: MongoRoomsReader

@@ -1,0 +1,34 @@
+scenario: channel_name_too_long_rejected
+kind: negative
+source: room-service/handler.go:233-235 + room-service/handler.go:247 (maxChannelNameRunes=100) + pkg/model/model.go (ErrorResponse)
+
+input:
+  verb: nats_request
+  subject: chat.user.${requester.account}.request.room.${site}.create
+  payload:
+    name: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    users: ["${other.account}"]
+  credential: ${requester.credential}
+  placeholders:
+    requester:
+      type: user
+      predicate:
+        verified: true
+    other:
+      type: user
+      predicate:
+        verified: true
+
+sequence:
+  - service: room-service
+    reads:
+      - location: reply
+        matcher: matches_shape
+        expected:
+          body_json:
+            error: "channel name must be at most 100 characters"
+      - location: logs.room-service
+        matcher: matches_shape
+        expected:
+          msg: "create-room failed"
+          error: "channel name must be at most 100 characters"

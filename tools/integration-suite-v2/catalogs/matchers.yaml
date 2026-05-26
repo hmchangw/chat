@@ -1,0 +1,8 @@
+- name: equals
+  description: scalar equality (deep for structs and slices)
+- name: count_eq
+  description: cardinality of a slice equals N
+- name: matches_shape
+  description: typed shape match with field=value constraints
+- name: contains
+  description: substring or item containment

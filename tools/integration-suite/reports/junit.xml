@@ -1,0 +1,590 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="integration-suite" tests="91" skipped="0" failures="91" errors="0" time="0.569738886">
+  <testsuite name="History service — request validation" tests="17" skipped="0" failures="17" errors="0" time="0.097987891">
+    <testcase name="Load history for a room the caller is not subscribed to" status="failed" time="0.003977747">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-load-history-for-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests history for room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Load next messages for a room the caller is not subscribed to" status="failed" time="0.002924642">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-load-next-messages-for-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests next messages in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Load next messages with a malformed cursor in a room the caller is not subscribed to" status="failed" time="0.003144368">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-load-next-messages-with-a-malformed-cursor-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests next messages in room &#34;general&#34; with cursor &#34;not-valid-base64!!!&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Requesting surrounding messages with no message id in a room the caller is not subscribed to" status="failed" time="0.002861053">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-requesting-surrounding-messages-with-no-message-id-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests surrounding messages with no message id in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Requesting surrounding messages for a room the caller is not subscribed to" status="failed" time="0.002582317">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-requesting-surrounding-messages-for-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests surrounding messages for unknown message in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Fetching a message by id with an empty id in a room the caller is not subscribed to" status="failed" time="0.003257657">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-fetching-a-message-by-id-with-an-empty-id-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests message by id &#34;&#34; in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Fetching a message for a room the caller is not subscribed to" status="failed" time="0.002720396">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-fetching-a-message-for-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests message by unknown id in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Editing a message with an empty message id in a room the caller is not subscribed to" status="failed" time="0.004840627">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-editing-a-message-with-an-empty-message-id-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; edits message &#34;&#34; in room &#34;general&#34; with new content &#34;hello&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Editing a message with empty new content in a room the caller is not subscribed to" status="failed" time="0.002981631">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-editing-a-message-with-empty-new-content-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; edits unknown message in room &#34;general&#34; with empty content" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Editing a message in a room the caller is not subscribed to" status="failed" time="0.003007757">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-editing-a-message-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; edits message &#34;&#34; in room &#34;general&#34; with new content &#34;hello&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Deleting a message with an empty message id in a room the caller is not subscribed to" status="failed" time="0.003385358">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-deleting-a-message-with-an-empty-message-id-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; deletes message &#34;&#34; in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Deleting a message in a room the caller is not subscribed to" status="failed" time="0.003435263">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-deleting-a-message-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; deletes unknown message in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Listing thread parents with an unknown filter in a room the caller is not subscribed to" status="failed" time="0.003250794">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-listing-thread-parents-with-an-unknown-filter-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests thread parent messages in room &#34;general&#34; with filter &#34;invalid-filter-value&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Listing thread parents for a room the caller is not subscribed to" status="failed" time="0.003109529">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-listing-thread-parents-for-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests thread parent messages in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="A subscribed caller gets an empty result for a thread parent with no replies" status="failed" time="0.003075588">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-empty-thread-requires-subscription-fixture, step error: auth: POST /auth for &#34;it-7d08-a-subscribed-caller-gets-an-empty-result-for-a-thread-parent-with-no-replies-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests thread messages with no thread message id in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Paginating load-next-messages yields a non-overlapping second page" status="failed" time="0.003069286">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-pagination-requires-cassandra-fixture, step error: auth: POST /auth for &#34;it-7d08-paginating-load-next-messages-yields-a-non-overlapping-second-page-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests next messages in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Load history returns messages in newest-first order" status="failed" time="0.003517488">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-ordering-requires-cassandra-fixture, step error: auth: POST /auth for &#34;it-7d08-load-history-returns-messages-in-newest-first-order-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests history for room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="History service — thread messages request validation" tests="2" skipped="0" failures="2" errors="0" time="0.009738666">
+    <testcase name="Requesting a thread with no thread message id is rejected as invalid" status="failed" time="0.003257854">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-requesting-a-thread-with-no-thread-message-id-is-rejected-as-invalid-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-requesting-a-thread-with-no-thread-message-id-is-rejected-as-invalid-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests thread messages with no thread message id in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Requesting a thread in a room the caller is not subscribed to" status="failed" time="0.002971791">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: auth: POST /auth for &#34;it-7d08-requesting-a-thread-in-a-room-the-caller-is-not-subscribed-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests thread messages for an unknown message in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Messaging pipeline — message submission validation" tests="2" skipped="0" failures="2" errors="0" time="0.009860683">
+    <testcase name="Submitting a message with an empty body is rejected" status="failed" time="0.002992317">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-submitting-a-message-with-an-empty-body-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a message with an empty body" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Submitting a message with an invalid message id is rejected" status="failed" time="0.003115136">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-submitting-a-message-with-an-invalid-message-id-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a message with an invalid message id" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Messaging pipeline — message-gatekeeper field-level validation" tests="16" skipped="0" failures="16" errors="0" time="0.09687069">
+    <testcase name="Valid message submission is accepted and canonical event is published" status="failed" time="0.003498462">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-canonical-publish-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-valid-message-submission-is-accepted-and-canonical-event-is-published-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a valid message to room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is an accepted reply" type="skipped"></error>
+      <error message="Step within 5s a canonical created event exists for the message in room &#34;general&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="Message with content exceeding 20 KB is rejected" status="failed" time="0.003235841">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-message-with-content-exceeding-20-kb-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a message with content larger than 20 KB to room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Thread reply with threadParentMessageId but no threadParentMessageCreatedAt is rejected" status="failed" time="0.003446386">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-thread-reply-with-threadparentmessageid-but-no-threadparentmessagecreatedat-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a thread reply to room &#34;general&#34; with threadParentMessageId set but no threadParentMessageCreatedAt" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Thread reply with a malformed threadParentMessageId is rejected" status="failed" time="0.002957003">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-thread-reply-with-a-malformed-threadparentmessageid-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a thread reply to room &#34;general&#34; with a malformed threadParentMessageId" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Quoting a message from a different thread context is rejected" status="failed" time="0.003177731">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-quote-thread-context-check-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-quoting-a-message-from-a-different-thread-context-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a message to room &#34;general&#34; quoting a message from a different thread" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Main-room message quoting a thread reply is rejected" status="failed" time="0.003244014">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-quote-thread-context-check-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-main-room-message-quoting-a-thread-reply-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a main-room message to room &#34;general&#34; quoting a thread reply" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Quoting a non-existent parent message fails the send" status="failed" time="0.009945283">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-quoting-a-non-existent-parent-message-fails-the-send-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; submits a message to room &#34;general&#34; quoting a non-existent message id" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Message submitted by a user not subscribed to the target room is rejected" status="failed" time="0.003621014">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-message-submitted-by-a-user-not-subscribed-to-the-target-room-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;bob&#34; submits a message to room &#34;alice-private&#34; on behalf of a non-member" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-privileged user is blocked from top-level posting in a large room" status="failed" time="0.004316737">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-large-room-cap-requires-mongo-seeding, step error: auth: POST /auth for &#34;it-7d08-non-privileged-user-is-blocked-from-top-level-posting-in-a-large-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step a channel room &#34;crowded&#34; exists with more than 500 members" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is a regular member of room &#34;crowded&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; submits a top-level message to room &#34;crowded&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Thread reply from a non-privileged user is accepted even in a large room" status="failed" time="0.003026084">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-large-room-cap-requires-mongo-seeding, step error: auth: POST /auth for &#34;it-7d08-thread-reply-from-a-non-privileged-user-is-accepted-even-in-a-large-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step a channel room &#34;crowded&#34; exists with more than 500 members" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is a regular member of room &#34;crowded&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; submits a thread reply to room &#34;crowded&#34; with threadParentMessageId set but no threadParentMessageCreatedAt" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-subscriber cannot edit a message in a room they do not belong to" status="failed" time="0.003461102">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-non-subscriber-cannot-edit-a-message-in-a-room-they-do-not-belong-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-non-subscriber-cannot-edit-a-message-in-a-room-they-do-not-belong-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to edit message &#34;someMessageId&#34; in room &#34;alices-room&#34; with new content &#34;updated&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Subscriber cannot edit a message authored by another user" status="failed" time="0.003773178">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-edit-sender-gate-requires-seeded-message, step error: auth: POST /auth for &#34;it-7d08-subscriber-cannot-edit-a-message-authored-by-another-user-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to edit message &#34;someMessageId&#34; in room &#34;alices-room&#34; with new content &#34;updated&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Edit request with empty newMsg is rejected" status="failed" time="0.003716295">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-edit-empty-content-requires-seeded-message, step error: auth: POST /auth for &#34;it-7d08-edit-request-with-empty-newmsg-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to edit message &#34;someMessageId&#34; in room &#34;general&#34; with empty content" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-subscriber cannot delete a message in a room they do not belong to" status="failed" time="0.003505665">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-non-subscriber-cannot-delete-a-message-in-a-room-they-do-not-belong-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-non-subscriber-cannot-delete-a-message-in-a-room-they-do-not-belong-to-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to delete message &#34;someMessageId&#34; in room &#34;alices-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Subscriber cannot delete a message they did not author" status="failed" time="0.003916025">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-delete-sender-gate-requires-seeded-message, step error: auth: POST /auth for &#34;it-7d08-subscriber-cannot-delete-a-message-they-did-not-author-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to delete message &#34;someMessageId&#34; in room &#34;alices-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Auth error" type="skipped"></error>
+    </testcase>
+    <testcase name="Message published on a mismatched siteID subject is silently acked with no reply" status="failed" time="0.003133294">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: gatekeeper-siteid-mismatch-reply-unobservable, step error: auth: POST /auth for &#34;it-7d08-message-published-on-a-mismatched-siteid-subject-is-silently-acked-with-no-reply-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; publishes a message on a subject for site &#34;wrong-site&#34; to room &#34;general&#34;" type="skipped"></error>
+      <error message="Step no reply is received on the response subject" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Messaging pipeline — message-worker persistence" tests="10" skipped="0" failures="10" errors="0" time="0.063246891">
+    <testcase name="A canonical create event yields rows in messages_by_room and messages_by_id" status="failed" time="0.004849938">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-persist-canonical-needs-cassandra-primitive, step error: auth: POST /auth for &#34;it-7d08-a-canonical-create-event-yields-rows-in-messages-by-room-and-messages-by-id-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step a canonical created event for message &#34;msg-01&#34; by &#34;alice&#34; in room &#34;r1&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s Cassandra table &#34;messages_by_room&#34; contains a row for message &#34;msg-01&#34; in room &#34;r1&#34;" type="skipped"></error>
+      <error message="Step within 5s Cassandra table &#34;messages_by_id&#34; contains a row for message &#34;msg-01&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="The messages_by_room row lands in the correct time bucket derived from created_at" status="failed" time="0.003817757">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-bucket-partition-needs-cassandra-primitive, step error: auth: POST /auth for &#34;it-7d08-the-messages-by-room-row-lands-in-the-correct-time-bucket-derived-from-created-at-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step a canonical created event for message &#34;msg-02&#34; by &#34;alice&#34; in room &#34;r2&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s the &#34;messages_by_room&#34; row for message &#34;msg-02&#34; has bucket equal to the expected time-window value for its created_at" type="skipped"></error>
+    </testcase>
+    <testcase name="A thread reply yields a row in thread_messages_by_room and increments the parent tcount" status="failed" time="0.003049248">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-thread-persist-needs-cassandra-primitive, step error: auth: POST /auth for &#34;it-7d08-a-thread-reply-yields-a-row-in-thread-messages-by-room-and-increments-the-parent-tcount-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step message &#34;parent-msg&#34; by &#34;alice&#34; in room &#34;r3&#34; already persisted in Cassandra" type="skipped"></error>
+      <error message="Step a canonical created event for thread reply &#34;reply-01&#34; by &#34;bob&#34; to parent &#34;parent-msg&#34; in room &#34;r3&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s Cassandra table &#34;thread_messages_by_room&#34; contains a row for message &#34;reply-01&#34;" type="skipped"></error>
+      <error message="Step within 5s the tcount for message &#34;parent-msg&#34; in &#34;messages_by_id&#34; is 1" type="skipped"></error>
+      <error message="Step within 5s the tcount for message &#34;parent-msg&#34; in &#34;messages_by_room&#34; is 1" type="skipped"></error>
+    </testcase>
+    <testcase name="The first thread reply creates a ThreadRoom document and ThreadSubscription for both parent author and replier" status="failed" time="0.00368108">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-thread-room-mongodb-needs-mongo-primitive, step error: auth: POST /auth for &#34;it-7d08-the-first-thread-reply-creates-a-threadroom-document-and-threadsubscription-for-both-parent-author-and-replier-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step message &#34;parent-msg-02&#34; by &#34;alice&#34; in room &#34;r4&#34; already persisted in Cassandra" type="skipped"></error>
+      <error message="Step a canonical created event for thread reply &#34;reply-02&#34; by &#34;bob&#34; to parent &#34;parent-msg-02&#34; in room &#34;r4&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s MongoDB collection &#34;thread_rooms&#34; contains a document with parentMessageId &#34;parent-msg-02&#34;" type="skipped"></error>
+      <error message="Step within 5s MongoDB collection &#34;thread_subscriptions&#34; contains a document for user &#34;alice&#34; and threadParent &#34;parent-msg-02&#34;" type="skipped"></error>
+      <error message="Step within 5s MongoDB collection &#34;thread_subscriptions&#34; contains a document for user &#34;bob&#34; and threadParent &#34;parent-msg-02&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="message-worker ignores canonical updated events and does not write duplicate rows" status="failed" time="0.003499427">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-no-edit-handler-needs-canonical-filter-primitive, step error: auth: POST /auth for &#34;it-7d08-message-worker-ignores-canonical-updated-events-and-does-not-write-duplicate-rows-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step message &#34;msg-03&#34; by &#34;alice&#34; in room &#34;r5&#34; already persisted in Cassandra" type="skipped"></error>
+      <error message="Step a canonical updated event for message &#34;msg-03&#34; by &#34;alice&#34; in room &#34;r5&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s the message-worker durable consumer sequence does not advance for the updated event" type="skipped"></error>
+    </testcase>
+    <testcase name="message-worker ignores canonical deleted events and does not process soft-deletes" status="failed" time="0.003495003">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-no-delete-handler-needs-canonical-filter-primitive, step error: auth: POST /auth for &#34;it-7d08-message-worker-ignores-canonical-deleted-events-and-does-not-process-soft-deletes-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step within 5s the message-worker durable consumer sequence does not advance for the deleted event" type="skipped"></error>
+      <error message="Step message &#34;msg-04&#34; by &#34;alice&#34; in room &#34;r6&#34; already persisted in Cassandra" type="skipped"></error>
+      <error message="Step a canonical deleted event for message &#34;msg-04&#34; by &#34;alice&#34; in room &#34;r6&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+    </testcase>
+    <testcase name="JetStream redelivery of the same canonical create event does not produce duplicate Cassandra rows" status="failed" time="0.003455922">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-idempotency-needs-cassandra-primitive, step error: auth: POST /auth for &#34;it-7d08-jetstream-redelivery-of-the-same-canonical-create-event-does-not-produce-duplicate-cassandra-rows-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step the canonical created event for message &#34;msg-05&#34; by &#34;alice&#34; in room &#34;r7&#34; is published to MESSAGES_CANONICAL twice" type="skipped"></error>
+      <error message="Step within 5s exactly 1 row for message &#34;msg-05&#34; exists in Cassandra table &#34;messages_by_room&#34;" type="skipped"></error>
+      <error message="Step exactly 1 row for message &#34;msg-05&#34; exists in Cassandra table &#34;messages_by_id&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="Out-of-order delivery of distinct canonical create events does not corrupt partition layout" status="failed" time="0.003709494">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-order-independence-needs-cassandra-primitive, step error: auth: POST /auth for &#34;it-7d08-out-of-order-delivery-of-distinct-canonical-create-events-does-not-corrupt-partition-layout-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step canonical created events for &#34;msg-06&#34; (created 48h ago) and &#34;msg-07&#34; (created now) are delivered out of order to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s &#34;msg-06&#34; exists in Cassandra in the bucket for 48 hours ago" type="skipped"></error>
+      <error message="Step &#34;msg-07&#34; exists in Cassandra in the bucket for the current window" type="skipped"></error>
+    </testcase>
+    <testcase name="When Cassandra is unreachable message-worker NAKs the canonical event for redelivery" status="failed" time="0.003235058">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-cassandra-error-naks-needs-jetstream-primitive, step error: auth: POST /auth for &#34;it-7d08-when-cassandra-is-unreachable-message-worker-naks-the-canonical-event-for-redelivery-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step Cassandra is made unavailable" type="skipped"></error>
+      <error message="Step a canonical created event for message &#34;msg-08&#34; by &#34;alice&#34; in room &#34;r8&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s the delivery count for message &#34;msg-08&#34; on the message-worker consumer is greater than 1" type="skipped"></error>
+    </testcase>
+    <testcase name="A thread reply by a user whose home site differs from the room site triggers an OUTBOX event" status="failed" time="0.000909301">
+      <failure message="Step user &#34;alice&#34; from site &#34;site-a&#34; is authenticated: after scenario hook failed: undocumented behavior: msg-worker-thread-sub-outbox-needs-jetstream-primitive, step error: config: unknown site &#34;site-a&#34;"></failure>
+      <error message="Step user &#34;bob&#34; from site &#34;site-b&#34; is authenticated" type="skipped"></error>
+      <error message="Step channel room &#34;r9&#34; is homed on site &#34;site-a&#34; with member &#34;alice&#34;" type="skipped"></error>
+      <error message="Step message &#34;parent-msg-03&#34; by &#34;alice&#34; in room &#34;r9&#34; already persisted in Cassandra" type="skipped"></error>
+      <error message="Step a canonical created event for thread reply &#34;reply-03&#34; by &#34;bob&#34; (home site &#34;site-b&#34;) to parent &#34;parent-msg-03&#34; in room &#34;r9&#34; on site &#34;site-a&#34; is published to MESSAGES_CANONICAL" type="skipped"></error>
+      <error message="Step within 5s an OUTBOX event of type &#34;thread_subscription_upserted&#34; destined for site &#34;site-b&#34; appears on the OUTBOX stream" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Room member operations pipeline — room-worker async processing" tests="17" skipped="0" failures="17" errors="0" time="0.103109642">
+    <testcase name="Owner adds a new member to a channel and room-service accepts the request" status="failed" time="0.003013759">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-owner-adds-a-new-member-to-a-channel-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-owner-adds-a-new-member-to-a-channel-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-alpha&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;bob&#34; to room &#34;project-alpha&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Add-member event missing X-Request-ID is rejected permanently by room-worker" status="failed" time="0.004759472">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-add-missing-request-id, step error: auth: POST /auth for &#34;it-7d08-add-member-event-missing-x-request-id-is-rejected-permanently-by-room-worker-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-beta&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;bob&#34; to room &#34;project-beta&#34; without a request ID" type="skipped"></error>
+      <error message="Step within 5s &#34;alice&#34; receives an async job error for operation &#34;room.member.add&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="Adding members to a DM room is rejected by room-service" status="failed" time="0.003410364">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-adding-members-to-a-dm-room-is-rejected-by-room-service-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-adding-members-to-a-dm-room-is-rejected-by-room-service-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step a DM room exists between &#34;alice&#34; and &#34;bob&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add &#34;alice&#34; to the DM room between &#34;alice&#34; and &#34;bob&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-owner cannot add members to a restricted channel" status="failed" time="0.003618319">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-non-owner-cannot-add-members-to-a-restricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-non-owner-cannot-add-members-to-a-restricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step user &#34;carol&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of restricted channel room &#34;classified&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;classified&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to add member &#34;carol&#34; to room &#34;classified&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="Adding a member to a non-existent room is rejected" status="failed" time="0.003237534">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-adding-a-member-to-a-non-existent-room-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-adding-a-member-to-a-non-existent-room-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;bob&#34; to room &#34;nonexistent-room-abc&#34; that does not exist" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="After add-member succeeds a subscription document is written for the new member" status="failed" time="0.005170632">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-add-member-persistence, step error: auth: POST /auth for &#34;it-7d08-after-add-member-succeeds-a-subscription-document-is-written-for-the-new-member-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-gamma&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;bob&#34; to room &#34;project-gamma&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+      <error message="Step within 5s a subscription exists in MongoDB for &#34;bob&#34; in room &#34;project-gamma&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="Adding a cross-site member produces an outbox event on the room-worker pipeline" status="failed" time="0.003316615">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-add-member-outbox, step error: auth: POST /auth for &#34;it-7d08-adding-a-cross-site-member-produces-an-outbox-event-on-the-room-worker-pipeline-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;dave&#34; is authenticated in site &#34;site-remote&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;cross-site-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;dave&#34; to room &#34;cross-site-room&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+      <error message="Step within 5s an outbox event of type &#34;member_added&#34; is published to site &#34;site-remote&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="A member self-leaves a channel and room-service accepts the request" status="failed" time="0.002945648">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-member-self-leaves-a-channel-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-member-self-leaves-a-channel-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-delta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-delta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to leave room &#34;project-delta&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-owner cannot remove another member from a channel" status="failed" time="0.004410649">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-non-owner-cannot-remove-another-member-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-non-owner-cannot-remove-another-member-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step user &#34;carol&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-epsilon&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-epsilon&#34;" type="skipped"></error>
+      <error message="Step &#34;carol&#34; is a member of room &#34;project-epsilon&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to remove member &#34;carol&#34; from room &#34;project-epsilon&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="The last owner cannot be removed from a channel" status="failed" time="0.003232378">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-be-removed-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-be-removed-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-zeta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-zeta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to remove member &#34;alice&#34; from room &#34;project-zeta&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="After a successful self-leave the subscription document is deleted" status="failed" time="0.003375297">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-remove-member-persistence, step error: auth: POST /auth for &#34;it-7d08-after-a-successful-self-leave-the-subscription-document-is-deleted-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-eta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-eta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to leave room &#34;project-eta&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+      <error message="Step within 5s no subscription exists in MongoDB for &#34;bob&#34; in room &#34;project-eta&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="Owner promotes a member to owner and room-service accepts the request" status="failed" time="0.003416074">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-owner-promotes-a-member-to-owner-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-owner-promotes-a-member-to-owner-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-theta&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-theta&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests role &#34;owner&#34; for member &#34;bob&#34; in room &#34;project-theta&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Owner demotes a co-owner to member and room-service accepts the request" status="failed" time="0.003724405">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-owner-demotes-a-co-owner-to-member-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-owner-demotes-a-co-owner-to-member-and-room-service-accepts-the-request-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-iota&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is an owner of room &#34;project-iota&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests role &#34;member&#34; for member &#34;bob&#34; in room &#34;project-iota&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Non-owner cannot update another member&#39;s role" status="failed" time="0.003544656">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-non-owner-cannot-update-another-member-s-role-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-non-owner-cannot-update-another-member-s-role-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step user &#34;carol&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-kappa&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-kappa&#34;" type="skipped"></error>
+      <error message="Step &#34;carol&#34; is a member of room &#34;project-kappa&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests role &#34;owner&#34; for member &#34;carol&#34; in room &#34;project-kappa&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="The last owner cannot self-demote" status="failed" time="0.002959717">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-self-demote-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-self-demote-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-lambda&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-lambda&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests role &#34;member&#34; for member &#34;alice&#34; in room &#34;project-lambda&#34;" type="skipped"></error>
+      <error message="Step the response is a HandlerError error" type="skipped"></error>
+    </testcase>
+    <testcase name="After a successful role promotion the subscription carries the owner role" status="failed" time="0.00284145">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-role-update-persistence, step error: auth: POST /auth for &#34;it-7d08-after-a-successful-role-promotion-the-subscription-carries-the-owner-role-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-mu&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; is a member of room &#34;project-mu&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests role &#34;owner&#34; for member &#34;bob&#34; in room &#34;project-mu&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+      <error message="Step within 5s &#34;bob&#34;&#39;s subscription in room &#34;project-mu&#34; contains role &#34;owner&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="A role update for a cross-site member produces an outbox event" status="failed" time="0.003208346">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-worker-role-update-outbox, step error: auth: POST /auth for &#34;it-7d08-a-role-update-for-a-cross-site-member-produces-an-outbox-event-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;dave&#34; is authenticated in site &#34;site-remote&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; is the owner of channel room &#34;project-nu&#34;" type="skipped"></error>
+      <error message="Step &#34;dave&#34; is a member of room &#34;project-nu&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests role &#34;owner&#34; for member &#34;dave&#34; in room &#34;project-nu&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+      <error message="Step within 5s an outbox event of type &#34;role_updated&#34; is published to site &#34;site-remote&#34;" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Room service — channel creation" tests="2" skipped="0" failures="2" errors="0" time="0.0097075">
+    <testcase name="Authenticated user creates a channel room" status="failed" time="0.00337042">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-authenticated-user-creates-a-channel-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-authenticated-user-creates-a-channel-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; creates channel room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Authenticated user creating a channel room (draft demo)" status="failed" time="0.003267254">
+      <failure message="Step user &#34;bob&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-authenticated-user-creating-a-channel-room-draft-demo-bob&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-authenticated-user-creating-a-channel-room-draft-demo-bob&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;bob&#34; creates channel room &#34;draft-room&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Room service — member operations and supporting RPCs" tests="24" skipped="0" failures="24" errors="0" time="0.143793474">
+    <testcase name="Creating a DM with yourself is rejected" status="failed" time="0.002993792">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-creating-a-dm-with-yourself-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-creating-a-dm-with-yourself-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to create a DM with user &#34;alice&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Create room with no X-Request-ID header is rejected" status="failed" time="0.003133593">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-create-missing-request-id, step error: auth: POST /auth for &#34;it-7d08-create-room-with-no-x-request-id-header-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to create a channel room without a request ID header" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Creating a channel with a name longer than 100 runes is rejected" status="failed" time="0.003016039">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-creating-a-channel-with-a-name-longer-than-100-runes-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-creating-a-channel-with-a-name-longer-than-100-runes-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to create a channel room with a name of 101 runes" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Creating a room with no users, orgs, channels, or name is rejected" status="failed" time="0.003042235">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-creating-a-room-with-no-users-orgs-channels-or-name-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-creating-a-room-with-no-users-orgs-channels-or-name-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to create an empty room" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Adding a bot account to a channel create request is rejected" status="failed" time="0.003296665">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-adding-a-bot-account-to-a-channel-create-request-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-adding-a-bot-account-to-a-channel-create-request-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests to create a channel room &#34;bots-test&#34; with bot user &#34;myapp.bot&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Creating a DM that already exists returns the existing room ID" status="failed" time="0.003378519">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-create-dm-already-exists, step error: auth: POST /auth for &#34;it-7d08-creating-a-dm-that-already-exists-returns-the-existing-room-id-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to create a DM with user &#34;bob&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to create a DM with user &#34;bob&#34;" type="skipped"></error>
+      <error message="Step the response contains a &#34;dm already exists&#34; error with an existing room ID" type="skipped"></error>
+    </testcase>
+    <testcase name="Room member adds another user to an unrestricted channel" status="failed" time="0.003533614">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-room-member-adds-another-user-to-an-unrestricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-room-member-adds-another-user-to-an-unrestricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;add-member-happy&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;bob&#34; to room &#34;add-member-happy&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="A non-owner member cannot add to a restricted channel" status="failed" time="0.003605375">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-non-owner-member-cannot-add-to-a-restricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-non-owner-member-cannot-add-to-a-restricted-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step user &#34;carol&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;restricted-add-test&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;restricted-add-test&#34;" type="skipped"></error>
+      <error message="Step room &#34;restricted-add-test&#34; is marked as restricted" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to add member &#34;carol&#34; to room &#34;restricted-add-test&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Adding a member to a DM room is rejected" status="failed" time="0.00300516">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-add-member-to-dm, step error: auth: POST /auth for &#34;it-7d08-adding-a-member-to-a-dm-room-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created a DM room with &#34;bob&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;alice&#34; to the DM room with &#34;bob&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Explicitly adding a bot account to a channel via add-member is rejected" status="failed" time="0.003468463">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-explicitly-adding-a-bot-account-to-a-channel-via-add-member-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-explicitly-adding-a-bot-account-to-a-channel-via-add-member-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; has created channel room &#34;no-bots-channel&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to add member &#34;myapp.bot&#34; to room &#34;no-bots-channel&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="A member can remove themselves from a channel (self-leave)" status="failed" time="0.003318145">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-member-can-remove-themselves-from-a-channel-self-leave-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-member-can-remove-themselves-from-a-channel-self-leave-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;self-leave-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;self-leave-room&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to remove member &#34;bob&#34; from room &#34;self-leave-room&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="An org-only member cannot leave individually" status="failed" time="0.00409261">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-remove-member-org-only, step error: auth: POST /auth for &#34;it-7d08-an-org-only-member-cannot-leave-individually-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;org-remove-test&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to remove member &#34;bob&#34; from room &#34;org-remove-test&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="The last owner cannot remove themselves from a channel" status="failed" time="0.002968821">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-remove-themselves-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-the-last-owner-cannot-remove-themselves-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;last-owner-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;last-owner-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to remove member &#34;alice&#34; from room &#34;last-owner-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="A non-owner cannot remove another member from a channel" status="failed" time="0.00293325">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-non-owner-cannot-remove-another-member-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-non-owner-cannot-remove-another-member-from-a-channel-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; has created channel room &#34;remove-auth-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;remove-auth-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;carol&#34; to room &#34;remove-auth-room&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to remove member &#34;carol&#34; from room &#34;remove-auth-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step user &#34;carol&#34; is authenticated" type="skipped"></error>
+    </testcase>
+    <testcase name="Remove member with neither account nor orgId is rejected" status="failed" time="0.003397502">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-remove-member-with-neither-account-nor-orgid-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-remove-member-with-neither-account-nor-orgid-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;remove-noargs-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;remove-noargs-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to remove a member from room &#34;remove-noargs-room&#34; with no account or orgId" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="A non-member cannot list the members of a room" status="failed" time="0.002878395">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-non-member-cannot-list-the-members-of-a-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-non-member-cannot-list-the-members-of-a-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;members-auth-room&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests to list members of room &#34;members-auth-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="A subscribed member can list the members of their room" status="failed" time="0.003271184">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-subscribed-member-can-list-the-members-of-their-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-subscribed-member-can-list-the-members-of-their-room-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; has created channel room &#34;list-members-happy&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to list members of room &#34;list-members-happy&#34;" type="skipped"></error>
+      <error message="Step the response is successful" type="skipped"></error>
+    </testcase>
+    <testcase name="Listing members with a zero limit is rejected" status="failed" time="0.005028169">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-listing-members-with-a-zero-limit-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-listing-members-with-a-zero-limit-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; has created channel room &#34;list-members-limit-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests to list members of room &#34;list-members-limit-room&#34; with limit 0" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="RoomsInfoBatch with an empty roomIds list is rejected" status="failed" time="0.005846735">
+      <failure message="Step the response is a Validation error: after scenario hook failed: error-class: want Validation, got Unclassified (transport=nats status=0 errText=&#34;&#34; trace=), step error: error-class: want Validation, got Unclassified (transport=nats status=0 errText=&#34;&#34; trace=)"></failure>
+    </testcase>
+    <testcase name="RoomsInfoBatch with too many room IDs is rejected" status="failed" time="0.006210327">
+      <failure message="Step the response is a Validation error: after scenario hook failed: error-class: want Validation, got Unclassified (transport=nats status=0 errText=&#34;&#34; trace=), step error: error-class: want Validation, got Unclassified (transport=nats status=0 errText=&#34;&#34; trace=)"></failure>
+    </testcase>
+    <testcase name="RoomsInfoBatch for an unknown room returns Found=false for that entry" status="failed" time="0.005402253">
+      <failure message="Step the response is successful: after scenario hook failed: successful: response is not a success (class=Unclassified transport=nats status=0 errText=&#34;&#34; err=dial tcp: lookup example.invalid on 8.8.8.8:53: no such host trace=), step error: successful: response is not a success (class=Unclassified transport=nats status=0 errText=&#34;&#34; err=dial tcp: lookup example.invalid on 8.8.8.8:53: no such host trace=)"></failure>
+      <error message="Step the response contains a room info entry with &#34;found&#34; set to &#34;false&#34;" type="skipped"></error>
+    </testcase>
+    <testcase name="A non-member cannot query read receipts for a message" status="failed" time="0.003131119">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-a-non-member-cannot-query-read-receipts-for-a-message-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-a-non-member-cannot-query-read-receipts-for-a-message-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;receipt-auth-room&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests read receipts for message &#34;some-msg-id&#34; in room &#34;receipt-auth-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Read receipt request with an empty message ID is rejected" status="failed" time="0.003265373">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-read-receipt-request-with-an-empty-message-id-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-read-receipt-request-with-an-empty-message-id-is-rejected-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; has created channel room &#34;receipt-empty-msgid-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; requests read receipts with no message ID in room &#34;receipt-empty-msgid-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="A member who is not the message sender cannot view read receipts" status="failed" time="0.002945023">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: undocumented behavior: room-read-receipt-non-sender, step error: auth: POST /auth for &#34;it-7d08-a-member-who-is-not-the-message-sender-cannot-view-read-receipts-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step user &#34;bob&#34; is authenticated" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has created channel room &#34;receipt-sender-room&#34;" type="skipped"></error>
+      <error message="Step &#34;alice&#34; has added &#34;bob&#34; to room &#34;receipt-sender-room&#34;" type="skipped"></error>
+      <error message="Step &#34;bob&#34; requests read receipts for message &#34;alice-message-id&#34; in room &#34;receipt-sender-room&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Room service — member role update validation" tests="1" skipped="0" failures="1" errors="0" time="0.002759942">
+    <testcase name="Updating a member to an unknown role is rejected as invalid" status="failed" time="0.002759942">
+      <failure message="Step user &#34;alice&#34; is authenticated: after scenario hook failed: auth: POST /auth for &#34;it-7d08-updating-a-member-to-an-unknown-role-is-rejected-as-invalid-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host, step error: auth: POST /auth for &#34;it-7d08-updating-a-member-to-an-unknown-role-is-rejected-as-invalid-alice&#34;: Post &#34;http://example.invalid/auth&#34;: dial tcp: lookup example.invalid on 8.8.8.8:53: no such host"></failure>
+      <error message="Step &#34;alice&#34; requests role &#34;supervisor&#34; for member &#34;bob&#34; in room &#34;general&#34;" type="skipped"></error>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+</testsuites>

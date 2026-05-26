@@ -1,0 +1,46 @@
+scenario: room_worker_rejects_missing_valkey_key
+kind: negative
+source: room-worker/handler.go:1106-1114 (newPermanentAbsent room key absent gate) + room-worker/handler.go:184 (slog.Error on process failure)
+
+input:
+  verb: jetstream_publish
+  subject: chat.room.canonical.${site}.create
+  payload:
+    roomId: r-no-key-for-this
+    name: should-never-land
+    requesterId: ${requester.id}
+    requesterAccount: ${requester.account}
+    users: ["${other.account}"]
+    timestamp: 1735689600000
+  credential: ${service.backend}
+  placeholders:
+    requester:
+      type: user
+      predicate:
+        verified: true
+    other:
+      type: user
+      predicate:
+        verified: true
+
+sequence:
+  - service: room-worker
+    reads:
+      - location: jetstream.rooms-canonical
+        matcher: matches_shape
+        expected:
+          body_json:
+            roomId: r-no-key-for-this
+            requesterAccount: ${requester.account}
+      - location: logs.room-worker
+        matcher: matches_shape
+        expected:
+          msg: process message failed
+          error: room key absent for r-no-key-for-this
+      - location: logs.room-worker
+        matcher: matches_shape
+        expected:
+          msg: async room job failed
+          error: room key absent for r-no-key-for-this
+          operation: room.create
+          roomID: r-no-key-for-this

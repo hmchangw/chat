@@ -1,0 +1,30 @@
+# Reader: logs.room-service
+#
+# Streams `docker logs -f` for the room-service container, parses each
+# line as slog JSON, and emits an event per log entry. Useful for
+# asserting on observable behavior the service intentionally logs
+# (e.g. "room created", request-ID propagation) without coupling to
+# implementation internals.
+#
+# Emit shape (one event per JSON-parseable log line):
+#   fields      — map[string]any of the parsed slog entry (time, level,
+#                 msg, plus structured key/value pairs the service set).
+#   timestamp   — the log entry's "time" field (RFC3339). If the
+#                 "time" field is missing or unparseable, the reader
+#                 silently falls back to wall-clock receive time at
+#                 `internal/readers/container_logs.go:76-86`. No
+#                 marker is set today; if scenarios need to
+#                 distinguish, add a tag in a future PR.
+#   raw_line    — the original line, for debugging.
+#
+# Choose this location ONLY for behavior the service contractually
+# logs (per CLAUDE.md §3 request logging & tracing). Do NOT use it to
+# assert on internal state — Mongo/Cassandra/JetStream readers exist
+# for that. Pair with `contains` for message text, `matches_shape` for
+# typed field assertions.
+
+location: logs.room-service
+owners:    [room-service]
+timestamp_source: log line's "time" field (slog JSON)
+shape:    structured log entry (map[string]any)
+executor: ContainerLogsReader[room-service]

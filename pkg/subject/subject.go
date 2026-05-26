@@ -310,6 +310,13 @@ func MsgThreadPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread", siteID)
 }
 
+// MsgThread builds the concrete history-service thread-messages request
+// subject for a specific account/room/site. Counterpart to MsgThreadPattern
+// (the natsrouter registration pattern).
+func MsgThread(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.thread", account, roomID, siteID)
+}
+
 func MemberAdd(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
 }

@@ -1,0 +1,38 @@
+# Reader: jetstream.rooms-canonical
+#
+# Observes the canonical-room JetStream subject space — the bridge
+# room-service publishes onto for room-worker to consume. Subject
+# pattern is `chat.room.canonical.{siteID}.>` (the trailing `>` covers
+# `create`, `member.add`, `member.remove`, `member.role-update`); see
+# `pkg/subject/subject.go:84-85` `RoomCanonical` for the builder and
+# `pkg/subject/subject.go:244-245` `RoomCanonicalWildcard` for the
+# matching wildcard.
+#
+# The executor opens an **ephemeral**, **filtered**, **deliver-new**
+# consumer scoped to the scenario's timeframe via `jetstream.Consume`,
+# captures messages, decodes the payload, and emits an Event per
+# message. Cleanup deletes the ephemeral consumer at timeframe close.
+# No durable consumers, no replay, no interference with production
+# JetStream consumers.
+#
+# Emit shape (one event per JetStream message):
+#   subject     — the concrete subject the message was published on
+#                 (e.g. `chat.room.canonical.site-local.create`).
+#   payload     — raw JSON bytes; matchers usually pair this location
+#                 with `matches_shape` against fields of the
+#                 publisher's request struct. For the `.create`
+#                 operation the payload is `pkg/model/member.go:140`
+#                 CreateRoomRequest, fields like `name`, `roomId`,
+#                 `requesterAccount`, `users`, `orgs`, `channels`.
+#   header      — every JetStream / NATS header on the message.
+#   metadata    — JetStream sequence + receive timestamp.
+#
+# Choose this location when the scenario asserts on what
+# room-service produced as a canonical event (i.e. between accepting
+# the request and room-worker materializing it).
+
+location: jetstream.rooms-canonical
+owners:    [room-service]
+timestamp_source: JetStream metadata.Timestamp, falling back to payload `timestamp` field
+shape:    model.CreateRoomRequest (for .create; other ops have their own shapes)
+executor: JetStreamSubjectReader

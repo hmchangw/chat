@@ -1,0 +1,46 @@
+scenario: room_service_create_room_persists_via_room_worker
+source: room-service/handler.go:296-374 + room-worker/handler.go:1080-1136 + room-worker/store_mongo.go:132-133
+
+input:
+  verb: nats_request
+  subject: chat.user.${requester.account}.request.room.${site}.create
+  payload:
+    name: $auto
+    users: ["${other.account}"]
+  credential: ${requester.credential}
+  placeholders:
+    requester:
+      type: user
+      predicate:
+        verified: true
+    other:
+      type: user
+      predicate:
+        verified: true
+
+sequence:
+  - service: room-service
+    reads:
+      - location: reply
+        matcher: matches_shape
+        expected:
+          body_json:
+            status: accepted
+            roomType: channel
+      - location: jetstream.rooms-canonical
+        matcher: matches_shape
+        expected:
+          body_json:
+            name: ${input.payload.name}
+            requesterAccount: ${requester.account}
+            requesterId: ${requester.id}
+
+  - service: room-worker
+    reads:
+      - location: mongo.rooms
+        matcher: matches_shape
+        expected:
+          type: channel
+          siteId: ${requester.siteId}
+          createdBy: ${requester.id}
+          name: ${input.payload.name}
