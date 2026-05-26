@@ -1,6 +1,6 @@
 # NATS Traffic & Operations Analysis
 
-**Baseline assumptions:** 1M rooms · 200M messages/year · 10 members/room · 100K unique users · peak = 10× avg · date: 2026-05-26
+**Baseline assumptions:** 1M rooms · 200M messages/year · 10 members/room · 20K unique users · peak = 10× avg · date: 2026-05-26
 
 ---
 
@@ -78,11 +78,11 @@ Event types carried in OUTBOX/INBOX:
 | Messages/sec (avg) | ÷ 86,400 | **6.3 msg/s** |
 | Messages/sec (daily peak, 8-hr window) | × 3 | **19 msg/s** |
 | Messages/sec (burst, 60-sec spike) | × 10 | **63 msg/s** |
-| Unique users | given | 100,000 |
-| Rooms per user (avg) | 1M rooms × 10 members ÷ 100K users | **100 rooms/user** |
-| Messages per user per year | 200M ÷ 100K | **2,000 (~5.5/day)** |
-| Peak concurrent users | 100K × 50% (business hours) | **50K** |
-| Peak NATS client connections | 50K × 1.2 (multi-device) | **~60K** |
+| Unique users | given | 20,000 |
+| Rooms per user (avg) | 1M rooms × 10 members ÷ 20K users | **500 rooms/user** |
+| Messages per user per year | 200M ÷ 20K | **10,000 (~27/day)** |
+| Peak concurrent users | 20K × 50% (business hours) | **10K** |
+| Peak NATS client connections | 10K × 1.2 (multi-device) | **~12K** |
 
 ### 2.2 JetStream Stream Traffic
 
@@ -176,45 +176,45 @@ Event types carried in OUTBOX/INBOX:
 
 ### 2.4 Core NATS (Live Broadcast) Traffic
 
-Fan-out accounts for online ratio: 50K concurrent ÷ 100K total = 50% of room members online at peak → ~5 online subscribers per room on average.
+Fan-out accounts for online ratio: 10K concurrent ÷ 20K total = 50% of room members online at peak → ~5 online subscribers per room on average.
 
 | Subject | Publish Rate (avg/peak) | Online fan-out | Delivery Rate (avg/peak) | Payload |
 |---|---|---|---|---|
 | `chat.room.{roomID}.event` | 6.3 / 63 msg/s | 5 online/room | **32 / 315 del/s** | 2 KB |
-| `chat.user.{acct}.event.room.update` | ~50 / 500 pub/s | 1 (user-scoped) | 50 / 500 pub/s | 500 B |
+| `chat.user.{acct}.event.room.update` | ~32 / 315 pub/s | 1 (user-scoped) | 32 / 315 pub/s | 500 B |
 | `chat.user.{acct}.notification` | 3 / 30 /s | 1 | 3 / 30 /s | 300 B |
 | Room member events | 0.4 / 40 /s | 5 | 2 / 200 del/s | 300 B |
 
 | Bandwidth Metric | Value |
 |---|---|
 | Inbound to NATS (publish) | ~105 KB/s avg |
-| Outbound from NATS (fan-out) | **~310 KB/s avg** |
-| Peak outbound (burst) | **~3.1 MB/s** |
+| Outbound from NATS (fan-out) | **~290 KB/s avg** |
+| Peak outbound (burst) | **~2.9 MB/s** |
 
 ### 2.5 NATS Connection & Subscription Summary
 
 | Resource | Value | Basis |
 |---|---|---|
-| Peak concurrent users | 50K | 50% of 100K during business hours |
-| Client connections (×1.2 multi-device) | 60K | |
+| Peak concurrent users | 10K | 50% of 20K during business hours |
+| Client connections (×1.2 multi-device) | 12K | |
 | Service connections | ~100 | 10 services × 5 replicas × 2 conns |
-| **Total NATS connections** | **~60,100** | |
-| Active room subscriptions per client | ~15 | user has 100 rooms; ~15 open at once |
+| **Total NATS connections** | **~12,100** | |
+| Active room subscriptions per client | ~20 | user has 500 rooms; ~20 open at once |
 | User-scoped + notification subs | 2 | |
-| Subscriptions per client | **17** | |
-| Total client subscriptions | **~1.02M** | 60K × 17 |
+| Subscriptions per client | **22** | |
+| Total client subscriptions | **~264K** | 12K × 22 |
 | Service subscriptions | ~500 | RPC queue groups + JetStream consumers |
-| **Total subscriptions** | **~1.02M** | |
+| **Total subscriptions** | **~264K** | |
 | JetStream consumers (per site) | **9** | 1+4+1+3 across 5 streams |
 
 ### 2.6 Operational Sizing Implications
 
 | Concern | Assessment |
 |---|---|
-| NATS server RAM | ~1–2 GB for routing table at 1M subscriptions |
-| NATS `max_connections` | Raise default (64K) to 100K |
+| NATS server RAM | ~200–300 MB for routing table at 264K subscriptions |
+| NATS `max_connections` | Default (64K) is sufficient; no tuning required |
 | JetStream cluster | 3 nodes × 8 GB RAM — comfortable for 7.3 GB total storage |
-| Fan-out bandwidth | 1 Gbps NIC sufficient at peak 3.1 MB/s |
+| Fan-out bandwidth | 1 Gbps NIC sufficient at peak 2.9 MB/s |
 | MESSAGES_CANONICAL (slowest consumer) | Primary storage watch item: 6.4 GB rolling; monitor search-sync-worker lag weekly |
 
 ---
@@ -258,7 +258,7 @@ Fan-out accounts for online ratio: 50K concurrent ÷ 100K total = 50% of room me
 | Scenario | Description | Pass Criteria |
 |---|---|---|
 | **D1** 10× message burst (630 msg/s for 60s) | Spike test via NATS publish loop | MESSAGES consumer lag < 1,000; broadcast p99 < 500ms; no OOM |
-| **D2** 60K concurrent connections | Ramp clients to 60K | NATS memory < 2 GB; subscription routing latency < 1ms |
+| **D2** 12K concurrent connections | Ramp clients to 12K | NATS memory < 500 MB; subscription routing latency < 1ms |
 | **D3** Large room broadcast (1,000 members) | Publish to room with 1K subscribers | `chat.room.{roomID}.event` fan-out within 200ms for all subscribers |
 | **D4** Cross-site replication lag | Throttle OUTBOX source to 10 msg/s | INBOX consumer lag < 10,000; no event loss; lag recovers on un-throttle |
 | **D5** JetStream stream full (storage limit hit) | Set MESSAGES max-bytes = 100 MB | New publishes fail with `429 MaxBytesExceeded`; gatekeeper returns error to client |
@@ -377,7 +377,7 @@ May 26 ────────────────────────�
 | W10 | Replay 1M synthetic messages; monitor consumer lag, Cassandra write latency, NATS memory | No consumer > 500 msg lag; Cassandra p99 write < 50ms |
 | W11 (Aug 2–8) | Chaos test in staging: kill NATS leader, kill Mongo primary, kill 1 Cassandra node | Zero message loss confirmed by Cassandra rowcount vs NATS sequence |
 | W11 | Validate cross-site federation in staging (2 staging sites) | Federation lag < 5s at 1K events/s |
-| W12 (Aug 9–15) | Soak test: 48-hour continuous load at 6.3 msg/s avg with 60K simulated connections | No memory leak; JetStream storage within §2.2 limits; no goroutine leak |
+| W12 (Aug 9–15) | Soak test: 48-hour continuous load at 6.3 msg/s avg with 12K simulated connections | No memory leak; JetStream storage within §2.2 limits; no goroutine leak |
 | W12 | Final `make sast` + `make lint` gate; security review of any new NATS subjects | CI pipeline green; SAST exits 0 |
 
 ### Phase 5 — Production Rollout (Aug 16 – Aug 29, 2 weeks)
@@ -395,7 +395,7 @@ May 26 ────────────────────────�
 
 | Risk | Probability | Mitigation |
 |---|---|---|
-| NATS `max_connections` default (64K) hit before tuning | Medium | Raise to 100K in NATS config early; monitor FD limits |
+| NATS `max_connections` default (64K) exceeded unexpectedly | Low | 12K peak is well within default; no tuning needed, but monitor FD count |
 | Cassandra hot partition at burst (63 msg/s to same room) | Low | Bucket key `(room_id, bucket)` distributes writes; tune `MESSAGE_BUCKET_HOURS` |
 | Cross-site OUTBOX→INBOX federation config owned by ops | High (coordination risk) | Include federation config template in `deploy/` as reference; align with ops in W6 |
 | search-sync-worker ES lag causing MESSAGES_CANONICAL to hold 7 days of data | Medium | Add `MaxAckPending` limit; monitor consumer lag weekly; ensure ES timeout < `AckWait` |
