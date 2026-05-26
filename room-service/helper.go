@@ -73,7 +73,7 @@ var (
 	errRoomKeyAbsent = errcode.NotFound("room key not available")
 
 	// Sentinels for rename and visibility operations.
-	errOnlyOwnersOrAdmins       = errcode.Forbidden("only owners or admins can rename a channel")
+	errOnlyOwnersOrAdmins       = errcode.Forbidden("only owners or platform admins can rename a channel")
 	errOnlyAdmins               = errcode.Forbidden("only admins can change room visibility")
 	errOwnerNotMember           = errcode.BadRequest("owner account is not a member of this room")
 	errOwnerAccountRequired     = errcode.BadRequest("owner account is required when restricting a room")

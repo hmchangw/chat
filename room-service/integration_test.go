@@ -2310,7 +2310,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 
 		var errResp model.ErrorResponse
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
-		assert.Contains(t, errResp.Error, "only owners or admins can rename a channel")
+		assert.Contains(t, errResp.Error, "only owners or platform admins can rename a channel")
 	})
 }
 

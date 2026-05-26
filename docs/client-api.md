@@ -617,7 +617,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"invalid name"` — `newName` is empty after trimming, or exceeds 100 characters.
 - `"room not found"` — no room matches the subject `{roomID}`.
 - `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
-- `"only owners or admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` role in the room.
+- `"only owners or platform admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` role in the room.
 - `"invalid request"` — body is malformed or `roomId` does not match the subject.
 - `"missing X-Request-ID header"` — the NATS header is absent.
 - `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
