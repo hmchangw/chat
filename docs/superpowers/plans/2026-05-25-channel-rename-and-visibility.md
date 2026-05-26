@@ -1107,7 +1107,7 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	req.RoomID, req.Account = roomID, account
 
 	name := strings.TrimSpace(req.NewName)
-	if name == "" || len(name) > 100 {
+	if name == "" || utf8.RuneCountInString(name) > 100 {
 		return nil, errInvalidName
 	}
 	req.NewName = name

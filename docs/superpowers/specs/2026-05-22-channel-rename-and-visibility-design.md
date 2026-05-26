@@ -24,7 +24,7 @@ Two admin operations on channel rooms:
 Both flow through the existing two-service split:
 
 - `room-service` validates synchronously, publishes the canonical
-  request to `ROOMS_{siteID}`, replies `{"status":"accepted"}`.
+  request to `ROOMS_{siteID}`, replies `{"status":"accepted","requestId":<id>}`.
 - `room-worker` (home site only) persists Mongo writes, emits a system
   message for rename, fans `SubscriptionUpdateEvent` per affected
   subscription, and publishes one outbox event per remote site that

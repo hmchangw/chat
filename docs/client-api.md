@@ -604,7 +604,7 @@ Only channel rooms may be renamed. This RPC may be called by a **platform admin*
 | Field      | Type   | Notes |
 |------------|--------|-------|
 | `status`   | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
-| `requestId`| string | The 36-char hyphenated UUID for this operation (echoes `X-Request-ID` when set; server-generated otherwise). |
+| `requestId`| string | The 36-char hyphenated UUID from the required `X-Request-ID` header. Clients MUST supply a valid hyphenated UUID; missing or invalid header is rejected with the listed validation error. |
 
 ```json
 { "status": "accepted", "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f" }
@@ -649,7 +649,7 @@ Recipients: every member (one `SubscriptionUpdateEvent` per individual subscript
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
-    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
     "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
@@ -706,7 +706,7 @@ Setting `restricted=true` restricts the room (members-only, no public join). Set
 | Field       | Type   | Notes |
 |-------------|--------|-------|
 | `status`    | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
-| `requestId` | string | The 36-char hyphenated UUID for this operation (echoes `X-Request-ID` when set; server-generated otherwise). |
+| `requestId` | string | The 36-char hyphenated UUID from the required `X-Request-ID` header. Clients MUST supply a valid hyphenated UUID; missing or invalid header is rejected with the listed validation error. |
 
 ```json
 { "status": "accepted", "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f" }
@@ -747,7 +747,7 @@ Recipients: every member (one `SubscriptionUpdateEvent` per individual subscript
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
-    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
     "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
