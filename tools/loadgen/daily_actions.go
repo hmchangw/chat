@@ -88,3 +88,94 @@ func refreshRoomList(a actionCtx, u *userState) error {
 	}
 	return nil
 }
+
+// scrollHistory does a NATS request/reply for a random room's recent history.
+func scrollHistory(a actionCtx, u *userState) error {
+	if len(u.Rooms) == 0 {
+		return nil
+	}
+	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
+	_, err := a.Request(a.Ctx, subject.MsgGet(u.Account, roomID, a.SiteID), nil, defaultRequestTimeout)
+	if err != nil {
+		return fmt.Errorf("request scroll-history: %w", err)
+	}
+	return nil
+}
+
+// muteToggle requests the mute toggle for a random room.
+func muteToggle(a actionCtx, u *userState) error {
+	if len(u.Rooms) == 0 {
+		return nil
+	}
+	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
+	_, err := a.Request(a.Ctx, subject.MuteToggle(u.Account, roomID, a.SiteID), nil, defaultRequestTimeout)
+	if err != nil {
+		return fmt.Errorf("request mute-toggle: %w", err)
+	}
+	return nil
+}
+
+// roomCreate creates a new channel room owned by u. The resulting roomID is
+// not added to u.Rooms — this is a deliberately leaky abstraction since the
+// simulated user wouldn't immediately be active in a brand-new room within
+// the same hold window.
+func roomCreate(a actionCtx, u *userState) error {
+	payload, err := json.Marshal(map[string]any{
+		"name": fmt.Sprintf("loadtest-%s-%d", u.ID, time.Now().UnixNano()),
+		"type": string(model.RoomTypeChannel),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal room-create: %w", err)
+	}
+	_, err = a.Request(a.Ctx, subject.RoomCreate(u.Account, a.SiteID), payload, defaultRequestTimeout)
+	if err != nil {
+		return fmt.Errorf("request room-create: %w", err)
+	}
+	return nil
+}
+
+// memberAdd adds a target account to a random room u belongs to.
+func memberAdd(a actionCtx, u *userState, targetAccount string) error {
+	if len(u.Rooms) == 0 {
+		return nil
+	}
+	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
+	payload, err := json.Marshal(map[string]any{"accounts": []string{targetAccount}})
+	if err != nil {
+		return fmt.Errorf("marshal member-add: %w", err)
+	}
+	_, err = a.Request(a.Ctx, subject.MemberAdd(u.Account, roomID, a.SiteID), payload, defaultRequestTimeout)
+	if err != nil {
+		return fmt.Errorf("request member-add: %w", err)
+	}
+	return nil
+}
+
+// threadReply publishes a SendMessageRequest with ThreadParentMessageID set,
+// on the frontdoor subject. The handler is intentionally a "send with parent
+// set" rather than a separate code path so it stresses the same pipeline.
+func threadReply(a actionCtx, u *userState, parentID, content string) error {
+	if len(u.Rooms) == 0 {
+		return nil
+	}
+	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
+	msgID := idgen.GenerateMessageID()
+	reqID := idgen.GenerateRequestID()
+	req := model.SendMessageRequest{
+		ID: msgID, Content: content, RequestID: reqID, ThreadParentMessageID: parentID,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal thread-reply: %w", err)
+	}
+	if a.Collector != nil {
+		a.Collector.RecordPublish(reqID, msgID, time.Now())
+	}
+	if err := a.Publish(a.Ctx, subject.MsgSend(u.Account, roomID, a.SiteID), data); err != nil {
+		if a.Collector != nil {
+			a.Collector.RecordPublishFailed(reqID, msgID)
+		}
+		return fmt.Errorf("publish thread-reply: %w", err)
+	}
+	return nil
+}

@@ -74,3 +74,52 @@ func TestRefreshRoomList_Requests(t *testing.T) {
 	require.Len(t, c.reqs, 1)
 	require.Equal(t, subject.UserSubscriptionGetRooms("user-1", "site-test"), c.reqs[0].Subj)
 }
+
+func TestScrollHistory_Requests(t *testing.T) {
+	c := &captured{}
+	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, scrollHistory(ctx, u))
+	require.Len(t, c.reqs, 1)
+	// History fetch goes through MsgGet-style subject — check it includes the roomID.
+	require.Contains(t, c.reqs[0].Subj, "room-a")
+}
+
+func TestMuteToggle_Publishes(t *testing.T) {
+	c := &captured{}
+	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, muteToggle(ctx, u))
+	require.Len(t, c.reqs, 1)
+	require.Equal(t, subject.MuteToggle("user-1", "room-a", "site-test"), c.reqs[0].Subj)
+}
+
+func TestRoomCreate_Requests(t *testing.T) {
+	c := &captured{}
+	u := &userState{ID: "u-1", Account: "user-1"}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, roomCreate(ctx, u))
+	require.Len(t, c.reqs, 1)
+	require.Equal(t, subject.RoomCreate("user-1", "site-test"), c.reqs[0].Subj)
+}
+
+func TestMemberAdd_Requests(t *testing.T) {
+	c := &captured{}
+	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, memberAdd(ctx, u, "user-2"))
+	require.Len(t, c.reqs, 1)
+	require.Equal(t, subject.MemberAdd("user-1", "room-a", "site-test"), c.reqs[0].Subj)
+}
+
+func TestThreadReply_Publishes(t *testing.T) {
+	c := &captured{}
+	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, threadReply(ctx, u, "parent-msg-1", "reply text"))
+	require.Len(t, c.pubs, 1)
+	require.Equal(t, subject.MsgSend("user-1", "room-a", "site-test"), c.pubs[0].Subj)
+	var req model.SendMessageRequest
+	require.NoError(t, json.Unmarshal(c.pubs[0].Data, &req))
+	require.Equal(t, "parent-msg-1", req.ThreadParentMessageID)
+}
