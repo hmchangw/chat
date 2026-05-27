@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	cassmodels "github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
@@ -203,12 +204,17 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-thread-full/m-quoted",
 	}
 
+	reactedAt := ts.Add(15 * time.Minute).Truncate(time.Millisecond)
+	reactions := map[cassmodels.ReactionKey]cassmodels.ReactorInfo{
+		{Emoji: "👍", UserAccount: "dave"}: {UserID: "u4", EngName: "Dave", Account: "dave", ReactedAt: reactedAt},
+	}
+
 	insertCQL := `INSERT INTO thread_messages_by_room (
         room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id,
         sender, msg, mentions, attachments, file, card, card_action,
-        quoted_parent_message, visible_to, deleted,
+        quoted_parent_message, visible_to, reactions, deleted,
         type, sys_msg_data, site_id, edited_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-thread-full", bucket, "tr-full", ts, "m-reply-full", "m-thread-parent",
 		sender, "thread reply body",
@@ -216,6 +222,7 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
 		quotedMsg, "u1",
+		reactions,
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
 	}
@@ -284,6 +291,14 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
 	assert.Equal(t, "site-remote", msg.SiteID)
+
+	require.Len(t, msg.Reactions, 1)
+	gotReaction, ok := msg.Reactions[cassmodels.ReactionKey{Emoji: "👍", UserAccount: "dave"}]
+	require.True(t, ok)
+	assert.Equal(t, "u4", gotReaction.UserID)
+	assert.Equal(t, "Dave", gotReaction.EngName)
+	assert.Equal(t, "dave", gotReaction.Account)
+	assert.Equal(t, reactedAt, gotReaction.ReactedAt.UTC())
 
 	require.NotNil(t, msg.EditedAt)
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())

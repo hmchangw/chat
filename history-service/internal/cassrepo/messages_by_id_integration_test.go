@@ -67,8 +67,12 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	}
 	pinnedAt := ts.Add(2 * time.Hour)
 	pinnedBy := models.Participant{ID: "u9", Account: "pinner"}
+	reactedAt := ts.Add(15 * time.Minute).Truncate(time.Millisecond)
+	reactions := map[cassmodels.ReactionKey]cassmodels.ReactorInfo{
+		{Emoji: "👍", UserAccount: "dave"}: {UserID: "u4", EngName: "Dave", Account: "dave", ReactedAt: reactedAt},
+	}
 
-	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertCQL := `INSERT INTO messages_by_id (room_id, created_at, message_id, sender, msg, mentions, attachments, file, card, card_action, tshow, thread_parent_id, thread_parent_created_at, quoted_parent_message, visible_to, reactions, deleted, type, sys_msg_data, site_id, edited_at, updated_at, thread_room_id, pinned_at, pinned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		"r-full", ts, "m-full",
 		sender, "hello world",
@@ -76,6 +80,7 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
 		true, "m-parent", threadParent, quotedMsg, "u1",
+		reactions,
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
 		"N/A", pinnedAt, pinnedBy,
@@ -149,6 +154,14 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
+
+	require.Len(t, msg.Reactions, 1)
+	gotReaction, ok := msg.Reactions[cassmodels.ReactionKey{Emoji: "👍", UserAccount: "dave"}]
+	require.True(t, ok)
+	assert.Equal(t, "u4", gotReaction.UserID)
+	assert.Equal(t, "Dave", gotReaction.EngName)
+	assert.Equal(t, "dave", gotReaction.Account)
+	assert.Equal(t, reactedAt, gotReaction.ReactedAt.UTC())
 
 	assert.Equal(t, "N/A", msg.ThreadRoomID)
 	require.NotNil(t, msg.PinnedAt)
