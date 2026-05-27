@@ -67,3 +67,41 @@ History-service handlers under `chat.user.{account}.…` are registered at `serv
 
 **Overall verdict: fix-first.** The misleading `structScan` comment masks a real silent-failure mode; full-row integration tests should exercise at least one non-nil v3 `Reactions` map through `structScan` before shipping.
 
+---
+
+## Go expert
+
+### Named-map type: `Reactions` JSON codec (`pkg/model/cassandra/message.go`)
+
+**medium** — `message.go:137`: `string(data) == "null"` is idiomatic but allocates a string per call. `bytes.Equal(data, []byte("null"))` avoids the allocation. Hot-path candidate.
+
+**medium** — `message.go:149`: The duplicate-key error is built as `fmt.Errorf("reactions: duplicate key (%s, %s)", ...)` without `%w`. Per CLAUDE.md §3, errors must be wrapped. Fix: define a sentinel `ErrDuplicateReactionKey` and wrap it, or at minimum use `%w` on an underlying cause.
+
+**medium** — `message.go:143`: `fmt.Errorf("reactions: unmarshal: %w", err)` describes the underlying call ("unmarshal") rather than what the function was doing. CLAUDE.md §3 prefers "what the current function was doing, not what failed underneath" — e.g. `"unmarshal reactions array: %w"`.
+
+**low** — `message.go:112-130`: `MarshalJSON` rebuilds the entries slice and re-runs `sort.Slice` on every encode. Necessary for correctness on mutable maps; flagging only as a profiling target.
+
+**nitpick** — `message.go:92` / `Message.Reactions` field: nil maps are elided via `omitempty` + the marshaller returning `"null"`, but the custom `MarshalJSON` is invoked before `omitempty` for non-nil empty maps. Empty `Reactions{}` serialises to `[]` rather than being omitted. Documented and tested — confirming as intentional.
+
+### `structScan` rewrite (`history-service/internal/cassrepo/utils.go`)
+
+**high** — `utils.go:141-143`: When a result column has no matching `cql` tag, `structScan` returns `false` silently. The function's own comment claims it "records an iterator error" — it does not. `scanMsgsFromIter` and siblings treat `false` identically to iterator exhaustion (break + iter.Close() → nil error), so a schema drift silently truncates the result set with no error, no log, no metric. Fix: call `iter.SetErr(...)` (or surface via a returned error) so downstream `iter.Close()` returns a non-nil error, plus a `slog.Warn` at the missing-column site.
+
+**medium** — `utils.go:127-146`: `fieldByTag` and the `values` slice are allocated per row in a tight loop. The struct type and column set are constant across a query; hoisting the tag-index lookup outside the scan loop (e.g. `prepareStructScan(rt, cols)`) would remove ≥2 allocations per row. The prior `MapScan` also allocated per row, so this is not a regression — but it is a known optimisation point.
+
+**nitpick** — `utils.go:119`: `dest interface{}` should be `dest any` (Go 1.18+); the codebase is on Go 1.25.
+
+### Mocks / generation
+
+**clean** — `mock_repository.go` is correctly regenerated (`models.Message` substituted for `cassandra.Message` across all method signatures). No manual edits.
+
+### Concurrency / sync
+
+No new goroutines or sync primitives. No `time.Sleep`. Clean.
+
+### Test coverage of new code
+
+**low** — `message_test.go`: covers nil map, empty map, sorted output, duplicate-key rejection, round-trip. Missing: a `Message` JSON round-trip with explicit `Reactions: nil` vs `Reactions: Reactions{}` to defend the `omitempty` vs `[]` distinction at the enclosing-struct level.
+
+**Overall verdict:** The design is sound and the `MapScan → positional Scan` pivot is well-motivated, but the silent-truncation in `structScan` (utils.go:141-143) is a `high` that must be fixed before merge.
+
