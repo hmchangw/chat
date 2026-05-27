@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,7 +25,16 @@ type Collector struct {
 	byMsgID map[string]publishEntry
 	e1      []sample
 	e2      []sample
+
+	multiplexDrops atomic.Int64
 }
+
+// RecordMultiplexDrop increments the count of broadcasts dropped because the
+// destination per-user inbox channel was full.
+func (c *Collector) RecordMultiplexDrop() { c.multiplexDrops.Add(1) }
+
+// MultiplexDrops returns the total number of dropped broadcasts.
+func (c *Collector) MultiplexDrops() int64 { return c.multiplexDrops.Load() }
 
 // NewCollector returns a ready-to-use Collector.
 func NewCollector(m *Metrics, preset string) *Collector {

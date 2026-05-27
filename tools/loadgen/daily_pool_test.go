@@ -41,3 +41,44 @@ func TestDirectPool_ReceivesBroadcast(t *testing.T) {
 		return col.E2Count() == 1
 	}, 2*time.Second, 20*time.Millisecond)
 }
+
+func TestMultiplexPool_RoutesBroadcastToInbox(t *testing.T) {
+	url := testutil.NATS(t)
+	ncPub, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(func() { ncPub.Close() })
+
+	col := NewCollector(NewMetrics(), "test")
+	pool := newMultiplexPool(url, col, 2 /*pool size*/)
+	t.Cleanup(pool.Close)
+
+	uA := &userState{ID: "u-a", Account: "ua", Rooms: []string{"r-1"}}
+	uB := &userState{ID: "u-b", Account: "ub", Rooms: []string{"r-1", "r-2"}}
+	require.NoError(t, pool.Add(uA))
+	require.NoError(t, pool.Add(uB))
+
+	col.RecordPublishBroadcastOnly("msg-1", time.Now())
+	data, err := json.Marshal(model.RoomEvent{LastMsgID: "msg-1", RoomID: "r-1"})
+	require.NoError(t, err)
+	require.NoError(t, ncPub.Publish(subject.RoomEvent("r-1"), data))
+	require.NoError(t, ncPub.Flush())
+
+	require.Eventually(t, func() bool {
+		return col.E2Count() >= 1
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestMultiplexPool_DropsCountedOnInboxFull(t *testing.T) {
+	col := NewCollector(NewMetrics(), "test")
+	pool := &multiplexPool{
+		collector: col,
+		dispatch:  make(map[string][]chan *nats.Msg),
+	}
+	// Wire one room with one zero-capacity (unbuffered) inbox with no reader.
+	full := make(chan *nats.Msg)
+	pool.dispatch["r-1"] = []chan *nats.Msg{full}
+
+	pool.route(&nats.Msg{Subject: subject.RoomEvent("r-1"), Data: []byte(`{"lastMsgId":"x","roomId":"r-1"}`)})
+
+	require.Equal(t, int64(1), col.MultiplexDrops())
+}
