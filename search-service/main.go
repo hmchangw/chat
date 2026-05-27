@@ -153,7 +153,8 @@ func main() {
 	store := newESStore(engine, cfg.Search.UserRoomIndex)
 	cache := newValkeyCache(valkey)
 	mongoStore := newMongoStore(mongoDB)
-	handler := newHandler(store, mongoStore, usersClient, cache, handlerConfig{
+	handler := newHandler(store, mongoStore, usersClient, cache, &handlerConfig{
+		SiteID:                  cfg.SiteID,
 		DocCounts:               cfg.Search.DocCounts,
 		MaxDocCounts:            cfg.Search.MaxDocCounts,
 		RestrictedRoomsCacheTTL: cfg.Search.RestrictedRoomsCacheTTL,
