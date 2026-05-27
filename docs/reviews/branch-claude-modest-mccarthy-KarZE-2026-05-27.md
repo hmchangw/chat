@@ -213,3 +213,46 @@ For non-empty maps: `make([]reactionEntry, 0, len(r))` is correctly sized, appen
 
 **Overall verdict:** The N+1 elimination and the `structScan` correctness fix are clear wins. The architectural risk — no per-message reaction-count cap — is the highest-impact issue from a perf lens; it manifests only under viral-message load but cannot be fixed in this PR (the write path lives elsewhere). Flag for the upcoming `addReaction` PR.
 
+---
+
+## Observability
+
+### `structScan` silent miss — diagnostic value degraded
+
+**medium** — `cassrepo/utils.go:141-143`: When a Cassandra column has no matching `cql` tag, the function returns `false` without calling `iter.Scan`. gocql never sets an error on the iterator; `iter.Close()` returns nil. In `messages_by_id.go:24` the `!found` path silently returns `(nil, nil)` — indistinguishable from "row not found". In paged readers, the unmapped-column case causes rows to be silently dropped with no log line, no error return, no observable signal.
+
+A one-line `slog.Warn("structScan: unmapped column", "column", col.Name)` directly above `return false` would restore diagnostic visibility for schema-drift or query/struct mismatches without changing the caller contract. (Same line as the bug-lens `high` and the Go-lens `high` — this lens scores it as `medium` because the action is purely an observability improvement; the underlying correctness fix is captured under the other lenses.)
+
+### `request_id` propagation
+
+**low** — `service/messages.go:335, 407, 449, 454`: The PR correctly back-fills `request_id` on all read-path slog lines touched by this diff. Four pre-existing error log sites NOT touched by this PR still lack `request_id`:
+- `messages.go:335` — `"edit: update content"` (Cassandra write failure on EditMessage)
+- `messages.go:407` — `"delete: soft-delete"` (Cassandra write failure on DeleteMessage)
+- `messages.go:449, 454` — `"canonical marshal/publish failed"` (best-effort publish failure)
+- `threads.go:149` — `"unhandled thread filter"`
+- `threads.go:194` — `"thread parent message belongs to unexpected room"`
+
+These are **pre-existing gaps**, not regressions introduced here. Out of scope for this PR but worth a follow-up.
+
+### Structured logging discipline
+
+**nitpick** — No `fmt.Println`, `log.Println`, or string-interpolation slog calls introduced anywhere in the diff. All new or modified log lines use correct key-value pairs. Clean.
+
+### Secret / payload leakage
+
+**nitpick** — `Reactions` contains `engName`, `chnName`, `account` (PII-adjacent but not credentials). None of these appear in any log line. Message bodies are not logged at any site touched by this diff. Clean.
+
+### OTel spans
+
+**low** — The service already instruments via `oteljetstream` at the NATS transport layer (`main.go:69`). No new handler methods or Cassandra call paths were introduced; the `structScan` refactor is purely internal to existing query paths. No net new span coverage is expected or missing.
+
+### Prometheus metrics
+
+**nitpick** — `pkg/metrics` does not exist; the project uses OTel tracing rather than Prometheus counters on the read path. No reaction-specific counter or histogram was expected here based on the existing instrumentation pattern. No gap.
+
+### `UnmarshalJSON` error sites
+
+**nitpick** — `pkg/model/cassandra/message.go` `UnmarshalJSON` returns wrapped errors. These surface through the standard JSON decode path; any caller that logs the decode error receives the full chain. No additional instrumentation needed at the model layer.
+
+**Overall verdict:** Observability is a net improvement on the touched paths — `request_id` back-filled on seven log lines. The `structScan` silent-drop on unmapped columns (`utils.go:142`) is a diagnostic gap that should be addressed with a `slog.Warn` alongside the correctness fix.
+
