@@ -685,6 +685,8 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	warmup := fs.Duration("warmup", 10*time.Second, "warmup window (samples discarded)")
 	inject := fs.String("inject", "frontdoor", "injection point: frontdoor|canonical")
 	csvPath := fs.String("csv", "", "optional csv output path")
+	asyncPublish := fs.Bool("async-publish", false, "use JetStream PublishAsync (canonical inject only)")
+	asyncMaxPending := fs.Int("async-max-pending", 4096, "max in-flight async publishes (canonical+async only)")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -700,19 +702,34 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
+	useAsync := *asyncPublish && injectMode == InjectCanonical
+	if *asyncPublish && injectMode != InjectCanonical {
+		slog.Warn("--async-publish ignored: only applies to canonical inject")
+	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect", "error", err)
 		return 1
 	}
-	js, err := jetstream.New(nc.NatsConn())
+
+	metrics := NewMetrics()
+
+	jsOpts := []jetstream.JetStreamOpt{}
+	if useAsync {
+		jsOpts = append(jsOpts,
+			jetstream.WithPublishAsyncMaxPending(*asyncMaxPending),
+			jetstream.WithPublishAsyncErrHandler(func(_ jetstream.JetStream, _ *nats.Msg, _ error) {
+				metrics.PublishErrors.WithLabelValues(p.Name, "async_ack").Inc()
+			}),
+		)
+	}
+	js, err := jetstream.New(nc.NatsConn(), jsOpts...)
 	if err != nil {
 		slog.Error("jetstream init", "error", err)
 		return 1
 	}
 
-	metrics := NewMetrics()
 	metricsSrv := &http.Server{
 		Addr:              cfg.MetricsAddr,
 		Handler:           metrics.Handler(),
@@ -811,7 +828,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		}(s)
 	}
 
-	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js)
+	publisher := newNatsCorePublisher(nc.NatsConn(), injectMode, js, useAsync)
 
 	warmupDeadline := time.Now().Add(*warmup)
 	gen := NewGenerator(&GeneratorConfig{
@@ -830,6 +847,16 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
 	genErr := gen.Run(runCtx)
+	// Drain async publish acks before sampling trailing events. Without this
+	// the run summary would miss the tail of async PubAcks (and any errors
+	// they surface via the async err handler).
+	if useAsync {
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(10 * time.Second):
+			slog.Warn("async publish drain timed out")
+		}
+	}
 	// Wait up to 2 seconds for trailing replies and broadcasts to arrive.
 	time.Sleep(2 * time.Second)
 	collector.DiscardBefore(warmupDeadline)
@@ -929,18 +956,38 @@ func newE2Handler(collector *Collector) func(*nats.Msg) {
 	}
 }
 
+// jsClient is the subset of jetstream.JetStream that natsCorePublisher uses.
+// Defined locally so tests can substitute a fake without standing up a server.
+type jsClient interface {
+	Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+	PublishAsync(subject string, data []byte, opts ...jetstream.PublishOpt) (jetstream.PubAckFuture, error)
+	PublishAsyncComplete() <-chan struct{}
+}
+
 type natsCorePublisher struct {
 	nc           *nats.Conn
 	useJetStream bool
-	js           jetstream.JetStream
+	useAsync     bool
+	js           jsClient
 }
 
-func newNatsCorePublisher(nc *nats.Conn, inject InjectMode, js jetstream.JetStream) *natsCorePublisher {
-	return &natsCorePublisher{nc: nc, useJetStream: inject == InjectCanonical, js: js}
+func newNatsCorePublisher(nc *nats.Conn, inject InjectMode, js jsClient, async bool) *natsCorePublisher {
+	return &natsCorePublisher{
+		nc:           nc,
+		useJetStream: inject == InjectCanonical,
+		useAsync:     async,
+		js:           js,
+	}
 }
 
 func (p *natsCorePublisher) Publish(ctx context.Context, subject string, data []byte) error {
 	if p.useJetStream {
+		if p.useAsync {
+			if _, err := p.js.PublishAsync(subject, data); err != nil {
+				return fmt.Errorf("jetstream publish async: %w", err)
+			}
+			return nil
+		}
 		if _, err := p.js.Publish(ctx, subject, data); err != nil {
 			return fmt.Errorf("jetstream publish: %w", err)
 		}

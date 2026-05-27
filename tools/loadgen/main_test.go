@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -92,25 +94,108 @@ func TestWriteCSVFile_EmptyCollector(t *testing.T) {
 }
 
 func TestNewNatsCorePublisher_CanonicalSetsUseJetStream(t *testing.T) {
-	p := newNatsCorePublisher(nil, InjectCanonical, nil)
+	p := newNatsCorePublisher(nil, InjectCanonical, nil, false)
 	require.True(t, p.useJetStream)
 }
 
 func TestNewNatsCorePublisher_FrontdoorDoesNotSetUseJetStream(t *testing.T) {
-	p := newNatsCorePublisher(nil, InjectFrontdoor, nil)
+	p := newNatsCorePublisher(nil, InjectFrontdoor, nil, false)
 	require.False(t, p.useJetStream)
 }
 
 func TestNewNatsCorePublisher_FieldWiring(t *testing.T) {
-	p := newNatsCorePublisher(nil, InjectCanonical, nil)
+	p := newNatsCorePublisher(nil, InjectCanonical, nil, false)
 	assert.Nil(t, p.nc)
 	assert.Nil(t, p.js)
 	assert.True(t, p.useJetStream)
+	assert.False(t, p.useAsync)
 
-	p2 := newNatsCorePublisher(nil, InjectFrontdoor, nil)
+	p2 := newNatsCorePublisher(nil, InjectFrontdoor, nil, false)
 	assert.Nil(t, p2.nc)
 	assert.Nil(t, p2.js)
 	assert.False(t, p2.useJetStream)
+	assert.False(t, p2.useAsync)
+}
+
+func TestNewNatsCorePublisher_AsyncFlagStored(t *testing.T) {
+	p := newNatsCorePublisher(nil, InjectCanonical, nil, true)
+	assert.True(t, p.useJetStream)
+	assert.True(t, p.useAsync)
+}
+
+func TestNewNatsCorePublisher_AsyncFlagIgnoredForFrontdoor(t *testing.T) {
+	// Async only meaningful for JetStream; the field is still stored but
+	// frontdoor publishes never read it.
+	p := newNatsCorePublisher(nil, InjectFrontdoor, nil, true)
+	assert.False(t, p.useJetStream)
+	assert.True(t, p.useAsync)
+}
+
+// fakeJSClient records which JetStream publish method was called.
+// It satisfies the jsClient interface used by natsCorePublisher.
+type fakeJSClient struct {
+	syncCalls   int
+	asyncCalls  int
+	asyncErr    error
+	completeCh  chan struct{}
+	lastSubject string
+	lastData    []byte
+}
+
+func (f *fakeJSClient) Publish(_ context.Context, subject string, data []byte, _ ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	f.syncCalls++
+	f.lastSubject = subject
+	f.lastData = data
+	return &jetstream.PubAck{Stream: "S", Sequence: uint64(f.syncCalls)}, nil
+}
+
+func (f *fakeJSClient) PublishAsync(subject string, data []byte, _ ...jetstream.PublishOpt) (jetstream.PubAckFuture, error) {
+	f.asyncCalls++
+	f.lastSubject = subject
+	f.lastData = data
+	if f.asyncErr != nil {
+		return nil, f.asyncErr
+	}
+	return nil, nil
+}
+
+func (f *fakeJSClient) PublishAsyncComplete() <-chan struct{} {
+	if f.completeCh == nil {
+		f.completeCh = make(chan struct{})
+		close(f.completeCh)
+	}
+	return f.completeCh
+}
+
+func TestNatsCorePublisher_Publish_CanonicalSync_CallsPublish(t *testing.T) {
+	fake := &fakeJSClient{}
+	p := newNatsCorePublisher(nil, InjectCanonical, fake, false)
+
+	require.NoError(t, p.Publish(context.Background(), "subj", []byte("data")))
+	assert.Equal(t, 1, fake.syncCalls)
+	assert.Equal(t, 0, fake.asyncCalls)
+	assert.Equal(t, "subj", fake.lastSubject)
+	assert.Equal(t, []byte("data"), fake.lastData)
+}
+
+func TestNatsCorePublisher_Publish_CanonicalAsync_CallsPublishAsync(t *testing.T) {
+	fake := &fakeJSClient{}
+	p := newNatsCorePublisher(nil, InjectCanonical, fake, true)
+
+	require.NoError(t, p.Publish(context.Background(), "subj", []byte("data")))
+	assert.Equal(t, 0, fake.syncCalls)
+	assert.Equal(t, 1, fake.asyncCalls)
+	assert.Equal(t, "subj", fake.lastSubject)
+}
+
+func TestNatsCorePublisher_Publish_CanonicalAsync_ErrorPropagates(t *testing.T) {
+	fake := &fakeJSClient{asyncErr: errors.New("stalled")}
+	p := newNatsCorePublisher(nil, InjectCanonical, fake, true)
+
+	err := p.Publish(context.Background(), "subj", []byte("data"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stalled")
+	assert.Equal(t, 1, fake.asyncCalls)
 }
 
 func TestNewE2Handler_RecordsWhenMessageNil(t *testing.T) {

@@ -63,7 +63,12 @@ the run binary itself never touches ciphertext.
   MongoDB with fixtures and Valkey with per-room keypairs.
 - `loadgen run --preset=<name> [flags]` — open-loop publish at `--rate`
   msgs/sec for `--duration`, print a summary at the end. Flags:
-  `--seed`, `--warmup`, `--inject=frontdoor|canonical`, `--csv=<path>`.
+  `--seed`, `--warmup`, `--inject=frontdoor|canonical`, `--csv=<path>`,
+  `--async-publish`, `--async-max-pending=<n>` (default 4096).
+  `--async-publish` only applies to `--inject=canonical`; it switches from
+  sync `js.Publish` (one PubAck per call) to `js.PublishAsync` so a single
+  publisher can sustain far higher rates. Failed async acks are counted
+  under `loadgen_publish_errors_total{reason="async_ack"}`.
 - `loadgen teardown --preset=<name> [--seed=42]` — drop the seeded
   Mongo collections and delete the per-room Valkey keys for the preset.
 
