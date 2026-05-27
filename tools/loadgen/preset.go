@@ -25,6 +25,24 @@ type Range struct {
 	Max int
 }
 
+// DailyBands describes how many rooms of each size band a typical user
+// belongs to in the daily-IM presets. Zero means the preset is not a
+// daily-IM preset and BuildFixtures falls back to the legacy distribution.
+type DailyBands struct {
+	DMs    int // 2-member rooms
+	Small  int // 5-20 members
+	Medium int // 50-200 members
+	Large  int // 500-2000 members
+}
+
+// IsZero reports whether bands are absent.
+func (b DailyBands) IsZero() bool {
+	return b.DMs == 0 && b.Small == 0 && b.Medium == 0 && b.Large == 0
+}
+
+// RoomsPerUser is the sum of all bands.
+func (b DailyBands) RoomsPerUser() int { return b.DMs + b.Small + b.Medium + b.Large }
+
 // Preset is a named, fully deterministic workload specification.
 type Preset struct {
 	Name         string
@@ -35,6 +53,7 @@ type Preset struct {
 	ContentBytes Range
 	MentionRate  float64
 	ThreadRate   float64
+	DailyBands   DailyBands
 }
 
 var builtinPresets = map[string]Preset{
@@ -59,6 +78,27 @@ var builtinPresets = map[string]Preset{
 		ContentBytes: Range{Min: 50, Max: 2000},
 		MentionRate:  0.10,
 		ThreadRate:   0.05,
+	},
+	"daily-light": {
+		Name: "daily-light", Users: 10000,
+		RoomSizeDist: DistMixed, SenderDist: DistZipf,
+		ContentBytes: Range{Min: 50, Max: 2000},
+		MentionRate:  0.05, ThreadRate: 0.30,
+		DailyBands: DailyBands{DMs: 15, Small: 10, Medium: 5, Large: 2},
+	},
+	"daily-heavy": {
+		Name: "daily-heavy", Users: 10000,
+		RoomSizeDist: DistMixed, SenderDist: DistZipf,
+		ContentBytes: Range{Min: 50, Max: 2000},
+		MentionRate:  0.05, ThreadRate: 0.30,
+		DailyBands: DailyBands{DMs: 25, Small: 20, Medium: 8, Large: 3},
+	},
+	"daily-power": {
+		Name: "daily-power", Users: 10000,
+		RoomSizeDist: DistMixed, SenderDist: DistZipf,
+		ContentBytes: Range{Min: 50, Max: 2000},
+		MentionRate:  0.05, ThreadRate: 0.30,
+		DailyBands: DailyBands{DMs: 40, Small: 30, Medium: 10, Large: 3},
 	},
 }
 

@@ -160,3 +160,23 @@ func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	out := sampleWithoutReplacement(r, users, 99)
 	assert.Len(t, out, 2)
 }
+
+func TestBuiltinPreset_Daily(t *testing.T) {
+	cases := []struct {
+		name  string
+		users int
+		bands DailyBands
+	}{
+		{"daily-light", 10000, DailyBands{DMs: 15, Small: 10, Medium: 5, Large: 2}},
+		{"daily-heavy", 10000, DailyBands{DMs: 25, Small: 20, Medium: 8, Large: 3}},
+		{"daily-power", 10000, DailyBands{DMs: 40, Small: 30, Medium: 10, Large: 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, ok := BuiltinPreset(tc.name)
+			require.True(t, ok, "preset %s missing", tc.name)
+			require.Equal(t, tc.users, p.Users)
+			require.Equal(t, tc.bands, p.DailyBands)
+		})
+	}
+}
