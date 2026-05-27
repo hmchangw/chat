@@ -32,9 +32,11 @@ const (
 	vaultTransitMount = "transit"
 )
 
-// vaultBase is the shared, process-wide Vault container handle: client,
-// address, root token, and the (single) transit mount. Per-test keys
-// are created on top of this.
+// vaultBase is the shared, process-wide Vault handle: client, address,
+// root token, and the (single) transit mount. Per-test keys are created
+// on top of this. The backing Vault instance is either a `vault server
+// -dev` subprocess (when the binary is on PATH) or a testcontainers
+// Vault container.
 type vaultBase struct {
 	client  *vaultapi.Client
 	address string
@@ -44,28 +46,41 @@ var (
 	vaultOnce    sync.Once
 	vaultBaseRef *vaultBase
 	vaultInitErr error
+	vaultStop    func()
 )
 
 func ensureVaultBase(ctx context.Context) (*vaultBase, error) {
 	vaultOnce.Do(func() {
-		container, err := tcvault.Run(
-			ctx,
-			testimages.Vault,
-			tcvault.WithToken(vaultRootToken),
-		)
-		if err != nil {
-			vaultInitErr = fmt.Errorf("start vault: %w", err)
-			return
+		var addr string
+		if a, stop, err := startVaultDevBinary(); err == nil {
+			addr = a
+			vaultStop = stop
+		} else {
+			container, cerr := tcvault.Run(
+				ctx,
+				testimages.Vault,
+				tcvault.WithToken(vaultRootToken),
+			)
+			if cerr != nil {
+				vaultInitErr = fmt.Errorf("start vault: %w", cerr)
+				return
+			}
+			caddr, cerr := container.HttpHostAddress(ctx)
+			if cerr != nil {
+				_ = container.Terminate(context.Background())
+				vaultInitErr = fmt.Errorf("get vault address: %w", cerr)
+				return
+			}
+			addr = caddr
+			vaultStop = func() { _ = container.Terminate(context.Background()) }
 		}
-		addr, err := container.HttpHostAddress(ctx)
-		if err != nil {
-			vaultInitErr = fmt.Errorf("get vault address: %w", err)
-			return
-		}
+
 		cfg := vaultapi.DefaultConfig()
 		cfg.Address = addr
 		client, err := vaultapi.NewClient(cfg)
 		if err != nil {
+			vaultStop()
+			vaultStop = nil
 			vaultInitErr = fmt.Errorf("vault client: %w", err)
 			return
 		}
@@ -76,6 +91,8 @@ func ensureVaultBase(ctx context.Context) (*vaultBase, error) {
 		if err := client.Sys().MountWithContext(ctx, vaultTransitMount, &vaultapi.MountInput{
 			Type: "transit",
 		}); err != nil {
+			vaultStop()
+			vaultStop = nil
 			vaultInitErr = fmt.Errorf("mount transit: %w", err)
 			return
 		}
@@ -83,6 +100,16 @@ func ensureVaultBase(ctx context.Context) (*vaultBase, error) {
 		vaultBaseRef = &vaultBase{client: client, address: addr}
 	})
 	return vaultBaseRef, vaultInitErr
+}
+
+// TerminateVault stops the shared Vault instance (subprocess or
+// container). Best-effort, idempotent. Wired into TerminateAll.
+func TerminateVault() {
+	if vaultStop == nil {
+		return
+	}
+	vaultStop()
+	vaultStop = nil
 }
 
 // Vault returns a Vault handle whose transit key is provisioned freshly
