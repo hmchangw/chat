@@ -105,3 +105,43 @@ No new goroutines or sync primitives. No `time.Sleep`. Clean.
 
 **Overall verdict:** The design is sound and the `MapScan → positional Scan` pivot is well-motivated, but the silent-truncation in `structScan` (utils.go:141-143) is a `high` that must be fixed before merge.
 
+---
+
+## Test-automation
+
+### TDD compliance
+
+**medium** — `pkg/model/cassandra/message_test.go`: All new exported types (`ReactionKey`, `ReactorInfo`, `Reactions`) and both custom JSON methods land in the **same commit** (`7e9c5fb`) as their tests. The Red phase is unverifiable from git history — tests and implementation arrived atomically. Per CLAUDE.md §4 the Red-Green-Refactor cycle is mandatory; this is a recurring pattern on the branch but worth flagging.
+
+### Coverage
+
+**low** — `pkg/model/cassandra/message.go:109-111`: `MarshalJSON`'s `nil` branch is unreached at runtime — the only nil-map test marshals through the enclosing `Message` struct with `omitempty`, which causes the encoder to skip the field entirely without ever calling `MarshalJSON`. A direct `json.Marshal(Reactions(nil))` would close the gap and confirm the branch is reachable.
+
+### `structScan` rewrite coverage
+
+**medium** — `history-service/internal/cassrepo/utils_test.go`: The new "column in result has no matching cql tag → return false" early-exit (utils.go:141-143) has zero unit tests. The existing tests only cover non-pointer and pointer-to-non-struct inputs. A table-driven unit test with a mocked `gocql.Iter` providing a surplus column would cover this.
+
+**medium** — `history-service/internal/cassrepo/*_integration_test.go`: Every cassrepo integration test removed the `reactions` INSERT arguments and assertions (correctly reverting v2). The `reactions` column is declared in the schema but is never written with a non-nil value in any cassrepo test. The gocql smoke test (`pkg/model/cassandra/gocql_map_udt_smoke_test.go`) round-trips the UDT map but **not through `structScan`** — it uses raw `iter.Scan(&got)` against a dedicated smoke table. If `structScan` regresses or a future code change breaks the reflective path on `MAP<UDT,UDT>`, no integration test would fail.
+
+### Mock hygiene
+
+`mockgen` is not installed in this sandbox so a live `make generate` staleness check could not run. Visual inspection: `mock_repository.go` was hand-updated in `ca34108` to match the `MessageReader` interface shrink; all 14 method signatures use `models.Message` consistently with `service.go`. CI's `make generate` gate should confirm.
+
+### Build-tag & TestMain discipline
+
+All new integration test files carry `//go:build integration`. `pkg/model/cassandra/main_test.go` correctly wires `testutil.RunTests(m)` behind the integration tag. Compliant.
+
+### Shared testutil container usage
+
+`pkg/model/cassandra/gocql_map_udt_smoke_test.go` uses `testutil.CassandraKeyspace(t, ...)` for the shared container, then opens a second keyspace-pinned session manually because it needs `cluster.Keyspace = keyspace` for unqualified UDT name resolution. The inline `cluster.CreateSession()` is justified and follows CLAUDE.md's carve-out for tests that need specific session configuration.
+
+### Table-driven structure
+
+**nitpick** — `pkg/model/cassandra/message_test.go:213-329`: The `TestReactions_MarshalJSON_*` and `TestReactions_UnmarshalJSON_*` tests are individual top-level functions rather than table-driven subtests. CLAUDE.md §4 prefers tables for multi-input/output variations of the same logic. Acceptable for 8 cases but inconsistent with project preference.
+
+### gocql smoke test design
+
+`TestGocqlMapUDTRoundTrip` writes two reactions and reads them back. Correctly gates the panic path. Does NOT exercise the NULL column path (write a row with no reactions, read back) — which is the common case in cassrepo today since no integration test populates the column. Acceptable given the smoke test's stated purpose.
+
+**Overall verdict:** Unit-test surface for the JSON codec is thorough on error paths; the regression-detection gap is in **integration coverage** — no test writes a non-nil `Reactions` through `structScan`, so a revert of the `MapScan → positional Scan` change or a future structScan regression would not be caught by CI.
+
