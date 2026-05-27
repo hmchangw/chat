@@ -18,14 +18,12 @@ import (
 
 func seedThreadMessages(t *testing.T, session *gocql.Session, roomID, threadRoomID, parentID string, base time.Time, count int) {
 	t.Helper()
-	sizer := msgbucket.New(24 * time.Hour)
 	sender := models.Participant{ID: "u1", Account: "user1"}
 	for i := 0; i < count; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		bucket := sizer.Of(ts)
 		err := session.Query(
-			`INSERT INTO thread_messages_by_room (room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id, sender, msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			roomID, bucket, threadRoomID, ts, fmt.Sprintf("%s-reply-%d", threadRoomID, i), parentID, sender, fmt.Sprintf("reply-%d", i),
+			`INSERT INTO thread_messages_by_thread (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			threadRoomID, ts, fmt.Sprintf("%s-reply-%d", threadRoomID, i), roomID, parentID, sender, fmt.Sprintf("reply-%d", i),
 		).Exec()
 		require.NoError(t, err)
 	}
@@ -33,12 +31,10 @@ func seedThreadMessages(t *testing.T, session *gocql.Session, roomID, threadRoom
 
 func seedThreadMessage(t *testing.T, session *gocql.Session, roomID, threadRoomID, messageID string, createdAt time.Time) {
 	t.Helper()
-	sizer := msgbucket.New(24 * time.Hour)
-	bucket := sizer.Of(createdAt)
 	err := session.Query(
-		`INSERT INTO thread_messages_by_room (room_id, bucket, thread_room_id, created_at, message_id, sender, msg, site_id, updated_at, type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, bucket, threadRoomID, createdAt, messageID,
+		`INSERT INTO thread_messages_by_thread (thread_room_id, created_at, message_id, room_id, sender, msg, site_id, updated_at, type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		threadRoomID, createdAt, messageID, roomID,
 		map[string]interface{}{"id": "u1", "account": "alice"},
 		"m", "site-A", createdAt, "text",
 	).Exec()
@@ -190,9 +186,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	editedAt := ts.Add(5 * time.Minute)
 	updatedAt := ts.Add(10 * time.Minute)
 
-	sizer := msgbucket.New(24 * time.Hour)
-	bucket := sizer.Of(ts)
-
 	sender := models.Participant{ID: "u1", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false, Account: "alice"}
 	mentionUser := models.Participant{ID: "u3", Account: "charlie"}
 	reactUser := models.Participant{ID: "u4", Account: "dave"}
@@ -205,14 +198,14 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-thread-full/m-quoted",
 	}
 
-	insertCQL := `INSERT INTO thread_messages_by_room (
-        room_id, bucket, thread_room_id, created_at, message_id, thread_parent_id,
+	insertCQL := `INSERT INTO thread_messages_by_thread (
+        thread_room_id, created_at, message_id, room_id, thread_parent_id,
         sender, msg, mentions, attachments, file, card, card_action,
         quoted_parent_message, visible_to, reactions, deleted,
         type, sys_msg_data, site_id, edited_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
-		"r-thread-full", bucket, "tr-full", ts, "m-reply-full", "m-thread-parent",
+		"tr-full", ts, "m-reply-full", "r-thread-full", "m-thread-parent",
 		sender, "thread reply body",
 		[]models.Participant{mentionUser},
 		[][]byte{[]byte("attach1"), []byte("attach2")},
@@ -310,14 +303,14 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
 
-	// Columns that DON'T exist on thread_messages_by_room must remain at zero value.
+	// Columns that DON'T exist on thread_messages_by_thread must remain at zero value.
 	assert.False(t, msg.TShow)
 	assert.Nil(t, msg.ThreadParentCreatedAt)
 	assert.Nil(t, msg.PinnedAt)
 	assert.Nil(t, msg.PinnedBy)
 }
 
-func TestGetThreadMessages_CrossBucketWalk(t *testing.T) {
+func TestGetThreadMessages_AcrossMultipleDays(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
