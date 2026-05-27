@@ -16,11 +16,6 @@ import (
 // directPool owns one nats.Conn per simulated user plus one subscription per
 // user-room pair. Each subscription callback records broadcast-arrival time
 // against the shared Collector for latency correlation.
-//
-// The pool is wired into the daily-IM runtime by a later task; suppress the
-// "unused" linter until that wiring lands so this commit can stand alone.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 type directPool struct {
 	url       string
 	collector *Collector
@@ -29,14 +24,12 @@ type directPool struct {
 	users map[string]*directUser
 }
 
-//nolint:unused // wired up in the daily-IM runtime task that follows
 type directUser struct {
 	id   string
 	nc   *nats.Conn
 	subs []*nats.Subscription
 }
 
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func newDirectPool(natsURL string, c *Collector) *directPool {
 	return &directPool{
 		url: natsURL, collector: c, users: make(map[string]*directUser),
@@ -45,8 +38,6 @@ func newDirectPool(natsURL string, c *Collector) *directPool {
 
 // Add opens a connection for u and subscribes to every room in u.Rooms.
 // Safe to call concurrently for different users.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *directPool) Add(u *userState) error {
 	nc, err := nats.Connect(p.url, nats.Name("loadgen-daily-"+u.ID))
 	if err != nil {
@@ -70,15 +61,12 @@ func (p *directPool) Add(u *userState) error {
 }
 
 // Size reports the number of users currently in the pool.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *directPool) Size() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.users)
 }
 
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *directPool) onBroadcast(m *nats.Msg) {
 	var evt model.RoomEvent
 	if err := json.Unmarshal(m.Data, &evt); err != nil {
@@ -91,8 +79,6 @@ func (p *directPool) onBroadcast(m *nats.Msg) {
 }
 
 // Close drains all connections.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *directPool) Close() {
 	p.mu.Lock()
 	users := p.users
@@ -107,8 +93,6 @@ func (p *directPool) Close() {
 // connection subscribes (with reference counting) to the union of room
 // broadcast subjects for its assigned users. Incoming messages are routed
 // to per-user inbox channels via the dispatch map.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 type multiplexPool struct {
 	url       string
 	collector *Collector
@@ -121,7 +105,6 @@ type multiplexPool struct {
 	nextConn  int                         // round-robin assignment
 }
 
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func newMultiplexPool(natsURL string, c *Collector, size int) *multiplexPool {
 	p := &multiplexPool{
 		url: natsURL, collector: c,
@@ -141,8 +124,6 @@ func newMultiplexPool(natsURL string, c *Collector, size int) *multiplexPool {
 }
 
 // Add registers a user with the multiplex pool.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *multiplexPool) Add(u *userState) error {
 	inbox := make(chan *nats.Msg, 128)
 	p.mu.Lock()
@@ -166,8 +147,6 @@ func (p *multiplexPool) Add(u *userState) error {
 
 // route is called by every shared conn's subscription callback. It looks up
 // the destination inboxes by RoomID and does a non-blocking send.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *multiplexPool) route(m *nats.Msg) {
 	var evt model.RoomEvent
 	if err := json.Unmarshal(m.Data, &evt); err != nil {
@@ -193,8 +172,6 @@ func (p *multiplexPool) route(m *nats.Msg) {
 }
 
 // parseRoomFromSubject extracts the room ID from a "chat.room.<id>.event" subject.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func parseRoomFromSubject(subj string) string {
 	parts := strings.Split(subj, ".")
 	if len(parts) >= 3 && parts[0] == "chat" && parts[1] == "room" {
@@ -204,8 +181,6 @@ func parseRoomFromSubject(subj string) string {
 }
 
 // Close drains shared conns and closes inboxes.
-//
-//nolint:unused // wired up in the daily-IM runtime task that follows
 func (p *multiplexPool) Close() {
 	p.mu.Lock()
 	inboxes := p.userInbox

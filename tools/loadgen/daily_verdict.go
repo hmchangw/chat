@@ -236,8 +236,6 @@ func diffPending(start, end map[string]int64) map[string]ConsumerPendingDelta {
 
 // pollPending queries the NATS monitoring endpoint /jsz?consumers=true and
 // returns a map of durable name -> NumPending.
-//
-//nolint:unused // wired up by daily-IM env factory in a later task
 func pollPending(ctx context.Context, jszURL string) (map[string]int64, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, jszURL+"?consumers=true", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -272,19 +270,15 @@ func pollPending(ctx context.Context, jszURL string) (map[string]int64, error) {
 // serviceScraper fetches /metrics from each service URL and returns a map of
 // service -> delta in slog_errors_total since the previous call.
 // First call returns zeros and records baselines.
-//
-//nolint:unused // wired up by daily-IM env factory in a later task
 type serviceScraper struct {
 	mu       sync.Mutex
 	baseline map[string]float64
 }
 
-//nolint:unused // wired up by daily-IM env factory in a later task
 func newServiceScraper() *serviceScraper {
 	return &serviceScraper{baseline: make(map[string]float64)}
 }
 
-//nolint:unused // wired up by daily-IM env factory in a later task
 func (s *serviceScraper) Scrape(ctx context.Context, urls map[string]string) (map[string]int64, error) {
 	out := make(map[string]int64, len(urls))
 	s.mu.Lock()
@@ -306,7 +300,6 @@ func (s *serviceScraper) Scrape(ctx context.Context, urls map[string]string) (ma
 	return out, nil
 }
 
-//nolint:unused // wired up by daily-IM env factory in a later task
 func scrapeErrorCounter(ctx context.Context, url string) (float64, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -328,7 +321,6 @@ func scrapeErrorCounter(ctx context.Context, url string) (float64, error) {
 	return sumCounterFamily(string(buf), "slog_errors_total"), nil
 }
 
-//nolint:unused // wired up by daily-IM env factory in a later task
 func sumCounterFamily(body, family string) float64 {
 	var sum float64
 	for _, line := range strings.Split(body, "\n") {

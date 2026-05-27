@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -96,8 +98,6 @@ func parseStepList(s string) ([]int, error) {
 }
 
 // stepEnv bundles the runtime dependencies of a step. Stub-able for unit tests.
-//
-//nolint:unused // wired up by runDaily in a later task
 type stepEnv struct {
 	collector      *Collector
 	direct         *directPool
@@ -117,8 +117,6 @@ type stepEnv struct {
 // previous), warms up, holds, evaluates SLO signals, and cools down.
 // The current step is `n`; the previous step's user count is `prevN` (0 for
 // the first step). Users [prevN..n) are activated this step.
-//
-//nolint:unused // wired up by runDaily in a later task
 func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 	startedAt := time.Now()
 	delta := n - prevN
@@ -175,8 +173,6 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 // activateUsers brings users in the range [from, to) online: optionally
 // mints a JWT, assigns them to a pool, opens connections / registers room
 // interest. Rate-limited at 500 users/sec.
-//
-//nolint:unused // wired up by runDaily in a later task
 func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 	if from >= to {
 		return
@@ -334,4 +330,89 @@ func groupSubsByUser(subs []model.Subscription) map[string][]string {
 		out[subs[i].User.ID] = append(out[subs[i].User.ID], subs[i].RoomID)
 	}
 	return out
+}
+
+// prodEnvFactory wires the real NATS pools and pollers.
+type prodEnvFactory struct {
+	baseCfg *config // existing top-level loadgen config: NatsURL, etc.
+}
+
+//nolint:gocritic // cfg passed by value to satisfy envFactory interface
+func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
+	col := NewCollector(NewMetrics(), cfg.Preset)
+	direct := newDirectPool(f.baseCfg.NatsURL, col)
+	var mux *multiplexPool
+	if cfg.MultiplexPoolSize > 0 {
+		mux = newMultiplexPool(f.baseCfg.NatsURL, col, cfg.MultiplexPoolSize)
+	}
+	scraper := newServiceScraper()
+
+	// Resolve service /metrics URLs from docker-compose service names.
+	svcURLs := map[string]string{
+		"message-gatekeeper":  "http://message-gatekeeper:9100/metrics",
+		"message-worker":      "http://message-worker:9100/metrics",
+		"broadcast-worker":    "http://broadcast-worker:9100/metrics",
+		"notification-worker": "http://notification-worker:9100/metrics",
+		"room-worker":         "http://room-worker:9100/metrics",
+		"room-service":        "http://room-service:9100/metrics",
+		"search-sync-worker":  "http://search-sync-worker:9100/metrics",
+		"inbox-worker":        "http://inbox-worker:9100/metrics",
+	}
+	jszURL := "http://nats:8222/jsz"
+
+	return &stepEnv{
+		collector: col, direct: direct, multiplex: mux, users: users,
+		thresholds: defaultThresholds(),
+		pollPending: func(ctx context.Context) (map[string]int64, error) {
+			return pollPending(ctx, jszURL)
+		},
+		scrapeServices: func(ctx context.Context) (map[string]int64, error) {
+			return scraper.Scrape(ctx, svcURLs)
+		},
+		maxDirect: cfg.MaxDirectUsers,
+		mintJWT: func(ctx context.Context, account string) error {
+			// Best-effort one-time auth-service login per user. If auth-service
+			// is unreachable or unconfigured, the warning is logged in
+			// activateUsers and the user proceeds with shared backend.creds.
+			body := fmt.Sprintf(`{"account":%q}`, account)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				"http://auth-service:8080/login", strings.NewReader(body))
+			if err != nil {
+				return fmt.Errorf("build auth-service request: %w", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("auth-service login: %w", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				return fmt.Errorf("auth-service login status %d", resp.StatusCode)
+			}
+			return nil
+		},
+		warmup: cfg.Warmup, hold: cfg.Hold, cooldown: cfg.Cooldown,
+	}
+}
+
+// runDaily is the production entrypoint invoked by main.go.
+func runDaily(ctx context.Context, baseCfg *config, args []string) int {
+	cfg, err := parseDailyConfig(args)
+	if err != nil {
+		slog.Error("parse daily config", "error", err)
+		return 2
+	}
+	results, err := runDailyForTest(ctx, cfg, &prodEnvFactory{baseCfg: baseCfg})
+	if err != nil {
+		slog.Error("daily run", "error", err)
+		return 1
+	}
+	renderConsole(os.Stdout, results)
+	if cfg.CSVPath != "" {
+		if err := writeDailyCSV(cfg.CSVPath, results); err != nil {
+			slog.Error("csv write", "error", err)
+			return 1
+		}
+	}
+	return 0
 }
