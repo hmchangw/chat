@@ -10,8 +10,10 @@
 -- SSTables are compacted once and then left alone (until they age out via
 -- TTL or DELETE). compaction_window_size MUST match MESSAGE_BUCKET_HOURS
 -- so each Cassandra window aligns with one logical bucket. The value
--- below assumes the documented default of 24 — if your deployment runs
--- with a different MESSAGE_BUCKET_HOURS, change both numbers together.
+-- below matches the services' MESSAGE_BUCKET_HOURS envDefault of 72
+-- (see message-worker/main.go and history-service/internal/config/config.go).
+-- If your deployment overrides MESSAGE_BUCKET_HOURS to a different value,
+-- change both numbers together.
 --
 -- Apply manually against the production keyspace; the docker-local init
 -- scripts already create new clusters with these settings.
@@ -32,11 +34,11 @@
 ALTER TABLE chat.messages_by_room WITH compaction = {
   'class': 'TimeWindowCompactionStrategy',
   'compaction_window_unit': 'HOURS',
-  'compaction_window_size': '24'
+  'compaction_window_size': '72'
 };
 
 ALTER TABLE chat.thread_messages_by_room WITH compaction = {
   'class': 'TimeWindowCompactionStrategy',
   'compaction_window_unit': 'HOURS',
-  'compaction_window_size': '24'
+  'compaction_window_size': '72'
 };

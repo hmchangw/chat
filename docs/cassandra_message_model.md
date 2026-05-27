@@ -64,8 +64,9 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
 `messages_by_room` and `thread_messages_by_room` use a composite partition key
 `(room_id, bucket)`. `bucket` is the start-of-window in unix milliseconds derived
 deterministically from `created_at` via `pkg/msgbucket.Sizer`. The window size
-is configured per service via `MESSAGE_BUCKET_HOURS` (default 24); all services
-that read or write these tables MUST be configured with the same window.
+is configured per service via `MESSAGE_BUCKET_HOURS` (envDefault 72 in both
+`message-worker` and `history-service`); all services that read or write these
+tables MUST be configured with the same window.
 
 ### Compaction
 
@@ -119,7 +120,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   AND compaction = {
     'class': 'TimeWindowCompactionStrategy',
     'compaction_window_unit': 'HOURS',
-    'compaction_window_size': '24'
+    'compaction_window_size': '72'
   };
 ```
 #### thread_messages_by_room
@@ -153,7 +154,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   AND compaction = {
     'class': 'TimeWindowCompactionStrategy',
     'compaction_window_unit': 'HOURS',
-    'compaction_window_size': '24'
+    'compaction_window_size': '72'
   };
 ```
 #### pinned_messages_by_room

@@ -38,5 +38,5 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_room (
   AND compaction = {
     'class': 'TimeWindowCompactionStrategy',
     'compaction_window_unit': 'HOURS',
-    'compaction_window_size': '24'
+    'compaction_window_size': '72'
   };
