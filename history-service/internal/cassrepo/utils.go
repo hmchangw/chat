@@ -3,6 +3,7 @@ package cassrepo
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/gocql/gocql"
@@ -95,6 +96,42 @@ func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
 	return b
 }
 
+// buildScanValues maps colNames (in order) to addressable field pointers from
+// dest using cql struct tags. It returns the pointer slice ready for
+// iter.Scan, or the first unmapped column name if any column has no
+// matching tag. dest must be a non-nil pointer to a struct.
+//
+// Separated from structScan so the column-matching logic is unit-testable
+// without a live gocql iterator.
+func buildScanValues(dest any, colNames []string) (values []any, missingCol string, ok bool) {
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
+		return nil, "", false
+	}
+	rv = rv.Elem()
+	rt := rv.Type()
+
+	fieldByTag := make(map[string]reflect.Value, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		tag := field.Tag.Get("cql")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		fieldByTag[tag] = rv.Field(i)
+	}
+
+	vals := make([]any, len(colNames))
+	for i, name := range colNames {
+		fv, found := fieldByTag[name]
+		if !found {
+			return nil, name, false
+		}
+		vals[i] = fv.Addr().Interface()
+	}
+	return vals, "", true
+}
+
 // structScan scans the current row of iter into dest using cql struct tags for
 // column-to-field mapping. It mirrors the gocql StructScan API that is not
 // present in v1.7.0: it inspects dest's cql tags to build a column-name →
@@ -112,38 +149,31 @@ func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
 // so it sidesteps the panic — gocql's reflective unmarshalMap is happy to
 // write into our concrete *Reactions destination directly.
 //
-// Returns true when a row was consumed, false when the iterator is exhausted
-// or an error occurred. If the result row carries a column that has no
-// matching cql tag on dest, structScan records an iterator error and returns
-// false — every selected column must be addressable on the destination.
-func structScan(iter *gocql.Iter, dest interface{}) bool {
+// Returns (true, nil) when a row was scanned successfully. Returns (false, nil)
+// when the iterator is exhausted. Returns (false, non-nil error) when a result
+// column has no matching cql tag on dest — the caller must treat this as a hard
+// failure (every selected column must be addressable on the destination struct).
+// An unmapped column also emits a slog.Warn for diagnostic visibility.
+func structScan(iter *gocql.Iter, dest any) (bool, error) {
+	// Validate dest shape before touching the iterator (iter may be nil in tests).
 	rv := reflect.ValueOf(dest)
 	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
-		return false
-	}
-	rv = rv.Elem()
-	rt := rv.Type()
-
-	fieldByTag := make(map[string]reflect.Value, rt.NumField())
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-		tag := field.Tag.Get("cql")
-		if tag == "" || tag == "-" {
-			continue
-		}
-		fieldByTag[tag] = rv.Field(i)
+		return false, nil
 	}
 
 	cols := iter.Columns()
-	values := make([]interface{}, len(cols))
-	for i, col := range cols {
-		fv, ok := fieldByTag[col.Name]
-		if !ok {
-			return false
-		}
-		values[i] = fv.Addr().Interface()
+	colNames := make([]string, len(cols))
+	for i, c := range cols {
+		colNames[i] = c.Name
 	}
-	return iter.Scan(values...)
+
+	values, missingCol, ok := buildScanValues(dest, colNames)
+	if !ok {
+		err := fmt.Errorf("structScan: unmapped column %q for type %T", missingCol, dest)
+		slog.Warn("structScan: unmapped column", "column", missingCol, "type", fmt.Sprintf("%T", dest))
+		return false, err
+	}
+	return iter.Scan(values...), nil
 }
 
 // Fetch executes the query; scan is called with the page iterator. Returns the encoded next-page cursor.

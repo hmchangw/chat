@@ -109,8 +109,9 @@ type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query
 // is reached or maxBuckets is exhausted. The first bucket may resume from a
 // caller-supplied gocql page state; later buckets always start fresh.
 //
-// scan must consume up to `remaining` rows from iter and return them; it is
-// responsible for stopping when full.
+// scan must consume up to `remaining` rows from iter and return them along with
+// any hard scan error (e.g. an unmapped column); it is responsible for stopping
+// when full.
 //
 // floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
 // when bucket > floorBucket. To disable floor-based termination, callers pass
@@ -125,7 +126,7 @@ func fillPage[T any](
 	pageSize int,
 	initialPageState []byte,
 	queryFn bucketQueryFn,
-	scan func(iter *gocql.Iter, remaining int) []T,
+	scan func(iter *gocql.Iter, remaining int) ([]T, error),
 ) (pageResult[T], error) {
 	out := make([]T, 0, pageSize)
 	bucket := startBucket
@@ -159,11 +160,14 @@ func fillPage[T any](
 		}
 
 		iter := q.Iter()
-		rows := scan(iter, pageSize-len(out))
+		rows, scanErr := scan(iter, pageSize-len(out))
 		out = append(out, rows...)
 		nextPageState := iter.PageState()
 		if err := iter.Close(); err != nil {
 			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, err)
+		}
+		if scanErr != nil {
+			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, scanErr)
 		}
 
 		if len(nextPageState) > 0 && len(out) < pageSize {

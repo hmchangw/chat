@@ -22,16 +22,21 @@ const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 // structScan requires every selected column to have a matching cql tag on
 // models.Message; the by-id query adds pinned_at/pinned_by on top of
 // baseColumns and both columns are present on the struct.
-func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
+// Returns (nil, err) if structScan encounters an unmapped column.
+func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !structScan(iter, &m) {
+		ok, err := structScan(iter, &m)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			break
 		}
 		messages = append(messages, m)
 	}
-	return messages
+	return messages, nil
 }
 
 // startBucketFromCursor returns the bucket to start the walk at, plus an
@@ -71,16 +76,21 @@ func startBucketFromCursor(pageReq PageRequest, direction walkDirection, default
 }
 
 // scanMessagesUpTo consumes up to remaining rows from iter via structScan.
-func scanMessagesUpTo(iter *gocql.Iter, remaining int) []models.Message {
+// Returns (nil, err) if structScan encounters an unmapped column.
+func scanMessagesUpTo(iter *gocql.Iter, remaining int) ([]models.Message, error) {
 	out := make([]models.Message, 0, remaining)
 	for len(out) < remaining {
 		var m models.Message
-		if !structScan(iter, &m) {
+		ok, err := structScan(iter, &m)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			break
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, nil
 }
 
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq PageRequest) (Page[models.Message], error) {

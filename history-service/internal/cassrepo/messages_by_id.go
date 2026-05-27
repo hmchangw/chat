@@ -17,9 +17,12 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	).WithContext(ctx).Iter()
 
 	var m models.Message
-	found := structScan(iter, &m)
-	if err := iter.Close(); err != nil {
-		return nil, fmt.Errorf("querying message by id %s: %w", messageID, err)
+	found, scanErr := structScan(iter, &m)
+	if closeErr := iter.Close(); closeErr != nil {
+		return nil, fmt.Errorf("querying message by id %s: %w", messageID, closeErr)
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("querying message by id %s: %w", messageID, scanErr)
 	}
 	if !found {
 		return nil, nil
@@ -36,9 +39,12 @@ func (r *Repository) GetMessagesByIDs(ctx context.Context, messageIDs []string) 
 		messageByIDQuery+` WHERE message_id IN ?`,
 		messageIDs,
 	).WithContext(ctx).Iter()
-	messages := scanMsgsFromIter(iter)
-	if err := iter.Close(); err != nil {
-		return nil, fmt.Errorf("querying messages by IDs: %w", err)
+	messages, scanErr := scanMsgsFromIter(iter)
+	if closeErr := iter.Close(); closeErr != nil {
+		return nil, fmt.Errorf("querying messages by IDs: %w", closeErr)
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("querying messages by IDs: %w", scanErr)
 	}
 	return messages, nil
 }

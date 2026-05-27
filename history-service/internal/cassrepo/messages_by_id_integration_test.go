@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	cassmodels "github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
@@ -219,4 +220,54 @@ func TestRepository_GetMessagesByIDs_MissingID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "m-exists", msgs[0].MessageID)
+}
+
+// TestRepository_GetMessageByID_ReactionsRoundTrip writes a message row whose
+// reactions column is populated with a two-entry v3 map and verifies that
+// GetMessageByID returns both entries with all fields intact. This exercises
+// structScan's reflective path against a MAP<FROZEN<reaction_key>,
+// FROZEN<reactor_info>> column, closing the regression-detection gap for the
+// positional-Scan pivot that replaced MapScan.
+func TestRepository_GetMessageByID_ReactionsRoundTrip(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	ctx := context.Background()
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+
+	// Cassandra TIMESTAMP precision is milliseconds — truncate so byte comparison
+	// after read-back is exact.
+	reactedAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	wantReactions := cassmodels.Reactions{
+		cassmodels.ReactionKey{Emoji: "👍", UserAccount: "alice"}: cassmodels.ReactorInfo{
+			UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: reactedAt,
+		},
+		cassmodels.ReactionKey{Emoji: "❤️", UserAccount: "bob"}: cassmodels.ReactorInfo{
+			UserID: "u2", EngName: "Bob", ChnName: "鲍勃", Account: "bob", ReactedAt: reactedAt,
+		},
+	}
+
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, reactions) VALUES (?, ?, ?, ?, ?, ?)`,
+		"m-reactions", "r-reactions", ts, sender, "hello", map[cassmodels.ReactionKey]cassmodels.ReactorInfo(wantReactions),
+	).Exec())
+
+	msg, err := repo.GetMessageByID(ctx, "m-reactions")
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+
+	assert.Equal(t, "m-reactions", msg.MessageID)
+	require.Len(t, msg.Reactions, 2, "expected both reactions to be returned")
+
+	for k, want := range wantReactions {
+		got, ok := msg.Reactions[k]
+		require.True(t, ok, "missing reaction key %+v", k)
+		assert.Equal(t, want.UserID, got.UserID)
+		assert.Equal(t, want.EngName, got.EngName)
+		assert.Equal(t, want.ChnName, got.ChnName)
+		assert.Equal(t, want.Account, got.Account)
+		assert.Equal(t, want.ReactedAt.UTC(), got.ReactedAt.UTC())
+	}
 }

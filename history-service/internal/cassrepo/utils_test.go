@@ -105,15 +105,85 @@ func TestStructScan_NonPointer(t *testing.T) {
 		Name string `cql:"name"`
 	}
 	// Passing a non-pointer should return false before touching iter.
-	result := structScan(nil, S{Name: "x"})
-	assert.False(t, result)
+	ok, err := structScan(nil, S{Name: "x"})
+	assert.False(t, ok)
+	assert.NoError(t, err)
 }
 
 func TestStructScan_PointerToNonStruct(t *testing.T) {
 	// Passing a pointer to a non-struct should return false before touching iter.
 	s := "hello"
-	result := structScan(nil, &s)
-	assert.False(t, result)
+	ok, err := structScan(nil, &s)
+	assert.False(t, ok)
+	assert.NoError(t, err)
+}
+
+// TestBuildScanValues exercises the column-matching helper in isolation,
+// covering the unmapped-column path that structScan now surfaces as a hard error.
+func TestBuildScanValues(t *testing.T) {
+	type Row struct {
+		RoomID    string `cql:"room_id"`
+		CreatedAt int64  `cql:"created_at"`
+		Msg       string `cql:"msg"`
+	}
+
+	tests := []struct {
+		name        string
+		colNames    []string
+		wantOK      bool
+		wantMissing string
+	}{
+		{
+			name:     "all columns map",
+			colNames: []string{"room_id", "created_at", "msg"},
+			wantOK:   true,
+		},
+		{
+			name:        "unmapped column at front",
+			colNames:    []string{"unknown_col", "room_id"},
+			wantOK:      false,
+			wantMissing: "unknown_col",
+		},
+		{
+			name:        "unmapped column in middle",
+			colNames:    []string{"room_id", "ghost", "msg"},
+			wantOK:      false,
+			wantMissing: "ghost",
+		},
+		{
+			name:        "unmapped column at end",
+			colNames:    []string{"room_id", "created_at", "msg", "extra"},
+			wantOK:      false,
+			wantMissing: "extra",
+		},
+		{
+			name:     "empty columns",
+			colNames: []string{},
+			wantOK:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var row Row
+			vals, missingCol, ok := buildScanValues(&row, tc.colNames)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantMissing, missingCol)
+			if tc.wantOK {
+				assert.Len(t, vals, len(tc.colNames))
+			}
+		})
+	}
+}
+
+func TestBuildScanValues_NonPointer(t *testing.T) {
+	type Row struct {
+		ID string `cql:"id"`
+	}
+	vals, missingCol, ok := buildScanValues(Row{}, []string{"id"})
+	assert.False(t, ok)
+	assert.Empty(t, missingCol)
+	assert.Nil(t, vals)
 }
 
 func TestNewCursor_TooLong(t *testing.T) {
