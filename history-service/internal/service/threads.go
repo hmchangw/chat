@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/hmchangw/chat/history-service/internal/models"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -27,8 +29,26 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	msg, err := s.findMessage(c, roomID, req.ThreadMessageID)
-	if err != nil {
+	// Parent lookup (Cassandra) and room-times resolve (Mongo) have no
+	// dependency on each other; fan them out so the worst-case pre-fetch
+	// latency is one RTT instead of two.
+	now := time.Now().UTC()
+	var (
+		msg                  *models.Message
+		lastMsgAt, createdAt time.Time
+	)
+	g, gctx := errgroup.WithContext(c)
+	g.Go(func() error {
+		var fErr error
+		msg, fErr = s.findMessage(gctx, roomID, req.ThreadMessageID)
+		return fErr
+	})
+	g.Go(func() error {
+		var rErr error
+		lastMsgAt, createdAt, rErr = s.resolveRoomTimesOrError(gctx, roomID, req.Meta, now)
+		return rErr
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 
@@ -64,10 +84,11 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
-	if err != nil {
-		return nil, err
+	// tcount == 0 (or never written) means the parent has no replies — skip the
+	// Cassandra round-trip entirely. message-worker bumps tcount on each reply;
+	// history-service decrements on delete, so this stays accurate.
+	if msg.TCount == nil || *msg.TCount == 0 {
+		return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}, nil
 	}
 
 	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.
