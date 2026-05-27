@@ -3,6 +3,9 @@
 package cassandra
 
 import (
+	"encoding/json"
+	"fmt"
+	"sort"
 	"time"
 )
 
@@ -68,6 +71,95 @@ type QuotedParentMessage struct {
 	ThreadParentCreatedAt *time.Time `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
+// ReactionKey is the map-key UDT for Message.Reactions.
+type ReactionKey struct {
+	Emoji       string `json:"emoji"       cql:"emoji"`
+	UserAccount string `json:"userAccount" cql:"user_account"`
+}
+
+// ReactorInfo is the map-value UDT for Message.Reactions.
+type ReactorInfo struct {
+	UserID    string    `json:"userId"    cql:"user_id"`
+	EngName   string    `json:"engName"   cql:"eng_name"`
+	ChnName   string    `json:"chnName"   cql:"chn_name"`
+	Account   string    `json:"account"   cql:"account"`
+	ReactedAt time.Time `json:"reactedAt" cql:"reacted_at"`
+}
+
+// Reactions is the in-row reaction map for Message. Keys are unique
+// (emoji, user_account) pairs; one cell per reaction. JSON projection is a
+// flat array sorted by (emoji, userAccount) for stable output.
+type Reactions map[ReactionKey]ReactorInfo
+
+// reactionEntry is the flat per-entry wire shape; key + value fields are inlined.
+type reactionEntry struct {
+	Emoji       string    `json:"emoji"`
+	UserAccount string    `json:"userAccount"`
+	UserID      string    `json:"userId"`
+	EngName     string    `json:"engName"`
+	ChnName     string    `json:"chnName"`
+	Account     string    `json:"account"`
+	ReactedAt   time.Time `json:"reactedAt"`
+}
+
+// MarshalJSON emits the flat sorted-by-(emoji,userAccount) wire shape.
+// Nil map returns "null" so an omitempty field elides the key entirely.
+// Empty map returns "[]".
+func (r Reactions) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("null"), nil
+	}
+	entries := make([]reactionEntry, 0, len(r))
+	for k, v := range r {
+		entries = append(entries, reactionEntry{
+			Emoji:       k.Emoji,
+			UserAccount: k.UserAccount,
+			UserID:      v.UserID,
+			EngName:     v.EngName,
+			ChnName:     v.ChnName,
+			Account:     v.Account,
+			ReactedAt:   v.ReactedAt,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Emoji != entries[j].Emoji {
+			return entries[i].Emoji < entries[j].Emoji
+		}
+		return entries[i].UserAccount < entries[j].UserAccount
+	})
+	return json.Marshal(entries)
+}
+
+// UnmarshalJSON parses the flat array into the map. A null input yields a nil
+// map; an empty array yields an empty (non-nil) map. Duplicate (emoji,
+// userAccount) pairs return a wrapped error.
+func (r *Reactions) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*r = nil
+		return nil
+	}
+	var entries []reactionEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return fmt.Errorf("reactions: unmarshal: %w", err)
+	}
+	out := make(Reactions, len(entries))
+	for _, e := range entries {
+		key := ReactionKey{Emoji: e.Emoji, UserAccount: e.UserAccount}
+		if _, ok := out[key]; ok {
+			return fmt.Errorf("reactions: duplicate key (%s, %s)", e.Emoji, e.UserAccount)
+		}
+		out[key] = ReactorInfo{
+			UserID:    e.UserID,
+			EngName:   e.EngName,
+			ChnName:   e.ChnName,
+			Account:   e.Account,
+			ReactedAt: e.ReactedAt,
+		}
+	}
+	*r = out
+	return nil
+}
+
 // Message represents a message row in the Cassandra message tables
 // (messages_by_room, messages_by_id, thread_messages_by_room).
 //
@@ -92,15 +184,16 @@ type Message struct {
 	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
 	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
-	// Reactions is the per-message reaction map (nil = no reactions).
-	Reactions    map[string][]Participant `json:"reactions,omitempty"`
-	Deleted      bool                     `json:"deleted,omitempty"               cql:"deleted"`
-	Type         string                   `json:"type,omitempty"                  cql:"type"`
-	SysMsgData   []byte                   `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
-	SiteID       string                   `json:"siteId,omitempty"                cql:"site_id"`
-	EditedAt     *time.Time               `json:"editedAt,omitempty"              cql:"edited_at"`
-	UpdatedAt    *time.Time               `json:"updatedAt,omitempty"             cql:"updated_at"`
-	ThreadRoomID string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
-	PinnedAt     *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
-	PinnedBy     *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
+	// Reactions is hydrated inline from the message row's reactions map column.
+	// Nil = no reactions (omitted from JSON); not modified by edit/delete paths.
+	Reactions    Reactions    `json:"reactions,omitempty"             cql:"reactions"`
+	Deleted      bool         `json:"deleted,omitempty"               cql:"deleted"`
+	Type         string       `json:"type,omitempty"                  cql:"type"`
+	SysMsgData   []byte       `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
+	SiteID       string       `json:"siteId,omitempty"                cql:"site_id"`
+	EditedAt     *time.Time   `json:"editedAt,omitempty"              cql:"edited_at"`
+	UpdatedAt    *time.Time   `json:"updatedAt,omitempty"             cql:"updated_at"`
+	ThreadRoomID string       `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
+	PinnedAt     *time.Time   `json:"pinnedAt,omitempty"              cql:"pinned_at"`
+	PinnedBy     *Participant `json:"pinnedBy,omitempty"              cql:"pinned_by"`
 }

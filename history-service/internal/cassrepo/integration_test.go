@@ -23,6 +23,8 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reaction_key (emoji TEXT, user_account TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reactor_info (user_id TEXT, eng_name TEXT, chn_name TEXT, account TEXT, reacted_at TIMESTAMP)`),
 	} {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
@@ -46,6 +48,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -72,6 +75,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -100,6 +104,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		thread_parent_id TEXT,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -117,18 +122,12 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		msg TEXT,
 		file FROZEN<"File">,
 		card FROZEN<"Card">,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		edited_at TIMESTAMP,
 		updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
-
-	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.message_reactions (
-		message_id TEXT,
-		emoji      TEXT,
-		users      SET<FROZEN<"Participant">>,
-		PRIMARY KEY ((message_id), emoji)
-	) WITH compaction = {'class': 'LeveledCompactionStrategy'}`)).Exec())
 
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One

@@ -19,9 +19,9 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, " 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
 // scanMsgsFromIter collects all rows from iter into a slice.
-// structScan ignores columns absent from the struct's cql tags, so this
-// helper is safe to use with any column subset (e.g. messageByIDQuery
-// includes pinned_at/pinned_by which are absent from the base column list).
+// structScan requires every selected column to have a matching cql tag on
+// models.Message; the by-id query adds pinned_at/pinned_by on top of
+// baseColumns and both columns are present on the struct.
 func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
 	messages := make([]models.Message, 0)
 	for {

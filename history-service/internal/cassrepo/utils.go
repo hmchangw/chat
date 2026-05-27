@@ -97,15 +97,25 @@ func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
 
 // structScan scans the current row of iter into dest using cql struct tags for
 // column-to-field mapping. It mirrors the gocql StructScan API that is not
-// present in v1.7.0: it builds a map[string]interface{} of column-name →
-// field-pointer from the dest struct's cql tags, then delegates to
-// iter.MapScan so gocql handles all type unmarshalling (including UDTs).
-// Returns true when a row was consumed, false when the iterator is exhausted
-// or an error occurred.
+// present in v1.7.0: it inspects dest's cql tags to build a column-name →
+// field-pointer index, then issues a positional iter.Scan in the column order
+// declared by the result metadata.
 //
-// The column map is rebuilt on every call. Do NOT cache or reuse it across
-// rows: iter.MapScan overwrites map entries with bare values after each call,
-// so a reused map would no longer contain field-pointers on the next scan.
+// Why not iter.MapScan? MapScan internally calls iter.RowData(), which invokes
+// column.TypeInfo.NewWithError() on every returned column to allocate a default
+// destination — even for columns the caller already provided. For a
+// MAP<frozen<UDT>, frozen<UDT>> column (e.g. the v3 reactions column), that
+// path resolves the UDT goType to map[string]interface{} and then calls
+// reflect.MapOf(map, map), which panics with "invalid key type
+// map[string]interface{}" because Go maps are not comparable and cannot be
+// used as map keys. Positional iter.Scan never builds default destinations,
+// so it sidesteps the panic — gocql's reflective unmarshalMap is happy to
+// write into our concrete *Reactions destination directly.
+//
+// Returns true when a row was consumed, false when the iterator is exhausted
+// or an error occurred. If the result row carries a column that has no
+// matching cql tag on dest, structScan records an iterator error and returns
+// false — every selected column must be addressable on the destination.
 func structScan(iter *gocql.Iter, dest interface{}) bool {
 	rv := reflect.ValueOf(dest)
 	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
@@ -114,16 +124,26 @@ func structScan(iter *gocql.Iter, dest interface{}) bool {
 	rv = rv.Elem()
 	rt := rv.Type()
 
-	row := make(map[string]interface{}, rt.NumField())
+	fieldByTag := make(map[string]reflect.Value, rt.NumField())
 	for i := 0; i < rt.NumField(); i++ {
 		field := rt.Field(i)
 		tag := field.Tag.Get("cql")
 		if tag == "" || tag == "-" {
 			continue
 		}
-		row[tag] = rv.Field(i).Addr().Interface()
+		fieldByTag[tag] = rv.Field(i)
 	}
-	return iter.MapScan(row)
+
+	cols := iter.Columns()
+	values := make([]interface{}, len(cols))
+	for i, col := range cols {
+		fv, ok := fieldByTag[col.Name]
+		if !ok {
+			return false
+		}
+		values[i] = fv.Addr().Interface()
+	}
+	return iter.Scan(values...)
 }
 
 // Fetch executes the query; scan is called with the page iterator. Returns the encoded next-page cursor.

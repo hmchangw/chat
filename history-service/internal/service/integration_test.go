@@ -36,6 +36,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reaction_key (emoji TEXT, user_account TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reactor_info (user_id TEXT, eng_name TEXT, chn_name TEXT, account TEXT, reacted_at TIMESTAMP)`),
 	} {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
@@ -48,6 +50,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id, bucket), created_at, message_id)
@@ -61,6 +64,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		tshow BOOLEAN, tcount INT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, created_at TIMESTAMP,
 		updated_at TIMESTAMP, pinned_at TIMESTAMP, pinned_by FROZEN<"Participant">,
@@ -75,6 +79,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
 		PRIMARY KEY ((room_id, bucket), thread_room_id, created_at, message_id)

@@ -963,7 +963,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 | `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. Map of `emoji → Participant[]`. Reactions are stored server-side in a dedicated `message_reactions` side table and hydrated on every history read; clients never write this field via message-send. |
+| `reactions` | array | Optional. Flat sorted array of reaction records — see [Reactions](#reactions) below. Omitted when nil; `[]` when present but empty. Clients never write this field via message-send. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -1002,6 +1002,37 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 
 When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
+
+#### Reactions
+
+> **Breaking change.** The `reactions` field previously described a `Map of emoji → Participant[]` shape backed by a dedicated `message_reactions` side table. It has been replaced with the flat sorted array described here. The frontend has no live consumers of this field today (`grep -rni reaction chat-frontend/` returns nothing), but any client code written against the old shape must be updated.
+
+Each element of the `reactions` array is a flat record:
+
+| Field         | Type   | Notes                                                                    |
+|---------------|--------|--------------------------------------------------------------------------|
+| `emoji`       | string | NFC-normalised emoji string.                                             |
+| `userAccount` | string | Account identifier of the reacting user. Matches the map key in storage. |
+| `userId`      | string | Internal user ID.                                                        |
+| `engName`     | string | Display name (English). May be empty.                                    |
+| `chnName`     | string | Display name (Chinese). May be empty.                                    |
+| `account`     | string | Duplicates `userAccount`; present for read-side convenience.             |
+| `reactedAt`   | string | RFC 3339 timestamp when the reaction was added.                          |
+
+Example:
+
+```json
+"reactions": [
+  {"emoji": "❤️", "userAccount": "bob",   "userId": "u2", "engName": "Bob",   "chnName": "鲍勃",   "account": "bob",   "reactedAt": "2026-05-25T10:23:00Z"},
+  {"emoji": "👍", "userAccount": "alice", "userId": "u1", "engName": "Alice", "chnName": "爱丽丝", "account": "alice", "reactedAt": "2026-05-25T10:22:00Z"}
+]
+```
+
+**Sort contract.** The server sorts the array by `(emoji ASC, userAccount ASC)` before serialising. Responses are byte-stable across requests; clients can rely on this ordering for snapshot tests and list rendering without re-sorting.
+
+**Empty state.** A nil reactions map is omitted from the JSON response entirely (no `"reactions"` key). An empty reactions map serialises as `"reactions": []`. Clients should treat both as "no reactions".
+
+**Live-event vs history asymmetry.** History responses return the enriched flat records above. Live reaction events (emitted by the add-reaction path) use a delta shape — `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` — which does not include display-name fields. Clients that consume both will need to translate live deltas (using a local user cache for display names) before merging them into the per-message reactions state derived from history.
 
 #### Load History
 

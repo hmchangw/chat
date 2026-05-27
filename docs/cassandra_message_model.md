@@ -57,6 +57,44 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
                                       // to enforce access-window checks without a Cassandra round-trip
 );
 ```
+#### reaction_key
+```cql
+CREATE TYPE IF NOT EXISTS chat.reaction_key (
+  emoji        TEXT,
+  user_account TEXT
+);
+```
+
+| Field        | Type | Notes                                                    |
+|--------------|------|----------------------------------------------------------|
+| `emoji`      | TEXT | NFC-normalised emoji string.                             |
+| `user_account` | TEXT | Account identifier of the reacting user. Load-bearing identity — see account immutability caveat below. |
+
+#### reactor_info
+```cql
+CREATE TYPE IF NOT EXISTS chat.reactor_info (
+  user_id     TEXT,
+  eng_name    TEXT,
+  chn_name    TEXT,
+  account     TEXT,
+  reacted_at  TIMESTAMP
+);
+```
+
+| Field        | Type      | Notes                                                                       |
+|--------------|-----------|-----------------------------------------------------------------------------|
+| `user_id`    | TEXT      | Internal user ID.                                                           |
+| `eng_name`   | TEXT      | Display name (English). May be empty.                                       |
+| `chn_name`   | TEXT      | Display name (Chinese). May be empty.                                       |
+| `account`    | TEXT      | Duplicates `reaction_key.user_account` for read-side ergonomics.            |
+| `reacted_at` | TIMESTAMP | Wall-clock time when the reaction was added (UTC).                          |
+
+**Frozen UDT extensibility caveat.** Both UDTs are `FROZEN`. Adding a field to `reaction_key` later requires rewriting every map key on every row across the four message tables — effectively a full table backfill. Adding a field to `reactor_info` is easier (values can be lazily rewritten on next toggle) but still requires a migration. Do not add or reorder fields on either UDT post-launch without a migration plan.
+
+**Account immutability.** `reaction_key.user_account` is the load-bearing identity. If accounts were ever renamed, a stale key would become orphaned (un-react would silently fail to find the cell). Accounts are immutable in this codebase (`pkg/userstore`). If that ever changes, the key must switch to `user_id`.
+
+**Mirror-write source-of-truth.** A single reaction toggle writes to `messages_by_id` first, then mirrors to `messages_by_room`, `thread_messages_by_room` (when applicable), and `pinned_messages_by_room` (when applicable). The writes are not atomic across tables — `messages_by_id` is authoritative. Readers must not diff reactions across mirrors.
+
 ### Table
 
 ### Partition Bucketing
@@ -66,8 +104,6 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
 deterministically from `created_at` via `pkg/msgbucket.Sizer`. The window size
 is configured per service via `MESSAGE_BUCKET_HOURS` (default 24); all services
 that read or write these tables MUST be configured with the same window.
-
-*Applies to `messages_by_room` and `thread_messages_by_room` only. NOT to `message_reactions` (which has no bucketing).*
 
 #### messages_by_room
 ```cql
@@ -90,6 +126,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -97,7 +134,8 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   PRIMARY KEY((room_id, bucket),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
+  AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
 ```
 #### thread_messages_by_room
 ```cql
@@ -117,6 +155,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -124,7 +163,8 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   PRIMARY KEY((room_id, bucket),thread_room_id,created_at,message_id)
-)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC);
+)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC)
+  AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
 ```
 #### pinned_messages_by_room
 ```cql
@@ -141,6 +181,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -149,7 +190,8 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   updated_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY((room_id),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
+  AND compaction = {'class': 'LeveledCompactionStrategy'};
 ```
 #### messages_by_id
 ```cql
@@ -170,6 +212,7 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -180,35 +223,12 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   pinned_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY(message_id,created_at)
-)WITH CLUSTERING ORDER BY (created_at DESC);
+)WITH CLUSTERING ORDER BY (created_at DESC)
+  AND compaction = {'class': 'LeveledCompactionStrategy'};
 ```
 
-## Reaction table
+### Compaction strategy
 
-### `message_reactions`
+`messages_by_room` and `thread_messages_by_room` use **TWCS** (TimeWindowCompactionStrategy, 1-day windows). These tables see append-only write patterns where rows cluster by time; TWCS keeps same-window SSTables together and expires them cleanly, avoiding read amplification on recent buckets.
 
-```cql
-CREATE TABLE IF NOT EXISTS message_reactions(
-  message_id TEXT,
-  emoji TEXT,
-  users SET<FROZEN<"Participant">>,
-  PRIMARY KEY((message_id), emoji)
-)WITH CLUSTERING ORDER BY (emoji ASC);
-```
-
-| Column     | Type                          | Notes                             |
-|------------|-------------------------------|-----------------------------------|
-| message_id | TEXT                          | Partition key. Unique site-wide.  |
-| emoji      | TEXT                          | Clustering key.                   |
-| users      | SET<FROZEN<"Participant">>    | Outer SET unfrozen for `+`/`-`.   |
-
-`PRIMARY KEY ((message_id), emoji)` — partition-per-message. LCS compaction.
-
-**Bucketing:** none. `MESSAGE_BUCKET_HOURS` does NOT apply to this table.
-`created_at` is deliberately excluded from the PK — no time-range queries
-on reactions.
-
-**Read pattern:** history-service hydrates reactions at read time via
-parallel single-partition queries (errgroup, token-aware routing). One
-side table covers both regular messages and thread replies — message IDs
-are unique site-wide.
+`messages_by_id` and `pinned_messages_by_room` use **LCS** (LeveledCompactionStrategy). Both are point-lookup tables with random-access patterns across the full key space; LCS bounds read amplification by keeping each level to a fixed set of non-overlapping SSTables.

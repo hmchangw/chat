@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_id (
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message    FROZEN<"QuotedParentMessage">,
   visible_to               TEXT,
+  reactions                MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted                  BOOLEAN,
   type                     TEXT,
   sys_msg_data             BLOB,
@@ -25,4 +26,5 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_id (
   pinned_at                TIMESTAMP,
   pinned_by                FROZEN<"Participant">,
   PRIMARY KEY (message_id, created_at)
-) WITH CLUSTERING ORDER BY (created_at DESC);
+) WITH CLUSTERING ORDER BY (created_at DESC)
+   AND compaction = {'class': 'LeveledCompactionStrategy'};
