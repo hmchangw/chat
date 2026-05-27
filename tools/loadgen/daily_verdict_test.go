@@ -80,3 +80,19 @@ func TestEvaluateStep_TripsOnErrorRate(t *testing.T) {
 	require.True(t, r.Tripped)
 	require.Contains(t, r.TrippedReasons[0], "error_rate")
 }
+
+func TestSelfMetricsSnapshot_ReturnsSaneValues(t *testing.T) {
+	s := snapshotSelfMetrics()
+	require.Greater(t, s.Goroutines, 0)
+	require.GreaterOrEqual(t, s.GCPauseP99Ms, 0.0)
+	require.GreaterOrEqual(t, s.CPUPercent, 0.0)
+}
+
+func TestDiffPending_BuildsDelta(t *testing.T) {
+	start := map[string]int64{"a": 100, "b": 50}
+	end := map[string]int64{"a": 150, "b": 50, "c": 10}
+	got := diffPending(start, end)
+	require.Equal(t, int64(50), got["a"].Delta)
+	require.Equal(t, int64(0), got["b"].Delta)
+	require.Equal(t, int64(10), got["c"].Delta) // c was added mid-window
+}

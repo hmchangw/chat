@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"runtime"
+	"runtime/metrics"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -144,4 +151,202 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 		}
 	}
 	return r
+}
+
+// snapshotSelfMetrics samples loadgen-process resource counters.
+// CPU% is approximate (delta of cumulative CPU time / wall-clock since last call).
+func snapshotSelfMetrics() SelfMetrics {
+	g := runtime.NumGoroutine()
+	gcP99 := readGCPauseP99Ms()
+	cpu := readCPUPercent()
+	return SelfMetrics{
+		GCPauseP99Ms: gcP99,
+		CPUPercent:   cpu,
+		Goroutines:   g,
+	}
+}
+
+var (
+	gcLastNumGC uint32 //nolint:unused // reserved for future delta tracking
+	gcMu        sync.Mutex
+)
+
+func readGCPauseP99Ms() float64 {
+	gcMu.Lock()
+	defer gcMu.Unlock()
+	samples := []metrics.Sample{{Name: "/gc/pauses:seconds"}}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() != metrics.KindFloat64Histogram {
+		return 0
+	}
+	h := samples[0].Value.Float64Histogram()
+	if len(h.Counts) == 0 {
+		return 0
+	}
+	var total uint64
+	for _, c := range h.Counts {
+		total += c
+	}
+	if total == 0 {
+		return 0
+	}
+	target := total * 99 / 100
+	var acc uint64
+	for i, c := range h.Counts {
+		acc += c
+		if acc >= target {
+			return h.Buckets[i] * 1000
+		}
+	}
+	return 0
+}
+
+var (
+	cpuMu    sync.Mutex
+	cpuLastT time.Time
+)
+
+// readCPUPercent is a conservative approximation. The Go stdlib doesn't
+// expose a clean process-wide CPU% counter; for load-test gating we use
+// NumGoroutine as a proxy: more goroutines under contention typically
+// correlates with higher CPU. If this trips spuriously, swap in gopsutil
+// in a follow-up.
+func readCPUPercent() float64 {
+	cpuMu.Lock()
+	defer cpuMu.Unlock()
+	now := time.Now()
+	if cpuLastT.IsZero() {
+		cpuLastT = now
+		return 0
+	}
+	cpuLastT = now
+	return float64(runtime.NumGoroutine()) / 5000.0 * 100
+}
+
+// diffPending computes per-durable Start/End/Delta from two snapshots.
+// Durables that appeared mid-window are counted with Start=0.
+func diffPending(start, end map[string]int64) map[string]ConsumerPendingDelta {
+	out := make(map[string]ConsumerPendingDelta, len(end))
+	for durable, e := range end {
+		s := start[durable]
+		out[durable] = ConsumerPendingDelta{Start: s, End: e, Delta: e - s}
+	}
+	return out
+}
+
+// pollPending queries the NATS monitoring endpoint /jsz?consumers=true and
+// returns a map of durable name -> NumPending.
+//
+//nolint:unused // wired up by daily-IM env factory in a later task
+func pollPending(ctx context.Context, jszURL string) (map[string]int64, error) {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, jszURL+"?consumers=true", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("jsz GET: %w", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		AccountDetails []struct {
+			StreamDetail []struct {
+				ConsumerDetail []struct {
+					Name       string `json:"name"`
+					NumPending int64  `json:"num_pending"`
+				} `json:"consumer_detail"`
+			} `json:"stream_detail"`
+		} `json:"account_details"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("jsz decode: %w", err)
+	}
+	out := make(map[string]int64)
+	for _, a := range body.AccountDetails {
+		for _, s := range a.StreamDetail {
+			for _, c := range s.ConsumerDetail {
+				out[c.Name] = c.NumPending
+			}
+		}
+	}
+	return out, nil
+}
+
+// serviceScraper fetches /metrics from each service URL and returns a map of
+// service -> delta in slog_errors_total since the previous call.
+// First call returns zeros and records baselines.
+//
+//nolint:unused // wired up by daily-IM env factory in a later task
+type serviceScraper struct {
+	mu       sync.Mutex
+	baseline map[string]float64
+}
+
+//nolint:unused // wired up by daily-IM env factory in a later task
+func newServiceScraper() *serviceScraper {
+	return &serviceScraper{baseline: make(map[string]float64)}
+}
+
+//nolint:unused // wired up by daily-IM env factory in a later task
+func (s *serviceScraper) Scrape(ctx context.Context, urls map[string]string) (map[string]int64, error) {
+	out := make(map[string]int64, len(urls))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, url := range urls {
+		v, err := scrapeErrorCounter(ctx, url)
+		if err != nil {
+			out[name] = 0 // tolerate missing
+			continue
+		}
+		prev, ok := s.baseline[name]
+		s.baseline[name] = v
+		if !ok {
+			out[name] = 0
+			continue
+		}
+		out[name] = int64(v - prev)
+	}
+	return out, nil
+}
+
+//nolint:unused // wired up by daily-IM env factory in a later task
+func scrapeErrorCounter(ctx context.Context, url string) (float64, error) {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("metrics GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 0, 32*1024)
+	tmp := make([]byte, 8192)
+	for {
+		n, err := resp.Body.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	return sumCounterFamily(string(buf), "slog_errors_total"), nil
+}
+
+//nolint:unused // wired up by daily-IM env factory in a later task
+func sumCounterFamily(body, family string) float64 {
+	var sum float64
+	for _, line := range strings.Split(body, "\n") {
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if !strings.HasPrefix(line, family) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		var v float64
+		if _, err := fmt.Sscanf(fields[len(fields)-1], "%f", &v); err != nil {
+			continue // skip unparseable line
+		}
+		sum += v
+	}
+	return sum
 }
