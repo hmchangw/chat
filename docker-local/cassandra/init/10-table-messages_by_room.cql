@@ -26,3 +26,6 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_room (
   updated_at               TIMESTAMP,
   PRIMARY KEY ((room_id, bucket), created_at, message_id)
 ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+
+ALTER TABLE chat.messages_by_room ADD enc_payload BLOB;
+ALTER TABLE chat.messages_by_room ADD enc_meta FROZEN<"EncMeta">;

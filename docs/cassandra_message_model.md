@@ -57,6 +57,16 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
                                       // to enforce access-window checks without a Cassandra round-trip
 );
 ```
+#### EncMeta
+```cql
+CREATE TYPE IF NOT EXISTS "EncMeta"(
+  nonce BLOB  // 12 bytes, AES-256-GCM nonce for enc_payload
+);
+```
+Per-row metadata for at-rest encryption. The KEK version that wrapped the
+room's DEK is intentionally **not** stored here — it lives on the
+`room_data_keys` MongoDB document and is authoritative there. See
+`docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.
 ### Table
 
 ### Partition Bucketing
@@ -95,6 +105,9 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((room_id, bucket),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
@@ -123,6 +136,9 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((room_id, bucket),thread_room_id,created_at,message_id)
 )WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC);
 ```
@@ -149,6 +165,9 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((room_id),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
@@ -181,6 +200,19 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   updated_at TIMESTAMP,
   pinned_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY(message_id,created_at)
 )WITH CLUSTERING ORDER BY (created_at DESC);
 ```
+
+## Encryption (at rest)
+
+Rows written after the at-rest encryption rollout encrypt user-authored
+content into a single `enc_payload` blob and leave the legacy plaintext
+columns (`msg`, `attachments`, `card`, `card_action`, `sys_msg_data`, and
+the body fields of `quoted_parent_message`) null. Rows written before the
+rollout retain their plaintext columns and have `enc_payload IS NULL`. The
+read path branches on `enc_payload IS NOT NULL`. See the design spec for
+details: `docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.

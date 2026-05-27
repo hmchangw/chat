@@ -21,3 +21,6 @@ CREATE TABLE IF NOT EXISTS chat.pinned_messages_by_room (
   pinned_by             FROZEN<"Participant">,
   PRIMARY KEY ((room_id), created_at, message_id)
 ) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+
+ALTER TABLE chat.pinned_messages_by_room ADD enc_payload BLOB;
+ALTER TABLE chat.pinned_messages_by_room ADD enc_meta FROZEN<"EncMeta">;
