@@ -48,3 +48,21 @@ triggers:
       - writes: reply
       - writes: logs.room-service
       - writes: jetstream.rooms-canonical
+  - source: nats
+    # Member-add subject carries an extra `{siteID}` token between the
+    # roomID and the operation — see `pkg/subject/subject.go:320`
+    # MemberAdd and `:324` MemberAddWildcard. The wide `*` slots
+    # describe the subject SHAPE (deployment-agnostic); scenarios
+    # resolve the concrete siteID via `${site}` at fire time.
+    pattern: "chat.user.*.request.room.*.*.member.add"
+    on_trigger:
+      # natsAddMembers / handleAddMembers (room-service/handler.go:625-738).
+      # On success: replies `{"status":"accepted"}` (:737) and publishes
+      # the normalized AddMembersRequest to
+      # chat.room.canonical.{site}.member.add (:732). No info-level
+      # success log on this path — the only slog call is the error
+      # log on failure (:629), kept in writes so an error-path log is
+      # not mis-classified as anomaly when a negative scenario runs.
+      - writes: reply
+      - writes: logs.room-service
+      - writes: jetstream.rooms-canonical
