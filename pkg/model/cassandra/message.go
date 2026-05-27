@@ -3,11 +3,17 @@
 package cassandra
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 )
+
+// ErrDuplicateReactionKey is returned when UnmarshalJSON encounters
+// two records with the same (emoji, userAccount) pair.
+var ErrDuplicateReactionKey = errors.New("duplicate reaction key")
 
 // Participant maps to the Cassandra "Participant" UDT.
 // cql struct tags tell gocql's reflection-based UDT marshaler how to map each
@@ -73,6 +79,8 @@ type QuotedParentMessage struct {
 
 // ReactionKey is the map-key UDT for Message.Reactions.
 type ReactionKey struct {
+	// Emoji is the emoji string. Writers MUST NFC-normalise before binding
+	// (enforced by the message gatekeeper, not by this type).
 	Emoji       string `json:"emoji"       cql:"emoji"`
 	UserAccount string `json:"userAccount" cql:"user_account"`
 }
@@ -109,6 +117,9 @@ func (r Reactions) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
 	}
+	if len(r) == 0 {
+		return []byte("[]"), nil
+	}
 	entries := make([]reactionEntry, 0, len(r))
 	for k, v := range r {
 		entries = append(entries, reactionEntry{
@@ -134,19 +145,19 @@ func (r Reactions) MarshalJSON() ([]byte, error) {
 // map; an empty array yields an empty (non-nil) map. Duplicate (emoji,
 // userAccount) pairs return a wrapped error.
 func (r *Reactions) UnmarshalJSON(data []byte) error {
-	if string(data) == "null" {
+	if bytes.Equal(data, []byte("null")) {
 		*r = nil
 		return nil
 	}
 	var entries []reactionEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("reactions: unmarshal: %w", err)
+		return fmt.Errorf("unmarshal reactions array: %w", err)
 	}
 	out := make(Reactions, len(entries))
 	for _, e := range entries {
 		key := ReactionKey{Emoji: e.Emoji, UserAccount: e.UserAccount}
 		if _, ok := out[key]; ok {
-			return fmt.Errorf("reactions: duplicate key (%s, %s)", e.Emoji, e.UserAccount)
+			return fmt.Errorf("reactions: duplicate key (%s, %s): %w", e.Emoji, e.UserAccount, ErrDuplicateReactionKey)
 		}
 		out[key] = ReactorInfo{
 			UserID:    e.UserID,
