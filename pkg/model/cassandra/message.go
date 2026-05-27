@@ -68,13 +68,6 @@ type QuotedParentMessage struct {
 	ThreadParentCreatedAt *time.Time `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
-// MessageReaction maps to the chat.message_reactions Cassandra table.
-type MessageReaction struct {
-	MessageID string        `json:"messageId" cql:"message_id"`
-	Emoji     string        `json:"emoji"     cql:"emoji"`
-	Users     []Participant `json:"users"     cql:"users"`
-}
-
 // Message represents a message row in the Cassandra message tables
 // (messages_by_room, messages_by_id, thread_messages_by_room).
 //
@@ -99,7 +92,7 @@ type Message struct {
 	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
 	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
-	// Reactions is hydrated server-side from the message_reactions side table; nil = no reactions.
+	// Reactions is the per-message reaction map (nil = no reactions).
 	Reactions    map[string][]Participant `json:"reactions,omitempty"`
 	Deleted      bool                     `json:"deleted,omitempty"               cql:"deleted"`
 	Type         string                   `json:"type,omitempty"                  cql:"type"`

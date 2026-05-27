@@ -13,7 +13,6 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
@@ -602,95 +601,6 @@ func TestHistoryService_GetThreadParentMessages_KeepsQuoteAfterAccessSince(t *te
 	require.NotNil(t, q)
 	assert.Equal(t, "visible content", q.Msg)
 	assert.Equal(t, "visible-msg", q.MessageID)
-}
-
-// TestHistoryService_GetThreadMessages_HydratesReactions asserts the handler
-// invokes GetReactionsByMessageIDs on the reply page and attaches the result
-// to each message's Reactions field.
-func TestHistoryService_GetThreadMessages_HydratesReactions(t *testing.T) {
-	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
-	c := testContext()
-
-	parentCreatedAt := joinTime.Add(5 * time.Minute)
-	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1"}
-	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
-
-	replies := []models.Message{
-		{MessageID: "reply-2", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(2 * time.Minute)},
-		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(1 * time.Minute)},
-	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
-
-	alice := cassandra.Participant{ID: "u1", Account: "alice"}
-	msgs.EXPECT().
-		GetReactionsByMessageIDs(gomock.Any(), []string{"reply-2", "reply-1"}).
-		Return(map[string]cassrepo.ReactionMap{"reply-1": {"👍": {alice}}}, nil).
-		Times(1)
-
-	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
-	require.NoError(t, err)
-	require.Len(t, resp.Messages, 2)
-	assert.Nil(t, resp.Messages[0].Reactions)
-	assert.Equal(t, map[string][]cassandra.Participant{"👍": {alice}}, resp.Messages[1].Reactions)
-}
-
-// TestHistoryService_GetThreadParentMessages_HydratesReactions asserts the
-// handler invokes GetReactionsByMessageIDs on the parentMessages slice and
-// attaches the result to each parent's Reactions field.
-func TestHistoryService_GetThreadParentMessages_HydratesReactions(t *testing.T) {
-	svc, msgs, subs, _, threadRooms := newServiceNoReactionDefault(t)
-	c := testContext()
-
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
-	threadRooms.EXPECT().GetThreadRooms(gomock.Any(), "r1", nil, gomock.Any()).Return(makeThreadPage(2), nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(makeCassMessages(), nil)
-
-	alice := cassandra.Participant{ID: "u1", Account: "alice"}
-	msgs.EXPECT().
-		GetReactionsByMessageIDs(gomock.Any(), []string{"p1", "p2"}).
-		Return(map[string]cassrepo.ReactionMap{"p1": {"🎉": {alice}}}, nil).
-		Times(1)
-
-	resp, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Filter: models.ThreadFilterAll, Limit: 20})
-	require.NoError(t, err)
-	require.Len(t, resp.ParentMessages, 2)
-	assert.Equal(t, map[string][]cassandra.Participant{"🎉": {alice}}, resp.ParentMessages[0].Reactions)
-	assert.Nil(t, resp.ParentMessages[1].Reactions)
-}
-
-func TestHistoryService_GetThreadMessages_HydrateReactionsError(t *testing.T) {
-	svc, msgs, subs, _, _ := newServiceNoReactionDefault(t)
-	c := testContext()
-
-	parentCreatedAt := joinTime.Add(5 * time.Minute)
-	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1"}
-	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
-
-	replies := []models.Message{
-		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(time.Minute)},
-	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
-	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
-
-	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
-	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load thread messages")
-}
-
-func TestHistoryService_GetThreadParentMessages_HydrateReactionsError(t *testing.T) {
-	svc, msgs, subs, _, threadRooms := newServiceNoReactionDefault(t)
-	c := testContext()
-
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
-	threadRooms.EXPECT().GetThreadRooms(gomock.Any(), "r1", nil, gomock.Any()).Return(makeThreadPage(2), nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(makeCassMessages(), nil)
-	msgs.EXPECT().GetReactionsByMessageIDs(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("cassandra unreachable"))
-
-	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Filter: models.ThreadFilterAll, Limit: 20})
-	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load thread parent messages")
 }
 
 func TestHistoryService_GetThreadParentMessages_PostHydrationAccessCheck(t *testing.T) {

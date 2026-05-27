@@ -39,9 +39,6 @@ type Config struct {
 	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
 	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
 	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
-	// ReactionsFetchConcurrency caps per-request fan-out in GetReactionsByMessageIDs (per-request, not global — ceiling under N concurrent requests is N×this).
-	// Ops tuning hint: roughly numConns × hosts / expectedQPS.
-	ReactionsFetchConcurrency int `env:"REACTIONS_FETCH_CONCURRENCY" envDefault:"50"`
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.

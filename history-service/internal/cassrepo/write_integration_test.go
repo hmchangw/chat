@@ -16,7 +16,7 @@ import (
 
 func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -73,7 +73,7 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -133,7 +133,7 @@ func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -195,7 +195,7 @@ func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -257,7 +257,7 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -340,7 +340,7 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -400,7 +400,7 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -462,7 +462,7 @@ func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 
 func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -502,7 +502,7 @@ func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
 
 func TestRepository_UpdateMessageContent_MissingThreadRoomID_ReturnsError(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -536,7 +536,7 @@ func TestRepository_UpdateMessageContent_MissingThreadRoomID_ReturnsError(t *tes
 
 func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -574,7 +574,7 @@ func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testin
 // This is the load-bearing test for the IF deleted != true CAS gate.
 func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -668,7 +668,7 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 // via the struct-scan read path (Tasks 1–2).
 func TestRepository_UpdateMessageContent_RoundTrip(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -708,7 +708,7 @@ func TestRepository_UpdateMessageContent_RoundTrip(t *testing.T) {
 // a top-level message, GetMessageByID returns deleted=true via struct scan.
 func TestRepository_SoftDeleteMessage_RoundTrip(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -751,7 +751,7 @@ func TestRepository_SoftDeleteMessage_RoundTrip(t *testing.T) {
 // a partial phantom row; the method must handle this gracefully.
 func TestRepository_SoftDeleteMessage_RowCreatedByLWT(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	msg := &models.Message{
@@ -771,7 +771,7 @@ func TestRepository_SoftDeleteMessage_RowCreatedByLWT(t *testing.T) {
 // atomically in messages_by_id and messages_by_room.
 func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -828,7 +828,7 @@ func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T)
 // deleting a regular message (TCount nil) does NOT set type = 'message_removed'.
 func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -873,7 +873,7 @@ func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T)
 // sets type = 'message_removed' in messages_by_id and thread_messages_by_room.
 func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, 50)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
