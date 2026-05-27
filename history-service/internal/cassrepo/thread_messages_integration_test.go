@@ -150,7 +150,6 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	assert.Len(t, page3.Data, 1)
 	assert.False(t, page3.HasNext)
 
-	// No overlap, no gaps.
 	seen := map[string]bool{}
 	for _, m := range page1.Data {
 		seen[m.MessageID] = true
@@ -230,14 +229,12 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	require.Len(t, page.Data, 1)
 	msg := page.Data[0]
 
-	// Primary key + thread linkage
 	assert.Equal(t, "r-thread-full", msg.RoomID)
 	assert.Equal(t, "tr-full", msg.ThreadRoomID)
 	assert.Equal(t, ts.UTC(), msg.CreatedAt.UTC())
 	assert.Equal(t, "m-reply-full", msg.MessageID)
 	assert.Equal(t, "m-thread-parent", msg.ThreadParentID)
 
-	// Sender UDT
 	assert.Equal(t, "u1", msg.Sender.ID)
 	assert.Equal(t, "alice", msg.Sender.Account)
 	assert.Equal(t, "Alice", msg.Sender.EngName)
@@ -246,31 +243,25 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "MyApp", msg.Sender.AppName)
 	assert.False(t, msg.Sender.IsBot)
 
-	// Text
 	assert.Equal(t, "thread reply body", msg.Msg)
 
-	// Mentions
 	require.Len(t, msg.Mentions, 1)
 	assert.Equal(t, "u3", msg.Mentions[0].ID)
 	assert.Equal(t, "charlie", msg.Mentions[0].Account)
 
-	// Attachments
 	require.Len(t, msg.Attachments, 2)
 	assert.Equal(t, []byte("attach1"), msg.Attachments[0])
 	assert.Equal(t, []byte("attach2"), msg.Attachments[1])
 
-	// File UDT
 	require.NotNil(t, msg.File)
 	assert.Equal(t, "f1", msg.File.ID)
 	assert.Equal(t, "doc.pdf", msg.File.Name)
 	assert.Equal(t, "application/pdf", msg.File.Type)
 
-	// Card UDT
 	require.NotNil(t, msg.Card)
 	assert.Equal(t, "approval", msg.Card.Template)
 	assert.Equal(t, []byte("card-data"), msg.Card.Data)
 
-	// CardAction UDT
 	require.NotNil(t, msg.CardAction)
 	assert.Equal(t, "approve", msg.CardAction.Verb)
 	assert.Equal(t, "Approve", msg.CardAction.Text)
@@ -280,7 +271,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "tm1", msg.CardAction.CardTmID)
 	assert.Equal(t, []byte("action-data"), msg.CardAction.Data)
 
-	// QuotedParentMessage UDT
 	require.NotNil(t, msg.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", msg.QuotedParentMessage.MessageID)
 	assert.Equal(t, "r-thread-full", msg.QuotedParentMessage.RoomID)
@@ -289,20 +279,18 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "original message", msg.QuotedParentMessage.Msg)
 	assert.Equal(t, "https://chat.example.com/r-thread-full/m-quoted", msg.QuotedParentMessage.MessageLink)
 
-	// Scalars
 	assert.Equal(t, "u1", msg.VisibleTo)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
 	assert.Equal(t, "site-remote", msg.SiteID)
 
-	// Timestamps
 	require.NotNil(t, msg.EditedAt)
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
 
-	// Columns that DON'T exist on thread_messages_by_room must remain at zero value.
+	// Columns absent from thread_messages_by_room must remain at zero value.
 	assert.False(t, msg.TShow)
 	assert.Nil(t, msg.ThreadParentCreatedAt)
 	assert.Nil(t, msg.PinnedAt)

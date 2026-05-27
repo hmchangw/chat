@@ -14,20 +14,11 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// TestGocqlMapUDTRoundTrip is the v3-design gate (spec §1 + §8.0). It verifies
-// that gocql's reflection-based UDT marshaller can round-trip
-// map[ReactionKey]ReactorInfo through a real Cassandra container — read AND
-// write — without custom MarshalUDT/UnmarshalUDT methods on the two structs.
-//
-// If this test fails in CI, the spec (docs/specs/message-reactions.md §1)
-// requires adding MarshalUDT/UnmarshalUDT methods to both ReactionKey and
-// ReactorInfo before any further v3 production-code work.
+// TestGocqlMapUDTRoundTrip is the v3-design gate (spec §1+§8.0): verifies gocql can round-trip map[ReactionKey]ReactorInfo without custom UDT methods.
+// If this fails, add MarshalUDT/UnmarshalUDT to both ReactionKey and ReactorInfo before any further v3 work.
 func TestGocqlMapUDTRoundTrip(t *testing.T) {
 	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "cassandra_map_udt_smoke")
 
-	// Create the two UDTs and a minimal smoke table that mirrors the v3 shape
-	// (MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>) without touching any
-	// production message tables.
 	stmts := []string{
 		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s.reaction_key (
 			emoji        TEXT,
@@ -49,7 +40,6 @@ func TestGocqlMapUDTRoundTrip(t *testing.T) {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
 
-	// Open a keyspace-pinned session so unqualified table/UDT names resolve.
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
 	cluster.DisableInitialHostLookup = true
@@ -58,8 +48,7 @@ func TestGocqlMapUDTRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(session.Close)
 
-	// Cassandra TIMESTAMP precision is milliseconds — truncate so the byte
-	// comparison after read-back is exact.
+	// Truncate to milliseconds to match Cassandra TIMESTAMP precision for exact byte comparison.
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	want := map[ReactionKey]ReactorInfo{
 		{Emoji: "👍", UserAccount: "alice"}: {

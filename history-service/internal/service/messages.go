@@ -42,8 +42,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	if before.IsZero() {
 		before = now
 	}
-	// Cap before by lastMsgAt+1ms so the walk starts from the actual last
-	// message bucket, not from "now". Year-dead rooms become 1-bucket reads.
+	// Cap before at lastMsgAt+1ms so year-dead rooms become 1-bucket reads instead of walking from now.
 	if !lastMsgAt.IsZero() && before.After(lastMsgAt) {
 		before = lastMsgAt.Add(time.Millisecond)
 	}
@@ -60,11 +59,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		return nil, err
 	}
 
-	// Issue two independent reads in parallel: the message page (with our
-	// bucket-walk floor derived from room.createdAt clamped to historyFloor)
-	// and the per-user MinUserLastSeenAt read-receipt floor returned to the
-	// client. Failures on the receipt fetch are non-fatal — clients treat
-	// absence as "no floor".
+	// Issue both the message-page read and the MinUserLastSeenAt read in parallel; receipt failures are non-fatal.
 	var (
 		page          cassrepo.Page[models.Message]
 		lastSeenFloor *time.Time
@@ -73,10 +68,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	g.Go(func() error {
 		var pErr error
 		if accessSince == nil {
-			// GetMessagesBetweenDesc uses *accessSince as its own floor; the
-			// explicit floor is only needed for the unrestricted
-			// GetMessagesBefore path. Clamp createdAt to historyFloor so a
-			// client hint can't push the walk further back.
+			// Clamp createdAt to historyFloor so a client hint can't push the walk further back than configured.
 			historyFloor := now.Add(-s.historyFloor)
 			walkFloor := createdAt
 			if walkFloor.IsZero() || walkFloor.Before(historyFloor) {
@@ -134,7 +126,6 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 
 	after := millisToTime(req.After)
 
-	// Lower bound = max(after, accessSince). Zero means no lower bound.
 	lowerBound := timeMax(after, derefTime(accessSince))
 
 	limit := req.Limit
@@ -200,8 +191,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
-	// Split limit-1 across before/after; before gets the larger half on odd splits.
-	remaining := limit - 1
+	remaining := limit - 1 // before gets the larger half on odd splits
 	if remaining <= 0 {
 		only := *centralMsg
 		redactUnavailableQuote(&only, accessSince)
@@ -221,7 +211,6 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 
-	// before- and after-walks are independent — issue both in parallel.
 	var (
 		beforePage cassrepo.Page[models.Message]
 		afterPage  cassrepo.Page[models.Message]
@@ -251,7 +240,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
 	}
 
-	// Assemble: reverse before-page (DESC→ASC) + central + after-page (already ASC).
+	// Assemble in ASC order: reverse the DESC before-page, append central, then after-page.
 	messages := make([]models.Message, 0, len(beforePage.Data)+1+len(afterPage.Data))
 	for i := len(beforePage.Data) - 1; i >= 0; i-- {
 		messages = append(messages, beforePage.Data[i])
@@ -290,12 +279,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 }
 
 // EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.
-// Sender-only auth. Writes to all applicable Cassandra tables via
-// UpdateMessageContent, then publishes a best-effort canonical MessageEvent
-// (Event=updated) to subject.MsgCanonicalUpdated(siteID). broadcast-worker
-// fans the canonical event out to per-user RoomEvents; search-sync-worker
-// updates the ES index from the same canonical event. Publish failure logs
-// and continues — Cassandra is the source of truth.
+// Cassandra is the source of truth; canonical publish failures are logged and swallowed.
 func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -304,17 +288,12 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 		return nil, err
 	}
 
-	// findMessage returns ErrNotFound for missing IDs and for messages that belong
-	// to a different room (same error, no leak).
 	msg, err := s.findMessage(c, roomID, req.MessageID)
 	if err != nil {
 		return nil, err
 	}
 
-	// A soft-deleted message must not be editable — that would emit a
-	// message_edited event after message_deleted, which downstream consumers
-	// can't reconcile. Same ErrNotFound as wrong-room to keep the leak
-	// surface symmetric.
+	// Editing a soft-deleted message would emit updated after deleted, which consumers can't reconcile.
 	if msg.Deleted {
 		return nil, natsrouter.ErrNotFound("message not found")
 	}
@@ -338,10 +317,7 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 
 	editedAtMs := editedAt.UnixMilli()
 
-	// Carry only the fields downstream actually reads: search-sync-worker
-	// reindexes by Content/EditedAt/UpdatedAt; broadcast-worker emits a slim
-	// MessageEditedPayload of {ID, Content, EditedBy, EditedAt, UpdatedAt}.
-	// Mentions intentionally omitted — broadcast-worker re-resolves from Content.
+	// Mentions intentionally omitted — broadcast-worker re-resolves them from Content.
 	canonicalEvt := model.MessageEvent{
 		Event: model.EventUpdated,
 		Message: model.Message{
@@ -366,11 +342,7 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 }
 
 // DeleteMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete.
-// Sender-only auth. Soft-deletes (deleted = true, updated_at = ?) across all
-// applicable Cassandra tables via SoftDeleteMessage, including tcount
-// decrement on the parent for thread replies. On already-deleted messages the
-// handler short-circuits and returns success without repeating the UPDATEs or
-// publishing a duplicate event — this prevents tcount drift on caller retry.
+// Already-deleted messages short-circuit to prevent tcount drift and duplicate canonical events on retry.
 func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -388,8 +360,6 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 		return nil, natsrouter.ErrForbidden("only the sender can delete")
 	}
 
-	// Already-deleted short-circuit: echo the current updated_at as the DeletedAt.
-	// Prevents tcount double-decrement on caller retry and avoids duplicate events.
 	if msg.Deleted {
 		var deletedAtMs int64
 		if msg.UpdatedAt != nil {
@@ -408,9 +378,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 		return nil, natsrouter.ErrInternal("failed to delete message")
 	}
 	if !applied {
-		// A concurrent delete won the CAS. Skip the publish — the winning
-		// goroutine has emitted (or will emit) the canonical .deleted event —
-		// and return the timestamp actually persisted.
+		// Concurrent delete won the CAS — skip publish to avoid a duplicate event.
 		return &models.DeleteMessageResponse{
 			MessageID: req.MessageID,
 			DeletedAt: actualDeletedAt.UnixMilli(),
@@ -440,9 +408,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	}, nil
 }
 
-// publishCanonicalBestEffort publishes a canonical MessageEvent best-effort:
-// Cassandra is the source of truth, so marshal/publish failures are logged
-// and swallowed rather than failing the RPC.
+// publishCanonicalBestEffort publishes a canonical event; failures are logged and swallowed (Cassandra is source of truth).
 func (s *HistoryService) publishCanonicalBestEffort(c *natsrouter.Context, subj string, evt *model.MessageEvent) {
 	payload, err := json.Marshal(evt)
 	if err != nil {

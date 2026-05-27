@@ -18,11 +18,6 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, " 
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
-// scanMsgsFromIter collects all rows from iter into a slice.
-// structScan requires every selected column to have a matching cql tag on
-// models.Message; the by-id query adds pinned_at/pinned_by on top of
-// baseColumns and both columns are present on the struct.
-// Returns (nil, err) if structScan encounters an unmapped column.
 func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	messages := make([]models.Message, 0)
 	for {
@@ -39,14 +34,8 @@ func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	return messages, nil
 }
 
-// startBucketFromCursor returns the bucket to start the walk at, plus an
-// initial in-bucket pageState if the request carried a non-empty cursor.
-// When the cursor is empty, defaultBucket is used. A cursor bucket outside
-// [floorBucket, defaultBucket] (DESC) or [defaultBucket, floorBucket] (ASC)
-// is rejected as a fresh start with an empty pageState — this prevents a
-// tampered cursor from pushing the walk into empty partitions far outside
-// the legitimate data window, which would otherwise consume up to maxBuckets
-// empty Cassandra round-trips.
+// startBucketFromCursor returns the walk's start bucket and any in-bucket pageState from the cursor.
+// Out-of-range cursor buckets are rejected to prevent tampered cursors from consuming maxBuckets empty reads.
 func startBucketFromCursor(pageReq PageRequest, direction walkDirection, defaultBucket, floorBucket int64) (int64, []byte, error) {
 	if pageReq.Cursor == nil {
 		return defaultBucket, nil, nil
@@ -75,8 +64,6 @@ func startBucketFromCursor(pageReq PageRequest, direction walkDirection, default
 	return bucket, pageState, nil
 }
 
-// scanMessagesUpTo consumes up to remaining rows from iter via structScan.
-// Returns (nil, err) if structScan encounters an unmapped column.
 func scanMessagesUpTo(iter *gocql.Iter, remaining int) ([]models.Message, error) {
 	out := make([]models.Message, 0, remaining)
 	for len(out) < remaining {

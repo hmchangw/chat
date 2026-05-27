@@ -86,12 +86,10 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, msg)
 
-	// Primary key fields
 	assert.Equal(t, "r-full", msg.RoomID)
 	assert.Equal(t, ts.UTC(), msg.CreatedAt.UTC())
 	assert.Equal(t, "m-full", msg.MessageID)
 
-	// Sender UDT (all fields)
 	assert.Equal(t, "u1", msg.Sender.ID)
 	assert.Equal(t, "alice", msg.Sender.Account)
 	assert.Equal(t, "Alice", msg.Sender.EngName)
@@ -100,31 +98,25 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, "MyApp", msg.Sender.AppName)
 	assert.False(t, msg.Sender.IsBot)
 
-	// Text
 	assert.Equal(t, "hello world", msg.Msg)
 
-	// Mentions (SET<FROZEN<Participant>>)
 	require.Len(t, msg.Mentions, 1)
 	assert.Equal(t, "u3", msg.Mentions[0].ID)
 	assert.Equal(t, "charlie", msg.Mentions[0].Account)
 
-	// Attachments (LIST<BLOB>)
 	require.Len(t, msg.Attachments, 2)
 	assert.Equal(t, []byte("attach1"), msg.Attachments[0])
 	assert.Equal(t, []byte("attach2"), msg.Attachments[1])
 
-	// File UDT
 	require.NotNil(t, msg.File)
 	assert.Equal(t, "f1", msg.File.ID)
 	assert.Equal(t, "doc.pdf", msg.File.Name)
 	assert.Equal(t, "application/pdf", msg.File.Type)
 
-	// Card UDT
 	require.NotNil(t, msg.Card)
 	assert.Equal(t, "approval", msg.Card.Template)
 	assert.Equal(t, []byte("card-data"), msg.Card.Data)
 
-	// CardAction UDT
 	require.NotNil(t, msg.CardAction)
 	assert.Equal(t, "approve", msg.CardAction.Verb)
 	assert.Equal(t, "Approve", msg.CardAction.Text)
@@ -134,13 +126,11 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, "tm1", msg.CardAction.CardTmID)
 	assert.Equal(t, []byte("action-data"), msg.CardAction.Data)
 
-	// Boolean/string fields
 	assert.True(t, msg.TShow)
 	assert.Equal(t, "m-parent", msg.ThreadParentID)
 	require.NotNil(t, msg.ThreadParentCreatedAt)
 	assert.Equal(t, threadParent.UTC(), msg.ThreadParentCreatedAt.UTC())
 
-	// QuotedParentMessage UDT
 	require.NotNil(t, msg.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", msg.QuotedParentMessage.MessageID)
 	assert.Equal(t, "r-full", msg.QuotedParentMessage.RoomID)
@@ -155,13 +145,11 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
 	assert.Equal(t, "site-remote", msg.SiteID)
 
-	// Timestamps
 	require.NotNil(t, msg.EditedAt)
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
 
-	// messages_by_id extra columns
 	assert.Equal(t, "N/A", msg.ThreadRoomID)
 	require.NotNil(t, msg.PinnedAt)
 	assert.Equal(t, pinnedAt.UTC(), msg.PinnedAt.UTC())
@@ -222,12 +210,8 @@ func TestRepository_GetMessagesByIDs_MissingID(t *testing.T) {
 	assert.Equal(t, "m-exists", msgs[0].MessageID)
 }
 
-// TestRepository_GetMessageByID_ReactionsRoundTrip writes a message row whose
-// reactions column is populated with a two-entry v3 map and verifies that
-// GetMessageByID returns both entries with all fields intact. This exercises
-// structScan's reflective path against a MAP<FROZEN<reaction_key>,
-// FROZEN<reactor_info>> column, closing the regression-detection gap for the
-// positional-Scan pivot that replaced MapScan.
+// TestRepository_GetMessageByID_ReactionsRoundTrip verifies the MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>
+// column round-trips correctly via structScan's positional-Scan path (MapScan replacement).
 func TestRepository_GetMessageByID_ReactionsRoundTrip(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)

@@ -104,22 +104,19 @@ func TestStructScan_NonPointer(t *testing.T) {
 	type S struct {
 		Name string `cql:"name"`
 	}
-	// Passing a non-pointer should return false before touching iter.
 	ok, err := structScan(nil, S{Name: "x"})
 	assert.False(t, ok)
 	assert.NoError(t, err)
 }
 
 func TestStructScan_PointerToNonStruct(t *testing.T) {
-	// Passing a pointer to a non-struct should return false before touching iter.
 	s := "hello"
 	ok, err := structScan(nil, &s)
 	assert.False(t, ok)
 	assert.NoError(t, err)
 }
 
-// TestBuildScanValues exercises the column-matching helper in isolation,
-// covering the unmapped-column path that structScan now surfaces as a hard error.
+// TestBuildScanValues exercises the column-matching helper including the unmapped-column hard-error path.
 func TestBuildScanValues(t *testing.T) {
 	type Row struct {
 		RoomID    string `cql:"room_id"`

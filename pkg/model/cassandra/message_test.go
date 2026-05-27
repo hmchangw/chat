@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// roundTrip marshals src to JSON and unmarshals into dst, verifying they match.
+// roundTrip marshals src to JSON, unmarshals into dst, asserts equality, and returns dst.
 func roundTrip[T any](t *testing.T, src T) T {
 	t.Helper()
 	data, err := json.Marshal(src)
@@ -215,8 +215,7 @@ func TestReactions_MarshalJSON(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	t.Run("nil", func(t *testing.T) {
-		// Direct marshal of nil map — exercises the MarshalJSON nil branch that
-		// omitempty otherwise skips.
+		// Direct marshal exercises the nil branch that omitempty otherwise skips.
 		data, err := json.Marshal(Reactions(nil))
 		require.NoError(t, err)
 		assert.Equal(t, "null", string(data))
@@ -229,7 +228,6 @@ func TestReactions_MarshalJSON(t *testing.T) {
 			MessageID: "m1",
 			Sender:    Participant{ID: "u1", Account: "alice"},
 			Msg:       "hi",
-			// Reactions left nil.
 		}
 		data, err := json.Marshal(msg)
 		require.NoError(t, err)
@@ -278,14 +276,13 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		var entries []map[string]any
 		require.NoError(t, json.Unmarshal(data, &entries))
 		require.Len(t, entries, 3)
-		// Sorted by (emoji ASC, userAccount ASC): ❤️ < 👍, then alice < carol within 👍.
+		// Sort: ❤️ < 👍, then alice < carol within 👍.
 		assert.Equal(t, "❤️", entries[0]["emoji"])
 		assert.Equal(t, "bob", entries[0]["userAccount"])
 		assert.Equal(t, "👍", entries[1]["emoji"])
 		assert.Equal(t, "alice", entries[1]["userAccount"])
 		assert.Equal(t, "👍", entries[2]["emoji"])
 		assert.Equal(t, "carol", entries[2]["userAccount"])
-		// Spot-check inlined value fields.
 		assert.Equal(t, "u2", entries[0]["userId"])
 		assert.Equal(t, "Bob", entries[0]["engName"])
 		assert.Equal(t, "鲍勃", entries[0]["chnName"])

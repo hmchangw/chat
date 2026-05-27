@@ -9,7 +9,6 @@ import (
 
 const messageByIDQuery = "SELECT " + baseColumns + ", pinned_at, pinned_by FROM messages_by_id"
 
-// Returns (nil, nil) when not found.
 func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*models.Message, error) {
 	iter := r.session.Query(
 		messageByIDQuery+` WHERE message_id = ? LIMIT 1`,

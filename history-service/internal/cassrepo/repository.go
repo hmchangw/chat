@@ -6,15 +6,14 @@ import (
 	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
-// Repository wraps a Cassandra session with the bucket sizer and read-walk
-// configuration shared by all queries against bucketed message tables.
+// Repository wraps a Cassandra session with the bucket sizer and max-walk depth for bucketed table queries.
 type Repository struct {
 	session    *gocql.Session
 	bucket     msgbucket.Sizer
 	maxBuckets int
 }
 
-// NewRepository wires a session, bucket sizer, and max-walk depth.
+// NewRepository creates a Repository with the given session, bucket sizer, and max-walk depth.
 func NewRepository(session *gocql.Session, bucket msgbucket.Sizer, maxBuckets int) *Repository {
 	return &Repository{
 		session:    session,

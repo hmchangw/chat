@@ -16,10 +16,7 @@ import (
 var ErrDuplicateReactionKey = errors.New("duplicate reaction key")
 
 // Participant maps to the Cassandra "Participant" UDT.
-// cql struct tags tell gocql's reflection-based UDT marshaler how to map each
-// Go field to its Cassandra UDT field name. Without these tags, gocql would
-// lowercase the Go field names (e.g. "EngName" → "engname") which would not
-// match the snake_case UDT fields (e.g. "eng_name").
+// cql tags are required because gocql lowercases Go field names (e.g. "EngName" → "engname"), not snake_case.
 type Participant struct {
 	ID          string `json:"id"                    cql:"id"`
 	EngName     string `json:"engName,omitempty"     cql:"eng_name"`
@@ -55,11 +52,6 @@ type CardAction struct {
 }
 
 // QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
-//
-// ThreadParentID and ThreadParentCreatedAt capture the parent message's
-// thread context (when the parent was itself a thread reply). Used by
-// gatekeeper to enforce same-thread-context quoting and by clients to
-// render thread-aware quote previews.
 type QuotedParentMessage struct {
 	MessageID   string        `json:"messageId"             cql:"message_id"`
 	RoomID      string        `json:"roomId"                cql:"room_id"`
@@ -69,18 +61,15 @@ type QuotedParentMessage struct {
 	Mentions    []Participant `json:"mentions,omitempty"    cql:"mentions"`
 	Attachments [][]byte      `json:"attachments,omitempty" cql:"attachments"`
 	MessageLink string        `json:"messageLink,omitempty" cql:"message_link"`
-	// ThreadParentID and ThreadParentCreatedAt are populated by message-worker when
-	// the quoted message is a TShow reply. They embed the thread parent's identity and
-	// actual CreatedAt so history-service can enforce access-window checks without a
-	// Cassandra round-trip at read time.
+	// ThreadParentID and ThreadParentCreatedAt are set by message-worker when the quoted message is a TShow reply,
+	// embedding the parent's identity so history-service can enforce access-window checks without an extra read.
 	ThreadParentID        string     `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
 	ThreadParentCreatedAt *time.Time `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
 // ReactionKey is the map-key UDT for Message.Reactions.
 type ReactionKey struct {
-	// Emoji is the emoji string. Writers MUST NFC-normalise before binding
-	// (enforced by the message gatekeeper, not by this type).
+	// Emoji must be NFC-normalised by writers; enforcement is in the message gatekeeper, not this type.
 	Emoji       string `json:"emoji"       cql:"emoji"`
 	UserAccount string `json:"userAccount" cql:"user_account"`
 }
@@ -94,12 +83,9 @@ type ReactorInfo struct {
 	ReactedAt time.Time `json:"reactedAt" cql:"reacted_at"`
 }
 
-// Reactions is the in-row reaction map for Message. Keys are unique
-// (emoji, user_account) pairs; one cell per reaction. JSON projection is a
-// flat array sorted by (emoji, userAccount) for stable output.
+// Reactions is the in-row reaction map. Keys are unique (emoji, user_account) pairs; JSON is a flat array sorted for stable output.
 type Reactions map[ReactionKey]ReactorInfo
 
-// reactionEntry is the flat per-entry wire shape; key + value fields are inlined.
 type reactionEntry struct {
 	Emoji       string    `json:"emoji"`
 	UserAccount string    `json:"userAccount"`
@@ -110,9 +96,7 @@ type reactionEntry struct {
 	ReactedAt   time.Time `json:"reactedAt"`
 }
 
-// MarshalJSON emits the flat sorted-by-(emoji,userAccount) wire shape.
-// Nil map returns "null" so an omitempty field elides the key entirely.
-// Empty map returns "[]".
+// MarshalJSON emits a flat array sorted by (emoji, userAccount); nil → "null", empty → "[]".
 func (r Reactions) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
@@ -141,9 +125,7 @@ func (r Reactions) MarshalJSON() ([]byte, error) {
 	return json.Marshal(entries)
 }
 
-// UnmarshalJSON parses the flat array into the map. A null input yields a nil
-// map; an empty array yields an empty (non-nil) map. Duplicate (emoji,
-// userAccount) pairs return a wrapped error.
+// UnmarshalJSON parses the flat array into the map; null → nil, [] → empty map, duplicates → error.
 func (r *Reactions) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(data, []byte("null")) {
 		*r = nil
@@ -171,12 +153,8 @@ func (r *Reactions) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Message represents a message row in the Cassandra message tables
-// (messages_by_room, messages_by_id, thread_messages_by_room).
-//
-// cql tags are consumed by the structScan helper in history-service/internal/cassrepo
-// to map returned Cassandra columns to struct fields by name, eliminating
-// positional scan maintenance.
+// Message represents a row in the Cassandra message tables (messages_by_room, messages_by_id, thread_messages_by_room).
+// cql tags are used by history-service/internal/cassrepo.structScan to map columns to fields by name.
 type Message struct {
 	RoomID                string               `json:"roomId"                          cql:"room_id"`
 	Bucket                int64                `json:"-"                                cql:"bucket"`
@@ -195,8 +173,7 @@ type Message struct {
 	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
 	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
-	// Reactions is hydrated inline from the message row's reactions map column.
-	// Nil = no reactions (omitted from JSON); not modified by edit/delete paths.
+	// Reactions is nil when absent (omitted from JSON); not modified by edit/delete paths.
 	Reactions    Reactions    `json:"reactions,omitempty"             cql:"reactions"`
 	Deleted      bool         `json:"deleted,omitempty"               cql:"deleted"`
 	Type         string       `json:"type,omitempty"                  cql:"type"`
