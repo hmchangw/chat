@@ -139,6 +139,10 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 		}
 	}
 
+	if !p.DailyBands.IsZero() {
+		return buildBandedFixtures(p, r, users, siteID, now)
+	}
+
 	rooms := make([]model.Room, p.Rooms)
 	// realistic: last 10% of rooms are DMs
 	dmStart := p.Rooms
@@ -180,6 +184,168 @@ func BuildFixtures(p *Preset, seed int64, siteID string) Fixtures {
 	for i := range rooms {
 		roomKeys[rooms[i].ID] = deterministicRoomKeyPair(r)
 	}
+	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs, RoomKeys: roomKeys}
+}
+
+// buildBandedFixtures generates rooms and subscriptions for a daily-IM
+// preset where each user belongs to a fixed mix of DM/small/medium/large
+// rooms per p.DailyBands. Rooms are pre-allocated band-by-band, then users
+// are assigned rooms within each band round-robin so every user gets the
+// configured per-band count and rooms stay within their band's size range.
+func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID string, now time.Time) Fixtures {
+	bands := p.DailyBands
+	totalUsers := len(users)
+
+	// Number of rooms per band, derived from per-user counts and band size targets.
+	// Aim for the *average* band size to consume the per-user demand exactly.
+	// Floor each band at `perUser` rooms so every user can find that many
+	// distinct rooms in the band (otherwise the per-user count is unreachable).
+	nDM := (totalUsers * bands.DMs) / 2 // each DM has 2 members
+	nSmall := (totalUsers*bands.Small + 9) / 10
+	nMed := (totalUsers*bands.Medium + 99) / 100
+	nLarge := (totalUsers*bands.Large + 999) / 1000
+	if nDM < bands.DMs {
+		nDM = bands.DMs
+	}
+	if nSmall < bands.Small {
+		nSmall = bands.Small
+	}
+	if nMed < bands.Medium {
+		nMed = bands.Medium
+	}
+	if nLarge < bands.Large {
+		nLarge = bands.Large
+	}
+
+	type bandSpec struct {
+		name     string
+		count    int
+		sizeMin  int
+		sizeMax  int
+		roomType model.RoomType
+		perUser  int
+	}
+	specs := []bandSpec{
+		{"dm", nDM, 2, 2, model.RoomTypeDM, bands.DMs},
+		{"small", nSmall, 5, 20, model.RoomTypeChannel, bands.Small},
+		{"medium", nMed, 50, 200, model.RoomTypeChannel, bands.Medium},
+		{"large", nLarge, 500, 2000, model.RoomTypeChannel, bands.Large},
+	}
+
+	var rooms []model.Room
+	var subs []model.Subscription
+	roomKeys := make(map[string]roomkeystore.RoomKeyPair)
+
+	for _, spec := range specs {
+		// Pre-create rooms in this band.
+		bandRooms := make([]model.Room, spec.count)
+		bandSizes := make([]int, spec.count)
+		for i := 0; i < spec.count; i++ {
+			id := fmt.Sprintf("room-%s-%06d", spec.name, i)
+			size := spec.sizeMin
+			if spec.sizeMax > spec.sizeMin {
+				size = spec.sizeMin + r.Intn(spec.sizeMax-spec.sizeMin+1)
+			}
+			bandRooms[i] = model.Room{
+				ID: id, Name: id, Type: spec.roomType, SiteID: siteID,
+				CreatedAt: now, UpdatedAt: now,
+			}
+			bandSizes[i] = size
+		}
+
+		// Assign memberships: for each user, pick `spec.perUser` distinct
+		// rooms from this band, weighted by remaining capacity. If the
+		// initially-randomised sizes can't satisfy demand at the tail
+		// (because earlier users consumed the most-capacity rooms), we
+		// expand a deficit room within sizeMax until the user is full.
+		// This guarantees every user gets exactly `perUser` memberships
+		// while keeping room sizes within their band range whenever
+		// feasible.
+		capacity := make([]int, len(bandRooms))
+		copy(capacity, bandSizes)
+
+		for ui := range users {
+			u := &users[ui]
+			// Distinct room indices already picked for this user.
+			picked := make(map[int]bool, spec.perUser)
+			for k := 0; k < spec.perUser; k++ {
+				// Build a weighted pool: indices with capacity>0 not yet picked.
+				totalCap := 0
+				for i, c := range capacity {
+					if c > 0 && !picked[i] {
+						totalCap += c
+					}
+				}
+				if totalCap == 0 {
+					// Every room is either full or already picked for this user.
+					// Expand a not-yet-picked room within sizeMax to make room.
+					grew := false
+					// Walk indices deterministically so seed reproducibility holds.
+					base := r.Intn(len(bandRooms))
+					for off := 0; off < len(bandRooms); off++ {
+						i := (base + off) % len(bandRooms)
+						if !picked[i] && bandSizes[i] < spec.sizeMax {
+							bandSizes[i]++
+							capacity[i]++
+							grew = true
+							break
+						}
+					}
+					if !grew {
+						// Hard infeasibility (e.g. nRooms<perUser): skip the rest
+						// of this user's quota. Should not happen with the floors
+						// applied above.
+						break
+					}
+					totalCap = 0
+					for i, c := range capacity {
+						if c > 0 && !picked[i] {
+							totalCap += c
+						}
+					}
+				}
+				// Weighted pick.
+				draw := r.Intn(totalCap)
+				acc := 0
+				chosen := -1
+				for i, c := range capacity {
+					if c == 0 || picked[i] {
+						continue
+					}
+					acc += c
+					if draw < acc {
+						chosen = i
+						break
+					}
+				}
+				if chosen < 0 {
+					break
+				}
+				picked[chosen] = true
+				capacity[chosen]--
+				roomID := bandRooms[chosen].ID
+				subs = append(subs, model.Subscription{
+					ID:     fmt.Sprintf("sub-%s-%s", roomID, u.ID),
+					User:   model.SubscriptionUser{ID: u.ID, Account: u.Account},
+					RoomID: roomID, SiteID: siteID,
+					Roles:    []model.Role{model.RoleMember},
+					JoinedAt: now,
+				})
+			}
+		}
+
+		// Finalise UserCount and emit rooms + keys. UserCount records the
+		// band's *target* size (what the room would look like in
+		// production), not the count of test-pool subscriptions — large
+		// rooms have hundreds-to-thousands of members in reality, while
+		// our test population is a small sampled subset.
+		for i := range bandRooms {
+			bandRooms[i].UserCount = bandSizes[i]
+			roomKeys[bandRooms[i].ID] = deterministicRoomKeyPair(r)
+		}
+		rooms = append(rooms, bandRooms...)
+	}
+
 	return Fixtures{Users: users, Rooms: rooms, Subscriptions: subs, RoomKeys: roomKeys}
 }
 

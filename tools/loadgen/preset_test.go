@@ -161,6 +161,52 @@ func TestSampleWithoutReplacement_CapsAtUserCount(t *testing.T) {
 	assert.Len(t, out, 2)
 }
 
+func TestBuildFixtures_DailyBands(t *testing.T) {
+	p, _ := BuiltinPreset("daily-heavy")
+	p.Users = 200 // shrink for test speed; bands stay the same
+	f := BuildFixtures(&p, 42, "site-test")
+
+	require.Equal(t, 200, len(f.Users))
+
+	// Per-user subscription count must equal p.DailyBands.RoomsPerUser
+	want := p.DailyBands.RoomsPerUser()
+	perUser := map[string]int{}
+	for _, s := range f.Subscriptions {
+		perUser[s.User.ID]++
+	}
+	for _, u := range f.Users {
+		require.Equal(t, want, perUser[u.ID],
+			"user %s wrong subscription count", u.ID)
+	}
+
+	// Each band must yield at least one room with the band's size range.
+	sizes := map[string]int{}
+	for _, r := range f.Rooms {
+		sizes[r.ID] = r.UserCount
+	}
+	var nDM, nSmall, nMed, nLarge int
+	for _, sz := range sizes {
+		switch {
+		case sz == 2:
+			nDM++
+		case sz >= 5 && sz <= 20:
+			nSmall++
+		case sz >= 50 && sz <= 200:
+			nMed++
+		case sz >= 500 && sz <= 2000:
+			nLarge++
+		}
+	}
+	require.Greater(t, nDM, 0)
+	require.Greater(t, nSmall, 0)
+	require.Greater(t, nMed, 0)
+	require.Greater(t, nLarge, 0)
+
+	// Determinism: same seed yields identical fixtures.
+	f2 := BuildFixtures(&p, 42, "site-test")
+	require.Equal(t, f, f2)
+}
+
 func TestBuiltinPreset_Daily(t *testing.T) {
 	cases := []struct {
 		name  string
