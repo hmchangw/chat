@@ -280,3 +280,57 @@ healthy — i.e. the load generator itself, not the service under test, was
 the limiting factor, so the step's result can't be trusted. An
 INCONCLUSIVE step does **not** count as a pass and does **not** stop the
 ramp, even with `--stop-on-trip`; only a hard TRIP stops the ramp.
+
+## Daily-IM scenario (find N)
+
+Simulates N users running the chat system as their primary IM
+throughout a workday. Ramps N geometrically and reports the largest N
+that survived all five SLO signals over a 3-minute steady-state hold.
+
+### Quick start
+
+```
+make -C tools/loadgen/deploy up
+make -C tools/loadgen/deploy seed PRESET=daily-heavy
+make -C tools/loadgen/deploy run-daily PRESET=daily-heavy
+```
+
+### Presets
+
+| preset       | DMs | small | medium | large | rooms/user |
+|--------------|-----|-------|--------|-------|------------|
+| daily-light  | 15  | 10    | 5      | 2     | ~32        |
+| daily-heavy  | 25  | 20    | 8      | 3     | ~56        |
+| daily-power  | 40  | 30    | 10     | 3     | ~83        |
+
+### CLI
+
+```
+loadgen daily \
+  --preset=daily-heavy \
+  --steps=1k,2k,5k,10k,20k,50k,100k \
+  --warmup=60s --hold=180s --cooldown=30s \
+  --max-direct-users=20000 --multiplex-pool-size=200 \
+  --max-conns-per-process=25000 \
+  --csv=results.csv
+```
+
+### SLO signals
+
+A step trips if any of:
+
+- p95 publish→broadcast latency > 500ms
+- p99 latency > 1000ms
+- error rate > 0.1%
+- any JetStream consumer's `num_pending` grew by > 1000 over the hold
+- any service's `slog_errors_total` increased over the hold
+
+If the loadgen process is itself under pressure (GC pause p99 > 50ms
+or CPU > 80%) the step is marked **INCONCLUSIVE** rather than PASS/TRIP,
+since the load box is the bottleneck.
+
+### Non-goals
+
+- Not a reconnect/presence-storm test — see separate scenario PR.
+- Not a cross-site federation test.
+- Not a CI gate. Invoked manually.
