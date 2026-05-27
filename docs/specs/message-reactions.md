@@ -1,5 +1,7 @@
 # Spec: Reactions — Embedded `MAP<reaction_key, reactor_info>`
 
+> **Status:** SHIPPED in PR #221 (branch `claude/modest-mccarthy-KarZE`) as Commit A `ca34108` (revert v2) + Commit B `7e9c5fb` (introduce v3), plus follow-up cleanup commits. This document is preserved as the design record; the forward-looking language ("Commit A", "Commit B", "the implementer must …") describes the rollout plan that was followed, not pending work. Open items are tracked separately on the companion `claude/add-reaction-support-jd0tU` branch (write path) and as a follow-up for custom-emoji admin CRUD.
+
 *Replace the original embedded `MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>` column on the four message tables with a flat, per-cell map keyed by `(emoji, user_account)`. The whole reactions map is read inline with the message row — no side table, no read-time fan-out.*
 
 ---
@@ -275,7 +277,7 @@ ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<
 
 **Empirical FE impact today:** `grep -rni "reaction" chat-frontend/` returns zero hits. The frontend doesn't render reactions yet — the wire-shape change has no actual consumers to break. The doc update is forward-looking.
 
-**Live-event shape vs history shape — known asymmetry.** The `add-reaction-support` branch emits `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` for live updates. That's a delta event without display-name fields. The history (this spec) returns enriched records. Frontends will need to translate live deltas (possibly with a user-cache lookup for display names) before merging into their local state of message reactions. Document this asymmetry in the addReaction PR.
+**Live-event shape vs history shape — known asymmetry.** The `add-reaction-support` branch emits `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` for live updates — a single-actor delta carrying the toggling user's full `Participant` (display names included). The history (this spec) returns the full enriched array of all reactors on the message. Both shapes carry display names; the asymmetry is delta-vs-snapshot, not enriched-vs-thin. Frontends merge a delta into their per-message state by adding/removing one entry keyed on `(shortcode, actor.account)`.
 
 Affected handlers: same six as before (`LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`, `GetThreadMessages`, `GetThreadParentMessages`). Update `docs/client-api.md`'s description of the `reactions` field to the new shape; per CLAUDE.md §5 this update lands in the same PR.
 

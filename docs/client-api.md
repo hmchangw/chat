@@ -1015,7 +1015,7 @@ When the reader is in a restricted access window and the quoted parent falls out
 | `account` | string | Duplicates `userAccount`. |
 | `reactedAt` | string | RFC 3339. |
 
-The array is sorted by `(emoji ASC, userAccount ASC)` and is byte-stable across responses. Live reaction events (`MessageReactedPayload`) use a delta shape without display-name fields; clients merging live deltas into history-derived state must hydrate names from a local user cache.
+The array is sorted by `(emoji ASC, userAccount ASC)` and is byte-stable across responses. Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`); the actor's display names are included. Clients merge a delta into history-derived state by adding or removing one entry keyed on `(shortcode, actor.account)`.
 
 #### Load History
 
