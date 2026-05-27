@@ -80,7 +80,7 @@ type SearchConfig struct {
 // against the other or moved to a distinct prefix to avoid silent env
 // shadowing.
 type Config struct {
-	SiteID   string         `env:"SITE_ID" envDefault:"site-local"`
+	SiteID   string         `env:"SITE_ID,required"`
 	ES       ESConfig       `envPrefix:"SEARCH_"`
 	Valkey   ValkeyConfig   `envPrefix:"VALKEY_"`
 	NATS     NATSConfig     `envPrefix:"NATS_"`
