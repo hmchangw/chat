@@ -54,7 +54,7 @@ func TestHistoryService_GetThreadMessages_Success(t *testing.T) {
 		{MessageID: "reply-2", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(2 * time.Minute)},
 		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(1 * time.Minute)},
 	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestHistoryService_GetThreadMessages_HasNextAndCursor(t *testing.T) {
 		{MessageID: "reply-2", RoomID: "r1", ThreadRoomID: "tr-1", CreatedAt: joinTime.Add(7 * time.Minute)},
 		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", CreatedAt: joinTime.Add(6 * time.Minute)},
 	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, true), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, true), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestHistoryService_GetThreadMessages_NoHSS(t *testing.T) {
 	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour), ThreadRoomID: "tr-1", TCount: intPtr(1)}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -183,14 +183,18 @@ func TestHistoryService_GetThreadMessages_TCountZeroSkipsCassandra(t *testing.T)
 	assert.Empty(t, resp.NextCursor)
 }
 
-// TCount nil = column never written, equivalent to zero. Same short-circuit.
-func TestHistoryService_GetThreadMessages_TCountNilSkipsCassandra(t *testing.T) {
+// TCount nil = column never written. Treat as 'unknown' rather than 'zero':
+// fall through to Cassandra so a brief window between a reply INSERT and a
+// successful tcount LWT does not hide replies. The Cassandra slice on an
+// empty partition is cheap.
+func TestHistoryService_GetThreadMessages_TCountNilFallsThroughToCassandra(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
 	c := testContext()
 
 	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: nil}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -236,7 +240,7 @@ func TestHistoryService_GetThreadMessages_RepoError(t *testing.T) {
 	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: intPtr(1)}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(cassrepo.Page[models.Message]{}, fmt.Errorf("db error"))
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(cassrepo.Page[models.Message]{}, fmt.Errorf("db error"))
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
@@ -262,7 +266,7 @@ func TestHistoryService_GetThreadMessages_Limits(t *testing.T) {
 			parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: intPtr(1)}
 			subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 			msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
-			msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Cond(func(x any) bool {
+			msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Cond(func(x any) bool {
 				pr, ok := x.(cassrepo.PageRequest)
 				return ok && pr.PageSize == tc.wantPageSize
 			})).Return(makePage(nil, false), nil)
@@ -506,7 +510,7 @@ func TestHistoryService_GetThreadMessages_RedactsQuoteBeforeAccessSince(t *testi
 			},
 		},
 	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -535,7 +539,7 @@ func TestHistoryService_GetThreadMessages_KeepsQuoteAfterAccessSince(t *testing.
 			},
 		},
 	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -570,7 +574,7 @@ func TestHistoryService_GetThreadMessages_RedactsLegacyTShowMissingParentTimesta
 			},
 		},
 	}
-	msgs.EXPECT().GetThreadMessages(gomock.Any(), "r1", "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
 
 	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)

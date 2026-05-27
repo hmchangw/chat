@@ -74,10 +74,6 @@ func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Messa
 	return r.session.Query(editMsgByRoom, newMsg, editedAt, editedAt, msg.RoomID, b, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
 }
 
-func (r *Repository) editInThreadMessagesByThread(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
-	return r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
-}
-
 func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, newMsg string, editedAt time.Time) error {
 	return r.session.Query(editPinnedMsg, newMsg, editedAt, editedAt, msg.RoomID, *msg.PinnedAt, msg.MessageID).WithContext(ctx).Exec()
 }
@@ -85,10 +81,6 @@ func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models
 func (r *Repository) deleteInMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
 	b := r.bucket.Of(msg.CreatedAt)
 	return r.session.Query(q, deletedAt, msg.RoomID, b, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
-}
-
-func (r *Repository) deleteInThreadMessagesByThread(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
-	return r.session.Query(q, deletedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
 }
 
 func (r *Repository) deleteInPinnedMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
@@ -109,7 +101,7 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 			return fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	} else {
-		if err := r.editInThreadMessagesByThread(ctx, msg, newMsg, editedAt); err != nil {
+		if err := r.session.Query(editThreadMsg, newMsg, editedAt, editedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("update thread_messages_by_thread for message %s thread %s: %w", msg.MessageID, msg.ThreadRoomID, err)
 		}
 	}
@@ -177,7 +169,7 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 			return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	} else {
-		if err := r.deleteInThreadMessagesByThread(ctx, threadMsgQ, msg, deletedAt); err != nil {
+		if err := r.session.Query(threadMsgQ, deletedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec(); err != nil {
 			return time.Time{}, false, fmt.Errorf("update thread_messages_by_thread for message %s thread %s: %w", msg.MessageID, msg.ThreadRoomID, err)
 		}
 	}
