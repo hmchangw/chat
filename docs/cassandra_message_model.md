@@ -64,12 +64,6 @@ CREATE TYPE IF NOT EXISTS chat.reaction_key (
   user_account TEXT
 );
 ```
-
-| Field        | Type | Notes                                                    |
-|--------------|------|----------------------------------------------------------|
-| `emoji`      | TEXT | NFC-normalised emoji string.                             |
-| `user_account` | TEXT | Account identifier of the reacting user. Load-bearing identity — see account immutability caveat below. |
-
 #### reactor_info
 ```cql
 CREATE TYPE IF NOT EXISTS chat.reactor_info (
@@ -80,21 +74,6 @@ CREATE TYPE IF NOT EXISTS chat.reactor_info (
   reacted_at  TIMESTAMP
 );
 ```
-
-| Field        | Type      | Notes                                                                       |
-|--------------|-----------|-----------------------------------------------------------------------------|
-| `user_id`    | TEXT      | Internal user ID.                                                           |
-| `eng_name`   | TEXT      | Display name (English). May be empty.                                       |
-| `chn_name`   | TEXT      | Display name (Chinese). May be empty.                                       |
-| `account`    | TEXT      | Duplicates `reaction_key.user_account` for read-side ergonomics.            |
-| `reacted_at` | TIMESTAMP | Wall-clock time when the reaction was added (UTC).                          |
-
-**Frozen UDT extensibility caveat.** Both UDTs are `FROZEN`. Adding a field to `reaction_key` later requires rewriting every map key on every row across the four message tables — effectively a full table backfill. Adding a field to `reactor_info` is easier (values can be lazily rewritten on next toggle) but still requires a migration. Do not add or reorder fields on either UDT post-launch without a migration plan.
-
-**Account immutability.** `reaction_key.user_account` is the load-bearing identity. If accounts were ever renamed, a stale key would become orphaned (un-react would silently fail to find the cell). Accounts are immutable in this codebase (`pkg/userstore`). If that ever changes, the key must switch to `user_id`.
-
-**Mirror-write source-of-truth.** A single reaction toggle writes to `messages_by_id` first, then mirrors to `messages_by_room`, `thread_messages_by_room` (when applicable), and `pinned_messages_by_room` (when applicable). The writes are not atomic across tables — `messages_by_id` is authoritative. Readers must not diff reactions across mirrors.
-
 ### Table
 
 ### Partition Bucketing
@@ -226,9 +205,3 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
 )WITH CLUSTERING ORDER BY (created_at DESC)
   AND compaction = {'class': 'LeveledCompactionStrategy'};
 ```
-
-### Compaction strategy
-
-`messages_by_room` and `thread_messages_by_room` use **TWCS** (TimeWindowCompactionStrategy, 1-day windows). These tables see append-only write patterns where rows cluster by time; TWCS keeps same-window SSTables together and expires them cleanly, avoiding read amplification on recent buckets.
-
-`messages_by_id` and `pinned_messages_by_room` use **LCS** (LeveledCompactionStrategy). Both are point-lookup tables with random-access patterns across the full key space; LCS bounds read amplification by keeping each level to a fixed set of non-overlapping SSTables.
