@@ -175,3 +175,41 @@ All new integration test files carry `//go:build integration`. `pkg/model/cassan
 
 **Overall verdict:** The v3 embedded-reactions model is structurally sound and the marshal/unmarshal logic is correct. The `structScan` silent-availability gap is the only `high` introduced; the migration-script `DROP THEN ADD` framing is a `medium` that's easy to fix with a comment rewrite.
 
+---
+
+## Performance
+
+### `Reactions.MarshalJSON` hot-path cost
+
+**medium** — `pkg/model/cassandra/message.go:108-131`: For a non-nil zero-length `Reactions{}`, `MarshalJSON` runs to completion: `make([]reactionEntry, 0, 0)`, `sort.Slice` on empty slice, `json.Marshal([])`. The `omitempty` tag on `Message.Reactions` does not eliminate this because Go consults the custom `MarshalJSON` before testing emptiness. An early `if len(r) == 0 { return []byte("[]"), nil }` guard between the nil check and the `make` call saves two allocations and a marshal round-trip per empty map. Per-page impact is small but the path is hot.
+
+For non-empty maps: `make([]reactionEntry, 0, len(r))` is correctly sized, append never reallocates, and the `O(k log k)` sort is unavoidable for stable output. Acceptable.
+
+### `structScan` allocator footprint vs prior `MapScan`
+
+**low** — Net improvement. Prior `MapScan` allocated a `map[string]interface{}` per row plus internal `RowData` allocations, and was non-functional for `MAP<frozen<UDT>, frozen<UDT>>` (panic). New path allocates one `map[string]reflect.Value` (sized exactly) and one `[]interface{}` per row, with `iter.Columns()` returning a cached slice (zero-alloc). Net comparable alloc count, no boxing for UDT columns, panic eliminated.
+
+**medium** — `cassrepo/utils.go:127-145`: `fieldByTag` is rebuilt on every `structScan` call even though the struct type and column set are constant across all rows of a given query. Hoisting the tag index (e.g. `prepareStructScan(rt, cols) → []interface{} pointers`) outside the per-row loop would remove 2 allocs/row on 100-message pages — 200 maps eliminated per page. Medium effort, meaningful at sustained load.
+
+### Per-row scan cost with inline reactions map
+
+**high** — `docker-local/cassandra/init/10-table-messages_by_room.cql` (architectural, not a code bug): The bucketed tables use TWCS (1-day window). With reactions inline, a viral message can accumulate thousands of `(emoji, userAccount)` map entries. Cassandra deserialises the entire `MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>` column on every read regardless of whether the caller needs reactions. At ~60 bytes per entry, a 10 000-reaction message adds ~600 KB to the row footprint; a 100-message page crossing such a partition could transfer tens of MB. No per-row reaction-count cap exists in the schema or the future write path; the existing page-size cap (100 messages) bounds count, not byte volume. **Action belongs in the upcoming `addReaction` PR** — enforce a max-reactions-per-message at the write path.
+
+### Page-size byte volume
+
+**high** — `cassrepo/utils.go:55`, `service/messages.go:22`: With reactions inline, a single page response can produce a multi-MB NATS reply payload. NATS's default `max_payload` is 1 MB; deployments using the default will hit `nats: maximum payload exceeded` on heavy-reaction pages. Mitigations: cap per-message reactions (write path); reduce page size when reactions are dense; bound page responses by estimated byte size. Co-related to the architectural high above.
+
+### N+1 elimination
+
+**low** — confirmed clean. `service/messages.go` and `service/threads.go` have no reaction-hydration call sites. The single `"hydrating thread parent messages"` log line in `threads.go:174` is unrelated (parent-message enrichment, pre-existing). Fan-out gone.
+
+### Concurrency primitives
+
+**low** — no issues. No new goroutines, channels, mutexes, `sync.Once`, or `WaitGroup` in the changed files. Existing errgroup patterns in `messages.go` unchanged.
+
+### Caching
+
+**nitpick** — `pkg/model/cassandra/message.go:108`: No missed memoisation. `Reactions` values are read-path-only and not hot enough to warrant a cache.
+
+**Overall verdict:** The N+1 elimination and the `structScan` correctness fix are clear wins. The architectural risk — no per-message reaction-count cap — is the highest-impact issue from a perf lens; it manifests only under viral-message load but cannot be fixed in this PR (the write path lives elsewhere). Flag for the upcoming `addReaction` PR.
+
