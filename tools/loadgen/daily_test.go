@@ -54,6 +54,42 @@ func TestParseDailyConfig_RejectsTooManyConns(t *testing.T) {
 	require.Error(t, err) // 30000 direct + 200 mux > 10000 cap
 }
 
+// testEnvFactory returns a stepEnv with stubs so runDaily can run without real NATS.
+type testEnvFactory struct{}
+
+//nolint:gocritic // cfg passed by value to satisfy envFactory interface
+func (testEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
+	return &stepEnv{
+		collector:      NewCollector(NewMetrics(), "test"),
+		users:          users,
+		thresholds:     defaultThresholds(),
+		pollPending:    func(_ context.Context) (map[string]int64, error) { return nil, nil },
+		scrapeServices: func(_ context.Context) (map[string]int64, error) { return nil, nil },
+		maxDirect:      cfg.MaxDirectUsers,
+		warmup:         cfg.Warmup,
+		hold:           cfg.Hold,
+		cooldown:       cfg.Cooldown,
+	}
+}
+
+func TestRunDaily_SmokeOnTinyConfig(t *testing.T) {
+	cfg := dailyConfig{
+		Preset:             "daily-heavy",
+		Steps:              []int{10},
+		Warmup:             20 * time.Millisecond,
+		Hold:               50 * time.Millisecond,
+		Cooldown:           10 * time.Millisecond,
+		StopOnTrip:         true,
+		MaxDirectUsers:     10,
+		MultiplexPoolSize:  0,
+		MaxConnsPerProcess: 10,
+	}
+	results, err := runDailyForTest(context.Background(), cfg, testEnvFactory{})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.False(t, results[0].Tripped)
+}
+
 func TestRunStep_StubReturnsPassWhenEverythingIsGreen(t *testing.T) {
 	env := &stepEnv{
 		collector:  NewCollector(NewMetrics(), "test"),

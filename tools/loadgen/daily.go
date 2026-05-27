@@ -5,9 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 // dailyConfig is the parsed CLI input for `loadgen daily`.
@@ -204,4 +207,131 @@ func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 			}
 		}
 	}
+}
+
+// envFactory builds a stepEnv from a parsed dailyConfig. Stubbed in tests.
+type envFactory interface {
+	Build(cfg dailyConfig, users []*userState) *stepEnv
+}
+
+// startEmitter launches a goroutine that, while ctx is live, ticks the user's
+// Markov state every second and, when active, emits actions at the Poisson
+// rate scaled by the diurnal envelope.
+//
+//nolint:unused // wired up by production envFactory in a later task
+func startEmitter(ctx context.Context, env *stepEnv, u *userState, holdStart time.Time, holdDuration time.Duration) {
+	go func() {
+		seed := time.Now().UnixNano() ^ int64(len(u.ID))
+		r := rand.New(rand.NewSource(seed))
+		weights := defaultActionWeights()
+		baseRate := actionRatePerSecond(weights.totalPerDay(), 8*time.Hour)
+		// Compress: a workday becomes the hold window. Multiply rate accordingly.
+		if holdDuration > 0 {
+			compress := (8 * time.Hour).Seconds() / holdDuration.Seconds()
+			baseRate *= compress
+		}
+
+		tick := time.NewTicker(1 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			u.step(r)
+			if !u.active {
+				continue
+			}
+			elapsed := time.Since(holdStart)
+			rate := baseRate * rateMultiplier(elapsed, holdDuration)
+			if r.Float64() < rate {
+				doAction(ctx, env, u, r, weights)
+			}
+		}
+	}()
+}
+
+// doAction picks one action via weights and dispatches it. Increments
+// attempted/failed counters on the Collector.
+//
+//nolint:unused // wired up by production envFactory in a later task
+func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w actionWeights) {
+	if env.collector != nil {
+		env.collector.RecordActionAttempt()
+	}
+	a := actionCtx{
+		Ctx: ctx, SiteID: "site-local", Rand: r, Collector: env.collector,
+	}
+	if a.Publish == nil && a.Request == nil {
+		return // stub mode (no real NATS wired); attempt was counted but skipped
+	}
+	var err error
+	switch pickAction(r, w) {
+	case actionSend:
+		err = sendMessage(a, u, "loadtest content")
+	case actionReadReceipt:
+		err = readReceipt(a, u, "msg-stub")
+	case actionScrollHistory:
+		err = scrollHistory(a, u)
+	case actionRefreshRoomList:
+		err = refreshRoomList(a, u)
+	case actionMemberAdd:
+		err = memberAdd(a, u, "user-stub")
+	case actionRoomCreate:
+		err = roomCreate(a, u)
+	case actionMuteToggle:
+		err = muteToggle(a, u)
+	}
+	if err != nil && env.collector != nil {
+		env.collector.RecordActionFailure()
+	}
+}
+
+// runDailyForTest is the testable variant: takes an envFactory so tests can
+// inject stubs. The production runDaily wraps it with the real factory.
+//
+//nolint:gocritic // cfg passed by value to match envFactory.Build signature
+func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) ([]StepResult, error) {
+	preset, _ := BuiltinPreset(cfg.Preset)
+	preset.Users = maxInt(cfg.Steps) // size fixtures for the largest step
+	fx := BuildFixtures(&preset, 42, "site-local")
+
+	userRooms := groupSubsByUser(fx.Subscriptions)
+	users := make([]*userState, len(fx.Users))
+	for i := range fx.Users {
+		u := &fx.Users[i]
+		users[i] = newUserState(u.ID, u.Account, userRooms[u.ID], int64(i))
+	}
+
+	env := factory.Build(cfg, users)
+	prevN := 0
+	var results []StepResult
+	for _, n := range cfg.Steps {
+		r := runStep(ctx, env, n, prevN)
+		results = append(results, r)
+		if cfg.StopOnTrip && r.Tripped {
+			break
+		}
+		prevN = n
+	}
+	return results, nil
+}
+
+func maxInt(xs []int) int {
+	m := 0
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+func groupSubsByUser(subs []model.Subscription) map[string][]string {
+	out := make(map[string][]string)
+	for i := range subs {
+		out[subs[i].User.ID] = append(out[subs[i].User.ID], subs[i].RoomID)
+	}
+	return out
 }
