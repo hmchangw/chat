@@ -256,3 +256,21 @@ These are **pre-existing gaps**, not regressions introduced here. Out of scope f
 
 **Overall verdict:** Observability is a net improvement on the touched paths — `request_id` back-filled on seven log lines. The `structScan` silent-drop on unmapped columns (`utils.go:142`) is a diagnostic gap that should be addressed with a `slog.Warn` alongside the correctness fix.
 
+---
+
+## Prioritized action list
+
+Ordered by severity, then impact ÷ effort. The first two items belong in this PR; items 3–8 are cleanup that can ship in a follow-up or in the upcoming `addReaction` PR.
+
+| # | Severity | Action | Where | Why |
+|---|----------|--------|-------|-----|
+| 1 | **high** | Make `structScan` fail loudly on unmapped columns. Call `iter.SetErr(fmt.Errorf("structScan: unmapped column %q", col.Name))` (or surface via a returned error) before `return false`, plus `slog.Warn` with `column` and the destination type name. Update the function's doc comment to match the actual behaviour. | `history-service/internal/cassrepo/utils.go:141-143` | A future DDL column addition would otherwise silently truncate every paged read. Currently the comment lies about recording an error; 5 of 6 lenses flagged this. |
+| 2 | **medium** | Rewrite the migration-script header to drop the word "idempotent" and explicitly warn that re-runs against a populated v3 keyspace will destroy reaction data. Optionally guard the DROP behind a sentinel column-presence-and-empty check. | `docker-local/cassandra/init/90-migrate-reactions-to-v3.cql:1-18` | Dev-environment data loss waiting to happen on the next `docker-compose down && up` cycle with persistent volumes. |
+| 3 | **medium** | Add at least one cassrepo integration test that writes a non-nil `Reactions{}` map via raw CQL and round-trips it through `GetMessageByID` (or one of the page readers). | `history-service/internal/cassrepo/messages_by_id_integration_test.go` | The gocql smoke test covers raw `iter.Scan` but not the `structScan` path; a structScan regression would not be caught by CI today. |
+| 4 | **medium** | Wrap the duplicate-key error in `Reactions.UnmarshalJSON` with `%w` (sentinel or otherwise). Also tighten the error wrap on line 143 from `"reactions: unmarshal: %w"` to `"unmarshal reactions array: %w"` per CLAUDE.md §3. | `pkg/model/cassandra/message.go:143, 149` | Error chain breaks `errors.Is` / `errors.As` for downstream callers. |
+| 5 | **medium** | Add an early `if len(r) == 0 { return []byte("[]"), nil }` guard in `Reactions.MarshalJSON` to avoid the slice+sort+marshal round-trip on empty maps. | `pkg/model/cassandra/message.go:108-131` | Hot path; tiny diff for measurable per-page allocator savings on messages with no reactions. |
+| 6 | **medium** | Hoist the `fieldByTag` index out of `structScan` so it isn't rebuilt per row. Either expose `prepareStructScan(rt, cols)` returning a reusable `[]interface{}` plan, or compute the field map once per query in `scanMsgsFromIter`. | `history-service/internal/cassrepo/utils.go:127-145` | Removes 2 allocs/row on every paged read. |
+| 7 | **medium** | Bound `len(data)` in `Reactions.UnmarshalJSON` (defensive cap, e.g. 256 KB). Add a table-driven test covering `{}` and other well-formed-but-wrong-type inputs alongside the existing malformed-JSON case. | `pkg/model/cassandra/message.go:136-161` | Defence-in-depth against corrupted rows; closes a small test-coverage gap. |
+| 8 | **low / nitpick** | Convert `dest interface{}` to `dest any` (Go 1.25 convention); add a `Message`-level round-trip test for `Reactions: nil` vs `Reactions: Reactions{}` to lock the `omitempty` vs `[]` distinction; convert the `TestReactions_MarshalJSON_*` / `_UnmarshalJSON_*` suite to table-driven subtests. | `history-service/internal/cassrepo/utils.go:119`, `pkg/model/cassandra/message_test.go` | House-style cleanups; cheap. |
+
+The architectural perf concerns (no per-message reaction-count cap; page responses not bounded by byte volume) cannot be fixed in this PR — the write path lives in the upcoming `addReaction` change. Capture them as known-issues against that PR's spec.
