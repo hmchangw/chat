@@ -1,6 +1,10 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"github.com/caarlos0/env/v11"
+
+	"github.com/hmchangw/chat/pkg/atrest"
+)
 
 // CassandraConfig holds Cassandra connection settings.
 // Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD
@@ -32,13 +36,15 @@ type NATSConfig struct {
 
 // Config is the top-level configuration for history-service.
 type Config struct {
-	SiteID                  string          `env:"SITE_ID"                    envDefault:"site-local"`
-	Cassandra               CassandraConfig `envPrefix:"CASSANDRA_"`
-	Mongo                   MongoConfig     `envPrefix:"MONGO_"`
-	NATS                    NATSConfig      `envPrefix:"NATS_"`
-	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"       envDefault:"72"`
-	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"   envDefault:"122"`
-	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS" envDefault:"365"`
+	SiteID                  string             `env:"SITE_ID"                    envDefault:"site-local"`
+	Cassandra               CassandraConfig    `envPrefix:"CASSANDRA_"`
+	Mongo                   MongoConfig        `envPrefix:"MONGO_"`
+	NATS                    NATSConfig         `envPrefix:"NATS_"`
+	MessageBucketHours      int                `env:"MESSAGE_BUCKET_HOURS"       envDefault:"72"`
+	MessageReadMaxBuckets   int                `env:"MESSAGE_READ_MAX_BUCKETS"   envDefault:"122"`
+	MessageHistoryFloorDays int                `env:"MESSAGE_HISTORY_FLOOR_DAYS" envDefault:"365"`
+	Atrest                  atrest.Config      // env vars are already prefixed ATREST_*
+	Vault                   atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 // Load parses environment variables into Config. Returns error if required vars are missing.

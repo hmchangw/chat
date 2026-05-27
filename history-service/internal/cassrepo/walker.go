@@ -110,7 +110,11 @@ type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query
 // caller-supplied gocql page state; later buckets always start fresh.
 //
 // scan must consume up to `remaining` rows from iter and return them; it is
-// responsible for stopping when full.
+// responsible for stopping when full. A halt=true return aborts the walk
+// immediately — the bucket advance and any further queries are skipped, and
+// the rows already accumulated are returned to the caller. Halt is the only
+// way scan can signal a fatal per-row error (e.g. a decrypt failure) up to
+// the caller, since the scan function cannot return an error directly.
 //
 // floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
 // when bucket > floorBucket. To disable floor-based termination, callers pass
@@ -125,7 +129,7 @@ func fillPage[T any](
 	pageSize int,
 	initialPageState []byte,
 	queryFn bucketQueryFn,
-	scan func(iter *gocql.Iter, remaining int) []T,
+	scan func(iter *gocql.Iter, remaining int) (rows []T, halt bool),
 ) (pageResult[T], error) {
 	out := make([]T, 0, pageSize)
 	bucket := startBucket
@@ -159,11 +163,25 @@ func fillPage[T any](
 		}
 
 		iter := q.Iter()
-		rows := scan(iter, pageSize-len(out))
+		rows, halt := scan(iter, pageSize-len(out))
 		out = append(out, rows...)
 		nextPageState := iter.PageState()
-		if err := iter.Close(); err != nil {
-			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, err)
+		closeErr := iter.Close()
+		if halt {
+			// scan signaled a fatal error (captured in its closure-scoped
+			// scanErr). Stop the walk so a subsequent bucket can't
+			// overwrite the captured error, and so we don't burn extra
+			// Cassandra round-trips after the first failure.
+			// Check halt BEFORE the iter.Close error so a transient
+			// coordinator/timeout from Close doesn't mask the captured
+			// per-row scanErr operators need to see (e.g., a corrupted
+			// nonce that triggered the halt). Rows is set to nil so
+			// callers can't accidentally serve the partial accumulation
+			// the scanErr-discard contract is supposed to throw away.
+			return pageResult[T]{Rows: nil, NextCursor: "", HasNext: false}, nil
+		}
+		if closeErr != nil {
+			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, closeErr)
 		}
 
 		if len(nextPageState) > 0 && len(out) < pageSize {

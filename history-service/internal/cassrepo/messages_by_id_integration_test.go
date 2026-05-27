@@ -16,7 +16,7 @@ import (
 
 func TestRepository_GetMessageByID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "user1"}
@@ -36,7 +36,7 @@ func TestRepository_GetMessageByID(t *testing.T) {
 
 func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	msg, err := repo.GetMessageByID(ctx, "nonexistent")
@@ -46,7 +46,7 @@ func TestRepository_GetMessageByID_NotFound(t *testing.T) {
 
 func TestRepository_FullRow_AllColumns(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	ts := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
@@ -179,7 +179,7 @@ func TestRepository_FullRow_AllColumns(t *testing.T) {
 
 func TestRepository_GetMessagesByIDs(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
@@ -203,7 +203,7 @@ func TestRepository_GetMessagesByIDs(t *testing.T) {
 
 func TestRepository_GetMessagesByIDs_Empty(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	msgs, err := repo.GetMessagesByIDs(ctx, []string{})
@@ -213,7 +213,7 @@ func TestRepository_GetMessagesByIDs_Empty(t *testing.T) {
 
 func TestRepository_GetMessagesByIDs_MissingID(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}

@@ -1067,6 +1067,34 @@ func TestHistoryService_EditMessage_UpdateFails(t *testing.T) {
 	assertInternalErr(t, err, "failed to edit message")
 }
 
+// TestHistoryService_EditMessage_RaceWithDelete_MapsToNotFound verifies the
+// TOCTOU between findMessage and the LWT-gated UpdateMessageContent doesn't
+// surface as a 5xx. When a concurrent SoftDelete or hard-delete lands
+// between findMessage's read and the CAS edit, the repo returns
+// cassrepo.ErrMessageNotFound; the handler must map it to ErrNotFound so
+// it doesn't pollute 5xx telemetry — it's a benign race, not a server
+// fault.
+func TestHistoryService_EditMessage_RaceWithDelete_MapsToNotFound(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-race",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-race").Return(hydrated, nil)
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(fmt.Errorf("edit message m-race: %w", cassrepo.ErrMessageNotFound))
+
+	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-race", NewMsg: "new content"})
+	assert.Nil(t, resp)
+	assertNotFoundErr(t, err, "message not found")
+}
+
 func TestHistoryService_EditMessage_PublishesCanonicalUpdatedEvent(t *testing.T) {
 	svc, msgs, subs, pub, _ := newService(t)
 	c := testContext()
