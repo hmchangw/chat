@@ -4,17 +4,34 @@
 
 ---
 
+## 0. Pivot context & rollout plan
+
+This is the **third design iteration** for reactions storage on the current branch (PR #221). The journey:
+- **v1** (original main): embedded `MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>` — rejected: every change rewrote the whole emoji's set.
+- **v2** (the work currently on this PR): side table `message_reactions((message_id), emoji)`. Eliminates write amp but introduces N parallel reads per page → wrong direction for a read-heavy workload.
+- **v3** (this spec): embedded `MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>` with a compound `(emoji, user_account)` map key. Each reaction is its own atomic map cell — no nested frozen collection, no whole-set rewrites, no read-time fan-out.
+
+To preserve revertability, the implementation lands in **two commits within this PR**:
+- **Commit A — Revert v2.** Strip all side-table code (`cassrepo/message_reactions*.go`, `service/reactions*.go`, the hydration wire sites, the regenerated mocks shrink, the env config, the `NewRepository` arity), restore `reactions` to `baseColumns` and thread columns (with v1 shape as a syntactic placeholder), delete the side-table DDL + the v2 migration.
+- **Commit B — Introduce v3.** Add the two UDTs and the new column shape, switch the Go model field type, add the named-type marshaller, add the migration, update docs.
+
+`git revert <B>` alone restores v2; `git revert <A> && git revert <B>` returns to current main.
+
+For migration purposes this spec treats v2 as if it never landed on any database — the docker-local inline DDL goes straight v1 → v3, and a single migration script handles dev keyspaces still on v1.
+
 ## 1. Goal
 
 Move reactions to a shape that satisfies all three of:
 
-1. **Per-cell writes** — adding or removing a reaction is one atomic `UPDATE … SET reactions[k] = v` (or `DELETE reactions[k]`). No read-modify-write, no LWT-CAS games.
+1. **Per-cell writes** — adding or removing a reaction is one atomic `UPDATE … SET reactions[k] = v` (or `DELETE reactions[k]`). No read-modify-write, no LWT-CAS.
 2. **Inline reads** — reactions ride with the message row; no extra Cassandra round-trip per page.
 3. **Self-uniqueness** — the map key encodes `(emoji, user_account)`, so DB-level uniqueness ("one user, one reaction per emoji") falls out of the schema.
 
-The original embedded shape had a triple-nested `FROZEN<SET<FROZEN<UDT>>>` inside the map value — every reaction change rewrote the whole emoji's set and generated range tombstones on the hot message row. The new shape collapses that to a flat `MAP<FROZEN<UDT>, FROZEN<UDT>>` whose cells are independent: each reaction is its own map entry with its own atomic add/remove.
+### Pre-merge validation (mandatory)
 
-For migration purposes this spec treats the prior side-table design (an earlier iteration of this branch) as if it never landed. The Docker-local inline DDL goes directly from the original v1 shape to the new v3 shape; a single migration `.cql` handles dev keyspaces that still have the v1 column.
+Before locking the design, the implementer **must** ship a tiny `gocql` smoke test that round-trips `map[ReactionKey]ReactorInfo` through a real Cassandra container — read AND write. The codebase has zero precedent for a UDT struct as a map key, and `gocql`'s reflection path for that shape is historically a rough edge. If the smoke test fails or requires `MarshalUDT` / `UnmarshalUDT` methods on the structs, the spec adopts whichever approach works (mechanical: 10 lines per struct).
+
+This validation lives under §8 "Tests" and is the first thing the implementation PR proves before touching production code.
 
 ## 2. Cassandra Schema
 
@@ -27,19 +44,35 @@ CREATE TYPE IF NOT EXISTS chat.reaction_key (
 );
 
 CREATE TYPE IF NOT EXISTS chat.reactor_info (
-  user_id       TEXT,
-  chinese_name  TEXT,
-  english_name  TEXT,
-  account       TEXT,
-  reacted_at    TIMESTAMP
+  user_id     TEXT,
+  eng_name    TEXT,
+  chn_name    TEXT,
+  account     TEXT,
+  reacted_at  TIMESTAMP
 );
 ```
 
-`reaction_key` is the map key — Cassandra requires map keys to be `FROZEN`. `reactor_info` rides as the value and is also `FROZEN` because we always set the whole record on add; we never partially update a reactor's display fields.
+`reaction_key` is the map key — Cassandra requires map keys to be `FROZEN`. `reactor_info` rides as the value, also `FROZEN`, because the value is always set as a whole on add.
 
-`reaction_key.user_account` and `reactor_info.account` carry the same value. The duplication is intentional — keeping `account` in the value means the JSON projection returned to clients is a flat `{user, name, account, reacted_at}` record without callers having to re-stitch the key.
+**Field naming** matches the `Participant` UDT precedent (`eng_name` / `chn_name`, not `english_name` / `chinese_name`).
+
+**Caveat — frozen UDT extensibility.** Both UDTs are FROZEN. Adding a field to `reaction_key` later requires rewriting every map key on every row across the four message tables — effectively a full table backfill. Adding a field to `reactor_info` is easier (values can be lazily rewritten on next toggle) but still requires a migration. **Do not add or reorder fields on either UDT post-launch without a migration plan.**
+
+`reaction_key.user_account` and `reactor_info.account` carry the same value. The duplication is intentional for read-side ergonomics (server-side scan yields a flat record without re-stitching the key). The wire shape (§6) collapses the duplication.
+
+**Account immutability contract.** `user_account` is the load-bearing identity in `reaction_key`. If accounts can be renamed in this system, a stale `reaction_key` will be orphaned (subsequent un-react will silently fail to find the cell). Verified by inspecting `pkg/userstore`: accounts are immutable in this codebase. If that ever changes, this design needs to switch the key to `user_id`.
+
+**Emoji normalisation contract.** Map-key equality is byte-exact. The same emoji can arrive in multiple valid Unicode encodings (NFC vs NFD, ZWJ sequences). The reaction handler **must** NFC-normalise `emoji` before binding into `reaction_key`. Document this in the addReaction PR; reading code can assume normalised values.
 
 ### 2.2 New column on the four message tables
+
+For fresh keyspaces, the column appears inline in the `CREATE TABLE` statements (§4):
+
+```cql
+reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
+```
+
+For dev keyspaces already created, the migration (§4) uses:
 
 ```cql
 ALTER TABLE chat.messages_by_room        ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
@@ -48,23 +81,43 @@ ALTER TABLE chat.thread_messages_by_room ADD reactions MAP<FROZEN<reaction_key>,
 ALTER TABLE chat.pinned_messages_by_room ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 ```
 
-Fresh keyspaces get the column directly via the inline `CREATE TABLE` statements (§4). The `ALTER` form above is what the migration `.cql` runs for dev keyspaces upgrading in place.
+The migration script uses `ADD IF NOT EXISTS` (Cassandra 4.0+) to stay idempotent — see §4.
 
 ### 2.3 Write semantics (out of scope for this PR — informative)
+
+The map-key UDT is bound as a Go struct, not as a CQL literal — both safer and portable:
 
 ```cql
 -- Add or replace one reaction
 UPDATE messages_by_id
-   SET reactions[{emoji: ?, user_account: ?}] = {user_id: ?, chinese_name: ?, english_name: ?, account: ?, reacted_at: ?}
+   SET reactions[?] = ?, updated_at = ?
  WHERE message_id = ? AND created_at = ?;
 
 -- Remove one reaction
-DELETE reactions[{emoji: ?, user_account: ?}]
+DELETE reactions[?]
   FROM messages_by_id
  WHERE message_id = ? AND created_at = ?;
 ```
 
-One map-cell write per reaction toggle, in each of the 2–4 mirror tables that hold the message. No row read, no LWT.
+Bind the first `?` to a `cassandra.ReactionKey` value (frozen UDT); bind the second to a `cassandra.ReactorInfo` value (frozen UDT). gocql encodes the frozen UDTs via reflection on `cql` tags. One map-cell write per reaction toggle.
+
+### 2.4 Compaction & tombstones
+
+- `messages_by_room` and `thread_messages_by_room` — **TWCS** (time-windowed). Chat append patterns line up with TWCS's strength; the reactions column rides along.
+- `messages_by_id` and `pinned_messages_by_room` — **LCS** (leveled). Both are point-lookup tables; LCS keeps read amplification bounded.
+
+These compaction choices should be applied to the inline `CREATE TABLE` clauses in `docker-local/cassandra/init/10-13-*.cql`. The migration script in §4 cannot retro-apply them to existing dev keyspaces — devs who want the optimal compaction need to drop+recreate their local keyspace. Acceptable trade-off.
+
+**Tombstone behaviour.** Each `DELETE reactions[k]` generates one map-cell tombstone, shadowing the live cell until `gc_grace_seconds` elapses (default 10 days). A hot message with churning reactors (add → remove → re-add cycles) accumulates tombstones inside the live row. Per-cell tombstones are the smallest possible shape (much better than v1's range tombstones), but the gc_grace window matters:
+
+- **Reaction churn rate is low** in practice (a user rarely toggles the same reaction multiple times). Acceptable for v1.
+- If we ever observe tombstone-driven read latency on hot rows, options include lowering `gc_grace_seconds` (risky with multi-DC repair windows) or running periodic `nodetool scrub`. Out of scope for this spec.
+
+### 2.5 Mirror consistency
+
+A single reaction toggle writes 2–4 mirror tables (`messages_by_id` always; `messages_by_room` always; `thread_messages_by_room` when the message is a thread reply; `pinned_messages_by_room` when the message is pinned). The writes are **not atomic across tables** — there is no batch, no LWT.
+
+**Source-of-truth contract:** `messages_by_id` is authoritative. Mirror tables are eventually-consistent. Readers MUST NOT diff reactions across mirrors; the addReaction handler is expected to write to `messages_by_id` first, then mirror to the others. Partial failure of a mirror write returns an error to the caller and gets retried at the application level (the addReaction PR's concern).
 
 ## 3. Go Models — `pkg/model/cassandra/`
 
@@ -81,197 +134,315 @@ type ReactionKey struct {
 
 // ReactorInfo is the map-value UDT for Message.Reactions.
 type ReactorInfo struct {
-    UserID      string    `json:"userId"      cql:"user_id"`
-    ChineseName string    `json:"chineseName" cql:"chinese_name"`
-    EnglishName string    `json:"englishName" cql:"english_name"`
-    Account     string    `json:"account"     cql:"account"`
-    ReactedAt   time.Time `json:"reactedAt"   cql:"reacted_at"`
+    UserID    string    `json:"userId"    cql:"user_id"`
+    EngName   string    `json:"engName"   cql:"eng_name"`
+    ChnName   string    `json:"chnName"   cql:"chn_name"`
+    Account   string    `json:"account"   cql:"account"`
+    ReactedAt time.Time `json:"reactedAt" cql:"reacted_at"`
 }
 ```
 
-No `bson` tags (Cassandra-only carriers, matches existing precedent in this package — see package-level doc).
+Naming matches `Participant`'s `EngName` convention exactly — no `EnglishName` / `ChineseName` drift. No `bson` tags (Cassandra-only carriers, matches package precedent).
 
-### 3.2 Updated `Message.Reactions` field
+> Tag alignment in this spec is illustrative; gofmt/goimports will reformat on commit.
+
+### 3.2 Updated `Message.Reactions` field and named-type marshaller
+
+The field uses a **named map type** so we can hang custom `MarshalJSON` / `UnmarshalJSON` on it (Go can't define methods on a built-in `map[K]V`):
 
 ```go
-// Reactions: keys are unique (emoji, user_account) pairs; one map cell per reaction.
-// Read inline with the message row — no separate hydration step.
-Reactions map[ReactionKey]ReactorInfo `json:"reactions,omitempty" cql:"reactions"`
+// Reactions is the in-row reaction map for Message. Keys are unique (emoji, user_account)
+// pairs; one cell per reaction. JSON projection is a flat array sorted by (emoji, userAccount)
+// for stable output. See MarshalJSON / UnmarshalJSON for the wire shape.
+type Reactions map[ReactionKey]ReactorInfo
+
+// MarshalJSON emits a flat, deterministically-ordered array of records:
+//   [{"emoji":"👍","userAccount":"alice","userId":"u1","engName":"Alice","chnName":"…","account":"alice","reactedAt":"…"}, …]
+// Empty maps serialise as `[]`. omitempty on the field elides nil maps entirely.
+func (r Reactions) MarshalJSON() ([]byte, error) { /* see §6 */ }
+func (r *Reactions) UnmarshalJSON(data []byte) error { /* see §6 */ }
 ```
 
-The `cql` tag is **restored**. The field is scanned directly by `structScan` like every other column.
+The `Message.Reactions` field becomes:
 
-JSON serialisation: Go's `encoding/json` cannot use a struct as a map key directly. The wire shape is decided in §6 and implemented via custom `MarshalJSON` / `UnmarshalJSON` on the field's container type.
+```go
+// Reactions is hydrated inline from the message row's reactions map column.
+// Nil = no reactions (omitted from JSON); not modified by edit/delete paths.
+Reactions Reactions `json:"reactions,omitempty" cql:"reactions"`
+```
 
-### 3.3 Round-trip tests
+The `cql` tag is **restored**. `structScan` scans the column into the named map type — same reflection that handles `map[string]string`.
 
-Add to `pkg/model/cassandra/message_test.go`:
+### 3.3 Removals from the v2 iteration
 
-- `TestReactionKey_JSONRoundTrip`
-- `TestReactorInfo_JSONRoundTrip`
-- `TestMessage_Reactions_JSONRoundTrip` — assert a 2-entry `Reactions` map serialises and round-trips correctly (covers whatever wire shape §6 picks).
+These v2 carriers are deleted in Commit A:
 
-The existing `MessageReaction` carrier from the side-table iteration is **deleted**.
+- `pkg/model/cassandra/message.go:71-76` — the `MessageReaction` struct.
+- `pkg/model/cassandra/message_test.go:223-235` — `TestMessageReaction_JSONRoundTrip`.
+
+Search regex (`grep -rn MessageReaction`) MUST return zero hits after Commit A.
+
+### 3.4 Round-trip tests (in `pkg/model/cassandra/message_test.go`)
+
+- `TestReactionKey_JSONRoundTrip` — both fields populated.
+- `TestReactorInfo_JSONRoundTrip` — all fields populated, including non-zero `ReactedAt` in UTC.
+- `TestReactions_MarshalJSON_FlatArray_Sorted` — assert wire shape is `[{emoji,userAccount,…}]`, sorted by `(emoji ASC, userAccount ASC)`.
+- `TestReactions_MarshalJSON_EmptyMap` — empty `Reactions{}` serialises to `[]` (when not omitted by `omitempty`).
+- `TestReactions_MarshalJSON_NilMap_OmittedViaOmitempty` — nil map on `Message.Reactions` produces no `"reactions"` field in JSON.
+- `TestReactions_UnmarshalJSON_HappyPath` — round-trip through the flat array.
+- `TestReactions_UnmarshalJSON_DuplicateKey_ReturnsError` — two records with identical `(emoji, userAccount)` is invalid input.
+- `TestReactions_UnmarshalJSON_MalformedJSON` — invalid JSON returns wrapped error.
 
 ## 4. DDL Files — `docker-local/cassandra/init/`
 
-**Add:**
+**Commit A (revert v2):**
+- Delete `docker-local/cassandra/init/14-table-message_reactions.cql`.
+- Delete `docker-local/cassandra/init/90-migrate-drop-old-reactions-column.cql`.
+
+**Commit B (introduce v3):**
+
+Add:
 - `07-udt-reaction_key.cql` — the new key UDT.
 - `08-udt-reactor_info.cql` — the new value UDT.
 
-**Edit (restore the `reactions` column with the new shape):**
+Edit (restore the `reactions` column with the new shape; also set explicit compaction per §2.4):
+
 - `10-table-messages_by_room.cql`
 - `11-table-thread_messages_by_room.cql`
 - `12-table-pinned_messages_by_room.cql`
 - `13-table-messages_by_id.cql`
 
-Each gains a line:
+Each gains a column line slotted exactly where the v1 column sat (after `visible_to`, before `deleted` — verify against `10-table-messages_by_room.cql:19-20` and siblings):
 
 ```cql
 reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 ```
 
-Slotted next to the other rich-content columns (after `visible_to`, before `deleted` — exactly where the original column sat).
+And gains a `WITH compaction = {'class': '<TWCS|LCS>'}` clause per §2.4 (TWCS for the bucketed tables, LCS for `messages_by_id` and `pinned_messages_by_room`).
 
-**Delete** (artefacts of the side-table iteration that we're forgetting ever existed):
-- `14-table-message_reactions.cql`
-- `90-migrate-drop-old-reactions-column.cql`
-
-**Add:** `90-migrate-reactions-to-v3.cql` — for dev keyspaces still on the v1 shape (`MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>`):
+Add `90-migrate-reactions-to-v3.cql` for dev keyspaces still on v1 — **fully idempotent** via `IF NOT EXISTS` / `IF EXISTS`:
 
 ```cql
 CREATE TYPE IF NOT EXISTS chat.reaction_key (emoji TEXT, user_account TEXT);
-CREATE TYPE IF NOT EXISTS chat.reactor_info (user_id TEXT, chinese_name TEXT, english_name TEXT, account TEXT, reacted_at TIMESTAMP);
+CREATE TYPE IF NOT EXISTS chat.reactor_info (
+  user_id TEXT, eng_name TEXT, chn_name TEXT, account TEXT, reacted_at TIMESTAMP
+);
 
 ALTER TABLE chat.messages_by_room        DROP IF EXISTS reactions;
-ALTER TABLE chat.messages_by_room        ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.messages_by_room        ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
 ALTER TABLE chat.messages_by_id          DROP IF EXISTS reactions;
-ALTER TABLE chat.messages_by_id          ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.messages_by_id          ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
 ALTER TABLE chat.thread_messages_by_room DROP IF EXISTS reactions;
-ALTER TABLE chat.thread_messages_by_room ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.thread_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
 ALTER TABLE chat.pinned_messages_by_room DROP IF EXISTS reactions;
-ALTER TABLE chat.pinned_messages_by_room ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 ```
 
-Idempotent on fresh setups (no column to drop). On re-runs the `ADD reactions` call will fail loudly because the column already exists — acceptable; this script is meant to run once during the upgrade window.
+`CREATE TYPE IF NOT EXISTS`, `DROP IF EXISTS column`, and `ADD IF NOT EXISTS column` are all idempotent in Cassandra 5 (the version pinned in `docker-local/compose.deps.yaml`). The script can re-run safely on every `make deps-up`. Compaction strategy on existing dev tables is NOT changed by the migration (you'd need to drop + recreate the table for that — devs who want it can wipe their keyspace).
 
 ## 5. Schema Docs — `docs/cassandra_message_model.md`
 
 - Restore the `reactions` row on each of the four message-table sections; type column reads `MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>`.
-- Drop the "Reaction table" section that the side-table iteration added.
-- Add a "Reaction UDTs" subsection documenting `reaction_key` + `reactor_info` with each field's role.
-- Keep the existing `MESSAGE_BUCKET_HOURS` paragraph as-is. Reactions sit inside the bucketed tables, so bucketing now naturally applies to reactions too — note this explicitly so a reader doesn't infer otherwise from the side-table-era spec.
+- Drop the "Reaction table" section that the v2 iteration added.
+- **Delete the v2-era exception note at line 70** ("Applies to … NOT to `message_reactions`") — becomes nonsense once the side table is gone.
+- Add a "Reaction UDTs" subsection documenting `reaction_key` + `reactor_info` field by field, the immutability / extensibility caveats from §2.1, and the mirror-write source-of-truth contract from §2.5.
+- Note the compaction strategy chosen per table per §2.4.
 
 ## 6. Client API — `docs/client-api.md`
 
-The map cannot serialise as a JSON object directly because the key is a struct. Two viable wire shapes:
+**Wire shape: flat array of records, sorted.**
 
-- **(a) Array of objects** — `reactions: [{key: {emoji, userAccount}, value: {...}}, …]`. Verbose but JSON-faithful.
-- **(b) Flat object keyed by `"<emoji>:<userAccount>"`** — `reactions: {"👍:alice": {...}, …}`. Compact, but the FE must split the composite key.
+```json
+"reactions": [
+  {"emoji": "❤️", "userAccount": "bob",   "userId": "u2", "engName": "Bob",   "chnName": "鲍勃",   "account": "bob",   "reactedAt": "2026-05-25T10:23:00Z"},
+  {"emoji": "👍", "userAccount": "alice", "userId": "u1", "engName": "Alice", "chnName": "爱丽丝", "account": "alice", "reactedAt": "2026-05-25T10:22:00Z"}
+]
+```
 
-**Picked: (a) array of objects.** JSON-natural, no string parsing on the FE, the `key` substructure carries semantic information separately from the value. Implemented via custom `MarshalJSON` / `UnmarshalJSON` for the `Message.Reactions` map.
+**Why flat (not `[{key, value}, ...]`):**
+- One-level destructure in TS — `r.emoji`, not `r.key.emoji`.
+- The `key`/`value` nesting was a Go-implementation leak (mirrors how the map encodes); clients shouldn't need to know that.
+- `account` already duplicates `userAccount` (§2.1 calls this denormalisation intentional); the flat form makes the duplication a server-side detail, not a client-visible one. If we keep both fields on the wire the client can pick whichever is convenient; if we drop one, prefer `userAccount` since it matches the schema-level key field name.
+
+**Ordering:** sorted by `(emoji ASC, userAccount ASC)` server-side in `Reactions.MarshalJSON`. This makes responses byte-stable across requests, makes snapshot tests deterministic, and avoids React list flicker.
+
+**Empty state:** nil `Reactions` → field omitted (via `omitempty`). Empty `Reactions{}` → `"reactions": []`. The FE should treat both as "no reactions".
+
+**Breaking change.** The wire shape is a complete change from the current `docs/client-api.md` documentation, which describes reactions as "Map of `emoji → Participant[]`" (v1-era). **Flag this as a breaking change** in the client-api.md update; bump any API version field if the system has one.
+
+**Empirical FE impact today:** `grep -rni "reaction" chat-frontend/` returns zero hits. The frontend doesn't render reactions yet — the wire-shape change has no actual consumers to break. The doc update is forward-looking.
+
+**Live-event shape vs history shape — known asymmetry.** The `add-reaction-support` branch emits `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` for live updates. That's a delta event without display-name fields. The history (this spec) returns enriched records. Frontends will need to translate live deltas (possibly with a user-cache lookup for display names) before merging into their local state of message reactions. Document this asymmetry in the addReaction PR.
 
 Affected handlers: same six as before (`LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`, `GetThreadMessages`, `GetThreadParentMessages`). Update `docs/client-api.md`'s description of the `reactions` field to the new shape; per CLAUDE.md §5 this update lands in the same PR.
 
-## 7. `history-service` — Read Path
+## 7. `history-service` — Read Path (Commit A: v2 reversal)
 
-The branch's side-table machinery is **removed**:
+The branch's side-table machinery is **removed** in Commit A:
 
 - Delete `history-service/internal/cassrepo/message_reactions.go`, `message_reactions_integration_test.go`, `message_reactions_bench_test.go`, `repository_test.go` (the clamp test).
 - Delete `history-service/internal/service/reactions.go`, `reactions_test.go`.
 - Remove the 6 `hydrateReactions` / `GetReactionsByMessageID` call sites in `messages.go` + `threads.go`.
 - Remove the 4 `_HydrateReactionsError` tests in `messages_test.go` and the 2 in `threads_test.go`.
-- Remove the 5 `*_HydratesReactions` happy-path tests; the reactions assertions move into the existing per-handler happy-path tests (since reactions now ride with the row, the regular happy-path tests can seed + assert reactions in the same fixture).
+- Remove the 5 `*_HydratesReactions` happy-path tests; reactions assertions move into the existing per-handler happy-path tests (since reactions ride with the row, the regular happy-path tests can seed + assert reactions in the same fixture).
 - Revert `MessageReader` interface: drop `GetReactionsByMessageID` and `GetReactionsByMessageIDs`.
 - Regenerate mocks (`make generate SERVICE=history-service`).
 - Revert `NewRepository` to its 3-arg form `(session, bucket, maxBuckets)`. Drop the `reactionsConcurrency` field on `Repository` and the `< 1 → 1` clamp.
-- Restore the `reactions` column to `baseColumns` in `messages_by_room.go` and to the column list in `thread_messages.go`.
+- Restore the `reactions` column to `baseColumns` in `messages_by_room.go` and to the column list in `thread_messages.go` (with v3 shape in Commit B; Commit A can leave it as a v1-shaped scan target since no real rows exist yet on the v3-shaped column — but cleanest is to do the whole-column restore in Commit B).
 - Drop `REACTIONS_FETCH_CONCURRENCY` from `internal/config/config.go`.
 - Update `cmd/main.go:93` to pass the 3-arg `NewRepository` shape; remove the `cfg.ReactionsFetchConcurrency` reference.
 
-Update the 30+ test sites that pass `(session, bucket, 365, 50)` back to `(session, bucket, 365)`.
+Update the ~30 test sites that pass `(session, bucket, 365, 50)` back to `(session, bucket, 365)`.
 
-After this PR a paged read returns reactions for free — no additional Cassandra round-trips, no errgroup, no concurrency cap.
+After Commit B a paged read returns reactions for free — no additional Cassandra round-trips, no errgroup, no concurrency cap.
 
 ## 8. Tests
 
-### Unit tests
-- Round-trip tests for `ReactionKey`, `ReactorInfo`, `Message.Reactions` JSON marshalling (including the custom `MarshalJSON`/`UnmarshalJSON` for the map-as-array wire shape).
-- The existing handler unit tests' happy-path cases seed + assert reactions on the row. No separate `*_HydratesReactions` / `*_HydrateReactionsError` tests needed.
+### 8.0 gocql `map[UDT]UDT` smoke test (Commit B, FIRST)
 
-### Integration tests
-- Add an integration test that writes a row with a 2-entry reactions map via raw CQL and confirms `GetMessageByID` returns the deserialised map.
-- Update existing `*_integration_test.go` row-round-trip tests to seed + assert on the new map shape (the side-table iteration removed those blocks; we re-add them).
+Before any production-code changes in Commit B, add `pkg/model/cassandra/gocql_map_udt_smoke_test.go` (build-tag `integration`) that:
 
-### Concurrency / benchmark
+1. Creates a tiny `chat.reaction_smoke` test table with just `(message_id TEXT PRIMARY KEY, reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>)` and the two UDTs in an isolated keyspace via `testutil.CassandraKeyspace`.
+2. Inserts a 2-entry reactions map via raw gocql `Query.Bind`.
+3. `SELECT … reactions FROM chat.reaction_smoke` via raw `Iter.Scan(&out)` where `out` is `map[ReactionKey]ReactorInfo`.
+4. Asserts equality round-trip on both entries.
+
+If this test fails, the implementer **must** add `MarshalUDT` / `UnmarshalUDT` methods to `ReactionKey` and `ReactorInfo` (and add the same to this test's setup). The smoke test is the gate: design proceeds iff it passes.
+
+### 8.1 Unit tests
+Round-trip tests for `ReactionKey`, `ReactorInfo`, `Reactions` JSON marshalling — full enumeration in §3.4 (happy, empty, nil-via-omitempty, duplicate-key invalid input, malformed JSON).
+
+The existing per-handler happy-path tests seed `Reactions` on their fixture messages and assert the field on the response. No `*_HydratesReactions` or `*_HydrateReactionsError` tests needed — reactions are in-row.
+
+### 8.2 Integration tests
+- An integration test that writes a row with a 2-entry reactions map (via raw CQL using bound UDT structs, per §2.3) and confirms `GetMessageByID` returns the deserialised map.
+- Update the existing `*_integration_test.go` row-round-trip tests in `cassrepo/` to seed + assert on the new map shape (v2 stripped these blocks; we re-add them).
+
+### 8.3 Concurrency / benchmark
 - Delete `BenchmarkGetReactionsByMessageIDs` (no longer applicable).
 - No fan-out concurrency to test.
 
 Coverage targets unchanged: ≥80% floor / ≥90% on touched code per CLAUDE.md §4.
 
-## 9. `message-worker` — DDL parity
+## 9. `setupCassandra` + `message-worker` — DDL parity
 
-The inline `CREATE TABLE` strings in `message-worker/integration_test.go` need the `reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>` column **and** the two new UDTs (`reaction_key`, `reactor_info`) created above the table DDL. Same for `history-service/internal/cassrepo/integration_test.go` and `internal/service/integration_test.go`. Search regex (`reactions\s+MAP`) catches all four sites.
+This is critical and was missed in the v2 spec. **Three** test files have inline schema that must mirror the production DDL:
 
-`message-worker`'s production INSERT statements do not currently set the reactions column (they never did; the column is populated by reaction writes, not message creation). Confirm and leave alone.
+1. **`history-service/internal/cassrepo/integration_test.go:15-141`** (the `setupCassandra` helper):
+   - Delete the `message_reactions` `CREATE TABLE` block (lines 126-131).
+   - Add `CREATE TYPE IF NOT EXISTS … reaction_key (…)` and `CREATE TYPE IF NOT EXISTS … reactor_info (…)` before the message tables.
+   - Add the `reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>` column to all four message-table `CREATE TABLE` strings.
+   - Note: `pinned_messages_by_room` block in the helper is currently incomplete (missing most columns). Beyond scope to fix here, but flag.
+
+2. **`history-service/internal/service/integration_test.go`** — same edits if it duplicates schema.
+
+3. **`message-worker/integration_test.go`** — same. `message-worker`'s production INSERT statements do not currently set the reactions column (they never did; the column is populated by reaction writes, not message creation). Confirm and leave the INSERTs alone.
+
+Search regex `reactions\s+MAP` catches all sites. After Commit B, no occurrences of the v1 or v2 shape should remain anywhere — the regex must hit only the four production DDL files + the three test files, all with the v3 shape.
 
 ## 10. Mocks
 
-`make generate SERVICE=history-service` regenerates `internal/service/mocks/mock_repository.go` after the `MessageReader` interface shrinks. Commit the regenerated file.
+`make generate SERVICE=history-service` regenerates `internal/service/mocks/mock_repository.go` after `MessageReader` shrinks (Commit A) and the build settles (Commit B requires no further mock changes). Commit the regenerated file in Commit A.
 
 ## 11. Out of Scope — `addReaction` PR
 
-The reaction-write path remains a separate PR. With the new shape it is **much simpler** than what the in-flight `add-reaction-support` branch currently has. The write path becomes:
+The reaction-write path remains a separate PR. With the v3 shape it is **much simpler** than what the in-flight `add-reaction-support` branch currently has. The write path:
 
 ```cql
 -- add
 UPDATE messages_by_id
-   SET reactions[{emoji: ?, user_account: ?}] = {user_id: ?, chinese_name: ?, english_name: ?, account: ?, reacted_at: ?}
+   SET reactions[?] = ?, updated_at = ?
  WHERE message_id = ? AND created_at = ?;
 
 -- remove
-DELETE reactions[{emoji: ?, user_account: ?}]
+DELETE reactions[?]
   FROM messages_by_id
  WHERE message_id = ? AND created_at = ?;
 ```
 
-Plus the same `UPDATE` / `DELETE` against the 1–3 mirror tables the message lives in (`messages_by_room`, `thread_messages_by_room`, `pinned_messages_by_room` when applicable). One map-cell write per reaction op, per mirror. No LWT-CAS, no read-modify-write.
+Plus the same `UPDATE` / `DELETE` against the 1–3 mirror tables the message lives in. One map-cell write per reaction op, per mirror. No LWT-CAS, no read-modify-write. Per §2.5, `messages_by_id` is the source of truth.
 
-The canonical event pipeline (broadcast-worker reaction fan-out, notification-worker reaction handling, search-sync-worker skipping the event) stays as the `add-reaction-support` branch has it.
+### Handoff to `claude/add-reaction-support-jd0tU`
 
-Edit/delete behaviour of the host message:
+Once this PR merges, the add-reaction branch's rebase delta:
+
+- **Keep:** `pkg/emoji/*` (shortcode validator), `pkg/model/custom_emoji.go`, `pkg/model/event.go` reaction event additions (`EventReacted`, `MessageReactedPayload`), `pkg/subject/*` reaction subjects (`MsgReactPattern`, `MsgCanonicalReacted`), broadcast-worker `handleReacted` wiring, notification-worker reaction wiring, search-sync-worker reaction-skip.
+- **Rewrite:** `history-service/internal/cassrepo/reactions.go` — entire LWT-based `ToggleReaction` collapses to the simple `UPDATE/DELETE` map-cell writes above. The four-table mirror logic remains; `messages_by_id` is written first.
+- **Adjust:** `history-service/internal/service/reactions.go` — `ReactMessage` handler still resolves the actor, validates the shortcode (now via the gatekeeper's NFC-normalised emoji), but the read-before-write for `alreadyReacted` membership check becomes a simple map lookup on `msg.Reactions[ReactionKey{Emoji, UserAccount}]` since reactions are now in-row. The handler may need a small re-read of `msg` before the toggle if there's a race window, or can use `IF NOT EXISTS` / `IF EXISTS` on the map-cell write for toggle-correctness without read-modify-write.
+- **Delete:** any code that depended on the v1 `Reactions map[string][]Participant` shape.
+
+The canonical event pipeline (broadcast-worker → frontends, notification-worker, search-sync-worker skip) is untouched by this change.
+
+### Edit / delete behaviour of the host message
 - **Edit:** reactions are preserved (the field isn't touched by the edit handler).
 - **Soft delete:** reactions stay on the row; rendered as "[deleted]" upstream, so they are effectively invisible without any code touching them.
 - **Hard delete** (if/when introduced): reactions go away with the row. No cascade needed.
 
-## 12. Clean services (no changes needed)
+### Federation
+Cross-site reaction propagation via OUTBOX/INBOX remains out of scope for both this PR and the addReaction PR. Documented as a known limitation.
 
-`broadcast-worker`, `inbox-worker`, `notification-worker`, `room-service`, `room-worker`, `search-service`, `search-sync-worker`, `auth-service`, `mock-user-service`, `pkg/stream`, `pkg/subject` — no reaction references to touch in this PR.
+## 12. Clean services (no changes needed in this PR)
+
+`broadcast-worker`, `inbox-worker`, `notification-worker`, `room-service`, `room-worker`, `search-service`, `search-sync-worker`, `auth-service`, `mock-user-service`, `pkg/stream`, `pkg/subject` — no reaction references to touch.
 
 ## 13. Rollout
 
-1. Land the new UDTs (`07`, `08`) + the column on the four message tables (10-13) + the migration script (90).
-2. Land the Go model changes (`ReactionKey`, `ReactorInfo`, updated `Message.Reactions`, custom JSON marshal).
-3. Land the history-service rollback of the side-table read path.
-4. Land the test + docs updates.
-5. The `add-reaction-support` branch rebases against this; their writer collapses to single-cell map writes.
+### Commit A — Revert v2
 
-Acceptance criteria:
+1. Delete side-table code (cassrepo + service files).
+2. Remove hydration wire sites in `messages.go` + `threads.go`.
+3. Remove v2-specific tests.
+4. Shrink `MessageReader` interface.
+5. Regenerate mocks.
+6. Revert `NewRepository` arity.
+7. Restore the `reactions` column to `baseColumns` / thread columns (placeholder type; Commit B brings the v3 shape).
+8. Drop `REACTIONS_FETCH_CONCURRENCY` config.
+9. Update `cmd/main.go` and the ~30 test call sites for the 3-arg constructor.
+10. Delete `docker-local/cassandra/init/14-table-message_reactions.cql` and `90-migrate-drop-old-reactions-column.cql`.
+11. Delete `pkg/model/cassandra/message.go:71-76` (`MessageReaction`) and `message_test.go:223-235`.
+
+After Commit A: lint, build, and tests pass. Reactions are gone from the code entirely — the column exists in DDL as a placeholder (v1-shape syntactic match, no rows reading it because no readers exist).
+
+### Commit B — Introduce v3
+
+1. Add the gocql `map[UDT]UDT` smoke test (§8.0). **Verify it passes** before continuing.
+2. Add the two UDTs (`07-udt-reaction_key.cql`, `08-udt-reactor_info.cql`).
+3. Update the four message-table `CREATE TABLE` files: `reactions` column to v3 shape + explicit compaction strategy per §2.4.
+4. Add the migration script (`90-migrate-reactions-to-v3.cql`).
+5. Add the Go types (`ReactionKey`, `ReactorInfo`, named `Reactions` type with `MarshalJSON` / `UnmarshalJSON`).
+6. Change `Message.Reactions` field type to `Reactions`.
+7. Add round-trip tests per §3.4.
+8. Update integration test schemas per §9.
+9. Update `docs/cassandra_message_model.md` per §5.
+10. Update `docs/client-api.md` per §6 (flag breaking change).
+
+### Acceptance criteria
+
+- gocql `map[UDT]UDT` smoke test passes (the gate).
 - All 6 history handlers return reactions inline on the message rows.
-- `make lint`, `make test`, `make test-integration SERVICE=history-service`, `make sast` all green.
-- `docs/cassandra_message_model.md` and `docs/client-api.md` updated in the same PR.
+- `make fmt`, `make lint`, `make test`, `make test-integration SERVICE=history-service`, `make sast` all green.
+- `make generate` produces no mock drift.
+- `docs/cassandra_message_model.md` and `docs/client-api.md` updated; client-api flagged as breaking.
+- `docs/reviews/` cleared before opening (per CLAUDE.md §5).
+- Splitting into Commit A + Commit B is preserved; `git revert <B>` returns to v2; `git revert <A> <B>` returns to current main.
 
-Effort estimate: ~1 day. Most of it is mechanical reversal of the side-table iteration plus the new UDT plumbing.
+### Effort estimate
+
+**2.5 days** for a focused implementer:
+- Day 1: Commit A reversal + the gocql smoke test (gate validation).
+- Day 1.5–2.5: Commit B v3 implementation + tests + docs + review-cycle churn.
+
+The earlier "1 day" estimate didn't account for the ~30 call-site reversal, custom JSON marshaller, three inline DDL test files, mock regen, doc updates, and CI review churn.
 
 ## 14. Decisions Walked Back (for posterity)
 
-This is the **third** iteration of the reactions storage design on this branch. The journey:
+This is the **third** iteration of the reactions storage design on this branch.
 
 - **v1 — Original embedded `MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>`.** Rejected mid-branch because every change to a single reaction required rewriting the whole emoji's set, generating range tombstones on the message row and accumulating read amplification.
 - **v2 — Side table `message_reactions((message_id), emoji)`** (the initial direction of this branch). Eliminated write amplification by keeping reactions in one place, but introduced N parallel single-partition reads per page hydration. Workable but added complexity (`hydrateReactions` helper, errgroup, fan-out cap config) and shifted the cost to the read path — wrong direction for a read-heavy workload.
-- **v3 — Embedded `MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>`** (this spec). Keeps reactions inline (free read), uses a compound `(emoji, user)` map key so each reaction is its own atomic map cell (no nested frozen collection, no whole-set rewrites). Pays write amplification (mirror tables) but for a low-frequency event that's acceptable; pays zero read amplification. Self-uniqueness falls out of the map-key constraint. Denormalised reactor display info lives in the value so reads are render-ready.
+- **v3 — Embedded `MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>`** (this spec). Keeps reactions inline (free read), uses a compound `(emoji, user_account)` map key so each reaction is its own atomic map cell (no nested frozen collection, no whole-set rewrites). Pays write amplification (mirror tables) but for a low-frequency event that's acceptable; pays zero read amplification. Self-uniqueness falls out of the map-key constraint. Denormalised reactor display info lives in the value so reads are render-ready.
 
 The v2 iteration is being treated as if it never landed for migration purposes — the inline DDL goes straight from v1 to v3, and the migration script handles dev keyspaces still on v1.
