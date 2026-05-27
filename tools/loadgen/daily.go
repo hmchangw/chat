@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -88,4 +90,118 @@ func parseStepList(s string) ([]int, error) {
 		out = append(out, n*mult)
 	}
 	return out, nil
+}
+
+// stepEnv bundles the runtime dependencies of a step. Stub-able for unit tests.
+//
+//nolint:unused // wired up by runDaily in a later task
+type stepEnv struct {
+	collector      *Collector
+	direct         *directPool
+	multiplex      *multiplexPool
+	users          []*userState
+	thresholds     Thresholds
+	pollPending    func(ctx context.Context) (map[string]int64, error)
+	scrapeServices func(ctx context.Context) (map[string]int64, error)
+	maxDirect      int // direct pool cap (from cfg.MaxDirectUsers)
+	warmup         time.Duration
+	hold           time.Duration
+	cooldown       time.Duration
+	mintJWT        func(ctx context.Context, account string) error // optional; nil = skip
+}
+
+// runStep executes one ramp step: activates additional users (delta over
+// previous), warms up, holds, evaluates SLO signals, and cools down.
+// The current step is `n`; the previous step's user count is `prevN` (0 for
+// the first step). Users [prevN..n) are activated this step.
+//
+//nolint:unused // wired up by runDaily in a later task
+func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
+	startedAt := time.Now()
+	delta := n - prevN
+
+	activateUsers(ctx, env, prevN, n)
+	if delta > 0 {
+		slog.Info("step warmup", "n", n, "delta", delta)
+	}
+
+	timer := time.NewTimer(env.warmup)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return StepResult{N: n, StartedAt: startedAt}
+	case <-timer.C:
+	}
+
+	startPending, _ := env.pollPending(ctx)
+	_, _ = env.scrapeServices(ctx) // first call records baseline
+
+	env.collector.Reset()
+
+	holdEnd := time.Now().Add(env.hold)
+	for time.Now().Before(holdEnd) {
+		select {
+		case <-ctx.Done():
+			return StepResult{N: n, StartedAt: startedAt}
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	endPending, _ := env.pollPending(ctx)
+	svcErrors, _ := env.scrapeServices(ctx)
+
+	in := stepInputs{
+		N: n, StartedAt: startedAt, HoldDuration: env.hold,
+		LatencySamples:  env.collector.LatencySamples(),
+		AttemptedOps:    env.collector.AttemptedOps(),
+		FailedOps:       env.collector.FailedOps(),
+		ConsumerPending: diffPending(startPending, endPending),
+		ServiceErrors:   svcErrors,
+		Self:            snapshotSelfMetrics(),
+	}
+	r := evaluateStep(in, env.thresholds)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(env.cooldown):
+	}
+
+	return r
+}
+
+// activateUsers brings users in the range [from, to) online: optionally
+// mints a JWT, assigns them to a pool, opens connections / registers room
+// interest. Rate-limited at 500 users/sec.
+//
+//nolint:unused // wired up by runDaily in a later task
+func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
+	if from >= to {
+		return
+	}
+	tokens := time.NewTicker(time.Second / 500)
+	defer tokens.Stop()
+	for i := from; i < to && i < len(env.users); i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tokens.C:
+		}
+		u := env.users[i]
+		if env.mintJWT != nil {
+			if err := env.mintJWT(ctx, u.Account); err != nil {
+				slog.Warn("jwt mint failed", "user", u.ID, "err", err)
+			}
+		}
+		if env.direct != nil && env.direct.Size() < env.maxDirect {
+			if err := env.direct.Add(u); err != nil {
+				slog.Warn("direct pool add failed", "user", u.ID, "err", err)
+				continue
+			}
+		} else if env.multiplex != nil {
+			if err := env.multiplex.Add(u); err != nil {
+				slog.Warn("multiplex pool add failed", "user", u.ID, "err", err)
+				continue
+			}
+		}
+	}
 }

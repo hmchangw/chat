@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -51,4 +52,25 @@ func TestParseDailyConfig_RejectsTooManyConns(t *testing.T) {
 		"--max-conns-per-process=10000",
 	})
 	require.Error(t, err) // 30000 direct + 200 mux > 10000 cap
+}
+
+func TestRunStep_StubReturnsPassWhenEverythingIsGreen(t *testing.T) {
+	env := &stepEnv{
+		collector:  NewCollector(NewMetrics(), "test"),
+		thresholds: defaultThresholds(),
+		pollPending: func(ctx context.Context) (map[string]int64, error) {
+			return map[string]int64{}, nil
+		},
+		scrapeServices: func(ctx context.Context) (map[string]int64, error) {
+			return map[string]int64{}, nil
+		},
+		maxDirect: 100,
+		warmup:    50 * time.Millisecond,
+		hold:      100 * time.Millisecond,
+		cooldown:  20 * time.Millisecond,
+	}
+	r := runStep(context.Background(), env, 100, 0)
+	require.False(t, r.Tripped)
+	require.False(t, r.Inconclusive)
+	require.Equal(t, 100, r.N)
 }

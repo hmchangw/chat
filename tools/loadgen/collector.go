@@ -27,6 +27,8 @@ type Collector struct {
 	e2      []sample
 
 	multiplexDrops atomic.Int64
+	attempted      atomic.Int64
+	failed         atomic.Int64
 }
 
 // RecordMultiplexDrop increments the count of broadcasts dropped because the
@@ -162,4 +164,42 @@ func (c *Collector) E2Samples() []time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return snapshotLatencies(c.e2)
+}
+
+// RecordActionAttempt is called by the daily action emitter for every action
+// dispatched, regardless of outcome.
+func (c *Collector) RecordActionAttempt() { c.attempted.Add(1) }
+
+// RecordActionFailure is called when an action returns an error.
+func (c *Collector) RecordActionFailure() { c.failed.Add(1) }
+
+// AttemptedOps returns the total count of action attempts since last Reset.
+func (c *Collector) AttemptedOps() int64 { return c.attempted.Load() }
+
+// FailedOps returns the total count of failed actions since last Reset.
+func (c *Collector) FailedOps() int64 { return c.failed.Load() }
+
+// Reset clears all per-step counters and sample slices.
+// Called at the end of warmup so the hold window starts fresh.
+func (c *Collector) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.e1 = c.e1[:0]
+	c.e2 = c.e2[:0]
+	c.byReqID = make(map[string]publishEntry)
+	c.byMsgID = make(map[string]publishEntry)
+	c.attempted.Store(0)
+	c.failed.Store(0)
+}
+
+// LatencySamples returns the current broadcast-latency samples in milliseconds.
+// Used by the daily-IM verdict evaluator.
+func (c *Collector) LatencySamples() []float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]float64, len(c.e2))
+	for i, s := range c.e2 {
+		out[i] = float64(s.latency.Microseconds()) / 1000.0
+	}
+	return out
 }
