@@ -145,3 +145,33 @@ All new integration test files carry `//go:build integration`. `pkg/model/cassan
 
 **Overall verdict:** Unit-test surface for the JSON codec is thorough on error paths; the regression-detection gap is in **integration coverage** — no test writes a non-nil `Reactions` through `structScan`, so a revert of the `MapScan → positional Scan` change or a future structScan regression would not be caught by CI.
 
+---
+
+## Bug & security
+
+### SAST results
+
+| Tool         | Status | Notes |
+|--------------|--------|-------|
+| gosec        | PASS   | No new findings introduced by this branch. |
+| govulncheck  | PASS   | No reachable vulnerabilities. |
+| semgrep      | FAIL   | Pre-existing Python/`pyo3` environment crash in this sandbox; **not attributable to this PR**. Re-run in CI to confirm. |
+
+### Findings
+
+**high** — `cassrepo/utils.go:139-143`: structScan unmapped-column returns `false` silently; no error propagated to caller. When Cassandra returns a column with no matching `cql` tag on the destination struct, `structScan` returns `false` without `iter.SetErr`. Calling loops (`scanMsgsFromIter`, `scanMessagesUpTo`) treat `false` identically to iterator exhaustion → `break` → `iter.Close()` returns nil. Result: paginated reads return empty pages with `HasNext: false` and no error; `GetMessageByID` returns `(nil, nil)` ("not found"). A future DDL column addition would cause a complete silent availability failure with no metrics, no log line, no error to the client. (Reflagged here from the Go-expert lens — same line, same root cause, multiple-angle confirmation.)
+
+**medium** — `pkg/model/cassandra/message.go:136-161`: `UnmarshalJSON(data []byte)` calls `json.Unmarshal(data, &entries)` without any guard on `len(data)`. The comparable cursor decoder in `utils.go:20-23` correctly bounds `len(encoded)` against `maxCursorBytes`; the same discipline should apply here. A malicious or corrupted Cassandra row could trigger unbounded allocation. Risk is low in normal operation but worth a defensive cap.
+
+**medium** — `docker-local/cassandra/init/90-migrate-reactions-to-v3.cql:19-28`: The migration script unconditionally `DROP IF EXISTS reactions` then `ADD IF NOT EXISTS reactions ...`. The header comment frames this as "idempotent" — it is **only** idempotent on an empty v3 keyspace. On a populated v3 keyspace (the normal state after any reaction is added), the DROP tombstones all reaction data. Most Cassandra container configurations execute the `init/` directory on each fresh start, so a `docker-compose down && up` cycle with persistent volumes would silently destroy reaction history. The header warning is present but downplays the severity of re-runs. Recommend either rephrasing the comment ("safe to re-run only against a keyspace with no reaction data") or guarding the DROP behind a sentinel check.
+
+**low** — `cassrepo/utils_test.go`: No unit test covers the unmapped-column path of `structScan`. Combined with the silent-false-return issue above, this path is both unguarded and untested.
+
+**low** — `pkg/model/cassandra/message.go:136-161`: If `data` is a well-formed JSON object `{}`, `json.Unmarshal` returns an opaque error (`cannot unmarshal object into Go value of type []cassandra.reactionEntry`), which gets wrapped and returned. The `TestReactions_UnmarshalJSON_MalformedJSON` case covers `{not valid json` but not the well-formed-but-wrong-type boundary. Low impact; a typed schema-mismatch error message would be friendlier.
+
+**nitpick** — `pkg/model/cassandra/message.go:76`: The doc comment claims emoji values are NFC-normalised, but the Go code does not enforce normalisation — the byte sequence read from Cassandra is stored verbatim. NFC enforcement is delegated to the (future) `addReaction` PR at the gatekeeper layer. Documented behaviour; flagging for visibility.
+
+**nitpick** — `pkg/model/cassandra/message.go:112-131`: `MarshalJSON` ranges the map (non-deterministic iteration order) then `sort.Slice` imposes canonical order. Concurrency-safe by Go contract — `r Reactions` is a value receiver (map header copy) and the local slice is private. No race risk.
+
+**Overall verdict:** The v3 embedded-reactions model is structurally sound and the marshal/unmarshal logic is correct. The `structScan` silent-availability gap is the only `high` introduced; the migration-script `DROP THEN ADD` framing is a `medium` that's easy to fix with a comment rewrite.
+
