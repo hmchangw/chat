@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // renderConsole writes a human-readable step-by-step table plus the ANSWER
@@ -64,14 +65,7 @@ func worstPending(m map[string]ConsumerPendingDelta) string {
 }
 
 func joinReasons(rs []string) string {
-	out := ""
-	for i, r := range rs {
-		if i > 0 {
-			out += "; "
-		}
-		out += r
-	}
-	return out
+	return strings.Join(rs, "; ")
 }
 
 // writeDailyCSV writes one row per StepResult, sorted ascending by N.

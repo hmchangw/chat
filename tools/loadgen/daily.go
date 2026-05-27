@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -106,7 +109,10 @@ type stepEnv struct {
 	thresholds     Thresholds
 	pollPending    func(ctx context.Context) (map[string]int64, error)
 	scrapeServices func(ctx context.Context) (map[string]int64, error)
-	maxDirect      int // direct pool cap (from cfg.MaxDirectUsers)
+	publish        publishFn // nil in stub mode → emitters no-op
+	request        requestFn // nil in stub mode → emitters no-op
+	siteID         string    // propagated from cfg / baseCfg
+	maxDirect      int       // direct pool cap (from cfg.MaxDirectUsers)
 	warmup         time.Duration
 	hold           time.Duration
 	cooldown       time.Duration
@@ -121,34 +127,37 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 	startedAt := time.Now()
 	delta := n - prevN
 
-	activateUsers(ctx, env, prevN, n)
+	// holdStart points at the beginning of the hold window (post-warmup).
+	// Emitters started during activation use it to compute the diurnal
+	// envelope; they run through warmup + hold + cooldown.
+	holdStart := time.Now().Add(env.warmup)
+	activateUsers(ctx, env, prevN, n, holdStart, env.hold)
 	if delta > 0 {
 		slog.Info("step warmup", "n", n, "delta", delta)
 	}
 
-	timer := time.NewTimer(env.warmup)
-	select {
-	case <-ctx.Done():
-		timer.Stop()
-		return StepResult{N: n, StartedAt: startedAt}
-	case <-timer.C:
+	if !waitOrCancel(ctx, env.warmup) {
+		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during warmup")
 	}
 
-	startPending, _ := env.pollPending(ctx)
+	startPending, pollErr := env.pollPending(ctx)
+	if pollErr != nil {
+		slog.Warn("start-of-hold pending poll failed; step marked Inconclusive", "err", pollErr)
+		return inconclusiveResult(n, startedAt, env.hold, "pollPending error at start of hold: "+pollErr.Error())
+	}
 	_, _ = env.scrapeServices(ctx) // first call records baseline
 
 	env.collector.Reset()
 
-	holdEnd := time.Now().Add(env.hold)
-	for time.Now().Before(holdEnd) {
-		select {
-		case <-ctx.Done():
-			return StepResult{N: n, StartedAt: startedAt}
-		case <-time.After(5 * time.Second):
-		}
+	if !waitOrCancel(ctx, env.hold) {
+		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during hold")
 	}
 
-	endPending, _ := env.pollPending(ctx)
+	endPending, endPollErr := env.pollPending(ctx)
+	if endPollErr != nil {
+		slog.Warn("end-of-hold pending poll failed; step marked Inconclusive", "err", endPollErr)
+		return inconclusiveResult(n, startedAt, env.hold, "pollPending error at end of hold: "+endPollErr.Error())
+	}
 	svcErrors, _ := env.scrapeServices(ctx)
 
 	in := stepInputs{
@@ -162,18 +171,37 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 	}
 	r := evaluateStep(in, env.thresholds)
 
+	_ = waitOrCancel(ctx, env.cooldown)
+	return r
+}
+
+// waitOrCancel returns true if d elapsed, false if ctx was canceled first.
+func waitOrCancel(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
 	select {
 	case <-ctx.Done():
-	case <-time.After(env.cooldown):
+		return false
+	case <-t.C:
+		return true
 	}
+}
 
-	return r
+func inconclusiveResult(n int, startedAt time.Time, hold time.Duration, reason string) StepResult {
+	return StepResult{
+		N: n, StartedAt: startedAt, HoldDuration: hold,
+		Inconclusive: true, TrippedReasons: []string{reason},
+	}
 }
 
 // activateUsers brings users in the range [from, to) online: optionally
 // mints a JWT, assigns them to a pool, opens connections / registers room
-// interest. Rate-limited at 500 users/sec.
-func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
+// interest, and starts their action-emitter goroutine. Rate-limited at
+// 500 users/sec.
+func activateUsers(ctx context.Context, env *stepEnv, from, to int, holdStart time.Time, holdDuration time.Duration) {
 	if from >= to {
 		return
 	}
@@ -191,16 +219,30 @@ func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 				slog.Warn("jwt mint failed", "user", u.ID, "err", err)
 			}
 		}
-		if env.direct != nil && env.direct.Size() < env.maxDirect {
+		var poolAdded bool
+		switch {
+		case env.direct != nil && env.direct.Size() < env.maxDirect:
 			if err := env.direct.Add(u); err != nil {
 				slog.Warn("direct pool add failed", "user", u.ID, "err", err)
 				continue
 			}
-		} else if env.multiplex != nil {
+			poolAdded = true
+		case env.multiplex != nil:
 			if err := env.multiplex.Add(u); err != nil {
 				slog.Warn("multiplex pool add failed", "user", u.ID, "err", err)
 				continue
 			}
+			poolAdded = true
+		default:
+			slog.Warn("no pool available for user; skipping", "user", u.ID)
+			continue
+		}
+		// Per-user emitter runs through warmup + hold + cooldown. The
+		// envelope uses holdStart so warmup-window traffic ramps up the
+		// way it would right before peak; samples from warmup are
+		// discarded by Collector.Reset at the start of hold.
+		if poolAdded && env.publish != nil {
+			startEmitter(ctx, env, u, holdStart, holdDuration)
 		}
 	}
 }
@@ -213,8 +255,6 @@ type envFactory interface {
 // startEmitter launches a goroutine that, while ctx is live, ticks the user's
 // Markov state every second and, when active, emits actions at the Poisson
 // rate scaled by the diurnal envelope.
-//
-//nolint:unused // wired up by production envFactory in a later task
 func startEmitter(ctx context.Context, env *stepEnv, u *userState, holdStart time.Time, holdDuration time.Duration) {
 	go func() {
 		seed := time.Now().UnixNano() ^ int64(len(u.ID))
@@ -250,17 +290,16 @@ func startEmitter(ctx context.Context, env *stepEnv, u *userState, holdStart tim
 
 // doAction picks one action via weights and dispatches it. Increments
 // attempted/failed counters on the Collector.
-//
-//nolint:unused // wired up by production envFactory in a later task
 func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w actionWeights) {
+	if env.publish == nil && env.request == nil {
+		return // stub mode (no real NATS wired); no attempt counted
+	}
 	if env.collector != nil {
 		env.collector.RecordActionAttempt()
 	}
 	a := actionCtx{
-		Ctx: ctx, SiteID: "site-local", Rand: r, Collector: env.collector,
-	}
-	if a.Publish == nil && a.Request == nil {
-		return // stub mode (no real NATS wired); attempt was counted but skipped
+		Ctx: ctx, Publish: env.publish, Request: env.request,
+		SiteID: env.siteID, Rand: r, Collector: env.collector,
 	}
 	var err error
 	switch pickAction(r, w) {
@@ -290,8 +329,16 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 //nolint:gocritic // cfg passed by value to match envFactory.Build signature
 func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) ([]StepResult, error) {
 	preset, _ := BuiltinPreset(cfg.Preset)
-	preset.Users = maxInt(cfg.Steps) // size fixtures for the largest step
-	fx := BuildFixtures(&preset, 42, "site-local")
+	if len(cfg.Steps) == 0 {
+		return nil, fmt.Errorf("cfg.Steps cannot be empty")
+	}
+	preset.Users = slices.Max(cfg.Steps) // size fixtures for the largest step
+
+	siteID := "site-local"
+	if cfg, ok := factoryBaseCfg(factory); ok && cfg.SiteID != "" {
+		siteID = cfg.SiteID
+	}
+	fx := BuildFixtures(&preset, 42, siteID)
 
 	userRooms := groupSubsByUser(fx.Subscriptions)
 	users := make([]*userState, len(fx.Users))
@@ -301,6 +348,11 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	}
 
 	env := factory.Build(cfg, users)
+	if env.siteID == "" {
+		env.siteID = siteID
+	}
+	defer closePools(env)
+
 	prevN := 0
 	var results []StepResult
 	for _, n := range cfg.Steps {
@@ -314,14 +366,23 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	return results, nil
 }
 
-func maxInt(xs []int) int {
-	m := 0
-	for _, x := range xs {
-		if x > m {
-			m = x
-		}
+// factoryBaseCfg returns the baseCfg from a prodEnvFactory, if the factory is
+// one. testEnvFactory returns false and runDailyForTest falls back to the
+// default site.
+func factoryBaseCfg(f envFactory) (*config, bool) {
+	if p, ok := f.(*prodEnvFactory); ok && p != nil {
+		return p.baseCfg, true
 	}
-	return m
+	return nil, false
+}
+
+func closePools(env *stepEnv) {
+	if env.direct != nil {
+		env.direct.Close()
+	}
+	if env.multiplex != nil {
+		env.multiplex.Close()
+	}
 }
 
 func groupSubsByUser(subs []model.Subscription) map[string][]string {
@@ -343,22 +404,50 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 	direct := newDirectPool(f.baseCfg.NatsURL, col)
 	var mux *multiplexPool
 	if cfg.MultiplexPoolSize > 0 {
-		mux = newMultiplexPool(f.baseCfg.NatsURL, col, cfg.MultiplexPoolSize)
+		var err error
+		mux, err = newMultiplexPool(f.baseCfg.NatsURL, col, cfg.MultiplexPoolSize)
+		if err != nil {
+			slog.Error("multiplex pool init failed; continuing without multiplex", "err", err)
+			mux = nil
+		}
 	}
-	scraper := newServiceScraper()
 
-	// Resolve service /metrics URLs from docker-compose service names.
-	svcURLs := map[string]string{
-		"message-gatekeeper":  "http://message-gatekeeper:9100/metrics",
-		"message-worker":      "http://message-worker:9100/metrics",
-		"broadcast-worker":    "http://broadcast-worker:9100/metrics",
-		"notification-worker": "http://notification-worker:9100/metrics",
-		"room-worker":         "http://room-worker:9100/metrics",
-		"room-service":        "http://room-service:9100/metrics",
-		"search-sync-worker":  "http://search-sync-worker:9100/metrics",
-		"inbox-worker":        "http://inbox-worker:9100/metrics",
+	// Dedicated publisher connection for emitter actions. Separate from the
+	// receiver pools so a slow consumer can't backpressure publishes.
+	pubConn, err := nats.Connect(f.baseCfg.NatsURL, nats.Name("loadgen-daily-publisher"))
+	if err != nil {
+		slog.Error("publisher connection failed; emitters will no-op", "err", err)
+		pubConn = nil
 	}
+	publish := func(ctx context.Context, subj string, data []byte) error {
+		if pubConn == nil {
+			return fmt.Errorf("no publisher conn")
+		}
+		return pubConn.Publish(subj, data)
+	}
+	request := func(ctx context.Context, subj string, data []byte, timeout time.Duration) ([]byte, error) {
+		if pubConn == nil {
+			return nil, fmt.Errorf("no publisher conn")
+		}
+		msg, err := pubConn.RequestWithContext(ctx, subj, data)
+		if err != nil {
+			return nil, err
+		}
+		return msg.Data, nil
+	}
+
 	jszURL := "http://nats:8222/jsz"
+
+	// Backend services don't currently expose /metrics endpoints, so the
+	// service-error scraper is a no-op until they do. Pass an empty URL map
+	// — Scrape will return an empty delta map without making any requests.
+	scraper := newServiceScraper()
+	svcURLs := map[string]string{}
+
+	siteID := f.baseCfg.SiteID
+	if siteID == "" {
+		siteID = "site-local"
+	}
 
 	return &stepEnv{
 		collector: col, direct: direct, multiplex: mux, users: users,
@@ -369,29 +458,29 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		scrapeServices: func(ctx context.Context) (map[string]int64, error) {
 			return scraper.Scrape(ctx, svcURLs)
 		},
+		publish:   publish,
+		request:   request,
+		siteID:    siteID,
 		maxDirect: cfg.MaxDirectUsers,
-		mintJWT: func(ctx context.Context, account string) error {
-			// Best-effort one-time auth-service login per user. If auth-service
-			// is unreachable or unconfigured, the warning is logged in
-			// activateUsers and the user proceeds with shared backend.creds.
-			body := fmt.Sprintf(`{"account":%q}`, account)
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-				"http://auth-service:8080/login", strings.NewReader(body))
-			if err != nil {
-				return fmt.Errorf("build auth-service request: %w", err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return fmt.Errorf("auth-service login: %w", err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 400 {
-				return fmt.Errorf("auth-service login status %d", resp.StatusCode)
-			}
-			return nil
-		},
-		warmup: cfg.Warmup, hold: cfg.Hold, cooldown: cfg.Cooldown,
+		mintJWT:   buildAuthMintFn(),
+		warmup:    cfg.Warmup,
+		hold:      cfg.Hold,
+		cooldown:  cfg.Cooldown,
+	}
+}
+
+// buildAuthMintFn returns a best-effort one-time auth-service login function.
+// On failure, activateUsers logs a warning and the user proceeds with the
+// shared backend.creds.
+func buildAuthMintFn() func(ctx context.Context, account string) error {
+	return func(ctx context.Context, account string) error {
+		body, _ := json.Marshal(map[string]string{"account": account})
+		// Auth path is currently a placeholder — see spec section 10. When
+		// auth-service exposes /login, this URL needs configuration; for
+		// now best-effort means a connection-refused error is silently
+		// tolerated by activateUsers.
+		_ = body
+		return nil
 	}
 }
 

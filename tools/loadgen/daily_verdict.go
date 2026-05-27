@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"runtime/metrics"
@@ -301,24 +302,20 @@ func (s *serviceScraper) Scrape(ctx context.Context, urls map[string]string) (ma
 }
 
 func scrapeErrorCounter(ctx context.Context, url string) (float64, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build metrics request %s: %w", url, err)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("metrics GET %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	buf := make([]byte, 0, 32*1024)
-	tmp := make([]byte, 8192)
-	for {
-		n, err := resp.Body.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil {
-			break
-		}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("metrics read %s: %w", url, err)
 	}
-	return sumCounterFamily(string(buf), "slog_errors_total"), nil
+	return sumCounterFamily(string(body), "slog_errors_total"), nil
 }
 
 func sumCounterFamily(body, family string) float64 {

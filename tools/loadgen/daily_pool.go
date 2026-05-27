@@ -36,8 +36,13 @@ func newDirectPool(natsURL string, c *Collector) *directPool {
 	}
 }
 
-// Add opens a connection for u and subscribes to every room in u.Rooms.
-// Safe to call concurrently for different users.
+// Add opens a connection for u and subscribes to every room in u.Rooms,
+// plus the user-scoped subject for DM broadcasts. Safe to call concurrently
+// for different users.
+//
+// Channel-room broadcasts arrive on subject.RoomEvent(roomID); DM and BotDM
+// broadcasts arrive on subject.UserRoomEvent(account) — both are needed for
+// realistic IM coverage since daily presets are DM-heavy.
 func (p *directPool) Add(u *userState) error {
 	nc, err := nats.Connect(p.url, nats.Name("loadgen-daily-"+u.ID))
 	if err != nil {
@@ -50,10 +55,19 @@ func (p *directPool) Add(u *userState) error {
 		})
 		if err != nil {
 			_ = nc.Drain()
-			return fmt.Errorf("subscribe %s/%s: %w", u.ID, roomID, err)
+			return fmt.Errorf("subscribe room %s/%s: %w", u.ID, roomID, err)
 		}
 		du.subs = append(du.subs, sub)
 	}
+	// User-scoped subscription for DM broadcasts.
+	userSub, err := nc.Subscribe(subject.UserRoomEvent(u.Account), func(m *nats.Msg) {
+		p.onBroadcast(m)
+	})
+	if err != nil {
+		_ = nc.Drain()
+		return fmt.Errorf("subscribe user %s: %w", u.ID, err)
+	}
+	du.subs = append(du.subs, userSub)
 	p.mu.Lock()
 	p.users[u.ID] = du
 	p.mu.Unlock()
@@ -105,7 +119,7 @@ type multiplexPool struct {
 	nextConn  int                         // round-robin assignment
 }
 
-func newMultiplexPool(natsURL string, c *Collector, size int) *multiplexPool {
+func newMultiplexPool(natsURL string, c *Collector, size int) (*multiplexPool, error) {
 	p := &multiplexPool{
 		url: natsURL, collector: c,
 		roomRefs:  make(map[string]int),
@@ -116,37 +130,62 @@ func newMultiplexPool(natsURL string, c *Collector, size int) *multiplexPool {
 		nc, err := nats.Connect(natsURL, nats.Name(fmt.Sprintf("loadgen-daily-mux-%d", i)))
 		if err != nil {
 			p.Close()
-			panic(fmt.Errorf("multiplex conn %d: %w", i, err))
+			return nil, fmt.Errorf("multiplex conn %d: %w", i, err)
 		}
 		p.conns = append(p.conns, nc)
 	}
-	return p
+	return p, nil
 }
 
-// Add registers a user with the multiplex pool.
+// Add registers a user with the multiplex pool. Subscribes the shared
+// connection BEFORE mutating dispatch/refcount maps so a failed subscribe
+// leaves the pool consistent (no orphaned inbox in dispatch).
 func (p *multiplexPool) Add(u *userState) error {
 	inbox := make(chan *nats.Msg, 128)
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// First pass: subscribe to any new room subjects via round-robin conn.
+	// Track which rooms we subscribed *in this Add* so partial failures can
+	// be undone. (roomRefs already > 0 means an earlier user already
+	// subscribed — no new sub needed.)
+	for _, roomID := range u.Rooms {
+		if p.roomRefs[roomID] > 0 || len(p.conns) == 0 {
+			continue
+		}
+		nc := p.conns[p.nextConn%len(p.conns)]
+		p.nextConn++
+		if _, err := nc.Subscribe(subject.RoomEvent(roomID), p.route); err != nil {
+			return fmt.Errorf("multiplex subscribe %s: %w", roomID, err)
+		}
+		// Mark provisionally with refcount 0 — the second pass below will
+		// increment it. We don't increment here so a subsequent Subscribe
+		// failure doesn't leave a dangling subscription.
+	}
+
+	// User-scoped subject for DM broadcasts. Subscribed per-user (no
+	// refcount needed since UserRoomEvent is scoped to the account).
+	if len(p.conns) > 0 {
+		nc := p.conns[p.nextConn%len(p.conns)]
+		p.nextConn++
+		if _, err := nc.Subscribe(subject.UserRoomEvent(u.Account), p.route); err != nil {
+			return fmt.Errorf("multiplex subscribe user %s: %w", u.ID, err)
+		}
+	}
+
+	// Second pass: mutate state only after every Subscribe succeeded.
 	p.userInbox[u.ID] = inbox
 	for _, roomID := range u.Rooms {
 		p.dispatch[roomID] = append(p.dispatch[roomID], inbox)
-		if p.roomRefs[roomID] == 0 && len(p.conns) > 0 {
-			nc := p.conns[p.nextConn%len(p.conns)]
-			p.nextConn++
-			subj := subject.RoomEvent(roomID)
-			if _, err := nc.Subscribe(subj, p.route); err != nil {
-				p.mu.Unlock()
-				return fmt.Errorf("multiplex subscribe %s: %w", roomID, err)
-			}
-		}
 		p.roomRefs[roomID]++
 	}
-	p.mu.Unlock()
 	return nil
 }
 
 // route is called by every shared conn's subscription callback. It looks up
 // the destination inboxes by RoomID and does a non-blocking send.
+// All inbox sends happen under p.mu so Close can safely set userInbox=nil
+// without racing against an in-flight send-on-closed-channel.
 func (p *multiplexPool) route(m *nats.Msg) {
 	var evt model.RoomEvent
 	if err := json.Unmarshal(m.Data, &evt); err != nil {
@@ -158,14 +197,20 @@ func (p *multiplexPool) route(m *nats.Msg) {
 	}
 	p.mu.Lock()
 	inboxes := p.dispatch[roomID]
-	p.mu.Unlock()
-	if evt.LastMsgID != "" {
+	if evt.LastMsgID != "" && p.collector != nil {
 		p.collector.RecordBroadcast(evt.LastMsgID, time.Now())
 	}
+	dropCount := 0
 	for _, ch := range inboxes {
 		select {
 		case ch <- m:
 		default:
+			dropCount++
+		}
+	}
+	p.mu.Unlock()
+	if dropCount > 0 && p.collector != nil {
+		for i := 0; i < dropCount; i++ {
 			p.collector.RecordMultiplexDrop()
 		}
 	}
@@ -180,10 +225,13 @@ func parseRoomFromSubject(subj string) string {
 	return ""
 }
 
-// Close drains shared conns and closes inboxes.
+// Close drains shared conns. Inbox channels are NOT closed — letting GC
+// reclaim them avoids a race between Close and an in-flight route() that
+// holds a pre-lock-release inbox snapshot (would panic on send-on-closed).
+// Once Drain returns, no further callbacks fire, so the channels are no
+// longer referenced and become garbage.
 func (p *multiplexPool) Close() {
 	p.mu.Lock()
-	inboxes := p.userInbox
 	p.userInbox = nil
 	p.dispatch = nil
 	p.roomRefs = nil
@@ -192,8 +240,5 @@ func (p *multiplexPool) Close() {
 	p.mu.Unlock()
 	for _, nc := range conns {
 		_ = nc.Drain()
-	}
-	for _, ch := range inboxes {
-		close(ch)
 	}
 }

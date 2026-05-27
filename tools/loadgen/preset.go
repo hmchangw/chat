@@ -262,6 +262,7 @@ func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID str
 		// while keeping room sizes within their band range whenever
 		// feasible.
 		capacity := make([]int, len(bandRooms))
+		memberCounts := make([]int, len(bandRooms))
 		copy(capacity, bandSizes)
 
 		for ui := range users {
@@ -323,6 +324,7 @@ func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID str
 				}
 				picked[chosen] = true
 				capacity[chosen]--
+				memberCounts[chosen]++
 				roomID := bandRooms[chosen].ID
 				subs = append(subs, model.Subscription{
 					ID:     fmt.Sprintf("sub-%s-%s", roomID, u.ID),
@@ -335,10 +337,18 @@ func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID str
 		}
 
 		// Finalise UserCount and emit rooms + keys. UserCount records the
-		// band's *target* size (what the room would look like in
-		// production), not the count of test-pool subscriptions — large
-		// rooms have hundreds-to-thousands of members in reality, while
-		// our test population is a small sampled subset.
+		// band's *target* size (what the room would look like in production)
+		// rather than the count of test-pool subscriptions — large rooms have
+		// hundreds-to-thousands of members in reality, while our test
+		// population is a small sampled subset.
+		//
+		// Known limitation: large-band rooms will have UserCount > 500
+		// (message-gatekeeper's default LargeRoomThreshold), which blocks
+		// non-thread sends from member-role users. The daily-IM scenario
+		// works around this by funneling sends to smaller rooms; large-band
+		// rooms are exercised primarily for fan-out via receive-side
+		// subscriptions.
+		_ = memberCounts // counts available for future tuning; keep computed for clarity
 		for i := range bandRooms {
 			bandRooms[i].UserCount = bandSizes[i]
 			roomKeys[bandRooms[i].ID] = deterministicRoomKeyPair(r)
