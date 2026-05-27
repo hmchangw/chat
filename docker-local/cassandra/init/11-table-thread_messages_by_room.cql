@@ -22,5 +22,4 @@ CREATE TABLE IF NOT EXISTS chat.thread_messages_by_room (
   edited_at             TIMESTAMP,
   updated_at            TIMESTAMP,
   PRIMARY KEY ((room_id, bucket), thread_room_id, created_at, message_id)
-) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)
-   AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
+) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC);

@@ -113,8 +113,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   PRIMARY KEY((room_id, bucket),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
-  AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### thread_messages_by_room
 ```cql
@@ -142,8 +141,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   PRIMARY KEY((room_id, bucket),thread_room_id,created_at,message_id)
-)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC)
-  AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': 1};
+)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC);
 ```
 #### pinned_messages_by_room
 ```cql
@@ -169,8 +167,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   updated_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY((room_id),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
-  AND compaction = {'class': 'LeveledCompactionStrategy'};
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### messages_by_id
 ```cql
@@ -202,6 +199,5 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   pinned_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
   PRIMARY KEY(message_id,created_at)
-)WITH CLUSTERING ORDER BY (created_at DESC)
-  AND compaction = {'class': 'LeveledCompactionStrategy'};
+)WITH CLUSTERING ORDER BY (created_at DESC);
 ```

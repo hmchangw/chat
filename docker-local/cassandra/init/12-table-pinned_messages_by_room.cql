@@ -20,5 +20,4 @@ CREATE TABLE IF NOT EXISTS chat.pinned_messages_by_room (
   updated_at            TIMESTAMP,
   pinned_by             FROZEN<"Participant">,
   PRIMARY KEY ((room_id), created_at, message_id)
-) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
-   AND compaction = {'class': 'LeveledCompactionStrategy'};
+) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
