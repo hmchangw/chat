@@ -1,6 +1,11 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,4 +100,84 @@ func TestDiffPending_BuildsDelta(t *testing.T) {
 	require.Equal(t, int64(50), got["a"].Delta)
 	require.Equal(t, int64(0), got["b"].Delta)
 	require.Equal(t, int64(10), got["c"].Delta) // c was added mid-window
+}
+
+func TestPollPending_ParsesJsz(t *testing.T) {
+	body := `{
+      "account_details": [{
+        "stream_detail": [{
+          "consumer_detail": [
+            {"name": "message-worker", "num_pending": 42},
+            {"name": "broadcast-worker", "num_pending": 7}
+          ]
+        }]
+      }]
+    }`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/jsz", r.URL.Path)
+		require.Equal(t, "consumers=true", r.URL.RawQuery)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	got, err := pollPending(context.Background(), srv.URL+"/jsz")
+	require.NoError(t, err)
+	require.Equal(t, int64(42), got["message-worker"])
+	require.Equal(t, int64(7), got["broadcast-worker"])
+}
+
+func TestPollPending_ReturnsErrorOnBadURL(t *testing.T) {
+	_, err := pollPending(context.Background(), "http://127.0.0.1:1/jsz")
+	require.Error(t, err)
+}
+
+func TestScrapeErrorCounter_SumsFamily(t *testing.T) {
+	body := `# HELP slog_errors_total Total errors logged
+# TYPE slog_errors_total counter
+slog_errors_total{level="error"} 5
+slog_errors_total{level="warn"} 0
+# unrelated counter
+other_total 100
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	v, err := scrapeErrorCounter(context.Background(), srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, 5.0, v)
+}
+
+func TestSumCounterFamily_HandlesCommentsAndBlankLines(t *testing.T) {
+	body := `
+# HELP foo
+# TYPE foo counter
+foo_total{a="x"} 3
+foo_total{a="y"} 4
+unrelated 99
+`
+	require.Equal(t, 7.0, sumCounterFamily(body, "foo_total"))
+	require.Equal(t, 0.0, sumCounterFamily(body, "missing"))
+}
+
+func TestServiceScraper_DeltaAfterBaseline(t *testing.T) {
+	var counter atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "slog_errors_total %d\n", counter.Load())
+	}))
+	t.Cleanup(srv.Close)
+
+	s := newServiceScraper()
+	urls := map[string]string{"svc": srv.URL}
+
+	// First call records baseline; returns 0.
+	out, err := s.Scrape(context.Background(), urls)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), out["svc"])
+
+	counter.Add(3)
+	out, err = s.Scrape(context.Background(), urls)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), out["svc"])
 }
