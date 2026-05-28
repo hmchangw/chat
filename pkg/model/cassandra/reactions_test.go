@@ -74,7 +74,9 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		assert.Equal(t, "Alice 爱丽丝", grouped["👍"][0]["displayName"])
 	})
 
-	t.Run("grouped_by_emoji_with_sorted_users", func(t *testing.T) {
+	t.Run("grouped_by_emoji", func(t *testing.T) {
+		// Inner-array order is unspecified (matches the existing backend convention —
+		// no sort). Assertions are set-based, not positional.
 		r := Reactions{
 			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{
 				UserID: "u3", EngName: "Carol", ChnName: "卡罗尔", Account: "carol", ReactedAt: now,
@@ -92,14 +94,13 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &grouped))
 		require.Contains(t, grouped, "❤️")
 		require.Contains(t, grouped, "👍")
-		// Inner arrays sorted by account ASC (pending architect's final sort decision).
-		require.Len(t, grouped["👍"], 2)
-		assert.Equal(t, "alice", grouped["👍"][0]["account"])
-		assert.Equal(t, "carol", grouped["👍"][1]["account"])
-		require.Len(t, grouped["❤️"], 1)
-		assert.Equal(t, "bob", grouped["❤️"][0]["account"])
-		// displayName composition: "Eng Chn" with account fallback when both blank.
-		assert.Equal(t, "Bob 鲍勃", grouped["❤️"][0]["displayName"])
+		assert.ElementsMatch(t, []map[string]string{
+			{"account": "alice", "displayName": "Alice 爱丽丝"},
+			{"account": "carol", "displayName": "Carol 卡罗尔"},
+		}, grouped["👍"])
+		assert.ElementsMatch(t, []map[string]string{
+			{"account": "bob", "displayName": "Bob 鲍勃"},
+		}, grouped["❤️"])
 	})
 
 	t.Run("displayName_fallback_to_account", func(t *testing.T) {

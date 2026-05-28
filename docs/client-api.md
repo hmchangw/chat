@@ -1019,7 +1019,7 @@ Example:
 }
 ```
 
-Each emoji's user list is sorted by `account` ASC for byte-stable responses (final sort strategy pending review). Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by adding or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
+Order is unspecified — outer JSON object keys are unordered by spec, and the inner arrays follow server-side Go map iteration (no sort). Frontends should apply whatever ordering they need. Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by adding or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
 
 #### Load History
 

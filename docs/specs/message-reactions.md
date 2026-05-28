@@ -158,9 +158,9 @@ The field uses a **named map type** so we can hang custom `MarshalJSON` / `Unmar
 // record — see MarshalJSON and §6 for the wire shape.
 type Reactions map[ReactionKey]ReactorInfo
 
-// MarshalJSON emits map<emoji, [{account, displayName}]> with each emoji's user list sorted
-// by account ASC. displayName is composed via displayfmt.CombineWithFallback(EngName,
-// ChineseName, UserAccount). Nil → "null"; empty → "{}" (omitempty elides nil on Message).
+// MarshalJSON emits map<emoji, [{account, displayName}]>. Order is unspecified at both levels.
+// displayName is composed via displayfmt.CombineWithFallback(EngName, ChineseName, UserAccount).
+// Nil → "null"; empty → "{}" (omitempty elides nil on Message).
 func (r Reactions) MarshalJSON() ([]byte, error) { /* see §6 */ }
 ```
 
@@ -271,7 +271,7 @@ ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<
 - `account` stays as the stable per-user identifier for FE concerns: "is this me?", "remove my reaction", React keys.
 - The per-user `userId` / `eng_name` / `chn_name` / `reactedAt` fields stay in Cassandra storage (UDT shape unchanged — §2.1, §3.1) but are server-side details, never emitted on the wire.
 
-**Ordering:** map key order in JSON objects is unspecified by the spec, so the FE must not depend on emoji iteration order. Each emoji's user list is sorted by `account` ASC server-side for byte-stable responses; the final sort strategy (alphabetical vs reaction time) is pending architect input.
+**Ordering:** unspecified at both levels. JSON object key order (outer `{emoji: ...}`) is unordered by spec, and the inner arrays follow Go map iteration (no server-side sort). This matches the existing backend convention — the v1 column had no defined wire-order either. Frontends apply whatever ordering they render.
 
 **Empty state:** nil `Reactions` → field omitted (via `omitempty`). Empty `Reactions{}` → `"reactions": {}`. The FE should treat both as "no reactions".
 

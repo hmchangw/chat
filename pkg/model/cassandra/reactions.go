@@ -2,7 +2,6 @@ package cassandra
 
 import (
 	"encoding/json"
-	"sort"
 	"time"
 
 	"github.com/hmchangw/chat/pkg/displayfmt"
@@ -35,8 +34,8 @@ type reactionUser struct {
 }
 
 // MarshalJSON groups reactors by emoji and emits map<emoji, [{account, displayName}]>.
-// Empty/nil maps follow Go defaults (omitted via omitempty on Message.Reactions).
-// Per-emoji arrays are sorted by account ascending pending the final sort decision from review.
+// Order is unspecified at both levels (JSON object keys; per-emoji arrays follow Go map
+// iteration order). nil → "null"; empty → "{}".
 func (r Reactions) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
@@ -47,10 +46,6 @@ func (r Reactions) MarshalJSON() ([]byte, error) {
 			Account:     k.UserAccount,
 			DisplayName: displayfmt.CombineWithFallback(v.EngName, v.ChnName, k.UserAccount),
 		})
-	}
-	for emoji := range grouped {
-		users := grouped[emoji]
-		sort.Slice(users, func(i, j int) bool { return users[i].Account < users[j].Account })
 	}
 	return json.Marshal(grouped)
 }
