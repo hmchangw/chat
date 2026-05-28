@@ -60,9 +60,7 @@ func ensureCassandraSession() (string, *gocql.Session, error) {
 		cluster.Consistency = gocql.One
 		cluster.ConnectTimeout = 30 * time.Second
 		cluster.Timeout = 30 * time.Second
-		// Cassandra inside Docker reports its rpc_address as the container's
-		// internal IP via system.local. Skip discovery so gocql sticks with
-		// the host:port we already obtained from the testcontainer.
+		// Cassandra in Docker reports its rpc_address as the container's internal IP; skip discovery to use the mapped port.
 		cluster.DisableInitialHostLookup = true
 		s, err := cluster.CreateSession()
 		if err != nil {
@@ -77,8 +75,7 @@ func ensureCassandraSession() (string, *gocql.Session, error) {
 	return cassHost, cassSession, cassInitErr
 }
 
-// TerminateCassandra closes the shared session and stops the shared
-// container. Best-effort, idempotent.
+// TerminateCassandra closes the shared Cassandra session and container. Best-effort, idempotent.
 func TerminateCassandra() {
 	if cassSession != nil {
 		cassSession.Close()
@@ -94,13 +91,11 @@ func TerminateCassandra() {
 	}
 }
 
-// EnsureCassandra starts the shared Cassandra container if not already
-// started. No-t variant intended for TestMain pre-warming.
+// EnsureCassandra starts the shared Cassandra container if not already running; intended for TestMain pre-warming.
 func EnsureCassandra() error { _, _, err := ensureCassandraSession(); return err }
 
-// CassandraKeyspace creates an isolated keyspace for the test (SimpleStrategy, RF=1).
-// Returns the keyspace name, an admin session for DDL, and the container host.
-func CassandraKeyspace(t *testing.T, prefix string) (keyspace string, admin *gocql.Session, hostAddr string) {
+// CassandraKeyspace creates an isolated keyspace (SimpleStrategy, RF=1) and returns its name, an admin DDL session, and the host.
+func CassandraKeyspace(t testing.TB, prefix string) (keyspace string, admin *gocql.Session, hostAddr string) {
 	t.Helper()
 	h, s, err := ensureCassandraSession()
 	if err != nil {

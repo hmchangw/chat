@@ -57,6 +57,23 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
                                       // to enforce access-window checks without a Cassandra round-trip
 );
 ```
+#### reaction_key
+```cql
+CREATE TYPE IF NOT EXISTS chat.reaction_key (
+  emoji        TEXT,
+  user_account TEXT
+);
+```
+#### reactor_info
+```cql
+CREATE TYPE IF NOT EXISTS chat.reactor_info (
+  user_id     TEXT,
+  eng_name    TEXT,
+  chn_name    TEXT,
+  account     TEXT,
+  reacted_at  TIMESTAMP
+);
+```
 ### Table
 
 ### Partition Bucketing
@@ -93,7 +110,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -120,7 +137,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -145,7 +162,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -175,7 +192,7 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,

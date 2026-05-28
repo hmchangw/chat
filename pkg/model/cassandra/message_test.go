@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// roundTrip marshals src to JSON and unmarshals into dst, verifying they match.
+// roundTrip marshals src to JSON, unmarshals into dst, asserts equality, and returns dst.
 func roundTrip[T any](t *testing.T, src T) T {
 	t.Helper()
 	data, err := json.Marshal(src)
@@ -155,7 +155,6 @@ func TestMessage_JSON(t *testing.T) {
 			CreatedAt: now.Add(-30 * time.Minute), Msg: "original",
 		},
 		VisibleTo:    "u1",
-		Reactions:    map[string][]Participant{"thumbsup": {{ID: "u2", Account: "bob"}}},
 		Deleted:      false,
 		Type:         "user_joined",
 		SysMsgData:   []byte(`{"userId":"u3"}`),
@@ -182,7 +181,6 @@ func TestMessage_JSON(t *testing.T) {
 	require.NotNil(t, got.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", got.QuotedParentMessage.MessageID)
 	assert.Equal(t, "u1", got.VisibleTo)
-	assert.Len(t, got.Reactions["thumbsup"], 1)
 	assert.Equal(t, "user_joined", got.Type)
 	assert.Equal(t, "site-remote", got.SiteID)
 	assert.Equal(t, edited, *got.EditedAt)

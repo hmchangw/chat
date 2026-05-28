@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_id (
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message    FROZEN<"QuotedParentMessage">,
   visible_to               TEXT,
-  reactions                MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions                MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted                  BOOLEAN,
   type                     TEXT,
   sys_msg_data             BLOB,

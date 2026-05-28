@@ -11,20 +11,11 @@ import (
 	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
-// Bucket cursor wire format (then base64-encoded for transport):
-//
-//	[bucket: 8 bytes BE int64][pageStateLen: 2 bytes BE uint16][pageState: N bytes]
-//
-// Empty input string decodes to (bucket=0, pageState=nil), interpreted by the
-// walker as "start from caller-supplied startBucket with a fresh in-bucket
-// query". The bucket=0 sentinel is unambiguous because the walker passes its
-// own startBucket when the cursor is empty.
+// Bucket cursor wire format (base64-encoded): [bucket: 8B BE int64][pageStateLen: 2B BE uint16][pageState: N bytes].
+// Empty string decodes to (bucket=0, pageState=nil); walker substitutes its own startBucket when the cursor is absent.
 const bucketCursorHeaderBytes = 8 + 2
 
-// maxEncodedPageState is the largest pageState that fits inside maxCursorBytes
-// once the framing header is accounted for. It also doubles as the math.MaxUint16
-// safety bound: maxCursorBytes (512) - bucketCursorHeaderBytes (10) = 502, well
-// below 65535, so the uint16 length field is sufficient.
+// maxEncodedPageState is the largest pageState fitting within maxCursorBytes after the header; 502 is safely below uint16 max.
 const maxEncodedPageState = maxCursorBytes - bucketCursorHeaderBytes
 
 func encodeBucketCursor(bucket int64, pageState []byte) (string, error) {
@@ -79,42 +70,23 @@ const (
 	walkAsc  walkDirection = +1 // Next — oldest to newest
 )
 
-// pageResult is fillPage's output. NextCursor is the empty string when the walk
-// has reached a terminal state (floor/ceiling crossed, or both page filled and
-// no more rows in current bucket).
+// pageResult is fillPage's output; NextCursor is "" when the walk has reached a terminal state.
 type pageResult[T any] struct {
 	Rows       []T
 	NextCursor string
 	HasNext    bool
 }
 
-// toPage projects the walker's pageResult into the cassrepo public Page[T] type.
 func (r pageResult[T]) toPage() Page[T] {
 	return Page[T]{Data: r.Rows, NextCursor: r.NextCursor, HasNext: r.HasNext}
 }
 
-// bucketQueryFn returns a freshly-prepared gocql.Query bound to the given
-// bucket value. Implementations are produced by each public read function
-// (e.g. GetMessagesBefore creates a factory that interpolates bucket and
-// the per-call predicate into the SELECT statement).
-//
-// firstBucket is true on the first invocation only; the factory may use this
-// to apply a per-call predicate (e.g. created_at < before) only on the first
-// bucket walked. Later buckets are entirely on one side of the boundary and
-// do not need the predicate.
+// bucketQueryFn builds a query for the given bucket; firstBucket is true only on the first walk step,
+// letting callers apply a per-call predicate (e.g. created_at < before) only where needed.
 type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query
 
-// fillPage walks buckets in the given direction starting at startBucket,
-// issuing one query per bucket and accumulating rows into out until pageSize
-// is reached or maxBuckets is exhausted. The first bucket may resume from a
-// caller-supplied gocql page state; later buckets always start fresh.
-//
-// scan must consume up to `remaining` rows from iter and return them; it is
-// responsible for stopping when full.
-//
-// floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
-// when bucket > floorBucket. To disable floor-based termination, callers pass
-// math.MinInt64 (DESC) or math.MaxInt64 (ASC).
+// fillPage walks buckets from startBucket, accumulating rows until pageSize or maxBuckets is reached.
+// floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops when bucket > floorBucket.
 func fillPage[T any](
 	ctx context.Context,
 	sizer msgbucket.Sizer,
@@ -125,7 +97,7 @@ func fillPage[T any](
 	pageSize int,
 	initialPageState []byte,
 	queryFn bucketQueryFn,
-	scan func(iter *gocql.Iter, remaining int) []T,
+	scan func(iter *gocql.Iter, remaining int) ([]T, error),
 ) (pageResult[T], error) {
 	out := make([]T, 0, pageSize)
 	bucket := startBucket
@@ -159,20 +131,23 @@ func fillPage[T any](
 		}
 
 		iter := q.Iter()
-		rows := scan(iter, pageSize-len(out))
+		rows, scanErr := scan(iter, pageSize-len(out))
 		out = append(out, rows...)
 		nextPageState := iter.PageState()
 		if err := iter.Close(); err != nil {
 			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, err)
 		}
+		if scanErr != nil {
+			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, scanErr)
+		}
 
 		if len(nextPageState) > 0 && len(out) < pageSize {
-			// Bucket has more rows but page wasn't filled yet — continue draining same bucket.
+			// More rows in this bucket but page not yet full — continue draining.
 			pageState = nextPageState
 			continue
 		}
 		if len(nextPageState) > 0 && len(out) >= pageSize {
-			// Page filled mid-bucket — return cursor pointing at this bucket so caller resumes here.
+			// Page filled mid-bucket — cursor resumes here on next call.
 			cursor, encErr := encodeBucketCursor(bucket, nextPageState)
 			if encErr != nil {
 				return pageResult[T]{}, fmt.Errorf("encode resume cursor at bucket %d: %w", bucket, encErr)
@@ -184,7 +159,6 @@ func fillPage[T any](
 			}, nil
 		}
 
-		// Bucket exhausted; advance.
 		pageState = nil
 		advance()
 		walked++
@@ -193,7 +167,7 @@ func fillPage[T any](
 	if floorCrossed(bucket) {
 		return pageResult[T]{Rows: out, NextCursor: "", HasNext: false}, nil
 	}
-	// maxBuckets reached or pageSize reached at bucket boundary — non-terminal cursor at next bucket.
+	// maxBuckets or pageSize reached at a bucket boundary — cursor points to the next bucket.
 	cursor, encErr := encodeBucketCursor(bucket, nil)
 	if encErr != nil {
 		return pageResult[T]{}, fmt.Errorf("encode resume cursor at bucket %d: %w", bucket, encErr)

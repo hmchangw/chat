@@ -963,7 +963,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 | `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. Map of `emoji → Participant[]`. |
+| `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -1002,6 +1002,26 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 
 When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
+
+`reactions` is keyed by emoji; each value is the list of users who reacted with that emoji. The inner record is intentionally minimal — the FE composes any further presentation it needs from these two fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `account` | string | The reactor's stable account identifier. Used for "is this me?" / "remove my reaction" checks. |
+| `displayName` | string | Server-composed via `displayfmt.CombineWithFallback(engName, chineseName, account)` — same helper used by system-message formatters. |
+
+Example:
+
+```json
+"reactions": {
+  "❤️": [{"account": "bob",   "displayName": "Bob 鲍勃"}],
+  "👍": [{"account": "alice", "displayName": "Alice 爱丽丝"}, {"account": "carol", "displayName": "Carol 卡罗尔"}]
+}
+```
+
+Each emoji's user array is sorted by `reactedAt` ascending — FIFO, oldest reaction first, newest last. This matches the legacy MongoDB insertion-order behaviour. Same-millisecond ties break by `account` ASC. Outer JSON object key order (across emojis) is unspecified — FE applies its own emoji ordering.
+
+Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by appending or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
 
 #### Load History
 

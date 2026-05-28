@@ -30,14 +30,18 @@ func (r *Repository) GetThreadMessages(
 	).WithContext(ctx)
 
 	var rows []models.Message
+	var scanErr error
 	nextCursor, err := NewQueryBuilder(q).
 		WithCursor(pageReq.Cursor).
 		WithPageSize(pageReq.PageSize).
 		Fetch(func(iter *gocql.Iter) {
-			rows = scanMessagesUpTo(iter, pageReq.PageSize)
+			rows, scanErr = scanMessagesUpTo(iter, pageReq.PageSize)
 		})
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get thread messages: %w", err)
+	}
+	if scanErr != nil {
+		return Page[models.Message]{}, fmt.Errorf("get thread messages: scan: %w", scanErr)
 	}
 
 	return Page[models.Message]{

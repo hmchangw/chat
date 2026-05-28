@@ -18,30 +18,24 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, " 
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
-// scanMsgsFromIter collects all rows from iter into a slice.
-// structScan ignores columns absent from the struct's cql tags, so this
-// helper is safe to use with any column subset (e.g. messageByIDQuery
-// includes pinned_at/pinned_by which are absent from the base column list).
-func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
+func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !structScan(iter, &m) {
+		ok, err := structScan(iter, &m)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			break
 		}
 		messages = append(messages, m)
 	}
-	return messages
+	return messages, nil
 }
 
-// startBucketFromCursor returns the bucket to start the walk at, plus an
-// initial in-bucket pageState if the request carried a non-empty cursor.
-// When the cursor is empty, defaultBucket is used. A cursor bucket outside
-// [floorBucket, defaultBucket] (DESC) or [defaultBucket, floorBucket] (ASC)
-// is rejected as a fresh start with an empty pageState — this prevents a
-// tampered cursor from pushing the walk into empty partitions far outside
-// the legitimate data window, which would otherwise consume up to maxBuckets
-// empty Cassandra round-trips.
+// startBucketFromCursor returns the walk's start bucket and any in-bucket pageState from the cursor.
+// Out-of-range cursor buckets are rejected to prevent tampered cursors from consuming maxBuckets empty reads.
 func startBucketFromCursor(pageReq PageRequest, direction walkDirection, defaultBucket, floorBucket int64) (int64, []byte, error) {
 	if pageReq.Cursor == nil {
 		return defaultBucket, nil, nil
@@ -70,17 +64,20 @@ func startBucketFromCursor(pageReq PageRequest, direction walkDirection, default
 	return bucket, pageState, nil
 }
 
-// scanMessagesUpTo consumes up to remaining rows from iter via structScan.
-func scanMessagesUpTo(iter *gocql.Iter, remaining int) []models.Message {
+func scanMessagesUpTo(iter *gocql.Iter, remaining int) ([]models.Message, error) {
 	out := make([]models.Message, 0, remaining)
 	for len(out) < remaining {
 		var m models.Message
-		if !structScan(iter, &m) {
+		ok, err := structScan(iter, &m)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			break
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, nil
 }
 
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq PageRequest) (Page[models.Message], error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	cassmodels "github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
@@ -119,7 +120,6 @@ func TestRepository_GetThreadMessages_Pagination(t *testing.T) {
 	assert.Len(t, page3.Data, 1)
 	assert.False(t, page3.HasNext)
 
-	// No overlap, no gaps.
 	seen := map[string]bool{}
 	for _, m := range page1.Data {
 		seen[m.MessageID] = true
@@ -161,7 +161,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 
 	sender := models.Participant{ID: "u1", EngName: "Alice", CompanyName: "Acme", AppID: "app1", AppName: "MyApp", IsBot: false, Account: "alice"}
 	mentionUser := models.Participant{ID: "u3", Account: "charlie"}
-	reactUser := models.Participant{ID: "u4", Account: "dave"}
 	file := models.File{ID: "f1", Name: "doc.pdf", Type: "application/pdf"}
 	card := models.Card{Template: "approval", Data: []byte("card-data")}
 	cardAction := models.CardAction{Verb: "approve", Text: "Approve", CardID: "c1", DisplayText: "Click", HideExecLog: true, CardTmID: "tm1", Data: []byte("action-data")}
@@ -169,6 +168,11 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	quotedMsg := models.QuotedParentMessage{
 		MessageID: "m-quoted", RoomID: "r-thread-full", Sender: quotedSender,
 		CreatedAt: ts.Add(-30 * time.Minute), Msg: "original message", MessageLink: "https://chat.example.com/r-thread-full/m-quoted",
+	}
+
+	reactedAt := ts.Add(15 * time.Minute).Truncate(time.Millisecond)
+	reactions := map[cassmodels.ReactionKey]cassmodels.ReactorInfo{
+		{Emoji: "👍", UserAccount: "dave"}: {UserID: "u4", EngName: "Dave", Account: "dave", ReactedAt: reactedAt},
 	}
 
 	insertCQL := `INSERT INTO thread_messages_by_thread (
@@ -184,7 +188,7 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 		[][]byte{[]byte("attach1"), []byte("attach2")},
 		file, card, cardAction,
 		quotedMsg, "u1",
-		map[string][]models.Participant{"thumbsup": {reactUser}},
+		reactions,
 		true, "user_joined", []byte("sys-data"),
 		"site-remote", editedAt, updatedAt,
 	}
@@ -198,14 +202,12 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	require.Len(t, page.Data, 1)
 	msg := page.Data[0]
 
-	// Primary key + thread linkage
 	assert.Equal(t, "r-thread-full", msg.RoomID)
 	assert.Equal(t, "tr-full", msg.ThreadRoomID)
 	assert.Equal(t, ts.UTC(), msg.CreatedAt.UTC())
 	assert.Equal(t, "m-reply-full", msg.MessageID)
 	assert.Equal(t, "m-thread-parent", msg.ThreadParentID)
 
-	// Sender UDT
 	assert.Equal(t, "u1", msg.Sender.ID)
 	assert.Equal(t, "alice", msg.Sender.Account)
 	assert.Equal(t, "Alice", msg.Sender.EngName)
@@ -214,31 +216,25 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "MyApp", msg.Sender.AppName)
 	assert.False(t, msg.Sender.IsBot)
 
-	// Text
 	assert.Equal(t, "thread reply body", msg.Msg)
 
-	// Mentions
 	require.Len(t, msg.Mentions, 1)
 	assert.Equal(t, "u3", msg.Mentions[0].ID)
 	assert.Equal(t, "charlie", msg.Mentions[0].Account)
 
-	// Attachments
 	require.Len(t, msg.Attachments, 2)
 	assert.Equal(t, []byte("attach1"), msg.Attachments[0])
 	assert.Equal(t, []byte("attach2"), msg.Attachments[1])
 
-	// File UDT
 	require.NotNil(t, msg.File)
 	assert.Equal(t, "f1", msg.File.ID)
 	assert.Equal(t, "doc.pdf", msg.File.Name)
 	assert.Equal(t, "application/pdf", msg.File.Type)
 
-	// Card UDT
 	require.NotNil(t, msg.Card)
 	assert.Equal(t, "approval", msg.Card.Template)
 	assert.Equal(t, []byte("card-data"), msg.Card.Data)
 
-	// CardAction UDT
 	require.NotNil(t, msg.CardAction)
 	assert.Equal(t, "approve", msg.CardAction.Verb)
 	assert.Equal(t, "Approve", msg.CardAction.Text)
@@ -248,7 +244,6 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "tm1", msg.CardAction.CardTmID)
 	assert.Equal(t, []byte("action-data"), msg.CardAction.Data)
 
-	// QuotedParentMessage UDT
 	require.NotNil(t, msg.QuotedParentMessage)
 	assert.Equal(t, "m-quoted", msg.QuotedParentMessage.MessageID)
 	assert.Equal(t, "r-thread-full", msg.QuotedParentMessage.RoomID)
@@ -257,20 +252,20 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	assert.Equal(t, "original message", msg.QuotedParentMessage.Msg)
 	assert.Equal(t, "https://chat.example.com/r-thread-full/m-quoted", msg.QuotedParentMessage.MessageLink)
 
-	// Scalars
 	assert.Equal(t, "u1", msg.VisibleTo)
 	assert.True(t, msg.Deleted)
 	assert.Equal(t, "user_joined", msg.Type)
 	assert.Equal(t, []byte("sys-data"), msg.SysMsgData)
 	assert.Equal(t, "site-remote", msg.SiteID)
 
-	// Reactions (MAP<TEXT, FROZEN<SET<FROZEN<Participant>>>>)
-	require.Contains(t, msg.Reactions, "thumbsup")
-	require.Len(t, msg.Reactions["thumbsup"], 1)
-	assert.Equal(t, "u4", msg.Reactions["thumbsup"][0].ID)
-	assert.Equal(t, "dave", msg.Reactions["thumbsup"][0].Account)
+	require.Len(t, msg.Reactions, 1)
+	gotReaction, ok := msg.Reactions[cassmodels.ReactionKey{Emoji: "👍", UserAccount: "dave"}]
+	require.True(t, ok)
+	assert.Equal(t, "u4", gotReaction.UserID)
+	assert.Equal(t, "Dave", gotReaction.EngName)
+	assert.Equal(t, "dave", gotReaction.Account)
+	assert.Equal(t, reactedAt, gotReaction.ReactedAt.UTC())
 
-	// Timestamps
 	require.NotNil(t, msg.EditedAt)
 	assert.Equal(t, editedAt.UTC(), msg.EditedAt.UTC())
 	require.NotNil(t, msg.UpdatedAt)
