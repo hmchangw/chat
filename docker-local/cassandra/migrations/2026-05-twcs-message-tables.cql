@@ -1,9 +1,8 @@
--- Migrate messages_by_room and thread_messages_by_room to
--- TimeWindowCompactionStrategy (TWCS).
+-- Migrate messages_by_room to TimeWindowCompactionStrategy (TWCS).
 --
 -- Default (STCS) groups SSTables by size, so cold historical data gets
 -- rewritten alongside the hot recent stuff every time a tier rebalances.
--- For our bucketed time-series tables that's pure waste: compaction CPU
+-- For this bucketed time-series table that's pure waste: compaction CPU
 -- scales with total table size instead of recent write volume.
 --
 -- TWCS groups SSTables by time window. Once a window is sealed, its
@@ -14,6 +13,10 @@
 -- (see message-worker/main.go and history-service/internal/config/config.go).
 -- If your deployment overrides MESSAGE_BUCKET_HOURS to a different value,
 -- change both numbers together.
+--
+-- thread_messages_by_thread is intentionally NOT migrated: it is
+-- partitioned per thread (thread_room_id), not time-bucketed, so the
+-- window-alignment rationale does not apply. It keeps the default strategy.
 --
 -- Apply manually against the production keyspace; the docker-local init
 -- scripts already create new clusters with these settings.
@@ -32,12 +35,6 @@
 --     data back into the current window. Use sub-range / incremental repair.
 
 ALTER TABLE chat.messages_by_room WITH compaction = {
-  'class': 'TimeWindowCompactionStrategy',
-  'compaction_window_unit': 'HOURS',
-  'compaction_window_size': '72'
-};
-
-ALTER TABLE chat.thread_messages_by_room WITH compaction = {
   'class': 'TimeWindowCompactionStrategy',
   'compaction_window_unit': 'HOURS',
   'compaction_window_size': '72'

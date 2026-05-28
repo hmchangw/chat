@@ -61,20 +61,29 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
 
 ### Partition Bucketing
 
-`messages_by_room` and `thread_messages_by_room` use a composite partition key
-`(room_id, bucket)`. `bucket` is the start-of-window in unix milliseconds derived
-deterministically from `created_at` via `pkg/msgbucket.Sizer`. The window size
-is configured per service via `MESSAGE_BUCKET_HOURS` (envDefault 72 in both
-`message-worker` and `history-service`); all services that read or write these
-tables MUST be configured with the same window.
+`messages_by_room` uses a composite partition key `(room_id, bucket)`. `bucket`
+is the start-of-window in unix milliseconds derived deterministically from
+`created_at` via `pkg/msgbucket.Sizer`. The window size is configured per
+service via `MESSAGE_BUCKET_HOURS` (envDefault 72 in both `message-worker` and
+`history-service`); all services that read or write this table MUST be
+configured with the same window.
+
+`thread_messages_by_thread` is partitioned by `thread_room_id` alone — one
+partition per thread. Reads slice the partition by `created_at`; no bucket
+walk is needed. This shape keeps the worst-case fetch latency bounded by
+partition size rather than by the thread's lifespan.
 
 ### Compaction
 
-Both bucketed tables use `TimeWindowCompactionStrategy` with
-`compaction_window_size` matching `MESSAGE_BUCKET_HOURS`. Each Cassandra
-compaction window therefore corresponds to exactly one logical bucket, so a
-sealed bucket's SSTables are compacted once and then left alone — compaction
-cost stays proportional to recent write volume rather than total table size.
+`messages_by_room` uses `TimeWindowCompactionStrategy` with
+`compaction_window_size` matching `MESSAGE_BUCKET_HOURS`, so each Cassandra
+compaction window corresponds to exactly one logical bucket: a sealed bucket's
+SSTables are compacted once and then left alone, keeping compaction cost
+proportional to recent write volume rather than total table size.
+
+`thread_messages_by_thread` keeps the default compaction strategy — it is
+partitioned per thread (not time-bucketed), so the window-alignment rationale
+does not apply.
 
 Operational notes:
 - Federation replays (`inbox-worker`) that lag more than one window write
@@ -123,14 +132,13 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
     'compaction_window_size': '72'
   };
 ```
-#### thread_messages_by_room
+#### thread_messages_by_thread
 ```cql
-CREATE TABLE IF NOT EXISTS thread_messages_by_room(
-  room_id TEXT,
-  bucket BIGINT,
+CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   thread_room_id TEXT,
   created_at TIMESTAMP,
   message_id TEXT,
+  room_id TEXT,
   thread_parent_id TEXT,
   sender FROZEN<"Participant">,
   msg TEXT,
@@ -148,14 +156,8 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
-  PRIMARY KEY((room_id, bucket),thread_room_id,created_at,message_id)
-)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC)
-  // compaction_window_size MUST match MESSAGE_BUCKET_HOURS.
-  AND compaction = {
-    'class': 'TimeWindowCompactionStrategy',
-    'compaction_window_unit': 'HOURS',
-    'compaction_window_size': '72'
-  };
+  PRIMARY KEY((thread_room_id),created_at,message_id)
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### pinned_messages_by_room
 ```cql
