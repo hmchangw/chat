@@ -111,6 +111,11 @@ func newMessagesWorkload(ctx context.Context, cfg *config, preset *Preset, injec
 			slog.Warn("metrics server stopped", "error", err)
 		}
 	}()
+	shutdownSrv := func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}
 
 	collector := NewCollector(metrics, preset.Name)
 
@@ -129,18 +134,21 @@ func newMessagesWorkload(ctx context.Context, cfg *config, preset *Preset, injec
 		collector.RecordReply(reqID, time.Now())
 	})
 	if err != nil {
+		shutdownSrv()
 		_ = nc.Drain()
 		return nil, nil, fmt.Errorf("subscribe e1: %w", err)
 	}
 	e2Handler := newE2Handler(collector)
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomEventWildcard(), e2Handler)
 	if err != nil {
+		shutdownSrv()
 		_ = e1Sub.Unsubscribe()
 		_ = nc.Drain()
 		return nil, nil, fmt.Errorf("subscribe e2: %w", err)
 	}
 	e2DMSub, err := nc.NatsConn().Subscribe(subject.UserRoomEventWildcard(), e2Handler)
 	if err != nil {
+		shutdownSrv()
 		_ = e1Sub.Unsubscribe()
 		_ = e2Sub.Unsubscribe()
 		_ = nc.Drain()
@@ -167,7 +175,10 @@ func newMessagesWorkload(ctx context.Context, cfg *config, preset *Preset, injec
 }
 
 func (w *messagesWorkload) snapshotCounters() msgCounters {
-	mfs, _ := w.metrics.Registry.Gather()
+	mfs, err := w.metrics.Registry.Gather()
+	if err != nil {
+		slog.Warn("metrics gather", "error", err)
+	}
 	c := msgCounters{
 		published: gatheredCounterValue(mfs, "loadgen_published_total", "", ""),
 		err:       map[string]float64{},

@@ -18,6 +18,9 @@ func TestDiffCounters(t *testing.T) {
 	assert.Equal(t, float64(1000), d.published)
 	assert.Equal(t, float64(2), d.err["publish"])
 	assert.Equal(t, float64(4), d.err["saturated"])
+	assert.Equal(t, float64(0), d.err["marshal"])
+	assert.Equal(t, float64(0), d.err["gatekeeper"])
+	assert.Equal(t, float64(0), d.err["bad_reply"])
 }
 
 func TestBuildMessagesInputs(t *testing.T) {
