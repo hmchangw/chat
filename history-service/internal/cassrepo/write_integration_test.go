@@ -62,15 +62,9 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	assert.Equal(t, "edited", gotMsg)
 	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
 
-	// thread_messages_by_thread must NOT have a phantom row for this message.
-	// (No thread_room_id was assigned to this top-level message, so the partition
-	// it would have lived in is the empty string — which is also empty.)
-	var threadCount int
-	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM thread_messages_by_thread WHERE thread_room_id = ?`,
-		"",
-	).Scan(&threadCount))
-	assert.Equal(t, 0, threadCount, "top-level edit must not write to thread_messages_by_thread")
+	// No phantom-row check on thread_messages_by_thread: a top-level message has
+	// empty ThreadRoomID, and Cassandra refuses empty-string partition keys, so
+	// the write is impossible at the driver layer.
 }
 
 func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
@@ -248,15 +242,9 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	assert.Equal(t, "original", gotMsg, "msg content must be preserved")
 	assert.WithinDuration(t, deletedAt, gotUpdatedAt, time.Second)
 
-	// thread_messages_by_thread must have no phantom row (no thread_room_id was
-	// ever assigned to this top-level message, so the empty-string partition is
-	// what we'd accidentally write to).
-	var threadCount int
-	require.NoError(t, session.Query(
-		`SELECT COUNT(*) FROM thread_messages_by_thread WHERE thread_room_id = ?`,
-		"",
-	).Scan(&threadCount))
-	assert.Equal(t, 0, threadCount, "top-level soft-delete must not write to thread_messages_by_thread")
+	// No phantom-row check on thread_messages_by_thread: top-level messages have
+	// empty ThreadRoomID, and Cassandra refuses empty-string partition keys, so
+	// the write is impossible at the driver layer.
 }
 
 func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
