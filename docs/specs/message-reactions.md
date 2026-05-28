@@ -154,16 +154,17 @@ The field uses a **named map type** so we can hang custom `MarshalJSON` / `Unmar
 
 ```go
 // Reactions is the in-row reaction map for Message. Keys are unique (emoji, user_account)
-// pairs; one cell per reaction. JSON projection is a flat array sorted by (emoji, userAccount)
-// for stable output. See MarshalJSON / UnmarshalJSON for the wire shape.
+// pairs; one cell per reaction. JSON projection is grouped per emoji with a minimal per-user
+// record — see MarshalJSON and §6 for the wire shape.
 type Reactions map[ReactionKey]ReactorInfo
 
-// MarshalJSON emits a flat, deterministically-ordered array of records:
-//   [{"emoji":"👍","userAccount":"alice","userId":"u1","engName":"Alice","chnName":"…","account":"alice","reactedAt":"…"}, …]
-// Empty maps serialise as `[]`. omitempty on the field elides nil maps entirely.
+// MarshalJSON emits map<emoji, [{account, displayName}]> with each emoji's user list sorted
+// by account ASC. displayName is composed via displayfmt.CombineWithFallback(EngName,
+// ChineseName, UserAccount). Nil → "null"; empty → "{}" (omitempty elides nil on Message).
 func (r Reactions) MarshalJSON() ([]byte, error) { /* see §6 */ }
-func (r *Reactions) UnmarshalJSON(data []byte) error { /* see §6 */ }
 ```
+
+The wire is server→client one-way (clients are JS); there is no `UnmarshalJSON` and no `ErrDuplicateReactionKey` sentinel. The storage map already enforces `(emoji, account)` uniqueness via the Go type, so duplicate-key validation on the wire would be redundant.
 
 The `Message.Reactions` field becomes:
 
@@ -184,16 +185,15 @@ These v2 carriers are deleted in Commit A:
 
 Search regex (`grep -rn MessageReaction`) MUST return zero hits after Commit A.
 
-### 3.4 Round-trip tests (in `pkg/model/cassandra/message_test.go`)
+### 3.4 Tests (in `pkg/model/cassandra/reactions_test.go`)
 
-- `TestReactionKey_JSONRoundTrip` — both fields populated.
-- `TestReactorInfo_JSONRoundTrip` — all fields populated, including non-zero `ReactedAt` in UTC.
-- `TestReactions_MarshalJSON_FlatArray_Sorted` — assert wire shape is `[{emoji,userAccount,…}]`, sorted by `(emoji ASC, userAccount ASC)`.
-- `TestReactions_MarshalJSON_EmptyMap` — empty `Reactions{}` serialises to `[]` (when not omitted by `omitempty`).
-- `TestReactions_MarshalJSON_NilMap_OmittedViaOmitempty` — nil map on `Message.Reactions` produces no `"reactions"` field in JSON.
-- `TestReactions_UnmarshalJSON_HappyPath` — round-trip through the flat array.
-- `TestReactions_UnmarshalJSON_DuplicateKey_ReturnsError` — two records with identical `(emoji, userAccount)` is invalid input.
-- `TestReactions_UnmarshalJSON_MalformedJSON` — invalid JSON returns wrapped error.
+- `TestReactionKey_JSONRoundTrip` / `TestReactorInfo_JSONRoundTrip` — UDT carriers round-trip via default `json:` tags (no custom marshaller on the carriers themselves).
+- `TestReactions_MarshalJSON/nil` — direct `json.Marshal(Reactions(nil))` → `"null"`.
+- `TestReactions_MarshalJSON/nil_omitted_via_omitempty` — nil `Message.Reactions` produces no `"reactions"` key in the message JSON.
+- `TestReactions_MarshalJSON/empty` — `Reactions{}` → `"{}"`.
+- `TestReactions_MarshalJSON/single` and `/grouped_by_emoji_with_sorted_users` — wire shape is `map<emoji, [{account, displayName}]>` with inner arrays sorted by account ASC.
+- `TestReactions_MarshalJSON/displayName_fallback_to_account` — when both name fields are blank, `displayName` falls back to `account`.
+- `TestReactions_MarshalJSON/one_user_multiple_different_emoji` and `/no_duplicate_account_within_emoji_bucket` — pin the spec §1 self-uniqueness contract at the wire level.
 
 ## 4. DDL Files — `docker-local/cassandra/init/`
 
