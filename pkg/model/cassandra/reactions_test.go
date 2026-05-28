@@ -112,4 +112,46 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &grouped))
 		assert.Equal(t, "anon", grouped["👍"][0]["displayName"])
 	})
+
+	t.Run("one_user_multiple_different_emoji", func(t *testing.T) {
+		// Spec §1: a user may react with multiple different emoji on the same
+		// message. The same account must appear under each emoji bucket they
+		// reacted with — different ReactionKey, distinct map entries.
+		r := Reactions{
+			ReactionKey{Emoji: "👍", UserAccount: "alice"}:  ReactorInfo{EngName: "Alice", Account: "alice", ReactedAt: now},
+			ReactionKey{Emoji: "❤️", UserAccount: "alice"}: ReactorInfo{EngName: "Alice", Account: "alice", ReactedAt: now},
+			ReactionKey{Emoji: "🎉", UserAccount: "alice"}:  ReactorInfo{EngName: "Alice", Account: "alice", ReactedAt: now},
+		}
+		data, err := json.Marshal(r)
+		require.NoError(t, err)
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		assert.Len(t, grouped, 3, "expected three emoji buckets, one per distinct reaction")
+		for _, emoji := range []string{"👍", "❤️", "🎉"} {
+			require.Len(t, grouped[emoji], 1, "alice should appear exactly once under %q", emoji)
+			assert.Equal(t, "alice", grouped[emoji][0]["account"])
+		}
+	})
+
+	t.Run("no_duplicate_account_within_emoji_bucket", func(t *testing.T) {
+		// Spec §1 self-uniqueness: the (emoji, userAccount) map key guarantees
+		// one user cannot appear twice under the same emoji. Verified at the
+		// type level (Go disallows duplicate map keys) and re-asserted here so
+		// any future regression that bypasses the map shape is caught.
+		r := Reactions{
+			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{Account: "alice", ReactedAt: now},
+			ReactionKey{Emoji: "👍", UserAccount: "bob"}:   ReactorInfo{Account: "bob", ReactedAt: now},
+			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{Account: "carol", ReactedAt: now},
+		}
+		data, err := json.Marshal(r)
+		require.NoError(t, err)
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		require.Len(t, grouped["👍"], 3)
+		seen := make(map[string]bool, 3)
+		for _, u := range grouped["👍"] {
+			require.False(t, seen[u["account"]], "duplicate account %q in 👍 bucket", u["account"])
+			seen[u["account"]] = true
+		}
+	})
 }
