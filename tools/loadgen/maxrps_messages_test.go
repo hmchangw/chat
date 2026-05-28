@@ -7,9 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Compile-time checks: messagesWorkload satisfies rpsWorkload; constructor exists.
+// Compile-time check: messagesWorkload satisfies rpsWorkload.
 var _ rpsWorkload = (*messagesWorkload)(nil)
-var _ = newMessagesWorkload
 
 func TestDiffCounters(t *testing.T) {
 	start := msgCounters{published: 100, err: map[string]float64{"publish": 1, "saturated": 5}}

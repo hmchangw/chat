@@ -7,9 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Compile-time checks: historyWorkload satisfies rpsWorkload; constructor exists.
+// Compile-time check: historyWorkload satisfies rpsWorkload.
 var _ rpsWorkload = (*historyWorkload)(nil)
-var _ = newHistoryWorkload
 
 func TestBuildHistoryInputs(t *testing.T) {
 	c := NewHistoryCollector()
