@@ -5,6 +5,11 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
+# Run async so the session starts immediately; tool install continues in the
+# background. Must be the first line of output. Generous timeout — the first
+# run compiles golangci-lint/gosec/etc. from source.
+echo '{"async": true, "asyncTimeout": 600000}'
+
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
 # Add superpowers marketplace (if not already added)
