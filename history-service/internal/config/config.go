@@ -1,6 +1,10 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"time"
+
+	"github.com/caarlos0/env/v11"
+)
 
 // CassandraConfig holds Cassandra connection settings (env prefix: CASSANDRA_).
 type CassandraConfig struct {
@@ -35,6 +39,18 @@ type Config struct {
 	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
 	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
 	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
+
+	// Subscription access-check cache. Only positive subscriptions are cached,
+	// so the TTL bounds how long revoked access can stay readable. Set size or
+	// ttl to 0 to disable.
+	SubCacheSize int           `env:"HISTORY_SUB_CACHE_SIZE" envDefault:"100000"`
+	SubCacheTTL  time.Duration `env:"HISTORY_SUB_CACHE_TTL"  envDefault:"2m"`
+
+	// Room metadata cache (room times + minUserLastSeenAt). lastMsgAt advances
+	// on every message, so the TTL is short by default; client room hints cover
+	// the freshness-sensitive path. Set size or ttl to 0 to disable.
+	RoomCacheSize int           `env:"HISTORY_ROOM_CACHE_SIZE" envDefault:"50000"`
+	RoomCacheTTL  time.Duration `env:"HISTORY_ROOM_CACHE_TTL"  envDefault:"10s"`
 }
 
 // Load parses environment variables into Config; returns an error when required vars are absent.
