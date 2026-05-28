@@ -131,11 +131,23 @@ func TestEvaluateRPSStep(t *testing.T) {
 			},
 			wantKind: verdictPass,
 		},
+		{
+			name: "explicit inconclusive beats TRIP signals",
+			in: rpsStepInputs{
+				TargetRPS: 1000, Hold: time.Second, AttemptedOps: 1000,
+				Inconclusive: true, InconclusiveReason: "snapshot failed",
+				Latencies: []seriesSamples{{Name: "E1", Samples: nLatencies(100, ms(400))}},
+			},
+			wantKind: verdictInconclusive,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := evaluateRPSStep(tt.in, th)
+			got := evaluateRPSStep(&tt.in, th)
 			assert.Equal(t, tt.wantKind, got.Kind, "reasons=%v", got.Reasons)
+			if tt.wantKind == verdictTrip {
+				assert.NotEmpty(t, got.Reasons, "TRIP verdict must have at least one reason")
+			}
 		})
 	}
 }
@@ -146,7 +158,7 @@ func TestEvaluateRPSStep_AchievedAndErrorRate(t *testing.T) {
 		TargetRPS: 1000, Hold: 2 * time.Second, AttemptedOps: 1000, FailedOps: 100,
 		Latencies: []seriesSamples{{Name: "E1", Samples: nLatencies(10, ms(20))}},
 	}
-	got := evaluateRPSStep(in, th)
+	got := evaluateRPSStep(&in, th)
 	assert.InDelta(t, 500.0, got.AchievedRPS, 0.01) // 1000 ops / 2s
 	assert.InDelta(t, 0.1, got.ErrorRate, 0.0001)   // 100/1000
 }
@@ -161,8 +173,25 @@ func TestEvaluateRPSStep_WorstPendingReported(t *testing.T) {
 			{Durable: "broadcast-worker", Start: 100, End: 700}, // delta 600, the worst
 		},
 	}
-	got := evaluateRPSStep(in, th)
+	got := evaluateRPSStep(&in, th)
 	assert.Equal(t, "broadcast-worker", got.WorstDurable)
 	assert.Equal(t, int64(600), got.WorstDelta)
 	assert.Equal(t, verdictPass, got.Kind) // 600 < 1000
+
+	// Over-threshold p95 trip: verify the reason string contains "p95=" and "> ".
+	tripIn := rpsStepInputs{
+		TargetRPS: 1000, Hold: time.Second, AttemptedOps: 1000,
+		Latencies: []seriesSamples{{Name: "E1", Samples: nLatencies(100, ms(400))}},
+	}
+	tripGot := evaluateRPSStep(&tripIn, th)
+	assert.Equal(t, verdictTrip, tripGot.Kind)
+	assert.NotEmpty(t, tripGot.Reasons)
+	assert.Contains(t, tripGot.Reasons[0], "p95=")
+	assert.Contains(t, tripGot.Reasons[0], "> ")
+}
+
+func TestVerdictKind_String(t *testing.T) {
+	assert.Equal(t, "PASS", verdictPass.String())
+	assert.Equal(t, "TRIP", verdictTrip.String())
+	assert.Equal(t, "INCONCLUSIVE", verdictInconclusive.String())
 }

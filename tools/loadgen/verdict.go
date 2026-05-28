@@ -93,7 +93,7 @@ type rpsStepResult struct {
 //  3. INCONCLUSIVE if the harness could not push the target rate while the
 //     system looked healthy (the load box is the limit, not the service),
 //  4. PASS.
-func evaluateRPSStep(in rpsStepInputs, th rpsThresholds) rpsStepResult {
+func evaluateRPSStep(in *rpsStepInputs, th rpsThresholds) rpsStepResult {
 	res := rpsStepResult{
 		TargetRPS:    in.TargetRPS,
 		AttemptedOps: in.AttemptedOps,
@@ -112,7 +112,6 @@ func evaluateRPSStep(in rpsStepInputs, th rpsThresholds) rpsStepResult {
 		res.Latencies = append(res.Latencies, seriesPercentile{Name: s.Name, Pct: ComputePercentiles(s.Samples)})
 	}
 	// Worst pending delta (always, for the report column).
-	res.WorstDelta = 0
 	for _, p := range in.Pending {
 		if d := p.Delta(); d > res.WorstDelta || res.WorstDurable == "" {
 			res.WorstDelta = d
