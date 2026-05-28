@@ -963,7 +963,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 | `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | array | Optional. Array of `Reaction` records — see below. Omitted when absent; `[]` when present but empty. |
+| `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -1003,19 +1003,23 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 
 When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
 
-`Reaction` (each element of the `reactions` array):
+`reactions` is keyed by emoji; each value is the list of users who reacted with that emoji. The inner record is intentionally minimal — the FE composes any further presentation it needs from these two fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `emoji` | string | NFC-normalised emoji. |
-| `userAccount` | string | Account identifier of the reacting user. |
-| `userId` | string | Internal user ID. |
-| `engName` | string | Optional. |
-| `chnName` | string | Optional. |
-| `account` | string | Duplicates `userAccount`. |
-| `reactedAt` | string | RFC 3339. |
+| `account` | string | The reactor's stable account identifier. Used for "is this me?" / "remove my reaction" checks. |
+| `displayName` | string | Server-composed via `displayfmt.CombineWithFallback(engName, chineseName, account)` — same helper used by system-message formatters. |
 
-The array is sorted by `(emoji ASC, userAccount ASC)` and is byte-stable across responses. Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`); the actor's display names are included. Clients merge a delta into history-derived state by adding or removing one entry keyed on `(shortcode, actor.account)`.
+Example:
+
+```json
+"reactions": {
+  "❤️": [{"account": "bob",   "displayName": "Bob 鲍勃"}],
+  "👍": [{"account": "alice", "displayName": "Alice 爱丽丝"}, {"account": "carol", "displayName": "Carol 卡罗尔"}]
+}
+```
+
+Each emoji's user list is sorted by `account` ASC for byte-stable responses (final sort strategy pending review). Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by adding or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
 
 #### Load History
 

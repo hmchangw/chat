@@ -1,17 +1,12 @@
 package cassandra
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"sort"
 	"time"
-)
 
-// ErrDuplicateReactionKey is returned when UnmarshalJSON encounters
-// two records with the same (emoji, userAccount) pair.
-var ErrDuplicateReactionKey = errors.New("duplicate reaction key")
+	"github.com/hmchangw/chat/pkg/displayfmt"
+)
 
 // ReactionKey is the map-key UDT for Message.Reactions.
 type ReactionKey struct {
@@ -29,72 +24,33 @@ type ReactorInfo struct {
 	ReactedAt time.Time `json:"reactedAt" cql:"reacted_at"`
 }
 
-// Reactions is the in-row reaction map. Keys are unique (emoji, user_account) pairs; JSON is a flat array sorted for stable output.
+// Reactions is the in-row reaction map. Stored as map[(emoji,userAccount)]reactor;
+// emitted on the wire grouped by emoji with composed display names — see MarshalJSON.
 type Reactions map[ReactionKey]ReactorInfo
 
-type reactionEntry struct {
-	Emoji       string    `json:"emoji"`
-	UserAccount string    `json:"userAccount"`
-	UserID      string    `json:"userId"`
-	EngName     string    `json:"engName"`
-	ChnName     string    `json:"chnName"`
-	Account     string    `json:"account"`
-	ReactedAt   time.Time `json:"reactedAt"`
+// reactionUser is the per-reactor record emitted on the wire.
+type reactionUser struct {
+	Account     string `json:"account"`
+	DisplayName string `json:"displayName"`
 }
 
-// MarshalJSON emits a flat array sorted by (emoji, userAccount); nil → "null", empty → "[]".
+// MarshalJSON groups reactors by emoji and emits map<emoji, [{account, displayName}]>.
+// Empty/nil maps follow Go defaults (omitted via omitempty on Message.Reactions).
+// Per-emoji arrays are sorted by account ascending pending the final sort decision from review.
 func (r Reactions) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
 	}
-	if len(r) == 0 {
-		return []byte("[]"), nil
-	}
-	entries := make([]reactionEntry, 0, len(r))
+	grouped := make(map[string][]reactionUser, len(r))
 	for k, v := range r {
-		entries = append(entries, reactionEntry{
-			Emoji:       k.Emoji,
-			UserAccount: k.UserAccount,
-			UserID:      v.UserID,
-			EngName:     v.EngName,
-			ChnName:     v.ChnName,
-			Account:     v.Account,
-			ReactedAt:   v.ReactedAt,
+		grouped[k.Emoji] = append(grouped[k.Emoji], reactionUser{
+			Account:     k.UserAccount,
+			DisplayName: displayfmt.CombineWithFallback(v.EngName, v.ChnName, k.UserAccount),
 		})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Emoji != entries[j].Emoji {
-			return entries[i].Emoji < entries[j].Emoji
-		}
-		return entries[i].UserAccount < entries[j].UserAccount
-	})
-	return json.Marshal(entries)
-}
-
-// UnmarshalJSON parses the flat array into the map; null → nil, [] → empty map, duplicates → error.
-func (r *Reactions) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(data, []byte("null")) {
-		*r = nil
-		return nil
+	for emoji := range grouped {
+		users := grouped[emoji]
+		sort.Slice(users, func(i, j int) bool { return users[i].Account < users[j].Account })
 	}
-	var entries []reactionEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("unmarshal reactions array: %w", err)
-	}
-	out := make(Reactions, len(entries))
-	for _, e := range entries {
-		key := ReactionKey{Emoji: e.Emoji, UserAccount: e.UserAccount}
-		if _, ok := out[key]; ok {
-			return fmt.Errorf("reactions: duplicate key (%s, %s): %w", e.Emoji, e.UserAccount, ErrDuplicateReactionKey)
-		}
-		out[key] = ReactorInfo{
-			UserID:    e.UserID,
-			EngName:   e.EngName,
-			ChnName:   e.ChnName,
-			Account:   e.Account,
-			ReactedAt: e.ReactedAt,
-		}
-	}
-	*r = out
-	return nil
+	return json.Marshal(grouped)
 }

@@ -255,29 +255,29 @@ ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<
 
 ## 6. Client API — `docs/client-api.md`
 
-**Wire shape: flat array of records, sorted.**
+**Wire shape: grouped by emoji, minimal per-user record.**
 
 ```json
-"reactions": [
-  {"emoji": "❤️", "userAccount": "bob",   "userId": "u2", "engName": "Bob",   "chnName": "鲍勃",   "account": "bob",   "reactedAt": "2026-05-25T10:23:00Z"},
-  {"emoji": "👍", "userAccount": "alice", "userId": "u1", "engName": "Alice", "chnName": "爱丽丝", "account": "alice", "reactedAt": "2026-05-25T10:22:00Z"}
-]
+"reactions": {
+  "❤️": [{"account": "bob",   "displayName": "Bob 鲍勃"}],
+  "👍": [{"account": "alice", "displayName": "Alice 爱丽丝"}, {"account": "carol", "displayName": "Carol 卡罗尔"}]
+}
 ```
 
-**Why flat (not `[{key, value}, ...]`):**
-- One-level destructure in TS — `r.emoji`, not `r.key.emoji`.
-- The `key`/`value` nesting was a Go-implementation leak (mirrors how the map encodes); clients shouldn't need to know that.
-- `account` already duplicates `userAccount` (§2.1 calls this denormalisation intentional); the flat form makes the duplication a server-side detail, not a client-visible one. If we keep both fields on the wire the client can pick whichever is convenient; if we drop one, prefer `userAccount` since it matches the schema-level key field name.
+**Why grouped + minimal (architect feedback during PR #221 review):**
+- Frontends render reactions as emoji buckets; grouping at the server saves the FE a per-message `groupBy` pass.
+- Per-reactor payload shrinks to two fields, materially reducing NATS payload size on high-reaction messages.
+- `displayName` is composed server-side via `displayfmt.CombineWithFallback(EngName, ChineseName, Account)` — the same helper already used by `room-worker/sysmsg.go`. Single source of truth for name formatting.
+- `account` stays as the stable per-user identifier for FE concerns: "is this me?", "remove my reaction", React keys.
+- The per-user `userId` / `eng_name` / `chn_name` / `reactedAt` fields stay in Cassandra storage (UDT shape unchanged — §2.1, §3.1) but are server-side details, never emitted on the wire.
 
-**Ordering:** sorted by `(emoji ASC, userAccount ASC)` server-side in `Reactions.MarshalJSON`. This makes responses byte-stable across requests, makes snapshot tests deterministic, and avoids React list flicker.
+**Ordering:** map key order in JSON objects is unspecified by the spec, so the FE must not depend on emoji iteration order. Each emoji's user list is sorted by `account` ASC server-side for byte-stable responses; the final sort strategy (alphabetical vs reaction time) is pending architect input.
 
-**Empty state:** nil `Reactions` → field omitted (via `omitempty`). Empty `Reactions{}` → `"reactions": []`. The FE should treat both as "no reactions".
-
-**Breaking change.** The wire shape is a complete change from the current `docs/client-api.md` documentation, which describes reactions as "Map of `emoji → Participant[]`" (v1-era). **Flag this as a breaking change** in the client-api.md update; bump any API version field if the system has one.
+**Empty state:** nil `Reactions` → field omitted (via `omitempty`). Empty `Reactions{}` → `"reactions": {}`. The FE should treat both as "no reactions".
 
 **Empirical FE impact today:** `grep -rni "reaction" chat-frontend/` returns zero hits. The frontend doesn't render reactions yet — the wire-shape change has no actual consumers to break. The doc update is forward-looking.
 
-**Live-event shape vs history shape — known asymmetry.** The `add-reaction-support` branch emits `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` for live updates — a single-actor delta carrying the toggling user's full `Participant` (display names included). The history (this spec) returns the full enriched array of all reactors on the message. Both shapes carry display names; the asymmetry is delta-vs-snapshot, not enriched-vs-thin. Frontends merge a delta into their per-message state by adding/removing one entry keyed on `(shortcode, actor.account)`.
+**Live-event shape vs history shape — known asymmetry.** The `add-reaction-support` branch emits `MessageReactedPayload{messageId, shortcode, action, actor, reactedAt}` for live updates — a single-actor delta carrying the toggling user's full `Participant` (display names included; the FE composes its own displayName for the delta if it wants to mirror the history shape). The history (this spec) returns the grouped minimal map above. Frontends merge a delta into their per-message state by adding or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
 
 Affected handlers: same six as before (`LoadHistory`, `LoadNextMessages`, `LoadSurroundingMessages`, `GetMessageByID`, `GetThreadMessages`, `GetThreadParentMessages`). Update `docs/client-api.md`'s description of the `reactions` field to the new shape; per CLAUDE.md §5 this update lands in the same PR.
 

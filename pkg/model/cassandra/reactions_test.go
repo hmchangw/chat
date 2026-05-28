@@ -2,7 +2,6 @@ package cassandra
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -56,7 +55,7 @@ func TestReactions_MarshalJSON(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		data, err := json.Marshal(Reactions{})
 		require.NoError(t, err)
-		assert.Equal(t, "[]", string(data))
+		assert.Equal(t, "{}", string(data))
 	})
 
 	t.Run("single", func(t *testing.T) {
@@ -67,79 +66,19 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		}
 		data, err := json.Marshal(r)
 		require.NoError(t, err)
-		var entries []map[string]any
-		require.NoError(t, json.Unmarshal(data, &entries))
-		require.Len(t, entries, 1)
-		assert.Equal(t, "👍", entries[0]["emoji"])
-		assert.Equal(t, "alice", entries[0]["userAccount"])
-		assert.Equal(t, "u1", entries[0]["userId"])
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		require.Contains(t, grouped, "👍")
+		require.Len(t, grouped["👍"], 1)
+		assert.Equal(t, "alice", grouped["👍"][0]["account"])
+		assert.Equal(t, "Alice 爱丽丝", grouped["👍"][0]["displayName"])
 	})
 
-	t.Run("sorted_multi", func(t *testing.T) {
+	t.Run("grouped_by_emoji_with_sorted_users", func(t *testing.T) {
 		r := Reactions{
-			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{
-				UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: now,
-			},
-			ReactionKey{Emoji: "❤️", UserAccount: "bob"}: ReactorInfo{
-				UserID: "u2", EngName: "Bob", ChnName: "鲍勃", Account: "bob", ReactedAt: now,
-			},
 			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{
 				UserID: "u3", EngName: "Carol", ChnName: "卡罗尔", Account: "carol", ReactedAt: now,
 			},
-		}
-		data, err := json.Marshal(r)
-		require.NoError(t, err)
-		var entries []map[string]any
-		require.NoError(t, json.Unmarshal(data, &entries))
-		require.Len(t, entries, 3)
-		// Sort: ❤️ < 👍, then alice < carol within 👍.
-		assert.Equal(t, "❤️", entries[0]["emoji"])
-		assert.Equal(t, "bob", entries[0]["userAccount"])
-		assert.Equal(t, "👍", entries[1]["emoji"])
-		assert.Equal(t, "alice", entries[1]["userAccount"])
-		assert.Equal(t, "👍", entries[2]["emoji"])
-		assert.Equal(t, "carol", entries[2]["userAccount"])
-		assert.Equal(t, "u2", entries[0]["userId"])
-		assert.Equal(t, "Bob", entries[0]["engName"])
-		assert.Equal(t, "鲍勃", entries[0]["chnName"])
-		assert.Equal(t, "bob", entries[0]["account"])
-	})
-}
-
-func TestReactions_UnmarshalJSON(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Millisecond)
-
-	t.Run("null", func(t *testing.T) {
-		r := Reactions{ReactionKey{Emoji: "x", UserAccount: "a"}: ReactorInfo{UserID: "u"}}
-		require.NoError(t, r.UnmarshalJSON([]byte("null")))
-		assert.Nil(t, r)
-	})
-
-	t.Run("empty_array", func(t *testing.T) {
-		var r Reactions
-		require.NoError(t, r.UnmarshalJSON([]byte("[]")))
-		require.NotNil(t, r)
-		assert.Len(t, r, 0)
-	})
-
-	t.Run("single", func(t *testing.T) {
-		want := Reactions{
-			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{
-				UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: now,
-			},
-		}
-		data, err := json.Marshal(want)
-		require.NoError(t, err)
-		var got Reactions
-		require.NoError(t, json.Unmarshal(data, &got))
-		require.Len(t, got, 1)
-		gv, ok := got[ReactionKey{Emoji: "👍", UserAccount: "alice"}]
-		require.True(t, ok)
-		assert.Equal(t, want[ReactionKey{Emoji: "👍", UserAccount: "alice"}], gv)
-	})
-
-	t.Run("multi", func(t *testing.T) {
-		want := Reactions{
 			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{
 				UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: now,
 			},
@@ -147,35 +86,30 @@ func TestReactions_UnmarshalJSON(t *testing.T) {
 				UserID: "u2", EngName: "Bob", ChnName: "鲍勃", Account: "bob", ReactedAt: now,
 			},
 		}
-		data, err := json.Marshal(want)
+		data, err := json.Marshal(r)
 		require.NoError(t, err)
-		var got Reactions
-		require.NoError(t, json.Unmarshal(data, &got))
-		require.Len(t, got, len(want))
-		for k, v := range want {
-			gv, ok := got[k]
-			require.True(t, ok, "missing key %+v", k)
-			assert.Equal(t, v, gv)
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		require.Contains(t, grouped, "❤️")
+		require.Contains(t, grouped, "👍")
+		// Inner arrays sorted by account ASC (pending architect's final sort decision).
+		require.Len(t, grouped["👍"], 2)
+		assert.Equal(t, "alice", grouped["👍"][0]["account"])
+		assert.Equal(t, "carol", grouped["👍"][1]["account"])
+		require.Len(t, grouped["❤️"], 1)
+		assert.Equal(t, "bob", grouped["❤️"][0]["account"])
+		// displayName composition: "Eng Chn" with account fallback when both blank.
+		assert.Equal(t, "Bob 鲍勃", grouped["❤️"][0]["displayName"])
+	})
+
+	t.Run("displayName_fallback_to_account", func(t *testing.T) {
+		r := Reactions{
+			ReactionKey{Emoji: "👍", UserAccount: "anon"}: ReactorInfo{Account: "anon", ReactedAt: now},
 		}
-	})
-
-	t.Run("duplicate_key_error", func(t *testing.T) {
-		raw := []byte(`[
-			{"emoji":"👍","userAccount":"alice","userId":"u1","engName":"Alice","chnName":"爱丽丝","account":"alice","reactedAt":"2026-05-25T10:22:00Z"},
-			{"emoji":"👍","userAccount":"alice","userId":"u1","engName":"Alice","chnName":"爱丽丝","account":"alice","reactedAt":"2026-05-25T10:22:00Z"}
-		]`)
-		var r Reactions
-		err := r.UnmarshalJSON(raw)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "duplicate key")
-		assert.Contains(t, err.Error(), "alice")
-		assert.True(t, errors.Is(err, ErrDuplicateReactionKey), "error chain must include ErrDuplicateReactionKey")
-	})
-
-	t.Run("malformed_json_error", func(t *testing.T) {
-		var r Reactions
-		err := r.UnmarshalJSON([]byte(`{not valid json`))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unmarshal reactions array")
+		data, err := json.Marshal(r)
+		require.NoError(t, err)
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		assert.Equal(t, "anon", grouped["👍"][0]["displayName"])
 	})
 }
