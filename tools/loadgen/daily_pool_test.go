@@ -49,7 +49,8 @@ func TestMultiplexPool_RoutesBroadcastToInbox(t *testing.T) {
 	t.Cleanup(func() { ncPub.Close() })
 
 	col := NewCollector(NewMetrics(), "test")
-	pool := newMultiplexPool(url, col, 2 /*pool size*/)
+	pool, err := newMultiplexPool(url, col, 2 /*pool size*/)
+	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
 	uA := &userState{ID: "u-a", Account: "ua", Rooms: []string{"r-1"}}
