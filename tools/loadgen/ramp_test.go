@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,9 +22,10 @@ func TestParseRPSSteps(t *testing.T) {
 		{in: "1000", want: []int{1000}},
 		{in: "", wantErr: true},
 		{in: "abc", wantErr: true},
-		{in: "1000,500", wantErr: true},  // not ascending
-		{in: "0,1000", wantErr: true},    // not positive
-		{in: "1000,1000", wantErr: true}, // not strictly ascending
+		{in: "1000,500", wantErr: true},             // not ascending
+		{in: "0,1000", wantErr: true},               // not positive
+		{in: "1000,1000", wantErr: true},            // not strictly ascending
+		{in: "9223372036854775807k", wantErr: true}, // overflows int
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -40,15 +42,26 @@ func TestParseRPSSteps(t *testing.T) {
 
 // fakeWorkload returns canned inputs, one per step, in order.
 type fakeWorkload struct {
-	inputs []rpsStepInputs
-	calls  int
+	inputs   []rpsStepInputs
+	errs     map[int]error // step index -> error to return
+	calls    int
+	cancel   context.CancelFunc // if non-nil, called at the start of RunStep #cancelOn
+	cancelOn int
 }
 
 func (f *fakeWorkload) Label() string { return "fake" }
 func (f *fakeWorkload) RunStep(_ context.Context, _ int, _, _ time.Duration) (rpsStepInputs, error) {
-	in := f.inputs[f.calls]
+	i := f.calls
 	f.calls++
-	return in, nil
+	if f.cancel != nil && i == f.cancelOn {
+		f.cancel()
+	}
+	if f.errs != nil {
+		if err := f.errs[i]; err != nil {
+			return rpsStepInputs{}, err
+		}
+	}
+	return f.inputs[i], nil
 }
 
 func passInputs(target int) rpsStepInputs {
@@ -95,6 +108,37 @@ func TestRunRamp_NoStopOnTripRunsAll(t *testing.T) {
 	require.Len(t, results, 3)
 }
 
+func TestRunRamp_StopsOnRunStepError(t *testing.T) {
+	w := &fakeWorkload{inputs: []rpsStepInputs{passInputs(500), {}, passInputs(2000)}, errs: map[int]error{1: errors.New("boom")}}
+	cfg := rampConfig{Steps: []int{500, 1000, 2000}, Hold: time.Second, Thresholds: defaultRPSThresholds(), StopOnTrip: true}
+	results := runRamp(context.Background(), w, &cfg)
+	require.Len(t, results, 1)
+	assert.Equal(t, verdictPass, results[0].Kind)
+}
+
+func TestRunRamp_StopsOnContextCanceledError(t *testing.T) {
+	w := &fakeWorkload{inputs: []rpsStepInputs{passInputs(500), {}}, errs: map[int]error{1: context.Canceled}}
+	cfg := rampConfig{Steps: []int{500, 1000}, Hold: time.Second, Thresholds: defaultRPSThresholds()}
+	results := runRamp(context.Background(), w, &cfg)
+	require.Len(t, results, 1)
+}
+
+func TestRunRamp_EmptyWhenContextCancelledBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := &fakeWorkload{inputs: []rpsStepInputs{passInputs(500)}}
+	results := runRamp(ctx, w, &rampConfig{Steps: []int{500}, Hold: time.Second, Thresholds: defaultRPSThresholds()})
+	assert.Empty(t, results)
+}
+
+func TestRunRamp_StopsWhenCooldownCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &fakeWorkload{inputs: []rpsStepInputs{passInputs(500), passInputs(1000)}, cancel: cancel, cancelOn: 0}
+	cfg := rampConfig{Steps: []int{500, 1000}, Hold: time.Second, Cooldown: time.Hour, Thresholds: defaultRPSThresholds()}
+	results := runRamp(ctx, w, &cfg)
+	require.Len(t, results, 1)
+}
+
 func TestMaxRPSExitCode(t *testing.T) {
 	pass := []rpsStepResult{{Kind: verdictPass}, {Kind: verdictTrip}}
 	none := []rpsStepResult{{Kind: verdictInconclusive}, {Kind: verdictTrip}}
@@ -108,4 +152,8 @@ func TestWaitOrCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	assert.Error(t, waitOrCancel(ctx, time.Hour))
+	require.NoError(t, waitOrCancel(context.Background(), 0))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	assert.Error(t, waitOrCancel(ctx2, 0))
 }

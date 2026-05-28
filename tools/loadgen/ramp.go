@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -12,8 +13,7 @@ import (
 
 // rpsWorkload is the engine<->adapter seam. RunStep drives open-loop load at
 // targetRPS, owning its own warmup/hold measurement boundaries, and returns the
-// normalized inputs for the hold window. The engine owns cooldown, stop-on-trip
-// and last-pass tracking.
+// normalized inputs for the hold window. The engine owns cooldown and stop-on-trip.
 type rpsWorkload interface {
 	RunStep(ctx context.Context, targetRPS int, warmup, hold time.Duration) (rpsStepInputs, error)
 	Label() string
@@ -47,6 +47,9 @@ func parseRPSSteps(s string) ([]int, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bad step %q: %w", raw, err)
 		}
+		if mult > 1 && n > math.MaxInt/mult {
+			return nil, fmt.Errorf("step %q overflows int", raw)
+		}
 		n *= mult
 		if n <= 0 {
 			return nil, fmt.Errorf("step must be > 0, got %d", n)
@@ -56,9 +59,6 @@ func parseRPSSteps(s string) ([]int, error) {
 		}
 		prev = n
 		out = append(out, n)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no steps parsed from %q", s)
 	}
 	return out, nil
 }
