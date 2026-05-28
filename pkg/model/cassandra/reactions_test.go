@@ -74,18 +74,24 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		assert.Equal(t, "Alice 爱丽丝", grouped["👍"][0]["displayName"])
 	})
 
-	t.Run("grouped_by_emoji", func(t *testing.T) {
-		// Inner-array order is unspecified (matches the existing backend convention —
-		// no sort). Assertions are set-based, not positional.
+	t.Run("grouped_by_emoji_fifo_by_reactedAt", func(t *testing.T) {
+		// Per-emoji order is FIFO — oldest reaction first, newest last.
+		// Matches the legacy MongoDB array-push insertion order.
+		t0 := now
+		t1 := now.Add(1 * time.Minute)
+		t2 := now.Add(2 * time.Minute)
 		r := Reactions{
-			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{
-				UserID: "u3", EngName: "Carol", ChnName: "卡罗尔", Account: "carol", ReactedAt: now,
+			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{ // newest 👍
+				UserID: "u3", EngName: "Carol", ChnName: "卡罗尔", Account: "carol", ReactedAt: t2,
 			},
-			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{
-				UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: now,
+			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{ // oldest 👍
+				UserID: "u1", EngName: "Alice", ChnName: "爱丽丝", Account: "alice", ReactedAt: t0,
+			},
+			ReactionKey{Emoji: "👍", UserAccount: "dave"}: ReactorInfo{ // middle 👍
+				UserID: "u4", EngName: "Dave", Account: "dave", ReactedAt: t1,
 			},
 			ReactionKey{Emoji: "❤️", UserAccount: "bob"}: ReactorInfo{
-				UserID: "u2", EngName: "Bob", ChnName: "鲍勃", Account: "bob", ReactedAt: now,
+				UserID: "u2", EngName: "Bob", ChnName: "鲍勃", Account: "bob", ReactedAt: t1,
 			},
 		}
 		data, err := json.Marshal(r)
@@ -93,14 +99,30 @@ func TestReactions_MarshalJSON(t *testing.T) {
 		var grouped map[string][]map[string]string
 		require.NoError(t, json.Unmarshal(data, &grouped))
 		require.Contains(t, grouped, "❤️")
-		require.Contains(t, grouped, "👍")
-		assert.ElementsMatch(t, []map[string]string{
-			{"account": "alice", "displayName": "Alice 爱丽丝"},
-			{"account": "carol", "displayName": "Carol 卡罗尔"},
-		}, grouped["👍"])
-		assert.ElementsMatch(t, []map[string]string{
-			{"account": "bob", "displayName": "Bob 鲍勃"},
-		}, grouped["❤️"])
+		require.Len(t, grouped["👍"], 3)
+		// Oldest first, newest last.
+		assert.Equal(t, "alice", grouped["👍"][0]["account"])
+		assert.Equal(t, "dave", grouped["👍"][1]["account"])
+		assert.Equal(t, "carol", grouped["👍"][2]["account"])
+		require.Len(t, grouped["❤️"], 1)
+		assert.Equal(t, "bob", grouped["❤️"][0]["account"])
+		assert.Equal(t, "Bob 鲍勃", grouped["❤️"][0]["displayName"])
+	})
+
+	t.Run("same_timestamp_breaks_by_account_asc", func(t *testing.T) {
+		r := Reactions{
+			ReactionKey{Emoji: "👍", UserAccount: "carol"}: ReactorInfo{Account: "carol", ReactedAt: now},
+			ReactionKey{Emoji: "👍", UserAccount: "alice"}: ReactorInfo{Account: "alice", ReactedAt: now},
+			ReactionKey{Emoji: "👍", UserAccount: "bob"}:   ReactorInfo{Account: "bob", ReactedAt: now},
+		}
+		data, err := json.Marshal(r)
+		require.NoError(t, err)
+		var grouped map[string][]map[string]string
+		require.NoError(t, json.Unmarshal(data, &grouped))
+		require.Len(t, grouped["👍"], 3)
+		assert.Equal(t, "alice", grouped["👍"][0]["account"])
+		assert.Equal(t, "bob", grouped["👍"][1]["account"])
+		assert.Equal(t, "carol", grouped["👍"][2]["account"])
 	})
 
 	t.Run("displayName_fallback_to_account", func(t *testing.T) {

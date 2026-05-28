@@ -1019,7 +1019,9 @@ Example:
 }
 ```
 
-Order is unspecified — outer JSON object keys are unordered by spec, and the inner arrays follow server-side Go map iteration (no sort). Frontends should apply whatever ordering they need. Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by adding or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
+Each emoji's user array is sorted by `reactedAt` ascending — FIFO, oldest reaction first, newest last. This matches the legacy MongoDB insertion-order behaviour. Same-millisecond ties break by `account` ASC. Outer JSON object key order (across emojis) is unspecified — FE applies its own emoji ordering.
+
+Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by appending or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
 
 #### Load History
 

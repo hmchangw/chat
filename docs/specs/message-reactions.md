@@ -158,8 +158,10 @@ The field uses a **named map type** so we can hang custom `MarshalJSON` / `Unmar
 // record — see MarshalJSON and §6 for the wire shape.
 type Reactions map[ReactionKey]ReactorInfo
 
-// MarshalJSON emits map<emoji, [{account, displayName}]>. Order is unspecified at both levels.
-// displayName is composed via displayfmt.CombineWithFallback(EngName, ChineseName, UserAccount).
+// MarshalJSON emits map<emoji, [{account, displayName}]>. Per-emoji arrays are sorted by
+// reactedAt ASC (FIFO — oldest first), with account ASC breaking same-millisecond ties.
+// Outer JSON object key order is unspecified. displayName is composed via
+// displayfmt.CombineWithFallback(EngName, ChineseName, UserAccount).
 // Nil → "null"; empty → "{}" (omitempty elides nil on Message).
 func (r Reactions) MarshalJSON() ([]byte, error) { /* see §6 */ }
 ```
@@ -271,7 +273,7 @@ ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<
 - `account` stays as the stable per-user identifier for FE concerns: "is this me?", "remove my reaction", React keys.
 - The per-user `userId` / `eng_name` / `chn_name` / `reactedAt` fields stay in Cassandra storage (UDT shape unchanged — §2.1, §3.1) but are server-side details, never emitted on the wire.
 
-**Ordering:** unspecified at both levels. JSON object key order (outer `{emoji: ...}`) is unordered by spec, and the inner arrays follow Go map iteration (no server-side sort). This matches the existing backend convention — the v1 column had no defined wire-order either. Frontends apply whatever ordering they render.
+**Ordering:** per-emoji arrays are sorted by `reactedAt` ascending (FIFO — oldest first, newest last), matching the legacy MongoDB array insertion-order behaviour. Same-millisecond ties break by `account` ASC for determinism. Outer JSON object key order (across emojis) is unspecified — the FE applies its own emoji ordering.
 
 **Empty state:** nil `Reactions` → field omitted (via `omitempty`). Empty `Reactions{}` → `"reactions": {}`. The FE should treat both as "no reactions".
 
