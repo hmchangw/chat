@@ -193,7 +193,9 @@ Search regex (`grep -rn MessageReaction`) MUST return zero hits after Commit A.
 - `TestReactions_MarshalJSON/nil` — direct `json.Marshal(Reactions(nil))` → `"null"`.
 - `TestReactions_MarshalJSON/nil_omitted_via_omitempty` — nil `Message.Reactions` produces no `"reactions"` key in the message JSON.
 - `TestReactions_MarshalJSON/empty` — `Reactions{}` → `"{}"`.
-- `TestReactions_MarshalJSON/single` and `/grouped_by_emoji_with_sorted_users` — wire shape is `map<emoji, [{account, displayName}]>` with inner arrays sorted by account ASC.
+- `TestReactions_MarshalJSON/single` — wire shape is `map<emoji, [{account, displayName}]>`.
+- `TestReactions_MarshalJSON/grouped_by_emoji_fifo_by_reactedAt` — per-emoji arrays sorted by `reactedAt` ASC (FIFO, oldest first).
+- `TestReactions_MarshalJSON/same_timestamp_breaks_by_account_asc` — same-millisecond ties break by `account` ASC.
 - `TestReactions_MarshalJSON/displayName_fallback_to_account` — when both name fields are blank, `displayName` falls back to `account`.
 - `TestReactions_MarshalJSON/one_user_multiple_different_emoji` and `/no_duplicate_account_within_emoji_bucket` — pin the spec §1 self-uniqueness contract at the wire level.
 
