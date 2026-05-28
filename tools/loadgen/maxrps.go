@@ -105,6 +105,14 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			fmt.Fprintln(os.Stderr, "--scrollback-pages must be > 0")
 			return 2
 		}
+		if *pageLimit <= 0 {
+			fmt.Fprintln(os.Stderr, "--page-limit must be > 0")
+			return 2
+		}
+		if *requestTimeout <= 0 {
+			fmt.Fprintln(os.Stderr, "--request-timeout must be > 0")
+			return 2
+		}
 		hw, clean, err := newHistoryWorkload(ctx, cfg, &p, *seed, historyWorkloadParams{
 			Mix: mix, BeforeMode: beforeMode, ScrollbackPages: *scrollbackPages,
 			PageLimit: *pageLimit, RequestTimeout: *requestTimeout,

@@ -266,14 +266,17 @@ At the end of the run the tool prints a per-step table and a final
 verdict line:
 
 ```
-ANSWER: max RPS = 2000
+ANSWER: max RPS = 2000 (workload=messages, preset=medium)
+        Next limit: E2 p95=143ms > 100ms
 ```
 
-This is the largest step at which **all** SLO signals passed. If no step
-passed, the output is `ANSWER: max RPS = 0 (none passed)`.
+This is the largest step at which **all** SLO signals passed; the
+`Next limit:` line names why the first failing step tripped. If no step
+passed, the output is `ANSWER: no step passed (workload=…, preset=…)`.
 
 **INCONCLUSIVE rows** appear when the achieved throughput fell more than
-`--rate-tolerance` below the target (the pipeline was already saturated
-before the SLO gate ran). An INCONCLUSIVE step is treated as a soft TRIP:
-`--stop-on-trip` halts at the first INCONCLUSIVE just as it would at a
-hard TRIP, and it does not count as a passing step.
+`--rate-tolerance` below the target while the SLO signals still looked
+healthy — i.e. the load generator itself, not the service under test, was
+the limiting factor, so the step's result can't be trusted. An
+INCONCLUSIVE step does **not** count as a pass and does **not** stop the
+ramp, even with `--stop-on-trip`; only a hard TRIP stops the ramp.

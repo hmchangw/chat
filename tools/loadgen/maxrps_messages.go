@@ -236,6 +236,10 @@ func (w *messagesWorkload) RunStep(ctx context.Context, targetRPS int, warmup, h
 
 	holdErr := waitOrCancel(ctx, hold)
 
+	// Counters are snapshotted at hold-end, before the drain: gatekeeper/bad_reply
+	// errors whose reply lands during the drain are deliberately excluded (see the
+	// straggler-exclusion rationale on buildMessagesInputs). The drain only lets
+	// trailing E1/E2 latency samples settle for the percentile signals.
 	endCounts := w.snapshotCounters()
 	endPending, perr2 := w.snapshotPending(ctx)
 	cancel()
