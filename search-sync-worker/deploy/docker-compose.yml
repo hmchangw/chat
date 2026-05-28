@@ -15,6 +15,11 @@ services:
       - SPOTLIGHT_INDEX=spotlight-site-local-v1
       - USER_ROOM_INDEX=user-room-mv-site-local
       - BOOTSTRAP_STREAMS=true
+      # Optional YYYY-MM-DD (UTC) cutoff for the messages collection.
+      # When set, events whose Message.CreatedAt predates the date are
+      # skipped — used during legacy-data migration. Leave unset/empty
+      # in local dev so all messages get indexed.
+      # - SYNC_MESSAGES_FROM=2026-01-01
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

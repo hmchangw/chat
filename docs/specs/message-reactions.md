@@ -79,7 +79,7 @@ For dev keyspaces already created, the migration (§4) uses:
 ```cql
 ALTER TABLE chat.messages_by_room        ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 ALTER TABLE chat.messages_by_id          ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
-ALTER TABLE chat.thread_messages_by_room ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.thread_messages_by_thread ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 ALTER TABLE chat.pinned_messages_by_room ADD reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 ```
 
@@ -105,7 +105,7 @@ Bind the first `?` to a `cassandra.ReactionKey` value (frozen UDT); bind the sec
 
 ### 2.4 Compaction & tombstones
 
-- `messages_by_room` and `thread_messages_by_room` — **TWCS** (time-windowed). Chat append patterns line up with TWCS's strength; the reactions column rides along.
+- `messages_by_room` and `thread_messages_by_thread` — **TWCS** (time-windowed). Chat append patterns line up with TWCS's strength; the reactions column rides along.
 - `messages_by_id` and `pinned_messages_by_room` — **LCS** (leveled). Both are point-lookup tables; LCS keeps read amplification bounded.
 
 These compaction choices should be applied to the inline `CREATE TABLE` clauses in `docker-local/cassandra/init/10-13-*.cql`. The migration script in §4 cannot retro-apply them to existing dev keyspaces — devs who want the optimal compaction need to drop+recreate their local keyspace. Acceptable trade-off.
@@ -117,7 +117,7 @@ These compaction choices should be applied to the inline `CREATE TABLE` clauses 
 
 ### 2.5 Mirror consistency
 
-A single reaction toggle writes 2–4 mirror tables (`messages_by_id` always; `messages_by_room` always; `thread_messages_by_room` when the message is a thread reply; `pinned_messages_by_room` when the message is pinned). The writes are **not atomic across tables** — there is no batch, no LWT.
+A single reaction toggle writes 2–4 mirror tables (`messages_by_id` always; `messages_by_room` always; `thread_messages_by_thread` when the message is a thread reply; `pinned_messages_by_room` when the message is pinned). The writes are **not atomic across tables** — there is no batch, no LWT.
 
 **Source-of-truth contract:** `messages_by_id` is authoritative. Mirror tables are eventually-consistent. Readers MUST NOT diff reactions across mirrors; the addReaction handler is expected to write to `messages_by_id` first, then mirror to the others. Partial failure of a mirror write returns an error to the caller and gets retried at the application level (the addReaction PR's concern).
 
@@ -214,7 +214,7 @@ Add:
 Edit (restore the `reactions` column with the new shape; also set explicit compaction per §2.4):
 
 - `10-table-messages_by_room.cql`
-- `11-table-thread_messages_by_room.cql`
+- `11-table-thread_messages_by_thread.cql`
 - `12-table-pinned_messages_by_room.cql`
 - `13-table-messages_by_id.cql`
 
@@ -240,8 +240,8 @@ ALTER TABLE chat.messages_by_room        ADD IF NOT EXISTS reactions MAP<FROZEN<
 ALTER TABLE chat.messages_by_id          DROP IF EXISTS reactions;
 ALTER TABLE chat.messages_by_id          ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
-ALTER TABLE chat.thread_messages_by_room DROP IF EXISTS reactions;
-ALTER TABLE chat.thread_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.thread_messages_by_thread DROP IF EXISTS reactions;
+ALTER TABLE chat.thread_messages_by_thread ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
 ALTER TABLE chat.pinned_messages_by_room DROP IF EXISTS reactions;
 ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;

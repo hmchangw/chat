@@ -30,8 +30,8 @@ ALTER TABLE chat.messages_by_room        ADD IF NOT EXISTS reactions MAP<FROZEN<
 ALTER TABLE chat.messages_by_id          DROP IF EXISTS reactions;
 ALTER TABLE chat.messages_by_id          ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
-ALTER TABLE chat.thread_messages_by_room DROP IF EXISTS reactions;
-ALTER TABLE chat.thread_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
+ALTER TABLE chat.thread_messages_by_thread DROP IF EXISTS reactions;
+ALTER TABLE chat.thread_messages_by_thread ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
 
 ALTER TABLE chat.pinned_messages_by_room DROP IF EXISTS reactions;
 ALTER TABLE chat.pinned_messages_by_room ADD IF NOT EXISTS reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>;
