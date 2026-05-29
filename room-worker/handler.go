@@ -1710,6 +1710,12 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	} else {
 		subs = buildDMSubs(requester, other, room, joinedAt)
 	}
+	// eventTs for the membership guard is the DM's creation time. Unlike the
+	// other add paths (req.Timestamp), SyncCreateDMRequest carries no event
+	// timestamp, but joinedAt (room.CreatedAt) is a sound monotonic source:
+	// a DM is created before it can be left/removed, so this value is always
+	// <= any later member_removed's req.Timestamp — the guard can never let a
+	// stale create resurrect a newer removal.
 	if err := h.store.BulkCreateSubscriptions(ctx, subs, joinedAt.UnixMilli()); err != nil {
 		return nil, fmt.Errorf("bulk create subs: %w", err)
 	}

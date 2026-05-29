@@ -863,7 +863,10 @@ func TestInboxWorker_Tombstone_RemoveAfterAdd_NoResurrection(t *testing.T) {
 		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t1))
 		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t2))
 		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
-		assert.True(t, loadSub(t, store, room, acct).Deleted)
+		got := loadSub(t, store, room, acct)
+		assert.True(t, got.Deleted)
+		// The guard (not just the unique index) must have let the newer remove win.
+		assert.EqualValues(t, t2, got.MembershipEventTimestamp)
 	})
 
 	t.Run("remove T2 then stale add T1 stays deleted", func(t *testing.T) {
@@ -871,7 +874,9 @@ func TestInboxWorker_Tombstone_RemoveAfterAdd_NoResurrection(t *testing.T) {
 		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t2))
 		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s2", acct, room)}, t1))
 		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
-		assert.True(t, loadSub(t, store, room, acct).Deleted, "stale add must not resurrect a newer tombstone")
+		got := loadSub(t, store, room, acct)
+		assert.True(t, got.Deleted, "stale add must not resurrect a newer tombstone")
+		assert.EqualValues(t, t2, got.MembershipEventTimestamp, "high-water mark must stay at the newer remove")
 	})
 }
 
@@ -886,14 +891,18 @@ func TestInboxWorker_Tombstone_AddAfterRemove_Revives(t *testing.T) {
 		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t1+1))
 		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1b", acct, room)}, t2))
 		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
-		assert.False(t, loadSub(t, store, room, acct).Deleted, "legit re-add must revive the membership")
+		got := loadSub(t, store, room, acct)
+		assert.False(t, got.Deleted, "legit re-add must revive the membership")
+		assert.EqualValues(t, t2, got.MembershipEventTimestamp)
 	})
 
 	t.Run("add T2 then stale remove T1 stays active", func(t *testing.T) {
 		store := newTombstoneStore(t, setupMongo(t))
 		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t2))
 		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t1))
-		assert.False(t, loadSub(t, store, room, acct).Deleted, "stale remove must not tombstone a newer add")
+		got := loadSub(t, store, room, acct)
+		assert.False(t, got.Deleted, "stale remove must not tombstone a newer add")
+		assert.EqualValues(t, t2, got.MembershipEventTimestamp, "high-water mark must stay at the newer add")
 	})
 }
 
