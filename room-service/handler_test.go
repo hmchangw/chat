@@ -1173,6 +1173,18 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 			},
 			wantErr: true, wantErrSentinel: errStoreFailure, wantPublish: false,
 		},
+		{
+			// Org and account existence checks run concurrently, so BOTH the
+			// users-collection reads fire even when the org is already known
+			// phantom; the org error still takes priority over the account error.
+			name: "both phantom — both validators run, org error wins",
+			req:  model.AddMembersRequest{Orgs: []string{"org-nope"}, Users: []string{"ghost"}},
+			setupMocks: func(store *MockRoomStore) {
+				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
+				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
+			},
+			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1249,6 +1261,15 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"bob"}).Return(nil, errStoreFailure)
 			},
 			wantErr: true, wantErrSentinel: errStoreFailure, wantPublish: false,
+		},
+		{
+			name: "both phantom — both validators run, org error wins",
+			req:  model.CreateRoomRequest{Name: "general", Orgs: []string{"org-nope"}, Users: []string{"ghost"}},
+			setupMocks: func(store *MockRoomStore) {
+				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
+				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
+			},
+			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
 		},
 	}
 
