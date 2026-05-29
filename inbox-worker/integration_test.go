@@ -186,6 +186,10 @@ func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
 	// First delivery establishes the membership event clock at addTs.
 	const addTs int64 = 1_000_000
 	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}, addTs))
+	// Read-state is written via the read path, not by BulkCreateSubscriptions
+	// (which only persists membership metadata). Seed it so the redelivery below
+	// has accumulated read-state to (not) clobber.
+	require.NoError(t, store.UpdateSubscriptionRead(ctx, "r1", "alice", originalSeenAt, true))
 
 	// Re-issue with a "fresher" copy that has no LastSeenAt — simulates a
 	// redelivered outbox event materializing the same sub.
