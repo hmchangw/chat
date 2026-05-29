@@ -482,6 +482,49 @@ func TestSubscriptionJSON(t *testing.T) {
 		roundTrip(t, &s, &model.Subscription{})
 	})
 
+	t.Run("tombstone fields round-trip when non-zero", func(t *testing.T) {
+		s := model.Subscription{
+			ID:                       "s1",
+			User:                     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:                   "r1",
+			RoomType:                 model.RoomTypeChannel,
+			SiteID:                   "site-a",
+			Roles:                    []model.Role{model.RoleMember},
+			JoinedAt:                 time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Deleted:                  true,
+			MembershipEventTimestamp: 1735689600000,
+		}
+		roundTrip(t, &s, &model.Subscription{})
+
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, true, raw["deleted"], "deleted must be present when true")
+		assert.EqualValues(t, 1735689600000, raw["membershipEventTimestamp"])
+	})
+
+	t.Run("deleted omitted when false but membershipEventTimestamp always present", func(t *testing.T) {
+		s := model.Subscription{
+			ID:                       "s1",
+			User:                     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:                   "r1",
+			RoomType:                 model.RoomTypeChannel,
+			SiteID:                   "site-a",
+			Roles:                    []model.Role{model.RoleMember},
+			JoinedAt:                 time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			MembershipEventTimestamp: 1735689600000,
+		}
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, hasDeleted := raw["deleted"]
+		assert.False(t, hasDeleted, "deleted should be omitted when false")
+		_, hasTs := raw["membershipEventTimestamp"]
+		assert.True(t, hasTs, "membershipEventTimestamp must always be present")
+	})
+
 	t.Run("lastSeenAt omitted when nil", func(t *testing.T) {
 		s := model.Subscription{
 			ID:       "s1",

@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/pipelines"
@@ -32,7 +33,9 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 }
 
 func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["roomId"] = roomID
+	cursor, err := s.subscriptions.Find(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions for room %q: find: %w", roomID, err)
 	}
@@ -52,8 +55,10 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 // accounts matching `.bot$|^p_` as bots.
 func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
 	const botRegex = `(\.bot$|^p_)`
+	matchActive := pipelines.ActiveSubscriptionFilter()
+	matchActive["roomId"] = roomID
 	pipe := []bson.M{
-		{"$match": bson.M{"roomId": roomID}},
+		{"$match": matchActive},
 		{"$group": bson.M{
 			"_id": nil,
 			"appCount": bson.M{"$sum": bson.M{
@@ -162,7 +167,9 @@ func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accou
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	filter := bson.M{"u.account": account, "roomId": roomID}
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["u.account"] = account
+	filter["roomId"] = roomID
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
@@ -229,6 +236,7 @@ func (s *MongoStore) GetUserWithMembership(ctx context.Context, roomID, account 
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$roomId", roomID}},
 					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+					pipelines.ActiveSubscriptionExpr(),
 				}}}},
 				bson.M{"$limit": 1},
 				bson.M{"$project": bson.M{"roles": 1}},
@@ -336,20 +344,77 @@ func (s *MongoStore) GetOrgMembersWithIndividualStatus(ctx context.Context, room
 	return results, nil
 }
 
-func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string) (int64, error) {
-	res, err := s.subscriptions.DeleteOne(ctx, bson.M{"roomId": roomID, "u.account": account})
-	if err != nil {
-		return 0, fmt.Errorf("delete subscription for %q in room %q: %w", account, roomID, err)
+// DeleteSubscription soft-deletes (tombstones) the subscription for account
+// in roomID at the given eventTs. It flips deleted:true under a strict $lt
+// guard on membershipEventTimestamp so an out-of-order (stale) remove cannot
+// override a newer membership decision. With upsert:true a remove that arrives
+// before any add lays a tombstone, which later blocks a stale add from
+// resurrecting the membership. The returned count is the number of docs whose
+// state actually changed (ModifiedCount + UpsertedCount), preserving the
+// caller's "rows affected" semantic. A guard-rejected stale remove can collide
+// on the full unique index when the upsert falls back to insert — that is a
+// no-op (the existing newer doc wins) and is swallowed.
+func (s *MongoStore) DeleteSubscription(ctx context.Context, roomID, account string, eventTs int64) (int64, error) {
+	filter := bson.M{
+		"roomId":    roomID,
+		"u.account": account,
+		"$or": bson.A{
+			bson.M{"membershipEventTimestamp": bson.M{"$exists": false}},
+			bson.M{"membershipEventTimestamp": bson.M{"$lt": eventTs}},
+		},
 	}
-	return res.DeletedCount, nil
+	update := bson.M{
+		"$set":         bson.M{"deleted": true, "membershipEventTimestamp": eventTs},
+		"$setOnInsert": bson.M{"_id": idgen.GenerateUUIDv7()},
+	}
+	res, err := s.subscriptions.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("soft-delete subscription for %q in room %q: %w", account, roomID, err)
+	}
+	return res.ModifiedCount + res.UpsertedCount, nil
 }
 
-func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error) {
-	res, err := s.subscriptions.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
-	if err != nil {
-		return 0, fmt.Errorf("delete subscriptions for room %q: %w", roomID, err)
+// DeleteSubscriptionsByAccounts soft-deletes (tombstones) the subscriptions
+// for the given accounts in roomID at eventTs. Each per-account write follows
+// the same guarded, upsert-on-missing tombstone semantics as DeleteSubscription.
+// Returns the number of docs whose state actually changed.
+func (s *MongoStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string, eventTs int64) (int64, error) {
+	if len(accounts) == 0 {
+		return 0, nil
 	}
-	return res.DeletedCount, nil
+	models := make([]mongo.WriteModel, 0, len(accounts))
+	for _, account := range accounts {
+		filter := bson.M{
+			"roomId":    roomID,
+			"u.account": account,
+			"$or": bson.A{
+				bson.M{"membershipEventTimestamp": bson.M{"$exists": false}},
+				bson.M{"membershipEventTimestamp": bson.M{"$lt": eventTs}},
+			},
+		}
+		update := bson.M{
+			"$set":         bson.M{"deleted": true, "membershipEventTimestamp": eventTs},
+			"$setOnInsert": bson.M{"_id": idgen.GenerateUUIDv7()},
+		}
+		models = append(models, mongoutil.UpsertModel(filter, update))
+	}
+	res, err := s.subscriptions.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			// A guard-rejected stale remove collided on the full unique index;
+			// the existing newer doc/tombstone is preserved. Count whatever
+			// non-colliding writes did land.
+			if res != nil {
+				return res.ModifiedCount + res.UpsertedCount, nil
+			}
+			return 0, nil
+		}
+		return 0, fmt.Errorf("soft-delete subscriptions for room %q: %w", roomID, err)
+	}
+	return res.ModifiedCount + res.UpsertedCount, nil
 }
 
 func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error {
@@ -360,23 +425,55 @@ func (s *MongoStore) DeleteRoomMember(ctx context.Context, roomID string, member
 	return nil
 }
 
-// BulkCreateSubscriptions upserts each sub idempotently, keyed on
-// (roomId, u.account). On collision with an existing document (e.g. a
-// JetStream redelivery of the same create/add-member event), $setOnInsert
-// is a no-op so the persisted sub is preserved unchanged — preserving the
-// insert-only contract for channel/DM/add-member paths while avoiding
-// the duplicate-key error path entirely.
-func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+// BulkCreateSubscriptions upserts each sub keyed on (roomId, u.account) as a
+// revive-capable add at eventTs. The $set carries member METADATA + control
+// fields and {deleted:false, membershipEventTimestamp:eventTs} — but never
+// read-state (lastSeenAt/alert/hasMention/threadUnread), which is preserved by
+// the strict $lt guard rejecting same/older-Ts redeliveries. $setOnInsert pins
+// only the _id for brand-new docs. A legitimate re-add (newer eventTs) flips a
+// tombstone back to active; a stale add (guard-rejected) falls back to insert
+// and collides on the full unique index — that duplicate-key error is a no-op
+// (the existing newer doc/tombstone is preserved).
+func (s *MongoStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription, eventTs int64) error {
 	if len(subs) == 0 {
 		return nil
 	}
 	models := make([]mongo.WriteModel, 0, len(subs))
 	for _, sub := range subs {
-		filter := bson.M{"roomId": sub.RoomID, "u.account": sub.User.Account}
-		models = append(models, mongoutil.UpsertModel(filter, bson.M{"$setOnInsert": sub}))
+		filter := bson.M{
+			"roomId":    sub.RoomID,
+			"u.account": sub.User.Account,
+			"$or": bson.A{
+				bson.M{"membershipEventTimestamp": bson.M{"$exists": false}},
+				bson.M{"membershipEventTimestamp": bson.M{"$lt": eventTs}},
+			},
+		}
+		set := bson.M{
+			"deleted":                  false,
+			"membershipEventTimestamp": eventTs,
+			"u":                        sub.User,
+			"roomId":                   sub.RoomID,
+			"siteId":                   sub.SiteID,
+			"roomType":                 sub.RoomType,
+			"roles":                    sub.Roles,
+			"name":                     sub.Name,
+			"isSubscribed":             sub.IsSubscribed,
+			"historySharedSince":       sub.HistorySharedSince,
+			"joinedAt":                 sub.JoinedAt,
+		}
+		update := bson.M{
+			"$set":         set,
+			"$setOnInsert": bson.M{"_id": sub.ID},
+		}
+		models = append(models, mongoutil.UpsertModel(filter, update))
 	}
 	opts := options.BulkWrite().SetOrdered(false)
 	if _, err := s.subscriptions.BulkWrite(ctx, models, opts); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			// Guard-rejected stale add fell back to insert and collided on the
+			// full unique index — no-op, existing newer doc/tombstone wins.
+			return nil
+		}
 		return fmt.Errorf("bulk create %d subscriptions: %w", len(subs), err)
 	}
 	return nil
@@ -443,7 +540,9 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 }
 
 func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
-	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID},
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["roomId"] = roomID
+	cursor, err := s.subscriptions.Find(ctx, filter,
 		options.Find().SetProjection(bson.M{"u.account": 1, "_id": 0}))
 	if err != nil {
 		return nil, fmt.Errorf("get subscription accounts for room %q: %w", roomID, err)
@@ -467,10 +566,10 @@ func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string)
 // query. The first return value is the sub owned by requesterAccount, the
 // second is the counterpart's.
 func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error) {
-	cursor, err := s.subscriptions.Find(ctx, bson.M{
-		"roomId":   roomID,
-		"roomType": bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
-	})
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["roomId"] = roomID
+	filter["roomType"] = bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}}
+	cursor, err := s.subscriptions.Find(ctx, filter)
 	if err != nil {
 		return nil, nil, err
 	}

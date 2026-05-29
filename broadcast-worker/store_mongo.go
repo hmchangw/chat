@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/pipelines"
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
@@ -31,7 +32,8 @@ func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, e
 }
 
 func (m *mongoStore) ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	filter := bson.M{"roomId": roomID}
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["roomId"] = roomID
 	cursor, err := m.subCol.Find(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("query subscriptions for room %s: %w", roomID, err)

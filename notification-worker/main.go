@@ -19,6 +19,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/pipelines"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 )
@@ -42,7 +43,8 @@ type mongoMemberLookup struct {
 }
 
 func (m *mongoMemberLookup) ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error) {
-	filter := map[string]string{"roomId": roomID}
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["roomId"] = roomID
 	cursor, err := m.col.Find(ctx, filter)
 	if err != nil {
 		return nil, err

@@ -41,6 +41,16 @@ type Subscription struct {
 	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
+	// Deleted is the soft-delete tombstone flag. A removed membership flips
+	// this to true (rather than deleting the doc); a legitimate re-add flips
+	// it back to false. Missing/false == active. Readers exclude tombstoned
+	// docs via pkg/pipelines.ActiveSubscriptionFilter/Expr.
+	Deleted bool `json:"deleted,omitempty" bson:"deleted,omitempty"`
+	// MembershipEventTimestamp is the event-clock (UnixMilli) of the last
+	// add/remove that touched membership state. Writers guard with a strict
+	// $lt on this field so an out-of-order (stale) add/remove cannot resurrect
+	// or re-tombstone a newer membership decision.
+	MembershipEventTimestamp int64 `json:"membershipEventTimestamp" bson:"membershipEventTimestamp"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a

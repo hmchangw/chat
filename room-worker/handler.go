@@ -392,7 +392,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 
 	// Individual-only: delete sub, reconcile userCount, publish leave/removed events.
-	if _, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account); err != nil {
+	if _, err := h.store.DeleteSubscription(ctx, req.RoomID, req.Account, req.Timestamp); err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
 
@@ -595,7 +595,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 
 	if len(accounts) > 0 {
-		if _, err := h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts); err != nil {
+		if _, err := h.store.DeleteSubscriptionsByAccounts(ctx, req.RoomID, accounts, req.Timestamp); err != nil {
 			return fmt.Errorf("delete subscriptions by accounts: %w", err)
 		}
 	}
@@ -888,7 +888,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	if len(subs) > 0 {
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs, req.Timestamp); err != nil {
 			return fmt.Errorf("bulk create subscriptions: %w", err)
 		}
 	}
@@ -1292,7 +1292,7 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		} else {
 			subs = buildDMSubs(requester, counterpart, room, acceptedAt)
 		}
-		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs, req.Timestamp); err != nil {
 			return fmt.Errorf("bulk create subs: %w", err)
 		}
 		// Re-read canonical subs: BulkCreate is a $setOnInsert upsert, so on a
@@ -1366,7 +1366,7 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		subs = append(subs, newSub(idgen.GenerateUUIDv7(), u, room, roles, room.Name, false, acceptedAt))
 	}
 
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+	if err := h.store.BulkCreateSubscriptions(ctx, subs, req.Timestamp); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
 
@@ -1710,7 +1710,7 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	} else {
 		subs = buildDMSubs(requester, other, room, joinedAt)
 	}
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+	if err := h.store.BulkCreateSubscriptions(ctx, subs, joinedAt.UnixMilli()); err != nil {
 		return nil, fmt.Errorf("bulk create subs: %w", err)
 	}
 	requesterSub, otherSub, err := h.store.FindDMSubscriptionPair(ctx, room.ID, requester.Account)

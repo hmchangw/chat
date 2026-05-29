@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/stream"
@@ -182,7 +183,9 @@ func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
 		Alert:      true,
 		JoinedAt:   originalSeenAt,
 	}
-	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}))
+	// First delivery establishes the membership event clock at addTs.
+	const addTs int64 = 1_000_000
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}, addTs))
 
 	// Re-issue with a "fresher" copy that has no LastSeenAt — simulates a
 	// redelivered outbox event materializing the same sub.
@@ -202,17 +205,21 @@ func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
 		Roles:    []model.Role{model.RoleMember},
 		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
 	}
-	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{redelivered, newOne}))
+	// Redelivery carries the SAME (equal) event clock as the first add, so the
+	// strict $lt guard rejects the alice refresh (read-state preserved) while
+	// bob is still inserted fresh. bob's first-ever write uses the same clock.
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{redelivered, newOne}, addTs))
 
-	// Exactly two subs in the room: alice (preserved) + bob (newly inserted).
-	count, err := store.subCol.CountDocuments(ctx, bson.M{"roomId": "r1"})
+	// Exactly two ACTIVE subs in the room: alice (preserved) + bob (inserted).
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"roomId": "r1", "deleted": bson.M{"$ne": true}})
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, count, "redelivery must not duplicate")
 
 	var existing model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&existing))
 	assert.Equal(t, "sub-existing", existing.ID, "existing _id must not change")
-	require.NotNil(t, existing.LastSeenAt, "LastSeenAt must be preserved on upsert no-op")
+	assert.False(t, existing.Deleted, "active sub must not be tombstoned by a same-Ts redelivery")
+	require.NotNil(t, existing.LastSeenAt, "LastSeenAt must be preserved on guard-rejected redelivery")
 	assert.WithinDuration(t, originalSeenAt, *existing.LastSeenAt, time.Second)
 	assert.True(t, existing.Alert, "Alert flag must be preserved")
 
@@ -250,10 +257,15 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 
 	require.NoError(t, h.HandleEvent(ctx, data))
 
-	// Subscription deleted — room_members lives only on the room's site.
-	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1"})
+	// Subscription soft-deleted — no ACTIVE sub remains, but the tombstone doc
+	// persists (deleted:true) to block a later stale re-add.
+	count, err := store.subCol.CountDocuments(ctx, bson.M{"u._id": "u1", "roomId": "r1", "deleted": bson.M{"$ne": true}})
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), count)
+	assert.Equal(t, int64(0), count, "no active sub after member_removed")
+
+	var tombstone model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"u._id": "u1", "roomId": "r1"}).Decode(&tombstone))
+	assert.True(t, tombstone.Deleted, "removed sub must be tombstoned, not hard-deleted")
 
 	// No publish — room-worker handles user notification via NATS supercluster.
 }
@@ -794,4 +806,157 @@ func TestInboxStore_ApplyThreadRead_MissingThreadSubscription_NoError(t *testing
 	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"_id": "sub-1"}).Decode(&gotSub))
 	assert.Equal(t, []string{"p1"}, gotSub.ThreadUnread)
 	assert.True(t, gotSub.Alert)
+}
+
+// --- Tombstone (soft-delete) membership-race integration tests ---
+
+// newTombstoneStore builds a mongoInboxStore against an isolated DB and ensures
+// the unique (roomId, u.account) index exists so the IsDuplicateKeyError
+// swallow path is actually exercised.
+func newTombstoneStore(t *testing.T, db *mongo.Database) *mongoInboxStore {
+	t.Helper()
+	ctx := context.Background()
+	subCol := db.Collection("subscriptions")
+	_, err := subCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "u.account", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	require.NoError(t, err)
+	return &mongoInboxStore{subCol: subCol, roomCol: db.Collection("rooms"), userCol: db.Collection("users")}
+}
+
+func tombstoneSub(id, account, roomID string) *model.Subscription {
+	return &model.Subscription{
+		ID:       id,
+		User:     model.SubscriptionUser{ID: "u-" + account, Account: account},
+		RoomID:   roomID,
+		SiteID:   "site-a",
+		RoomType: model.RoomTypeChannel,
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
+func loadSub(t *testing.T, store *mongoInboxStore, roomID, account string) model.Subscription {
+	t.Helper()
+	var sub model.Subscription
+	require.NoError(t, store.subCol.FindOne(context.Background(),
+		bson.M{"roomId": roomID, "u.account": account}).Decode(&sub))
+	return sub
+}
+
+func countSubDocs(t *testing.T, store *mongoInboxStore, roomID, account string) int64 {
+	t.Helper()
+	n, err := store.subCol.CountDocuments(context.Background(),
+		bson.M{"roomId": roomID, "u.account": account})
+	require.NoError(t, err)
+	return n
+}
+
+func TestInboxWorker_Tombstone_RemoveAfterAdd_NoResurrection(t *testing.T) {
+	ctx := context.Background()
+	store := newTombstoneStore(t, setupMongo(t))
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("add T1 then remove T2 tombstones", func(t *testing.T) {
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t1))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t2))
+		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
+		assert.True(t, loadSub(t, store, room, acct).Deleted)
+	})
+
+	t.Run("remove T2 then stale add T1 stays deleted", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t2))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s2", acct, room)}, t1))
+		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
+		assert.True(t, loadSub(t, store, room, acct).Deleted, "stale add must not resurrect a newer tombstone")
+	})
+}
+
+func TestInboxWorker_Tombstone_AddAfterRemove_Revives(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("remove T1 then legit add T2 revives", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t1))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t1+1))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1b", acct, room)}, t2))
+		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
+		assert.False(t, loadSub(t, store, room, acct).Deleted, "legit re-add must revive the membership")
+	})
+
+	t.Run("add T2 then stale remove T1 stays active", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t2))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t1))
+		assert.False(t, loadSub(t, store, room, acct).Deleted, "stale remove must not tombstone a newer add")
+	})
+}
+
+func TestInboxWorker_Tombstone_EqualTs_NoDuplicateNoError(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const ts int64 = 100
+
+	t.Run("add+add equal Ts", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, ts))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s2", acct, room)}, ts))
+		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
+		assert.False(t, loadSub(t, store, room, acct).Deleted)
+	})
+
+	t.Run("remove+remove equal Ts", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, ts))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, ts))
+		assert.EqualValues(t, 1, countSubDocs(t, store, room, acct))
+		assert.True(t, loadSub(t, store, room, acct).Deleted)
+	})
+}
+
+func TestInboxWorker_Tombstone_RemoveBeforeAnyAdd(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("older add after tombstone stays deleted", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t2))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t1))
+		assert.True(t, loadSub(t, store, room, acct).Deleted)
+	})
+
+	t.Run("newer add after tombstone revives", func(t *testing.T) {
+		store := newTombstoneStore(t, setupMongo(t))
+		require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, t1))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, t2))
+		assert.False(t, loadSub(t, store, room, acct).Deleted)
+	})
+}
+
+func TestInboxWorker_Tombstone_RevivePreservesReadState(t *testing.T) {
+	ctx := context.Background()
+	store := newTombstoneStore(t, setupMongo(t))
+	const room, acct = "r1", "alice"
+
+	seenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1", acct, room)}, 100))
+	// Seed read-state on the active doc.
+	_, err := store.subCol.UpdateOne(ctx, bson.M{"roomId": room, "u.account": acct},
+		bson.M{"$set": bson.M{"lastSeenAt": seenAt, "alert": true}})
+	require.NoError(t, err)
+
+	require.NoError(t, store.DeleteSubscriptionsByAccounts(ctx, room, []string{acct}, 200))
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{tombstoneSub("s1b", acct, room)}, 300))
+
+	revived := loadSub(t, store, room, acct)
+	assert.False(t, revived.Deleted, "re-add must revive")
+	require.NotNil(t, revived.LastSeenAt, "revive must preserve lastSeenAt")
+	assert.WithinDuration(t, seenAt, *revived.LastSeenAt, time.Second)
+	assert.True(t, revived.Alert, "revive must preserve alert")
 }

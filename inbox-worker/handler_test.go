@@ -45,6 +45,8 @@ type stubInboxStore struct {
 	subscriptions      []model.Subscription
 	bulkSubscriptions  []*model.Subscription
 	bulkCreateErr      error
+	lastBulkEventTs    int64
+	lastDeleteEventTs  int64
 	rooms              []model.Room
 	roleUpdates        []roleUpdate
 	users              []model.User
@@ -74,9 +76,10 @@ func (s *stubInboxStore) UpsertRoom(ctx context.Context, room *model.Room) error
 	return nil
 }
 
-func (s *stubInboxStore) DeleteSubscriptionsByAccounts(_ context.Context, roomID string, accounts []string) error {
+func (s *stubInboxStore) DeleteSubscriptionsByAccounts(_ context.Context, roomID string, accounts []string, eventTs int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastDeleteEventTs = eventTs
 	want := make(map[string]struct{}, len(accounts))
 	for _, a := range accounts {
 		want[a] = struct{}{}
@@ -141,9 +144,10 @@ func (s *stubInboxStore) FindUsersByAccounts(_ context.Context, accounts []strin
 	return result, nil
 }
 
-func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*model.Subscription) error {
+func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*model.Subscription, eventTs int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastBulkEventTs = eventTs
 	if s.bulkCreateErr != nil {
 		return s.bulkCreateErr
 	}
@@ -795,6 +799,58 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 	assert.Empty(t, subs)
 }
 
+// TestHandleEvent_Member_ThreadsEnvelopeTimestamp asserts the inbox worker
+// threads the OutboxEvent envelope Timestamp (NOT MemberAddEvent.JoinedAt) into
+// both the add and remove store writes, so the membershipEventTimestamp guard
+// uses one consistent clock.
+func TestHandleEvent_Member_ThreadsEnvelopeTimestamp(t *testing.T) {
+	t.Run("member_added threads evt.Timestamp", func(t *testing.T) {
+		store := &stubInboxStore{}
+		store.users = append(store.users, model.User{ID: "u1", Account: "alice", SiteID: "site-a"})
+		h := NewHandler(store)
+
+		const envelopeTs int64 = 1735689600500
+		const joinedAt int64 = 1735689600000 // distinct from the envelope Ts
+		add := model.MemberAddEvent{
+			Type: "member_added", RoomID: "r1", RoomName: "eng",
+			RoomType: model.RoomTypeChannel, SiteID: "site-a",
+			Accounts: []string{"alice"}, JoinedAt: joinedAt,
+		}
+		payload, _ := json.Marshal(add)
+		data, _ := json.Marshal(model.OutboxEvent{
+			Type: "member_added", SiteID: "site-a", DestSiteID: "site-b",
+			Payload: payload, Timestamp: envelopeTs,
+		})
+
+		require.NoError(t, h.HandleEvent(context.Background(), data))
+		store.mu.Lock()
+		got := store.lastBulkEventTs
+		store.mu.Unlock()
+		assert.Equal(t, envelopeTs, got, "eventTs must be the envelope Timestamp, not JoinedAt")
+	})
+
+	t.Run("member_removed threads evt.Timestamp", func(t *testing.T) {
+		store := &stubInboxStore{}
+		h := NewHandler(store)
+
+		const envelopeTs int64 = 1735689600999
+		rm := model.MemberRemoveEvent{
+			Type: "member_removed", RoomID: "r1", Accounts: []string{"bob"}, SiteID: "site-a",
+		}
+		payload, _ := json.Marshal(rm)
+		data, _ := json.Marshal(model.OutboxEvent{
+			Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
+			Payload: payload, Timestamp: envelopeTs,
+		})
+
+		require.NoError(t, h.HandleEvent(context.Background(), data))
+		store.mu.Lock()
+		got := store.lastDeleteEventTs
+		store.mu.Unlock()
+		assert.Equal(t, envelopeTs, got)
+	})
+}
+
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
 	h := NewHandler(store)
@@ -858,7 +914,7 @@ type errorDeleteStore struct {
 	*stubInboxStore
 }
 
-func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ string, _ []string) error {
+func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ string, _ []string, _ int64) error {
 	return fmt.Errorf("boom")
 }
 

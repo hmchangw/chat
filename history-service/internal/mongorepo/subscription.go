@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/pipelines"
 )
 
 const subscriptionsCollection = "subscriptions"
@@ -25,13 +26,19 @@ func NewSubscriptionRepo(db *mongo.Database) *SubscriptionRepo {
 
 // GetSubscription returns the full subscription for a user in a room, or (nil, nil) when not subscribed.
 func (r *SubscriptionRepo) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
-	return r.subscriptions.FindOne(ctx, bson.M{"u.account": account, "roomId": roomID})
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["u.account"] = account
+	filter["roomId"] = roomID
+	return r.subscriptions.FindOne(ctx, filter)
 }
 
 // GetHistorySharedSince returns (nil, true, nil) = full access; (&t, true, nil) = restricted; (nil, false, nil) = not subscribed.
 func (r *SubscriptionRepo) GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error) {
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["u.account"] = account
+	filter["roomId"] = roomID
 	sub, err := r.subscriptions.FindOne(ctx,
-		bson.M{"u.account": account, "roomId": roomID},
+		filter,
 		mongoutil.WithProjection(bson.M{"historySharedSince": 1, "_id": 0}),
 	)
 	if err != nil {

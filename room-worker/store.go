@@ -50,12 +50,14 @@ type AddMemberCandidate struct {
 }
 
 type SubscriptionStore interface {
-	// BulkCreateSubscriptions upserts each sub keyed on (roomId, u.account)
-	// via $setOnInsert; collisions (e.g. JetStream redelivery) are a Mongo
-	// no-op so the persisted sub is preserved unchanged. Used by every
-	// membership write path (channel, DM, botDM, add-member); the
-	// re-subscribe semantic for botDM is owned by user-service.
-	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	// BulkCreateSubscriptions upserts each sub keyed on (roomId, u.account) as
+	// a revive-capable add at eventTs: it sets member metadata + control fields
+	// and flips deleted:false under a strict $lt guard on membershipEventTimestamp,
+	// without touching read-state. Stale (guard-rejected) adds and JetStream
+	// redeliveries are Mongo no-ops. Used by every membership write path
+	// (channel, DM, botDM, add-member); the re-subscribe semantic for botDM is
+	// owned by user-service.
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription, eventTs int64) error
 	// ListByRoom returns all subscriptions for roomID across every site.
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
@@ -79,8 +81,13 @@ type SubscriptionStore interface {
 	GetOrgMembersWithIndividualStatus(ctx context.Context, roomID, orgID string) ([]OrgMemberStatus, error)
 
 	// --- write operations (remove flow) ---
-	DeleteSubscription(ctx context.Context, roomID, account string) (int64, error)
-	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error)
+	// DeleteSubscription soft-deletes (tombstones) the sub at eventTs under a
+	// strict $lt guard; upsert lays a tombstone when no doc exists yet so a
+	// later stale add cannot resurrect the membership.
+	DeleteSubscription(ctx context.Context, roomID, account string, eventTs int64) (int64, error)
+	// DeleteSubscriptionsByAccounts soft-deletes (tombstones) each account's
+	// sub at eventTs with the same guarded, upsert-on-missing semantics.
+	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string, eventTs int64) (int64, error)
 	DeleteRoomMember(ctx context.Context, roomID string, memberType model.RoomMemberType, memberID string) error
 
 	// --- add-member flow ---

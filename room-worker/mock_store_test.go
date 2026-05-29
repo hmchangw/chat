@@ -71,17 +71,17 @@ func (mr *MockSubscriptionStoreMockRecorder) BulkCreateRoomMembers(ctx, members 
 }
 
 // BulkCreateSubscriptions mocks base method.
-func (m *MockSubscriptionStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+func (m *MockSubscriptionStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription, eventTs int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BulkCreateSubscriptions", ctx, subs)
+	ret := m.ctrl.Call(m, "BulkCreateSubscriptions", ctx, subs, eventTs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // BulkCreateSubscriptions indicates an expected call of BulkCreateSubscriptions.
-func (mr *MockSubscriptionStoreMockRecorder) BulkCreateSubscriptions(ctx, subs any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) BulkCreateSubscriptions(ctx, subs, eventTs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkCreateSubscriptions), ctx, subs)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkCreateSubscriptions", reflect.TypeOf((*MockSubscriptionStore)(nil).BulkCreateSubscriptions), ctx, subs, eventTs)
 }
 
 // CreateRoom mocks base method.
@@ -113,33 +113,33 @@ func (mr *MockSubscriptionStoreMockRecorder) DeleteRoomMember(ctx, roomID, membe
 }
 
 // DeleteSubscription mocks base method.
-func (m *MockSubscriptionStore) DeleteSubscription(ctx context.Context, roomID, account string) (int64, error) {
+func (m *MockSubscriptionStore) DeleteSubscription(ctx context.Context, roomID, account string, eventTs int64) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteSubscription", ctx, roomID, account)
+	ret := m.ctrl.Call(m, "DeleteSubscription", ctx, roomID, account, eventTs)
 	ret0, _ := ret[0].(int64)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DeleteSubscription indicates an expected call of DeleteSubscription.
-func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscription(ctx, roomID, account any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscription(ctx, roomID, account, eventTs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscription", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscription), ctx, roomID, account)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscription", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscription), ctx, roomID, account, eventTs)
 }
 
 // DeleteSubscriptionsByAccounts mocks base method.
-func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) (int64, error) {
+func (m *MockSubscriptionStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string, eventTs int64) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteSubscriptionsByAccounts", ctx, roomID, accounts)
+	ret := m.ctrl.Call(m, "DeleteSubscriptionsByAccounts", ctx, roomID, accounts, eventTs)
 	ret0, _ := ret[0].(int64)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DeleteSubscriptionsByAccounts indicates an expected call of DeleteSubscriptionsByAccounts.
-func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscriptionsByAccounts(ctx, roomID, accounts any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) DeleteSubscriptionsByAccounts(ctx, roomID, accounts, eventTs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscriptionsByAccounts", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscriptionsByAccounts), ctx, roomID, accounts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubscriptionsByAccounts", reflect.TypeOf((*MockSubscriptionStore)(nil).DeleteSubscriptionsByAccounts), ctx, roomID, accounts, eventTs)
 }
 
 // FindDMSubscriptionPair mocks base method.

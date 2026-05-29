@@ -360,3 +360,30 @@ func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
 	assert.Equal(t, "msg-last", got.LastMsgID)
 	assert.WithinDuration(t, msgTime, got.LastMsgAt, time.Millisecond)
 }
+
+// TestMongoStore_ListSubscriptions_ExcludesTombstones verifies the delivery
+// fan-out reader skips soft-deleted (tombstoned) subscriptions.
+func TestMongoStore_ListSubscriptions_ExcludesTombstones(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []interface{}{
+		model.Subscription{
+			ID: "s-active", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+			RoomID: "r1", SiteID: "site-a", RoomType: model.RoomTypeChannel,
+			Roles: []model.Role{model.RoleMember}, MembershipEventTimestamp: 100,
+		},
+		model.Subscription{
+			ID: "s-tomb", User: model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+			RoomID: "r1", SiteID: "site-a", RoomType: model.RoomTypeChannel,
+			Roles: []model.Role{model.RoleMember}, Deleted: true, MembershipEventTimestamp: 200,
+		},
+	})
+	require.NoError(t, err)
+
+	subs, err := store.ListSubscriptions(ctx, "r1")
+	require.NoError(t, err)
+	require.Len(t, subs, 1, "tombstoned sub must be excluded from fan-out")
+	assert.Equal(t, "alice", subs[0].User.Account)
+}

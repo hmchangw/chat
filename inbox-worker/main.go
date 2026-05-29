@@ -15,6 +15,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -70,9 +71,37 @@ func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, 
 	return nil
 }
 
-func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error {
-	_, err := s.subCol.DeleteMany(ctx, bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}})
-	if err != nil {
+// DeleteSubscriptionsByAccounts soft-deletes (tombstones) each account's
+// subscription in roomID at eventTs. Each per-account write flips deleted:true
+// under a strict $lt guard on membershipEventTimestamp and upserts a tombstone
+// when no doc exists yet, so an out-of-order (stale) cross-site remove cannot
+// override a newer membership decision and a remove-before-add blocks a later
+// stale add. Guard-rejected stale removes collide on the full unique index and
+// are swallowed as no-ops.
+func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string, eventTs int64) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(accounts))
+	for _, account := range accounts {
+		filter := bson.M{
+			"roomId":    roomID,
+			"u.account": account,
+			"$or": bson.A{
+				bson.M{"membershipEventTimestamp": bson.M{"$exists": false}},
+				bson.M{"membershipEventTimestamp": bson.M{"$lt": eventTs}},
+			},
+		}
+		update := bson.M{
+			"$set":         bson.M{"deleted": true, "membershipEventTimestamp": eventTs},
+			"$setOnInsert": bson.M{"_id": idgen.GenerateUUIDv7()},
+		}
+		models = append(models, mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true))
+	}
+	if _, err := s.subCol.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
 		return fmt.Errorf("delete subscriptions in room %q: %w", roomID, err)
 	}
 	return nil
@@ -93,23 +122,52 @@ func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []st
 	return users, nil
 }
 
-// BulkCreateSubscriptions inserts the supplied subs idempotently. Each is
-// keyed by (roomId, u.account) and written via $setOnInsert so an existing
-// sub (from a previous delivery, or with read-state already accumulated) is
-// preserved. Redelivered cross-site events become no-ops on Mongo.
-func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error {
+// BulkCreateSubscriptions upserts the supplied subs as revive-capable adds at
+// eventTs. Each is keyed by (roomId, u.account); the $set carries member
+// METADATA + control fields and flips {deleted:false, membershipEventTimestamp}
+// under a strict $lt guard, while NEVER touching read-state
+// (lastSeenAt/alert/hasMention/threadUnread) — that is preserved by the guard
+// rejecting same/older-Ts redeliveries. $setOnInsert pins only the _id. A
+// legitimate re-add (newer eventTs) revives a tombstone; a stale add is a Mongo
+// no-op (guard rejects, then the insert fallback collides on the full unique
+// index — swallowed).
+func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription, eventTs int64) error {
 	if len(subs) == 0 {
 		return nil
 	}
 	models := make([]mongo.WriteModel, len(subs))
 	for i, sub := range subs {
+		filter := bson.M{
+			"roomId":    sub.RoomID,
+			"u.account": sub.User.Account,
+			"$or": bson.A{
+				bson.M{"membershipEventTimestamp": bson.M{"$exists": false}},
+				bson.M{"membershipEventTimestamp": bson.M{"$lt": eventTs}},
+			},
+		}
+		set := bson.M{
+			"deleted":                  false,
+			"membershipEventTimestamp": eventTs,
+			"u":                        sub.User,
+			"roomId":                   sub.RoomID,
+			"siteId":                   sub.SiteID,
+			"roomType":                 sub.RoomType,
+			"roles":                    sub.Roles,
+			"name":                     sub.Name,
+			"isSubscribed":             sub.IsSubscribed,
+			"historySharedSince":       sub.HistorySharedSince,
+			"joinedAt":                 sub.JoinedAt,
+		}
 		models[i] = mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"roomId": sub.RoomID, "u.account": sub.User.Account}).
-			SetUpdate(bson.M{"$setOnInsert": sub}).
+			SetFilter(filter).
+			SetUpdate(bson.M{"$set": set, "$setOnInsert": bson.M{"_id": sub.ID}}).
 			SetUpsert(true)
 	}
 	opts := options.BulkWrite().SetOrdered(false)
 	if _, err := s.subCol.BulkWrite(ctx, models, opts); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil
+		}
 		return fmt.Errorf("bulk upsert subscriptions: %w", err)
 	}
 	return nil

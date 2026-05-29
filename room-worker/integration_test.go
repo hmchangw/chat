@@ -339,13 +339,18 @@ func TestMongoStore_DeleteSubscription_Integration(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	})
 
-	deleted, err := store.DeleteSubscription(ctx, "r1", "alice")
+	deleted, err := store.DeleteSubscription(ctx, "r1", "alice", time.Now().UnixMilli())
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), deleted)
 
 	subs, err := store.ListByRoom(ctx, "r1")
 	require.NoError(t, err)
-	assert.Empty(t, subs)
+	assert.Empty(t, subs, "soft-deleted sub must be excluded by the active-only ListByRoom")
+
+	// The doc itself still exists as a tombstone (deleted:true).
+	var raw model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&raw))
+	assert.True(t, raw.Deleted, "removed sub must be tombstoned, not hard-deleted")
 }
 
 func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
@@ -366,7 +371,7 @@ func TestMongoStore_DeleteSubscriptionsByAccounts_Integration(t *testing.T) {
 		RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	})
 
-	deleted, err := store.DeleteSubscriptionsByAccounts(ctx, "r1", []string{"alice", "bob"})
+	deleted, err := store.DeleteSubscriptionsByAccounts(ctx, "r1", []string{"alice", "bob"}, time.Now().UnixMilli())
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), deleted)
 
@@ -1741,4 +1746,159 @@ func TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash(t *testing.T) {
 	room, err := store.GetRoom(ctx, roomID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, room.UserCount, "ReconcileMemberCounts ran on retry")
+}
+
+// --- Tombstone (soft-delete) membership-race integration tests ---
+
+func rwTombstoneSub(account, roomID string) *model.Subscription {
+	return &model.Subscription{
+		ID:       idgen.GenerateUUIDv7(),
+		User:     model.SubscriptionUser{ID: "u-" + account, Account: account},
+		RoomID:   roomID,
+		SiteID:   "site-a",
+		RoomType: model.RoomTypeChannel,
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
+func rwLoadSub(t *testing.T, db *mongo.Database, roomID, account string) model.Subscription {
+	t.Helper()
+	var sub model.Subscription
+	require.NoError(t, db.Collection("subscriptions").FindOne(context.Background(),
+		bson.M{"roomId": roomID, "u.account": account}).Decode(&sub))
+	return sub
+}
+
+func rwCountSubDocs(t *testing.T, db *mongo.Database, roomID, account string) int64 {
+	t.Helper()
+	n, err := db.Collection("subscriptions").CountDocuments(context.Background(),
+		bson.M{"roomId": roomID, "u.account": account})
+	require.NoError(t, err)
+	return n
+}
+
+func TestMongoStore_Tombstone_RemoveAfterAdd_NoResurrection(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("add T1 then remove T2 tombstones", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t1))
+		_, err := store.DeleteSubscription(ctx, room, acct, t2)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, rwCountSubDocs(t, db, room, acct))
+		assert.True(t, rwLoadSub(t, db, room, acct).Deleted)
+	})
+
+	t.Run("remove T2 then stale add T1 stays deleted", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		_, err := store.DeleteSubscription(ctx, room, acct, t2)
+		require.NoError(t, err)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t1))
+		assert.EqualValues(t, 1, rwCountSubDocs(t, db, room, acct))
+		assert.True(t, rwLoadSub(t, db, room, acct).Deleted, "stale add must not resurrect a newer tombstone")
+	})
+}
+
+func TestMongoStore_Tombstone_AddAfterRemove_Revives(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("remove T1 then legit add T2 revives", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t1))
+		_, err := store.DeleteSubscription(ctx, room, acct, t1+1)
+		require.NoError(t, err)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t2))
+		assert.EqualValues(t, 1, rwCountSubDocs(t, db, room, acct))
+		assert.False(t, rwLoadSub(t, db, room, acct).Deleted, "legit re-add must revive the membership")
+	})
+
+	t.Run("add T2 then stale remove T1 stays active", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t2))
+		_, err := store.DeleteSubscription(ctx, room, acct, t1)
+		require.NoError(t, err)
+		assert.False(t, rwLoadSub(t, db, room, acct).Deleted, "stale remove must not tombstone a newer add")
+	})
+}
+
+func TestMongoStore_Tombstone_EqualTs_NoDuplicateNoError(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const ts int64 = 100
+
+	t.Run("add+add equal Ts", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, ts))
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, ts))
+		assert.EqualValues(t, 1, rwCountSubDocs(t, db, room, acct))
+		assert.False(t, rwLoadSub(t, db, room, acct).Deleted)
+	})
+
+	t.Run("remove+remove equal Ts", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		_, err := store.DeleteSubscription(ctx, room, acct, ts)
+		require.NoError(t, err)
+		_, err = store.DeleteSubscription(ctx, room, acct, ts)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, rwCountSubDocs(t, db, room, acct))
+		assert.True(t, rwLoadSub(t, db, room, acct).Deleted)
+	})
+}
+
+func TestMongoStore_Tombstone_RemoveBeforeAnyAdd(t *testing.T) {
+	ctx := context.Background()
+	const room, acct = "r1", "alice"
+	const t1, t2 int64 = 100, 200
+
+	t.Run("older add after tombstone stays deleted", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		_, err := store.DeleteSubscription(ctx, room, acct, t2)
+		require.NoError(t, err)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t1))
+		assert.True(t, rwLoadSub(t, db, room, acct).Deleted)
+	})
+
+	t.Run("newer add after tombstone revives", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		_, err := store.DeleteSubscription(ctx, room, acct, t1)
+		require.NoError(t, err)
+		require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, t2))
+		assert.False(t, rwLoadSub(t, db, room, acct).Deleted)
+	})
+}
+
+func TestMongoStore_Tombstone_RevivePreservesReadState(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	const room, acct = "r1", "alice"
+
+	seenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, 100))
+	_, err := db.Collection("subscriptions").UpdateOne(ctx, bson.M{"roomId": room, "u.account": acct},
+		bson.M{"$set": bson.M{"lastSeenAt": seenAt, "alert": true}})
+	require.NoError(t, err)
+
+	_, err = store.DeleteSubscription(ctx, room, acct, 200)
+	require.NoError(t, err)
+	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{rwTombstoneSub(acct, room)}, 300))
+
+	revived := rwLoadSub(t, db, room, acct)
+	assert.False(t, revived.Deleted, "re-add must revive")
+	require.NotNil(t, revived.LastSeenAt, "revive must preserve lastSeenAt")
+	assert.WithinDuration(t, seenAt, *revived.LastSeenAt, time.Second)
+	assert.True(t, revived.Alert, "revive must preserve alert")
 }

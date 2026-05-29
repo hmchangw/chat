@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/pipelines"
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
@@ -26,7 +26,9 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	filter := bson.M{"u.account": account, "roomId": roomID}
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["u.account"] = account
+	filter["roomId"] = roomID
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("user %s not subscribed to room %s: %w", account, roomID, errNotSubscribed)

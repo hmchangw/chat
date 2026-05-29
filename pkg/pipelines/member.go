@@ -46,6 +46,7 @@ func GetNewMembersPipeline(orgIDs, directAccounts []string, roomID, excludeAccou
 					bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 						bson.M{"$eq": bson.A{"$roomId", roomID}},
 						bson.M{"$eq": bson.A{"$u.account", "$$userAccount"}},
+						ActiveSubscriptionExpr(),
 					}}}},
 					bson.M{"$limit": 1},
 					// Outer stage only checks emptiness — drop the full sub doc.
@@ -90,6 +91,7 @@ func GetAddMemberCandidatesPipeline(orgIDs, directAccounts []string, roomID, exc
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$roomId", roomID}},
 					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+					ActiveSubscriptionExpr(),
 				}}}},
 				bson.M{"$limit": 1},
 				// Outer $project only reads $size of _sub — drop everything else.

@@ -123,7 +123,9 @@ func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	filter := bson.M{"u.account": account, "roomId": roomID}
+	filter := pipelines.ActiveSubscriptionFilter()
+	filter["u.account"] = account
+	filter["roomId"] = roomID
 	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
@@ -137,8 +139,11 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 // individual and org membership sources. Used by the remove-member validation
 // flow to decide whether a user can leave or be removed individually.
 func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error) {
+	subMatch := pipelines.ActiveSubscriptionFilter()
+	subMatch["roomId"] = roomID
+	subMatch["u.account"] = account
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": account}}},
+		{{Key: "$match", Value: subMatch}},
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
 			"let":  bson.M{"acct": "$u.account"},
@@ -225,8 +230,10 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 // for a room in a single aggregation, driving the last-owner and last-member
 // guards in remove-member validation.
 func (s *MongoStore) CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error) {
+	countMatch := pipelines.ActiveSubscriptionFilter()
+	countMatch["roomId"] = roomID
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		{{Key: "$match", Value: countMatch}},
 		{{Key: "$facet", Value: bson.M{
 			"members": bson.A{bson.M{"$count": "count"}},
 			"owners": bson.A{
@@ -284,7 +291,10 @@ func (s *MongoStore) ListRoomsByIDs(ctx context.Context, ids []string) ([]model.
 }
 
 func (s *MongoStore) CountOwners(ctx context.Context, roomID string) (int, error) {
-	count, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "roles": model.RoleOwner})
+	ownerFilter := pipelines.ActiveSubscriptionFilter()
+	ownerFilter["roomId"] = roomID
+	ownerFilter["roles"] = model.RoleOwner
+	count, err := s.subscriptions.CountDocuments(ctx, ownerFilter)
 	if err != nil {
 		return 0, fmt.Errorf("count owners for room %q: %w", roomID, err)
 	}
@@ -494,6 +504,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 					bson.M{"$eq": bson.A{"$$mtyp", "individual"}},
 					bson.M{"$eq": bson.A{"$roomId", roomID}},
 					bson.M{"$eq": bson.A{"$u.account", "$$acct"}},
+					pipelines.ActiveSubscriptionExpr(),
 				}}}},
 				bson.M{"$limit": 1},
 				bson.M{"$project": bson.M{"roles": 1, "_id": 0}},
@@ -578,7 +589,9 @@ func (s *MongoStore) getRoomSubscriptions(ctx context.Context, roomID string, li
 	if limit != nil && *limit > 0 {
 		opts.SetLimit(int64(*limit))
 	}
-	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID}, opts)
+	subFilter := pipelines.ActiveSubscriptionFilter()
+	subFilter["roomId"] = roomID
+	cursor, err := s.subscriptions.Find(ctx, subFilter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("find subscriptions for %q: %w", roomID, err)
 	}
@@ -681,11 +694,11 @@ func (s *MongoStore) GetApp(ctx context.Context, botAccount string) (*model.App,
 
 func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error) {
 	var sub model.Subscription
-	err := s.subscriptions.FindOne(ctx, bson.M{
-		"u.account": account,
-		"name":      targetName,
-		"roomType":  bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}},
-	}).Decode(&sub)
+	dmFilter := pipelines.ActiveSubscriptionFilter()
+	dmFilter["u.account"] = account
+	dmFilter["name"] = targetName
+	dmFilter["roomType"] = bson.M{"$in": []model.RoomType{model.RoomTypeDM, model.RoomTypeBotDM}}
+	err := s.subscriptions.FindOne(ctx, dmFilter).Decode(&sub)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, model.ErrSubscriptionNotFound
 	}
@@ -857,8 +870,10 @@ func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string,
 // rooms.minUserLastSeenAt on a nil result.
 func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
 	zeroTime := time.Time{}
+	minMatch := pipelines.ActiveSubscriptionFilter()
+	minMatch["roomId"] = roomID
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		{{Key: "$match", Value: minMatch}},
 		// total counts every subscription in the room. readCount counts those
 		// with a usable lastSeenAt — $gt:zeroTime is false for missing/null
 		// (BSON null sorts before dates) and for the legacy zero date, so it
@@ -921,12 +936,12 @@ func (s *MongoStore) ListReadReceipts(
 	excludeAccount string,
 	limit int,
 ) ([]ReadReceiptRow, error) {
+	receiptMatch := pipelines.ActiveSubscriptionFilter()
+	receiptMatch["roomId"] = roomID
+	receiptMatch["lastSeenAt"] = bson.M{"$gte": since}
+	receiptMatch["u.account"] = bson.M{"$ne": excludeAccount}
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{
-			"roomId":     roomID,
-			"lastSeenAt": bson.M{"$gte": since},
-			"u.account":  bson.M{"$ne": excludeAccount},
-		}}},
+		{{Key: "$match", Value: receiptMatch}},
 		{{Key: "$lookup", Value: bson.M{
 			"from": "users",
 			"let":  bson.M{"uid": "$u._id"},

@@ -17,10 +17,16 @@ import (
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
-	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	// BulkCreateSubscriptions upserts each sub as a revive-capable add at
+	// eventTs (the OutboxEvent envelope Timestamp), flipping deleted:false under
+	// a strict $lt membershipEventTimestamp guard without touching read-state.
+	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription, eventTs int64) error
 	UpsertRoom(ctx context.Context, room *model.Room) error
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
-	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
+	// DeleteSubscriptionsByAccounts soft-deletes (tombstones) each account's
+	// sub at eventTs (the OutboxEvent envelope Timestamp) under a strict $lt
+	// guard, upserting a tombstone when no doc exists yet.
+	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string, eventTs int64) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
 	// keyed by (roomID, account). Idempotent and order-safe: the write
@@ -127,7 +133,7 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.OutboxEvent)
 	if len(subs) == 0 {
 		return nil
 	}
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+	if err := h.store.BulkCreateSubscriptions(ctx, subs, evt.Timestamp); err != nil {
 		if !mongo.IsDuplicateKeyError(err) {
 			return fmt.Errorf("bulk create subscriptions: %w", err)
 		}
@@ -153,7 +159,7 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.OutboxEven
 	if len(memberEvt.Accounts) == 0 {
 		return nil
 	}
-	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
+	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts, evt.Timestamp); err != nil {
 		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
 	}
 	return nil
