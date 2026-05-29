@@ -56,8 +56,6 @@ type SubscriptionStore interface {
 	// membership write path (channel, DM, botDM, add-member); the
 	// re-subscribe semantic for botDM is owned by user-service.
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
-	// ListByRoom returns all subscriptions for roomID across every site.
-	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
 	// Room.AppCount (bot subs) by scanning the subscriptions collection,
 	// then writes both back to the rooms collection in a single update.

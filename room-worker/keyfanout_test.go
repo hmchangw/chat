@@ -132,6 +132,56 @@ func TestFanOutKey_PublishesEveryAccount(t *testing.T) {
 	require.Len(t, got, accounts, "must publish once per account")
 }
 
+// dataRecordingPublisher records the raw payload bytes of every Publish call.
+type dataRecordingPublisher struct {
+	mu       sync.Mutex
+	payloads [][]byte
+}
+
+func (d *dataRecordingPublisher) Publish(_ string, data []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Copy: callers may reuse the backing array.
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	d.payloads = append(d.payloads, cp)
+	return nil
+}
+
+func (d *dataRecordingPublisher) snapshot() [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]byte, len(d.payloads))
+	copy(out, d.payloads)
+	return out
+}
+
+// TestFanOutKey_MarshalsOnce asserts every recipient receives byte-identical
+// payload, which holds only when the event is serialized a single time and the
+// same bytes are fanned out (rather than re-marshaled per account with a
+// per-recipient timestamp).
+func TestFanOutKey_MarshalsOnce(t *testing.T) {
+	const accounts = 50
+
+	dp := &dataRecordingPublisher{}
+	h := newFanoutTestHandler(t, roomkeysender.NewSender(dp), 8)
+
+	accts := make([]string, accounts)
+	for i := range accts {
+		accts[i] = fmt.Sprintf("acct-%03d", i)
+	}
+	evt := model.RoomKeyEvent{RoomID: "r", Version: 2, PrivateKey: []byte{0xaa, 0xbb}}
+	h.fanOutKey(context.Background(), "r", accts, &evt)
+
+	payloads := dp.snapshot()
+	require.Len(t, payloads, accounts)
+	first := payloads[0]
+	require.NotEmpty(t, first)
+	for i, p := range payloads {
+		assert.Equal(t, first, p, "payload %d differs; event was not marshaled exactly once", i)
+	}
+}
+
 func TestFanOutKey_NoAccountsIsNoOp(t *testing.T) {
 	rp := &recordingPublisher{}
 	h := newFanoutTestHandler(t, roomkeysender.NewSender(rp), 16)
