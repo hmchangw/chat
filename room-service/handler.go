@@ -1108,8 +1108,15 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 	if err != nil {
 		return nil, fmt.Errorf("min subscription lastSeenAt: %w", err)
 	}
-	if err := h.store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime); err != nil {
-		return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
+	// Skip the write when the recomputed floor matches what the room already
+	// carries. For a busy room the floor is unchanged on almost every read (the
+	// reader is rarely the most-behind member, and large rooms usually have an
+	// unread member that pins the floor to nil), so this avoids a no-op Mongo
+	// round trip and the write-intent lock on the hot rooms document.
+	if !sameFloor(minTime, room.MinUserLastSeenAt) {
+		if err := h.store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime); err != nil {
+			return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
+		}
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})
