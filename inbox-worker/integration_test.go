@@ -166,11 +166,10 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
-	store := &mongoInboxStore{
-		subCol:  db.Collection("subscriptions"),
-		roomCol: db.Collection("rooms"),
-		userCol: db.Collection("users"),
-	}
+	// Use the tombstone store so the (roomId, u.account) unique index exists:
+	// under the guarded upsert a same-Ts redelivery no longer matches the
+	// filter and instead relies on the unique index to collide and be swallowed.
+	store := newTombstoneStore(t, db)
 
 	originalSeenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	original := &model.Subscription{
