@@ -91,6 +91,14 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
+	// Backs room-worker's ReconcileMemberCounts, which counts bot vs non-bot
+	// subs per room off u.isBot — keeps both CountDocuments index-only instead
+	// of scanning every subscription in the room.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "u.isBot", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,u.isBot) index: %w", err)
+	}
 	// Lookup index for FindDMSubscription (filters on u.account+name).
 	// Without this index, FindDMSubscription falls back to a collection scan.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{

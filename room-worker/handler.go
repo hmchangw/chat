@@ -866,16 +866,9 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	actualAccounts := make([]string, 0, len(needSub))
 	for _, c := range needSub {
 		user := userMap[c.Account]
-		sub := &model.Subscription{
-			ID:       idgen.GenerateUUIDv7(),
-			User:     model.SubscriptionUser{ID: user.ID, Account: user.Account},
-			RoomID:   req.RoomID,
-			Name:     room.Name,
-			RoomType: model.RoomTypeChannel,
-			SiteID:   room.SiteID,
-			Roles:    []model.Role{model.RoleMember},
-			JoinedAt: acceptedAt,
-		}
+		// newSub stamps u.isBot from the account; room is the channel fetched by
+		// req.RoomID so RoomType/SiteID/Name/ID all match the prior inline build.
+		sub := newSub(idgen.GenerateUUIDv7(), &user, room, []model.Role{model.RoleMember}, room.Name, false, acceptedAt)
 		// Resolve once via the shared helper so the local sub, the per-user
 		// SubscriptionUpdateEvent fan-out, and the cross-site MemberAddEvent
 		// all carry the same HistorySharedSince value.
@@ -1188,7 +1181,7 @@ func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	name string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
 	return &model.Subscription{
 		ID:           id,
-		User:         model.SubscriptionUser{ID: user.ID, Account: user.Account},
+		User:         model.SubscriptionUser{ID: user.ID, Account: user.Account, IsBot: model.IsBotAccount(user.Account)},
 		RoomID:       room.ID,
 		SiteID:       room.SiteID,
 		Roles:        roles,
@@ -1311,13 +1304,12 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}
 }
 
-// determineRoomTypeFromPayload mirrors room-service's determineRoomType on the canonical payload.
-// botPattern matches both ".bot" suffix and "p_" prefix to classify webhook-style bots
-// consistently with room-service/helper.go and pkg/pipelines.
+// determineRoomTypeFromPayload mirrors room-service's determineRoomType on the
+// canonical payload. model.IsBotAccount classifies webhook-style bots (".bot"
+// suffix or "p_" prefix) consistently with room-service/helper.go and pkg/pipelines.
 func determineRoomTypeFromPayload(req *model.CreateRoomRequest) model.RoomType {
 	if req.Name == "" && len(req.Orgs) == 0 && len(req.Channels) == 0 && len(req.Users) == 1 {
-		acct := req.Users[0]
-		if strings.HasSuffix(acct, ".bot") || strings.HasPrefix(acct, "p_") {
+		if model.IsBotAccount(req.Users[0]) {
 			return model.RoomTypeBotDM
 		}
 		return model.RoomTypeDM
