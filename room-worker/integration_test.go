@@ -470,8 +470,11 @@ func TestReconcileMemberCountsSplitsBots(t *testing.T) {
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s3", User: model.SubscriptionUser{Account: "carol"}, RoomID: "r1",
 	})
+	// Bot subs carry u.isBot=true in production (stamped by newSub via
+	// model.IsBotAccount); set it explicitly here since the test inserts the
+	// document directly. ReconcileMemberCounts now counts off this flag.
 	mustInsertSub(t, db, &model.Subscription{
-		ID: "s4", User: model.SubscriptionUser{Account: "weather.bot"}, RoomID: "r1",
+		ID: "s4", User: model.SubscriptionUser{Account: "weather.bot", IsBot: true}, RoomID: "r1",
 	})
 	mustInsertRoom(t, db, &model.Room{ID: "r1", Type: model.RoomTypeChannel})
 
