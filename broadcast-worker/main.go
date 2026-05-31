@@ -36,6 +36,7 @@ type config struct {
 	MongoUsername        string                  `env:"MONGO_USERNAME"            envDefault:""`
 	MongoPassword        string                  `env:"MONGO_PASSWORD"            envDefault:""`
 	MaxWorkers           int                     `env:"MAX_WORKERS"               envDefault:"100"`
+	LastMsgFlushInterval time.Duration           `env:"LAST_MSG_FLUSH_INTERVAL"   envDefault:"250ms"`
 	UserCacheSize        int                     `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration           `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	RoomMetaCacheSize    int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
@@ -134,7 +135,15 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled)
+	// Coalesce per-message rooms.lastMsgAt writes into periodic BulkWrites.
+	// The handler still calls UpdateRoomLastMessage; the coalescing wrapper
+	// buffers it and drains via flushCtx/Run.
+	coalescer := newCoalescingStore(cachedStore, store)
+	flushCtx, flushCancel := context.WithCancel(context.Background())
+	go coalescer.Run(flushCtx, cfg.LastMsgFlushInterval, 5*time.Second)
+	slog.Info("last-msg coalescer enabled", "flush_interval", cfg.LastMsgFlushInterval)
+
+	handler := NewHandler(coalescer, us, publisher, keyStore, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
@@ -189,6 +198,12 @@ func main() {
 			case <-ctx.Done():
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
+		},
+		// Stop the coalescer AFTER in-flight handlers drain so any final
+		// buffered UpdateRoomLastMessage calls land in this last flush.
+		func(_ context.Context) error {
+			flushCancel()
+			return nil
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
