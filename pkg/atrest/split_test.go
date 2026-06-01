@@ -26,7 +26,6 @@ func TestSplitMessage_AllFields(t *testing.T) {
 	assert.Equal(t, "hello", enc.Msg)
 	assert.Equal(t, [][]byte{[]byte("a")}, enc.Attachments)
 	assert.Equal(t, "t", enc.Card.Template)
-	assert.Equal(t, []byte("sys"), enc.SysMsgData)
 	assert.NotNil(t, enc.QuotedParentContent)
 	assert.Equal(t, "parent body", enc.QuotedParentContent.Msg)
 
@@ -44,11 +43,13 @@ func TestApplyDecryptedFields_Restores(t *testing.T) {
 			MessageID: "p", // metadata preserved by reader
 		},
 	}
+	// sys_msg_data is set on the row (plaintext column) and must be left
+	// untouched by ApplyDecryptedFields since it is not part of the bundle.
+	target.SysMsgData = []byte("sys")
 	enc := &EncryptedFields{
 		Msg:         "hello",
 		Attachments: [][]byte{[]byte("a")},
 		Card:        &cassandra.Card{Template: "t", Data: []byte("c")},
-		SysMsgData:  []byte("sys"),
 		QuotedParentContent: &QuotedParentEncrypted{
 			Msg:         "parent body",
 			Attachments: [][]byte{[]byte("pa")},
@@ -80,7 +81,8 @@ func TestStripEncryptedFields_NullsContent(t *testing.T) {
 	assert.Empty(t, in.Msg)
 	assert.Nil(t, in.Attachments)
 	assert.Nil(t, in.Card)
-	assert.Nil(t, in.SysMsgData)
+	// sys_msg_data is not encrypted, so Strip leaves it on the plaintext column.
+	assert.Equal(t, []byte("sys"), in.SysMsgData)
 	// quoted_parent_message kept, body fields nulled
 	assert.Equal(t, "p", in.QuotedParentMessage.MessageID)
 	assert.Empty(t, in.QuotedParentMessage.Msg)

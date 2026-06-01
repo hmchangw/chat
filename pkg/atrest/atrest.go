@@ -19,12 +19,15 @@ import (
 // serialised, encrypted and stored in the Cassandra `enc_payload` column.
 // Field names mirror the plaintext columns so that callers can construct
 // this struct directly from a cassandra.Message.
+//
+// sys_msg_data is intentionally NOT encrypted — it carries system-generated
+// metadata (e.g. the room members being added), not user-authored secrets,
+// so it stays in its plaintext column.
 type EncryptedFields struct {
 	Msg                 string                 `json:"msg,omitempty"`
 	Attachments         [][]byte               `json:"attachments,omitempty"`
 	Card                *cassandra.Card        `json:"card,omitempty"`
 	CardAction          *cassandra.CardAction  `json:"cardAction,omitempty"`
-	SysMsgData          []byte                 `json:"sysMsgData,omitempty"`
 	QuotedParentContent *QuotedParentEncrypted `json:"quotedParentContent,omitempty"`
 }
 

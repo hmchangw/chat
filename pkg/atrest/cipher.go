@@ -46,10 +46,9 @@ type cipherImpl struct {
 	randReader io.Reader
 }
 
-func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields EncryptedFields) (out []byte, meta EncMeta, err error) { //nolint:gocritic // hugeParam: fields is passed by value to satisfy the Cipher interface
+func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields EncryptedFields) ([]byte, EncMeta, error) { //nolint:gocritic // hugeParam: fields is passed by value to satisfy the Cipher interface
 	ctx, span := tracer.Start(ctx, "atrest.Encrypt")
 	defer span.End()
-	defer func() { encryptCounter.WithLabelValues(resultLabel(err)).Inc() }()
 
 	span.SetAttributes(attribute.String("room_id", roomID))
 
@@ -63,26 +62,20 @@ func (c *cipherImpl) Encrypt(ctx context.Context, roomID string, fields Encrypte
 	if err != nil {
 		return nil, EncMeta{}, fmt.Errorf("marshal payload: %w", err)
 	}
-	span.SetAttributes(attribute.Int("plaintext_bytes", len(plaintext)))
 
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := io.ReadFull(c.randReader, nonce); err != nil {
 		return nil, EncMeta{}, fmt.Errorf("nonce: %w", err)
 	}
 	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
-	span.SetAttributes(attribute.Int("ciphertext_bytes", len(ciphertext)))
 	return ciphertext, EncMeta{Nonce: nonce}, nil
 }
 
-func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte, meta EncMeta) (out EncryptedFields, err error) {
+func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte, meta EncMeta) (EncryptedFields, error) {
 	ctx, span := tracer.Start(ctx, "atrest.Decrypt")
 	defer span.End()
-	defer func() { decryptCounter.WithLabelValues(resultLabel(err)).Inc() }()
 
-	span.SetAttributes(
-		attribute.String("room_id", roomID),
-		attribute.Int("ciphertext_bytes", len(payload)),
-	)
+	span.SetAttributes(attribute.String("room_id", roomID))
 
 	aead, cacheHit, err := c.dekFor(ctx, roomID)
 	if err != nil {
@@ -101,7 +94,6 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 	if err != nil {
 		return EncryptedFields{}, fmt.Errorf("%w: %w", ErrAuthFailed, err)
 	}
-	span.SetAttributes(attribute.Int("plaintext_bytes", len(plain)))
 
 	var decoded EncryptedFields
 	if err := json.Unmarshal(plain, &decoded); err != nil {
@@ -110,17 +102,10 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 	return decoded, nil
 }
 
-// dekFor returns the AEAD for roomID, creating a DEK lazily if no row
-// exists yet. The second return is whether the AEAD was served from the
-// in-memory cache.
-//
-// Concurrent cache-miss callers for the same roomID coalesce through a
-// singleflight.Group so that only one goroutine actually runs the store
-// fetch + Vault unwrap + cache populate; the rest block briefly and
-// reuse the leader's result. This bounds Vault QPS to roughly one call
-// per (roomID, miss-burst) instead of one per goroutine — important
-// during cold-start stampedes (LRU eviction, process restart, cache
-// flush) where dozens of in-flight requests may all miss simultaneously.
+// dekFor returns the AEAD for roomID, lazily creating a DEK if none exists.
+// The bool reports a cache hit. Concurrent cache-miss callers for the same
+// roomID coalesce via singleflight so only one runs the store fetch + unwrap +
+// cache populate, bounding Vault QPS during cold-start miss bursts.
 func (c *cipherImpl) dekFor(ctx context.Context, roomID string) (cipher.AEAD, bool, error) {
 	if aead, ok := c.cache.get(roomID); ok {
 		dekCacheHits.Inc()

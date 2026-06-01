@@ -978,7 +978,7 @@ func TestEditMessage_EncryptsBody(t *testing.T) {
 
 // TestEditMessage_PreservesOtherEncryptedFields verifies that editing a
 // message's body re-encrypts a bundle that still contains the original
-// non-Msg user-authored fields (here, SysMsgData). Without the
+// non-Msg user-authored fields (here, Attachments). Without the
 // decrypt-mutate-encrypt cycle in buildEditPayload these fields would be
 // silently dropped on edit.
 func TestEditMessage_PreservesOtherEncryptedFields(t *testing.T) {
@@ -995,8 +995,8 @@ func TestEditMessage_PreservesOtherEncryptedFields(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	roomID := "r-edit-pres-1"
 
-	originalSysMsgData := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	enc := atrest.EncryptedFields{Msg: "original body", SysMsgData: originalSysMsgData}
+	originalAttachments := [][]byte{[]byte("att-1.bin"), []byte("att-2.bin")}
+	enc := atrest.EncryptedFields{Msg: "original body", Attachments: originalAttachments}
 	payload, meta, err := cipher.Encrypt(ctx, roomID, enc)
 	require.NoError(t, err)
 	require.NoError(t, session.Query(
@@ -1025,16 +1025,16 @@ func TestEditMessage_PreservesOtherEncryptedFields(t *testing.T) {
 	plain, err := cipher.Decrypt(ctx, roomID, encPayload, atrest.EncMeta{Nonce: encNonce})
 	require.NoError(t, err)
 	assert.Equal(t, "new body", plain.Msg)
-	assert.Equal(t, originalSysMsgData, plain.SysMsgData, "non-Msg encrypted fields must survive an edit")
+	assert.Equal(t, originalAttachments, plain.Attachments, "non-Msg encrypted fields must survive an edit")
 }
 
 // TestEditMessage_LegacyRow_PreservesPlaintextAttachments verifies that
 // editing a legacy plaintext row (written before the at-rest rollout)
 // under cipher-enabled history-service preserves its existing plaintext
-// attachments / sys_msg_data through the re-encryption cycle. Without
-// readEncryptedFields promoting the legacy plaintext columns into the
-// bundle, ApplyDecryptedFields would silently overwrite those fields
-// with nil on the next read.
+// attachments through the re-encryption cycle (without readEncryptedFields
+// promoting the legacy attachments into the bundle, ApplyDecryptedFields
+// would silently overwrite them with nil on the next read), and that the
+// un-encrypted sys_msg_data column is left intact by the edit.
 func TestEditMessage_LegacyRow_PreservesPlaintextAttachments(t *testing.T) {
 	ctx := context.Background()
 	session := setupCassandra(t)
@@ -1073,18 +1073,20 @@ func TestEditMessage_LegacyRow_PreservesPlaintextAttachments(t *testing.T) {
 	var (
 		encPayload []byte
 		encNonce   []byte
+		sysMsgData []byte
 	)
 	require.NoError(t, session.Query(
-		`SELECT enc_payload, enc_meta.nonce FROM messages_by_room WHERE room_id=? AND bucket=? AND created_at=? AND message_id=? LIMIT 1`,
+		`SELECT enc_payload, enc_meta.nonce, sys_msg_data FROM messages_by_room WHERE room_id=? AND bucket=? AND created_at=? AND message_id=? LIMIT 1`,
 		roomID, sizer.Of(now), now, "m-legacy",
-	).Scan(&encPayload, &encNonce))
+	).Scan(&encPayload, &encNonce, &sysMsgData))
 	require.NotEmpty(t, encPayload, "edit must produce an enc_payload")
 
 	plain, err := cipher.Decrypt(ctx, roomID, encPayload, atrest.EncMeta{Nonce: encNonce})
 	require.NoError(t, err)
 	assert.Equal(t, "edited body", plain.Msg)
 	assert.Equal(t, originalAttachments, plain.Attachments, "legacy plaintext attachments must survive the cipher-enabled edit")
-	assert.Equal(t, originalSysMsgData, plain.SysMsgData, "legacy plaintext sys_msg_data must survive the cipher-enabled edit")
+	// sys_msg_data is not encrypted: it stays in its plaintext column across the edit.
+	assert.Equal(t, originalSysMsgData, sysMsgData, "legacy plaintext sys_msg_data must survive the cipher-enabled edit")
 }
 
 // TestDeleteMessage_NullsEncryptedColumns verifies that soft-deleting an
@@ -1134,12 +1136,14 @@ func TestDeleteMessage_NullsEncryptedColumns(t *testing.T) {
 	assert.Nil(t, encPayload)
 }
 
-// TestUpdateMessageContent_NonExistent_ReturnsErrMessageNotFound verifies
-// that editing a (message_id, created_at) that does not exist short-
-// circuits with ErrMessageNotFound instead of materialising a ghost row
-// via CQL UPDATE's upsert semantics. Covers both the cipher-disabled and
-// cipher-enabled paths.
-func TestUpdateMessageContent_NonExistent_ReturnsErrMessageNotFound(t *testing.T) {
+// TestUpdateMessageContent_NonExistent_CipherEnabled_ReturnsErrMessageNotFound
+// verifies that on the cipher-enabled path, editing a (message_id, created_at)
+// that does not exist short-circuits with ErrMessageNotFound instead of
+// materialising a ghost row via CQL UPDATE's upsert semantics. buildEditPayload
+// must read the canonical row to re-encrypt, so the missing row is caught there
+// before any UPDATE runs. The cipher-disabled path issues a plain UPDATE and
+// relies on the service layer's findMessage to gate existence.
+func TestUpdateMessageContent_NonExistent_CipherEnabled_ReturnsErrMessageNotFound(t *testing.T) {
 	ctx := context.Background()
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
@@ -1147,47 +1151,31 @@ func TestUpdateMessageContent_NonExistent_ReturnsErrMessageNotFound(t *testing.T
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	cases := []struct {
-		name        string
-		withCipher  bool
-		messageID   string
-		expectGhost bool
-	}{
-		{name: "cipher_disabled", withCipher: false, messageID: "m-ghost-plain"},
-		{name: "cipher_enabled", withCipher: true, messageID: "m-ghost-enc"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var cipher atrest.Cipher
-			if tc.withCipher {
-				wrapper := newTestVaultWrapper(t, ctx)
-				cipher = atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
-					atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
-			}
-			repo := NewRepository(session, sizer, 365, cipher)
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	repo := NewRepository(session, sizer, 365, cipher)
 
-			err := repo.UpdateMessageContent(ctx, &models.Message{
-				RoomID: "r-ghost", MessageID: tc.messageID, CreatedAt: now,
-			}, "should not land", now.Add(time.Minute))
-			require.Error(t, err)
-			require.ErrorIs(t, err, ErrMessageNotFound, "edit of non-existent message must surface ErrMessageNotFound")
+	err := repo.UpdateMessageContent(ctx, &models.Message{
+		RoomID: "r-ghost", MessageID: "m-ghost-enc", CreatedAt: now,
+	}, "should not land", now.Add(time.Minute))
+	require.ErrorIs(t, err, ErrMessageNotFound, "edit of non-existent message must surface ErrMessageNotFound on the cipher path")
 
-			// No ghost row was materialised.
-			var got string
-			err = session.Query(
-				`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-				tc.messageID, now,
-			).Scan(&got)
-			require.ErrorIs(t, err, gocql.ErrNotFound, "no row must be upserted by the failed edit")
-		})
-	}
+	// No ghost row was materialised.
+	var got string
+	err = session.Query(
+		`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		"m-ghost-enc", now,
+	).Scan(&got)
+	require.ErrorIs(t, err, gocql.ErrNotFound, "no row must be upserted by the failed edit")
 }
 
 // TestEditMessage_Encrypted_NullsLegacyPlaintextColumns verifies that
 // editing a legacy plaintext row through the cipher-enabled path nulls
-// every legacy body column (attachments, card, card_action, sys_msg_data)
-// in addition to msg. Without this, the very edit that's supposed to move
-// the body into enc_payload would leave stale plaintext on disk.
+// every encrypted legacy body column (attachments, card, card_action) in
+// addition to msg. Without this, the very edit that's supposed to move the
+// body into enc_payload would leave stale plaintext on disk. The un-encrypted
+// sys_msg_data column is preserved.
 func TestEditMessage_Encrypted_NullsLegacyPlaintextColumns(t *testing.T) {
 	ctx := context.Background()
 	session := setupCassandra(t)
@@ -1243,7 +1231,7 @@ func TestEditMessage_Encrypted_NullsLegacyPlaintextColumns(t *testing.T) {
 		require.NoError(t, session.Query(table.q, table.args...).Scan(&msgCol, &attachments, &sysMsgData), "select from %s", table.name)
 		assert.Nil(t, msgCol, "%s: msg must be NULL after encrypted edit", table.name)
 		assert.Nil(t, attachments, "%s: legacy attachments must be NULL after encrypted edit", table.name)
-		assert.Nil(t, sysMsgData, "%s: legacy sys_msg_data must be NULL after encrypted edit", table.name)
+		assert.Equal(t, []byte{0xAA}, sysMsgData, "%s: un-encrypted sys_msg_data must be preserved after encrypted edit", table.name)
 	}
 }
 

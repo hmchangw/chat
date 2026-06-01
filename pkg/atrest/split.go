@@ -10,7 +10,6 @@ func SplitForEncryption(msg *cassandra.Message) EncryptedFields {
 		Attachments: msg.Attachments,
 		Card:        msg.Card,
 		CardAction:  msg.CardAction,
-		SysMsgData:  msg.SysMsgData,
 	}
 	if msg.QuotedParentMessage != nil {
 		q := msg.QuotedParentMessage
@@ -26,7 +25,8 @@ func SplitForEncryption(msg *cassandra.Message) EncryptedFields {
 
 // StripEncryptedFields nulls out user-authored fields on msg in place.
 // Call this after SplitForEncryption to produce the metadata-only struct
-// that gets written to Cassandra alongside enc_payload.
+// that gets written to Cassandra alongside enc_payload. sys_msg_data is left
+// intact — it is not encrypted and stays in its plaintext column.
 //
 // quoted_parent_message metadata (sender, IDs, timestamps) is preserved;
 // only its body fields (msg, attachments) are nulled.
@@ -35,7 +35,6 @@ func StripEncryptedFields(msg *cassandra.Message) {
 	msg.Attachments = nil
 	msg.Card = nil
 	msg.CardAction = nil
-	msg.SysMsgData = nil
 	if msg.QuotedParentMessage != nil {
 		msg.QuotedParentMessage.Msg = ""
 		msg.QuotedParentMessage.Attachments = nil
@@ -50,7 +49,6 @@ func ApplyDecryptedFields(msg *cassandra.Message, enc *EncryptedFields) {
 	msg.Attachments = enc.Attachments
 	msg.Card = enc.Card
 	msg.CardAction = enc.CardAction
-	msg.SysMsgData = enc.SysMsgData
 	if enc.QuotedParentContent != nil {
 		if msg.QuotedParentMessage == nil {
 			msg.QuotedParentMessage = &cassandra.QuotedParentMessage{}

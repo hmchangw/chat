@@ -99,7 +99,7 @@ func TestCipher_RoundTrip(t *testing.T) {
 	c := newTestCipher(t, store)
 	ctx := context.Background()
 
-	in := EncryptedFields{Msg: "hello world", SysMsgData: []byte{1, 2, 3}}
+	in := EncryptedFields{Msg: "hello world", Attachments: [][]byte{{1, 2, 3}}}
 	payload, meta, err := c.Encrypt(ctx, "room1", in)
 	require.NoError(t, err)
 	assert.NotEmpty(t, payload)

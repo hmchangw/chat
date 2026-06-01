@@ -1335,13 +1335,15 @@ func TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns(t *testing.T)
 		UserAccount: "alice",
 		Content:     "legacy body",
 		CreatedAt:   now,
+		SysMsgData:  originalSysMsgData,
 	}
 	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
 
-	// The legacy plaintext columns must now be NULL on both tables;
-	// otherwise decryptIfNeeded → ApplyDecryptedFields will overwrite
-	// them with empty values from the new bundle on read, silently
-	// losing the attachments.
+	// The encrypted legacy plaintext columns (msg, attachments) must now be
+	// NULL on both tables; otherwise decryptIfNeeded → ApplyDecryptedFields
+	// will overwrite them with empty values from the new bundle on read,
+	// silently losing the attachments. sys_msg_data is not encrypted, so the
+	// redelivered insert rewrites it as plaintext and it survives.
 	for _, tableQuery := range []struct {
 		name string
 		q    string
@@ -1367,6 +1369,6 @@ func TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns(t *testing.T)
 			"select from %s", tableQuery.name)
 		assert.Nil(t, msgCol, "%s: msg must be NULL after redelivered encrypted insert", tableQuery.name)
 		assert.Nil(t, attachments, "%s: attachments must be NULL after redelivered encrypted insert", tableQuery.name)
-		assert.Nil(t, sysMsgData, "%s: sys_msg_data must be NULL after redelivered encrypted insert", tableQuery.name)
+		assert.Equal(t, originalSysMsgData, sysMsgData, "%s: un-encrypted sys_msg_data must be preserved after redelivered encrypted insert", tableQuery.name)
 	}
 }

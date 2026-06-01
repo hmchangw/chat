@@ -260,9 +260,11 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
 ## Encryption (at rest)
 
 Rows written after the at-rest encryption rollout encrypt user-authored
-content into a single `enc_payload` blob and leave the legacy plaintext
-columns (`msg`, `attachments`, `card`, `card_action`, `sys_msg_data`, and
-the body fields of `quoted_parent_message`) null. Rows written before the
-rollout retain their plaintext columns and have `enc_payload IS NULL`. The
+content into a single `enc_payload` blob and leave the encrypted legacy
+plaintext columns (`msg`, `attachments`, `card`, `card_action`, and the body
+fields of `quoted_parent_message`) null. `sys_msg_data` is **not** encrypted —
+it carries system-generated metadata (e.g. the room members being added), not
+user-authored secrets, so it stays in its plaintext column. Rows written before
+the rollout retain their plaintext columns and have `enc_payload IS NULL`. The
 read path branches on `enc_payload IS NOT NULL`. See the design spec for
 details: `docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.

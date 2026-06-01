@@ -19,16 +19,6 @@ func resultLabel(err error) string {
 }
 
 var (
-	encryptCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "atrest_encrypt_total",
-		Help: "Total payload encryptions, by result.",
-	}, []string{"result"})
-
-	decryptCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "atrest_decrypt_total",
-		Help: "Total payload decryptions, by result.",
-	}, []string{"result"})
-
 	dekCacheHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "atrest_dek_cache_hits_total",
 		Help: "DEK cache hits.",

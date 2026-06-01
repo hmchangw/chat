@@ -121,34 +121,34 @@ func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Me
 	b := s.bucket.Of(msg.CreatedAt)
 	mentions := toMentionSet(msg.Mentions)
 
-	// Encrypted INSERTs explicitly bind NULL for every body column so a
-	// JetStream redelivery (or federation replay) of a pre-rollout legacy
-	// message can't leave the row in a hybrid plaintext+encrypted state.
-	// CQL INSERT does not null unspecified columns on key collision, so
-	// without these explicit NULLs an upsert over a legacy row would
-	// preserve plaintext attachments/card/sys_msg_data alongside the new
-	// enc_payload, and decryptIfNeeded would later overwrite them with
-	// empty fields from the bundle.
+	// Encrypted INSERTs explicitly bind NULL for every encrypted body column
+	// so a JetStream redelivery (or federation replay) of a pre-rollout legacy
+	// message can't leave the row in a hybrid plaintext+encrypted state. CQL
+	// INSERT does not null unspecified columns on key collision, so without
+	// these explicit NULLs an upsert over a legacy row would preserve plaintext
+	// attachments/card alongside the new enc_payload, and decryptIfNeeded would
+	// later overwrite them with empty fields from the bundle. sys_msg_data is
+	// NOT encrypted, so it is written as plaintext like any other metadata column.
 	batch := s.cassSession.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 	batch.Query(
 		`INSERT INTO messages_by_room
 		   (room_id, bucket, created_at, message_id, sender, site_id, updated_at,
-		    mentions, type, tshow, quoted_parent_message,
-		    msg, attachments, card, card_action, sys_msg_data,
+		    mentions, type, tshow, quoted_parent_message, sys_msg_data,
+		    msg, attachments, card, card_action,
 		    enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
 		msg.RoomID, b, msg.CreatedAt, msg.ID, sender, siteID, msg.CreatedAt,
-		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, payload, encMeta,
+		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
 	)
 	batch.Query(
 		`INSERT INTO messages_by_id
 		   (message_id, created_at, room_id, sender, site_id, updated_at,
-		    mentions, type, tshow, quoted_parent_message,
-		    msg, attachments, card, card_action, sys_msg_data,
+		    mentions, type, tshow, quoted_parent_message, sys_msg_data,
+		    msg, attachments, card, card_action,
 		    enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt,
-		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, payload, encMeta,
+		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
 	)
 	if err := s.cassSession.ExecuteBatch(batch); err != nil {
 		return fmt.Errorf("save message %s: %w", msg.ID, err)
@@ -210,31 +210,31 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 	encMeta := &cassandra.EncMeta{Nonce: meta.Nonce}
 	mentions := toMentionSet(msg.Mentions)
 
-	// See saveMessageEncrypted: legacy plaintext body columns are bound
-	// to NULL so a redelivered pre-rollout row can't end up in a hybrid
-	// plaintext+encrypted state.
+	// See saveMessageEncrypted: encrypted body columns are bound to NULL so a
+	// redelivered pre-rollout row can't end up in a hybrid plaintext+encrypted
+	// state. sys_msg_data is not encrypted and is written as plaintext.
 	batch := s.cassSession.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
 	batch.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow,
-		  quoted_parent_message,
-		  msg, attachments, card, card_action, sys_msg_data,
+		  quoted_parent_message, sys_msg_data,
+		  msg, attachments, card, card_action,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow,
-		cm.QuotedParentMessage, payload, encMeta,
+		cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
 	)
 	batch.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id,
-		  sender, site_id, updated_at, mentions, type, quoted_parent_message,
-		  msg, attachments, card, card_action, sys_msg_data,
+		  sender, site_id, updated_at, mentions, type, quoted_parent_message, sys_msg_data,
+		  msg, attachments, card, card_action,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
-		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage,
+		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage, msg.SysMsgData,
 		payload, encMeta,
 	)
 	if err := s.cassSession.ExecuteBatch(batch); err != nil {
