@@ -56,20 +56,6 @@ func (mr *MockSubscriptionStoreMockRecorder) AddRole(ctx, account, roomID, role 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRole", reflect.TypeOf((*MockSubscriptionStore)(nil).AddRole), ctx, account, roomID, role)
 }
 
-// ApplySubscriptionVisibility mocks base method.
-func (m *MockSubscriptionStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ApplySubscriptionVisibility", ctx, roomID, restricted, externalAccess, ownerAccount)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ApplySubscriptionVisibility indicates an expected call of ApplySubscriptionVisibility.
-func (mr *MockSubscriptionStoreMockRecorder) ApplySubscriptionVisibility(ctx, roomID, restricted, externalAccess, ownerAccount any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplySubscriptionVisibility", reflect.TypeOf((*MockSubscriptionStore)(nil).ApplySubscriptionVisibility), ctx, roomID, restricted, externalAccess, ownerAccount)
-}
-
 // BulkCreateRoomMembers mocks base method.
 func (m *MockSubscriptionStore) BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error {
 	m.ctrl.T.Helper()
@@ -377,20 +363,6 @@ func (m *MockSubscriptionStore) UpdateRoomName(ctx context.Context, roomID, newN
 func (mr *MockSubscriptionStoreMockRecorder) UpdateRoomName(ctx, roomID, newName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRoomName", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateRoomName), ctx, roomID, newName)
-}
-
-// UpdateRoomVisibility mocks base method.
-func (m *MockSubscriptionStore) UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateRoomVisibility", ctx, roomID, restricted, externalAccess)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateRoomVisibility indicates an expected call of UpdateRoomVisibility.
-func (mr *MockSubscriptionStoreMockRecorder) UpdateRoomVisibility(ctx, roomID, restricted, externalAccess any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRoomVisibility", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateRoomVisibility), ctx, roomID, restricted, externalAccess)
 }
 
 // UpdateSubscriptionNamesForRoom mocks base method.

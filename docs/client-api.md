@@ -649,37 +649,11 @@ The event uses the standard `RoomEvent` envelope (`type: "new_message"`) with an
 | `message.sysMsgData`   | object | `{ "newName": "engineering-general", "byAccount": "alice" }`. |
 | `timestamp`            | number | Milliseconds since Unix epoch (UTC). |
 
-**2. `chat.user.{memberAccount}.event.subscription.update`** — one event per subscription.
+> **No per-subscription `subscription.update` event is published for the rename.** Clients drive their local state off the single room-scoped sys message above — `roomName` carries the new name and `message.sysMsgData.newName` is authoritative.
 
-Recipients: every member (one `SubscriptionUpdateEvent` per individual subscription, including the requester).
+**2. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
 
-| Field          | Type   | Notes |
-|----------------|--------|-------|
-| `userId`       | string | The member's internal user ID. |
-| `subscription` | object | The updated `Subscription` record reflecting the new room name. |
-| `action`       | string | `"renamed"`. |
-| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
-
-```json
-{
-  "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
-  "subscription": {
-    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
-    "roomId": "01970a4f8c2d7c9aQ",
-    "roomType": "channel",
-    "siteId": "siteA",
-    "roles": ["owner", "member"],
-    "joinedAt": "2026-05-06T08:01:23Z"
-  },
-  "action": "renamed",
-  "timestamp": 1746518483000
-}
-```
-
-**3. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
-
-**4. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
+**3. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
 
 ##### Triggered events — error path
 
@@ -687,7 +661,7 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 ---
 
-> **Note:** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is an admin-only server-internal call and is no longer documented here. Admin tooling targets it directly. See `pkg/model/RoomRestrictedRequest`.
+> **Note (server-internal — not a client RPC):** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying `roomId`, `account` (caller), `restricted`, `externalAccess`, and `ownerAccount`; room-service does the Mongo writes, publishes one `room_restricted` system message to `chat.room.{roomID}.event`, fans out an `OutboxRoomRestricted` event per remote federated site, and replies `{"status":"ok","requestId":"…"}` once the work is committed. No `AsyncJobResult` is emitted — the reply *is* the result. Clients learn about the change from the same `chat.room.{roomID}.event` stream they already subscribe to for chat messages.
 
 ---
 
@@ -1173,7 +1147,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `visibleTo` | string | Optional. Visibility scope. |
 | `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
-| `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
+| `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`, `"room_renamed"`, `"room_restricted"`. For all six, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other / room-creates / renames / restricted changes, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
 | `siteId` | string | Optional. The site that owns the message. |
 | `editedAt` | string | Optional. RFC 3339. Set after an edit. |

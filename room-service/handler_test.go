@@ -4305,30 +4305,37 @@ func TestHandleRoomRename_Validation(t *testing.T) {
 	}
 }
 
-// --- RoomVisibility tests ---
+// --- RoomRestricted tests ---
 
-func TestHandleRoomVisibility_Validation(t *testing.T) {
+// happyPathRestrictedSuccessSetup wires the post-validation store calls that
+// the sync handler needs to complete: Mongo writes, subscription list, user
+// lookup. Used by the success-path table rows.
+func happyPathRestrictedSuccessSetup(s *MockRoomStore) {
+	s.EXPECT().UpdateRoomVisibility(gomock.Any(), "r1", gomock.Any(), gomock.Any()).Return(nil)
+	s.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	s.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r1").Return(nil, nil)
+	s.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
+}
+
+func TestHandleRoomRestricted_Validation(t *testing.T) {
 	const validReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 
 	tests := []struct {
 		name       string
-		subj       string
 		body       []byte
 		ctx        context.Context
 		setupStore func(*MockRoomStore)
 		wantErr    error
 	}{
 		{
-			name:    "invalid subject",
-			subj:    "bad.subject",
+			name:    "missing roomID/account in body",
 			body:    mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
 			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
 			wantErr: errInvalidRestrictedSubject,
 		},
 		{
 			name: "non-admin requester",
-			subj: subject.RoomRestricted("alice", "r1", "site-a"),
-			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
+			body: mustJSON(t, model.RoomRestrictedRequest{RoomID: "r1", Account: "alice", Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
@@ -4337,8 +4344,7 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "room not found",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
+			body: mustJSON(t, model.RoomRestrictedRequest{RoomID: "r1", Account: "admin1", Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
@@ -4348,8 +4354,7 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "non-channel room",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
+			body: mustJSON(t, model.RoomRestrictedRequest{RoomID: "r1", Account: "admin1", Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
@@ -4359,15 +4364,13 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "restricted=true + ownerAccount given + owner not a member",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted:   true,
-				OwnerAccount: "nonmember",
+				RoomID: "r1", Account: "admin1",
+				Restricted: true, OwnerAccount: "nonmember",
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
-				// room already restricted so this is an owner change, not a transition
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 10}, nil)
 				s.EXPECT().GetSubscription(gomock.Any(), "nonmember", "r1").Return(nil, mongo.ErrNoDocuments)
 			},
@@ -4375,10 +4378,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition false→true without ownerAccount",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted: true,
-				// OwnerAccount intentionally empty
+				RoomID: "r1", Account: "admin1", Restricted: true,
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
@@ -4389,10 +4390,9 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition with UserCount < 5 (need at least 5)",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted:   true,
-				OwnerAccount: "owner1",
+				RoomID: "r1", Account: "admin1",
+				Restricted: true, OwnerAccount: "owner1",
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
@@ -4404,46 +4404,44 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition success (admin + ownerAccount + UserCount >= 5)",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted:   true,
-				OwnerAccount: "owner1",
+				RoomID: "r1", Account: "admin1",
+				Restricted: true, OwnerAccount: "owner1",
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: false, UserCount: 10}, nil)
 				s.EXPECT().GetSubscription(gomock.Any(), "owner1", "r1").Return(&model.Subscription{}, nil)
+				happyPathRestrictedSuccessSetup(s)
 			},
 			wantErr: nil,
 		},
 		{
 			name: "unrestrict (no owner/threshold checks)",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted: false,
+				RoomID: "r1", Account: "admin1", Restricted: false,
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 10}, nil)
-				// No GetSubscription expected for unrestrict
+				happyPathRestrictedSuccessSetup(s)
 			},
 			wantErr: nil,
 		},
 		{
 			name: "already-restricted owner change success",
-			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
 			body: mustJSON(t, model.RoomRestrictedRequest{
-				Restricted:   true,
-				OwnerAccount: "owner2",
+				RoomID: "r1", Account: "admin1",
+				Restricted: true, OwnerAccount: "owner2",
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
-				// room already restricted → isTransition=false; no threshold check
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 2}, nil)
 				s.EXPECT().GetSubscription(gomock.Any(), "owner2", "r1").Return(&model.Subscription{}, nil)
+				happyPathRestrictedSuccessSetup(s)
 			},
 			wantErr: nil,
 		},
@@ -4459,7 +4457,7 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 			h := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, 5,
 				func(_ context.Context, _ string, _ []byte) error { return nil }, nil)
 
-			_, err := h.handleRoomRestricted(tt.ctx, tt.subj, tt.body)
+			_, err := h.handleRoomRestricted(tt.ctx, tt.body)
 			if tt.wantErr == nil {
 				require.NoError(t, err)
 			} else {

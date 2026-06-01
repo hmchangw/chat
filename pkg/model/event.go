@@ -360,7 +360,6 @@ const (
 	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
 	AsyncJobOpRoomRename           = "room.rename"
-	AsyncJobOpRoomRestricted       = "room.restricted"
 )
 
 const (

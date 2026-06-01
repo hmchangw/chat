@@ -77,16 +77,12 @@ func RoomRename(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.rename", account, roomID, siteID)
 }
 
-// RoomRestricted is the request/reply subject for the restricted (formerly
-// visibility) RPC. Admin-only — caller's auth identity travels in the request
-// account field.
-func RoomRestricted(account, roomID, siteID string) string {
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.restricted", account, roomID, siteID)
-}
-
-// RoomRestrictedWildcard is the queue-subscribe pattern on a site.
-func RoomRestrictedWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.restricted", siteID)
+// RoomRestricted is the synchronous server-to-server request/reply subject for
+// the restricted (formerly visibility) RPC. Admin-only and not exposed to
+// clients — admin tooling targets this directly; room-service does all the
+// work in the request handler and replies with the result.
+func RoomRestricted(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.restricted", siteID)
 }
 
 func MemberRemove(account, roomID, siteID string) string {

@@ -2,7 +2,14 @@
 
 **Date:** 2026-05-22 (revised 2026-05-25 after fresh-eyed review against
 existing `room-service` / `room-worker` / `inbox-worker` code)
-**Status:** Draft — awaiting plan approval
+**Status:** Shipped, with post-merge divergences — see note below.
+
+> **Post-merge divergences (PR #224 review):**
+> * **Visibility → restricted, sync, server-internal.** The visibility RPC was renamed `room.restricted` and converted from an async-job (client → `chat.user.>` → ROOMS_ → room-worker → AsyncJobResult) to a **synchronous server-to-server** request/reply on `chat.server.request.room.{siteID}.restricted`. room-service does the work in-handler (Mongo writes, sys-message publish, outbox fan-out) and replies `{"status":"ok","requestId":<id>}` once the work is committed. No `AsyncJobResult`. The RPC is no longer part of the client-facing API surface.
+> * **Per-subscription fan-out replaced by a single room-scoped sys message.** Both rename and restricted dropped the `SubscriptionUpdateEvent` per-subscription publish; they now publish ONE `room_renamed` / `room_restricted` system message to `chat.room.{roomID}.event` (via the existing canonical-message pipeline) and clients derive their local subscription state from that single event.
+> * **`pkg/subject.RoomRename` no longer panics** on invalid account tokens — the validation check was removed (server callers are responsible for clean identities).
+> * **`updateChannelRoom` no longer enforces `type=channel` at the store layer** — room-service validates upstream, so the store only handles room-not-found.
+> * **Cross-site member fan-out for add-members ships only that site's homed accounts** instead of the full member list.
 
 > Line-number references throughout this spec (e.g.
 > `room-worker/handler.go:1203–1210`) are accurate as of the current

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -2314,12 +2315,14 @@ func TestIntegration_RoomRename(t *testing.T) {
 	})
 }
 
-// TestIntegration_RoomVisibility exercises the room.restricted RPC end-to-end through NATS.
-func TestIntegration_RoomVisibility(t *testing.T) {
-	const siteID = "site-visibility"
+// TestIntegration_RoomRestricted exercises the room.restricted server-to-server
+// RPC end-to-end through NATS. The handler does all the work synchronously and
+// the reply carries the actual result.
+func TestIntegration_RoomRestricted(t *testing.T) {
+	const siteID = "site-restricted"
 
-	t.Run("admin can set visibility — canonical event published", func(t *testing.T) {
-		db := testutil.MongoDB(t, "room-service-visibility")
+	t.Run("admin syncs restricted state — sys message published + Mongo updated", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-restricted")
 		store := NewMongoStore(db)
 		ctx := context.Background()
 
@@ -2328,31 +2331,39 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = clientNC.Drain() })
 
-		// Set up the ROOMS stream so publishToStream can land events.
-		js := setupRoomsStream(t, clientNC, siteID)
-
 		handlerNC, err := otelnats.Connect(natsURL)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = handlerNC.Drain() })
 
-		handlerJS, err := jetstream.New(handlerNC.NatsConn())
-		require.NoError(t, err)
-
-		publishToStream := func(pCtx context.Context, subj string, data []byte) error {
-			msg := natsutil.NewMsg(pCtx, subj, data)
-			_, err := handlerJS.PublishMsg(pCtx, msg)
-			return err
+		// Capture publishes via the handler's stream-publish callback so we can
+		// assert the sys message lands without standing up the MESSAGES_CANONICAL
+		// stream just for this test.
+		type captured struct {
+			subj string
+			data []byte
+		}
+		var (
+			mu   sync.Mutex
+			pubs []captured
+		)
+		publishToStream := func(_ context.Context, subj string, data []byte) error {
+			mu.Lock()
+			defer mu.Unlock()
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			pubs = append(pubs, captured{subj: subj, data: cp})
+			return nil
 		}
 
 		keyStore := setupValkey(t)
-		// restrictedRoomMinMembers=5; seed UserCount=5 to pass the transition guard.
 		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
 			publishToStream, func(context.Context, string, []byte) error { return nil })
 		require.NoError(t, h.RegisterCRUD(handlerNC))
 		require.NoError(t, handlerNC.NatsConn().Flush())
 
-		// Seed: channel room with 5 members; admin1 is platform admin.
-		const roomID = "room-vis-1"
+		// Seed: channel room + admin + 5 members (the restricted-transition
+		// guard requires UserCount >= 5).
+		const roomID = "room-restricted-1"
 		mustInsertRoom(t, db, &model.Room{
 			ID: roomID, Name: "big-channel", Type: model.RoomTypeChannel,
 			SiteID: siteID, UserCount: 5,
@@ -2361,7 +2372,6 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 			ID: "u-admin1", Account: "admin1", SiteID: siteID,
 			Roles: []model.UserRole{model.UserRoleAdmin},
 		})
-		// Seed 5 subscriptions so CountNewMembers/GetSubscription work if needed.
 		for i := 0; i < 5; i++ {
 			mustInsertSub(t, db, &model.Subscription{
 				ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
@@ -2372,54 +2382,56 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 				Roles: []model.Role{model.RoleMember},
 			})
 		}
-		// admin1 must also be a member (for OwnerAccount validation path).
 		mustInsertSub(t, db, &model.Subscription{
 			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
 			User:  model.SubscriptionUser{ID: "u-admin1", Account: "admin1"},
 			Roles: []model.Role{model.RoleMember},
 		})
 
-		// Set up a JetStream consumer to catch the canonical event.
-		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
-			Durable:       "test-vis-consumer",
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			FilterSubject: subject.RoomCanonical(siteID, "room.restricted"),
-		})
-		require.NoError(t, err)
-
 		reqID := idgen.GenerateRequestID()
 		body, err := json.Marshal(model.RoomRestrictedRequest{
+			RoomID: roomID, Account: "admin1",
 			Restricted:   true,
 			OwnerAccount: "admin1",
 		})
 		require.NoError(t, err)
 
 		msg := &nats.Msg{
-			Subject: subject.RoomRestricted("admin1", roomID, siteID),
+			Subject: subject.RoomRestricted(siteID),
 			Data:    body,
 			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
 		}
 		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
 		require.NoError(t, err)
 
-		// Assert accepted response.
+		// Sync reply confirms the actual result.
 		var resp map[string]string
 		require.NoError(t, json.Unmarshal(reply.Data, &resp))
-		assert.Equal(t, "accepted", resp["status"])
+		assert.Equal(t, "ok", resp["status"])
 		assert.Equal(t, reqID, resp["requestId"])
 
-		// Assert canonical event landed on the stream.
-		raw := drainJetStreamMsg(t, cons, 5*time.Second)
-		var event model.RoomRestrictedRequest
-		require.NoError(t, json.Unmarshal(raw, &event))
-		assert.Equal(t, roomID, event.RoomID)
-		assert.Equal(t, "admin1", event.Account)
-		assert.True(t, event.Restricted)
-		assert.NotZero(t, event.Timestamp)
+		// Mongo: room flags updated.
+		updatedRoom, err := store.GetRoom(ctx, roomID)
+		require.NoError(t, err)
+		assert.True(t, updatedRoom.Restricted)
+
+		// Sys message published to canonical messages stream.
+		mu.Lock()
+		var sawSysMsg bool
+		for _, p := range pubs {
+			if p.subj == subject.MsgCanonicalCreated(siteID) {
+				sawSysMsg = true
+				var msgEvt model.MessageEvent
+				require.NoError(t, json.Unmarshal(p.data, &msgEvt))
+				assert.Equal(t, model.MessageTypeRoomRestricted, msgEvt.Message.Type)
+			}
+		}
+		mu.Unlock()
+		assert.True(t, sawSysMsg, "expected room_restricted sys message to be published")
 	})
 
 	t.Run("non-admin requester is rejected", func(t *testing.T) {
-		db := testutil.MongoDB(t, "room-service-visibility-reject")
+		db := testutil.MongoDB(t, "room-service-restricted-reject")
 		store := NewMongoStore(db)
 
 		natsURL := setupNATS(t)
@@ -2438,17 +2450,18 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 		require.NoError(t, h.RegisterCRUD(handlerNC))
 		require.NoError(t, handlerNC.NatsConn().Flush())
 
-		const roomID = "room-vis-2"
+		const roomID = "room-restricted-2"
 		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "my-channel", Type: model.RoomTypeChannel, SiteID: siteID, UserCount: 5})
-		// carol is not a platform admin.
 		mustInsertUser(t, db, &model.User{ID: "u-carol", Account: "carol", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
 
 		reqID := idgen.GenerateRequestID()
-		body, err := json.Marshal(model.RoomRestrictedRequest{Restricted: true})
+		body, err := json.Marshal(model.RoomRestrictedRequest{
+			RoomID: roomID, Account: "carol", Restricted: true,
+		})
 		require.NoError(t, err)
 
 		msg := &nats.Msg{
-			Subject: subject.RoomRestricted("carol", roomID, siteID),
+			Subject: subject.RoomRestricted(siteID),
 			Data:    body,
 			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
 		}

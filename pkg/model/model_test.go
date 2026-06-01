@@ -2718,5 +2718,4 @@ func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
 	assert.Equal(t, "room_renamed", model.OutboxRoomRenamed)
 	assert.Equal(t, "room_restricted", model.OutboxRoomRestricted)
 	assert.Equal(t, "room.rename", model.AsyncJobOpRoomRename)
-	assert.Equal(t, "room.restricted", model.AsyncJobOpRoomRestricted)
 }

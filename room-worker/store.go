@@ -110,30 +110,19 @@ type SubscriptionStore interface {
 	// member in addition to being added separately as the owner.
 	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
 
-	// Rename/visibility operations.
+	// Rename operations. (Restricted moved to room-service as a sync RPC.)
 
 	// UpdateRoomName sets {name, updatedAt} on the channel-typed room doc.
-	// Returns ErrRoomNotFound or ErrNotChannelRoom; both are package sentinels in store.go.
+	// Returns ErrRoomNotFound; ErrNotChannelRoom is no longer returned since
+	// room-service validates type upstream.
 	UpdateRoomName(ctx context.Context, roomID, newName string) error
-
-	// UpdateRoomVisibility sets {restricted, externalAccess, updatedAt}; same
-	// not-found / wrong-type semantics as UpdateRoomName.
-	UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error
 
 	// UpdateSubscriptionNamesForRoom updateMany on subscriptions matching {roomId: roomID}.
 	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
 
-	// ApplySubscriptionVisibility updateMany matching {roomId: roomID}. Three branches:
-	//   restricted=true && ownerAccount!="" → aggregation pipeline rewriting roles
-	//     ($cond: u.account == ownerAccount → ["owner"] else ["member"]) and flipping flags.
-	//   restricted=true && ownerAccount=="" → $set flags only.
-	//   restricted=false → $set flags only (ownerAccount ignored).
-	// All branches idempotent on retry.
-	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
-
 	// ListByRoom returns all subscriptions for roomID across every site.
-	// Used by rename/visibility processors to bucket accounts by remote site
-	// for outbox fan-out.
+	// Used by the rename processor to bucket accounts by remote site for
+	// outbox fan-out.
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 }
 

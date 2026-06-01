@@ -133,7 +133,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomRenameWildcard(h.siteID), queue, h.natsRoomRename); err != nil {
 		return fmt.Errorf("subscribe room rename: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomRestrictedWildcard(h.siteID), queue, h.natsRoomRestricted); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomRestricted(h.siteID), "room-service", h.natsRoomRestricted); err != nil {
 		return fmt.Errorf("subscribe room restricted: %w", err)
 	}
 	return nil
@@ -1642,7 +1642,7 @@ func (h *Handler) natsRoomRestricted(m otelnats.Msg) {
 		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
-	resp, err := h.handleRoomRestricted(ctx, m.Msg.Subject, m.Msg.Data)
+	resp, err := h.handleRoomRestricted(ctx, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
 		return
@@ -1652,27 +1652,28 @@ func (h *Handler) natsRoomRestricted(m otelnats.Msg) {
 	}
 }
 
-func (h *Handler) handleRoomRestricted(ctx context.Context, subj string, data []byte) ([]byte, error) {
-	account, roomID, ok := subject.ParseUserRoomSubject(subj)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", errInvalidRestrictedSubject, subj)
-	}
+// handleRoomRestricted is the sync server-to-server handler for the restricted
+// RPC. It does ALL the work in this call — Mongo writes, sys-message publish,
+// per-remote outbox publishes — and returns the result to the caller. No
+// AsyncJobResult is emitted because the reply IS the result.
+func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 
 	var req model.RoomRestrictedRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
-	req.RoomID, req.Account = roomID, account
+	if req.RoomID == "" || req.Account == "" {
+		return nil, fmt.Errorf("%w: roomId and account are required", errInvalidRestrictedSubject)
+	}
 
-	// Admin-only RPC is rare enough that an info-level audit trail is useful.
+	// Admin-only RPC is rare; info-level audit trail is justified.
 	slog.Info("processing room.restricted",
-		"op", model.AsyncJobOpRoomRestricted,
-		"requester", account,
-		"roomID", roomID,
+		"requester", req.Account,
+		"roomID", req.RoomID,
 		"requestID", requestID)
 
-	requesterUser, err := h.store.GetUser(ctx, account)
+	requesterUser, err := h.store.GetUser(ctx, req.Account)
 	if err != nil && !errors.Is(err, ErrUserNotFound) {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
@@ -1680,7 +1681,7 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, subj string, data []
 		return nil, errOnlyAdmins
 	}
 
-	room, err := h.store.GetRoom(ctx, roomID)
+	room, err := h.store.GetRoom(ctx, req.RoomID)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errRoomNotFound
@@ -1694,7 +1695,7 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, subj string, data []
 	isTransition := req.Restricted && !room.Restricted
 
 	if req.Restricted && req.OwnerAccount != "" {
-		if _, subErr := h.store.GetSubscription(ctx, req.OwnerAccount, roomID); subErr != nil {
+		if _, subErr := h.store.GetSubscription(ctx, req.OwnerAccount, req.RoomID); subErr != nil {
 			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
 				return nil, errOwnerNotMember
 			}
@@ -1711,14 +1712,107 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, subj string, data []
 	}
 
 	req.Timestamp = time.Now().UTC().UnixMilli()
-	out, err := json.Marshal(req)
+
+	// Do the writes synchronously.
+	if err := h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
+		if errors.Is(err, ErrRoomNotFound) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("update room restricted: %w", err)
+	}
+	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+		if errors.Is(err, ErrOwnerNotSubscribed) {
+			return nil, errOwnerNotMember
+		}
+		return nil, fmt.Errorf("apply subscription restricted: %w", err)
+	}
+
+	// One room-scoped sys message (room_restricted) — replaces the per-user
+	// SubscriptionUpdateEvent fan-out the old async path used.
+	sysData, err := json.Marshal(model.RoomRestrictedSysData{
+		Restricted:     req.Restricted,
+		ExternalAccess: req.ExternalAccess,
+		ByAccount:      req.Account,
+		OwnerAccount:   req.OwnerAccount,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal restricted request: %w", err)
+		return nil, fmt.Errorf("marshal restricted sys data: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.restricted"), out); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
+	sysMsg := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "room_restricted"),
+		RoomID:      req.RoomID,
+		UserAccount: req.Account,
+		Type:        model.MessageTypeRoomRestricted,
+		Content:     fmt.Sprintf("%s changed the channel restricted state", req.Account),
+		SysMsgData:  sysData,
+		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
 	}
-	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
+	msgEvt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   sysMsg,
+		SiteID:    h.siteID,
+		Timestamp: req.Timestamp,
+	}
+	msgEvtData, err := json.Marshal(msgEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sys message event: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
+		return nil, fmt.Errorf("publish room_restricted sys message: %w", err)
+	}
+
+	// Cross-site outbox fan-out: one event per remote site that homes a member.
+	subs, err := h.store.ListSubscriptionsByRoom(ctx, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions: %w", err)
+	}
+	accounts := make([]string, 0, len(subs))
+	for i := range subs {
+		accounts = append(accounts, subs[i].User.Account)
+	}
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return nil, fmt.Errorf("find users for outbox fan-out: %w", err)
+	}
+	seenSites := make(map[string]struct{})
+	var remoteSites []string
+	for i := range users {
+		if users[i].SiteID == "" || users[i].SiteID == h.siteID {
+			continue
+		}
+		if _, dup := seenSites[users[i].SiteID]; dup {
+			continue
+		}
+		seenSites[users[i].SiteID] = struct{}{}
+		remoteSites = append(remoteSites, users[i].SiteID)
+	}
+	if len(remoteSites) > 0 {
+		payload, err := json.Marshal(model.RoomRestrictedOutboxPayload{
+			RoomID:         req.RoomID,
+			Restricted:     req.Restricted,
+			ExternalAccess: req.ExternalAccess,
+			OwnerAccount:   req.OwnerAccount,
+			Timestamp:      req.Timestamp,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal restricted outbox payload: %w", err)
+		}
+		for _, remoteSiteID := range remoteSites {
+			evt := model.OutboxEvent{
+				Type: model.OutboxRoomRestricted, SiteID: h.siteID, DestSiteID: remoteSiteID,
+				Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+			}
+			evtData, mErr := json.Marshal(evt)
+			if mErr != nil {
+				return nil, fmt.Errorf("marshal restricted outbox event: %w", mErr)
+			}
+			if err := h.publishToStream(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted), evtData); err != nil {
+				return nil, fmt.Errorf("publish restricted outbox to %s: %w", remoteSiteID, err)
+			}
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "ok", "requestId": requestID})
 }
 
 func (h *Handler) natsMuteToggle(m otelnats.Msg) {
