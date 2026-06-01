@@ -2060,19 +2060,15 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	assert.Equal(t, model.MessageTypeRoomRenamed, sysEvt.Message.Type)
 	assert.Equal(t, "alice", sysEvt.Message.UserAccount)
 
-	// Exactly one subscription update event per subscriber (alice, bob, carol).
+	// Rename publishes a single room-scoped sys message via canonical; no
+	// per-subscription fan-out — clients derive their state from the room event.
 	cap.mu.Lock()
-	var subUpdateAccounts []string
 	for _, p := range cap.captured {
-		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
-			parts := strings.Split(p.subject, ".")
-			if len(parts) > 2 {
-				subUpdateAccounts = append(subUpdateAccounts, parts[2])
-			}
-		}
+		assert.False(t,
+			strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update"),
+			"rename must not fan out subscription.update events (got %s)", p.subject)
 	}
 	cap.mu.Unlock()
-	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, subUpdateAccounts, "expected subscription update per subscriber")
 
 	// One outbox publish to remote site-b.
 	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRenamed))
@@ -2156,23 +2152,22 @@ func TestIntegration_ProcessRoomVisibility(t *testing.T) {
 	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["alice"], "alice must remain member")
 	assert.Equal(t, []model.Role{model.RoleMember}, rolesByAccount["carol"], "carol must remain member")
 
-	// No sys message published for visibility change.
+	// Restricted now publishes a single room-scoped sys message and NO
+	// per-subscription fan-out.
 	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated(siteID))
-	assert.Empty(t, sysPubs, "visibility change must not publish a sys message")
+	require.Len(t, sysPubs, 1, "exactly one canonical sys message published for room_restricted")
+	var sysEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
+	assert.Equal(t, model.MessageTypeRoomRestricted, sysEvt.Message.Type)
+	assert.Equal(t, "admin1", sysEvt.Message.UserAccount)
 
-	// Exactly one subscription update event per subscriber (alice, bob, carol).
 	cap.mu.Lock()
-	var visSubUpdateAccounts []string
 	for _, p := range cap.captured {
-		if strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update") {
-			parts := strings.Split(p.subject, ".")
-			if len(parts) > 2 {
-				visSubUpdateAccounts = append(visSubUpdateAccounts, parts[2])
-			}
-		}
+		assert.False(t,
+			strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update"),
+			"restricted must not fan out subscription.update events (got %s)", p.subject)
 	}
 	cap.mu.Unlock()
-	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, visSubUpdateAccounts, "expected subscription update per subscriber")
 
 	// Outbox published to remote site-b carrying RoomVisibilityOutboxPayload with OwnerAccount.
 	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRestricted))
