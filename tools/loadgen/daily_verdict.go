@@ -236,9 +236,33 @@ func diffPending(start, end map[string]int64) map[string]ConsumerPendingDelta {
 }
 
 // pollPending queries the NATS monitoring endpoint /jsz?consumers=true and
-// returns a map of durable name -> NumPending.
+// returns a map of durable name -> NumPending. Retries transient failures
+// with short backoff so a flaky monitoring endpoint doesn't poison a step.
 func pollPending(ctx context.Context, jszURL string) (map[string]int64, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, jszURL+"?consumers=true", nil)
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
+		}
+		out, err := pollPendingOnce(ctx, jszURL)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("pollPending after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func pollPendingOnce(ctx context.Context, jszURL string) (map[string]int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jszURL+"?consumers=true", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build jsz request: %w", err)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("jsz GET: %w", err)

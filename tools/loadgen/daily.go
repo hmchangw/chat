@@ -190,10 +190,18 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during warmup")
 	}
 
-	startPending, pollErr := env.pollPending(ctx)
-	if pollErr != nil {
-		slog.Warn("start-of-hold pending poll failed; step marked Inconclusive", "err", pollErr)
-		return inconclusiveResult(n, startedAt, env.hold, "pollPending error at start of hold: "+pollErr.Error())
+	// Snapshot pending state at start of hold. If the NATS monitoring
+	// endpoint is misbehaving, drop the pending-growth signal for this
+	// step rather than aborting it — the other signals (latency, errors,
+	// service health) still produce a useful verdict. Only ctx cancel
+	// is treated as Inconclusive.
+	startPending, startPollErr := env.pollPending(ctx)
+	if startPollErr != nil {
+		if errors.Is(startPollErr, context.Canceled) || errors.Is(startPollErr, context.DeadlineExceeded) {
+			return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during start-of-hold poll")
+		}
+		slog.Warn("start-of-hold pending poll failed; pending-growth signal skipped this step", "err", startPollErr)
+		startPending = nil
 	}
 	_, _ = env.scrapeServices(ctx) // first call records baseline
 
@@ -205,17 +213,27 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 
 	endPending, endPollErr := env.pollPending(ctx)
 	if endPollErr != nil {
-		slog.Warn("end-of-hold pending poll failed; step marked Inconclusive", "err", endPollErr)
-		return inconclusiveResult(n, startedAt, env.hold, "pollPending error at end of hold: "+endPollErr.Error())
+		if errors.Is(endPollErr, context.Canceled) || errors.Is(endPollErr, context.DeadlineExceeded) {
+			return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during end-of-hold poll")
+		}
+		slog.Warn("end-of-hold pending poll failed; pending-growth signal skipped this step", "err", endPollErr)
+		endPending = nil
 	}
 	svcErrors, _ := env.scrapeServices(ctx)
+
+	// Only compute pending deltas when both snapshots succeeded; otherwise
+	// pass an empty map so evaluateStep doesn't trip on garbage baselines.
+	var pendingDeltas map[string]ConsumerPendingDelta
+	if startPending != nil && endPending != nil {
+		pendingDeltas = diffPending(startPending, endPending)
+	}
 
 	in := stepInputs{
 		N: n, StartedAt: startedAt, HoldDuration: env.hold,
 		LatencySamples:  env.collector.LatencySamples(),
 		AttemptedOps:    env.collector.AttemptedOps(),
 		FailedOps:       env.collector.FailedOps(),
-		ConsumerPending: diffPending(startPending, endPending),
+		ConsumerPending: pendingDeltas,
 		ServiceErrors:   svcErrors,
 		Self:            snapshotSelfMetrics(),
 	}
