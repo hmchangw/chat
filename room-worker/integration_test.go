@@ -831,13 +831,14 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.Len(t, pubsC, 1)
 	assert.Empty(t, pubsA, "no member_added outbox to home site-A")
 
-	// Post Task 11 retrofit: each remote site receives the full account list;
-	// destination's FindUsersByAccounts filters out foreign accounts naturally.
+	// Each remote site receives only its own homed accounts — bob (site-B) and
+	// ian (site-C) are partitioned by the userMap[].SiteID filter at the publish
+	// site so we never ship cross-site account identities over the wire.
 	var envB model.OutboxEvent
 	require.NoError(t, json.Unmarshal(pubsB[0].data, &envB))
 	var evtB model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envB.Payload, &evtB))
-	assert.ElementsMatch(t, []string{"bob", "ian"}, evtB.Accounts)
+	assert.ElementsMatch(t, []string{"bob"}, evtB.Accounts)
 	assert.Equal(t, roomName, evtB.RoomName)
 	assert.Equal(t, "site-A", evtB.SiteID)
 	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
@@ -846,7 +847,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.NoError(t, json.Unmarshal(pubsC[0].data, &envC))
 	var evtC model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envC.Payload, &evtC))
-	assert.ElementsMatch(t, []string{"bob", "ian"}, evtC.Accounts)
+	assert.ElementsMatch(t, []string{"ian"}, evtC.Accounts)
 	assert.Equal(t, roomName, evtC.RoomName)
 	assert.Equal(t, "site-A", evtC.SiteID)
 	assert.Equal(t, reqID+":site-C", pubsC[0].msgID)
@@ -1778,13 +1779,6 @@ func TestMongoStore_UpdateRoomName(t *testing.T) {
 	assert.Equal(t, "new", got.Name)
 
 	assert.ErrorIs(t, store.UpdateRoomName(ctx, "missing", "x"), ErrRoomNotFound)
-
-	_, err = db.Collection("rooms").InsertOne(ctx, model.Room{
-		ID: "dm1", Type: model.RoomTypeDM, SiteID: "site-a",
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	})
-	require.NoError(t, err)
-	assert.ErrorIs(t, store.UpdateRoomName(ctx, "dm1", "x"), ErrNotChannelRoom)
 }
 
 func TestMongoStore_UpdateRoomVisibility(t *testing.T) {

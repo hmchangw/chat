@@ -1141,17 +1141,26 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			remoteSites = append(remoteSites, siteID)
 		}
 	}
-	// Each remote site receives the full account list. Destination inbox-worker
-	// filters foreign accounts via FindUsersByAccounts (a site only knows users
-	// homed there); cross-site subscription leakage is impossible by that
-	// invariant. See inbox-worker/handler.go handleMemberAdded.
+	// Each remote site receives only the accounts it homes — filter actualAccounts
+	// against userMap[].SiteID. Sending the full list would over-pressure NATS
+	// and ship subscription identities to sites that have no business knowing
+	// them, even though inbox-worker would filter on the destination.
 	for _, destSiteID := range remoteSites {
+		siteAccounts := make([]string, 0, len(actualAccounts))
+		for _, acc := range actualAccounts {
+			if userMap[acc].SiteID == destSiteID {
+				siteAccounts = append(siteAccounts, acc)
+			}
+		}
+		if len(siteAccounts) == 0 {
+			continue
+		}
 		siteEvt := model.MemberAddEvent{
 			Type:               model.OutboxMemberAdded,
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
-			Accounts:           actualAccounts,
+			Accounts:           siteAccounts,
 			SiteID:             room.SiteID,
 			RequesterAccount:   req.RequesterAccount,
 			JoinedAt:           req.Timestamp,
@@ -1894,15 +1903,15 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
-		return newPermanent("missing X-Request-ID")
+		return permanent(errcode.BadRequest("missing X-Request-ID"))
 	}
 	if !idgen.IsValidUUID(requestID) {
-		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
+		return permanent(errcode.BadRequest("invalid X-Request-ID: must be a hyphenated UUID"))
 	}
 
 	var req model.RenameRoomRequest
 	if err = json.Unmarshal(data, &req); err != nil {
-		return newPermanent("unmarshal rename request: %s", err.Error())
+		return permanent(errcode.BadRequest(fmt.Sprintf("unmarshal rename request: %s", err.Error())))
 	}
 	requesterAccount, roomID = req.Account, req.RoomID
 	slog.Info("processing room.rename",
@@ -1913,10 +1922,10 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 
 	if err = h.store.UpdateRoomName(ctx, req.RoomID, req.NewName); err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
-			return newPermanent("room not found")
+			return permanent(errcode.NotFound("room not found"))
 		}
 		if errors.Is(err, ErrNotChannelRoom) {
-			return newPermanent("rename is only allowed in channel rooms")
+			return permanent(errcode.BadRequest("rename is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation)))
 		}
 		return fmt.Errorf("update room name: %w", err)
 	}
@@ -1970,9 +1979,8 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 		if mErr != nil {
 			return fmt.Errorf("marshal rename outbox event: %w", mErr)
 		}
-		seed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.NewName, req.Timestamp)
 		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRenamed),
-			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, seed)); err != nil {
+			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
 			return fmt.Errorf("publish rename outbox to %s: %w", remoteSiteID, err)
 		}
 	}
@@ -1987,15 +1995,15 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
-		return newPermanent("missing X-Request-ID")
+		return permanent(errcode.BadRequest("missing X-Request-ID"))
 	}
 	if !idgen.IsValidUUID(requestID) {
-		return newPermanent("invalid X-Request-ID: must be a hyphenated UUID")
+		return permanent(errcode.BadRequest("invalid X-Request-ID: must be a hyphenated UUID"))
 	}
 
 	var req model.RoomVisibilityRequest
 	if err = json.Unmarshal(data, &req); err != nil {
-		return newPermanent("unmarshal visibility request: %s", err.Error())
+		return permanent(errcode.BadRequest(fmt.Sprintf("unmarshal visibility request: %s", err.Error())))
 	}
 	requesterAccount, roomID = req.Account, req.RoomID
 	slog.Info("processing room.visibility",
@@ -2006,16 +2014,16 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 
 	if err = h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
-			return newPermanent("room not found")
+			return permanent(errcode.NotFound("room not found"))
 		}
 		if errors.Is(err, ErrNotChannelRoom) {
-			return newPermanent("visibility change is only allowed in channel rooms")
+			return permanent(errcode.BadRequest("visibility change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation)))
 		}
 		return fmt.Errorf("update room visibility: %w", err)
 	}
 	if err = h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
 		if errors.Is(err, ErrOwnerNotSubscribed) {
-			return newPermanent("owner account %s is no longer subscribed to room %s", req.OwnerAccount, req.RoomID)
+			return permanent(errcode.BadRequest(fmt.Sprintf("owner account %s is no longer subscribed to room %s", req.OwnerAccount, req.RoomID)))
 		}
 		return fmt.Errorf("apply subscription visibility: %w", err)
 	}

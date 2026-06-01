@@ -697,7 +697,9 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	// 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 batched outbox (site-b)
 	assert.GreaterOrEqual(t, len(published), 4)
 
-	// Verify exactly 1 outbox event for site-b; it carries all actualAccounts.
+	// Exactly one outbox event to site-b, carrying only site-b-homed accounts
+	// (charlie). bob is on site-a (home), so does not appear in the cross-site
+	// payload.
 	var outboxCount int
 	for _, p := range published {
 		if strings.Contains(p.subj, "outbox") {
@@ -707,7 +709,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 			var change model.MemberAddEvent
 			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-			assert.ElementsMatch(t, []string{"bob", "charlie"}, change.Accounts)
+			assert.ElementsMatch(t, []string{"charlie"}, change.Accounts)
 		}
 	}
 	assert.Equal(t, 1, outboxCount, "should publish exactly 1 outbox event per remote site")
@@ -1129,15 +1131,21 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 	}
 	assert.Len(t, outboxEvents, 2, "one outbox event per remote site: site-b and site-c")
 
+	// Each remote site receives only its own homed accounts: site-b gets
+	// alice+bob, site-c gets charlie.
+	want := map[string][]string{
+		"site-b": {"alice", "bob"},
+		"site-c": {"charlie"},
+	}
 	for _, p := range outboxEvents {
 		var outboxEvt model.OutboxEvent
 		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 		var change model.MemberAddEvent
 		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-
-		// After retrofit: every remote site receives all actualAccounts (alice, bob, charlie).
-		assert.ElementsMatch(t, []string{"alice", "bob", "charlie"}, change.Accounts,
-			"outbox to %s should carry all newly-added accounts", p.subj)
+		expected, ok := want[outboxEvt.DestSiteID]
+		require.True(t, ok, "unexpected destSiteID %s", outboxEvt.DestSiteID)
+		assert.ElementsMatch(t, expected, change.Accounts,
+			"outbox to %s should carry only its homed accounts", outboxEvt.DestSiteID)
 	}
 }
 

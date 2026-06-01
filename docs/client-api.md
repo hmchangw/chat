@@ -628,11 +628,26 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.room.{roomID}.event`** — a canonical `room_renamed` system message fanned out by `broadcast-worker` to every client subscribed to the room.
+**1. `chat.room.{roomID}.event`** — a canonical system message fanned out by `broadcast-worker` to every client subscribed to the room.
 
 Recipients: all room members on all sites.
 
-The event shape follows the standard `RoomEvent` envelope (see [Message schema](#message-schema)) with `type: "room_renamed"` and the human-readable system-message body in `msg`.
+The event uses the standard `RoomEvent` envelope (`type: "new_message"`) with an embedded system `message` of `type: "room_renamed"`. The `message.content` is the human-readable line; the renamed channel name lives on the envelope's `roomName` field (already populated from room meta).
+
+| Field                  | Type   | Notes |
+|------------------------|--------|-------|
+| `type`                 | string | Always `"new_message"`. |
+| `roomId`               | string | The renamed room. |
+| `roomName`             | string | The **new** room name. |
+| `roomType`             | string | Always `"channel"`. |
+| `siteId`               | string | Home site of the room. |
+| `userCount`            | number | Current member count. |
+| `lastMsgAt`            | string | ISO-8601 timestamp of this sys message. |
+| `lastMsgId`            | string | ID of this sys message. |
+| `message.type`         | string | Always `"room_renamed"`. |
+| `message.content`      | string | e.g. `"alice renamed the channel to \"engineering-general\""`. |
+| `message.sysMsgData`   | object | `{ "newName": "engineering-general", "byAccount": "alice" }`. |
+| `timestamp`            | number | Milliseconds since Unix epoch (UTC). |
 
 **2. `chat.user.{memberAccount}.event.subscription.update`** — one event per subscription.
 

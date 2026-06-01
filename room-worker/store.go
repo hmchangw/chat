@@ -130,6 +130,11 @@ type SubscriptionStore interface {
 	//   restricted=false → $set flags only (ownerAccount ignored).
 	// All branches idempotent on retry.
 	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
+
+	// ListByRoom returns all subscriptions for roomID across every site.
+	// Used by rename/visibility processors to bucket accounts by remote site
+	// for outbox fan-out.
+	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 }
 
 // Key store used by room-worker: reads for fan-out, writes for rotation.

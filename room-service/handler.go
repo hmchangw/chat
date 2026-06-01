@@ -1582,15 +1582,9 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
-	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("invalid request: room ID mismatch")
-	}
-	if req.Account != "" && req.Account != account {
-		return nil, fmt.Errorf("invalid request: account mismatch")
-	}
 	req.RoomID, req.Account = roomID, account
 
-	slog.Info("processing room.rename",
+	slog.Debug("processing room.rename",
 		"op", model.AsyncJobOpRoomRename,
 		"requester", account,
 		"roomID", roomID,

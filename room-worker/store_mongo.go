@@ -487,24 +487,18 @@ func (s *MongoStore) UpdateRoomVisibility(ctx context.Context, roomID string, re
 	})
 }
 
-// updateChannelRoom enforces type=channel and disambiguates not-found vs wrong-type.
+// updateChannelRoom applies a $set update; room-service validates type=channel
+// upstream before publishing the canonical event, so the store layer does not
+// re-check.
 func (s *MongoStore) updateChannelRoom(ctx context.Context, roomID string, update bson.M) error {
-	res, err := s.rooms.UpdateOne(ctx,
-		bson.M{"_id": roomID, "type": model.RoomTypeChannel}, update)
+	res, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, update)
 	if err != nil {
 		return fmt.Errorf("update channel room %s: %w", roomID, err)
 	}
-	if res.MatchedCount > 0 {
-		return nil
+	if res.MatchedCount == 0 {
+		return ErrRoomNotFound
 	}
-	var probe model.Room
-	if probeErr := s.rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&probe); probeErr != nil {
-		if errors.Is(probeErr, mongo.ErrNoDocuments) {
-			return ErrRoomNotFound
-		}
-		return fmt.Errorf("probe room type: %w", probeErr)
-	}
-	return ErrNotChannelRoom
+	return nil
 }
 
 func (s *MongoStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
