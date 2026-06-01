@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"runtime"
 	"runtime/metrics"
@@ -52,6 +53,7 @@ func defaultThresholds() Thresholds {
 // stepInputs is everything evaluateStep needs to produce a verdict.
 type stepInputs struct {
 	N               int
+	EffectiveN      int // count of users actually activated (may be < N)
 	StartedAt       time.Time
 	HoldDuration    time.Duration
 	LatencySamples  []float64 // milliseconds
@@ -65,6 +67,7 @@ type stepInputs struct {
 // StepResult is the verdict for a single ramp step.
 type StepResult struct {
 	N                     int
+	EffectiveN            int // users actually activated; differs from N when pools fill up
 	StartedAt             time.Time
 	HoldDuration          time.Duration
 	P50LatencyMs          float64
@@ -81,6 +84,10 @@ type StepResult struct {
 	TrippedReasons        []string
 }
 
+// percentile returns the value at quantile p using ceil-based nearest-rank
+// (the standard for "what's the p99 of my samples"). Floor-based indexing
+// systematically under-reports for small sample counts — e.g. p99 of 50
+// samples with floor → cp[48] (true p98), with ceil → cp[49] (true p99).
 func percentile(samples []float64, p float64) float64 {
 	if len(samples) == 0 {
 		return 0
@@ -88,7 +95,7 @@ func percentile(samples []float64, p float64) float64 {
 	cp := make([]float64, len(samples))
 	copy(cp, samples)
 	sort.Float64s(cp)
-	idx := int(p * float64(len(cp)-1))
+	idx := int(math.Ceil(p*float64(len(cp)))) - 1
 	if idx < 0 {
 		idx = 0
 	}
@@ -101,7 +108,8 @@ func percentile(samples []float64, p float64) float64 {
 //nolint:gocritic // hugeParam: pure-function signature is intentional; the per-step copy cost is negligible.
 func evaluateStep(in stepInputs, th Thresholds) StepResult {
 	r := StepResult{
-		N: in.N, StartedAt: in.StartedAt, HoldDuration: in.HoldDuration,
+		N: in.N, EffectiveN: in.EffectiveN,
+		StartedAt: in.StartedAt, HoldDuration: in.HoldDuration,
 		AttemptedOps: in.AttemptedOps, FailedOps: in.FailedOps,
 		ConsumerPending:       in.ConsumerPending,
 		ServiceErrorIncreases: in.ServiceErrors,
@@ -114,11 +122,30 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 		r.ErrorRate = float64(in.FailedOps) / float64(in.AttemptedOps)
 	}
 
-	// Inconclusive overrides trip.
+	// Inconclusive overrides trip. Reserved for situations where the
+	// verdict signals can't be trusted: load box saturated, no traffic
+	// generated, or far fewer users active than nominal.
 	if in.Self.GCPauseP99Ms > th.GCPauseInconclusive || in.Self.CPUPercent > th.CPUInconclusive {
 		r.Inconclusive = true
 		r.TrippedReasons = append(r.TrippedReasons,
 			fmt.Sprintf("inconclusive: gc=%.1fms cpu=%.1f%%", in.Self.GCPauseP99Ms, in.Self.CPUPercent))
+		return r
+	}
+	if in.AttemptedOps == 0 {
+		// No actions emitted — publisher conn failed, emitters not wired,
+		// or zero hold duration. A "PASS" here would be a silent lie.
+		r.Inconclusive = true
+		r.TrippedReasons = append(r.TrippedReasons,
+			"inconclusive: zero actions attempted (publisher down or emitters not wired)")
+		return r
+	}
+	if in.N > 0 && in.EffectiveN > 0 && float64(in.EffectiveN)/float64(in.N) < 0.95 {
+		// More than 5% of nominal N never came online. The result doesn't
+		// reflect "N users at sustained load"; report Inconclusive so the
+		// operator knows to fix pool config before trusting the verdict.
+		r.Inconclusive = true
+		r.TrippedReasons = append(r.TrippedReasons,
+			fmt.Sprintf("inconclusive: only %d/%d users activated (pool caps too low)", in.EffectiveN, in.N))
 		return r
 	}
 
@@ -138,10 +165,17 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 			fmt.Sprintf("error_rate=%.4f > %.4f", r.ErrorRate, th.ErrorRate))
 	}
 	for durable, d := range in.ConsumerPending {
-		if d.Delta > th.PendingGrowth {
+		switch {
+		case d.Delta > th.PendingGrowth:
 			r.Tripped = true
 			r.TrippedReasons = append(r.TrippedReasons,
 				fmt.Sprintf("%s pending +%d > +%d", durable, d.Delta, th.PendingGrowth))
+		case d.End == 0 && d.Start > 0:
+			// Durable disappeared mid-window — the consumer crashed or was
+			// deleted. Trip regardless of PendingGrowth threshold.
+			r.Tripped = true
+			r.TrippedReasons = append(r.TrippedReasons,
+				fmt.Sprintf("%s disappeared mid-hold (had %d pending at start)", durable, d.Start))
 		}
 	}
 	for svc, n := range in.ServiceErrors {
@@ -202,35 +236,35 @@ func readGCPauseP99Ms() float64 {
 	return 0
 }
 
-var (
-	cpuMu    sync.Mutex
-	cpuLastT time.Time
-)
-
-// readCPUPercent is a conservative approximation. The Go stdlib doesn't
-// expose a clean process-wide CPU% counter; for load-test gating we use
-// NumGoroutine as a proxy: more goroutines under contention typically
-// correlates with higher CPU. If this trips spuriously, swap in gopsutil
-// in a follow-up.
+// readCPUPercent is disabled. The previous goroutine-count proxy
+// (NumGoroutine/5000 × 100) tripped INCONCLUSIVE at any scale above ~4k
+// users since startEmitter launches one goroutine per user — exactly the
+// scale this tool is designed to test. A real CPU sample (gopsutil or
+// /proc/self/stat deltas) is the right fix, deferred to a follow-up; for
+// now the CPU check is effectively off and INCONCLUSIVE relies on the GC
+// pause signal alone.
 func readCPUPercent() float64 {
-	cpuMu.Lock()
-	defer cpuMu.Unlock()
-	now := time.Now()
-	if cpuLastT.IsZero() {
-		cpuLastT = now
-		return 0
-	}
-	cpuLastT = now
-	return float64(runtime.NumGoroutine()) / 5000.0 * 100
+	return 0
 }
 
 // diffPending computes per-durable Start/End/Delta from two snapshots.
-// Durables that appeared mid-window are counted with Start=0.
+// Walks both maps: durables that appeared mid-window are counted with
+// Start=0 (positive Delta), and durables that disappeared mid-window
+// (consumer crashed, was deleted) are surfaced with End=0 (negative
+// Delta) so evaluateStep can flag the disappearance instead of silently
+// dropping the signal.
 func diffPending(start, end map[string]int64) map[string]ConsumerPendingDelta {
-	out := make(map[string]ConsumerPendingDelta, len(end))
+	out := make(map[string]ConsumerPendingDelta, len(end)+len(start))
 	for durable, e := range end {
 		s := start[durable]
 		out[durable] = ConsumerPendingDelta{Start: s, End: e, Delta: e - s}
+	}
+	for durable, s := range start {
+		if _, present := end[durable]; present {
+			continue
+		}
+		// Disappeared mid-window — surface the loss so it can trip.
+		out[durable] = ConsumerPendingDelta{Start: s, End: 0, Delta: -s}
 	}
 	return out
 }
@@ -258,12 +292,17 @@ func pollPending(ctx context.Context, jszURL string) (map[string]int64, error) {
 	return nil, fmt.Errorf("pollPending after %d attempts: %w", maxAttempts, lastErr)
 }
 
+// pollPendingClient has an explicit per-request timeout so a hung NATS
+// monitoring endpoint can't wedge the whole run waiting on the operator's
+// run-level ctx (which typically has no deadline for exploratory sweeps).
+var pollPendingClient = &http.Client{Timeout: 5 * time.Second}
+
 func pollPendingOnce(ctx context.Context, jszURL string) (map[string]int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jszURL+"?consumers=true", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build jsz request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := pollPendingClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("jsz GET: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -151,6 +152,16 @@ func parseStepList(s string) ([]int, error) {
 }
 
 // stepEnv bundles the runtime dependencies of a step. Stub-able for unit tests.
+//
+// holdStartNanos / holdDurationNanos are atomics so emitters started during
+// step N can re-anchor their diurnal envelope when step N+1 begins (otherwise
+// older users would emit at the envelope's clamped baseline for the entire
+// next step). Set via setHold() at the actual start of each hold window.
+//
+// activatedCount tracks how many users were successfully added to a pool;
+// when it diverges from the nominal N (because direct pool filled and no
+// multiplex was configured, or NATS subscribe failed), runStep surfaces the
+// gap so an "N=20000 PASS" doesn't silently mean "10000 users active".
 type stepEnv struct {
 	collector      *Collector
 	direct         *directPool
@@ -162,11 +173,32 @@ type stepEnv struct {
 	publish        publishFn // nil in stub mode → emitters no-op
 	request        requestFn // nil in stub mode → emitters no-op
 	siteID         string    // propagated from cfg / baseCfg
+	runSeed        int64     // for deterministic per-user RNG seeding
 	maxDirect      int       // direct pool cap (from cfg.MaxDirectUsers)
 	warmup         time.Duration
 	hold           time.Duration
 	cooldown       time.Duration
 	mintJWT        func(ctx context.Context, account string) error // optional; nil = skip
+
+	holdStartNanos    atomic.Int64
+	holdDurationNanos atomic.Int64
+	activatedCount    atomic.Int64
+	skippedCount      atomic.Int64
+}
+
+// setHold updates the current envelope anchor. Emitters read these on every
+// tick so a step transition takes effect within ~1s.
+func (env *stepEnv) setHold(start time.Time, duration time.Duration) {
+	env.holdStartNanos.Store(start.UnixNano())
+	env.holdDurationNanos.Store(duration.Nanoseconds())
+}
+
+func (env *stepEnv) currentHold() (time.Time, time.Duration) {
+	startNanos := env.holdStartNanos.Load()
+	if startNanos == 0 {
+		return time.Time{}, 0
+	}
+	return time.Unix(0, startNanos), time.Duration(env.holdDurationNanos.Load())
 }
 
 // runStep executes one ramp step: activates additional users (delta over
@@ -177,18 +209,29 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 	startedAt := time.Now()
 	delta := n - prevN
 
-	// holdStart points at the beginning of the hold window (post-warmup).
-	// Emitters started during activation use it to compute the diurnal
-	// envelope; they run through warmup + hold + cooldown.
-	holdStart := time.Now().Add(env.warmup)
-	activateUsers(ctx, env, prevN, n, holdStart, env.hold)
+	// Activate the new slice of users. Activation can take significant time
+	// (rate-limited at 500/sec, so +50k users = 100s) — that elapsed time
+	// would eat into the warmup window if we set holdStart early. We
+	// re-anchor holdStart right before the hold actually begins (below).
+	activationStart := time.Now()
+	activateUsers(ctx, env, prevN, n)
+	activationElapsed := time.Since(activationStart)
 	if delta > 0 {
-		slog.Info("step warmup", "n", n, "delta", delta)
+		slog.Info("step activated",
+			"n", n, "delta", delta,
+			"activated", env.activatedCount.Load(),
+			"skipped", env.skippedCount.Load(),
+			"activation_elapsed", activationElapsed.Round(time.Millisecond))
 	}
 
 	if !waitOrCancel(ctx, env.warmup) {
 		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during warmup")
 	}
+
+	// Re-anchor the diurnal envelope at the actual hold start. Emitters
+	// re-read this on every tick, so step-1 users that survived into step 2
+	// follow step 2's envelope rather than continuing on step 1's curve.
+	env.setHold(time.Now(), env.hold)
 
 	// Snapshot pending state at start of hold. If the NATS monitoring
 	// endpoint is misbehaving, drop the pending-growth signal for this
@@ -230,6 +273,7 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 
 	in := stepInputs{
 		N: n, StartedAt: startedAt, HoldDuration: env.hold,
+		EffectiveN:      int(env.activatedCount.Load()),
 		LatencySamples:  env.collector.LatencySamples(),
 		AttemptedOps:    env.collector.AttemptedOps(),
 		FailedOps:       env.collector.FailedOps(),
@@ -268,8 +312,9 @@ func inconclusiveResult(n int, startedAt time.Time, hold time.Duration, reason s
 // activateUsers brings users in the range [from, to) online: optionally
 // mints a JWT, assigns them to a pool, opens connections / registers room
 // interest, and starts their action-emitter goroutine. Rate-limited at
-// 500 users/sec.
-func activateUsers(ctx context.Context, env *stepEnv, from, to int, holdStart time.Time, holdDuration time.Duration) {
+// 500 users/sec. Updates env.activatedCount / env.skippedCount so runStep
+// can surface whether the nominal N actually went live.
+func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 	if from >= to {
 		return
 	}
@@ -292,26 +337,30 @@ func activateUsers(ctx context.Context, env *stepEnv, from, to int, holdStart ti
 		case env.direct != nil && env.direct.Size() < env.maxDirect:
 			if err := env.direct.Add(u); err != nil {
 				slog.Warn("direct pool add failed", "user", u.ID, "err", err)
+				env.skippedCount.Add(1)
 				continue
 			}
 			poolAdded = true
 		case env.multiplex != nil:
 			if err := env.multiplex.Add(u); err != nil {
 				slog.Warn("multiplex pool add failed", "user", u.ID, "err", err)
+				env.skippedCount.Add(1)
 				continue
 			}
 			poolAdded = true
 		default:
 			slog.Warn("no pool available for user; skipping", "user", u.ID)
+			env.skippedCount.Add(1)
 			continue
 		}
-		// Per-user emitter runs through warmup + hold + cooldown. The
-		// envelope uses holdStart so warmup-window traffic ramps up the
-		// way it would right before peak; samples from warmup are
-		// discarded by Collector.Reset at the start of hold.
+		// Per-user emitter runs through warmup + hold + cooldown, reading
+		// the current envelope anchor from env on each tick so step
+		// transitions take effect within ~1s. Pass the per-user index so
+		// the RNG seed is deterministic given env.runSeed.
 		if poolAdded && env.publish != nil {
-			startEmitter(ctx, env, u, holdStart, holdDuration)
+			startEmitter(ctx, env, u, i)
 		}
+		env.activatedCount.Add(1)
 	}
 }
 
@@ -323,17 +372,24 @@ type envFactory interface {
 // startEmitter launches a goroutine that, while ctx is live, ticks the user's
 // Markov state every second and, when active, emits actions at the Poisson
 // rate scaled by the diurnal envelope.
-func startEmitter(ctx context.Context, env *stepEnv, u *userState, holdStart time.Time, holdDuration time.Duration) {
+//
+// The RNG seed is derived from env.runSeed and the user's index, so two runs
+// with the same run-seed produce identical action streams (reproducibility
+// is the whole point of a load-test verdict). Avoid time.Now in the seed —
+// at the 500 users/sec activation rate, bursts of users get seeded in the
+// same nanosecond and end up perfectly correlated.
+//
+// The envelope anchor is read from env on every tick (not captured at
+// activation), so emitters started during step N follow step N+1's envelope
+// once runStep calls env.setHold for the next step.
+func startEmitter(ctx context.Context, env *stepEnv, u *userState, userIdx int) {
 	go func() {
-		seed := time.Now().UnixNano() ^ int64(len(u.ID))
+		// Splitmix-style mix to scramble adjacent userIdx seeds; cast through
+		// uint64 so the multiplier doesn't overflow the int64 literal.
+		seed := int64(uint64(env.runSeed)*0x9E3779B97F4A7C15) + int64(userIdx)
 		r := rand.New(rand.NewSource(seed))
 		weights := defaultActionWeights()
 		baseRate := actionRatePerSecond(weights.totalPerDay(), 8*time.Hour)
-		// Compress: a workday becomes the hold window. Multiply rate accordingly.
-		if holdDuration > 0 {
-			compress := (8 * time.Hour).Seconds() / holdDuration.Seconds()
-			baseRate *= compress
-		}
 
 		tick := time.NewTicker(1 * time.Second)
 		defer tick.Stop()
@@ -347,8 +403,14 @@ func startEmitter(ctx context.Context, env *stepEnv, u *userState, holdStart tim
 			if !u.active {
 				continue
 			}
+			holdStart, holdDuration := env.currentHold()
+			if holdDuration <= 0 {
+				continue // env not yet initialised; wait for runStep to set
+			}
+			// Compress: a workday becomes the hold window. Multiply rate accordingly.
+			compress := (8 * time.Hour).Seconds() / holdDuration.Seconds()
 			elapsed := time.Since(holdStart)
-			rate := baseRate * rateMultiplier(elapsed, holdDuration)
+			rate := baseRate * compress * rateMultiplier(elapsed, holdDuration)
 			if r.Float64() < rate {
 				doAction(ctx, env, u, r, weights)
 			}
@@ -394,6 +456,11 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 // runDailyForTest is the testable variant: takes an envFactory so tests can
 // inject stubs. The production runDaily wraps it with the real factory.
 //
+// dailyRunSeed is the fixture/RNG seed. Hardcoded for now; spec section 12
+// flagged this as a follow-up. Same seed → same fixtures → same action
+// stream, which is what makes regression CSV comparisons meaningful.
+const dailyRunSeed int64 = 42
+
 //nolint:gocritic // cfg passed by value to match envFactory.Build signature
 func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) ([]StepResult, error) {
 	preset, _ := BuiltinPreset(cfg.Preset)
@@ -408,7 +475,7 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	}
 	slog.Info("building fixtures", "preset", cfg.Preset, "users", preset.Users)
 	buildStart := time.Now()
-	fx := BuildFixtures(&preset, 42, siteID)
+	fx := BuildFixtures(&preset, dailyRunSeed, siteID)
 	slog.Info("fixtures built",
 		"rooms", len(fx.Rooms),
 		"subscriptions", len(fx.Subscriptions),
@@ -425,11 +492,18 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	if env.siteID == "" {
 		env.siteID = siteID
 	}
+	env.runSeed = dailyRunSeed
 	defer closePools(env)
 
 	prevN := 0
 	var results []StepResult
 	for _, n := range cfg.Steps {
+		// Honor ctx between steps so SIGINT mid-cooldown doesn't produce
+		// a junk trail of INCONCLUSIVE rows for steps that never started.
+		if err := ctx.Err(); err != nil {
+			slog.Info("daily run interrupted; stopping ramp", "completed_steps", len(results))
+			break
+		}
 		r := runStep(ctx, env, n, prevN)
 		results = append(results, r)
 		if cfg.StopOnTrip && r.Tripped {

@@ -11,7 +11,9 @@ import (
 )
 
 // renderConsole writes a human-readable step-by-step table plus the ANSWER
-// line (largest passing N) to w.
+// line (largest passing N) to w. When EffectiveN differs materially from N,
+// the discrepancy is annotated so an operator doesn't read "N=20000 PASS"
+// when only half the users were actually active.
 func renderConsole(w io.Writer, results []StepResult) {
 	fmt.Fprintln(w, "N        p50    p95    p99    err%    worst-pending-delta             verdict")
 	var lastPass int
@@ -28,10 +30,14 @@ func renderConsole(w io.Writer, results []StepResult) {
 			lastPass = r.N
 		}
 		worst := worstPending(r.ConsumerPending)
-		fmt.Fprintf(w, "%-8d %-6.0f %-6.0f %-6.0f %-7.2f%% %-30s %s\n",
-			r.N, r.P50LatencyMs, r.P95LatencyMs, r.P99LatencyMs,
+		nLabel := strconv.Itoa(r.N)
+		if r.EffectiveN > 0 && r.EffectiveN != r.N {
+			nLabel = fmt.Sprintf("%d(%d)", r.N, r.EffectiveN)
+		}
+		fmt.Fprintf(w, "%-8s %-6.0f %-6.0f %-6.0f %-7.2f%% %-30s %s\n",
+			nLabel, r.P50LatencyMs, r.P95LatencyMs, r.P99LatencyMs,
 			r.ErrorRate*100, worst, verdict)
-		if r.Tripped && len(r.TrippedReasons) > 0 {
+		if (r.Tripped || r.Inconclusive) && len(r.TrippedReasons) > 0 {
 			fmt.Fprintf(w, "    reasons: %s\n", joinReasons(r.TrippedReasons))
 		}
 	}
@@ -79,7 +85,7 @@ func writeDailyCSV(path string, results []StepResult) error {
 	defer w.Flush()
 
 	if err := w.Write([]string{
-		"n", "started_at", "p50_ms", "p95_ms", "p99_ms",
+		"n", "effective_n", "started_at", "p50_ms", "p95_ms", "p99_ms",
 		"error_rate", "attempted_ops", "failed_ops",
 		"worst_durable", "worst_pending_delta",
 		"tripped", "inconclusive", "tripped_reasons",
@@ -100,6 +106,7 @@ func writeDailyCSV(path string, results []StepResult) error {
 		}
 		if err := w.Write([]string{
 			strconv.Itoa(r.N),
+			strconv.Itoa(r.EffectiveN),
 			r.StartedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			fmt.Sprintf("%.0f", r.P50LatencyMs),
 			fmt.Sprintf("%.0f", r.P95LatencyMs),
