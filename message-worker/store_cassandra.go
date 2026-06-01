@@ -86,18 +86,22 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	batch.Query(
 		`INSERT INTO messages_by_room
 		   (room_id, bucket, created_at, message_id, sender, msg, site_id, updated_at,
-		    mentions, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    mentions, type, sys_msg_data, tshow, quoted_parent_message,
+		    attachments, card, card_action, file)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.RoomID, b, msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt,
 		mentions, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+		msg.Attachments, msg.Card, msg.CardAction, msg.File,
 	)
 	batch.Query(
 		`INSERT INTO messages_by_id
 		   (message_id, created_at, room_id, sender, msg, site_id, updated_at,
-		    mentions, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    mentions, type, sys_msg_data, tshow, quoted_parent_message,
+		    attachments, card, card_action, file)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt,
 		mentions, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+		msg.Attachments, msg.Card, msg.CardAction, msg.File,
 	)
 	if err := s.cassSession.ExecuteBatch(batch); err != nil {
 		return fmt.Errorf("save message %s: %w", msg.ID, err)
@@ -134,9 +138,9 @@ func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Me
 		`INSERT INTO messages_by_room
 		   (room_id, bucket, created_at, message_id, sender, site_id, updated_at,
 		    mentions, type, tshow, quoted_parent_message, sys_msg_data,
-		    msg, attachments, card, card_action,
+		    msg, attachments, card, card_action, file,
 		    enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		msg.RoomID, b, msg.CreatedAt, msg.ID, sender, siteID, msg.CreatedAt,
 		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
 	)
@@ -144,9 +148,9 @@ func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Me
 		`INSERT INTO messages_by_id
 		   (message_id, created_at, room_id, sender, site_id, updated_at,
 		    mentions, type, tshow, quoted_parent_message, sys_msg_data,
-		    msg, attachments, card, card_action,
+		    msg, attachments, card, card_action, file,
 		    enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt,
 		mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
 	)
@@ -171,19 +175,23 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 	batch.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
-		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message,
+		  attachments, card, card_action, file)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+		msg.Attachments, msg.Card, msg.CardAction, msg.File,
 	)
 	batch.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg,
-		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message,
+		  attachments, card, card_action, file)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+		msg.Attachments, msg.Card, msg.CardAction, msg.File,
 	)
 	if err := s.cassSession.ExecuteBatch(batch); err != nil {
 		return fmt.Errorf("save thread message %s: %w", msg.ID, err)
@@ -219,9 +227,9 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 		 (message_id, created_at, room_id, sender, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow,
 		  quoted_parent_message, sys_msg_data,
-		  msg, attachments, card, card_action,
+		  msg, attachments, card, card_action, file,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow,
 		cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
@@ -230,9 +238,9 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id,
 		  sender, site_id, updated_at, mentions, type, quoted_parent_message, sys_msg_data,
-		  msg, attachments, card, card_action,
+		  msg, attachments, card, card_action, file,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage, msg.SysMsgData,
 		payload, encMeta,
@@ -249,21 +257,23 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 }
 
 // buildCassandraMessage projects the user-authored fields of msg into a
-// cassandra.Message for encryption. Only fields that participate in
-// encryption need to be populated — for the message-worker write path that
-// is Msg (Content) plus the QuotedParentMessage body. sys_msg_data is not
-// encrypted, and attachments/card/card_action are not produced by this path
-// (the model has no such fields); columns bound by SaveMessage directly are
-// left out.
+// cassandra.Message for encryption. The encrypted content fields are Msg
+// (Content), Attachments, Card, CardAction, File and the QuotedParentMessage
+// body. sys_msg_data is not encrypted; columns bound by SaveMessage directly
+// are left out.
 //
 // The returned QuotedParentMessage is a fresh struct so that
 // StripEncryptedFields nulling its Msg/Attachments fields does not mutate
 // the caller's *model.Message.
 func buildCassandraMessage(msg *model.Message) cassandra.Message {
 	cm := cassandra.Message{
-		RoomID:    msg.RoomID,
-		MessageID: msg.ID,
-		Msg:       msg.Content,
+		RoomID:      msg.RoomID,
+		MessageID:   msg.ID,
+		Msg:         msg.Content,
+		Attachments: msg.Attachments,
+		Card:        msg.Card,
+		CardAction:  msg.CardAction,
+		File:        msg.File,
 	}
 	if msg.QuotedParentMessage != nil {
 		q := *msg.QuotedParentMessage

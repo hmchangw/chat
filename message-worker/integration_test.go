@@ -72,6 +72,11 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			card_tmid     TEXT,
 			data          BLOB
 		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."File" (
+			id   TEXT,
+			name TEXT,
+			type TEXT
+		)`, keyspace),
 		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (
 			message_id               TEXT,
 			room_id                  TEXT,
@@ -97,6 +102,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			attachments           LIST<BLOB>,
 			card                  FROZEN<"Card">,
 			card_action           FROZEN<"CardAction">,
+			file                  FROZEN<"File">,
 			tcount                INT,
 			tshow                 BOOLEAN,
 			type                  TEXT,
@@ -118,6 +124,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			attachments              LIST<BLOB>,
 			card                     FROZEN<"Card">,
 			card_action              FROZEN<"CardAction">,
+			file                     FROZEN<"File">,
 			thread_room_id           TEXT,
 			thread_parent_id         TEXT,
 			thread_parent_created_at TIMESTAMP,
@@ -144,6 +151,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			attachments           LIST<BLOB>,
 			card                  FROZEN<"Card">,
 			card_action           FROZEN<"CardAction">,
+			file                  FROZEN<"File">,
 			tshow                 BOOLEAN,
 			type                  TEXT,
 			sys_msg_data          BLOB,

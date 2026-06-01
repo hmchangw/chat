@@ -10,6 +10,7 @@ func SplitForEncryption(msg *cassandra.Message) EncryptedFields {
 		Attachments: msg.Attachments,
 		Card:        msg.Card,
 		CardAction:  msg.CardAction,
+		File:        msg.File,
 	}
 	if msg.QuotedParentMessage != nil {
 		q := msg.QuotedParentMessage
@@ -35,6 +36,7 @@ func StripEncryptedFields(msg *cassandra.Message) {
 	msg.Attachments = nil
 	msg.Card = nil
 	msg.CardAction = nil
+	msg.File = nil
 	if msg.QuotedParentMessage != nil {
 		msg.QuotedParentMessage.Msg = ""
 		msg.QuotedParentMessage.Attachments = nil
@@ -49,6 +51,7 @@ func ApplyDecryptedFields(msg *cassandra.Message, enc *EncryptedFields) {
 	msg.Attachments = enc.Attachments
 	msg.Card = enc.Card
 	msg.CardAction = enc.CardAction
+	msg.File = enc.File
 	if enc.QuotedParentContent != nil {
 		if msg.QuotedParentMessage == nil {
 			msg.QuotedParentMessage = &cassandra.QuotedParentMessage{}

@@ -12,6 +12,10 @@ type Message struct {
 	UserID                       string                         `json:"userId"                                 bson:"userId"`
 	UserAccount                  string                         `json:"userAccount"                            bson:"userAccount"`
 	Content                      string                         `json:"content"                                bson:"content"`
+	Attachments                  [][]byte                       `json:"attachments,omitempty"                  bson:"attachments,omitempty"`
+	Card                         *cassandra.Card                `json:"card,omitempty"                         bson:"card,omitempty"`
+	CardAction                   *cassandra.CardAction          `json:"cardAction,omitempty"                   bson:"cardAction,omitempty"`
+	File                         *cassandra.File                `json:"file,omitempty"                         bson:"file,omitempty"`
 	Mentions                     []Participant                  `json:"mentions,omitempty"                     bson:"mentions,omitempty"`
 	CreatedAt                    time.Time                      `json:"createdAt"                              bson:"createdAt"`
 	EditedAt                     *time.Time                     `json:"editedAt,omitempty"                     bson:"editedAt,omitempty"`
