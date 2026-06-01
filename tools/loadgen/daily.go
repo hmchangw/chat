@@ -510,7 +510,10 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		return msg.Data, nil
 	}
 
-	jszURL := "http://nats:8222/jsz"
+	jszURL := f.baseCfg.NatsMonitoringURL
+	if jszURL == "" {
+		jszURL = "http://nats:8222/jsz"
+	}
 
 	// Backend services don't currently expose /metrics endpoints, so the
 	// service-error scraper is a no-op until they do. Pass an empty URL map

@@ -51,6 +51,12 @@ type config struct {
 	CassandraUsername  string `env:"CASSANDRA_USERNAME"     envDefault:""`
 	CassandraPassword  string `env:"CASSANDRA_PASSWORD"     envDefault:""`
 	MessageBucketHours int    `env:"MESSAGE_BUCKET_HOURS"   envDefault:"72"`
+
+	// NATS monitoring endpoint used by the `daily` subcommand to poll
+	// JetStream consumer pending counts. Defaults to the docker-compose
+	// service name. Override (e.g. `http://127.0.0.1:8222/jsz` on the host,
+	// or a custom monitoring port) when running against non-default infra.
+	NatsMonitoringURL string `env:"NATS_MONITORING_URL"    envDefault:"http://nats:8222/jsz"`
 }
 
 func main() {
