@@ -1352,26 +1352,31 @@ func TestProcessCreateRoom_BotDM_DoesNotUpsert_Integration(t *testing.T) {
 		UIDs:     []string{"u_alice", "u_helper_bot"},
 		Accounts: []string{"alice", "helper.bot"},
 	})
+	// MembershipEventTimestamp mirrors what the original create wrote
+	// (room.CreatedAt): a re-create uses the same eventTs, so the $lt guard
+	// rejects it and the insert-only contract holds.
 	mustInsertSub(t, db, &model.Subscription{
-		ID:           "existing-human-sub",
-		User:         model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:       roomID,
-		SiteID:       "site-A",
-		RoomType:     model.RoomTypeBotDM,
-		Name:         "helper.bot",
-		IsSubscribed: false,
-		Muted:        true,
-		JoinedAt:     oldJoinedAt,
+		ID:                       "existing-human-sub",
+		User:                     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:                   roomID,
+		SiteID:                   "site-A",
+		RoomType:                 model.RoomTypeBotDM,
+		Name:                     "helper.bot",
+		IsSubscribed:             false,
+		Muted:                    true,
+		JoinedAt:                 oldJoinedAt,
+		MembershipEventTimestamp: oldJoinedAt.UnixMilli(),
 	})
 	mustInsertSub(t, db, &model.Subscription{
-		ID:           "existing-bot-sub",
-		User:         model.SubscriptionUser{ID: "u_helper_bot", Account: "helper.bot"},
-		RoomID:       roomID,
-		SiteID:       "site-A",
-		RoomType:     model.RoomTypeBotDM,
-		Name:         "alice",
-		IsSubscribed: false,
-		JoinedAt:     oldJoinedAt,
+		ID:                       "existing-bot-sub",
+		User:                     model.SubscriptionUser{ID: "u_helper_bot", Account: "helper.bot"},
+		RoomID:                   roomID,
+		SiteID:                   "site-A",
+		RoomType:                 model.RoomTypeBotDM,
+		Name:                     "alice",
+		IsSubscribed:             false,
+		JoinedAt:                 oldJoinedAt,
+		MembershipEventTimestamp: oldJoinedAt.UnixMilli(),
 	})
 
 	h := newIntegrationHandler(t, store, "site-A")
@@ -1432,24 +1437,28 @@ func TestProcessCreateRoom_DM_DoesNotUpsert_Integration(t *testing.T) {
 		UIDs:     []string{"u_alice", "u_bob"},
 		Accounts: []string{"alice", "bob"},
 	})
+	// MembershipEventTimestamp mirrors what the original create wrote
+	// (room.CreatedAt) so the re-create's $lt guard rejects it.
 	mustInsertSub(t, db, &model.Subscription{
-		ID:       "existing-alice-sub",
-		User:     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
-		RoomID:   roomID,
-		SiteID:   "site-A",
-		RoomType: model.RoomTypeDM,
-		Name:     "bob",
-		Muted:    true,
-		JoinedAt: oldJoinedAt,
+		ID:                       "existing-alice-sub",
+		User:                     model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		RoomID:                   roomID,
+		SiteID:                   "site-A",
+		RoomType:                 model.RoomTypeDM,
+		Name:                     "bob",
+		Muted:                    true,
+		JoinedAt:                 oldJoinedAt,
+		MembershipEventTimestamp: oldJoinedAt.UnixMilli(),
 	})
 	mustInsertSub(t, db, &model.Subscription{
-		ID:       "existing-bob-sub",
-		User:     model.SubscriptionUser{ID: "u_bob", Account: "bob"},
-		RoomID:   roomID,
-		SiteID:   "site-A",
-		RoomType: model.RoomTypeDM,
-		Name:     "alice",
-		JoinedAt: oldJoinedAt,
+		ID:                       "existing-bob-sub",
+		User:                     model.SubscriptionUser{ID: "u_bob", Account: "bob"},
+		RoomID:                   roomID,
+		SiteID:                   "site-A",
+		RoomType:                 model.RoomTypeDM,
+		Name:                     "alice",
+		JoinedAt:                 oldJoinedAt,
+		MembershipEventTimestamp: oldJoinedAt.UnixMilli(),
 	})
 
 	h := newIntegrationHandler(t, store, "site-A")

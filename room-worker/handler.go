@@ -1292,7 +1292,13 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		} else {
 			subs = buildDMSubs(requester, counterpart, room, acceptedAt)
 		}
-		if err := h.store.BulkCreateSubscriptions(ctx, subs, req.Timestamp); err != nil {
+		// Guard eventTs is the room's creation time, not req.Timestamp: on a
+		// re-create / JetStream redelivery the room resolves to the existing
+		// doc with its original CreatedAt, so the $lt guard rejects the replay
+		// and preserves accumulated sub state (the insert-only contract). It
+		// also means a replayed create can never resurrect a membership a
+		// later remove tombstoned. Matches handleSyncCreateDM.
+		if err := h.store.BulkCreateSubscriptions(ctx, subs, room.CreatedAt.UnixMilli()); err != nil {
 			return fmt.Errorf("bulk create subs: %w", err)
 		}
 		// Re-read canonical subs: BulkCreate is a $setOnInsert upsert, so on a
@@ -1366,7 +1372,10 @@ func (h *Handler) processCreateRoomChannel(ctx context.Context, req *model.Creat
 		subs = append(subs, newSub(idgen.GenerateUUIDv7(), u, room, roles, room.Name, false, acceptedAt))
 	}
 
-	if err := h.store.BulkCreateSubscriptions(ctx, subs, req.Timestamp); err != nil {
+	// Guard eventTs is the room's creation time (see processCreateRoom): a
+	// re-create / redelivery resolves the existing room's original CreatedAt,
+	// so the $lt guard rejects the replay and the insert-only contract holds.
+	if err := h.store.BulkCreateSubscriptions(ctx, subs, room.CreatedAt.UnixMilli()); err != nil {
 		return fmt.Errorf("bulk create subs: %w", err)
 	}
 
