@@ -31,7 +31,12 @@ import (
 type Handler struct {
 	store RoomStore
 	// keyStore is set when VALKEY_ADDRS is configured (always in production; tests may pass nil).
-	keyStore          RoomKeyStore
+	keyStore RoomKeyStore
+	// dekProvisioner is set in main when ATREST_ENABLED; nil disables eager
+	// at-rest DEK creation at room-create time (message-worker's lazy create
+	// still covers remote sites and pre-rollout rooms). Injected as a field
+	// rather than a constructor arg to avoid churning every NewHandler caller.
+	dekProvisioner    DEKProvisioner
 	memberListClient  MemberListClient
 	msgReader         MessageReader
 	siteID            string
@@ -349,6 +354,16 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		if _, err := h.keyStore.Set(ctx, req.RoomID, *pair); err != nil {
 			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return nil, fmt.Errorf("store room key: %w", err)
+		}
+	}
+
+	// Provision the at-rest DEK BEFORE the canonical event so the first message
+	// write doesn't pay the create cost. Blocking, like the room key above;
+	// message-worker's lazy creation still covers remote sites (the DEK is
+	// per-site) and rooms created before this rollout.
+	if h.dekProvisioner != nil {
+		if err := h.dekProvisioner.EnsureDEK(ctx, req.RoomID); err != nil {
+			return nil, fmt.Errorf("provision at-rest DEK: %w", err)
 		}
 	}
 

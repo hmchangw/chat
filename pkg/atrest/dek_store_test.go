@@ -13,8 +13,9 @@ import (
 // fakeDEKStore is an in-memory DEKStore used to drive Cipher unit tests
 // and to verify the contract assertions below before the Mongo impl exists.
 type fakeDEKStore struct {
-	mu   sync.Mutex
-	data map[string]RoomDataKey
+	mu     sync.Mutex
+	data   map[string]RoomDataKey
+	getErr error // when set, Get returns this error (drives failure-path tests)
 }
 
 func newFakeDEKStore() *fakeDEKStore {
@@ -24,6 +25,9 @@ func newFakeDEKStore() *fakeDEKStore {
 func (f *fakeDEKStore) Get(_ context.Context, roomID string) (*RoomDataKey, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	k, ok := f.data[roomID]
 	if !ok {
 		return nil, nil

@@ -130,6 +130,12 @@ type RoomKeyStore interface {
 	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
 }
 
+// DEKProvisioner eagerly provisions a room's at-rest data encryption key at
+// room-creation time. Satisfied by *atrest.Cipher; nil when ATREST_ENABLED=false.
+type DEKProvisioner interface {
+	EnsureDEK(ctx context.Context, roomID string) error
+}
+
 // MessageReader looks up a message by ID. found=false with err=nil means no row matched.
 type MessageReader interface {
 	GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (

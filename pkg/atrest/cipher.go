@@ -25,6 +25,13 @@ var tracer = otel.Tracer("github.com/hmchangw/chat/pkg/atrest")
 type Cipher interface {
 	Encrypt(ctx context.Context, roomID string, fields EncryptedFields) ([]byte, EncMeta, error)
 	Decrypt(ctx context.Context, roomID string, encPayload []byte, meta EncMeta) (EncryptedFields, error)
+	// EnsureDEK provisions the room's DEK if it does not already exist, so a
+	// later first write doesn't pay the create cost. It is idempotent (a no-op
+	// when the row already exists) and safe under concurrency (Mongo
+	// $setOnInsert). Callers that provision eagerly (e.g. room creation) still
+	// rely on the lazy create in Encrypt for rooms/sites where EnsureDEK was
+	// never called (federation replays, pre-rollout rooms).
+	EnsureDEK(ctx context.Context, roomID string) error
 }
 
 // NewCipher composes a Cipher from its dependencies.
@@ -100,6 +107,16 @@ func (c *cipherImpl) Decrypt(ctx context.Context, roomID string, payload []byte,
 		return EncryptedFields{}, fmt.Errorf("%w: %w", ErrPayloadMalformed, err)
 	}
 	return decoded, nil
+}
+
+// EnsureDEK provisions the room's wrapped DEK row if it is absent. See the
+// Cipher interface doc. The unwrapped key is discarded — only the persisted
+// row matters here.
+func (c *cipherImpl) EnsureDEK(ctx context.Context, roomID string) error {
+	if _, err := c.fetchOrCreateDEK(ctx, roomID); err != nil {
+		return fmt.Errorf("ensure DEK for room %s: %w", roomID, err)
+	}
+	return nil
 }
 
 // dekFor returns the AEAD for roomID, lazily creating a DEK if none exists.

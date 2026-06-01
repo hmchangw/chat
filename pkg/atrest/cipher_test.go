@@ -128,6 +128,44 @@ func TestCipher_LazyDEKCreation(t *testing.T) {
 	assert.NotEmpty(t, row.WrappedDEK)
 }
 
+func TestCipher_EnsureDEK_CreatesAndIsIdempotent(t *testing.T) {
+	store := newFakeDEKStore()
+	c := newTestCipher(t, store)
+	ctx := context.Background()
+
+	// No row before EnsureDEK.
+	row, err := store.Get(ctx, "room-ensure")
+	require.NoError(t, err)
+	require.Nil(t, row)
+
+	// EnsureDEK provisions the wrapped DEK row.
+	require.NoError(t, c.EnsureDEK(ctx, "room-ensure"))
+	row, err = store.Get(ctx, "room-ensure")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.NotEmpty(t, row.WrappedDEK)
+
+	// Idempotent: a second call doesn't error or replace the existing row.
+	wrapped := row.WrappedDEK
+	require.NoError(t, c.EnsureDEK(ctx, "room-ensure"))
+	row2, err := store.Get(ctx, "room-ensure")
+	require.NoError(t, err)
+	assert.Equal(t, wrapped, row2.WrappedDEK)
+
+	// A subsequent Encrypt reuses the pre-provisioned DEK (still one row).
+	_, _, err = c.Encrypt(ctx, "room-ensure", EncryptedFields{Msg: "hi"})
+	require.NoError(t, err)
+}
+
+func TestCipher_EnsureDEK_PropagatesStoreError(t *testing.T) {
+	store := newFakeDEKStore()
+	store.getErr = errors.New("mongo down")
+	c := newTestCipher(t, store)
+
+	err := c.EnsureDEK(context.Background(), "room-err")
+	require.Error(t, err)
+}
+
 func TestCipher_TamperedCiphertextRejected(t *testing.T) {
 	store := newFakeDEKStore()
 	c := newTestCipher(t, store)
