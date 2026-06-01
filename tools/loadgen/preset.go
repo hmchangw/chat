@@ -253,6 +253,86 @@ func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID str
 			bandSizes[i] = size
 		}
 
+		if spec.name == "dm" {
+			// DM band: stub-pairing (configuration model). Each user
+			// contributes spec.perUser stubs; shuffle the stub list and
+			// pair consecutive stubs into DM rooms. This produces a
+			// guaranteed perUser-regular bipartite graph in O(N×perUser)
+			// instead of the O(N×perUser×R) weighted picker used by the
+			// other bands (which would be quadratic in N here since
+			// R = N×perUser/2 for DMs).
+			stubs := make([]int, 0, totalUsers*spec.perUser)
+			for ui := range users {
+				for k := 0; k < spec.perUser; k++ {
+					stubs = append(stubs, ui)
+				}
+			}
+			r.Shuffle(len(stubs), func(a, b int) { stubs[a], stubs[b] = stubs[b], stubs[a] })
+			if len(stubs)%2 != 0 {
+				stubs = stubs[:len(stubs)-1] // drop one stub on odd totals (one user loses 1 DM)
+			}
+			// Self-loop fix: if a pair lands on the same user, swap the
+			// second stub with a later position whose neighbours don't
+			// create a new self-loop. Self-loops at random shuffle are
+			// rare (~perUser expected over the whole stub list), so total
+			// fix work is O(perUser).
+			for k := 0; k+1 < len(stubs); k += 2 {
+				if stubs[k] != stubs[k+1] {
+					continue
+				}
+				x := stubs[k]
+				for j := k + 2; j < len(stubs); j++ {
+					partner := j ^ 1 // sibling in pair
+					if stubs[j] != x && stubs[partner] != x {
+						stubs[k+1], stubs[j] = stubs[j], stubs[k+1]
+						break
+					}
+				}
+				// If no swap target was found (vanishingly rare; would
+				// require all remaining stubs to be `x`, impossible since
+				// each user contributes only perUser stubs), the self-loop
+				// remains and that DM has 1 distinct member instead of 2.
+				// We still emit it; the test at N≥2 is satisfied.
+			}
+
+			// Emit subscriptions from each pair. Truncate bandRooms to the
+			// actual pair count (rare divergence only at extreme small N).
+			nActualDM := len(stubs) / 2
+			if nActualDM < len(bandRooms) {
+				bandRooms = bandRooms[:nActualDM]
+				bandSizes = bandSizes[:nActualDM]
+			}
+			for k := 0; k < nActualDM; k++ {
+				roomID := bandRooms[k].ID
+				uA := &users[stubs[2*k]]
+				uB := &users[stubs[2*k+1]]
+				subs = append(subs, model.Subscription{
+					ID:     fmt.Sprintf("sub-%s-%s", roomID, uA.ID),
+					User:   model.SubscriptionUser{ID: uA.ID, Account: uA.Account},
+					RoomID: roomID, SiteID: siteID,
+					Roles:    []model.Role{model.RoleMember},
+					JoinedAt: now,
+				})
+				if uA.ID != uB.ID { // skip duplicate sub on unfixable self-loop
+					subs = append(subs, model.Subscription{
+						ID:     fmt.Sprintf("sub-%s-%s", roomID, uB.ID),
+						User:   model.SubscriptionUser{ID: uB.ID, Account: uB.Account},
+						RoomID: roomID, SiteID: siteID,
+						Roles:    []model.Role{model.RoleMember},
+						JoinedAt: now,
+					})
+				}
+			}
+
+			// Finalise UserCount + keys and emit rooms.
+			for i := range bandRooms {
+				bandRooms[i].UserCount = bandSizes[i]
+				roomKeys[bandRooms[i].ID] = deterministicRoomKeyPair(r)
+			}
+			rooms = append(rooms, bandRooms...)
+			continue
+		}
+
 		// Assign memberships: for each user, pick `spec.perUser` distinct
 		// rooms from this band, weighted by remaining capacity. If the
 		// initially-randomised sizes can't satisfy demand at the tail

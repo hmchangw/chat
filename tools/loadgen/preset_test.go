@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -224,5 +225,34 @@ func TestBuiltinPreset_Daily(t *testing.T) {
 			require.Equal(t, tc.users, p.Users)
 			require.Equal(t, tc.bands, p.DailyBands)
 		})
+	}
+}
+
+// TestBuildFixtures_DailyHeavy_FastAtScale guards the DM-band stub-pairing
+// fix: prior to it, the O(N×perUser×R) weighted picker on the DM band
+// (R = N×perUser/2) was quadratic in N and unusable at production scale.
+// At N=2000 this used to take many minutes; with stub-pairing it's
+// well under a second. We assert <30s as a generous ceiling so an
+// occasionally-slow CI runner doesn't flake.
+func TestBuildFixtures_DailyHeavy_FastAtScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale test")
+	}
+	p, _ := BuiltinPreset("daily-heavy")
+	p.Users = 2000
+	start := time.Now()
+	f := BuildFixtures(&p, 42, "site-test")
+	elapsed := time.Since(start)
+	t.Logf("BuildFixtures(N=2000) elapsed=%s rooms=%d subs=%d", elapsed, len(f.Rooms), len(f.Subscriptions))
+	require.Less(t, elapsed, 30*time.Second, "fixture build regressed; was %s", elapsed)
+
+	// Every user should have exactly RoomsPerUser subscriptions.
+	want := p.DailyBands.RoomsPerUser()
+	perUser := map[string]int{}
+	for _, s := range f.Subscriptions {
+		perUser[s.User.ID]++
+	}
+	for _, u := range f.Users {
+		require.Equal(t, want, perUser[u.ID], "user %s wrong subscription count", u.ID)
 	}
 }
