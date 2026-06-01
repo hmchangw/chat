@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -34,22 +35,71 @@ type dailyConfig struct {
 
 func parseDailyConfig(args []string) (dailyConfig, error) {
 	fs := flag.NewFlagSet("daily", flag.ContinueOnError)
-	preset := fs.String("preset", "daily-heavy", "preset name (daily-light|daily-heavy|daily-power)")
-	steps := fs.String("steps", "1000,2000,5000,10000,20000,50000,100000", "comma-separated N values")
-	warmup := fs.Duration("warmup", 60*time.Second, "per-step warm-up")
-	hold := fs.Duration("hold", 180*time.Second, "per-step hold")
-	cooldown := fs.Duration("cooldown", 30*time.Second, "per-step cooldown")
-	stopOnTrip := fs.Bool("stop-on-trip", true, "stop on first trip")
-	maxDirect := fs.Int("max-direct-users", 20000, "direct-pool cap")
-	mux := fs.Int("multiplex-pool-size", 200, "multiplex pool size")
-	maxConns := fs.Int("max-conns-per-process", 25000, "safety ceiling on connections")
-	csvPath := fs.String("csv", "", "optional CSV output path")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `loadgen daily — daily-IM scenario, find sustainable N
+
+Simulates N users using the chat system as their primary IM throughout a
+workday. Ramps N geometrically through the configured steps; for each step,
+warms up, holds steady, polls SLO signals, and decides PASS / TRIP /
+INCONCLUSIVE. Reports the largest passing N and which signal tripped next.
+
+SLO signals evaluated over the hold window:
+  - p95 latency (publish→broadcast)        threshold 500ms
+  - p99 latency                            threshold 1000ms
+  - error rate                             threshold 0.1%
+  - any JetStream consumer pending growth  threshold +1000
+  - any service slog_errors_total increase threshold +0
+INCONCLUSIVE (overrides PASS/TRIP) when the loadgen process is itself
+saturated (GC pause p99 > 50ms or CPU proxy > 80%).
+
+Receiver topology is hybrid: the first --max-direct-users users get one
+nats.Conn each (most realistic); the rest share a fixed pool of
+--multiplex-pool-size connections.
+
+Usage:
+  loadgen daily --preset=<name> [flags]
+
+Presets:
+  daily-light    ~32 rooms/user   light daily-IM user
+  daily-heavy    ~56 rooms/user   heavy daily-IM user (default)
+  daily-power    ~83 rooms/user   power user
+
+Flags:
+`)
+		fs.PrintDefaults()
+		fmt.Fprint(fs.Output(), `
+Examples:
+  # Default 7-step geometric ramp 1k → 100k, daily-heavy preset:
+  loadgen daily --preset=daily-heavy --csv=results.csv
+
+  # Tight sweep around an expected breakpoint, shorter hold:
+  loadgen daily --preset=daily-heavy --steps=8000,9000,10000,11000,12000 --hold=120s
+
+  # Single-step smoke test:
+  loadgen daily --preset=daily-light --steps=500 --warmup=10s --hold=30s
+
+Step list accepts shorthand: --steps=1k,2k,5k,10k
+
+See tools/loadgen/README.md and docs/superpowers/specs/2026-05-27-daily-im-load-scenario-design.md
+for the full design and SLO rationale.
+`)
+	}
+	preset := fs.String("preset", "daily-heavy", "preset name: daily-light | daily-heavy | daily-power")
+	steps := fs.String("steps", "1000,2000,5000,10000,20000,50000,100000", "comma-separated N values per ramp step; `k` suffix multiplies by 1000 (e.g. \"1k,2k,5k\")")
+	warmup := fs.Duration("warmup", 60*time.Second, "per-step warm-up before SLO measurement begins")
+	hold := fs.Duration("hold", 180*time.Second, "per-step steady-state window where SLO signals are evaluated")
+	cooldown := fs.Duration("cooldown", 30*time.Second, "per-step cooldown to let consumers drain before the next step")
+	stopOnTrip := fs.Bool("stop-on-trip", true, "stop the ramp on the first TRIP (false: run all steps)")
+	maxDirect := fs.Int("max-direct-users", 20000, "cap on the direct-pool size; users beyond this go to the multiplex pool")
+	mux := fs.Int("multiplex-pool-size", 200, "number of shared nats.Conn instances in the multiplex pool")
+	maxConns := fs.Int("max-conns-per-process", 25000, "safety ceiling on total nats.Conn count to this process")
+	csvPath := fs.String("csv", "", "optional CSV output path (one row per step)")
 	if err := fs.Parse(args); err != nil {
 		return dailyConfig{}, err
 	}
 
 	if _, ok := BuiltinPreset(*preset); !ok {
-		return dailyConfig{}, fmt.Errorf("unknown preset %q", *preset)
+		return dailyConfig{}, fmt.Errorf("unknown preset %q (valid: daily-light, daily-heavy, daily-power)", *preset)
 	}
 
 	parsedSteps, err := parseStepList(*steps)
@@ -488,6 +538,9 @@ func buildAuthMintFn() func(ctx context.Context, account string) error {
 func runDaily(ctx context.Context, baseCfg *config, args []string) int {
 	cfg, err := parseDailyConfig(args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0 // -h / --help printed usage; exit cleanly
+		}
 		slog.Error("parse daily config", "error", err)
 		return 2
 	}
