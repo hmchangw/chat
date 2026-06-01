@@ -83,6 +83,10 @@ Notes:
 | Message-history R/R ops per day per connection | R_hist | ~75 |
 | Presence status changes per day per user | C_pres | ~20 |
 | Room ops per day per user | R_room | 10 |
+| Member add/remove ops per day per user (subset of R_room) | R_member | ~5 |
+| Room-opens per day per user (drives reads, member.list) | O_room | ~50 |
+| Search ops per day per user | R_search | ~5 |
+| Cross-site event ratio (events whose dest ≠ local site) | X | ~10% |
 | Peak factor (business-hours concentration) | k | ~4× |
 
 ## 5. Methodology — ingress vs. fan-out
@@ -103,35 +107,69 @@ Per message: **~7 JetStream hops** (2 stores + 5 consumer deliveries, persisted)
 The broadcast-worker publishes once per subject; the multiplication happens at the NATS
 delivery layer, scaling with the number of subscribers.
 
-## 6. Single-Connection Baseline
+## 6. Single-Connection Baseline — per stream & endpoint
 
-One NATS connection per user. Peak ≈ avg × k.
+One NATS connection per user. Peak ≈ avg × k. Traffic is attributed to each JetStream
+stream, each core-delivery subject, and each R/R endpoint group. "Ops/day" counts
+publishes + consumer deliveries (JetStream) or deliveries (core) or requests (R/R).
 
-| Source | Formula | Deliveries/day | avg msg/s | Payload | Bytes/day |
-|--------|---------|---------------:|----------:|---------|----------:|
-| Message ingress (pub) | M | 4M | 46 | 1KB | 4 GB |
-| JetStream pipeline | M × 7 | 28M | 324 | 1KB | 28 GB |
-| Message delivery (room stream) | M × F | 400M | 4,630 | 1KB | 400 GB |
-| Metadata update delivery | M × F | 400M | 4,630 | 0.3KB | 120 GB |
-| Notifications | M × ~10% | 0.4M | 5 | 1KB | 0.4 GB |
-| Room events + 2° fan-out | R_room × U × ~4 | ~0.8M | ~10 | 0.3–1KB | <1 GB |
-| Presence delivery | U × C_pres × P | ~42M | ~480 | 0.15KB | 6 GB |
-| Subscription R/R (responses) | R_sub × U | 3.1M | 36 | 150KB | 468 GB |
-| Message history R/R | R_hist × U | 1.6M | 18 | 30KB | 47 GB |
-| Typing | active room only | — | — | — | *(ignored, negligible)* |
-| **TOTAL** | | **~870M/day** | **~10,000/s avg · ~40,000/s peak** | | **~1.07 TB/day** |
+### 6.1 JetStream streams
+
+| Stream | Driver | Pub/day | Deliveries/day | Ops/day | avg msg/s | Payload | Bytes/day |
+|--------|--------|--------:|---------------:|--------:|----------:|---------|----------:|
+| `MESSAGES` | M (client → gatekeeper) | 4M | 4M | 8M | 93 | 1KB | 8 GB |
+| `MESSAGES_CANONICAL` | M × (1 pub + 4 consumers) | 4M | 16M | 20M | 231 | 1KB | 20 GB |
+| `ROOMS` | R_member × U (member invites) | ~104K | ~104K | ~208K | 2.4 | 0.4KB | 0.1 GB |
+| `OUTBOX` | (member + read/mute/thread) × X | ~115K | ~115K | ~230K | 2.7 | 0.3KB | 0.07 GB |
+| `INBOX` | local member events + sourced remote × 2 consumers | ~265K | ~530K | ~795K | 9 | 0.3KB | 0.24 GB |
+| **JetStream subtotal** | | | | **~29M** | **~338** | | **~28 GB** |
+
+INBOX carries all local member add/remove events (room-worker publishes to the local
+INBOX regardless of site) plus federated events sourced from remote OUTBOX, each
+consumed by inbox-worker and search-sync-worker.
+
+### 6.2 Core delivery subjects (server → client, fanned out ×F or ×P)
+
+| Subject | Driver | Pub/day | Deliveries/day | avg msg/s | Payload | Bytes/day |
+|---------|--------|--------:|---------------:|----------:|---------|----------:|
+| `chat.room.*.stream.msg` (+ DM) | M × F | 4M | 400M | 4,630 | 1KB | 400 GB |
+| `chat.room.*.event.metadata.update` | M × F | 4M | 400M | 4,630 | 0.3KB | 120 GB |
+| `chat.user.*.notification` | M × ~10% | 0.4M | 0.4M | 5 | 1KB | 0.4 GB |
+| `chat.user.*.event.subscription.update` | room/member events × members | ~0.4M | ~0.8M | ~10 | 0.5KB | 0.4 GB |
+| `chat.user.*.event.presence` | U × C_pres × P | 0.42M | 42M | 480 | 0.15KB | 6 GB |
+| `chat.room.*.event.typing` | active room only | — | — | — | — | *(ignored)* |
+| **Core delivery subtotal** | | | **~843M** | **~9,760** | | **~527 GB** |
+
+### 6.3 Request/Reply endpoints
+
+| Endpoint group | Subjects | Driver | Req/day | req/s | Resp payload | Bytes/day |
+|----------------|----------|--------|--------:|------:|-------------|----------:|
+| Subscription R/R | `…subscription.{getCurrent,getRooms,getChannels,getApps,count}` | R_sub × U | 3.12M | 36 | 150KB | 468 GB |
+| Message history R/R | `…msg.{history,next,surrounding,thread,get,edit,delete}` | R_hist × U | 1.56M | 18 | 30KB | 47 GB |
+| Room R/R | `…rooms.create`, `…room.{siteID}.info.batch`, `…member.list`, `…key.ensure` | (O_room + R_room) × U | ~350K | 4 | 10KB | 3.5 GB |
+| Search R/R | `…search.{siteID}.{messages,rooms,apps,users}` | R_search × U | ~104K | 1.2 | 30KB | 3 GB |
+| **R/R subtotal** | | | **~5.1M** | **~59** | | **~522 GB** |
+
+### 6.4 Totals
+
+| Layer | Deliveries/day | avg msg/s | Bytes/day |
+|-------|---------------:|----------:|----------:|
+| JetStream streams | ~29M | ~338 | ~28 GB |
+| Core delivery subjects | ~843M | ~9,760 | ~527 GB |
+| R/R (req + resp) | ~10M | ~118 | ~522 GB |
+| **TOTAL** | **~882M/day** | **~10,200/s avg · ~41,000/s peak** | **~1.08 TB/day** |
 
 Connection state: ~2.08M live message/room subscriptions + ~2.08M presence
 subscriptions = **~4.2M subscription interests** across 20,789 connections.
 
-### 6.1 Bottlenecks
+### 6.5 Bottlenecks
 
 - **Message + metadata delivery = ~800M deliveries/day (~9,300/s)** — the
   message-rate / connection bottleneck, driven entirely by F = 100.
 - **Subscription R/R = ~468 GB/day** — the bandwidth bottleneck, despite only 36 ops/s,
   because each response is 150KB. It rivals all message-delivery bytes combined.
 
-### 6.2 Optimization levers
+### 6.6 Optimization levers
 
 - **Coalesce metadata updates** (e.g., max 1/sec/room) → halves the dominant delivery
   term (removes the second `M × F` row).
@@ -185,7 +223,7 @@ Connection state at D=5: **~104k connections** and **~20.8M subscription interes
   because ingress (the only flat term) is a small fraction of the total.
 - **Subscription R/R becomes the single largest line** at D=5 (~2.34 TB/day), since each
   of the 5 connections independently fetches the 150KB list. This makes the lighter
-  subscription endpoint (§6.2) the highest-value optimization for multi-device fleets.
+  subscription endpoint (§6.6) the highest-value optimization for multi-device fleets.
 - **Reconnect storms multiply by D**: a site restart triggers up to `U × D ≈ 104k`
   simultaneous subscription-list fetches of 150KB each — a thundering-herd risk worth
   rate-limiting or jittering.
