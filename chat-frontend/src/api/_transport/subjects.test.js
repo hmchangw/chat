@@ -17,6 +17,7 @@ import {
   messageRead,
   roomCreate,
   userResponse,
+  userResponseWildcard,
   orgMembers,
   userSubscriptionGetCurrent,
   userSubscriptionGetApps,
@@ -107,6 +108,10 @@ describe('subjects', () => {
 
   it('userResponse builds the per-request async-result subject', () => {
     expect(userResponse('alice', 'req-123')).toBe('chat.user.alice.response.req-123')
+  })
+
+  it('userResponseWildcard builds the per-account response wildcard subject', () => {
+    expect(userResponseWildcard('alice')).toBe('chat.user.alice.response.>')
   })
 
   it('orgMembers builds the list-org-members request subject', () => {

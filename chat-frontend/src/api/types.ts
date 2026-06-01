@@ -313,4 +313,9 @@ export interface Nats {
     data?: unknown,
     opts?: AsyncJobOptions,
   ) => Promise<AsyncJobResult<S, A>>
+  /** Await the async reply correlated by `requestId` on the session-long
+   *  chat.user.{account}.response.> subscription. Used by fire-and-forget
+   *  publishes (msg.send) whose result arrives on the response subject rather
+   *  than an _INBOX reply. Register before publishing. */
+  waitForResponse: (requestId: string, opts?: { timeout?: number }) => Promise<unknown>
 }

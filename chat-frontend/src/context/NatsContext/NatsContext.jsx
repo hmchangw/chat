@@ -3,6 +3,8 @@ import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 import { AUTH_URL, NATS_URL } from '@/lib/runtimeConfig'
 import { requestWithAsyncResult as asyncJobRequest } from '@/api/_transport/asyncJob'
+import { createResponseCorrelator } from '@/api/_transport/responseCorrelator'
+import { startUserResponseSubscription } from '@/api/_transport/userResponses'
 
 export const NatsContext = createContext(null)
 
@@ -10,6 +12,11 @@ const sc = StringCodec()
 
 export function NatsProvider({ children }) {
   const ncRef = useRef(null)
+  // Correlator + baseline response-wildcard subscription. Created on connect so
+  // msg.send replies (chat.user.{account}.response.{requestID}) are received and
+  // routed by requestId; torn down on disconnect/close.
+  const correlatorRef = useRef(null)
+  const responseSubRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
@@ -61,6 +68,14 @@ export function NatsProvider({ children }) {
     })
 
     ncRef.current = nc
+
+    // Open the baseline response-wildcard subscription BEFORE flipping
+    // `connected`, so any send issued on the first render already has a live
+    // correlator to receive its reply.
+    const correlator = createResponseCorrelator()
+    correlatorRef.current = correlator
+    responseSubRef.current = startUserResponseSubscription(nc, userInfo.account, correlator)
+
     setUser({ ...userInfo, siteId })
     setConnected(true)
 
@@ -68,6 +83,11 @@ export function NatsProvider({ children }) {
       if (err) {
         setError(`Disconnected: ${err.message}`)
       }
+      // Reject any in-flight waiters so awaiting senders fail fast instead of
+      // hanging until their per-request timeout.
+      correlatorRef.current?.rejectAll(new Error(err ? `Disconnected: ${err.message}` : 'Disconnected'))
+      correlatorRef.current = null
+      responseSubRef.current = null
       setConnected(false)
     })
   }, [authUrl, natsUrl])
@@ -118,6 +138,23 @@ export function NatsProvider({ children }) {
   }, [user])
 
   /**
+   * Await the async reply correlated by `requestId` on the session-long
+   * chat.user.{account}.response.> subscription. Used by fire-and-forget
+   * publishes (msg.send) whose result the gatekeeper delivers on the response
+   * subject rather than an _INBOX reply. Register the waiter BEFORE publishing.
+   *
+   * @param {string} requestId  The `requestId` carried in the publish payload.
+   * @param {{timeout?: number}} [opts]
+   * @returns {Promise<unknown>} Resolves with the reply payload; rejects with a
+   *   `response-timeout`-kinded Error if no reply arrives, or on disconnect.
+   * @throws if not connected.
+   */
+  const waitForResponse = useCallback((requestId, opts = {}) => {
+    if (!correlatorRef.current) throw new Error('Not connected')
+    return correlatorRef.current.waitFor(requestId, opts)
+  }, [])
+
+  /**
    * Fire-and-forget JSON publish. Use for events the server consumes
    * via QueueSubscribe (no reply expected); for request/reply use
    * `request` or `requestWithAsyncResult`.
@@ -166,6 +203,14 @@ export function NatsProvider({ children }) {
    * provider is a no-op.
    */
   const disconnect = useCallback(async () => {
+    if (responseSubRef.current) {
+      try { responseSubRef.current.unsubscribe() } catch { /* already closed */ }
+      responseSubRef.current = null
+    }
+    if (correlatorRef.current) {
+      correlatorRef.current.rejectAll(new Error('Disconnected'))
+      correlatorRef.current = null
+    }
     if (ncRef.current) {
       await ncRef.current.drain()
       ncRef.current = null
@@ -181,8 +226,9 @@ export function NatsProvider({ children }) {
     () => ({
       connected, user, error,
       connect: connectToNats, request, requestWithAsyncResult, publish, subscribe, disconnect,
+      waitForResponse,
     }),
-    [connected, user, error, connectToNats, request, requestWithAsyncResult, publish, subscribe, disconnect]
+    [connected, user, error, connectToNats, request, requestWithAsyncResult, publish, subscribe, disconnect, waitForResponse]
   )
 
   return <NatsContext.Provider value={value}>{children}</NatsContext.Provider>

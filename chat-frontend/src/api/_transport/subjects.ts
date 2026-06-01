@@ -86,6 +86,16 @@ export function userResponse(account: string, requestId: string): string {
   return `chat.user.${account}.response.${requestId}`
 }
 
+// userResponseWildcard is the per-account wildcard the client subscribes to as
+// a baseline so it receives every async reply on its response namespace —
+// including the msg.send reply the message-gatekeeper publishes on
+// chat.user.{account}.response.{requestID}. The trailing `>` matches the
+// {requestID} token (and any future deeper tail). Scoped to {account} because
+// the user's JWT only permits subscribing under its own chat.user.{account}.>.
+export function userResponseWildcard(account: string): string {
+  return `chat.user.${account}.response.>`
+}
+
 export function searchRooms(account: string): string {
   return `chat.user.${account}.request.search.rooms`
 }
