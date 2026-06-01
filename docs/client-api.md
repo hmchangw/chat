@@ -628,28 +628,35 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.room.{roomID}.event`** — a canonical system message fanned out by `broadcast-worker` to every client subscribed to the room.
+**1. `chat.room.{roomID}.event`** — a `RoomRenamedRoomEvent` fanned out by `broadcast-worker` to every client subscribed to the room.
 
 Recipients: all room members on all sites.
 
-The event uses the standard `RoomEvent` envelope (`type: "new_message"`) with an embedded system `message` of `type: "room_renamed"`. The `message.content` is the human-readable line; the renamed channel name lives on the envelope's `roomName` field (already populated from room meta).
+The event uses a **dedicated flat struct** (`type: "room_renamed"`) — mirroring the convention of `EditRoomEvent` / `DeleteRoomEvent` — so the wire payload carries no zero-valued `RoomEvent` base fields (no `userCount`, `lastMsgAt`, `message`, `mentions`, etc. on a rename).
 
-| Field                  | Type   | Notes |
-|------------------------|--------|-------|
-| `type`                 | string | Always `"new_message"`. |
-| `roomId`               | string | The renamed room. |
-| `roomName`             | string | The **new** room name. |
-| `roomType`             | string | Always `"channel"`. |
-| `siteId`               | string | Home site of the room. |
-| `userCount`            | number | Current member count. |
-| `lastMsgAt`            | string | ISO-8601 timestamp of this sys message. |
-| `lastMsgId`            | string | ID of this sys message. |
-| `message.type`         | string | Always `"room_renamed"`. |
-| `message.content`      | string | e.g. `"alice renamed the channel to \"engineering-general\""`. |
-| `message.sysMsgData`   | object | `{ "newName": "engineering-general", "byAccount": "alice" }`. |
-| `timestamp`            | number | Milliseconds since Unix epoch (UTC). |
+| Field        | Type   | Notes |
+|--------------|--------|-------|
+| `type`       | string | Always `"room_renamed"`. |
+| `roomId`     | string | The renamed room. |
+| `siteId`     | string | Home site of the room. |
+| `timestamp`  | number | Publish time, milliseconds since Unix epoch (UTC). |
+| `newName`    | string | The new room name. |
+| `byAccount`  | string | The account that performed the rename (room owner or platform admin). |
+| `renamedAt`  | string | ISO-8601 timestamp of when the rename was applied (the source sys message's `createdAt`). |
 
-> **No per-subscription `subscription.update` event is published for the rename.** Clients drive their local state off the single room-scoped sys message above — `roomName` carries the new name and `message.sysMsgData.newName` is authoritative.
+```json
+{
+  "type": "room_renamed",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "timestamp": 1746518483000,
+  "newName": "engineering-general",
+  "byAccount": "alice",
+  "renamedAt": "2026-05-06T08:01:23Z"
+}
+```
+
+> **No per-subscription `subscription.update` event is published for the rename.** Clients drive their local subscription `name` update off this single room-scoped event.
 
 **2. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
 
@@ -661,7 +668,29 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 ---
 
-> **Note (server-internal — not a client RPC):** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying `roomId`, `account` (caller), `restricted`, `externalAccess`, and `ownerAccount`; room-service does the Mongo writes, publishes one `room_restricted` system message to `chat.room.{roomID}.event`, fans out an `OutboxRoomRestricted` event per remote federated site, and replies `{"status":"ok","requestId":"…"}` once the work is committed. No `AsyncJobResult` is emitted — the reply *is* the result. Clients learn about the change from the same `chat.room.{roomID}.event` stream they already subscribe to for chat messages.
+> **Note (server-internal — not a client RPC):** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying:
+>
+> - `roomId` — channel room to mutate
+> - `account` — the admin caller (used for the sys-message authorship + audit log)
+> - `restricted` — whether the room is members-only; on the `false → true` transition `ownerAccount` is required and that account is promoted to sole owner
+> - `externalAccess` — whether the room is reachable from outside the company network (e.g. internet-side / off-VPN clients). This is a network-access gate, NOT a cross-site federation flag
+> - `ownerAccount` — required on the unrestricted-to-restricted transition
+>
+> room-service does the Mongo writes, fans out an `OutboxRoomRestricted` event per remote federated site, and replies `{"status":"ok","requestId":"…"}` once the work is committed. No `AsyncJobResult` is emitted — the reply *is* the result.
+>
+> Clients learn about the change via a **`RoomRestrictedRoomEvent`** (`type: "room_restricted"`) on the same `chat.room.{roomID}.event` stream they already subscribe to for chat messages. Like `RoomRenamedRoomEvent`, it's a flat struct with no zero-valued envelope fields:
+>
+> | Field            | Type   | Notes |
+> |------------------|--------|-------|
+> | `type`           | string | Always `"room_restricted"`. |
+> | `roomId`         | string | The room whose flags changed. |
+> | `siteId`         | string | Home site of the room. |
+> | `timestamp`      | number | Publish time (UTC ms). |
+> | `restricted`     | bool   | The new restricted state. |
+> | `externalAccess` | bool   | The new external-access state. |
+> | `ownerAccount`   | string | Omitted unless this was an unrestricted→restricted transition with a designated owner. |
+> | `byAccount`      | string | The admin who made the change. |
+> | `changedAt`      | string | ISO-8601 timestamp of when the change was applied. |
 
 ---
 

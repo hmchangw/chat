@@ -111,6 +111,19 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		}
 	}
 
+	// Room-metadata sys messages (room_renamed, room_restricted) ride the
+	// canonical-message pipeline so that history reflects them, but on the
+	// fan-out side they publish a flat typed event (RoomRenamedRoomEvent /
+	// RoomRestrictedRoomEvent) instead of the new_message RoomEvent envelope.
+	// That avoids shipping unrelated message fields (mentions, sender meta,
+	// encrypted body) on a pure metadata change.
+	switch msg.Type {
+	case model.MessageTypeRoomRenamed:
+		return h.publishRoomRenamedEvent(ctx, meta, &msg)
+	case model.MessageTypeRoomRestricted:
+		return h.publishRoomRestrictedEvent(ctx, meta, &msg)
+	}
+
 	clientMsg := buildClientMessage(&msg, userByAccount)
 
 	switch meta.Type {
@@ -122,6 +135,60 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "room_id", meta.ID)
 		return nil
 	}
+}
+
+func (h *Handler) publishRoomRenamedEvent(ctx context.Context, meta roommetacache.Meta, msg *model.Message) error {
+	var sys model.RoomRenamedSysData
+	if len(msg.SysMsgData) > 0 {
+		if err := json.Unmarshal(msg.SysMsgData, &sys); err != nil {
+			return fmt.Errorf("unmarshal room_renamed sysMsgData for room %s: %w", msg.RoomID, err)
+		}
+	}
+	evt := model.RoomRenamedRoomEvent{
+		Type:      model.RoomEventRoomRenamed,
+		RoomID:    meta.ID,
+		SiteID:    meta.SiteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		NewName:   sys.NewName,
+		ByAccount: sys.ByAccount,
+		RenamedAt: msg.CreatedAt,
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal room_renamed event for room %s: %w", msg.RoomID, err)
+	}
+	if err := h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload); err != nil {
+		return fmt.Errorf("publish room_renamed event for room %s: %w", msg.RoomID, err)
+	}
+	return nil
+}
+
+func (h *Handler) publishRoomRestrictedEvent(ctx context.Context, meta roommetacache.Meta, msg *model.Message) error {
+	var sys model.RoomRestrictedSysData
+	if len(msg.SysMsgData) > 0 {
+		if err := json.Unmarshal(msg.SysMsgData, &sys); err != nil {
+			return fmt.Errorf("unmarshal room_restricted sysMsgData for room %s: %w", msg.RoomID, err)
+		}
+	}
+	evt := model.RoomRestrictedRoomEvent{
+		Type:           model.RoomEventRoomRestricted,
+		RoomID:         meta.ID,
+		SiteID:         meta.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		Restricted:     sys.Restricted,
+		ExternalAccess: sys.ExternalAccess,
+		OwnerAccount:   sys.OwnerAccount,
+		ByAccount:      sys.ByAccount,
+		ChangedAt:      msg.CreatedAt,
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal room_restricted event for room %s: %w", msg.RoomID, err)
+	}
+	if err := h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload); err != nil {
+		return fmt.Errorf("publish room_restricted event for room %s: %w", msg.RoomID, err)
+	}
+	return nil
 }
 
 func (h *Handler) handleUpdated(ctx context.Context, evt *model.MessageEvent) error {

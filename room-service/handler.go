@@ -45,12 +45,12 @@ type Handler struct {
 	maxRoomSize              int
 	maxBatchSize             int
 	memberListTimeout        time.Duration
-	publishToStream          func(ctx context.Context, subj string, data []byte) error
+	publishToStream          func(ctx context.Context, subj string, data []byte, msgID string) error
 	publishCore              func(ctx context.Context, subj string, data []byte) error
 	restrictedRoomMinMembers int
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, restrictedRoomMinMembers int, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, restrictedRoomMinMembers int, publishToStream func(context.Context, string, []byte, string) error, publishCore func(context.Context, string, []byte) error) *Handler {
 	return &Handler{
 		store:                    store,
 		keyStore:                 keyStore,
@@ -384,7 +384,7 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 	if err != nil {
 		return nil, fmt.Errorf("marshal canonical event: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload, ""); err != nil {
 		return nil, fmt.Errorf("publish canonical: %w", err)
 	}
 	return json.Marshal(model.CreateRoomReply{
@@ -641,7 +641,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	if err != nil {
 		return nil, fmt.Errorf("marshal remove member request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -729,7 +729,7 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal role update request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 	return json.Marshal(map[string]string{"status": "accepted"})
@@ -850,7 +850,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal add-members request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -1234,7 +1234,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish subscription_read outbox: %w", err)
 		}
 	}
@@ -1483,7 +1483,7 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish thread_read outbox: %w", err)
 		}
 	}
@@ -1630,7 +1630,7 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal rename request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.rename"), out); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.rename"), out, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
@@ -1757,7 +1757,7 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal sys message event: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData); err != nil {
+	if err := h.publishToStream(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, natsutil.CanonicalDedupID(&msgEvt)); err != nil {
 		return nil, fmt.Errorf("publish room_restricted sys message: %w", err)
 	}
 
@@ -1806,7 +1806,7 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 			if mErr != nil {
 				return nil, fmt.Errorf("marshal restricted outbox event: %w", mErr)
 			}
-			if err := h.publishToStream(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted), evtData); err != nil {
+			if err := h.publishToStream(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted), evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
 				return nil, fmt.Errorf("publish restricted outbox to %s: %w", remoteSiteID, err)
 			}
 		}
@@ -1895,7 +1895,7 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish mute-toggled outbox: %w", err)
 		}
 	}

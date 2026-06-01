@@ -2690,6 +2690,34 @@ func TestRoomRenamedSysDataJSON(t *testing.T) {
 	roundTrip(t, &d, &model.RoomRenamedSysData{})
 }
 
+func TestRoomRenamedRoomEventJSON(t *testing.T) {
+	e := model.RoomRenamedRoomEvent{
+		Type:      model.RoomEventRoomRenamed,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1700000000000,
+		NewName:   "engineering",
+		ByAccount: "alice",
+		RenamedAt: time.UnixMilli(1700000000000).UTC(),
+	}
+	roundTrip(t, &e, &model.RoomRenamedRoomEvent{})
+}
+
+func TestRoomRestrictedRoomEventJSON(t *testing.T) {
+	e := model.RoomRestrictedRoomEvent{
+		Type:           model.RoomEventRoomRestricted,
+		RoomID:         "r1",
+		SiteID:         "site-a",
+		Timestamp:      1700000000000,
+		Restricted:     true,
+		ExternalAccess: false,
+		OwnerAccount:   "alice",
+		ByAccount:      "admin1",
+		ChangedAt:      time.UnixMilli(1700000000000).UTC(),
+	}
+	roundTrip(t, &e, &model.RoomRestrictedRoomEvent{})
+}
+
 func TestRoomRestrictedSysDataJSON(t *testing.T) {
 	d := model.RoomRestrictedSysData{
 		Restricted: true, ExternalAccess: false, ByAccount: "admin1", OwnerAccount: "alice",
@@ -2718,4 +2746,6 @@ func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
 	assert.Equal(t, "room_renamed", model.OutboxRoomRenamed)
 	assert.Equal(t, "room_restricted", model.OutboxRoomRestricted)
 	assert.Equal(t, "room.rename", model.AsyncJobOpRoomRename)
+	assert.Equal(t, model.RoomEventType("room_renamed"), model.RoomEventRoomRenamed)
+	assert.Equal(t, model.RoomEventType("room_restricted"), model.RoomEventRoomRestricted)
 }

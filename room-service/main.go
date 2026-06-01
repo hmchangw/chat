@@ -10,6 +10,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
@@ -147,8 +148,13 @@ func main() {
 
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
 	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, cfg.RestrictedRoomMinMembers,
-		func(ctx context.Context, subj string, data []byte) error {
-			if _, err := js.PublishMsg(ctx, natsutil.NewMsg(ctx, subj, data)); err != nil {
+		func(ctx context.Context, subj string, data []byte, msgID string) error {
+			msg := natsutil.NewMsg(ctx, subj, data)
+			var opts []jetstream.PublishOpt
+			if msgID != "" {
+				opts = append(opts, jetstream.WithMsgID(msgID))
+			}
+			if _, err := js.PublishMsg(ctx, msg, opts...); err != nil {
 				return fmt.Errorf("publish to %q: %w", subj, err)
 			}
 			return nil

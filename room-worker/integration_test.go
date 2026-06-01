@@ -1932,4 +1932,3 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	assert.Equal(t, roomID, outboxPayload.RoomID)
 	assert.Equal(t, newName, outboxPayload.NewName)
 }
-

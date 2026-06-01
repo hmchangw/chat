@@ -162,6 +162,8 @@ const (
 	RoomEventMessageDeleted  RoomEventType = "message_deleted"
 	RoomEventMessagePinned   RoomEventType = "message_pinned"
 	RoomEventMessageUnpinned RoomEventType = "message_unpinned"
+	RoomEventRoomRenamed     RoomEventType = "room_renamed"
+	RoomEventRoomRestricted  RoomEventType = "room_restricted"
 )
 
 // RoomEvent is the live fan-out event for a newly created message
@@ -241,6 +243,38 @@ type UnpinRoomEvent struct {
 	MessageID  string        `json:"messageId" bson:"messageId"`
 	UnpinnedBy *Participant  `json:"unpinnedBy,omitempty" bson:"unpinnedBy,omitempty"`
 	UnpinnedAt time.Time     `json:"unpinnedAt" bson:"unpinnedAt"`
+}
+
+// RoomRenamedRoomEvent is the live event published when a channel is renamed.
+// Flat shape (same convention as EditRoomEvent / DeleteRoomEvent) — no
+// zero-valued RoomEvent base fields shipped to clients. Drives the client's
+// local subscription `name` update; no separate `subscription.update` fan-out
+// fires for renames.
+type RoomRenamedRoomEvent struct {
+	Type      RoomEventType `json:"type" bson:"type"`
+	RoomID    string        `json:"roomId" bson:"roomId"`
+	SiteID    string        `json:"siteId" bson:"siteId"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	NewName   string        `json:"newName" bson:"newName"`
+	ByAccount string        `json:"byAccount" bson:"byAccount"`
+	RenamedAt time.Time     `json:"renamedAt" bson:"renamedAt"`
+}
+
+// RoomRestrictedRoomEvent is the live event published when a channel's
+// restricted / externalAccess flags change. Flat shape. `OwnerAccount` is
+// non-empty only on the unrestricted→restricted transition (when an owner is
+// designated). Drives the client's local subscription `restricted` /
+// `externalAccess` / `roles` update.
+type RoomRestrictedRoomEvent struct {
+	Type           RoomEventType `json:"type" bson:"type"`
+	RoomID         string        `json:"roomId" bson:"roomId"`
+	SiteID         string        `json:"siteId" bson:"siteId"`
+	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
+	Restricted     bool          `json:"restricted" bson:"restricted"`
+	ExternalAccess bool          `json:"externalAccess" bson:"externalAccess"`
+	OwnerAccount   string        `json:"ownerAccount,omitempty" bson:"ownerAccount,omitempty"`
+	ByAccount      string        `json:"byAccount" bson:"byAccount"`
+	ChangedAt      time.Time     `json:"changedAt" bson:"changedAt"`
 }
 
 // RemovedSubscriptionRef is the minimal subscription identity carried on a

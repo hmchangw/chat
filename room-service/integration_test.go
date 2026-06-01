@@ -1080,7 +1080,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	// expandChannelRefs uses store.ListRoomMembers and never invokes the client.
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
@@ -1144,7 +1144,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	// Same-site only: nil memberListClient is safe (the same-site branch never invokes it).
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
@@ -1191,7 +1191,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1249,7 +1249,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	mustInsertSub(t, dbB, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
-	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
@@ -1264,7 +1264,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	// Capture what site-A publishes to its canonical stream
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
@@ -1329,7 +1329,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, 5, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil })
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -1375,7 +1375,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil })
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
@@ -1569,7 +1569,7 @@ func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStor
 	t.Helper()
 	var lastSubj string
 	var lastData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		lastSubj = subj
 		lastData = data
 		return nil
@@ -2209,7 +2209,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 		handlerJS, err := jetstream.New(handlerNC.NatsConn())
 		require.NoError(t, err)
 
-		publishToStream := func(pCtx context.Context, subj string, data []byte) error {
+		publishToStream := func(pCtx context.Context, subj string, data []byte, _ string) error {
 			msg := natsutil.NewMsg(pCtx, subj, data)
 			_, err := handlerJS.PublishMsg(pCtx, msg)
 			return err
@@ -2282,7 +2282,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 
 		keyStore := setupValkey(t)
 		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
-			func(context.Context, string, []byte) error { return nil },
+			func(context.Context, string, []byte, string) error { return nil },
 			func(context.Context, string, []byte) error { return nil })
 		require.NoError(t, h.RegisterCRUD(handlerNC))
 		require.NoError(t, handlerNC.NatsConn().Flush())
@@ -2309,7 +2309,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
 		require.NoError(t, err)
 
-		var errResp model.ErrorResponse
+		var errResp errcode.Error
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
 		assert.Contains(t, errResp.Error, "only owners or platform admins can rename a channel")
 	})
@@ -2346,7 +2346,7 @@ func TestIntegration_RoomRestricted(t *testing.T) {
 			mu   sync.Mutex
 			pubs []captured
 		)
-		publishToStream := func(_ context.Context, subj string, data []byte) error {
+		publishToStream := func(_ context.Context, subj string, data []byte, _ string) error {
 			mu.Lock()
 			defer mu.Unlock()
 			cp := make([]byte, len(data))
@@ -2445,7 +2445,7 @@ func TestIntegration_RoomRestricted(t *testing.T) {
 
 		keyStore := setupValkey(t)
 		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
-			func(context.Context, string, []byte) error { return nil },
+			func(context.Context, string, []byte, string) error { return nil },
 			func(context.Context, string, []byte) error { return nil })
 		require.NoError(t, h.RegisterCRUD(handlerNC))
 		require.NoError(t, handlerNC.NatsConn().Flush())
@@ -2468,7 +2468,7 @@ func TestIntegration_RoomRestricted(t *testing.T) {
 		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
 		require.NoError(t, err)
 
-		var errResp model.ErrorResponse
+		var errResp errcode.Error
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
 		assert.Contains(t, errResp.Error, "only admins can change room restricted state")
 	})
