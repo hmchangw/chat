@@ -225,9 +225,6 @@ describe('RoomEventsProvider subscriptions', () => {
   it('opens a new channel subscription when a channel room is added', async () => {
     const request = vi.fn().mockImplementation((subject) => {
       if (subject.endsWith('.subscription.getRooms')) return Promise.resolve({ subscriptions: [] })
-      if (subject === 'chat.user.alice.request.rooms.get.g2') {
-        return Promise.resolve({ id: 'g2', name: 'new', type: 'channel', siteId: 'site-A', userCount: 1, lastMsgAt: null })
-      }
       if (subject.includes('.subscription.get')) return Promise.resolve({ subscriptions: [] })
       throw new Error('unexpected request: ' + subject)
     })
@@ -241,10 +238,11 @@ describe('RoomEventsProvider subscriptions', () => {
     render(wrap(<SummariesProbe />, nats))
     await waitFor(() => expect(subscribe).toHaveBeenCalled())
 
+    // The room is built from the subscription record — no rooms.get RPC.
     act(() => {
       handlers.get('chat.user.alice.event.subscription.update')({
         action: 'added',
-        subscription: { roomId: 'g2' },
+        subscription: { roomId: 'g2', roomType: 'channel', siteId: 'site-A', name: 'new' },
       })
     })
     await waitFor(() =>

@@ -175,18 +175,6 @@ func RoomKeyUpdate(account string) string {
 
 // --- Room CRUD request builders ---
 
-func RoomsCreate(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.create", account)
-}
-
-func RoomsList(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.list", account)
-}
-
-func RoomsGet(account, roomID string) string {
-	return fmt.Sprintf("chat.user.%s.request.rooms.get.%s", account, roomID)
-}
-
 // RoomsInfoBatch is the server-to-server request subject for batch room info lookups.
 func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
@@ -268,18 +256,6 @@ func OutboxWildcard(siteID string) string {
 	return fmt.Sprintf("outbox.%s.>", siteID)
 }
 
-func RoomsCreateWildcard() string {
-	return "chat.user.*.request.rooms.create"
-}
-
-func RoomsListWildcard() string {
-	return "chat.user.*.request.rooms.list"
-}
-
-func RoomsGetWildcard() string {
-	return "chat.user.*.request.rooms.get.*"
-}
-
 // RoomsInfoBatchSubscribe is the per-site subscription subject for room-service.
 func RoomsInfoBatchSubscribe(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
@@ -334,6 +310,24 @@ func MsgThreadPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread", siteID)
 }
 
+// MsgHistory is the concrete-subject form clients publish on to invoke
+// LoadHistory. Pair with MsgHistoryPattern for the server-side registration.
+func MsgHistory(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.history", account, roomID, siteID)
+}
+
+// MsgThread is the concrete-subject form clients publish on to invoke
+// GetThreadMessages. Pair with MsgThreadPattern for the server-side registration.
+func MsgThread(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.thread", account, roomID, siteID)
+}
+
 func MemberAdd(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.add", account, roomID, siteID)
 }
@@ -359,6 +353,26 @@ func MessageReadReceipt(account, roomID, siteID string) string {
 
 func MessageReadReceiptWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.read-receipt", siteID)
+}
+
+// MessageThreadRead returns the concrete subject for the per-user mark-thread-as-read RPC.
+func MessageThreadRead(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.message.thread.read", account, roomID, siteID)
+}
+
+// MessageThreadReadWildcard is the per-site subscription pattern for the mark-thread-as-read RPC.
+func MessageThreadReadWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.message.thread.read", siteID)
+}
+
+// MuteToggle returns the concrete subject for the per-user mute.toggle RPC.
+func MuteToggle(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.mute.toggle", account, roomID, siteID)
+}
+
+// MuteToggleWildcard is the per-site subscription pattern for the mute.toggle RPC.
+func MuteToggleWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.mute.toggle", siteID)
 }
 
 // RoomCreate: client→room-service create subject; siteID is the requester's site.
@@ -392,44 +406,47 @@ func MsgThreadParentWildcard(siteID string) string {
 // --- search-service request/reply builders ---
 
 // SearchMessages builds the concrete subject for a message search request.
-func SearchMessages(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.messages", account)
+// The siteID routes the request through the NATS supercluster to the
+// search-service running on that specific site.
+func SearchMessages(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.%s.messages", account, siteID)
 }
 
 // SearchRooms builds the concrete subject for a subscription search request.
-func SearchRooms(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.rooms", account)
+func SearchRooms(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.%s.rooms", account, siteID)
 }
 
 // SearchMessagesPattern is the natsrouter pattern for message search, used
-// during registration to extract `{account}` from incoming subjects.
-func SearchMessagesPattern() string {
-	return "chat.user.{account}.request.search.messages"
+// during registration to extract `{account}` from incoming subjects. siteID
+// is baked in so each site only handles its own search traffic.
+func SearchMessagesPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.search.%s.messages", siteID)
 }
 
 // SearchRoomsPattern is the natsrouter pattern for subscription search.
-func SearchRoomsPattern() string {
-	return "chat.user.{account}.request.search.rooms"
+func SearchRoomsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.search.%s.rooms", siteID)
 }
 
 // SearchApps builds the concrete subject for an app search request.
-func SearchApps(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.apps", account)
+func SearchApps(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.%s.apps", account, siteID)
 }
 
 // SearchAppsPattern is the natsrouter pattern for app search.
-func SearchAppsPattern() string {
-	return "chat.user.{account}.request.search.apps"
+func SearchAppsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.search.%s.apps", siteID)
 }
 
 // SearchUsers builds the concrete subject for a user search request.
-func SearchUsers(account string) string {
-	return fmt.Sprintf("chat.user.%s.request.search.users", account)
+func SearchUsers(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.search.%s.users", account, siteID)
 }
 
 // SearchUsersPattern is the natsrouter pattern for user search.
-func SearchUsersPattern() string {
-	return "chat.user.{account}.request.search.users"
+func SearchUsersPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.search.%s.users", siteID)
 }
 
 // isValidAccountToken rejects empty tokens and tokens containing NATS wildcard

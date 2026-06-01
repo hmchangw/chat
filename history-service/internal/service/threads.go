@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
@@ -11,6 +12,13 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
+
+// emptyThreadResponse is the canonical shape for "no replies" — keeps the
+// shared response shape in one place so future fields can't drift between
+// the short-circuit branches.
+func emptyThreadResponse() *models.GetThreadMessagesResponse {
+	return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}
+}
 
 // NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
 func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.GetThreadMessagesRequest) (*models.GetThreadMessagesResponse, error) {
@@ -21,15 +29,39 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrBadRequest("threadMessageId is required")
 	}
 
-	// Access check before fetch — prevents probing message IDs without room membership.
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
 		return nil, err
 	}
 
-	msg, err := s.findMessage(c, roomID, req.ThreadMessageID)
-	if err != nil {
-		return nil, err
+	// Parent lookup (Cassandra) and room-times resolve (Mongo) have no
+	// dependency on each other; fan them out so the worst-case pre-fetch
+	// latency is one RTT instead of two. We capture each side's error
+	// separately rather than letting errgroup return whichever-fires-first,
+	// so input-validation 400s derived from the parent (reply ID, empty
+	// ThreadRoomID, TCount explicitly 0) take precedence over a transient
+	// Mongo error from the room-times read.
+	now := time.Now().UTC()
+	var (
+		msg                  *models.Message
+		findErr              error
+		lastMsgAt, createdAt time.Time
+		rtErr                error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		msg, findErr = s.findMessage(c, roomID, req.ThreadMessageID)
+	}()
+	go func() {
+		defer wg.Done()
+		lastMsgAt, createdAt, rtErr = s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
+	}()
+	wg.Wait()
+
+	if findErr != nil {
+		return nil, findErr
 	}
 
 	if msg.ThreadParentID != "" {
@@ -40,7 +72,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, natsrouter.ErrForbidden("thread is outside access window")
 	}
 
-	// Empty ThreadRoomID = no replies yet OR a silently-failed stamp in message-worker.
+	// Empty ThreadRoomID means no replies yet or a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
 		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
 			"request_id", natsutil.RequestIDFromContext(c),
@@ -49,7 +81,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 			"messageCreatedAt", msg.CreatedAt,
 			"account", account,
 		)
-		return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}, nil
+		return emptyThreadResponse(), nil
 	}
 
 	limit := req.Limit
@@ -64,13 +96,23 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
-	if err != nil {
-		return nil, err
+	// tcount explicitly 0 means all replies have been deleted — skip the
+	// Cassandra round-trip. tcount == nil means the column was never written:
+	// commonly a brand-new parent with no replies yet, but also briefly true
+	// between a successful SaveThreadMessage INSERT and the follow-up
+	// incrementParentTcount LWT. Fall through to Cassandra in the nil case so
+	// the optimisation can't hide replies during that window.
+	if msg.TCount != nil && *msg.TCount == 0 {
+		return emptyThreadResponse(), nil
 	}
 
-	// Ceiling for thread DESC walk: lastMsgAt+1ms, or now+1h if unknown.
+	// Room-times error only matters once we're committed to the Cassandra
+	// read — short-circuit paths above don't depend on the result.
+	if rtErr != nil {
+		return nil, rtErr
+	}
+
+	// Ceiling: lastMsgAt+1ms or now+clockSkewTolerance when unknown.
 	ceiling := lastMsgAt
 	if ceiling.IsZero() {
 		ceiling = now.Add(clockSkewTolerance)
@@ -78,9 +120,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		ceiling = ceiling.Add(time.Millisecond)
 	}
 
-	// Floor: max(createdAt, accessSince) for restricted access, clamped up to
-	// historyFloor so an ancient createdAt can't push the walk further back
-	// than configured. Mirrors walkBounds in room_times.go.
+	// Floor: max(createdAt, accessSince) clamped to historyFloor so an ancient createdAt can't exceed the configured limit.
 	historyFloor := now.Add(-s.historyFloor)
 	floor := createdAt
 	if accessSince != nil && accessSince.After(floor) {
@@ -89,14 +129,14 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	if floor.IsZero() || floor.Before(historyFloor) {
 		floor = historyFloor
 	}
-	// Guard against inverted range: collapsed thread on a room older than historyFloor.
+	// Inverted range guard: collapsed thread on a room older than historyFloor.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}
 
-	page, err := s.msgReader.GetThreadMessages(c, roomID, msg.ThreadRoomID, ceiling, floor, pageReq)
+	page, err := s.msgReader.GetThreadMessages(c, msg.ThreadRoomID, ceiling, floor, pageReq)
 	if err != nil {
-		slog.Error("loading thread messages", "error", err, "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
+		slog.Error("loading thread messages", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
 		return nil, natsrouter.ErrInternal("failed to load thread messages")
 	}
 
@@ -108,7 +148,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}, nil
 }
 
-// Empty filter defaults to "all" so clients can omit the field.
+// validateThreadFilter normalizes an empty filter to "all" so clients can omit the field.
 func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, error) {
 	switch filter {
 	case "", models.ThreadFilterAll:
@@ -120,7 +160,7 @@ func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, erro
 	}
 }
 
-// NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent
+// GetThreadParentMessages handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent.
 func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req models.GetThreadParentMessagesRequest) (*models.GetThreadParentMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -150,7 +190,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		return nil, natsrouter.ErrInternal("unhandled thread filter")
 	}
 	if err != nil {
-		slog.Error("loading thread rooms from MongoDB", "error", err, "roomID", roomID, "filter", filter)
+		slog.Error("loading thread rooms from MongoDB", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "filter", filter)
 		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
 	}
 
@@ -171,7 +211,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 
 	cassMessages, err := s.msgReader.GetMessagesByIDs(c, parentIDs)
 	if err != nil {
-		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "roomID", roomID)
+		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
 		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
 	}
 
@@ -180,10 +220,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 		msgByID[cassMessages[i].MessageID] = cassMessages[i]
 	}
 
-	// Iterate parentIDs (deduplicated, MongoDB sort order preserved) rather than
-	// threadPage.Data to avoid emitting the same parent twice when MongoDB returns
-	// duplicate thread rooms for one parent. accessSince re-checked here:
-	// MongoDB's threadParentCreatedAt can be zero when absent from the original event.
+	// Iterate parentIDs (deduplicated) to avoid emitting the same parent twice for duplicate MongoDB thread rooms.
 	parentMessages := make([]models.Message, 0, len(parentIDs))
 	for _, id := range parentIDs {
 		msg, ok := msgByID[id]

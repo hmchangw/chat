@@ -1,3 +1,5 @@
+// Package cassandra holds Cassandra-only row and UDT carriers.
+// No bson tags — these types never reach MongoDB (Mongo-bound types live in pkg/model).
 package cassandra
 
 import (
@@ -5,10 +7,7 @@ import (
 )
 
 // Participant maps to the Cassandra "Participant" UDT.
-// cql struct tags tell gocql's reflection-based UDT marshaler how to map each
-// Go field to its Cassandra UDT field name. Without these tags, gocql would
-// lowercase the Go field names (e.g. "EngName" → "engname") which would not
-// match the snake_case UDT fields (e.g. "eng_name").
+// cql tags are required because gocql lowercases Go field names (e.g. "EngName" → "engname"), not snake_case.
 type Participant struct {
 	ID          string `json:"id"                    cql:"id"`
 	EngName     string `json:"engName,omitempty"     cql:"eng_name"`
@@ -50,11 +49,6 @@ type EncMeta struct {
 }
 
 // QuotedParentMessage maps to the Cassandra "QuotedParentMessage" UDT.
-//
-// ThreadParentID and ThreadParentCreatedAt capture the parent message's
-// thread context (when the parent was itself a thread reply). Used by
-// gatekeeper to enforce same-thread-context quoting and by clients to
-// render thread-aware quote previews.
 type QuotedParentMessage struct {
 	MessageID   string        `json:"messageId"             cql:"message_id"`
 	RoomID      string        `json:"roomId"                cql:"room_id"`
@@ -64,48 +58,47 @@ type QuotedParentMessage struct {
 	Mentions    []Participant `json:"mentions,omitempty"    cql:"mentions"`
 	Attachments [][]byte      `json:"attachments,omitempty" cql:"attachments"`
 	MessageLink string        `json:"messageLink,omitempty" cql:"message_link"`
-	// ThreadParentID and ThreadParentCreatedAt are populated by message-worker when
-	// the quoted message is a TShow reply. They embed the thread parent's identity and
-	// actual CreatedAt so history-service can enforce access-window checks without a
-	// Cassandra round-trip at read time.
+	// ThreadParentID and ThreadParentCreatedAt are set by message-worker when the quoted message is a TShow reply,
+	// embedding the parent's identity so history-service can enforce access-window checks without an extra read.
 	ThreadParentID        string     `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
 	ThreadParentCreatedAt *time.Time `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
 }
 
 // Message represents a message row in the Cassandra message tables
-// (messages_by_room, messages_by_id, thread_messages_by_room).
+// (messages_by_room, messages_by_id, thread_messages_by_thread).
 //
 // cql tags are consumed by the structScan helper in history-service/internal/cassrepo
 // to map returned Cassandra columns to struct fields by name, eliminating
 // positional scan maintenance.
 type Message struct {
-	RoomID                string                   `json:"roomId"                          cql:"room_id"`
-	Bucket                int64                    `json:"-"                                cql:"bucket"`
-	CreatedAt             time.Time                `json:"createdAt"                       cql:"created_at"`
-	MessageID             string                   `json:"messageId"                       cql:"message_id"`
-	Sender                Participant              `json:"sender"                          cql:"sender"`
-	Msg                   string                   `json:"msg"                             cql:"msg"`
-	Mentions              []Participant            `json:"mentions,omitempty"              cql:"mentions"`
-	Attachments           [][]byte                 `json:"attachments,omitempty"           cql:"attachments"`
-	File                  *File                    `json:"file,omitempty"                  cql:"file"`
-	Card                  *Card                    `json:"card,omitempty"                  cql:"card"`
-	CardAction            *CardAction              `json:"cardAction,omitempty"            cql:"card_action"`
-	TShow                 bool                     `json:"tshow,omitempty"                 cql:"tshow"`
-	TCount                *int                     `json:"tcount,omitempty"                cql:"tcount"`
-	ThreadParentID        string                   `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
-	ThreadParentCreatedAt *time.Time               `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
-	QuotedParentMessage   *QuotedParentMessage     `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
-	VisibleTo             string                   `json:"visibleTo,omitempty"             cql:"visible_to"`
-	Reactions             map[string][]Participant `json:"reactions,omitempty"             cql:"reactions"`
-	Deleted               bool                     `json:"deleted,omitempty"               cql:"deleted"`
-	Type                  string                   `json:"type,omitempty"                  cql:"type"`
-	SysMsgData            []byte                   `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
-	SiteID                string                   `json:"siteId,omitempty"                cql:"site_id"`
-	EditedAt              *time.Time               `json:"editedAt,omitempty"              cql:"edited_at"`
-	UpdatedAt             *time.Time               `json:"updatedAt,omitempty"             cql:"updated_at"`
-	EncPayload            []byte                   `json:"encPayload,omitempty"            cql:"enc_payload"`
-	EncMeta               *EncMeta                 `json:"encMeta,omitempty"               cql:"enc_meta"`
-	ThreadRoomID          string                   `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
-	PinnedAt              *time.Time               `json:"pinnedAt,omitempty"              cql:"pinned_at"`
-	PinnedBy              *Participant             `json:"pinnedBy,omitempty"              cql:"pinned_by"`
+	RoomID                string               `json:"roomId"                          cql:"room_id"`
+	Bucket                int64                `json:"-"                                cql:"bucket"`
+	CreatedAt             time.Time            `json:"createdAt"                       cql:"created_at"`
+	MessageID             string               `json:"messageId"                       cql:"message_id"`
+	Sender                Participant          `json:"sender"                          cql:"sender"`
+	Msg                   string               `json:"msg"                             cql:"msg"`
+	Mentions              []Participant        `json:"mentions,omitempty"              cql:"mentions"`
+	Attachments           [][]byte             `json:"attachments,omitempty"           cql:"attachments"`
+	File                  *File                `json:"file,omitempty"                  cql:"file"`
+	Card                  *Card                `json:"card,omitempty"                  cql:"card"`
+	CardAction            *CardAction          `json:"cardAction,omitempty"            cql:"card_action"`
+	TShow                 bool                 `json:"tshow,omitempty"                 cql:"tshow"`
+	TCount                *int                 `json:"tcount,omitempty"                cql:"tcount"`
+	ThreadParentID        string               `json:"threadParentId,omitempty"        cql:"thread_parent_id"`
+	ThreadParentCreatedAt *time.Time           `json:"threadParentCreatedAt,omitempty" cql:"thread_parent_created_at"`
+	QuotedParentMessage   *QuotedParentMessage `json:"quotedParentMessage,omitempty"   cql:"quoted_parent_message"`
+	VisibleTo             string               `json:"visibleTo,omitempty"             cql:"visible_to"`
+	// Reactions is nil when absent (omitted from JSON); not modified by edit/delete paths.
+	Reactions    Reactions    `json:"reactions,omitempty"             cql:"reactions"`
+	Deleted      bool         `json:"deleted,omitempty"               cql:"deleted"`
+	Type         string       `json:"type,omitempty"                  cql:"type"`
+	SysMsgData   []byte       `json:"sysMsgData,omitempty"            cql:"sys_msg_data"`
+	SiteID       string       `json:"siteId,omitempty"                cql:"site_id"`
+	EditedAt     *time.Time   `json:"editedAt,omitempty"              cql:"edited_at"`
+	UpdatedAt    *time.Time   `json:"updatedAt,omitempty"             cql:"updated_at"`
+	EncPayload   []byte       `json:"encPayload,omitempty"            cql:"enc_payload"`
+	EncMeta      *EncMeta     `json:"encMeta,omitempty"               cql:"enc_meta"`
+	ThreadRoomID string       `json:"threadRoomId,omitempty"          cql:"thread_room_id"`
+	PinnedAt     *time.Time   `json:"pinnedAt,omitempty"              cql:"pinned_at"`
+	PinnedBy     *Participant `json:"pinnedBy,omitempty"              cql:"pinned_by"`
 }

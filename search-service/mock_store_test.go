@@ -192,16 +192,16 @@ func (m *MockSearchUsersClient) EXPECT() *MockSearchUsersClientMockRecorder {
 }
 
 // SearchUsers mocks base method.
-func (m *MockSearchUsersClient) SearchUsers(ctx context.Context, query string) ([]model.SearchUser, error) {
+func (m *MockSearchUsersClient) SearchUsers(ctx context.Context, query string, offset, limit int) ([]model.SearchUser, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SearchUsers", ctx, query)
+	ret := m.ctrl.Call(m, "SearchUsers", ctx, query, offset, limit)
 	ret0, _ := ret[0].([]model.SearchUser)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SearchUsers indicates an expected call of SearchUsers.
-func (mr *MockSearchUsersClientMockRecorder) SearchUsers(ctx, query any) *gomock.Call {
+func (mr *MockSearchUsersClientMockRecorder) SearchUsers(ctx, query, offset, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchUsers", reflect.TypeOf((*MockSearchUsersClient)(nil).SearchUsers), ctx, query)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchUsers", reflect.TypeOf((*MockSearchUsersClient)(nil).SearchUsers), ctx, query, offset, limit)
 }

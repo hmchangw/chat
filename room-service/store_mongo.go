@@ -16,20 +16,22 @@ import (
 )
 
 type MongoStore struct {
-	rooms         *mongo.Collection
-	subscriptions *mongo.Collection
-	roomMembers   *mongo.Collection
-	users         *mongo.Collection
-	apps          *mongo.Collection
+	rooms               *mongo.Collection
+	subscriptions       *mongo.Collection
+	threadSubscriptions *mongo.Collection
+	roomMembers         *mongo.Collection
+	users               *mongo.Collection
+	apps                *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
-		rooms:         db.Collection("rooms"),
-		subscriptions: db.Collection("subscriptions"),
-		roomMembers:   db.Collection("room_members"),
-		users:         db.Collection("users"),
-		apps:          db.Collection("apps"),
+		rooms:               db.Collection("rooms"),
+		subscriptions:       db.Collection("subscriptions"),
+		threadSubscriptions: db.Collection("thread_subscriptions"),
+		roomMembers:         db.Collection("room_members"),
+		users:               db.Collection("users"),
+		apps:                db.Collection("apps"),
 	}
 }
 
@@ -89,12 +91,32 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
+	// Backs room-worker's ReconcileMemberCounts, which counts bot vs non-bot
+	// subs per room off u.isBot — keeps both CountDocuments index-only instead
+	// of scanning every subscription in the room.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "u.isBot", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,u.isBot) index: %w", err)
+	}
 	// Lookup index for FindDMSubscription (filters on u.account+name).
 	// Without this index, FindDMSubscription falls back to a collection scan.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "u.account", Value: 1}, {Key: "name", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,name) index: %w", err)
+	}
+	// Mirrors the unique index created by message-worker / history-service so per-service test DBs also enforce it.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userAccount) unique index: %w", err)
+	}
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,userAccount) index: %w", err)
 	}
 	return nil
 }
@@ -105,18 +127,6 @@ func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error
 		return nil, fmt.Errorf("room %q not found: %w", id, err)
 	}
 	return &room, nil
-}
-
-func (s *MongoStore) ListRooms(ctx context.Context) ([]model.Room, error) {
-	cursor, err := s.rooms.Find(ctx, bson.M{})
-	if err != nil {
-		return nil, err
-	}
-	var rooms []model.Room
-	if err := cursor.All(ctx, &rooms); err != nil {
-		return nil, err
-	}
-	return rooms, nil
 }
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
@@ -804,6 +814,29 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 	return nil
 }
 
+// ToggleSubscriptionMute atomically flips muted via FindOneAndUpdate.
+// $ifNull treats absent field as false so legacy docs toggle to true on first call.
+func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	update := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: bson.M{
+			"muted": bson.M{"$not": bson.A{
+				bson.M{"$ifNull": bson.A{"$muted", false}},
+			}},
+		}}},
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var result model.Subscription
+	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, err)
+	}
+	return &result, nil
+}
+
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
 // user document exists.
 func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string, error) {
@@ -821,26 +854,31 @@ func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string,
 	return doc.SiteID, nil
 }
 
-// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across the
-// room's subscriptions, considering only subscriptions that have a non-nil,
-// non-zero lastSeenAt. Subscriptions whose lastSeenAt has never been written
-// (e.g. the user was invited but has never opened the room) are excluded
-// entirely. Returns nil when no subscription has a usable lastSeenAt — the
-// caller should then $unset rooms.minUserLastSeenAt rather than pinning the
-// floor to a value that doesn't represent any real read activity.
+// MinSubscriptionLastSeenByRoomID returns the room's strict read floor: the
+// minimum lastSeenAt across ALL of the room's subscriptions, but only when
+// EVERY subscription has a usable lastSeenAt (> zero). If any subscription has
+// no usable lastSeenAt — missing, null, or the BSON zero date, i.e. a member
+// who was invited but has never opened the room — it returns nil, meaning "not
+// everyone has read yet". It also returns nil for a room with no subscriptions.
+// Bots are ordinary subscriptions and are counted: a botDM room (the bot never
+// reads) therefore always resolves to nil. The caller $unsets
+// rooms.minUserLastSeenAt on a nil result.
 func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
 	zeroTime := time.Time{}
 	pipeline := mongo.Pipeline{
-		// $gt:zeroTime excludes both missing/null lastSeenAt and the BSON
-		// zero date that legacy documents may carry. MongoDB's $gt against
-		// a missing field is false, so this filter naturally drops never-read
-		// subs without an explicit existence check.
-		{{Key: "$match", Value: bson.M{
-			"roomId":     roomID,
-			"lastSeenAt": bson.M{"$gt": zeroTime},
-		}}},
+		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
+		// total counts every subscription in the room. readCount counts those
+		// with a usable lastSeenAt — $gt:zeroTime is false for missing/null
+		// (BSON null sorts before dates) and for the legacy zero date, so it
+		// matches our definition of "has read". min is only consumed when
+		// readCount == total, where every doc has lastSeenAt > zero, so $min
+		// (which ignores missing/null) yields the true minimum.
 		{{Key: "$group", Value: bson.M{
-			"_id": nil,
+			"_id":   nil,
+			"total": bson.M{"$sum": 1},
+			"readCount": bson.M{"$sum": bson.M{"$cond": bson.A{
+				bson.M{"$gt": bson.A{"$lastSeenAt", zeroTime}}, 1, 0,
+			}}},
 			"min": bson.M{"$min": "$lastSeenAt"},
 		}}},
 	}
@@ -853,13 +891,19 @@ func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID
 		if err := cursor.Err(); err != nil {
 			return nil, fmt.Errorf("iterate min lastSeenAt for room %q: %w", roomID, err)
 		}
-		return nil, nil
+		return nil, nil // no subscriptions in the room
 	}
 	var result struct {
-		Min time.Time `bson:"min"`
+		Total     int       `bson:"total"`
+		ReadCount int       `bson:"readCount"`
+		Min       time.Time `bson:"min"`
 	}
 	if err := cursor.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode min lastSeenAt for room %q: %w", roomID, err)
+	}
+	// Strict floor: only return the MIN when every subscription has read.
+	if result.Total == 0 || result.ReadCount != result.Total {
+		return nil, nil
 	}
 	return &result.Min, nil
 }
@@ -925,4 +969,65 @@ func (s *MongoStore) ListReadReceipts(
 		return nil, fmt.Errorf("iterate read receipts for room %q: %w", roomID, err)
 	}
 	return rows, nil
+}
+
+func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error) {
+	var ts model.ThreadSubscription
+	err := s.threadSubscriptions.FindOne(ctx, bson.M{
+		"parentMessageId": parentMessageID,
+		"userAccount":     account,
+		"roomId":          roomID,
+	}).Decode(&ts)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("find thread subscription for %q parent %q in room %q: %w",
+				account, parentMessageID, roomID, model.ErrThreadSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("find thread subscription for %q parent %q in room %q: %w",
+			account, parentMessageID, roomID, err)
+	}
+	return &ts, nil
+}
+
+// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
+func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	var update bson.M
+	if len(threadUnread) == 0 {
+		update = bson.M{
+			"$set":   bson.M{"alert": alert},
+			"$unset": bson.M{"threadUnread": ""},
+		}
+	} else {
+		update = bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}
+	}
+	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+			account, roomID, model.ErrSubscriptionNotFound)
+	}
+	return nil
+}
+
+// No order-safety guard on the source-site write; the $lt guard lives on the inbox-worker side.
+func (s *MongoStore) UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error {
+	filter := bson.M{"threadRoomId": threadRoomID, "userAccount": account}
+	update := bson.M{"$set": bson.M{
+		"lastSeenAt": lastSeenAt,
+		"updatedAt":  lastSeenAt,
+		"hasMention": false,
+	}}
+	res, err := s.threadSubscriptions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("update thread subscription read for %q in thread room %q: %w",
+			account, threadRoomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update thread subscription read for %q in thread room %q: %w",
+			account, threadRoomID, model.ErrThreadSubscriptionNotFound)
+	}
+	return nil
 }

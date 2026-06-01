@@ -46,5 +46,5 @@ type MongoStore interface {
 // It wraps the third-party HR endpoint; the handler tests inject a fake
 // implementation so no real HTTP call is needed in unit tests.
 type SearchUsersClient interface {
-	SearchUsers(ctx context.Context, query string) ([]model.SearchUser, error)
+	SearchUsers(ctx context.Context, query string, offset, limit int) ([]model.SearchUser, error)
 }

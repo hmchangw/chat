@@ -26,27 +26,25 @@ const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 //
 // Decryption of enc_payload rows is the caller's responsibility — single-row
 // readers call r.decryptIfNeeded directly; paginated walkers use
-// r.scanMessagesUpTo (which threads a captured error back to fillPage).
-func scanMsgsFromIter(iter *gocql.Iter) []models.Message {
+// r.scanMessagesUpTo, which decrypts and propagates errors through fillPage.
+func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	messages := make([]models.Message, 0)
 	for {
 		var m models.Message
-		if !structScan(iter, &m) {
+		ok, err := structScan(iter, &m)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			break
 		}
 		messages = append(messages, m)
 	}
-	return messages
+	return messages, nil
 }
 
-// startBucketFromCursor returns the bucket to start the walk at, plus an
-// initial in-bucket pageState if the request carried a non-empty cursor.
-// When the cursor is empty, defaultBucket is used. A cursor bucket outside
-// [floorBucket, defaultBucket] (DESC) or [defaultBucket, floorBucket] (ASC)
-// is rejected as a fresh start with an empty pageState — this prevents a
-// tampered cursor from pushing the walk into empty partitions far outside
-// the legitimate data window, which would otherwise consume up to maxBuckets
-// empty Cassandra round-trips.
+// startBucketFromCursor returns the walk's start bucket and any in-bucket pageState from the cursor.
+// Out-of-range cursor buckets are rejected to prevent tampered cursors from consuming maxBuckets empty reads.
 func startBucketFromCursor(pageReq PageRequest, direction walkDirection, defaultBucket, floorBucket int64) (int64, []byte, error) {
 	if pageReq.Cursor == nil {
 		return defaultBucket, nil, nil
@@ -75,27 +73,28 @@ func startBucketFromCursor(pageReq PageRequest, direction walkDirection, default
 	return bucket, pageState, nil
 }
 
-// scanMessagesUpTo consumes up to remaining rows from iter via structScan
-// and decrypts any enc_payload rows in place via r.decryptIfNeeded. Decrypt
-// errors are captured in *scanErr and signalled via halt=true so fillPage
-// stops the walk immediately. Without the halt signal, fillPage would
-// advance to the next bucket and a subsequent decrypt failure could
-// overwrite *scanErr — masking the root cause from operators.
-func (r *Repository) scanMessagesUpTo(ctx context.Context, scanErr *error) func(iter *gocql.Iter, remaining int) (rows []models.Message, halt bool) {
-	return func(iter *gocql.Iter, remaining int) ([]models.Message, bool) {
+// scanMessagesUpTo returns a fillPage scan callback that consumes up to
+// remaining rows from iter via structScan and decrypts any enc_payload rows in
+// place via r.decryptIfNeeded. A decrypt (or scan) error aborts the walk:
+// fillPage discards the accumulated rows and propagates the error to the caller.
+func (r *Repository) scanMessagesUpTo(ctx context.Context) func(iter *gocql.Iter, remaining int) ([]models.Message, error) {
+	return func(iter *gocql.Iter, remaining int) ([]models.Message, error) {
 		out := make([]models.Message, 0, remaining)
 		for len(out) < remaining {
 			var m models.Message
-			if !structScan(iter, &m) {
+			ok, err := structScan(iter, &m)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
 				break
 			}
 			if err := r.decryptIfNeeded(ctx, &m); err != nil {
-				*scanErr = err
-				return out, true
+				return nil, err
 			}
 			out = append(out, m)
 		}
-		return out, false
+		return out, nil
 	}
 }
 
@@ -119,16 +118,12 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 		)
 	}
 
-	var scanErr error
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx, &scanErr),
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", err)
-	}
-	if scanErr != nil {
-		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", scanErr)
 	}
 	return res.toPage(), nil
 }
@@ -170,16 +165,12 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 		}
 	}
 
-	var scanErr error
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx, &scanErr),
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", err)
-	}
-	if scanErr != nil {
-		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", scanErr)
 	}
 	return res.toPage(), nil
 }
@@ -204,16 +195,12 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 		)
 	}
 
-	var scanErr error
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx, &scanErr),
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", err)
-	}
-	if scanErr != nil {
-		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", scanErr)
 	}
 	return res.toPage(), nil
 }
@@ -232,16 +219,12 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor
 		)
 	}
 
-	var scanErr error
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx, &scanErr),
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", err)
-	}
-	if scanErr != nil {
-		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", scanErr)
 	}
 	return res.toPage(), nil
 }

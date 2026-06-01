@@ -42,7 +42,6 @@ type ReadReceiptRow struct {
 
 type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
-	ListRooms(ctx context.Context) ([]model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
@@ -84,16 +83,19 @@ type RoomStore interface {
 	// keyed by (roomID, account). Returns model.ErrSubscriptionNotFound
 	// (wrapped) when no subscription matches.
 	UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error
+	// ToggleSubscriptionMute atomically flips muted via a single FindOneAndUpdate.
+	// Returns the post-flip subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
+	ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error)
 	// GetUserSiteID returns the home site of a user looked up by account.
 	// Returns ("", nil) when the user is not found locally; callers treat
 	// that as "skip cross-site outbox".
 	GetUserSiteID(ctx context.Context, account string) (string, error)
-	// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across
-	// the room's subscriptions, considering only subscriptions that have a
-	// non-nil, non-zero lastSeenAt. Subscriptions whose lastSeenAt has never
-	// been written (e.g. the user was invited but has never opened the room)
-	// are excluded entirely. Returns nil when no subscription has a usable
-	// lastSeenAt.
+	// MinSubscriptionLastSeenByRoomID returns the room's strict read floor:
+	// the MIN(lastSeenAt) across ALL of the room's subscriptions, but only
+	// when every subscription has a usable lastSeenAt (> zero). Returns nil if
+	// any subscription has never been read (missing/null/zero lastSeenAt) or if
+	// the room has no subscriptions. Bots are counted, so a botDM room always
+	// resolves to nil.
 	MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error)
 	// UpdateRoomMinUserLastSeenAt writes rooms.minUserLastSeenAt for roomID.
 	// A nil value clears the field via $unset; a non-nil value writes via $set.
@@ -107,6 +109,15 @@ type RoomStore interface {
 	GetApp(ctx context.Context, botAccount string) (*model.App, error)
 	// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName, filtered by RoomType.
 	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
+
+	// GetThreadSubscriptionByParent enforces (parentMessageID, account, roomID); the roomID
+	// filter rejects a threadId that belongs to a different room than the request subject.
+	GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error)
+
+	// UpdateSubscriptionThreadRead overwrites threadUnread + alert; empty threadUnread is $unset.
+	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error
+
+	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
 }
 
 // RoomKeyStore is the consumer-side interface for room encryption key lookups.

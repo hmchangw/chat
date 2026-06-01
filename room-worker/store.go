@@ -59,8 +59,9 @@ type SubscriptionStore interface {
 	// ListByRoom returns all subscriptions for roomID across every site.
 	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
-	// Room.AppCount (bot subs) by scanning the subscriptions collection,
-	// then writes both back to the rooms collection in a single update.
+	// Room.AppCount (bot subs) via index-backed counts on the denormalized
+	// u.isBot flag, then writes both back to the rooms collection in a single
+	// update.
 	ReconcileMemberCounts(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import {
   fetchSidebarBuckets,
-  getRoom,
   markRoomRead,
   subscribeToRoomEvents,
   subscribeToRoomMetadataUpdates,
@@ -66,9 +65,8 @@ export function useRoomSubscriptions(
   decrypt = async () => null,
 ) {
   const { user } = nats
-  // Keep a live ref to `nats` so long-lived subscription callbacks
-  // (subUpdate's getRoom call, listRooms inside the effect body) see
-  // the latest connection without forcing the effect to re-run.
+  // Keep a live ref to `nats` so long-lived subscription callbacks see the
+  // latest connection without forcing the effect to re-run.
   const natsRef = useRef(nats)
   natsRef.current = nats
 
@@ -163,8 +161,8 @@ export function useRoomSubscriptions(
 
     // Translate a wire-level event to room+thread dispatches for edit/delete.
     const handleMutationEvent = (evt) => {
-      if (evt?.type === 'message_edited' && evt.messageEdited?.messageId) {
-        const { messageId, newContent, editedAt } = evt.messageEdited
+      if (evt?.type === 'message_edited' && evt.messageId) {
+        const { messageId, newContent, editedAt } = evt
         // Drop edits without a plaintext body. Encrypted channel rooms emit
         // `encryptedNewContent` instead; blanking the existing content to ''
         // would silently wipe the message until decryption is implemented.
@@ -181,8 +179,8 @@ export function useRoomSubscriptions(
         fanThreadMutation({ kind: 'edited', messageId, content: newContent, editedAt: editedAtIso })
         return true
       }
-      if (evt?.type === 'message_deleted' && evt.messageDeleted?.messageId) {
-        const { messageId } = evt.messageDeleted
+      if (evt?.type === 'message_deleted' && evt.messageId) {
+        const { messageId } = evt
         safeDispatch({ type: 'MESSAGE_DELETED', roomId: evt.roomId, messageId })
         fanThreadMutation({ kind: 'deleted', messageId })
         return true
@@ -235,7 +233,7 @@ export function useRoomSubscriptions(
     // Decrypt encrypted fields on an event, then call finalize(decoded).
     // Handles two cases:
     //   1. encryptedMessage (new_message with no plaintext body yet)
-    //   2. messageEdited.encryptedNewContent (edit events in encrypted rooms)
+    //   2. encryptedNewContent (edit events in encrypted rooms)
     // Returns null on the key-not-yet-available path — the caller passes
     // the event through unchanged and the reducer's placeholder branch
     // handles the missing body gracefully.
@@ -258,9 +256,9 @@ export function useRoomSubscriptions(
             }
           }
         }
-        // Handle encrypted message edits.
-        if (decoded.messageEdited && decoded.messageEdited.encryptedNewContent && !decoded.messageEdited.newContent) {
-          const enc = decoded.messageEdited.encryptedNewContent
+        // Handle encrypted message edits (flattened edit event).
+        if (decoded.type === 'message_edited' && decoded.encryptedNewContent && !decoded.newContent) {
+          const enc = decoded.encryptedNewContent
           if (typeof enc.version === 'number' && enc.nonce && enc.ciphertext) {
             const plaintext = await decryptRef.current({
               roomId: decoded.roomId,
@@ -269,10 +267,7 @@ export function useRoomSubscriptions(
               ciphertextB64: enc.ciphertext,
             })
             if (plaintext != null) {
-              decoded = {
-                ...decoded,
-                messageEdited: { ...decoded.messageEdited, newContent: plaintext, encryptedNewContent: undefined },
-              }
+              decoded = { ...decoded, newContent: plaintext, encryptedNewContent: undefined }
             }
           }
         }
@@ -344,19 +339,20 @@ export function useRoomSubscriptions(
         // hasMention / alert state. The full payload is what room-worker
         // emits on `subscription.update`.
         safeDispatch({ type: 'SUBSCRIPTION_UPSERTED', subscription: evt.subscription })
-        getRoom(natsRef.current, { roomId: evt.subscription.roomId })
-          .then((room) => {
-            if (cancelledRef.current || !room) return
-            // DM rooms have no canonical Room.Name server-side — the friendly
-            // text lives on the user's Subscription. Stash that here so the
-            // sidebar + header can fall back to it via roomDisplayName(room).
-            const merged = evt.subscription?.name
-              ? { ...room, subscriptionName: evt.subscription.name }
-              : room
-            safeDispatch({ type: 'ROOM_ADDED', room: merged })
-            if (room.type === 'channel') openChannelSub(room.id)
-          })
-          .catch(() => {})
+        // Build the sidebar room straight from the subscription record — it
+        // carries roomId, roomType, siteId, and the per-user friendly name.
+        // Room-level metadata (userCount, lastMsgAt) is absent here and lands
+        // via subsequent ROOM_METADATA_UPDATED / MESSAGE_RECEIVED events.
+        const sub = evt.subscription
+        const room = {
+          id: sub.roomId,
+          type: sub.roomType,
+          siteId: sub.siteId,
+          name: sub.name,
+          subscriptionName: sub.name,
+        }
+        safeDispatch({ type: 'ROOM_ADDED', room })
+        if (sub.roomType === 'channel') openChannelSub(sub.roomId)
       } else if (evt.action === 'removed') {
         const roomId = evt.subscription?.roomId
         if (!roomId) return

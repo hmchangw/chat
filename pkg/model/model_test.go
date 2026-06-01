@@ -465,19 +465,19 @@ func TestSubscriptionJSON(t *testing.T) {
 		hss := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		lsa := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 		s := model.Subscription{
-			ID:                  "s1",
-			User:                model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:              "r1",
-			RoomType:            model.RoomTypeChannel,
-			SiteID:              "site-a",
-			Roles:               []model.Role{model.RoleOwner},
-			HistorySharedSince:  &hss,
-			JoinedAt:            time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			LastSeenAt:          &lsa,
-			HasMention:          true,
-			ThreadUnread:        []string{"parent-1", "parent-2"},
-			Alert:               true,
-			DisableNotification: true,
+			ID:                 "s1",
+			User:               model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:             "r1",
+			RoomType:           model.RoomTypeChannel,
+			SiteID:             "site-a",
+			Roles:              []model.Role{model.RoleOwner},
+			HistorySharedSince: &hss,
+			JoinedAt:           time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			LastSeenAt:         &lsa,
+			HasMention:         true,
+			ThreadUnread:       []string{"parent-1", "parent-2"},
+			Alert:              true,
+			Muted:              true,
 		}
 		roundTrip(t, &s, &model.Subscription{})
 	})
@@ -529,9 +529,9 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	assert.True(t, hasAlert, "alert must be present in JSON even when false")
 	assert.Equal(t, false, alertVal)
 
-	disableVal, hasDisable := raw["disableNotification"]
-	assert.True(t, hasDisable, "disableNotification must be present in JSON even when false")
-	assert.Equal(t, false, disableVal)
+	mutedVal, hasMuted := raw["muted"]
+	assert.True(t, hasMuted, "muted must be present in JSON even when false")
+	assert.Equal(t, false, mutedVal)
 
 	var dst model.Subscription
 	require.NoError(t, json.Unmarshal(data, &dst))
@@ -2228,6 +2228,43 @@ func TestMessageTypeAndAsyncJobStatusConstants(t *testing.T) {
 	assert.Equal(t, "error", model.AsyncJobStatusError)
 }
 
+func TestMuteToggleResponseJSON(t *testing.T) {
+	src := model.MuteToggleResponse{
+		Status: "ok",
+		Muted:  true,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "ok", raw["status"])
+	assert.Equal(t, true, raw["muted"])
+}
+
+func TestSubscriptionMuteToggledEventJSON(t *testing.T) {
+	src := model.SubscriptionMuteToggledEvent{
+		Account:   "alice",
+		RoomID:    "r1",
+		Muted:     true,
+		Timestamp: 1234567890,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.SubscriptionMuteToggledEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestOutboxSubscriptionMuteToggledConst(t *testing.T) {
+	assert.Equal(t, model.OutboxEventType("subscription_mute_toggled"), model.OutboxSubscriptionMuteToggled)
+}
+
 func TestSyncCreateDMRequestJSON(t *testing.T) {
 	src := model.SyncCreateDMRequest{
 		RoomType:         model.RoomTypeDM,
@@ -2342,34 +2379,122 @@ func TestSearchUserJSON_OmitEmpty(t *testing.T) {
 	assert.NotContains(t, got, "chineseName", "empty ChineseName must be omitted")
 }
 
-func TestRoomEventMessageEditedJSON(t *testing.T) {
+func TestEditRoomEventJSON(t *testing.T) {
 	editedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
 	updatedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageEdited,
-		RoomID: "r1",
-		MessageEdited: &model.MessageEditedPayload{
-			MessageID:  "msg-uuid",
-			NewContent: "hello (edited)",
-			EditedBy:   "alice",
-			EditedAt:   editedAt,
-			UpdatedAt:  updatedAt,
-		},
+	evt := model.EditRoomEvent{
+		Type:       model.RoomEventMessageEdited,
+		RoomID:     "r1",
+		SiteID:     "site-a",
+		Timestamp:  1746518700123,
+		MessageID:  "msg-uuid",
+		NewContent: "hello (edited)",
+		EditedBy:   "alice",
+		EditedAt:   editedAt,
+		UpdatedAt:  updatedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.EditRoomEvent{})
 }
 
-func TestRoomEventMessageDeletedJSON(t *testing.T) {
+func TestDeleteRoomEventJSON(t *testing.T) {
 	deletedAt := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC)
-	evt := model.RoomEvent{
-		Type:   model.RoomEventMessageDeleted,
-		RoomID: "r1",
-		MessageDeleted: &model.MessageDeletedPayload{
-			MessageID: "msg-uuid",
-			DeletedBy: "alice",
-			DeletedAt: deletedAt,
-			UpdatedAt: deletedAt,
-		},
+	evt := model.DeleteRoomEvent{
+		Type:      model.RoomEventMessageDeleted,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1746518800123,
+		MessageID: "msg-uuid",
+		DeletedBy: "alice",
+		DeletedAt: deletedAt,
+		UpdatedAt: deletedAt,
 	}
-	roundTrip(t, &evt, &model.RoomEvent{})
+	roundTrip(t, &evt, &model.DeleteRoomEvent{})
+}
+
+func TestMessageThreadReadRequestJSON(t *testing.T) {
+	src := model.MessageThreadReadRequest{ThreadID: "01970a4f8c2d7c9aQRST"}
+	roundTrip(t, &src, &model.MessageThreadReadRequest{})
+}
+
+func TestThreadReadEventJSON(t *testing.T) {
+	src := model.ThreadReadEvent{
+		Account:         "alice",
+		RoomID:          "r1",
+		ThreadRoomID:    "tr1",
+		ParentMessageID: "01970a4f8c2d7c9aQRST",
+		NewThreadUnread: []string{"t2", "t3"},
+		Alert:           true,
+		LastSeenAt:      1735689600000,
+		Timestamp:       1735689600001,
+	}
+	roundTrip(t, &src, &model.ThreadReadEvent{})
+}
+
+func TestOutboxEventJSON_ThreadRead(t *testing.T) {
+	payload := model.ThreadReadEvent{
+		Account: "alice", RoomID: "r1", ThreadRoomID: "tr1",
+		ParentMessageID: "p1", NewThreadUnread: []string{"t2"},
+		Alert: false, LastSeenAt: 1735689600000, Timestamp: 1735689600001,
+	}
+	data, err := json.Marshal(&payload)
+	require.NoError(t, err)
+	src := model.OutboxEvent{
+		Type:       model.OutboxThreadRead,
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    data,
+		Timestamp:  1735689600002,
+	}
+	out, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.OutboxEvent
+	require.NoError(t, json.Unmarshal(out, &dst))
+	if !reflect.DeepEqual(src, dst) {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+	}
+	if dst.Type != "thread_read" {
+		t.Errorf("Type = %q, want thread_read", dst.Type)
+	}
+	var gotPayload model.ThreadReadEvent
+	require.NoError(t, json.Unmarshal(dst.Payload, &gotPayload))
+	assert.Equal(t, payload, gotPayload)
+}
+
+func TestSubscriptionRemovedEventJSON(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		UserID: "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{ID: "01970a4f8c2d7c9a01970a4f8c2d7c9a", Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	roundTrip(t, &evt, &model.SubscriptionRemovedEvent{})
+}
+
+func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
+	evt := model.SubscriptionRemovedEvent{
+		Subscription: model.RemovedSubscriptionRef{
+			RoomID:   "r1",
+			RoomType: model.RoomTypeChannel,
+			U:        model.SubscriptionUser{Account: "bob"},
+		},
+		Action:    "removed",
+		Timestamp: 1746518483000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	sub := raw["subscription"]
+	require.NotNil(t, sub)
+	var subRaw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(sub, &subRaw))
+	// The lean ref must NOT carry the full Subscription's fields.
+	for _, leaked := range []string{"roles", "name", "joinedAt", "alert", "muted", "siteId", "id"} {
+		_, present := subRaw[leaked]
+		assert.False(t, present, "removed event subscription must not carry %q", leaked)
+	}
 }

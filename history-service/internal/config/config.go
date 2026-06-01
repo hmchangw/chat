@@ -6,20 +6,17 @@ import (
 	"github.com/hmchangw/chat/pkg/atrest"
 )
 
-// CassandraConfig holds Cassandra connection settings.
-// Env vars: CASSANDRA_HOSTS, CASSANDRA_KEYSPACE, CASSANDRA_USERNAME, CASSANDRA_PASSWORD
+// CassandraConfig holds Cassandra connection settings (env prefix: CASSANDRA_).
 type CassandraConfig struct {
 	Hosts    string `env:"HOSTS"    required:"true"`
 	Keyspace string `env:"KEYSPACE" envDefault:"chat"`
 	Username string `env:"USERNAME" envDefault:""`
 	Password string `env:"PASSWORD" envDefault:""`
-	// NumConns sets gocql's per-host connection count. Zero leaves cassutil
-	// to apply its own default (which is well above gocql's stock 2).
+	// NumConns sets gocql's per-host connection count; zero lets cassutil apply its own default.
 	NumConns int `env:"NUM_CONNS" envDefault:"8"`
 }
 
-// MongoConfig holds MongoDB connection settings.
-// Env vars: MONGO_URI, MONGO_DB, MONGO_USERNAME, MONGO_PASSWORD
+// MongoConfig holds MongoDB connection settings (env prefix: MONGO_).
 type MongoConfig struct {
 	URI      string `env:"URI"      required:"true"`
 	DB       string `env:"DB"       envDefault:"chat"`
@@ -27,14 +24,13 @@ type MongoConfig struct {
 	Password string `env:"PASSWORD" envDefault:""`
 }
 
-// NATSConfig holds NATS connection settings.
-// Env vars: NATS_URL, NATS_CREDS_FILE
+// NATSConfig holds NATS connection settings (env prefix: NATS_).
 type NATSConfig struct {
 	URL       string `env:"URL" required:"true"`
 	CredsFile string `env:"CREDS_FILE" envDefault:""`
 }
 
-// Config is the top-level configuration for history-service.
+// Config is the top-level configuration for the history-service.
 type Config struct {
 	SiteID                  string             `env:"SITE_ID"                    envDefault:"site-local"`
 	Cassandra               CassandraConfig    `envPrefix:"CASSANDRA_"`
@@ -47,7 +43,7 @@ type Config struct {
 	Vault                   atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
-// Load parses environment variables into Config. Returns error if required vars are missing.
+// Load parses environment variables into Config; returns an error when required vars are absent.
 func Load() (Config, error) {
 	return env.ParseAs[Config]()
 }

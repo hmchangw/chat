@@ -32,7 +32,7 @@ type RoomMetadataUpdateEvent struct {
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
-	Action       string       `json:"action"` // "added" | "removed"
+	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
@@ -82,7 +82,9 @@ const (
 	OutboxMemberAdded                OutboxEventType = "member_added"
 	OutboxMemberRemoved              OutboxEventType = "member_removed"
 	OutboxSubscriptionRead           OutboxEventType = "subscription_read"
+	OutboxSubscriptionMuteToggled    OutboxEventType = "subscription_mute_toggled"
 	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
+	OutboxThreadRead                 OutboxEventType = "thread_read"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -96,6 +98,19 @@ type SubscriptionReadEvent struct {
 	LastSeenAt int64  `json:"lastSeenAt" bson:"lastSeenAt"`
 	Alert      bool   `json:"alert"      bson:"alert"`
 	Timestamp  int64  `json:"timestamp"  bson:"timestamp"`
+}
+
+// ThreadReadEvent is the OutboxEvent.Payload for type "thread_read". The source site
+// ships the authoritative NewThreadUnread+Alert; the destination applies them as-is.
+type ThreadReadEvent struct {
+	Account         string   `json:"account"`
+	RoomID          string   `json:"roomId"`
+	ThreadRoomID    string   `json:"threadRoomId"`
+	ParentMessageID string   `json:"parentMessageId"`
+	NewThreadUnread []string `json:"newThreadUnread"`
+	Alert           bool     `json:"alert"`
+	LastSeenAt      int64    `json:"lastSeenAt"`
+	Timestamp       int64    `json:"timestamp"`
 }
 
 type OutboxEvent struct {
@@ -142,28 +157,9 @@ const (
 	RoomEventMessageDeleted RoomEventType = "message_deleted"
 )
 
-// MessageEditedPayload carries the per-edit fields on a RoomEvent of type
-// RoomEventMessageEdited. For encrypted channel rooms NewContent is empty and
-// EncryptedNewContent carries the ciphertext; otherwise NewContent is the
-// plaintext edit content.
-type MessageEditedPayload struct {
-	MessageID           string          `json:"messageId"`
-	NewContent          string          `json:"newContent,omitempty"`
-	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty"`
-	EditedBy            string          `json:"editedBy"`
-	EditedAt            time.Time       `json:"editedAt"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
-}
-
-// MessageDeletedPayload carries the per-delete fields on a RoomEvent of type
-// RoomEventMessageDeleted.
-type MessageDeletedPayload struct {
-	MessageID string    `json:"messageId"`
-	DeletedBy string    `json:"deletedBy"`
-	DeletedAt time.Time `json:"deletedAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
+// RoomEvent is the live fan-out event for a newly created message
+// (RoomEventNewMessage). Edits and deletes use the flattened EditRoomEvent /
+// DeleteRoomEvent so clients are not handed zero-valued base fields.
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
 	RoomID    string        `json:"roomId"`
@@ -183,9 +179,58 @@ type RoomEvent struct {
 
 	Message          *ClientMessage  `json:"message,omitempty"`
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
+}
 
-	MessageEdited  *MessageEditedPayload  `json:"messageEdited,omitempty"`
-	MessageDeleted *MessageDeletedPayload `json:"messageDeleted,omitempty"`
+// EditRoomEvent is the live event published when a message is edited. Fields are
+// flat (no zero-valued RoomEvent base fields). For encrypted channel rooms
+// NewContent is empty and EncryptedNewContent carries the ciphertext; otherwise
+// NewContent holds the plaintext edit.
+type EditRoomEvent struct {
+	Type                RoomEventType   `json:"type" bson:"type"`
+	RoomID              string          `json:"roomId" bson:"roomId"`
+	SiteID              string          `json:"siteId" bson:"siteId"`
+	Timestamp           int64           `json:"timestamp" bson:"timestamp"`
+	MessageID           string          `json:"messageId" bson:"messageId"`
+	NewContent          string          `json:"newContent,omitempty" bson:"newContent,omitempty"`
+	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty" bson:"encryptedNewContent,omitempty"`
+	EditedBy            string          `json:"editedBy" bson:"editedBy"`
+	EditedAt            time.Time       `json:"editedAt" bson:"editedAt"`
+	UpdatedAt           time.Time       `json:"updatedAt" bson:"updatedAt"`
+}
+
+// DeleteRoomEvent is the live event published when a message is deleted. Fields
+// are flat (no zero-valued RoomEvent base fields).
+type DeleteRoomEvent struct {
+	Type      RoomEventType `json:"type" bson:"type"`
+	RoomID    string        `json:"roomId" bson:"roomId"`
+	SiteID    string        `json:"siteId" bson:"siteId"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	MessageID string        `json:"messageId" bson:"messageId"`
+	DeletedBy string        `json:"deletedBy" bson:"deletedBy"`
+	DeletedAt time.Time     `json:"deletedAt" bson:"deletedAt"`
+	UpdatedAt time.Time     `json:"updatedAt" bson:"updatedAt"`
+}
+
+// RemovedSubscriptionRef is the minimal subscription identity carried on a
+// "removed" subscription.update event — only the fields a client needs to drop
+// the room from its sidebar. Used instead of an embedded full Subscription so
+// the wire payload carries no zero-valued fields (roles, name, joinedAt, etc.).
+type RemovedSubscriptionRef struct {
+	RoomID   string           `json:"roomId" bson:"roomId"`
+	RoomType RoomType         `json:"roomType" bson:"roomType"`
+	U        SubscriptionUser `json:"u" bson:"u"`
+}
+
+// SubscriptionRemovedEvent is the subscription.update payload published when a
+// member (individual or via org removal) loses a subscription. It mirrors
+// SubscriptionUpdateEvent's envelope (userId / subscription / action /
+// timestamp) but embeds a lean RemovedSubscriptionRef rather than a full
+// Subscription, so removals do not ship zero-valued Subscription fields.
+type SubscriptionRemovedEvent struct {
+	UserID       string                 `json:"userId,omitempty" bson:"userId,omitempty"`
+	Subscription RemovedSubscriptionRef `json:"subscription" bson:"subscription"`
+	Action       string                 `json:"action" bson:"action"` // always "removed"
+	Timestamp    int64                  `json:"timestamp" bson:"timestamp"`
 }
 
 type RoomKeyEvent struct {
@@ -206,6 +251,20 @@ type RoomKeyEnsureRequest struct {
 type RoomKeyEnsureResponse struct {
 	RoomID  string `json:"roomId"`
 	Version int    `json:"version"`
+}
+
+// MuteToggleResponse is the sync reply for the mute.toggle RPC.
+type MuteToggleResponse struct {
+	Status string `json:"status"`
+	Muted  bool   `json:"muted"`
+}
+
+// SubscriptionMuteToggledEvent is the OutboxEvent.Payload for type "subscription_mute_toggled".
+type SubscriptionMuteToggledEvent struct {
+	Account   string `json:"account"              bson:"account"`
+	RoomID    string `json:"roomId"               bson:"roomId"`
+	Muted     bool   `json:"muted" bson:"muted"`
+	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
 }
 
 type MemberRemoveEvent struct {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -38,9 +39,10 @@ type Handler struct {
 	maxBatchSize      int
 	memberListTimeout time.Duration
 	publishToStream   func(ctx context.Context, subj string, data []byte) error
+	publishCore       func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
 	return &Handler{
 		store:             store,
 		keyStore:          keyStore,
@@ -51,6 +53,7 @@ func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberL
 		maxBatchSize:      maxBatchSize,
 		memberListTimeout: memberListTimeout,
 		publishToStream:   publishToStream,
+		publishCore:       publishCore,
 	}
 }
 
@@ -64,12 +67,6 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	const queue = "room-service"
 	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, h.natsCreateRoom); err != nil {
 		return fmt.Errorf("subscribe room.create: %w", err)
-	}
-	if _, err := nc.QueueSubscribe(subject.RoomsListWildcard(), queue, h.natsListRooms); err != nil {
-		return err
-	}
-	if _, err := nc.QueueSubscribe(subject.RoomsGetWildcard(), queue, h.natsGetRoom); err != nil {
-		return err
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
 		return err
@@ -89,6 +86,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MessageReadReceiptWildcard(h.siteID), queue, h.natsMessageReadReceipt); err != nil {
 		return fmt.Errorf("subscribe message read-receipt: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.MessageThreadReadWildcard(h.siteID), queue, h.natsMessageThreadRead); err != nil {
+		return fmt.Errorf("subscribe message thread read: %w", err)
+	}
 	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
 	}
@@ -97,6 +97,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
 		return fmt.Errorf("subscribe room key ensure: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, h.natsMuteToggle); err != nil {
+		return fmt.Errorf("subscribe mute toggle: %w", err)
 	}
 	return nil
 }
@@ -131,28 +134,6 @@ func (h *Handler) replyDMExists(msg *nats.Msg, existingRoomID string) {
 	if err := msg.Respond(body); err != nil {
 		slog.Error("failed to respond DM exists", "error", err)
 	}
-}
-
-func (h *Handler) natsListRooms(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	rooms, err := h.store.ListRooms(ctx)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, model.ListRoomsResponse{Rooms: rooms})
-}
-
-func (h *Handler) natsGetRoom(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
-	parts := strings.Split(m.Msg.Subject, ".")
-	roomID := parts[len(parts)-1]
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		natsutil.ReplyError(m.Msg, err.Error())
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, room)
 }
 
 func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte) ([]byte, error) {
@@ -457,10 +438,10 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 		}
 	}
 	if req.Limit != nil && *req.Limit <= 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("limit must be > 0")
+		return model.ListRoomMembersResponse{}, errListLimitInvalid
 	}
 	if req.Offset != nil && *req.Offset < 0 {
-		return model.ListRoomMembersResponse{}, fmt.Errorf("offset must be >= 0")
+		return model.ListRoomMembersResponse{}, errListOffsetInvalid
 	}
 
 	members, err := h.store.ListRoomMembers(ctx, roomID, req.Limit, req.Offset, req.Enrich)
@@ -482,7 +463,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	}
 
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("room ID mismatch")
+		return nil, errRoomIDMismatch
 	}
 	req.RoomID = roomID
 	req.Requester = requesterAccount
@@ -493,14 +474,14 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, fmt.Errorf("remove-member only supported on channel rooms, got %s", room.Type)
+		return nil, fmt.Errorf("%w, got %s", errRemoveChannelOnly, room.Type)
 	}
 	// Carry room type to room-worker to avoid a redundant GetRoom round-trip there.
 	req.RoomType = room.Type
 
 	// Exactly one of Account or OrgID must be set.
 	if (req.Account == "") == (req.OrgID == "") {
-		return nil, fmt.Errorf("exactly one of account or orgId must be set")
+		return nil, errRemoveTargetAmbiguous
 	}
 
 	// Permission + last-member checks. Dual-membership / no-actual-removal detection moves to room-worker (it owns deletion).
@@ -510,7 +491,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("get target subscription: %w", err)
 		}
 		if target.HasOrgMembership && !target.HasIndividualMembership {
-			return nil, fmt.Errorf("org members cannot leave individually")
+			return nil, errOrgMemberCannotLeaveSolo
 		}
 		if req.Account != requesterAccount {
 			requesterSub, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
@@ -526,10 +507,10 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("count members: %w", err)
 		}
 		if counts.MemberCount <= 1 {
-			return nil, fmt.Errorf("cannot remove the last member of the room")
+			return nil, errCannotRemoveLastMember
 		}
 		if hasRole(target.Subscription.Roles, model.RoleOwner) && counts.OwnerCount <= 1 {
-			return nil, fmt.Errorf("last owner cannot leave the room")
+			return nil, errLastOwnerCannotLeave
 		}
 	} else {
 		// Owner-removes-org: only the requester's owner role matters here; org members resolved downstream.
@@ -1227,6 +1208,132 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 	return json.Marshal(model.ReadReceiptResponse{Readers: entries})
 }
 
+func (h *Handler) natsMessageThreadRead(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleMessageThreadRead(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("message thread-read failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to message thread-read", "error", err)
+	}
+}
+
+func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid message-thread-read subject: %s", subj)
+	}
+
+	var req model.MessageThreadReadRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("unmarshal thread-read request: %w", err)
+	}
+	if strings.TrimSpace(req.ThreadID) == "" {
+		return nil, errInvalidThreadID
+	}
+
+	// Manual priority after Wait(): errNotRoomMember > errThreadSubNotFound > internal errors.
+	// Plain errgroup.Group (not WithContext) so a NotFound from one goroutine does NOT cancel
+	// the siblings — otherwise context.Canceled in subErr/userSiteErr would outrank tsubErr.
+	var (
+		sub                          *model.Subscription
+		tsub                         *model.ThreadSubscription
+		userSiteID                   string
+		subErr, tsubErr, userSiteErr error
+	)
+	var g errgroup.Group
+	g.Go(func() error {
+		s, err := h.store.GetSubscription(ctx, account, roomID)
+		sub, subErr = s, err
+		return err
+	})
+	g.Go(func() error {
+		t, err := h.store.GetThreadSubscriptionByParent(ctx, account, req.ThreadID, roomID)
+		tsub, tsubErr = t, err
+		return err
+	})
+	g.Go(func() error {
+		s, err := h.store.GetUserSiteID(ctx, account)
+		userSiteID, userSiteErr = s, err
+		return err
+	})
+	_ = g.Wait()
+	// Specific NotFound sentinels first so they always outrank any sibling
+	// goroutine's generic error (defends against accidental ctx cancellation).
+	switch {
+	case errors.Is(subErr, model.ErrSubscriptionNotFound):
+		return nil, errNotRoomMember
+	case errors.Is(tsubErr, model.ErrThreadSubscriptionNotFound):
+		return nil, errThreadSubNotFound
+	case subErr != nil:
+		return nil, fmt.Errorf("get subscription: %w", subErr)
+	case tsubErr != nil:
+		return nil, fmt.Errorf("get thread subscription: %w", tsubErr)
+	case userSiteErr != nil:
+		return nil, fmt.Errorf("get user siteId: %w", userSiteErr)
+	}
+
+	newThreadUnread := slices.DeleteFunc(slices.Clone(sub.ThreadUnread), func(s string) bool { return s == req.ThreadID })
+	newAlert := sub.Alert && len(newThreadUnread) > 0
+	now := time.Now().UTC()
+
+	wg, wctx := errgroup.WithContext(ctx)
+	wg.Go(func() error {
+		if err := h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, newThreadUnread, newAlert); err != nil {
+			return fmt.Errorf("update subscription thread-read: %w", err)
+		}
+		return nil
+	})
+	wg.Go(func() error {
+		if err := h.store.UpdateThreadSubscriptionRead(wctx, tsub.ThreadRoomID, account, now); err != nil {
+			return fmt.Errorf("update thread subscription read: %w", err)
+		}
+		return nil
+	})
+	if err := wg.Wait(); err != nil {
+		return nil, err
+	}
+
+	switch {
+	case userSiteID == "":
+		slog.Warn("user not found locally; skipping cross-site outbox", "account", account)
+	case userSiteID != h.siteID:
+		payload := model.ThreadReadEvent{
+			Account:         account,
+			RoomID:          roomID,
+			ThreadRoomID:    tsub.ThreadRoomID,
+			ParentMessageID: req.ThreadID,
+			NewThreadUnread: newThreadUnread,
+			Alert:           newAlert,
+			LastSeenAt:      now.UnixMilli(),
+			Timestamp:       now.UnixMilli(),
+		}
+		payloadData, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal thread_read payload: %w", err)
+		}
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxThreadRead,
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    payloadData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData); err != nil {
+			return nil, fmt.Errorf("publish thread_read outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "accepted"})
+}
+
 // NatsHandleEnsureRoomKey handles server-to-server requests to ensure a room
 // has an encryption key pair in Valkey. Generates and stores a new pair if
 // missing. The reply confirms the room and version but does not return key
@@ -1280,4 +1387,89 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 		RoomID:  req.RoomID,
 		Version: ver,
 	})
+}
+
+func (h *Handler) natsMuteToggle(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleMuteToggle(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("mute toggle failed", "error", err, "subject", m.Msg.Subject)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to mute toggle", "error", err)
+	}
+}
+
+func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid mute-toggle subject: %s", subj)
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+		)
+	}
+
+	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account)
+	if err != nil {
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errNotRoomMember
+		}
+		return nil, fmt.Errorf("toggle subscription mute: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: *sub,
+		Action:       "mute_toggled",
+		Timestamp:    now.UnixMilli(),
+	}
+	subEvtData, err := json.Marshal(subEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", account)
+		// Non-fatal — the DB write is the source of truth; clients will reconcile on next refetch.
+	}
+
+	userSiteID, err := h.store.GetUserSiteID(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get user siteId: %w", err)
+	}
+	if userSiteID != "" && userSiteID != h.siteID {
+		payload := model.SubscriptionMuteToggledEvent{
+			Account:   account,
+			RoomID:    roomID,
+			Muted:     sub.Muted,
+			Timestamp: now.UnixMilli(),
+		}
+		payloadData, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal mute-toggled payload: %w", err)
+		}
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxSubscriptionMuteToggled,
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    payloadData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData); err != nil {
+			return nil, fmt.Errorf("publish mute-toggled outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(model.MuteToggleResponse{Status: "ok", Muted: sub.Muted})
 }

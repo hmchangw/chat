@@ -26,8 +26,7 @@ paths.
    - [3.2 history-service](#32-history-service)
    - [3.3 search-service](#33-search-service)
 4. [Message Send](#4-message-send)
-5. [Server-Pushed Events](#5-server-pushed-events)
-   - [5.1 Room Encryption Keys](#51-room-encryption-keys)
+5. [Room Encryption](#5-room-encryption)
 6. [Error envelope reference](#6-error-envelope-reference)
 
 ---
@@ -36,12 +35,12 @@ paths.
 
 This doc covers the public client-facing API surface only.
 
-**Out of scope (documented elsewhere or backend-internal):**
+**Out of scope (backend-internal — clients never see these):**
 
-- Backend-only JetStream subjects (MESSAGES, MESSAGES_CANONICAL, FANOUT, OUTBOX, INBOX, ROOMS streams). See [`docs/nats-subject-naming.md`](./nats-subject-naming.md).
+- Backend-only JetStream subjects (MESSAGES, MESSAGES_CANONICAL, OUTBOX, INBOX, ROOMS streams).
 - Server-to-server subjects (`chat.server.request.…`).
 
-Server-pushed events that clients consume (room-key generation/rotation, etc.) are documented in [§5](#5-server-pushed-events). Federation arrivals, presence, and cross-site member events remain backend-internal.
+Room-encryption key events that clients consume are documented under the RPC that triggers them (Create Room, Add Members, Remove Member) and in [§5 Room Encryption](#5-room-encryption). Multi-site federation is transparent to clients: a cross-site action delivers the **same** events on the same `chat.user.{account}.…` / `chat.room.…` subjects as a same-site action, so this doc does not distinguish them.
 
 ### Subject placeholders
 
@@ -101,8 +100,8 @@ A client connects to NATS using a user NKey pair plus a signed JWT obtained from
 
 **Recommended baseline subscriptions on connect:**
 
-- `chat.user.{account}.>` — captures every personal event including async replies, notifications, and subscription updates.
-- `chat.room.{roomID}.stream.msg` for each room in the user's sidebar — receives new messages.
+- `chat.user.{account}.>` — captures every personal event including async replies, per-user room events (DM messages, edits, deletes), room-key events, and subscription updates.
+- `chat.room.{roomID}.event` for each channel room in the user's sidebar — receives new messages plus edit/delete events for that channel.
 
 The exact event subjects a client may receive as a result of an RPC are listed under each method's "Triggered events" sections in §2.2, §3, and §4.
 
@@ -163,9 +162,13 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 | Status | Meaning | Example body |
 |--------|---------|--------------|
-| 400    | Missing or malformed fields, or invalid `natsPublicKey`. | `{ "error": "ssoToken and natsPublicKey are required" }` |
-| 401    | SSO token expired or invalid. | `{ "error": "SSO token has expired, please re-login" }` |
+| 400    | Missing required fields. | `{ "error": "ssoToken and natsPublicKey are required" }` |
+| 400    | `natsPublicKey` is not a valid NATS user public NKey. | `{ "error": "invalid natsPublicKey format" }` |
+| 401    | SSO token expired. | `{ "error": "SSO token has expired, please re-login" }` |
+| 401    | SSO token invalid (bad signature, audience, etc.). | `{ "error": "invalid SSO token" }` |
 | 500    | Server-side JWT signing failure. | `{ "error": "failed to generate NATS token" }` |
+
+The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /auth` to refresh before it expires.
 
 #### Triggered events — success path
 
@@ -175,10 +178,6 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 `None.`
 
-#### Dev mode
-
-When the auth-service is started with `DEV_MODE=true`, the request body schema is `{ "account": string, "natsPublicKey": string }` (no SSO token; the supplied account is trusted). This is local-development only and is **not** part of the production contract.
-
 ---
 
 ## 3. Request/Reply Methods
@@ -187,28 +186,32 @@ When the auth-service is started with `DEV_MODE=true`, the request body schema i
 
 #### Create Room
 
-**Subject:** `chat.user.{account}.request.rooms.create`
+**Subject:** `chat.user.{account}.request.room.{siteID}.create`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The room is created asynchronously in `room-worker`, which publishes the events under "Triggered events" below. The client **must** set an `X-Request-ID` NATS header — Create Room rejects requests without it, and the header value is echoed as the `requestId` on the `AsyncJobResult` event.
+
+The room **type is inferred server-side** from the payload shape — the client does not send it:
+
+- `name` set → `channel`
+- `name` empty + exactly one entry in `users` → `dm` (or `botDM` if that user is a bot)
+
+The creator's account and the site come from the subject (`chat.user.{account}.request.room.{siteID}.create`); the client does not pass them in the body.
 
 ##### Request body
 
-| Field              | Type     | Required | Notes |
-|--------------------|----------|----------|-------|
-| `name`             | string   | yes      | Room name. |
-| `type`             | string   | yes      | One of `channel`, `dm`, `botDM`, `discussion`. |
-| `siteId`           | string   | yes      | The site that will own this room. |
-| `members`          | string[] | no       | Required exactly **one** entry when `type=dm` (the other user's ID); ignored otherwise. |
-| `users`            | string[] | no       | `channel` only. Internal user IDs (or accounts) to enroll as members at creation time. Rejected with `"user not found"` if any entry has no matching user document. |
-| `orgs`             | string[] | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Rejected with `"invalid org"` if any entry matches zero users. |
-| `channels`         | array<ChannelRef> | no | `channel` only. Other channels whose members should be copied in. Each entry is `{ "roomId": string, "siteId": string }`. |
-
-The creator's account is taken from the `{account}` segment of the subject (`chat.user.{account}.request.rooms.create`); the client does not pass it in the body.
+| Field      | Type              | Required | Notes |
+|------------|-------------------|----------|-------|
+| `name`     | string            | channels | Channel name (≤ 100 chars). Required to create a channel; leave empty for a DM/botDM. |
+| `users`    | string[]          | no       | Internal user IDs (or accounts) to enroll. For a DM, exactly one entry (the other user). Channel creates reject a bot account here with `"bots cannot be added to a channel"`, and any account with no matching user document with `user "<account>": user not found`. |
+| `orgs`     | string[]          | no       | `channel` only. Org IDs to enroll (expanded server-side to all org members). Any entry matching zero users is rejected with `org "<orgId>": invalid org`. |
+| `channels` | array<ChannelRef> | no       | `channel` only. Other channels whose members are copied in. Each entry is `{ "roomId": string, "siteId": string }`. |
 
 ```json
 {
   "name": "engineering-announcements",
-  "type": "channel",
-  "siteId": "siteA",
   "users": ["bob"],
   "orgs": ["org-eng"],
   "channels": []
@@ -217,155 +220,56 @@ The creator's account is taken from the `{account}` segment of the subject (`cha
 
 ##### Success response
 
-The created `Room` object.
+**Not** the full room — the room object is never returned; it is created asynchronously.
 
-| Field               | Type    | Notes |
-|---------------------|---------|-------|
-| `id`                | string  | Room ID. 17-char base62 for channels; sorted concat of two accounts for DMs. |
-| `name`              | string  |       |
-| `type`              | string  | Same values as request. |
-| `siteId`            | string  |       |
-| `userCount`         | number  | `1` for owner-only creates; higher when initial members were enrolled at creation via `users` / `orgs` / `channels`. |
-| `lastMsgAt`         | string  | Optional. RFC 3339 timestamp; absent until first message. |
-| `lastMsgId`         | string  | Empty until first message. |
-| `lastMentionAllAt`  | string  | Optional. RFC 3339 timestamp. |
-| `minUserLastSeenAt` | string  | Optional. RFC 3339 timestamp. |
-| `createdAt`         | string  | RFC 3339 timestamp. |
-| `updatedAt`         | string  | RFC 3339 timestamp. |
-| `restricted`        | boolean | Optional. |
-| `uids`              | string[] | Optional. `dm`/`botDM` only. Sorted ascending; paired by index with `accounts` so `uids[i]` and `accounts[i]` describe the same user. Absent on channels and on legacy DMs created before this field was introduced. |
-| `accounts`          | string[] | Optional. `dm`/`botDM` only. Permuted to mirror `uids` order. Absent on channels and legacy DMs. |
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `status`   | string | Always `"accepted"`. |
+| `roomId`   | string | The new room's ID. Channel: 17-char base62. DM/botDM: sorted concat of the two account IDs. |
+| `roomType` | string | `channel`, `dm`, or `botDM`. |
 
 ```json
-{
-  "id": "01970a4f8c2d7c9aQ",
-  "name": "engineering-announcements",
-  "type": "channel",
-  "siteId": "siteA",
-  "userCount": 1,
-  "lastMsgId": "",
-  "createdAt": "2026-05-06T08:00:00Z",
-  "updatedAt": "2026-05-06T08:00:00Z"
-}
+{ "status": "accepted", "roomId": "01970a4f8c2d7c9aQ", "roomType": "channel" }
+```
+
+**DM already exists.** When the client asks to create a DM/botDM that already exists, the reply is a non-standard envelope carrying the existing room ID (this is the open-or-create contract — the client should treat it as success and open the existing room):
+
+```json
+{ "error": "dm already exists", "roomId": "<existing room id>" }
 ```
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Channel creates also reject any `orgs` entry that matches zero users with `"invalid org"` and any `users` entry without a matching user document with `"user not found"` (same gates as Add Members — phantom org IDs or accounts do not create a room).
+See [Error envelope](#6-error-envelope-reference). Returned synchronously on validation/authorization failure:
+
+- `"missing X-Request-ID header"` / `"invalid X-Request-ID format"`
+- `"request must include at least one of users, orgs, channels, or name"`
+- `"channel name is required"` / `"channel name must be at most 100 characters"`
+- `"cannot create a DM with yourself"`
+- `"bots cannot be added to a channel"` / `"bot not available"` (botDM target whose assistant is disabled)
+- `user "<account>": user not found` / `org "<orgId>": invalid org` (each wrapped with the offending account/org ID)
+- `"user is missing required name fields"`
+- `"exceeds maximum capacity (N): would create M members"`
 
 ```json
-{ "error": "DM requires exactly one other member, got 0" }
+{ "error": "channel name is required" }
 ```
 
 ##### Triggered events — success path
 
-`None — reply only.` Creation enrolls the owner (from the subject's `{account}`) plus any members supplied via `users` / `orgs` / `channels` per the request schema above. Adding members to an existing room is a separate RPC (Add Members).
+The creator (from the subject) plus any members supplied via `users` / `orgs` / `channels` are enrolled asynchronously. The following events fire:
+
+**1. `chat.user.{account}.response.{requestID}`** — an `AsyncJobResult` to the requester when the job finishes (requires the `X-Request-ID` header). See the [AsyncJobResult schema](#asyncjobresult) under Add Members. `operation` is `"room.create"`.
+
+**2. `chat.user.{account}.event.subscription.update`** — one per enrolled member (including the owner), `action: "added"`. See the [subscription.update schema](#subscriptionupdate-event) under Add Members.
+
+**3. `chat.user.{account}.event.room.key`** — one `RoomKeyEvent` per enrolled local member. See [§5 Room Encryption](#5-room-encryption).
+
+For **channel** rooms, the first messages (`type: "room_created"`, then `type: "members_added"` when initial members were enrolled) flow through the normal message pipeline and arrive as `new_message` room events (see [§4](#4-message-send)).
 
 ##### Triggered events — error path
 
-`None — error returned only via the reply subject.`
-
----
-
-#### List Rooms
-
-**Subject:** `chat.user.{account}.request.rooms.list`
-**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
-
-##### Request body
-
-Empty. Send `{}` or no payload.
-
-```json
-{}
-```
-
-##### Success response
-
-| Field   | Type           | Notes |
-|---------|----------------|-------|
-| `rooms` | array<Room>    | All rooms the requester is subscribed to. See [Create Room](#create-room) for the `Room` schema. |
-
-```json
-{
-  "rooms": [
-    {
-      "id": "01970a4f8c2d7c9aQ",
-      "name": "engineering-announcements",
-      "type": "channel",
-      "siteId": "siteA",
-      "userCount": 12,
-      "lastMsgAt": "2026-05-06T07:55:00Z",
-      "lastMsgId": "01970a4f8c2d7c9aQRST",
-      "createdAt": "2026-05-01T10:00:00Z",
-      "updatedAt": "2026-05-06T07:55:00Z"
-    }
-  ]
-}
-```
-
-##### Error response
-
-See [Error envelope](#6-error-envelope-reference).
-
-##### Triggered events — success path
-
-`None — reply only.`
-
-##### Triggered events — error path
-
-`None — error returned only via the reply subject.`
-
----
-
-#### Get Room
-
-**Subject:** `chat.user.{account}.request.rooms.get.{roomID}`
-**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
-
-The room ID is the last subject segment — there is no request body.
-
-##### Request body
-
-Empty. Send `{}` or no payload.
-
-```json
-{}
-```
-
-##### Success response
-
-A single `Room` object. See [Create Room](#create-room) for the `Room` schema.
-
-```json
-{
-  "id": "01970a4f8c2d7c9aQ",
-  "name": "engineering-announcements",
-  "type": "channel",
-  "siteId": "siteA",
-  "userCount": 12,
-  "lastMsgAt": "2026-05-06T07:55:00Z",
-  "lastMsgId": "01970a4f8c2d7c9aQRST",
-  "createdAt": "2026-05-01T10:00:00Z",
-  "updatedAt": "2026-05-06T07:55:00Z"
-}
-```
-
-##### Error response
-
-See [Error envelope](#6-error-envelope-reference).
-
-```json
-{ "error": "room not found" }
-```
-
-##### Triggered events — success path
-
-`None — reply only.`
-
-##### Triggered events — error path
-
-`None — error returned only via the reply subject.`
+`None for synchronous rejections.` If the async job fails after `accepted`, the requester receives an `AsyncJobResult` with `status: "error"`.
 
 ---
 
@@ -373,6 +277,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.add`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member adds run asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
@@ -411,7 +317,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `"invalid org"`, and any `users` entry that has no matching user document is rejected with `"user not found"` — in both cases the request is not queued and no members are added.
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner, or a `users` entry is a bot — rejected with `"bots cannot be added to a channel"`). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `org "<orgId>": invalid org`, and any `users` entry that has no matching user document is rejected with `user "<account>": user not found` (each wrapped with the offending account/org ID) — in both cases the request is not queued and no members are added.
 
 ```json
 { "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
@@ -419,44 +325,48 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.user.{requesterAccount}.response.{requestID}`** — async job result delivered to the **requester** when the bulk add finishes.
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — an `AsyncJobResult` delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request.
 
-Recipients: the original requester. Only published if the client set `X-Request-ID` on the original request.
+<a id="asyncjobresult"></a>**`AsyncJobResult` schema** (shared by Create Room, Add Members, Remove Member):
 
-| Field       | Type    | Notes |
-|-------------|---------|-------|
-| `requestId` | string  | Echoes the `X-Request-ID` value from the original request. |
-| `job`       | string  | `"add_members"`. |
-| `success`   | boolean | `true` if all members were added; `false` if the worker hit an error. |
-| `error`     | string  | Optional. Sanitized message; present only when `success=false`. |
-| `timestamp` | number  | Milliseconds since Unix epoch (UTC). |
+| Field       | Type   | Notes |
+|-------------|--------|-------|
+| `requestId` | string | Echoes the `X-Request-ID` value from the original request. |
+| `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`. |
+| `status`    | string | `"ok"` or `"error"`. |
+| `roomId`    | string | Optional. The affected room. |
+| `error`     | string | Optional. Sanitized message; present only when `status="error"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
 
 ```json
 {
   "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
-  "job": "add_members",
-  "success": true,
+  "operation": "room.member.add",
+  "status": "ok",
+  "roomId": "01970a4f8c2d7c9aQ",
   "timestamp": 1746518400123
 }
 ```
 
-**2. `chat.user.{newMember}.event.subscription.update`** — one event per newly added member.
+**2. `chat.user.{newMember}.event.subscription.update`** — one event per **newly subscribed** member (not the requester, not existing members, not org→individual upgrades).
 
-Recipients: each new member (the freshly added user — not the requester, not existing members).
+<a id="subscriptionupdate-event"></a>**`subscription.update` schema** (shared by Add Members, Remove Member, Update Member Role):
 
 | Field          | Type   | Notes |
 |----------------|--------|-------|
-| `userId`       | string | The new member's internal user ID. |
-| `subscription` | object | The full `Subscription` record (room ID, room type, roles, joinedAt, etc.). |
-| `action`       | string | `"added"`. |
+| `userId`       | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
+| `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
+| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, or `"mute_toggled"`. |
 | `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+On `added` / `role_updated` / `mute_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
-    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "user": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
@@ -468,11 +378,17 @@ Recipients: each new member (the freshly added user — not the requester, not e
 }
 ```
 
+**3. `chat.user.{newMember}.event.room.key`** — a `RoomKeyEvent` per newly-subscribed account (channels). Existing members do not receive a duplicate. See [§5 Room Encryption](#5-room-encryption).
+
+**4. `chat.room.{roomID}.event.member`** — a `MemberAddEvent` (`type: "member_added"`) published once when at least one new account or org was added. Carries `roomId`, `roomName`, `roomType`, `accounts` (the added accounts), `siteId`, `requesterAccount`, `joinedAt`, `historySharedSince`, `timestamp`. Delivered to clients subscribed to `chat.room.>` for the room.
+
+A `members_added` system message also flows through the message pipeline and arrives as a `new_message` room event.
+
+**No-op note:** if every requested account is already a member (and no new orgs), or the add only upgrades an existing org member to an individual membership, the requester still gets an `AsyncJobResult` with `status: "ok"` but **no** `subscription.update` / `room.key` / `member_added` events follow.
+
 ##### Triggered events — error path
 
-When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
-
-When the asynchronous job fails after acceptance, the requester receives the `AsyncJobResult` above with `success: false`. No `subscription.update` events are published in that case.
+`None for synchronous rejections.` If the async job fails after `accepted`, the requester receives the `AsyncJobResult` with `status: "error"`.
 
 ---
 
@@ -480,6 +396,8 @@ When the asynchronous job fails after acceptance, the requester receives the `As
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.remove`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual member removal runs asynchronously in `room-worker`, which publishes the events listed under "Triggered events" below. To receive the `AsyncJobResult` event, the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
 
@@ -491,7 +409,7 @@ This is an **async-job RPC**: the synchronous reply only confirms acceptance. Th
 | `orgId`   | string | no       | Remove all users in this org. Mutually exclusive with `account`. |
 | `roomId`  | string | no       | Server derives from subject; non-matching values are rejected. |
 
-Exactly one of `account` or `orgId` must be set. The fields `requester` and `timestamp` on the Go `RemoveMemberRequest` are server-set — the client should omit them.
+Exactly one of `account` or `orgId` must be set. The fields `requester`, `roomType`, and `timestamp` on the Go `RemoveMemberRequest` are server-set — the client should omit them.
 
 ```json
 { "account": "bob" }
@@ -517,56 +435,34 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.user.{requesterAccount}.response.{requestID}`** — async job result delivered to the **requester** when the removal finishes.
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the removal finishes (requires `X-Request-ID`). `operation` is `"room.member.remove"` for single-account removal, `"room.member.remove_org"` for org removal.
 
-Recipients: the original requester. Only published if the client set `X-Request-ID` on the original request.
-
-| Field       | Type    | Notes |
-|-------------|---------|-------|
-| `requestId` | string  | Echoes the `X-Request-ID` value from the original request. |
-| `job`       | string  | `"remove_member"` for single-account removal; `"remove_org"` for org removal. |
-| `success`   | boolean | `true` if removal succeeded; `false` if the worker hit an error. |
-| `error`     | string  | Optional. Sanitized message; present only when `success=false`. |
-| `timestamp` | number  | Milliseconds since Unix epoch (UTC). |
-
-```json
-{
-  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
-  "job": "remove_member",
-  "success": true,
-  "timestamp": 1746518400123
-}
-```
-
-**2. `chat.user.{removedAccount}.event.subscription.update`** — one event per removed account.
-
-Recipients: each removed account (the user whose subscription was deleted).
-
-| Field          | Type   | Notes |
-|----------------|--------|-------|
-| `userId`       | string | The removed user's internal user ID. |
-| `subscription` | object | The `Subscription` record at the time of removal (room ID, room type, user info). |
-| `action`       | string | `"removed"`. |
-| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+**2. `chat.user.{removedAccount}.event.subscription.update`** — one per removed account, `action: "removed"`. The payload is a dedicated `SubscriptionRemovedEvent` (not the full `SubscriptionUpdateEvent`): its `subscription` carries **only** `roomId`, `roomType`, and `u` so no zero-valued `Subscription` fields are sent. On the **org-removal** path `userId` is omitted (only `subscription.u.account` is set).
 
 ```json
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
-    "user": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
     "roomId": "01970a4f8c2d7c9aQ",
-    "roomType": "channel"
+    "roomType": "channel",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" }
   },
   "action": "removed",
   "timestamp": 1746518483000
 }
 ```
 
+**3. `chat.user.{survivor}.event.room.key`** — on a channel removal the room key is **rotated**; every surviving member receives a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving key events. See [§5 Room Encryption](#5-room-encryption).
+
+**4. `chat.room.{roomID}.event.member`** — a `MemberRemoveEvent` (`type: "member_left"` for a self-leave, `"member_removed"` for a forced removal or org removal) carrying `roomId`, `accounts` (removed accounts), `siteId`, `timestamp` (org removals also carry `orgId`). Delivered to clients subscribed to `chat.room.>`.
+
+A `member_left` / `member_removed` system message also flows through the message pipeline as a `new_message` room event.
+
+**No-op note:** removals that change no membership (e.g. an org member who still has an individual membership, or an org removal where every member is covered by another membership) still return an `AsyncJobResult` `ok` with no follow-on events.
+
 ##### Triggered events — error path
 
-When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
-
-When the asynchronous job fails after acceptance, the requester receives the `AsyncJobResult` above with `success: false`. No `subscription.update` events are published in that case.
+`None for synchronous rejections.` If the async job fails after `accepted`, the requester receives the `AsyncJobResult` with `status: "error"`.
 
 ---
 
@@ -574,6 +470,8 @@ When the asynchronous job fails after acceptance, the requester receives the `As
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.role-update`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 This is an **async-job RPC**. The synchronous reply confirms acceptance; the actual role change runs in `room-worker` and emits the event below. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for role updates — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
 
@@ -619,27 +517,18 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**`chat.user.{targetAccount}.event.subscription.update`** — emitted once for the user whose role changed.
-
-Recipients: the target user (the account whose role was updated) only — not the requester, not other room members.
-
-| Field          | Type   | Notes |
-|----------------|--------|-------|
-| `userId`       | string | The target user's internal user ID. |
-| `subscription` | object | The full `Subscription` record reflecting the updated `roles` array. |
-| `action`       | string | `"role_updated"`. |
-| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+**`chat.user.{targetAccount}.event.subscription.update`** — emitted once for the user whose role changed, `action: "role_updated"`. Delivered to the target user only (not the requester, not other members). See the [subscription.update schema](#subscriptionupdate-event); the embedded `Subscription` reflects the updated `roles`. No `AsyncJobResult` and no room-key event fire for role updates.
 
 ```json
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
-    "_id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
     "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
-    "roles": ["owner", "member"],
+    "roles": ["member", "owner"],
     "joinedAt": "2026-05-06T08:01:23Z"
   },
   "action": "role_updated",
@@ -657,6 +546,8 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.member.list`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 ##### Request body
 
@@ -720,7 +611,7 @@ When the synchronous reply is an error envelope, no events follow. The async job
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Common errors: `"not a member of this room"`, `"limit must be > 0"`, `"offset must be >= 0"`.
+See [Error envelope](#6-error-envelope-reference). Common errors: `"only room members can list members"` (requester has no subscription in the room), `"limit must be > 0"`, `"offset must be >= 0"`.
 
 ##### Triggered events — success path
 
@@ -737,7 +628,9 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"not a member
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-This is a **synchronous RPC** — `room-service` performs all writes inline before replying. The handler validates room membership, recomputes the per-subscription `alert` flag, persists the new `lastSeenAt` and `alert` on the user's `Subscription`, optionally recomputes `Room.MinUserLastSeenAt`, and (for cross-site users) publishes a `subscription_read` event to the user's home-site outbox so the destination `inbox-worker` can update its local subscription cache.
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+This is a **synchronous RPC** — `room-service` performs all writes inline before replying. The handler validates room membership, recomputes the per-subscription `alert` flag, persists the new `lastSeenAt` and `alert` on the user's `Subscription`, and optionally recomputes `Room.MinUserLastSeenAt`.
 
 ##### Request body
 
@@ -758,7 +651,7 @@ The subject already carries `account` and `roomID`, so no body fields are requir
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
-- `"invalid message-read subject: …"` — the subject is malformed.
+- A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 
 ```json
 { "error": "only room members can list members" }
@@ -767,14 +660,14 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 ##### Behaviour notes
 
 - **Alert recomputation:** new `alert = oldSub.alert && len(oldSub.threadUnread) > 0`. Reading the room clears the alert when there are no unread thread mentions; it stays set when thread-level unreads remain.
-- **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so that a newly-invited member's joinedAt cannot keep `room.minUserLastSeenAt` pinned to a stale value.
-- **Room-floor recompute (`Room.MinUserLastSeenAt`):** skipped when `room.lastMsgAt` is `null` or when `subscription.lastSeenAt` is non-null and already strictly greater than `room.lastMsgAt` (the user had a recorded read past all content — the floor cannot have moved). Otherwise the handler computes the new floor as `MIN(lastSeenAt)` across only those subscriptions whose `lastSeenAt` is set; subscriptions that have never been read are excluded entirely. If no subscription has a usable `lastSeenAt`, `rooms.minUserLastSeenAt` is `$unset`.
-- **Cross-site federation:** if the user's home site (`users.siteId`) differs from the handler's site, a `subscription_read` event is published to `outbox.{handlerSite}.to.{userSite}.subscription_read` with payload `{account, roomId, lastSeenAt, alert, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the write with an `$lt` order-safety guard so out-of-order delivery cannot regress `lastSeenAt`. The outbox publish happens **before** the room-floor recompute so the user's home site receives every read receipt — even ones that don't move the room floor.
+- **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so a member who has just read for the first time is reflected in the floor.
+- **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is a **strict "everyone has read" marker**: `MIN(lastSeenAt)` across **all** of the room's subscriptions, set **only when every subscription has a usable `lastSeenAt`**. If **any** member has never read the room (no/zero `lastSeenAt` — e.g. invited but never opened), the floor is `$unset` (null). Bots are counted like any other member, so a **botDM room — where the bot never reads — always has a null floor**. Reading a room can advance the floor (or, if this was the last unread member, raise it from null to a value).
+- **Recompute trigger & a known gap:** the floor is recomputed only on this Mark Read path, and only when the caller was not already past `room.lastMsgAt` (the early-return above). Adding a member does not itself recompute the floor, so a newly-invited, never-read member will not flip an existing non-null floor to null until the next recompute is triggered (e.g. that member reads, or another member reads while the room has content).
 - **No system message, no fan-out events:** read receipts are silent; only the requester receives the `accepted` reply.
 
 ##### Triggered events — success path
 
-`None — reply only.` (Cross-site users may observe a delayed `subscription.update` on their home site driven by the outbox/inbox flow above; this is treated as cache convergence rather than a client-visible event for this RPC.)
+`None — reply only.`
 
 ##### Triggered events — error path
 
@@ -782,10 +675,116 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ---
 
+#### Mark Thread as Read
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.thread.read`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+A **synchronous RPC** that clears a single thread's unread state for the caller. `room-service` validates room membership and thread-subscription existence, removes the threadId from the user's `Subscription.ThreadUnread`, recomputes the per-subscription `alert` flag, refreshes the `ThreadSubscription` (`lastSeenAt`, `updatedAt`, `hasMention=false`), and — for cross-site users — publishes a `thread_read` event to the user's home-site outbox so the destination `inbox-worker` can mirror both updates.
+
+##### Request body
+
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `threadId` | string | Required. The thread's parent message ID. Empty / missing → `threadId is required`. |
+
+```json
+{ "threadId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Success response
+
+| Field    | Type   | Notes |
+|----------|--------|-------|
+| `status` | string | Always `"accepted"`. |
+
+```json
+{ "status": "accepted" }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the caller has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"thread subscription not found"` — the caller has no `ThreadSubscription` for the supplied `threadId` in the supplied room. Also returned when the thread exists but belongs to a different room than the one in the subject.
+- `"threadId is required"` — body is missing `threadId` or sends an empty string.
+- `"invalid message-thread-read subject: …"` — the subject is malformed.
+
+##### Behaviour notes
+
+- **Alert recomputation:** new `alert = oldSub.alert && len(newThreadUnread) > 0`. A thread-read can only clear an alert, never set one. When the post-removal `threadUnread` is empty, `alert` becomes false.
+- **Concurrent local writes:** the room-`Subscription` update and the `ThreadSubscription` update run in parallel inside an `errgroup`. Both must succeed before the handler proceeds.
+- **Cross-site federation:** if the user's home site differs from the handler's site, a `thread_read` event is published to `outbox.{handlerSite}.to.{userSite}.thread_read` with payload `{account, roomId, threadRoomId, parentMessageId, newThreadUnread, alert, lastSeenAt, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the supplied `newThreadUnread`+`alert` to the local Subscription cache and applies `lastSeenAt`+`updatedAt`+`hasMention=false` to the local ThreadSubscription with an `$lt` order-safety guard so out-of-order delivery cannot regress the thread's read position.
+- **Defensive `roomId` filter:** the thread-subscription lookup additionally enforces that the supplied `threadId` belongs to the room named in the subject. Mismatches return `thread subscription not found` (rather than silently clearing an unrelated thread).
+- **No system message, no fan-out events:** thread reads are silent; only the requester receives the `accepted` reply.
+
+##### Triggered events — success path
+
+`None — reply only.` (Cross-site users may observe a delayed cache update on their home site via the outbox/inbox flow above; this is treated as cache convergence rather than a client-visible event for this RPC.)
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Toggle Mute
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.mute.toggle`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+Synchronous RPC. `room-service` flips `Subscription.muted` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, and fans out a `subscription.update` event to the user's other client sessions.
+
+Idempotency: this is a toggle, not a set — every successful call flips the bit. Clients must debounce the user-visible action; redelivery of the same RPC will flip back.
+
+##### Request body
+
+The subject already carries `account` and `roomID`, so no body fields are required. Clients may send `{}` or omit the body entirely; any body content is ignored.
+
+##### Success response
+
+| Field                  | Type    | Notes |
+|------------------------|---------|-------|
+| `status`               | string  | Always `"ok"`. |
+| `muted` | boolean | The resulting value of `Subscription.muted` after the flip. |
+
+```json
+{ "status": "ok", "muted": true }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"invalid mute-toggle subject: …"` — the subject is malformed.
+
+##### Triggered events — success path
+
+**`chat.user.{account}.event.subscription.update`** — emitted once for the requester so other client sessions reconcile.
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The requester's internal user ID. |
+| `subscription` | object | The `Subscription` record with the updated `muted`. |
+| `action`       | string | `"mute_toggled"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+##### Behaviour notes
+
+- **Notification delivery:** `notification-worker` does **not** yet consult `muted` before sending. End-to-end mute behaviour is wired only as far as the persisted flag; honouring it in fan-out is a follow-up.
+
+---
+
 #### Read Message Receipts
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 A **synchronous, sender-only** RPC. Returns the list of users on the local site whose `subscription.lastSeenAt` is at or after the target message's `createdAt`. Only the message author may call it. The author is excluded from the result.
 
@@ -835,7 +834,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - `"message not found"` — no message matches `messageId`.
 - `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
 - `"only the message sender can view read receipts"` — requester is not the author of `messageId`.
-- `"invalid message-read-receipt subject: …"` — the subject is malformed.
+- A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 - `"invalid request: messageId is required"` — empty `messageId`.
 
 ```json
@@ -924,6 +923,24 @@ See [Error envelope](#6-error-envelope-reference).
 
 ### 3.2 history-service
 
+#### Common request fields (read RPCs)
+
+The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread Messages) accept these shared optional fields in addition to their own:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
+| `meta` | object | Optional. `{ "lastMsgAt"?: number, "createdAt"?: number }`, both UTC milliseconds. |
+
+**What to pass for `meta`:** the server needs the room's `lastMsgAt` and `createdAt` to pick the Cassandra time-bucket window to scan. `meta` lets the client supply the values it already holds so the server can skip a MongoDB lookup:
+
+- `meta.lastMsgAt` — the room's most-recent-message time, as the client knows it from the room summary (the same `lastMsgAt` carried on `RoomEvent`s / the sidebar). Use the room's last-activity timestamp; for an empty room use its `createdAt`.
+- `meta.createdAt` — the room's creation time from the room summary.
+
+Both are **hints, not authority**: the server sanitizes them (ignores values that are negative, in the future, or mutually inconsistent) and falls back to a MongoDB fetch when a value is missing or fails sanitization. A client that does not have these values should omit `meta` entirely — correctness is unaffected, only an extra lookup is incurred.
+
+Common error strings across these RPCs: `"not subscribed to room"`, `"unable to verify room access"`, `"room not found"`, `"invalid pagination cursor"`, `"message not found"`, and (for access-restricted readers) `"message is outside access window"` / `"thread is outside access window"`.
+
 #### Message schema
 
 Used by every history-service method that returns messages. Mirrors the Cassandra `Message` row.
@@ -946,7 +963,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 | `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. Map of `emoji → Participant[]`. |
+| `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -984,17 +1001,41 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `threadParentId` | string | Optional. Set if the quoted message itself is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 
+When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
+
+`reactions` is keyed by emoji; each value is the list of users who reacted with that emoji. The inner record is intentionally minimal — the FE composes any further presentation it needs from these two fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `account` | string | The reactor's stable account identifier. Used for "is this me?" / "remove my reaction" checks. |
+| `displayName` | string | Server-composed via `displayfmt.CombineWithFallback(engName, chineseName, account)` — same helper used by system-message formatters. |
+
+Example:
+
+```json
+"reactions": {
+  "❤️": [{"account": "bob",   "displayName": "Bob 鲍勃"}],
+  "👍": [{"account": "alice", "displayName": "Alice 爱丽丝"}, {"account": "carol", "displayName": "Carol 卡罗尔"}]
+}
+```
+
+Each emoji's user array is sorted by `reactedAt` ascending — FIFO, oldest reaction first, newest last. This matches the legacy MongoDB insertion-order behaviour. Same-millisecond ties break by `account` ASC. Outer JSON object key order (across emojis) is unspecified — FE applies its own emoji ordering.
+
+Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{shortcode, action: "added"|"removed", actor: Participant, reactedAt}`) including the actor's full `Participant`; clients merge a delta into history-derived state by appending or removing one entry under `reactions[shortcode]` keyed on `actor.account`.
+
 #### Load History
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 ##### Request body
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `before` | number | no | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt < before`. Omit (or `null`) for "now". |
-| `limit`  | number | yes | Maximum number of messages to return. |
+| `limit`  | number | no  | Page size — see [Common request fields](#common-request-fields-read-rpcs) (default 20, max 100). |
 
 ```json
 {
@@ -1008,7 +1049,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | Field | Type | Notes |
 |-------|------|-------|
 | `messages` | array<Message> | Most-recent first. See [Message schema](#message-schema). |
-| `minUserLastSeenAt` | number | Optional. UTC milliseconds since Unix epoch. The room's read floor — `MIN(lastSeenAt)` across all subscribers whose `lastSeenAt` is set. Absent when no member has read yet, when the latest read is past `room.lastMsgAt`, or when the value cannot be retrieved (treated as best-effort; messages still load). See the Message Read RPC for the semantics of how this floor is recomputed. |
+| `minUserLastSeenAt` | number | Optional. UTC milliseconds since Unix epoch. The room's **strict read floor** — `MIN(lastSeenAt)` across all subscribers, present **only when every member has read** the room. Absent (null) when any member has not read yet (so botDM rooms, where the bot never reads, never set it), when the most recent read is already past `room.lastMsgAt` (recompute is skipped), or when the value cannot be retrieved (best-effort; messages still load). See the Message Read RPC for how this floor is recomputed. |
 
 ```json
 {
@@ -1052,6 +1093,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Fetches messages newer than a cursor — the forward-pagination counterpart to Load History.
 
 ##### Request body
@@ -1059,7 +1102,7 @@ Fetches messages newer than a cursor — the forward-pagination counterpart to L
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `after`  | number | no  | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt > after`. Omit for "no lower bound". |
-| `limit`  | number | yes | Maximum number of messages to return. |
+| `limit`  | number | no  | Page size — see [Common request fields](#common-request-fields-read-rpcs) (default 20, max 100). |
 | `cursor` | string | yes | Pagination cursor returned by a previous response. Use empty string for the first page. |
 
 ```json
@@ -1113,6 +1156,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Fetches messages around a target message — useful for "jump to this message" navigation. Returns up to `limit` messages total, centered on `messageId`.
 
 ##### Request body
@@ -1120,7 +1165,7 @@ Fetches messages around a target message — useful for "jump to this message" n
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `messageId` | string | yes | The central message to center the window on. |
-| `limit`     | number | yes | Total number of messages to return (including the central one). |
+| `limit`     | number | no  | Window size including the central message — see [Common request fields](#common-request-fields-read-rpcs) (default 50, max 100). |
 
 ```json
 {
@@ -1172,6 +1217,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 ##### Request body
 
 | Field | Type | Required | Notes |
@@ -1219,6 +1266,8 @@ See [Error envelope](#6-error-envelope-reference).
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Only the original sender may edit a message.
 
 ##### Request body
@@ -1255,28 +1304,37 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sen
 
 ##### Triggered events — success path
 
-**`chat.room.{roomID}.event`** — `MessageEditedEvent`. Recipients: every client subscribed to the room.
+An `EditRoomEvent` is fanned out by `broadcast-worker`. The subject depends on room type:
+
+- **Channel rooms — `chat.room.{roomID}.event`** — one publish to the room stream.
+- **DM/botDM rooms — `chat.user.{recipient}.event.room`** — published once per non-bot member.
+
+The payload is flat (no zero-valued room fields):
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `type` | string | Always `"message_edited"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 | `roomId` | string |       |
+| `siteId` | string |       |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 | `messageId` | string | The edited message's ID. |
-| `newMsg` | string | Optional. New plaintext content. Set for rooms without a key (DMs). Empty for encrypted rooms — see `encryptedNewMsg`. |
-| `encryptedNewMsg` | object | Optional. The `roomcrypto.EncryptedMessage` JSON object for encrypted (channel) rooms. Empty for DMs. |
+| `newContent` | string | Optional. New plaintext content. Present for DMs and unencrypted channels. Omitted for encrypted channels — see `encryptedNewContent`. |
+| `encryptedNewContent` | object | Optional. The `roomcrypto.EncryptedMessage` (`{version, nonce, ciphertext}`) for encrypted channel rooms. Omitted otherwise. |
 | `editedBy` | string | The sender's account. |
-| `editedAt` | number | Milliseconds since Unix epoch (UTC). Domain time of the edit. |
+| `editedAt` | string | RFC 3339 timestamp. Domain time of the edit. |
+| `updatedAt` | string | RFC 3339 timestamp. |
 
 ```json
 {
   "type": "message_edited",
-  "timestamp": 1746518700123,
   "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "timestamp": 1746518700123,
   "messageId": "01970a4f8c2d7c9aQRST",
-  "newMsg": "morning team — updated",
+  "newContent": "morning team — updated",
   "editedBy": "alice",
-  "editedAt": 1746518700000
+  "editedAt": "2026-05-06T08:05:00Z",
+  "updatedAt": "2026-05-06T08:05:00Z"
 }
 ```
 
@@ -1290,6 +1348,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sen
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 Soft-deletes a message (sets `deleted=true` on the row; row is preserved for audit). Only the original sender may delete. Idempotent — re-deleting an already-deleted message returns success without re-publishing the event.
 
@@ -1323,25 +1383,34 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sen
 
 ##### Triggered events — success path
 
-**`chat.room.{roomID}.event`** — `MessageDeletedEvent`. Recipients: every client subscribed to the room. Not published when the request hits an already-deleted message or loses a concurrent-delete CAS.
+A `DeleteRoomEvent` is fanned out by `broadcast-worker` (not published when the request hits an already-deleted message or loses a concurrent-delete CAS). The subject depends on room type:
+
+- **Channel rooms — `chat.room.{roomID}.event`** — one publish to the room stream.
+- **DM/botDM rooms — `chat.user.{recipient}.event.room`** — published once per non-bot member.
+
+The payload is flat:
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `type` | string | Always `"message_deleted"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 | `roomId` | string |       |
+| `siteId` | string |       |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 | `messageId` | string | The deleted message's ID. |
 | `deletedBy` | string | The sender's account. |
-| `deletedAt` | number | Milliseconds since Unix epoch (UTC). Domain time of the delete. |
+| `deletedAt` | string | RFC 3339 timestamp. Domain time of the delete. |
+| `updatedAt` | string | RFC 3339 timestamp. |
 
 ```json
 {
   "type": "message_deleted",
-  "timestamp": 1746518800123,
   "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "timestamp": 1746518800123,
   "messageId": "01970a4f8c2d7c9aQRST",
   "deletedBy": "alice",
-  "deletedAt": 1746518800000
+  "deletedAt": "2026-05-06T08:06:40Z",
+  "updatedAt": "2026-05-06T08:06:40Z"
 }
 ```
 
@@ -1356,6 +1425,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sen
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 Returns the replies in a thread. The thread parent's `messageId` is supplied in the request.
 
 ##### Request body
@@ -1364,7 +1435,7 @@ Returns the replies in a thread. The thread parent's `messageId` is supplied in 
 |-------|------|----------|-------|
 | `threadMessageId` | string | yes | The top-level thread message ID. Must be a thread parent — not a reply. |
 | `cursor`          | string | no  | Pagination cursor returned by a previous response. Omit for the first page. |
-| `limit`           | number | yes | Maximum number of replies to return. |
+| `limit`           | number | no  | Page size — see [Common request fields](#common-request-fields-read-rpcs) (default 20, max 100). |
 
 ```json
 {
@@ -1416,6 +1487,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
 Lists the parent messages of threads the user has subscribed to (or all threads, depending on filter). Use this to drive a "Threads" tab in the client.
 
@@ -1478,10 +1551,12 @@ See [Error envelope](#6-error-envelope-reference).
 
 > **Breaking change (v2):** The response shape has changed from `{total, results}` to `{messages, total}`. The `results` field no longer exists. The per-hit type is now `SearchMessage` (an enriched projection) instead of the former `MessageSearchHit`. Update all clients before deploying this version.
 
-**Subject:** `chat.user.{account}.request.search.messages`
+**Subject:** `chat.user.{account}.request.search.{siteID}.messages`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-**Auth:** the `{account}` in the subject is the authenticated identity. The search is automatically scoped to rooms the user is a member of — results never include messages from rooms the user cannot access.
+**Auth:** the `{account}` in the subject is the authenticated identity. `{siteID}` is the requester's home site — the supercluster routes the request to the search-service running on that site. The search is automatically scoped to rooms the user is a member of — results never include messages from rooms the user cannot access.
+
+**Cross-site results:** results may include messages from rooms hosted on remote sites (the index is searched across the local and remote clusters). The `siteId` on each `SearchMessage` identifies the originating site; there is no client opt-in/opt-out.
 
 ##### Request body
 
@@ -1570,10 +1645,10 @@ See [Error envelope](#6-error-envelope-reference).
 
 #### Search Rooms
 
-**Subject:** `chat.user.{account}.request.search.rooms`
+**Subject:** `chat.user.{account}.request.search.{siteID}.rooms`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-Full-text search across rooms the requester is subscribed to. Results are served directly from the spotlight ES index (one document per `(account, room)` pair), in ES relevance order.
+`{siteID}` is the requester's home site; the supercluster routes the request to that site's search-service. Full-text search across rooms the requester is subscribed to. Results are served directly from the spotlight ES index (one document per `(account, room)` pair), in ES relevance order.
 
 ##### Request body
 
@@ -1641,9 +1716,9 @@ See [Error envelope](#6-error-envelope-reference).
 
 #### Search Apps
 
-**Subject:** `chat.user.{account}.request.search.apps`
+**Subject:** `chat.user.{account}.request.search.{siteID}.apps`
 
-**Auth:** the `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout).
+**Auth:** the `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout). `{siteID}` is the requester's home site; the supercluster routes the request to that site's search-service.
 
 **Current behavior (prototype):** results are matched by `query` (and optional `assistantEnabled`) only. The response is **not** yet subscription-scoped — every app whose name matches the query is returned.
 
@@ -1694,23 +1769,25 @@ These are documentation categories. The wire error envelope is `{ "error": "<hum
 
 #### Search Users
 
-**Subject:** `chat.user.{account}.request.search.users`
+**Subject:** `chat.user.{account}.request.search.{siteID}.users`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-Proxy search for users via the third-party HR endpoint. The `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout) and is used for logging/metrics only — company-scoping is enforced by the third-party endpoint.
-
-No pagination parameters — the third-party endpoint hardcodes offset=0, limit=25.
+`{siteID}` is the requester's home site; the supercluster routes the request to that site's search-service. Proxy search for users via the third-party HR endpoint. The `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout) and is used for logging/metrics only — company-scoping is enforced by the third-party endpoint.
 
 **Request body:**
 ```json
 {
-  "query": "alice"
+  "query": "alice",
+  "offset": 0,
+  "limit": 25
 }
 ```
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
+| `offset` | integer | no | Page offset forwarded to the HR endpoint. Default `0`. Must be non-negative. |
+| `limit` | integer | no | Page size forwarded to the HR endpoint. Default `25`, capped at `100`. Must be non-negative. |
 
 **Response body — raw JSON array (no envelope):**
 ```json
@@ -1741,6 +1818,8 @@ The response is a top-level JSON array of `SearchUser` objects (no wrapping obje
 **Subject:** `chat.user.{account}.room.{roomID}.{siteID}.msg.send`
 **Reply subject:** `chat.user.{account}.response.{requestID}` — the client must subscribe to `chat.user.{account}.>` (the user wildcard) to receive it. The `{requestID}` value is the `requestId` field from the request body.
 
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
 This RPC uses the **publish + async-reply** pattern, not the standard NATS request/reply. The client publishes to the `msg.send` subject (no `_INBOX.>` reply expected). `message-gatekeeper` validates the request, publishes the canonical message to `MESSAGES_CANONICAL`, and replies to `chat.user.{account}.response.{requestID}` with the persisted `Message` (or an error envelope on failure).
 
 The same subject and request body cover three send variants: plain message, thread reply, and quoted message. The variant is determined by which optional fields are set.
@@ -1751,7 +1830,7 @@ The same subject and request body cover three send variants: plain message, thre
 |-------|------|----------|-------|
 | `id` | string | yes | The message's ID. Must be 20-char base62. The client generates this and uses it for client-side optimistic rendering. |
 | `content` | string | yes | The message body. Must be non-empty and ≤ 20 KiB. |
-| `requestId` | string | yes | A 36-char hyphenated UUIDv7 the client generates. The async reply will be published to `chat.user.{account}.response.{requestId}`. |
+| `requestId` | string | yes | A 36-char hyphenated UUID (v4 or v7) the client generates. **Validated** — an empty or malformed `requestId` is rejected with no message published. The async reply is delivered to `chat.user.{account}.response.{requestId}`. |
 | `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. Pair with `threadParentMessageCreatedAt`. |
 | `threadParentMessageCreatedAt` | number | no | Required when `threadParentMessageId` is set. Milliseconds since Unix epoch (UTC). |
 | `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
@@ -1791,23 +1870,21 @@ The same subject and request body cover three send variants: plain message, thre
 
 #### Success response
 
-Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message`.
+Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message` as the gatekeeper builds it. Only the fields below are populated — the same shape for plain, thread, and quoted sends (the optional fields appear only for their variant):
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `id` | string |       |
-| `roomId` | string |       |
-| `userId` | string | Sender's internal user ID. |
+| `id` | string | Echoes the request `id`. |
+| `roomId` | string | Derived from the request subject. |
+| `userId` | string | Sender's internal user ID (resolved from the sender's subscription). |
 | `userAccount` | string | Sender's account. |
-| `content` | string | The message body. |
-| `mentions` | array<Participant> | Optional. |
-| `createdAt` | string | RFC 3339. |
-| `threadParentMessageId` | string | Optional. Set for thread replies. |
-| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
-| `tshow` | boolean | Optional. |
-| `type` | string | Optional. |
-| `sysMsgData` | string | Optional. Base64. |
-| `quotedParentMessage` | object | Optional. Snapshot of the quoted message. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+| `content` | string | The message body, exactly as sent. |
+| `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
+| `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
+| `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
+| `quotedParentMessage` | object | Present only for a quoted send — the server-fetched snapshot of the quoted parent. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+
+The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
 
 ```json
 {
@@ -1822,7 +1899,21 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 
 #### Error response
 
-Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6-error-envelope-reference). Common errors: `"invalid message ID \"…\": must be a 20-char base62 string"`, `"content must not be empty"`, `"content exceeds maximum size of 20480 bytes"`, `"user alice is not subscribed to room …"`, `"validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set"`.
+Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6-error-envelope-reference). Errors:
+
+| Wire `error` | `code` | Cause |
+|--------------|--------|-------|
+| `invalid requestId "…": must be a hyphenated UUID` | — | Empty/malformed `requestId`. (Reachable only when `requestId` is non-empty but malformed; an empty `requestId` leaves no reply subject, so the client just times out.) |
+| `invalid message ID "…": must be a 20-char base62 string` | — | `id` is not valid base62. |
+| `invalid thread parent message ID "…": …` | — | `threadParentMessageId` is not a valid message ID. |
+| `content must not be empty` | — | Empty `content`. |
+| `content exceeds maximum size of 20480 bytes` | — | `content` > 20 KiB. |
+| `validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set` | — | Missing thread-parent timestamp. |
+| `user {account} is not subscribed to room {roomID}` | — | Sender is not a member. |
+| `posting is restricted to owners and admins in this room` | `large_room_post_restricted` | Non-owner/admin/bot posting a top-level message in a room above the large-room threshold (thread replies are exempt). |
+| `quoted parent {id} thread context mismatch: …` | — | A quoted message must be in the same thread context (main-room or the same thread) as the new message. |
+
+**Delivery guarantee:** every validation/authorization failure — including a `siteID` mismatch and a malformed `msg.send` subject — is replied to the client on the response subject and the JetStream message is acked (not retried). The error reply requires a routable response subject, so it can only be sent when the `{account}` segment is recoverable from the subject and the payload carries a valid hyphenated-UUID `requestId`; if neither is recoverable (a truly malformed subject or missing/invalid `requestId`) no reply is possible and the client falls back to a request timeout. **Only infrastructure failures** (store/publish errors) are nak'd and **redelivered by JetStream** — these produce no immediate reply.
 
 ```json
 { "error": "content must not be empty" }
@@ -1830,11 +1921,11 @@ Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6
 
 #### Triggered events — success path
 
-After a successful send, two downstream services fan out events. The set you receive depends on whether the room is a channel or a DM, and whether you're a mentioned user.
+After a successful send, `broadcast-worker` fans out a `RoomEvent`. The subject depends on room type. **`botDM` rooms receive no `new_message` fan-out at all:** `broadcast-worker` only handles `channel` and `dm` room types, so a `botDM` falls through to the default branch and is skipped — the human participant in a `botDM` does **not** receive a `new_message` room event from this pipeline. (Bot integrations consume `botDM` messages through a separate backend path.)
 
-**1. For channel rooms — `chat.room.{roomID}.event`**
+**1. For channel rooms — `chat.room.{roomID}.event`** (`publishChannelEvent`)
 
-A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscribed to the room (which includes the sender, since the sender is also a member).
+A `RoomEvent`. Recipients: every client subscribed to the room (which includes the sender, since the sender is also a member).
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -1850,8 +1941,8 @@ A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscrib
 | `mentions` | array<Participant> | Optional. |
 | `mentionAll` | boolean | Optional. `true` if the message mentioned `@all` or `@here`. |
 | `hasMention` | boolean | Optional. Per-recipient flag (DM event only). Always absent on channel events. |
-| `message` | object | Optional. The `ClientMessage` (see [Message schema](#message-schema) plus a `sender` Participant). Set for unencrypted rooms. |
-| `encryptedMessage` | object | Optional. The room ciphertext envelope `{version, nonce, ciphertext}` (see [§5.1](#51-room-encryption-keys)). Set for encrypted (channel) rooms. Clients decrypt by deriving the AES-256-GCM key from the room private key for `version` and unsealing with `nonce` + `ciphertext`. |
+| `message` | object | Optional. The `ClientMessage` (the [Message schema](#message-schema) plus a `sender` Participant: `{userId, account, chineseName, engName}`). Set for unencrypted rooms. |
+| `encryptedMessage` | object | Optional. The room ciphertext envelope `{version, nonce, ciphertext}` (see [§5 Room Encryption](#5-room-encryption)). Set for encrypted (channel) rooms. Clients decrypt with the room key for `version`. |
 
 ```json
 {
@@ -1872,9 +1963,9 @@ A `RoomEvent` published by `broadcast-worker`. Recipients: every client subscrib
 }
 ```
 
-**2. For DM rooms — `chat.user.{recipient}.event.room`**
+**2. For DM rooms — `chat.user.{recipient}.event.room`** (`publishDMEvents`)
 
-A `RoomEvent` (same struct as above) published by `broadcast-worker` per DM participant. Recipients: each user subscribed to the DM. The `hasMention` field is set per-recipient. DM events use `message` (plaintext); they do not use `encryptedMessage`.
+A `RoomEvent` (same struct as above) published once per DM participant. Recipients: each user subscribed to the DM. The `hasMention` field is set per-recipient. DM events carry `message` (plaintext); they do not use `encryptedMessage`.
 
 ```json
 {
@@ -1896,38 +1987,12 @@ A `RoomEvent` (same struct as above) published by `broadcast-worker` per DM part
     "content": "morning team",
     "createdAt": "2026-05-06T07:55:00Z",
     "sender": {
-      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+      "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
       "account": "alice",
+      "chineseName": "愛麗絲",
       "engName": "Alice"
     }
   }
-}
-```
-
-**3. `chat.user.{recipient}.notification`** — for desktop banner notifications.
-
-A `NotificationEvent` published by `notification-worker`. Recipients: per the worker's policy — typically the DM partner for DMs, and any `@`-mentioned user for channel messages.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `type` | string | `"new_message"`. |
-| `roomId` | string |       |
-| `message` | object | The full `Message`. See [Message schema](#message-schema). |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
-
-```json
-{
-  "type": "new_message",
-  "roomId": "alice___bob",
-  "message": {
-    "id": "01970a4f8c2d7c9aQRST",
-    "roomId": "alice___bob",
-    "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
-    "userAccount": "alice",
-    "content": "morning team",
-    "createdAt": "2026-05-06T07:55:00Z"
-  },
-  "timestamp": 1746518100123
 }
 ```
 
@@ -1941,11 +2006,9 @@ When validation fails, the gatekeeper publishes the error envelope to `chat.user
 
 ---
 
-## 5. Server-Pushed Events
+## 5. Room Encryption
 
-Server-pushed events are delivered to clients on NATS subjects the client is already authorized for, without a corresponding client RPC. They are distinct from the "Triggered events" sections in §3 and §4, which document events that arise as a side-effect of a specific RPC.
-
-### 5.1 Room Encryption Keys
+Channel messages can be end-to-end encrypted. The key material reaches clients as `RoomKeyEvent`s, which are triggered by the Create Room / Add Members / Remove Member RPCs (see their "Triggered events" sections). This section describes the event payload and how a client uses it to decrypt.
 
 Each room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
 
@@ -1977,7 +2040,9 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
    - Look up `privateKey` for `(roomId, encryptedMessage.version)`.
    - Use the 32-byte `privateKey` directly as the AES-256-GCM key (no key derivation step).
    - Decrypt: `AES-GCM-Decrypt(privateKey, nonce, ciphertext, aad=empty)`. The ciphertext already includes the 16-byte GCM tag at the end (Go `cipher.AEAD.Seal` format).
-   - The plaintext is a UTF-8-encoded JSON `ClientMessage` (for `encryptedMessage`) or a UTF-8 string (for `messageEdited.encryptedNewContent`).
+   - **The cipher is identical for both event kinds (same `roomcrypto` AES-256-GCM seal); only the plaintext payload differs**, because each event encrypts exactly what the client needs:
+     - **`encryptedMessage`** (new message) decrypts to a UTF-8-encoded JSON `ClientMessage` — a brand-new message the client has never seen, so the whole object (sender, timestamps, thread/quote fields) is sealed.
+     - **`encryptedNewContent`** (edit) decrypts to a plain UTF-8 content **string** — the client already has the original message rendered, and an edit only replaces its `content`, so just the new body is sealed (the surrounding message metadata is unchanged and already known).
 3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
 #### When clients receive `RoomKeyEvent`s
@@ -2003,7 +2068,7 @@ Every error response — over NATS reply subjects and HTTP — uses the same env
 | Field   | Type   | Notes |
 |---------|--------|-------|
 | `error` | string | Human-readable, sanitized at the service boundary. Do not parse or pattern-match against the text. |
-| `code`  | string | Optional. Machine-readable category emitted by services using `natsrouter`'s typed `RouteError` (e.g. `bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, `unavailable`). Absent for plain `natsutil.ReplyError` responses. |
+| `code`  | string | Optional. Machine-readable category emitted by services using `natsrouter`'s typed `RouteError` (e.g. `bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, `unavailable`). The message-send flow also emits `large_room_post_restricted`. Absent for plain `natsutil.ReplyError` responses. |
 
 **NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError` (no `code`) or `natsrouter`'s typed error replies (with `code`).
 

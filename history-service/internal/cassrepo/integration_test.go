@@ -12,7 +12,7 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-func setupCassandra(t *testing.T) *gocql.Session {
+func setupCassandra(t testing.TB) *gocql.Session {
 	t.Helper()
 	keyspace, adminSession, host := testutil.CassandraKeyspace(t, "history_service_test")
 	cql := func(format string) string { return fmt.Sprintf(format, keyspace) }
@@ -24,6 +24,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."EncMeta" (nonce BLOB)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reaction_key (emoji TEXT, user_account TEXT)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s.reactor_info (user_id TEXT, eng_name TEXT, chn_name TEXT, account TEXT, reacted_at TIMESTAMP)`),
 	} {
 		require.NoError(t, adminSession.Query(stmt).Exec())
 	}
@@ -47,7 +49,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -76,7 +78,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -91,12 +93,11 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		PRIMARY KEY (message_id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
 
-	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_room (
-		room_id TEXT,
-		bucket BIGINT,
+	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_thread (
 		thread_room_id TEXT,
 		created_at TIMESTAMP,
 		message_id TEXT,
+		room_id TEXT,
 		sender FROZEN<"Participant">,
 		msg TEXT,
 		mentions SET<FROZEN<"Participant">>,
@@ -107,7 +108,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		thread_parent_id TEXT,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
-		reactions MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,
@@ -116,8 +117,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		updated_at TIMESTAMP,
 		enc_payload BLOB,
 		enc_meta FROZEN<"EncMeta">,
-		PRIMARY KEY ((room_id, bucket), thread_room_id, created_at, message_id)
-	) WITH CLUSTERING ORDER BY (thread_room_id DESC, created_at DESC, message_id DESC)`)).Exec())
+		PRIMARY KEY ((thread_room_id), created_at, message_id)
+	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
 
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.pinned_messages_by_room (
 		room_id TEXT,
@@ -127,6 +128,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		msg TEXT,
 		file FROZEN<"File">,
 		card FROZEN<"Card">,
+		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		edited_at TIMESTAMP,
 		updated_at TIMESTAMP,

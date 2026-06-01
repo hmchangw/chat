@@ -67,15 +67,60 @@ Per-row metadata for at-rest encryption. The KEK version that wrapped the
 room's DEK is intentionally **not** stored here — it lives on the
 `room_data_keys` MongoDB document and is authoritative there. See
 `docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.
+#### reaction_key
+```cql
+CREATE TYPE IF NOT EXISTS chat.reaction_key (
+  emoji        TEXT,
+  user_account TEXT
+);
+```
+#### reactor_info
+```cql
+CREATE TYPE IF NOT EXISTS chat.reactor_info (
+  user_id     TEXT,
+  eng_name    TEXT,
+  chn_name    TEXT,
+  account     TEXT,
+  reacted_at  TIMESTAMP
+);
+```
 ### Table
 
 ### Partition Bucketing
 
-`messages_by_room` and `thread_messages_by_room` use a composite partition key
-`(room_id, bucket)`. `bucket` is the start-of-window in unix milliseconds derived
-deterministically from `created_at` via `pkg/msgbucket.Sizer`. The window size
-is configured per service via `MESSAGE_BUCKET_HOURS` (default 24); all services
-that read or write these tables MUST be configured with the same window.
+`messages_by_room` uses a composite partition key `(room_id, bucket)`. `bucket`
+is the start-of-window in unix milliseconds derived deterministically from
+`created_at` via `pkg/msgbucket.Sizer`. The window size is configured per
+service via `MESSAGE_BUCKET_HOURS` (envDefault 72 in both `message-worker` and
+`history-service`); all services that read or write this table MUST be
+configured with the same window.
+
+`thread_messages_by_thread` is partitioned by `thread_room_id` alone — one
+partition per thread. Reads slice the partition by `created_at`; no bucket
+walk is needed. This shape keeps the worst-case fetch latency bounded by
+partition size rather than by the thread's lifespan.
+
+### Compaction
+
+`messages_by_room` uses `TimeWindowCompactionStrategy` with
+`compaction_window_size` matching `MESSAGE_BUCKET_HOURS`, so each Cassandra
+compaction window corresponds to exactly one logical bucket: a sealed bucket's
+SSTables are compacted once and then left alone, keeping compaction cost
+proportional to recent write volume rather than total table size.
+
+`thread_messages_by_thread` keeps the default compaction strategy — it is
+partitioned per thread (not time-bucketed), so the window-alignment rationale
+does not apply.
+
+Operational notes:
+- Federation replays (`inbox-worker`) that lag more than one window write
+  late-arriving rows into the current window's SSTable; tolerable in small
+  volume but worth monitoring if sustained federation lag is expected.
+- Prefer sub-range / incremental `nodetool repair`; a full-cluster repair
+  rewrites old SSTables into the current TWCS window and defeats the point.
+- Local dev: the `docker-local/cassandra/init/*.cql` scripts already create
+  fresh keyspaces with TWCS. Production clusters apply the migration in
+  `docker-local/cassandra/migrations/2026-05-twcs-message-tables.cql`.
 
 #### messages_by_room
 ```cql
@@ -98,7 +143,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -109,16 +154,21 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((room_id, bucket),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
+  // compaction_window_size MUST match MESSAGE_BUCKET_HOURS.
+  AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'HOURS',
+    'compaction_window_size': '72'
+  };
 ```
-#### thread_messages_by_room
+#### thread_messages_by_thread
 ```cql
-CREATE TABLE IF NOT EXISTS thread_messages_by_room(
-  room_id TEXT,
-  bucket BIGINT,
+CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   thread_room_id TEXT,
   created_at TIMESTAMP,
   message_id TEXT,
+  room_id TEXT,
   thread_parent_id TEXT,
   sender FROZEN<"Participant">,
   msg TEXT,
@@ -129,7 +179,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -139,8 +189,8 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_room(
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
-  PRIMARY KEY((room_id, bucket),thread_room_id,created_at,message_id)
-)WITH CLUSTERING ORDER BY (thread_room_id DESC,created_at DESC, message_id DESC);
+  PRIMARY KEY((thread_room_id),created_at,message_id)
+)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
 #### pinned_messages_by_room
 ```cql
@@ -157,7 +207,7 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   card_action FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,
@@ -190,7 +240,7 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to TEXT,
-  reactions MAP<TEXT,FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted BOOLEAN,
   type TEXT,
   sys_msg_data BLOB,

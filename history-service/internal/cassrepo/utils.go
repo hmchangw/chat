@@ -3,6 +3,7 @@ package cassrepo
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/gocql/gocql"
@@ -13,7 +14,7 @@ type Cursor struct {
 	state []byte
 }
 
-// NewCursor decodes a base64-encoded cursor string; empty string returns the first-page cursor.
+// NewCursor decodes a base64-encoded cursor; empty string returns a first-page cursor.
 func NewCursor(encoded string) (*Cursor, error) {
 	if encoded == "" {
 		return &Cursor{}, nil
@@ -29,7 +30,7 @@ func NewCursor(encoded string) (*Cursor, error) {
 	return &Cursor{state: state}, nil
 }
 
-// Encode returns the base64 cursor string, or empty string when there are no more pages.
+// Encode returns the base64 cursor string, or "" when there are no more pages.
 func (c *Cursor) Encode() string {
 	if len(c.state) == 0 {
 		return ""
@@ -55,12 +56,10 @@ const (
 	maxPageSize         = 100
 )
 
-// maxCursorBytes is the maximum number of raw bytes a decoded page-state cursor
-// may occupy. Real Cassandra page state tokens are 10–100 bytes; 512 is
-// generous while still blocking pathological allocations.
+// maxCursorBytes caps decoded page-state size; 512 is generous vs. real tokens (10–100 B) yet blocks pathological allocations.
 const maxCursorBytes = 512
 
-// ParsePageRequest validates and normalises cursor+pageSize. Default 50, max 100.
+// ParsePageRequest validates and normalizes cursor and pageSize (default 50, max 100).
 func ParsePageRequest(cursorStr string, pageSize int) (PageRequest, error) {
 	cursor, err := NewCursor(cursorStr)
 	if err != nil {
@@ -95,38 +94,62 @@ func (b *QueryBuilder) WithPageSize(size int) *QueryBuilder {
 	return b
 }
 
-// structScan scans the current row of iter into dest using cql struct tags for
-// column-to-field mapping. It mirrors the gocql StructScan API that is not
-// present in v1.7.0: it builds a map[string]interface{} of column-name →
-// field-pointer from the dest struct's cql tags, then delegates to
-// iter.MapScan so gocql handles all type unmarshalling (including UDTs).
-// Returns true when a row was consumed, false when the iterator is exhausted
-// or an error occurred.
-//
-// The column map is rebuilt on every call. Do NOT cache or reuse it across
-// rows: iter.MapScan overwrites map entries with bare values after each call,
-// so a reused map would no longer contain field-pointers on the next scan.
-func structScan(iter *gocql.Iter, dest interface{}) bool {
+// buildScanValues maps colNames to addressable field pointers via cql struct tags, returning the slice for iter.Scan.
+// Separated from structScan so the column-matching logic is unit-testable without a live gocql iterator.
+func buildScanValues(dest any, colNames []string) (values []any, missingCol string, ok bool) {
 	rv := reflect.ValueOf(dest)
 	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
-		return false
+		return nil, "", false
 	}
 	rv = rv.Elem()
 	rt := rv.Type()
 
-	row := make(map[string]interface{}, rt.NumField())
+	fieldByTag := make(map[string]reflect.Value, rt.NumField())
 	for i := 0; i < rt.NumField(); i++ {
 		field := rt.Field(i)
 		tag := field.Tag.Get("cql")
 		if tag == "" || tag == "-" {
 			continue
 		}
-		row[tag] = rv.Field(i).Addr().Interface()
+		fieldByTag[tag] = rv.Field(i)
 	}
-	return iter.MapScan(row)
+
+	vals := make([]any, len(colNames))
+	for i, name := range colNames {
+		fv, found := fieldByTag[name]
+		if !found {
+			return nil, name, false
+		}
+		vals[i] = fv.Addr().Interface()
+	}
+	return vals, "", true
 }
 
-// Fetch executes the query; scan is called with the page iterator. Returns the encoded next-page cursor.
+// structScan scans one row into dest via positional iter.Scan using cql struct tags.
+// Positional scan is used instead of MapScan because MapScan's RowData() panics on MAP<frozen<UDT>,frozen<UDT>> keys.
+func structScan(iter *gocql.Iter, dest any) (bool, error) {
+	// Validate dest shape before touching the iterator (iter may be nil in tests).
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
+		return false, nil
+	}
+
+	cols := iter.Columns()
+	colNames := make([]string, len(cols))
+	for i, c := range cols {
+		colNames[i] = c.Name
+	}
+
+	values, missingCol, ok := buildScanValues(dest, colNames)
+	if !ok {
+		err := fmt.Errorf("structScan: unmapped column %q for type %T", missingCol, dest)
+		slog.Warn("structScan: unmapped column", "column", missingCol, "type", fmt.Sprintf("%T", dest))
+		return false, err
+	}
+	return iter.Scan(values...), nil
+}
+
+// Fetch executes the paged query, calls scan with the iterator, and returns the encoded next-page cursor.
 func (b *QueryBuilder) Fetch(scan func(iter *gocql.Iter)) (string, error) {
 	if b.query == nil {
 		return "", fmt.Errorf("execute paged query: nil query")

@@ -1,11 +1,12 @@
-.PHONY: lint fmt test test-integration generate build deps-up deps-down up down \
-        tools sast sast-gosec sast-vuln sast-semgrep
+.PHONY: lint fmt test test-integration generate build deps-up deps-down up down dev \
+        obs-up obs-down tools sast sast-gosec sast-vuln sast-semgrep
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
 NATS_CREDS       := docker-local/backend.creds
 NATS_CONF        := docker-local/nats.conf
 NATS_CONTAINER   := chat-local-nats
+OBS_COMPOSE      := tools/observability/docker-compose.yml
 
 # --- SAST / dev tooling ------------------------------------------------------
 # Pinned tool versions. Keep GOLANGCI_LINT_VERSION in sync with
@@ -120,6 +121,15 @@ else
 	docker compose -f $(SERVICES_COMPOSE) up --build
 endif
 
+# Hot-reload a single service against the shared deps stack. Requires
+# `make deps-up` first. Uses air; install via `make tools`.
+dev:
+ifndef SERVICE
+	$(error SERVICE is required. Usage: make dev SERVICE=<name>)
+endif
+	@chmod +x tools/dev/dev.sh
+	./tools/dev/dev.sh $(SERVICE)
+
 # Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
 down:
 ifdef SERVICE
@@ -127,6 +137,19 @@ ifdef SERVICE
 else
 	docker compose -f $(SERVICES_COMPOSE) down
 endif
+
+# --- Local observability targets ----------------------------------------------
+# Start cAdvisor + Prometheus + Grafana. Requires `make deps-up` first so the
+# chat-local network exists. Dashboard at http://localhost:3001.
+obs-up:
+	@docker network inspect chat-local >/dev/null 2>&1 || { \
+	  echo "chat-local network missing. Run 'make deps-up' first."; exit 1; \
+	}
+	docker compose -f $(OBS_COMPOSE) up -d --wait
+
+# Stop the observability stack.
+obs-down:
+	docker compose -f $(OBS_COMPOSE) down
 
 # --- SAST -------------------------------------------------------------------
 # Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
@@ -138,6 +161,7 @@ tools:
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	GOTOOLCHAIN=$(TOOLS_GO_TOOLCHAIN) go install github.com/air-verse/air@v1.62.0
 	@if command -v pipx >/dev/null 2>&1; then \
 	  pipx install --force semgrep==$(SEMGREP_VERSION) \
 	    && pipx inject semgrep setuptools; \
@@ -175,3 +199,19 @@ sast-vuln:
 sast-semgrep:
 	@command -v semgrep >/dev/null 2>&1 || { echo "semgrep not installed — run 'make tools' (needs pipx), or: pipx install semgrep==$(SEMGREP_VERSION)"; exit 1; }
 	semgrep scan $(SEMGREP_FLAGS) .
+
+# --- Sample data seeder -----------------------------------------------------
+# Populate MongoDB and Valkey with a small idempotent dataset for local dev.
+# Run after `make deps-up`. Safe to re-run; `seed-reset` wipes the seed
+# records first via stable IDs (never DROP DATABASE) so any hand-added
+# dev data survives. `seed-dry-run` prints the plan without writing.
+.PHONY: seed seed-reset seed-dry-run
+
+seed:
+	go run ./tools/seed-sample-data
+
+seed-reset:
+	go run ./tools/seed-sample-data --reset
+
+seed-dry-run:
+	go run ./tools/seed-sample-data --dry-run

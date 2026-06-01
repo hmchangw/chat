@@ -34,7 +34,7 @@ const (
 	// would silently override the new plaintext on re-enabled reads.
 	editMsgByIDCAS = `UPDATE messages_by_id SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
 	editMsgByRoom  = `UPDATE messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
-	editThreadMsg  = `UPDATE thread_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	editThreadMsg  = `UPDATE thread_messages_by_thread SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	editPinnedMsg  = `UPDATE pinned_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 
 	// Encrypted-path edits null every legacy body column (msg, attachments,
@@ -45,12 +45,12 @@ const (
 	// as the plaintext path.
 	editMsgByIDEncryptedCAS = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, sys_msg_data = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
 	editMsgByRoomEncrypted  = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, sys_msg_data = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
-	editThreadMsgEncrypted  = `UPDATE thread_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, sys_msg_data = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	editThreadMsgEncrypted  = `UPDATE thread_messages_by_thread SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, sys_msg_data = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	editPinnedMsgEncrypted  = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, sys_msg_data = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 
 	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
 	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
-	deleteThreadMsg  = `UPDATE thread_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND bucket = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?`
+	deleteThreadMsg  = `UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
 )
 
@@ -71,7 +71,7 @@ const MessageTypeRemoved = "message_removed"
 const (
 	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true"
 	deleteThreadParentMsgByRoom  = "UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?"
-	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND bucket = ? AND thread_room_id = ? AND created_at = ? AND message_id = ?"
+	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?"
 	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
 )
 
@@ -240,9 +240,10 @@ func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Messa
 	return r.editOne(ctx, editMsgByRoom, editMsgByRoomEncrypted, ep, editedAt, msg.RoomID, b, msg.CreatedAt, msg.MessageID)
 }
 
-func (r *Repository) editInThreadMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
-	b := r.bucket.Of(msg.CreatedAt)
-	return r.editOne(ctx, editThreadMsg, editThreadMsgEncrypted, ep, editedAt, msg.RoomID, b, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID)
+// editInThreadMessagesByThread edits the thread mirror row. thread_messages_by_thread
+// is partitioned by thread_room_id alone, so room_id/bucket no longer enter the key.
+func (r *Repository) editInThreadMessagesByThread(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
+	return r.editOne(ctx, editThreadMsg, editThreadMsgEncrypted, ep, editedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID)
 }
 
 func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
@@ -252,11 +253,6 @@ func (r *Repository) editInPinnedMessagesByRoom(ctx context.Context, msg *models
 func (r *Repository) deleteInMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
 	b := r.bucket.Of(msg.CreatedAt)
 	return r.session.Query(q, deletedAt, msg.RoomID, b, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
-}
-
-func (r *Repository) deleteInThreadMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
-	b := r.bucket.Of(msg.CreatedAt)
-	return r.session.Query(q, deletedAt, msg.RoomID, b, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec()
 }
 
 func (r *Repository) deleteInPinnedMessagesByRoom(ctx context.Context, q string, msg *models.Message, deletedAt time.Time) error {
@@ -317,8 +313,8 @@ func (r *Repository) UpdateMessageContent(ctx context.Context, msg *models.Messa
 			return fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	} else {
-		if err := r.editInThreadMessagesByRoom(ctx, msg, ep, editedAt); err != nil {
-			return fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+		if err := r.editInThreadMessagesByThread(ctx, msg, ep, editedAt); err != nil {
+			return fmt.Errorf("update thread_messages_by_thread for message %s thread %s: %w", msg.MessageID, msg.ThreadRoomID, err)
 		}
 	}
 
@@ -385,8 +381,8 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 			return time.Time{}, false, fmt.Errorf("update messages_by_room for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
 	} else {
-		if err := r.deleteInThreadMessagesByRoom(ctx, threadMsgQ, msg, deletedAt); err != nil {
-			return time.Time{}, false, fmt.Errorf("update thread_messages_by_room for message %s room %s thread %s: %w", msg.MessageID, msg.RoomID, msg.ThreadRoomID, err)
+		if err := r.session.Query(threadMsgQ, deletedAt, msg.ThreadRoomID, msg.CreatedAt, msg.MessageID).WithContext(ctx).Exec(); err != nil {
+			return time.Time{}, false, fmt.Errorf("update thread_messages_by_thread for message %s thread %s: %w", msg.MessageID, msg.ThreadRoomID, err)
 		}
 	}
 

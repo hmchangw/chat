@@ -52,12 +52,6 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.msg.canonical.site-a.updated"},
 		{"MsgCanonicalDeleted", subject.MsgCanonicalDeleted("site-a"),
 			"chat.msg.canonical.site-a.deleted"},
-		{"RoomsCreate", subject.RoomsCreate("alice"),
-			"chat.user.alice.request.rooms.create"},
-		{"RoomsList", subject.RoomsList("alice"),
-			"chat.user.alice.request.rooms.list"},
-		{"RoomsGet", subject.RoomsGet("alice", "r1"),
-			"chat.user.alice.request.rooms.get.r1"},
 		{"RoomsInfoBatch", subject.RoomsInfoBatch("site-a"),
 			"chat.server.request.room.site-a.info.batch"},
 		{"RoomEvent", subject.RoomEvent("r1"), "chat.room.r1.event"},
@@ -84,22 +78,26 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.thread"},
 		{"MsgThreadParentPattern", subject.MsgThreadParentPattern("site-a"),
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.thread.parent"},
-		{"SearchMessages", subject.SearchMessages("alice"),
-			"chat.user.alice.request.search.messages"},
-		{"SearchRooms", subject.SearchRooms("alice"),
-			"chat.user.alice.request.search.rooms"},
-		{"SearchMessagesPattern", subject.SearchMessagesPattern(),
-			"chat.user.{account}.request.search.messages"},
-		{"SearchRoomsPattern", subject.SearchRoomsPattern(),
-			"chat.user.{account}.request.search.rooms"},
-		{"SearchApps", subject.SearchApps("alice"),
-			"chat.user.alice.request.search.apps"},
-		{"SearchAppsPattern", subject.SearchAppsPattern(),
-			"chat.user.{account}.request.search.apps"},
-		{"SearchUsers", subject.SearchUsers("alice"),
-			"chat.user.alice.request.search.users"},
-		{"SearchUsersPattern", subject.SearchUsersPattern(),
-			"chat.user.{account}.request.search.users"},
+		{"MsgHistory", subject.MsgHistory("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.history"},
+		{"MsgThread", subject.MsgThread("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.msg.thread"},
+		{"SearchMessages", subject.SearchMessages("alice", "site-a"),
+			"chat.user.alice.request.search.site-a.messages"},
+		{"SearchRooms", subject.SearchRooms("alice", "site-a"),
+			"chat.user.alice.request.search.site-a.rooms"},
+		{"SearchMessagesPattern", subject.SearchMessagesPattern("site-a"),
+			"chat.user.{account}.request.search.site-a.messages"},
+		{"SearchRoomsPattern", subject.SearchRoomsPattern("site-a"),
+			"chat.user.{account}.request.search.site-a.rooms"},
+		{"SearchApps", subject.SearchApps("alice", "site-a"),
+			"chat.user.alice.request.search.site-a.apps"},
+		{"SearchAppsPattern", subject.SearchAppsPattern("site-a"),
+			"chat.user.{account}.request.search.site-a.apps"},
+		{"SearchUsers", subject.SearchUsers("alice", "site-a"),
+			"chat.user.alice.request.search.site-a.users"},
+		{"SearchUsersPattern", subject.SearchUsersPattern("site-a"),
+			"chat.user.{account}.request.search.site-a.users"},
 		{"MsgEditPattern", subject.MsgEditPattern("site-a"),
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
 		{"MsgDeletePattern", subject.MsgDeletePattern("site-a"),
@@ -223,12 +221,6 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.msg.canonical.site-a.>"},
 		{"OutboxWild", subject.OutboxWildcard("site-a"),
 			"outbox.site-a.>"},
-		{"RoomsCreateWild", subject.RoomsCreateWildcard(),
-			"chat.user.*.request.rooms.create"},
-		{"RoomsListWild", subject.RoomsListWildcard(),
-			"chat.user.*.request.rooms.list"},
-		{"RoomsGetWild", subject.RoomsGetWildcard(),
-			"chat.user.*.request.rooms.get.*"},
 		{"MemberAddWild", subject.MemberAddWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.member.add"},
 		{"RoomsInfoBatchSubscribe", subject.RoomsInfoBatchSubscribe("site-a"),
@@ -319,6 +311,55 @@ func TestMessageReadReceipt_ParseUserRoomSubject(t *testing.T) {
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok || account != "alice" || roomID != "r1" {
 		t.Errorf("parse: got (%q,%q,%v), want (alice,r1,true)", account, roomID, ok)
+	}
+}
+
+func TestMessageThreadRead(t *testing.T) {
+	got := subject.MessageThreadRead("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.message.thread.read"
+	if got != want {
+		t.Errorf("MessageThreadRead: got %q, want %q", got, want)
+	}
+}
+
+func TestMessageThreadReadWildcard(t *testing.T) {
+	got := subject.MessageThreadReadWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.message.thread.read"
+	if got != want {
+		t.Errorf("MessageThreadReadWildcard: got %q, want %q", got, want)
+	}
+}
+
+func TestMessageThreadRead_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok || account != "alice" || roomID != "r1" {
+		t.Errorf("ParseUserRoomSubject(%q) = (%q, %q, %v); want (\"alice\", \"r1\", true)",
+			subj, account, roomID, ok)
+	}
+}
+
+func TestMuteToggle(t *testing.T) {
+	got := subject.MuteToggle("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.mute.toggle"
+	if got != want {
+		t.Errorf("MuteToggle: got %q, want %q", got, want)
+	}
+}
+
+func TestMuteToggleWildcard(t *testing.T) {
+	got := subject.MuteToggleWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.mute.toggle"
+	if got != want {
+		t.Errorf("MuteToggleWildcard: got %q, want %q", got, want)
+	}
+}
+
+func TestMuteToggle_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok || account != "alice" || roomID != "r1" {
+		t.Errorf("ParseUserRoomSubject(%q) = (%q,%q,%v), want (alice,r1,true)", subj, account, roomID, ok)
 	}
 }
 

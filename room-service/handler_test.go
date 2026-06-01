@@ -498,7 +498,7 @@ func TestHandler_RemoveMember_SelfLeave_Success(t *testing.T) {
 		publishedSubj = subj
 		publishedData = data
 		return nil
-	})
+	}, nil)
 
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
@@ -539,7 +539,7 @@ func TestHandler_RemoveMember_OrgOnly_Rejected(t *testing.T) {
 			store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 			store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 				Return(&SubscriptionWithMembership{Subscription: sub, HasOrgMembership: true}, nil)
-			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
 			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: tc.target})
 			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -566,7 +566,7 @@ func TestHandler_RemoveMember_SelfLeave_NoOrgs_Allowed(t *testing.T) {
 	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, _ string, data []byte) error {
 		publishedData = data
 		return nil
-	})
+	}, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -602,7 +602,7 @@ func TestHandler_RemoveMember_LastOwner_Rejected(t *testing.T) {
 			}
 			store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 				Return(&RoomCounts{MemberCount: 3, OwnerCount: 1}, nil)
-			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+			handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 			reqSubj := subject.MemberRemove(tc.requester, "r1", "site-a")
 			reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 			_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -624,7 +624,7 @@ func TestHandler_RemoveMember_LastMember_Rejected(t *testing.T) {
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(&RoomCounts{MemberCount: 1, OwnerCount: 0}, nil)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -653,7 +653,7 @@ func TestHandler_RemoveMember_OwnerRemovesOther_Success(t *testing.T) {
 	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
 		return nil
-	})
+	}, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
 	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -677,7 +677,7 @@ func TestHandler_RemoveMember_NonOwnerRemovesOther_Rejected(t *testing.T) {
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
 		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(requesterSub, nil)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -698,7 +698,7 @@ func TestHandler_RemoveMember_OwnerRemovesOrg_Success(t *testing.T) {
 	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(ctx context.Context, subj string, data []byte) error {
 		publishedData = data
 		return nil
-	})
+	}, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
 	resp, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -713,7 +713,7 @@ func TestHandler_RemoveMember_BothAccountAndOrgID_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob", OrgID: "eng-org"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -725,7 +725,7 @@ func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	reqBody, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, reqBody)
@@ -736,7 +736,7 @@ func TestHandler_RemoveMember_NeitherAccountNorOrgID_Rejected(t *testing.T) {
 func TestHandler_RemoveMember_InvalidSubject(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	_, err := handler.handleRemoveMember(context.Background(), "bogus", []byte("{}"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid remove-member subject")
@@ -745,7 +745,7 @@ func TestHandler_RemoveMember_InvalidSubject(t *testing.T) {
 func TestHandler_RemoveMember_InvalidJSON(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, []byte("{not json"))
 	require.Error(t, err)
@@ -755,7 +755,7 @@ func TestHandler_RemoveMember_InvalidJSON(t *testing.T) {
 func TestHandler_RemoveMember_RoomIDMismatch(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r2", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -769,7 +769,7 @@ func TestHandler_RemoveMember_GetTargetError(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "alice").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -788,7 +788,7 @@ func TestHandler_RemoveMember_OwnerRemoves_RequesterLookupError(t *testing.T) {
 		Return(&SubscriptionWithMembership{Subscription: targetSub, HasIndividualMembership: true}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "bob"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -807,7 +807,7 @@ func TestHandler_RemoveMember_CountsError(t *testing.T) {
 		Return(&SubscriptionWithMembership{Subscription: sub, HasIndividualMembership: true}, nil)
 	store.EXPECT().CountMembersAndOwners(gomock.Any(), "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -821,7 +821,7 @@ func TestHandler_RemoveMember_OrgPath_RequesterLookupError(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(nil, fmt.Errorf("db down"))
-	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil)
+	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, nil, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", OrgID: "eng-org"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -842,7 +842,7 @@ func TestHandler_RemoveMember_PublishError(t *testing.T) {
 		Return(&RoomCounts{MemberCount: 3, OwnerCount: 2}, nil)
 	handler := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, func(_ context.Context, _ string, _ []byte) error {
 		return fmt.Errorf("nats down")
-	})
+	}, nil)
 	reqSubj := subject.MemberRemove("alice", "r1", "site-a")
 	body, _ := json.Marshal(model.RemoveMemberRequest{RoomID: "r1", Account: "alice"})
 	_, err := handler.handleRemoveMember(context.Background(), reqSubj, body)
@@ -954,7 +954,7 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
-	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
+	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish, nil)
 
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		Roles: []model.Role{model.RoleOwner},
@@ -982,7 +982,7 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	publish := func(_ context.Context, _ string, _ []byte) error { return nil }
-	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish)
+	h := NewHandler(store, nil, nil, nil, "site-a", 100, 500, 5*time.Second, publish, nil)
 
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		Roles: []model.Role{model.RoleMember},
@@ -3190,7 +3190,7 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 				tt.prep(setup{store: store, reader: reader})
 			}
 
-			h := NewHandler(store, nil, nil, reader, siteID, 1000, 1000, time.Second, nil)
+			h := NewHandler(store, nil, nil, reader, siteID, 1000, 1000, time.Second, nil, nil)
 			gotBytes, err := h.handleMessageReadReceipt(context.Background(), tt.subject, tt.body)
 
 			if tt.wantErr != nil {
@@ -3386,4 +3386,593 @@ func TestHandler_EnsureRoomKey_NilKeyStore(t *testing.T) {
 
 	_, err := h.handleEnsureRoomKey(context.Background(), data)
 	require.Error(t, err)
+}
+
+// ===== message.thread.read tests =====
+
+type threadReadFixture struct {
+	store          *MockRoomStore
+	handler        *Handler
+	publishCalls   int
+	publishedSubj  string
+	publishedData  []byte
+	publishCallErr error
+}
+
+func newThreadReadFixture(t *testing.T) *threadReadFixture {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	f := &threadReadFixture{store: store}
+	f.handler = &Handler{
+		store:  store,
+		siteID: "site-a",
+		publishToStream: func(_ context.Context, subj string, data []byte) error {
+			f.publishCalls++
+			f.publishedSubj = subj
+			f.publishedData = data
+			return f.publishCallErr
+		},
+	}
+	return f
+}
+
+func threadReadBody(t *testing.T, threadID string) []byte {
+	t.Helper()
+	b, err := json.Marshal(model.MessageThreadReadRequest{ThreadID: threadID})
+	require.NoError(t, err)
+	return b
+}
+
+func baseThreadSub(account, roomID, parent, threadRoomID string) *model.ThreadSubscription {
+	return &model.ThreadSubscription{
+		ID:              "tsub-" + parent,
+		ParentMessageID: parent,
+		RoomID:          roomID,
+		ThreadRoomID:    threadRoomID,
+		UserAccount:     account,
+		SiteID:          "site-a",
+		HasMention:      true,
+	}
+}
+
+func baseSubForThreadRead(account, roomID string, threadUnread []string, alert bool) *model.Subscription {
+	return &model.Subscription{
+		User:         model.SubscriptionUser{ID: "u-" + account, Account: account},
+		RoomID:       roomID,
+		SiteID:       "site-a",
+		JoinedAt:     time.Now().UTC().Add(-time.Hour),
+		ThreadUnread: threadUnread,
+		Alert:        alert,
+	}
+}
+
+func TestHandler_MessageThreadRead_InvalidSubject(t *testing.T) {
+	f := newThreadReadFixture(t)
+	_, err := f.handler.handleMessageThreadRead(context.Background(), "garbage", threadReadBody(t, "p1"))
+	require.Error(t, err)
+}
+
+func TestHandler_MessageThreadRead_EmptyThreadID(t *testing.T) {
+	f := newThreadReadFixture(t)
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, ""))
+	require.ErrorIs(t, err, errInvalidThreadID)
+}
+
+func TestHandler_MessageThreadRead_MalformedBody(t *testing.T) {
+	f := newThreadReadFixture(t)
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, []byte("{"))
+	require.Error(t, err)
+}
+
+func TestHandler_MessageThreadRead_NotRoomMember(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, model.ErrSubscriptionNotFound)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil).AnyTimes()
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.ErrorIs(t, err, errNotRoomMember)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_ThreadSubNotFound(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(nil, model.ErrThreadSubscriptionNotFound)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.ErrorIs(t, err, errThreadSubNotFound)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+// Regression for the errgroup.WithContext bug: against real Mongo, when one
+// goroutine fails with ErrThreadSubscriptionNotFound, an errgroup.WithContext
+// cancels the others, causing them to return context.Canceled. Earlier code
+// then matched `case subErr != nil` first and surfaced the wrapped
+// context.Canceled as "internal error" instead of errThreadSubNotFound.
+// Simulate by returning context.Canceled on the siblings.
+func TestHandler_MessageThreadRead_ThreadSubNotFound_SiblingsCancelled(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(nil, context.Canceled).AnyTimes()
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(nil, model.ErrThreadSubscriptionNotFound)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").
+		Return("", context.Canceled).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.ErrorIs(t, err, errThreadSubNotFound)
+}
+
+func TestHandler_MessageThreadRead_BothMiss_RoomNotMemberWins(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		f := newThreadReadFixture(t)
+		f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+			Return(nil, model.ErrSubscriptionNotFound)
+		f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+			Return(nil, model.ErrThreadSubscriptionNotFound).AnyTimes()
+		f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil).AnyTimes()
+
+		subj := subject.MessageThreadRead("alice", "r1", "site-a")
+		_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+		require.ErrorIs(t, err, errNotRoomMember, "iteration %d", i)
+	}
+}
+
+func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
+		gomock.Len(0), false).Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	resp, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+	var got map[string]string
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "accepted", got["status"])
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
+		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+}
+
+func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p2"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
+		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+}
+
+func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, false), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
+		gomock.Len(0), false).Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+}
+
+func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
+		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+
+	require.Equal(t, 1, f.publishCalls)
+	assert.Equal(t, "outbox.site-a.to.site-b.thread_read", f.publishedSubj)
+
+	var outer model.OutboxEvent
+	require.NoError(t, json.Unmarshal(f.publishedData, &outer))
+	assert.Equal(t, model.OutboxThreadRead, outer.Type)
+	assert.Equal(t, "site-a", outer.SiteID)
+	assert.Equal(t, "site-b", outer.DestSiteID)
+
+	var inner model.ThreadReadEvent
+	require.NoError(t, json.Unmarshal(outer.Payload, &inner))
+	assert.Equal(t, "alice", inner.Account)
+	assert.Equal(t, "r1", inner.RoomID)
+	assert.Equal(t, "tr1", inner.ThreadRoomID)
+	assert.Equal(t, "p1", inner.ParentMessageID)
+	assert.Equal(t, []string{"p2"}, inner.NewThreadUnread)
+	assert.True(t, inner.Alert)
+	assert.Greater(t, inner.LastSeenAt, int64(0))
+	assert.Greater(t, inner.Timestamp, int64(0))
+}
+
+func TestHandler_MessageThreadRead_GetUserSiteID_Empty(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.NoError(t, err)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_GetUserSiteID_Error(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", fmt.Errorf("boom"))
+	// Writes are short-circuited by the read-phase error, but may race ahead.
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).AnyTimes()
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.Error(t, err)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_OutboxPublishError(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.publishCallErr = fmt.Errorf("nats down")
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.Error(t, err)
+	require.Equal(t, 1, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_UpdateSubscriptionError(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
+		Return(fmt.Errorf("mongo down"))
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(nil).AnyTimes()
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.Error(t, err)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MessageThreadRead_UpdateThreadSubscriptionError(t *testing.T) {
+	f := newThreadReadFixture(t)
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
+		Return(nil).AnyTimes()
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
+		Return(fmt.Errorf("mongo down"))
+
+	subj := subject.MessageThreadRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageThreadRead(context.Background(), subj, threadReadBody(t, "p1"))
+	require.Error(t, err)
+	assert.Equal(t, 0, f.publishCalls)
+}
+
+func TestHandler_MuteToggle_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			ID:     "s1",
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil) // same site → no outbox publish
+
+	var coreSubjects []string
+	var coreBodies [][]byte
+	h := &Handler{
+		store:  store,
+		siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site mute toggle")
+			return nil
+		},
+		publishCore: func(_ context.Context, subj string, data []byte) error {
+			coreSubjects = append(coreSubjects, subj)
+			coreBodies = append(coreBodies, data)
+			return nil
+		},
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	resp, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	var got model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.Muted)
+
+	require.Len(t, coreSubjects, 1)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), coreSubjects[0])
+
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
+	assert.Equal(t, "mute_toggled", evt.Action)
+	assert.True(t, evt.Subscription.Muted)
+	assert.Equal(t, "alice", evt.Subscription.User.Account)
+}
+
+func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	var streamSubj string
+	var streamData []byte
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, s string, d []byte) error {
+			streamSubj = s
+			streamData = d
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, subject.Outbox("site-a", "site-b", model.OutboxSubscriptionMuteToggled), streamSubj)
+
+	var outbox model.OutboxEvent
+	require.NoError(t, json.Unmarshal(streamData, &outbox))
+	assert.Equal(t, model.OutboxSubscriptionMuteToggled, outbox.Type)
+	assert.Equal(t, "site-a", outbox.SiteID)
+	assert.Equal(t, "site-b", outbox.DestSiteID)
+
+	var payload model.SubscriptionMuteToggledEvent
+	require.NoError(t, json.Unmarshal(outbox.Payload, &payload))
+	assert.Equal(t, "alice", payload.Account)
+	assert.Equal(t, "r1", payload.RoomID)
+	assert.True(t, payload.Muted)
+	assert.NotZero(t, payload.Timestamp)
+}
+
+func TestHandler_MuteToggle_NotRoomMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(nil, model.ErrSubscriptionNotFound)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	assert.ErrorIs(t, err, errNotRoomMember)
+}
+
+func TestHandler_MuteToggle_InvalidSubject(t *testing.T) {
+	h := &Handler{
+		siteID:          "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	_, err := h.handleMuteToggle(context.Background(), "garbage.subject", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid mute-toggle subject")
+}
+
+func TestHandler_MuteToggle_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(nil, fmt.Errorf("db down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "toggle subscription mute")
+}
+
+func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("", fmt.Errorf("mongo down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called when GetUserSiteID fails")
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get user siteId")
+}
+
+func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("nats unavailable")
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	_, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish mute-toggled outbox")
+}
+
+// publishCore failure is intentionally non-fatal: the DB write is the source
+// of truth and other client sessions reconcile on their next subscription
+// refetch. The handler must still reply ok.
+func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			SiteID: "site-a",
+			Muted:  true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishCore: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("core nats down")
+		},
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site mute toggle")
+			return nil
+		},
+	}
+
+	subj := subject.MuteToggle("alice", "r1", "site-a")
+	resp, err := h.handleMuteToggle(context.Background(), subj, nil)
+	require.NoError(t, err, "publishCore failure must be non-fatal — DB write is the source of truth")
+
+	var got model.MuteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.Muted)
 }

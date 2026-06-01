@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS chat.pinned_messages_by_room (
   card_action           FROZEN<"CardAction">,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
   visible_to            TEXT,
-  reactions             MAP<TEXT, FROZEN<SET<FROZEN<"Participant">>>>,
+  reactions             MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
   deleted               BOOLEAN,
   type                  TEXT,
   sys_msg_data          BLOB,

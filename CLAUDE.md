@@ -194,6 +194,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Never commit `.env` files
 - Never merge code directly into `master` or `main` — always create a PR for review first
 - If your changes touch a client-facing handler (any handler registered with `nc.QueueSubscribe` or `natsrouter.Register` whose subject begins with `chat.user.{account}.request.…` or `chat.user.{account}.room.{roomID}.{siteID}.msg.send`, or any HTTP route in `auth-service`), update `docs/client-api.md` in the same PR to reflect the new request/response schema, error cases, and triggered events.
+- `docs/reviews/` holds session-scoped multi-agent review reports (output of the `branch_review` skill). Delete every file under `docs/reviews/` from the branch just before creating the PR — these reports are working notes for the author, not shippable artifacts.
 
 ### Before Editing
 - Always read a file before modifying it — understand existing code before suggesting changes
@@ -269,7 +270,8 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - `docs/cassandra_message_model.md` is the single source of truth for the message schema. Any PR that touches it MUST, in the same PR, update both downstream mirrors:
   1. The Go UDT/row structs in `pkg/model/cassandra/` (keep `cql:"…"` tags aligned with the columns).
   2. The init DDL under `docker-local/cassandra/init/*.cql` that creates the types and tables.
-- **Bucketed message tables.** `messages_by_room` and `thread_messages_by_room` use a composite partition key `(room_id, bucket)`. The bucket is `floor(created_at_unix_ms / windowMs) * windowMs`. The window is configured per service via `MESSAGE_BUCKET_HOURS` (default 24). All services that read or write these tables MUST be configured with the same `MESSAGE_BUCKET_HOURS`; mismatches will cause writes and reads to target different partitions and silently lose data. Bucket math lives in `pkg/msgbucket`.
+- **Bucketed message table.** `messages_by_room` uses a composite partition key `(room_id, bucket)`. The bucket is `floor(created_at_unix_ms / windowMs) * windowMs`. The window is configured per service via `MESSAGE_BUCKET_HOURS` (default 72). All services that read or write this table MUST be configured with the same `MESSAGE_BUCKET_HOURS`; mismatches will cause writes and reads to target different partitions and silently lose data. Bucket math lives in `pkg/msgbucket`.
+- **Thread reply table.** `thread_messages_by_thread` is partitioned by `thread_room_id` alone — one partition per thread. Reads slice the partition by `created_at` clustering, no bucket walk required.
 
 ### HTTP (Gin + Resty)
 - Use Gin for all HTTP servers — never `net/http` mux directly

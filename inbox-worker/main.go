@@ -115,6 +115,18 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	return nil
 }
 
+// UpdateSubscriptionMute sets muted by (roomID, account); missing is a silent no-op.
+func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error {
+	_, err := s.subCol.UpdateOne(ctx,
+		bson.M{"roomId": roomID, "u.account": account},
+		bson.M{"$set": bson.M{"muted": muted}},
+	)
+	if err != nil {
+		return fmt.Errorf("update subscription mute for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}
+
 func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	filter := bson.M{
 		"roomId":    roomID,
@@ -177,6 +189,46 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 	if _, err := s.threadSubCol.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
 		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
 			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error {
+	// Guarded thread-sub update first; same gate then protects the Subscription overwrite.
+	tsFilter := bson.M{
+		"threadRoomId": threadRoomID,
+		"userAccount":  account,
+		"$or": bson.A{
+			bson.M{"lastSeenAt": nil},
+			bson.M{"lastSeenAt": bson.M{"$lt": lastSeenAt}},
+		},
+	}
+	tsUpdate := bson.M{"$set": bson.M{
+		"lastSeenAt": lastSeenAt,
+		"updatedAt":  lastSeenAt,
+		"hasMention": false,
+	}}
+	tsRes, err := s.threadSubCol.UpdateOne(ctx, tsFilter, tsUpdate)
+	if err != nil {
+		return fmt.Errorf("apply thread read on thread subscription for %q in thread room %q: %w",
+			account, threadRoomID, err)
+	}
+	if tsRes.MatchedCount == 0 {
+		return nil
+	}
+
+	subFilter := bson.M{"roomId": roomID, "u.account": account}
+	var subUpdate bson.M
+	if len(newThreadUnread) == 0 {
+		subUpdate = bson.M{
+			"$set":   bson.M{"alert": alert},
+			"$unset": bson.M{"threadUnread": ""},
+		}
+	} else {
+		subUpdate = bson.M{"$set": bson.M{"threadUnread": newThreadUnread, "alert": alert}}
+	}
+	if _, err := s.subCol.UpdateOne(ctx, subFilter, subUpdate); err != nil {
+		return fmt.Errorf("apply thread read on subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
 }
