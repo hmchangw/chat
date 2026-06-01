@@ -74,11 +74,12 @@ type RenameRoomRequest struct {
 	Timestamp int64  `json:"timestamp" bson:"timestamp"`
 }
 
-// RoomVisibilityRequest is the canonical event for setting Restricted and
-// ExternalAccess on a channel room. When Restricted=true and OwnerAccount is
-// non-empty, that account becomes sole owner regardless of prior role.
-// Account and Timestamp are server-set by room-service.
-type RoomVisibilityRequest struct {
+// RoomRestrictedRequest is the request body for the sync chat.server.> RPC
+// that sets Restricted + ExternalAccess on a channel room. When
+// Restricted=true and OwnerAccount is non-empty, that account becomes sole
+// owner regardless of prior role. Account identifies the admin caller for
+// audit / sys-message authorship.
+type RoomRestrictedRequest struct {
 	RoomID         string `json:"roomId"                 bson:"roomId"`
 	Restricted     bool   `json:"restricted"             bson:"restricted"`
 	ExternalAccess bool   `json:"externalAccess"         bson:"externalAccess"`

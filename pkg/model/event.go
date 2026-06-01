@@ -89,7 +89,7 @@ const (
 	OutboxThreadSubscriptionUpserted  OutboxEventType = "thread_subscription_upserted"
 	OutboxThreadRead                  OutboxEventType = "thread_read"
 	OutboxRoomRenamed                 OutboxEventType = "room_renamed"
-	OutboxRoomVisibilityChanged       OutboxEventType = "room_visibility_changed"
+	OutboxRoomRestricted              OutboxEventType = "room_restricted"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -360,7 +360,7 @@ const (
 	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
 	AsyncJobOpRoomRename           = "room.rename"
-	AsyncJobOpRoomVisibility       = "room.visibility"
+	AsyncJobOpRoomRestricted       = "room.restricted"
 )
 
 const (
@@ -374,6 +374,9 @@ const (
 	MessageTypeMemberLeft = "member_left"
 	// MessageTypeRoomRenamed is the system-message type emitted when a channel is renamed.
 	MessageTypeRoomRenamed = "room_renamed"
+	// MessageTypeRoomRestricted is the system-message type emitted when a
+	// channel's Restricted/ExternalAccess flags change.
+	MessageTypeRoomRestricted = "room_restricted"
 )
 
 const (
@@ -404,10 +407,10 @@ type RoomRenamedOutboxPayload struct {
 	Timestamp int64  `json:"timestamp" bson:"timestamp"`
 }
 
-// RoomVisibilityOutboxPayload is wrapped in OutboxEvent.Payload for
-// OutboxRoomVisibilityChanged. When OwnerAccount is non-empty AND Restricted
-// is true, the destination $cond promotes that account to sole owner.
-type RoomVisibilityOutboxPayload struct {
+// RoomRestrictedOutboxPayload is wrapped in OutboxEvent.Payload for
+// OutboxRoomRestricted. When OwnerAccount is non-empty AND Restricted is
+// true, the destination $cond promotes that account to sole owner.
+type RoomRestrictedOutboxPayload struct {
 	RoomID         string `json:"roomId"                 bson:"roomId"`
 	Restricted     bool   `json:"restricted"             bson:"restricted"`
 	ExternalAccess bool   `json:"externalAccess"         bson:"externalAccess"`

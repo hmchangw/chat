@@ -87,8 +87,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleThreadRead(ctx, &evt)
 	case "room_renamed":
 		return h.handleRoomRenamed(ctx, &evt)
-	case "room_visibility_changed":
-		return h.handleRoomVisibilityChanged(ctx, &evt)
+	case "room_restricted":
+		return h.handleRoomRestricted(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -300,20 +300,20 @@ func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent)
 	return nil
 }
 
-func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.OutboxEvent) error {
-	var payload model.RoomVisibilityOutboxPayload
+func (h *Handler) handleRoomRestricted(ctx context.Context, evt *model.OutboxEvent) error {
+	var payload model.RoomRestrictedOutboxPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal room_visibility_changed payload: %w", err)
+		return fmt.Errorf("unmarshal room_restricted payload: %w", err)
 	}
-	slog.Info("processing room_visibility_changed",
-		"op", "room_visibility_changed",
+	slog.Info("processing room_restricted",
+		"op", "room_restricted",
 		"roomID", payload.RoomID,
 		"restricted", payload.Restricted,
 		"externalAccess", payload.ExternalAccess,
 		"ownerAccount", payload.OwnerAccount,
 		"requestID", natsutil.RequestIDFromContext(ctx))
 	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
-		return fmt.Errorf("apply visibility for room %s: %w", payload.RoomID, err)
+		return fmt.Errorf("apply restricted for room %s: %w", payload.RoomID, err)
 	}
 	return nil
 }

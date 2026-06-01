@@ -180,8 +180,8 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 		err = h.processCreateRoom(ctx, msg.Data())
 	case strings.HasSuffix(subj, ".room.rename"):
 		err = h.processRoomRename(ctx, msg.Data())
-	case strings.HasSuffix(subj, ".room.visibility"):
-		err = h.processRoomVisibility(ctx, msg.Data())
+	case strings.HasSuffix(subj, ".room.restricted"):
+		err = h.processRoomRestricted(ctx, msg.Data())
 	default:
 		slog.WarnContext(ctx, "unknown member operation", "subject", subj)
 	}
@@ -1950,11 +1950,13 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 		return fmt.Errorf("publish room_renamed sys message: %w", err)
 	}
 
+	// Single room-scoped event (the room_renamed sys message published above)
+	// is sufficient — clients update their subscription state from the room
+	// event without per-subscription fan-out.
 	subs, err := h.store.ListByRoom(ctx, req.RoomID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
-	h.publishSubscriptionEvents(ctx, subs, "renamed")
 
 	accounts := make([]string, 0, len(subs))
 	for i := range subs {
@@ -1987,10 +1989,10 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 	return nil
 }
 
-func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err error) {
+func (h *Handler) processRoomRestricted(ctx context.Context, data []byte) (err error) {
 	var requesterAccount, roomID string
 	defer func() {
-		h.publishAsyncJobResult(ctx, requesterAccount, model.AsyncJobOpRoomVisibility, roomID, err)
+		h.publishAsyncJobResult(ctx, requesterAccount, model.AsyncJobOpRoomRestricted, roomID, err)
 	}()
 
 	requestID := natsutil.RequestIDFromContext(ctx)
@@ -2001,13 +2003,13 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 		return permanent(errcode.BadRequest("invalid X-Request-ID: must be a hyphenated UUID"))
 	}
 
-	var req model.RoomVisibilityRequest
+	var req model.RoomRestrictedRequest
 	if err = json.Unmarshal(data, &req); err != nil {
-		return permanent(errcode.BadRequest(fmt.Sprintf("unmarshal visibility request: %s", err.Error())))
+		return permanent(errcode.BadRequest(fmt.Sprintf("unmarshal restricted request: %s", err.Error())))
 	}
 	requesterAccount, roomID = req.Account, req.RoomID
-	slog.Info("processing room.visibility",
-		"op", model.AsyncJobOpRoomVisibility,
+	slog.Info("processing room.restricted",
+		"op", model.AsyncJobOpRoomRestricted,
 		"requester", req.Account,
 		"roomID", req.RoomID,
 		"requestID", requestID)
@@ -2017,22 +2019,46 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 			return permanent(errcode.NotFound("room not found"))
 		}
 		if errors.Is(err, ErrNotChannelRoom) {
-			return permanent(errcode.BadRequest("visibility change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation)))
+			return permanent(errcode.BadRequest("restricted change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation)))
 		}
-		return fmt.Errorf("update room visibility: %w", err)
+		return fmt.Errorf("update room restricted: %w", err)
 	}
 	if err = h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
 		if errors.Is(err, ErrOwnerNotSubscribed) {
 			return permanent(errcode.BadRequest(fmt.Sprintf("owner account %s is no longer subscribed to room %s", req.OwnerAccount, req.RoomID)))
 		}
-		return fmt.Errorf("apply subscription visibility: %w", err)
+		return fmt.Errorf("apply subscription restricted: %w", err)
+	}
+
+	// Publish ONE room-scoped event (a room_restricted sys message) instead of
+	// fanning out a SubscriptionUpdateEvent per subscriber; clients update
+	// their local subscription state from this single room event.
+	sysData, err := json.Marshal(model.RoomRestrictedSysData{
+		Restricted:     req.Restricted,
+		ExternalAccess: req.ExternalAccess,
+		ByAccount:      req.Account,
+		OwnerAccount:   req.OwnerAccount,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal restricted sys data: %w", err)
+	}
+	msg := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "room_restricted"),
+		RoomID:      req.RoomID,
+		UserAccount: req.Account,
+		Type:        model.MessageTypeRoomRestricted,
+		Content:     fmt.Sprintf("%s changed the channel restricted state", req.Account),
+		SysMsgData:  sysData,
+		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
+	}
+	if err = h.publishCanonical(ctx, &msg, h.siteID, time.Now().UTC()); err != nil {
+		return fmt.Errorf("publish room_restricted sys message: %w", err)
 	}
 
 	subs, err := h.store.ListByRoom(ctx, req.RoomID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
-	h.publishSubscriptionEvents(ctx, subs, "visibility_changed")
 
 	accounts := make([]string, 0, len(subs))
 	for i := range subs {
@@ -2042,7 +2068,7 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 	if err != nil {
 		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
 	}
-	visibilityPayload, err := json.Marshal(model.RoomVisibilityOutboxPayload{
+	restrictedPayload, err := json.Marshal(model.RoomRestrictedOutboxPayload{
 		RoomID:         req.RoomID,
 		Restricted:     req.Restricted,
 		ExternalAccess: req.ExternalAccess,
@@ -2050,21 +2076,20 @@ func (h *Handler) processRoomVisibility(ctx context.Context, data []byte) (err e
 		Timestamp:      req.Timestamp,
 	})
 	if err != nil {
-		return fmt.Errorf("marshal visibility outbox payload: %w", err)
+		return fmt.Errorf("marshal restricted outbox payload: %w", err)
 	}
 	for _, remoteSiteID := range remoteSites {
 		evt := model.OutboxEvent{
-			Type: model.OutboxRoomVisibilityChanged, SiteID: h.siteID, DestSiteID: remoteSiteID,
-			Payload: visibilityPayload, Timestamp: time.Now().UTC().UnixMilli(),
+			Type: model.OutboxRoomRestricted, SiteID: h.siteID, DestSiteID: remoteSiteID,
+			Payload: restrictedPayload, Timestamp: time.Now().UTC().UnixMilli(),
 		}
 		evtData, mErr := json.Marshal(evt)
 		if mErr != nil {
-			return fmt.Errorf("marshal visibility outbox event: %w", mErr)
+			return fmt.Errorf("marshal restricted outbox event: %w", mErr)
 		}
-		seed := fmt.Sprintf("%s:%t:%t:%d", req.RoomID, req.Restricted, req.ExternalAccess, req.Timestamp)
-		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomVisibilityChanged),
-			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, seed)); err != nil {
-			return fmt.Errorf("publish visibility outbox to %s: %w", remoteSiteID, err)
+		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted),
+			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
+			return fmt.Errorf("publish restricted outbox to %s: %w", remoteSiteID, err)
 		}
 	}
 	return nil

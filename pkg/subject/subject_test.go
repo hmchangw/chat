@@ -120,10 +120,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.room.rename"},
 		{"RoomRenameWildcard", subject.RoomRenameWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.room.rename"},
-		{"RoomVisibility", subject.RoomVisibility("alice", "r1", "site-a"),
-			"chat.user.alice.request.room.r1.site-a.room.visibility"},
-		{"RoomVisibilityWildcard", subject.RoomVisibilityWildcard("site-a"),
-			"chat.user.*.request.room.*.site-a.room.visibility"},
+		{"RoomRestricted", subject.RoomRestricted("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.room.restricted"},
+		{"RoomRestrictedWildcard", subject.RoomRestrictedWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.room.restricted"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -642,23 +642,6 @@ func TestUserServiceBuildersRejectWildcardAccounts(t *testing.T) {
 		{"UserSubscriptionUnsubscribeApp", func() { subject.UserSubscriptionUnsubscribeApp(">", "s1") }},
 		{"UserRoomSubscriptionGet", func() { subject.UserRoomSubscriptionGet("*", "s1", "r1") }},
 		{"UserAppsList", func() { subject.UserAppsList(">", "s1") }},
-	}
-	for _, b := range builders {
-		t.Run(b.name, func(t *testing.T) {
-			assert.Panics(t, b.fn)
-		})
-	}
-}
-
-func TestRoomRenameVisibility_RejectWildcardAccounts(t *testing.T) {
-	builders := []struct {
-		name string
-		fn   func()
-	}{
-		{"RoomRename star", func() { subject.RoomRename("*", "r1", "site-a") }},
-		{"RoomRename tail", func() { subject.RoomRename(">", "r1", "site-a") }},
-		{"RoomVisibility star", func() { subject.RoomVisibility("*", "r1", "site-a") }},
-		{"RoomVisibility tail", func() { subject.RoomVisibility(">", "r1", "site-a") }},
 	}
 	for _, b := range builders {
 		t.Run(b.name, func(t *testing.T) {

@@ -72,18 +72,18 @@ var (
 	// version has aged out of the grace window).
 	errRoomKeyAbsent = errcode.NotFound("room key not available")
 
-	// Sentinels for rename and visibility operations.
+	// Sentinels for rename and restricted operations.
 	errOnlyOwnersOrAdmins       = errcode.Forbidden("only owners or platform admins can rename a channel")
-	errOnlyAdmins               = errcode.Forbidden("only admins can change room visibility")
+	errOnlyAdmins               = errcode.Forbidden("only admins can change room restricted state")
 	errOwnerNotMember           = errcode.BadRequest("owner account is not a member of this room")
 	errOwnerAccountRequired     = errcode.BadRequest("owner account is required when restricting a room")
 	errNotEnoughMembers         = errcode.Conflict("not enough members to restrict")
 	errInvalidName              = errcode.BadRequest("invalid name")
 	errRenameChannelOnly        = errcode.BadRequest("rename is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
-	errVisibilityChannelOnly    = errcode.BadRequest("visibility change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
+	errRestrictedChannelOnly    = errcode.BadRequest("restricted change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 	errRoomNotFound             = errcode.NotFound("room not found")
 	errInvalidRenameSubject     = errcode.BadRequest("invalid rename subject")
-	errInvalidVisibilitySubject = errcode.BadRequest("invalid visibility subject")
+	errInvalidRestrictedSubject = errcode.BadRequest("invalid restricted subject")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)

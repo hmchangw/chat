@@ -2126,7 +2126,7 @@ func TestIntegration_ProcessRoomVisibility(t *testing.T) {
 	const reqID = "01970a4f-8c2d-7c9a-abcd-e0123456789b"
 	ctx = natsutil.WithRequestID(ctx, reqID)
 
-	body, err := json.Marshal(model.RoomVisibilityRequest{
+	body, err := json.Marshal(model.RoomRestrictedRequest{
 		RoomID:         roomID,
 		Restricted:     true,
 		ExternalAccess: true,
@@ -2135,7 +2135,7 @@ func TestIntegration_ProcessRoomVisibility(t *testing.T) {
 		Timestamp:      time.Now().UTC().UnixMilli(),
 	})
 	require.NoError(t, err)
-	require.NoError(t, h.processRoomVisibility(ctx, body))
+	require.NoError(t, h.processRoomRestricted(ctx, body))
 
 	// Room has Restricted=true, ExternalAccess=true.
 	room, err := store.GetRoom(ctx, roomID)
@@ -2175,11 +2175,11 @@ func TestIntegration_ProcessRoomVisibility(t *testing.T) {
 	assert.ElementsMatch(t, []string{"alice", "bob", "carol"}, visSubUpdateAccounts, "expected subscription update per subscriber")
 
 	// Outbox published to remote site-b carrying RoomVisibilityOutboxPayload with OwnerAccount.
-	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomVisibilityChanged))
+	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRestricted))
 	require.Len(t, outboxPubs, 1, "exactly one outbox publish to remote site-b")
 	var outboxEvt model.OutboxEvent
 	require.NoError(t, json.Unmarshal(outboxPubs[0].data, &outboxEvt))
-	var outboxPayload model.RoomVisibilityOutboxPayload
+	var outboxPayload model.RoomRestrictedOutboxPayload
 	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
 	assert.Equal(t, roomID, outboxPayload.RoomID)
 	assert.True(t, outboxPayload.Restricted)

@@ -133,8 +133,8 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomRenameWildcard(h.siteID), queue, h.natsRoomRename); err != nil {
 		return fmt.Errorf("subscribe room rename: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomVisibilityWildcard(h.siteID), queue, h.natsRoomVisibility); err != nil {
-		return fmt.Errorf("subscribe room visibility: %w", err)
+	if _, err := nc.QueueSubscribe(subject.RoomRestrictedWildcard(h.siteID), queue, h.natsRoomRestricted); err != nil {
+		return fmt.Errorf("subscribe room restricted: %w", err)
 	}
 	return nil
 }
@@ -1636,43 +1636,38 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
 }
 
-func (h *Handler) natsRoomVisibility(m otelnats.Msg) {
+func (h *Handler) natsRoomRestricted(m otelnats.Msg) {
 	ctx, err := wrappedCtx(m)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
-	resp, err := h.handleRoomVisibility(ctx, m.Msg.Subject, m.Msg.Data)
+	resp, err := h.handleRoomRestricted(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
-		slog.Error("failed to respond to visibility", "error", err)
+		slog.Error("failed to respond to restricted", "error", err)
 	}
 }
 
-func (h *Handler) handleRoomVisibility(ctx context.Context, subj string, data []byte) ([]byte, error) {
+func (h *Handler) handleRoomRestricted(ctx context.Context, subj string, data []byte) ([]byte, error) {
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", errInvalidVisibilitySubject, subj)
+		return nil, fmt.Errorf("%w: %s", errInvalidRestrictedSubject, subj)
 	}
 	requestID := natsutil.RequestIDFromContext(ctx)
 
-	var req model.RoomVisibilityRequest
+	var req model.RoomRestrictedRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
-	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("invalid request: room ID mismatch")
-	}
-	if req.Account != "" && req.Account != account {
-		return nil, fmt.Errorf("invalid request: account mismatch")
-	}
 	req.RoomID, req.Account = roomID, account
 
-	slog.Info("processing room.visibility",
-		"op", model.AsyncJobOpRoomVisibility,
+	// Admin-only RPC is rare enough that an info-level audit trail is useful.
+	slog.Info("processing room.restricted",
+		"op", model.AsyncJobOpRoomRestricted,
 		"requester", account,
 		"roomID", roomID,
 		"requestID", requestID)
@@ -1693,7 +1688,7 @@ func (h *Handler) handleRoomVisibility(ctx context.Context, subj string, data []
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, errVisibilityChannelOnly
+		return nil, errRestrictedChannelOnly
 	}
 
 	isTransition := req.Restricted && !room.Restricted
@@ -1718,9 +1713,9 @@ func (h *Handler) handleRoomVisibility(ctx context.Context, subj string, data []
 	req.Timestamp = time.Now().UTC().UnixMilli()
 	out, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal visibility request: %w", err)
+		return nil, fmt.Errorf("marshal restricted request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.visibility"), out); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.restricted"), out); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})

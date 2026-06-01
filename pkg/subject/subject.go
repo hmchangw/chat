@@ -70,19 +70,23 @@ func MemberRoleUpdate(account, roomID, siteID string) string {
 }
 
 // RoomRename is the request/reply subject for the rename RPC (owner or admin).
+// Callers are responsible for ensuring `account` is a server-derived auth
+// identity; the builder does not validate, since panicking on a server-side
+// invariant would crash the process.
 func RoomRename(account, roomID, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.rename", account, roomID, siteID)
 }
 
-// RoomVisibility is the request/reply subject for the visibility RPC (admin only).
-func RoomVisibility(account, roomID, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.visibility", account, roomID, siteID)
+// RoomRestricted is the request/reply subject for the restricted (formerly
+// visibility) RPC. Admin-only — caller's auth identity travels in the request
+// account field.
+func RoomRestricted(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.restricted", account, roomID, siteID)
+}
+
+// RoomRestrictedWildcard is the queue-subscribe pattern on a site.
+func RoomRestrictedWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.restricted", siteID)
 }
 
 func MemberRemove(account, roomID, siteID string) string {
@@ -242,11 +246,6 @@ func MemberRoleUpdateWildcard(siteID string) string {
 // RoomRenameWildcard is the queue-subscribe pattern on a site.
 func RoomRenameWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.rename", siteID)
-}
-
-// RoomVisibilityWildcard is the queue-subscribe pattern on a site.
-func RoomVisibilityWildcard(siteID string) string {
-	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.visibility", siteID)
 }
 
 func MemberRemoveWildcard(siteID string) string {

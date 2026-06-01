@@ -2314,7 +2314,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 	})
 }
 
-// TestIntegration_RoomVisibility exercises the room.visibility RPC end-to-end through NATS.
+// TestIntegration_RoomVisibility exercises the room.restricted RPC end-to-end through NATS.
 func TestIntegration_RoomVisibility(t *testing.T) {
 	const siteID = "site-visibility"
 
@@ -2383,19 +2383,19 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
 			Durable:       "test-vis-consumer",
 			AckPolicy:     jetstream.AckExplicitPolicy,
-			FilterSubject: subject.RoomCanonical(siteID, "room.visibility"),
+			FilterSubject: subject.RoomCanonical(siteID, "room.restricted"),
 		})
 		require.NoError(t, err)
 
 		reqID := idgen.GenerateRequestID()
-		body, err := json.Marshal(model.RoomVisibilityRequest{
+		body, err := json.Marshal(model.RoomRestrictedRequest{
 			Restricted:   true,
 			OwnerAccount: "admin1",
 		})
 		require.NoError(t, err)
 
 		msg := &nats.Msg{
-			Subject: subject.RoomVisibility("admin1", roomID, siteID),
+			Subject: subject.RoomRestricted("admin1", roomID, siteID),
 			Data:    body,
 			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
 		}
@@ -2410,7 +2410,7 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 
 		// Assert canonical event landed on the stream.
 		raw := drainJetStreamMsg(t, cons, 5*time.Second)
-		var event model.RoomVisibilityRequest
+		var event model.RoomRestrictedRequest
 		require.NoError(t, json.Unmarshal(raw, &event))
 		assert.Equal(t, roomID, event.RoomID)
 		assert.Equal(t, "admin1", event.Account)
@@ -2444,11 +2444,11 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 		mustInsertUser(t, db, &model.User{ID: "u-carol", Account: "carol", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
 
 		reqID := idgen.GenerateRequestID()
-		body, err := json.Marshal(model.RoomVisibilityRequest{Restricted: true})
+		body, err := json.Marshal(model.RoomRestrictedRequest{Restricted: true})
 		require.NoError(t, err)
 
 		msg := &nats.Msg{
-			Subject: subject.RoomVisibility("carol", roomID, siteID),
+			Subject: subject.RoomRestricted("carol", roomID, siteID),
 			Data:    body,
 			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
 		}
@@ -2457,6 +2457,6 @@ func TestIntegration_RoomVisibility(t *testing.T) {
 
 		var errResp model.ErrorResponse
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
-		assert.Contains(t, errResp.Error, "only admins can change room visibility")
+		assert.Contains(t, errResp.Error, "only admins can change room restricted state")
 	})
 }

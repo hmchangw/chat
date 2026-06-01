@@ -5193,11 +5193,10 @@ func TestProcessRoomRename_HappyPathNoRemoteSites(t *testing.T) {
 	require.NoError(t, h.processRoomRename(ctx, body))
 
 	assert.Contains(t, publishedSubjects, subject.MsgCanonicalCreated("site-a"))
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("alice"))
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("bob"))
 	assert.Contains(t, publishedSubjects, subject.UserResponse("alice", requestID))
 	for _, subj := range publishedSubjects {
 		assert.NotContains(t, subj, "outbox.", "should not publish to outbox when all members are local")
+		assert.NotContains(t, subj, ".event.subscription.update", "rename publishes a single room-scoped sys message; no per-subscription fan-out")
 	}
 }
 
@@ -5248,9 +5247,10 @@ func TestProcessRoomRename_HappyPathWithRemoteSite(t *testing.T) {
 	require.NoError(t, h.processRoomRename(ctx, body))
 
 	assert.Contains(t, publishedSubjects, subject.MsgCanonicalCreated("site-a"))
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("alice"))
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("bob"))
 	assert.Contains(t, publishedSubjects, subject.UserResponse("alice", requestID))
+	for _, subj := range publishedSubjects {
+		assert.NotContains(t, subj, ".event.subscription.update", "rename publishes a single room-scoped sys message; no per-subscription fan-out")
+	}
 
 	// Exactly one outbox publish to site-b.
 	outboxSubjects := make([]string, 0)
@@ -5305,7 +5305,7 @@ func TestProcessRoomRename_ErrorThenOkRetrySequence(t *testing.T) {
 	assert.Equal(t, model.AsyncJobStatusOK, asyncResults[1].Status)
 }
 
-// --- processRoomVisibility tests ---
+// --- processRoomRestricted tests ---
 
 // Test 1: Missing X-Request-ID → permanent error, no store calls.
 func TestProcessRoomVisibility_MissingRequestID(t *testing.T) {
@@ -5317,8 +5317,8 @@ func TestProcessRoomVisibility_MissingRequestID(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
 	}}
-	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, Account: "alice", Timestamp: 1700000000000})
-	err := h.processRoomVisibility(context.Background(), body)
+	body, _ := json.Marshal(model.RoomRestrictedRequest{RoomID: "r1", Restricted: true, Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRestricted(context.Background(), body)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 }
@@ -5333,8 +5333,8 @@ func TestProcessRoomVisibility_InvalidUUID(t *testing.T) {
 		return nil
 	}}
 	ctx := natsutil.WithRequestID(context.Background(), "not-a-valid-uuid")
-	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, Account: "alice", Timestamp: 1700000000000})
-	err := h.processRoomVisibility(ctx, body)
+	body, _ := json.Marshal(model.RoomRestrictedRequest{RoomID: "r1", Restricted: true, Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRestricted(ctx, body)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 }
@@ -5352,7 +5352,7 @@ func TestProcessRoomVisibility_UnmarshalFailure(t *testing.T) {
 		return nil
 	}}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	err := h.processRoomVisibility(ctx, []byte("not-valid-json"))
+	err := h.processRoomRestricted(ctx, []byte("not-valid-json"))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 	// requesterAccount is empty after unmarshal failure, so publishAsyncJobResult must not publish.
@@ -5384,8 +5384,8 @@ func TestProcessRoomVisibility_RoomNotFound(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publish: publish}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, Account: "alice", Timestamp: 1700000000000})
-	err := h.processRoomVisibility(ctx, body)
+	body, _ := json.Marshal(model.RoomRestrictedRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRestricted(ctx, body)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 	require.Len(t, asyncResults, 1)
@@ -5413,8 +5413,8 @@ func TestProcessRoomVisibility_NotChannelRoom(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publish: publish}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, Account: "alice", Timestamp: 1700000000000})
-	err := h.processRoomVisibility(ctx, body)
+	body, _ := json.Marshal(model.RoomRestrictedRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRestricted(ctx, body)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
 	require.Len(t, asyncResults, 1)
@@ -5451,19 +5451,17 @@ func TestProcessRoomVisibility_HappyPathNoRemoteSites(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publish: publish}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	body, _ := json.Marshal(model.RoomVisibilityRequest{
+	body, _ := json.Marshal(model.RoomRestrictedRequest{
 		RoomID: roomID, Restricted: true, ExternalAccess: false,
 		OwnerAccount: owner, Account: "admin1", Timestamp: time.Now().UTC().UnixMilli(),
 	})
 
-	require.NoError(t, h.processRoomVisibility(ctx, body))
+	require.NoError(t, h.processRoomRestricted(ctx, body))
 
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("alice"))
-	assert.Contains(t, publishedSubjects, subject.SubscriptionUpdate("bob"))
+	assert.Contains(t, publishedSubjects, subject.MsgCanonicalCreated("site-a"), "room_restricted sys message must be published")
 	assert.Contains(t, publishedSubjects, subject.UserResponse("admin1", requestID))
-	// No sys message published for visibility change.
 	for _, s := range publishedSubjects {
-		assert.NotContains(t, s, "canonical", "visibility must not publish a sys message")
+		assert.NotContains(t, s, ".event.subscription.update", "no per-subscription fan-out; the room-scoped sys message is the single event")
 		assert.NotContains(t, s, "outbox.", "no outbox when all members are local")
 	}
 }
@@ -5501,19 +5499,19 @@ func TestProcessRoomVisibility_HappyPathWithRemoteSite(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publish: publish}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	body, _ := json.Marshal(model.RoomVisibilityRequest{
+	body, _ := json.Marshal(model.RoomRestrictedRequest{
 		RoomID: roomID, Restricted: true, ExternalAccess: false,
 		OwnerAccount: owner, Account: "admin1", Timestamp: time.Now().UTC().UnixMilli(),
 	})
 
-	require.NoError(t, h.processRoomVisibility(ctx, body))
+	require.NoError(t, h.processRoomRestricted(ctx, body))
 
-	assert.Contains(t, subjects, subject.Outbox("site-a", "site-b", model.OutboxRoomVisibilityChanged))
+	assert.Contains(t, subjects, subject.Outbox("site-a", "site-b", model.OutboxRoomRestricted))
 	require.Len(t, outboxPayloads, 1)
 
 	var outboxEvt model.OutboxEvent
 	require.NoError(t, json.Unmarshal(outboxPayloads[0], &outboxEvt))
-	var payload model.RoomVisibilityOutboxPayload
+	var payload model.RoomRestrictedOutboxPayload
 	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &payload))
 	assert.Equal(t, owner, payload.OwnerAccount)
 	assert.True(t, payload.Restricted)
@@ -5544,13 +5542,13 @@ func TestProcessRoomVisibility_ErrorThenOkRetrySequence(t *testing.T) {
 
 	h := &Handler{store: store, siteID: "site-a", publish: publish}
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
-	body, _ := json.Marshal(model.RoomVisibilityRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Account: "alice", Timestamp: 1700000000000})
+	body, _ := json.Marshal(model.RoomRestrictedRequest{RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Account: "alice", Timestamp: 1700000000000})
 
-	err := h.processRoomVisibility(ctx, body)
+	err := h.processRoomRestricted(ctx, body)
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, errPermanent))
 
-	require.NoError(t, h.processRoomVisibility(ctx, body))
+	require.NoError(t, h.processRoomRestricted(ctx, body))
 
 	require.Len(t, asyncResults, 2)
 	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)

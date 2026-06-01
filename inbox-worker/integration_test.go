@@ -968,7 +968,7 @@ func TestIntegration_HandleRoomVisibilityChanged(t *testing.T) {
 	require.NoError(t, err)
 
 	// Construct and marshal the outbox event: bob becomes new owner.
-	visPayload := model.RoomVisibilityOutboxPayload{
+	visPayload := model.RoomRestrictedOutboxPayload{
 		RoomID:         "r1",
 		Restricted:     true,
 		ExternalAccess: false,
@@ -978,7 +978,7 @@ func TestIntegration_HandleRoomVisibilityChanged(t *testing.T) {
 	payloadData, err := json.Marshal(visPayload)
 	require.NoError(t, err)
 	evt := model.OutboxEvent{
-		Type:       string(model.OutboxRoomVisibilityChanged),
+		Type:       string(model.OutboxRoomRestricted),
 		SiteID:     "site-a",
 		DestSiteID: "site-b",
 		Payload:    payloadData,

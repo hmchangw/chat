@@ -2665,16 +2665,16 @@ func TestRenameRoomRequestJSON(t *testing.T) {
 	roundTrip(t, &r, &model.RenameRoomRequest{})
 }
 
-func TestRoomVisibilityRequestJSON(t *testing.T) {
-	r := model.RoomVisibilityRequest{
+func TestRoomRestrictedRequestJSON(t *testing.T) {
+	r := model.RoomRestrictedRequest{
 		RoomID: "r1", Restricted: true, ExternalAccess: false,
 		OwnerAccount: "alice", Account: "admin1", Timestamp: 1700000000000,
 	}
-	roundTrip(t, &r, &model.RoomVisibilityRequest{})
+	roundTrip(t, &r, &model.RoomRestrictedRequest{})
 }
 
-func TestRoomVisibilityRequest_OwnerOmittedWhenEmpty(t *testing.T) {
-	r := model.RoomVisibilityRequest{RoomID: "r1", Account: "admin1", Timestamp: 1700000000000}
+func TestRoomRestrictedRequest_OwnerOmittedWhenEmpty(t *testing.T) {
+	r := model.RoomRestrictedRequest{RoomID: "r1", Account: "admin1", Timestamp: 1700000000000}
 	data, err := json.Marshal(&r)
 	require.NoError(t, err)
 	var raw map[string]any
@@ -2690,25 +2690,33 @@ func TestRoomRenamedSysDataJSON(t *testing.T) {
 	roundTrip(t, &d, &model.RoomRenamedSysData{})
 }
 
+func TestRoomRestrictedSysDataJSON(t *testing.T) {
+	d := model.RoomRestrictedSysData{
+		Restricted: true, ExternalAccess: false, ByAccount: "admin1", OwnerAccount: "alice",
+	}
+	roundTrip(t, &d, &model.RoomRestrictedSysData{})
+}
+
 func TestRoomRenamedOutboxPayloadJSON(t *testing.T) {
 	p := model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "x", Timestamp: 1700000000000}
 	roundTrip(t, &p, &model.RoomRenamedOutboxPayload{})
 }
 
-func TestRoomVisibilityOutboxPayloadJSON(t *testing.T) {
-	p := model.RoomVisibilityOutboxPayload{
+func TestRoomRestrictedOutboxPayloadJSON(t *testing.T) {
+	p := model.RoomRestrictedOutboxPayload{
 		RoomID: "r1", Restricted: true, ExternalAccess: false,
 		OwnerAccount: "alice", Timestamp: 1700000000000,
 	}
-	roundTrip(t, &p, &model.RoomVisibilityOutboxPayload{})
+	roundTrip(t, &p, &model.RoomRestrictedOutboxPayload{})
 }
 
 // --- Constants ---
 
 func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
 	assert.Equal(t, "room_renamed", model.MessageTypeRoomRenamed)
+	assert.Equal(t, "room_restricted", model.MessageTypeRoomRestricted)
 	assert.Equal(t, "room_renamed", model.OutboxRoomRenamed)
-	assert.Equal(t, "room_visibility_changed", model.OutboxRoomVisibilityChanged)
+	assert.Equal(t, "room_restricted", model.OutboxRoomRestricted)
 	assert.Equal(t, "room.rename", model.AsyncJobOpRoomRename)
-	assert.Equal(t, "room.visibility", model.AsyncJobOpRoomVisibility)
+	assert.Equal(t, "room.restricted", model.AsyncJobOpRoomRestricted)
 }

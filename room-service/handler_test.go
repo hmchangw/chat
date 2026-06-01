@@ -4321,14 +4321,14 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		{
 			name:    "invalid subject",
 			subj:    "bad.subject",
-			body:    mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			body:    mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
 			ctx:     natsutil.WithRequestID(context.Background(), validReqID),
-			wantErr: errInvalidVisibilitySubject,
+			wantErr: errInvalidRestrictedSubject,
 		},
 		{
 			name: "non-admin requester",
-			subj: subject.RoomVisibility("alice", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			subj: subject.RoomRestricted("alice", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
@@ -4337,8 +4337,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "room not found",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
@@ -4348,19 +4348,19 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "non-channel room",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{Restricted: true}),
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{Restricted: true}),
 			ctx:  natsutil.WithRequestID(context.Background(), validReqID),
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().GetUser(gomock.Any(), "admin1").Return(&model.User{Account: "admin1", Roles: []model.UserRole{model.UserRoleAdmin}}, nil)
 				s.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeDM}, nil)
 			},
-			wantErr: errVisibilityChannelOnly,
+			wantErr: errRestrictedChannelOnly,
 		},
 		{
 			name: "restricted=true + ownerAccount given + owner not a member",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted:   true,
 				OwnerAccount: "nonmember",
 			}),
@@ -4375,8 +4375,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition false→true without ownerAccount",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted: true,
 				// OwnerAccount intentionally empty
 			}),
@@ -4389,8 +4389,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition with UserCount < 5 (need at least 5)",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted:   true,
 				OwnerAccount: "owner1",
 			}),
@@ -4404,8 +4404,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "transition success (admin + ownerAccount + UserCount >= 5)",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted:   true,
 				OwnerAccount: "owner1",
 			}),
@@ -4419,8 +4419,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "unrestrict (no owner/threshold checks)",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted: false,
 			}),
 			ctx: natsutil.WithRequestID(context.Background(), validReqID),
@@ -4433,8 +4433,8 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 		},
 		{
 			name: "already-restricted owner change success",
-			subj: subject.RoomVisibility("admin1", "r1", "site-a"),
-			body: mustJSON(t, model.RoomVisibilityRequest{
+			subj: subject.RoomRestricted("admin1", "r1", "site-a"),
+			body: mustJSON(t, model.RoomRestrictedRequest{
 				Restricted:   true,
 				OwnerAccount: "owner2",
 			}),
@@ -4459,7 +4459,7 @@ func TestHandleRoomVisibility_Validation(t *testing.T) {
 			h := NewHandler(store, nil, nil, nil, "site-a", 1000, 500, 5*time.Second, 5,
 				func(_ context.Context, _ string, _ []byte) error { return nil }, nil)
 
-			_, err := h.handleRoomVisibility(tt.ctx, tt.subj, tt.body)
+			_, err := h.handleRoomRestricted(tt.ctx, tt.subj, tt.body)
 			if tt.wantErr == nil {
 				require.NoError(t, err)
 			} else {
