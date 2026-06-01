@@ -388,7 +388,13 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	if cfg, ok := factoryBaseCfg(factory); ok && cfg.SiteID != "" {
 		siteID = cfg.SiteID
 	}
+	slog.Info("building fixtures", "preset", cfg.Preset, "users", preset.Users)
+	buildStart := time.Now()
 	fx := BuildFixtures(&preset, 42, siteID)
+	slog.Info("fixtures built",
+		"rooms", len(fx.Rooms),
+		"subscriptions", len(fx.Subscriptions),
+		"elapsed", time.Since(buildStart).Round(time.Millisecond))
 
 	userRooms := groupSubsByUser(fx.Subscriptions)
 	users := make([]*userState, len(fx.Users))
