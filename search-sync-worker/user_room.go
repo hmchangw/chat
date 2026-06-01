@@ -44,6 +44,30 @@ func (c *userRoomCollection) TemplateBody() json.RawMessage {
 	return userRoomTemplateBody(c.indexName)
 }
 
+// StoredScripts registers the add/remove painless scripts as ES stored
+// scripts. BuildAction references them by id so fan-out member updates don't
+// repeat the full source per action.
+func (c *userRoomCollection) StoredScripts() map[string]json.RawMessage {
+	return map[string]json.RawMessage{
+		addRoomScriptID:    storedScriptBody(addRoomScript),
+		removeRoomScriptID: storedScriptBody(removeRoomScript),
+	}
+}
+
+// storedScriptBody wraps a painless source string in the `PUT /_scripts/{id}`
+// request envelope ES expects.
+func storedScriptBody(source string) json.RawMessage {
+	body := map[string]any{
+		"script": map[string]any{
+			"lang":   "painless",
+			"source": source,
+		},
+	}
+	// Inputs are literal string/map values that always marshal cleanly.
+	data, _ := json.Marshal(body)
+	return data
+}
+
 // addRoomScript / removeRoomScript implement application-level last-write-wins
 // on (user, room) using `params.ts` (OutboxEvent.Timestamp in millis). Stale
 // events short-circuit via `ctx.op = 'none'` which tells ES to skip the write
@@ -61,6 +85,18 @@ func (c *userRoomCollection) TemplateBody() json.RawMessage {
 // The Go↔painless contract: publishers MUST emit nil for unrestricted rooms
 // on the wire — a `&0` is treated as unrestricted by this script and would be
 // a silent contract violation.
+// addRoomScriptID / removeRoomScriptID are the ES stored-script ids under
+// which addRoomScript / removeRoomScript are registered at startup. Bulk
+// member updates reference these ids instead of inlining the ~600-byte
+// source per action, so an N-account fan-out ships one id reference per
+// action rather than N copies of the script body. If a script's source ever
+// changes incompatibly during a rolling deploy, bump the id suffix so old and
+// new pods don't share a single mutated definition.
+const (
+	addRoomScriptID    = "search-sync-user-room-add-v1"
+	removeRoomScriptID = "search-sync-user-room-remove-v1"
+)
+
 const (
 	addRoomScript = `if (ctx._source.roomTimestamps == null) { ctx._source.roomTimestamps = [:]; } ` +
 		`if (ctx._source.rooms == null) { ctx._source.rooms = []; } ` +
@@ -192,8 +228,7 @@ func buildAddRoomUpdateBody(account, roomID string, ts, hss int64) (json.RawMess
 
 	body := map[string]any{
 		"script": map[string]any{
-			"source": addRoomScript,
-			"lang":   "painless",
+			"id": addRoomScriptID,
 			"params": map[string]any{
 				"rid": roomID,
 				"ts":  ts,
@@ -213,8 +248,7 @@ func buildAddRoomUpdateBody(account, roomID string, ts, hss int64) (json.RawMess
 func buildRemoveRoomUpdateBody(roomID string, ts int64) (json.RawMessage, error) {
 	body := map[string]any{
 		"script": map[string]any{
-			"source": removeRoomScript,
-			"lang":   "painless",
+			"id": removeRoomScriptID,
 			"params": map[string]any{
 				"rid": roomID,
 				"ts":  ts,
