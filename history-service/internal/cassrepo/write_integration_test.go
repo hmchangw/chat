@@ -1370,58 +1370,8 @@ func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
 	}
 }
 
-// TestUpdateMessageContent_SoftDeletedRow_ReturnsErrMessageNotFound
-// verifies the LWT `IF deleted != true` gate. A soft-deleted row must
-// not be editable at the store layer: SoftDeleteMessage uses the same
-// CAS gate for re-delete idempotency, and a successful edit on a
-// tombstoned row would emit a message_edited after message_deleted
-// that downstream consumers can't reconcile.
-func TestUpdateMessageContent_SoftDeletedRow_ReturnsErrMessageNotFound(t *testing.T) {
-	ctx := context.Background()
-	session := setupCassandra(t)
-	mongoDB := setupMongo(t)
-	sizer := msgbucket.New(24 * time.Hour)
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	roomID := "r-tomb"
-
-	cases := []struct {
-		name       string
-		withCipher bool
-		messageID  string
-	}{
-		{name: "cipher_disabled", withCipher: false, messageID: "m-tomb-plain"},
-		{name: "cipher_enabled", withCipher: true, messageID: "m-tomb-enc"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var cipher atrest.Cipher
-			if tc.withCipher {
-				wrapper := newTestVaultWrapper(t, ctx)
-				cipher = atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
-					atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
-			}
-			repo := NewRepository(session, sizer, 365, cipher)
-
-			// Seed a row with deleted=true (simulating a prior soft-delete).
-			require.NoError(t, session.Query(
-				`INSERT INTO messages_by_id (message_id, created_at, room_id, msg, deleted, site_id) VALUES (?, ?, ?, ?, ?, ?)`,
-				tc.messageID, now, roomID, "original", true, "site-a",
-			).Exec())
-
-			err := repo.UpdateMessageContent(ctx, &models.Message{
-				RoomID: roomID, MessageID: tc.messageID, CreatedAt: now,
-			}, "should not land", now.Add(time.Minute))
-			require.Error(t, err)
-			require.ErrorIs(t, err, ErrMessageNotFound, "edit of soft-deleted row must surface ErrMessageNotFound via LWT")
-
-			// The row's body must be unchanged.
-			var got string
-			require.NoError(t, session.Query(
-				`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-				tc.messageID, now,
-			).Scan(&got))
-			assert.Equal(t, "original", got, "edit on deleted row must NOT mutate msg")
-		})
-	}
-}
+// Note: editing a soft-deleted row is gated at the service layer
+// (EditMessage's msg.Deleted check, covered by
+// TestHistoryService_EditMessage_AlreadyDeleted), not at the store layer.
+// UpdateMessageContent issues plain UPDATEs and no longer LWT-gates on
+// `deleted`, matching main's pre-encryption edit behavior.
