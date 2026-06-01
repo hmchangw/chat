@@ -249,19 +249,21 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 }
 
 // buildCassandraMessage projects the user-authored fields of msg into a
-// cassandra.Message. Only fields that participate in encryption (body
-// fields + the QuotedParentMessage container that holds them) need to be
-// populated; columns bound by SaveMessage directly are left out.
+// cassandra.Message for encryption. Only fields that participate in
+// encryption need to be populated — for the message-worker write path that
+// is Msg (Content) plus the QuotedParentMessage body. sys_msg_data is not
+// encrypted, and attachments/card/card_action are not produced by this path
+// (the model has no such fields); columns bound by SaveMessage directly are
+// left out.
 //
 // The returned QuotedParentMessage is a fresh struct so that
 // StripEncryptedFields nulling its Msg/Attachments fields does not mutate
 // the caller's *model.Message.
 func buildCassandraMessage(msg *model.Message) cassandra.Message {
 	cm := cassandra.Message{
-		RoomID:     msg.RoomID,
-		MessageID:  msg.ID,
-		Msg:        msg.Content,
-		SysMsgData: msg.SysMsgData,
+		RoomID:    msg.RoomID,
+		MessageID: msg.ID,
+		Msg:       msg.Content,
 	}
 	if msg.QuotedParentMessage != nil {
 		q := *msg.QuotedParentMessage
