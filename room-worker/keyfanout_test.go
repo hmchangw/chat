@@ -132,7 +132,10 @@ func TestFanOutKey_PublishesEveryAccount(t *testing.T) {
 	require.Len(t, got, accounts, "must publish once per account")
 }
 
-// dataRecordingPublisher records the raw payload bytes of every Publish call.
+// dataRecordingPublisher records the raw payload slice of every Publish call
+// WITHOUT copying, so a test can compare backing-array identity across calls.
+// Safe because fanOutKey marshals once and never mutates the buffer after it is
+// handed to Publish.
 type dataRecordingPublisher struct {
 	mu       sync.Mutex
 	payloads [][]byte
@@ -141,10 +144,7 @@ type dataRecordingPublisher struct {
 func (d *dataRecordingPublisher) Publish(_ string, data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// Copy: callers may reuse the backing array.
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	d.payloads = append(d.payloads, cp)
+	d.payloads = append(d.payloads, data)
 	return nil
 }
 
@@ -156,10 +156,12 @@ func (d *dataRecordingPublisher) snapshot() [][]byte {
 	return out
 }
 
-// TestFanOutKey_MarshalsOnce asserts every recipient receives byte-identical
-// payload, which holds only when the event is serialized a single time and the
-// same bytes are fanned out (rather than re-marshaled per account with a
-// per-recipient timestamp).
+// TestFanOutKey_MarshalsOnce asserts the event is serialized exactly once and
+// the same buffer is fanned out to every recipient. It compares backing-array
+// identity (same first-element address) rather than byte-equality: two
+// json.Marshal calls always allocate distinct buffers, so a per-recipient
+// re-marshal is caught deterministically even when every marshal lands in the
+// same millisecond and produces identical JSON.
 func TestFanOutKey_MarshalsOnce(t *testing.T) {
 	const accounts = 50
 
@@ -178,7 +180,9 @@ func TestFanOutKey_MarshalsOnce(t *testing.T) {
 	first := payloads[0]
 	require.NotEmpty(t, first)
 	for i, p := range payloads {
-		assert.Equal(t, first, p, "payload %d differs; event was not marshaled exactly once", i)
+		require.NotEmpty(t, p, "payload %d is empty", i)
+		assert.True(t, &p[0] == &first[0],
+			"payload %d is a distinct allocation; event was marshaled more than once", i)
 	}
 }
 
