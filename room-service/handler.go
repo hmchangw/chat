@@ -499,6 +499,7 @@ func (h *Handler) handleGetRoomKey(ctx context.Context, subj string, data []byte
 		if existing == nil {
 			return nil, errRoomKeyAbsent
 		}
+		// #nosec G117 -- RoomKeyGetResponse.PrivateKey is the intended payload: on-demand key delivery to the authorized room member over an auth-callout-gated per-user NATS subject, not a leak
 		return json.Marshal(model.RoomKeyGetResponse{
 			RoomID:     roomID,
 			Version:    existing.Version,
@@ -513,6 +514,7 @@ func (h *Handler) handleGetRoomKey(ctx context.Context, subj string, data []byte
 	if pair == nil {
 		return nil, errRoomKeyAbsent
 	}
+	// #nosec G117 -- RoomKeyGetResponse.PrivateKey is the intended payload: on-demand key delivery to the authorized room member over an auth-callout-gated per-user NATS subject, not a leak
 	return json.Marshal(model.RoomKeyGetResponse{
 		RoomID:     roomID,
 		Version:    *req.Version,
