@@ -1,4 +1,4 @@
-package main
+package usercache
 
 import (
 	"container/list"
@@ -32,9 +32,8 @@ type CachedUserStore struct {
 	now   func() time.Time
 }
 
-// NewCachedUserStore returns a cache wrapping inner. maxSize and ttl must
-// both be positive.
-func NewCachedUserStore(inner userstore.UserStore, maxSize int, ttl time.Duration) *CachedUserStore {
+// New returns a cache wrapping inner. maxSize and ttl must both be positive.
+func New(inner userstore.UserStore, maxSize int, ttl time.Duration) *CachedUserStore {
 	return &CachedUserStore{
 		inner:   inner,
 		ttl:     ttl,
