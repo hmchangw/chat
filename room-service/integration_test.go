@@ -2311,7 +2311,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 
 		var errResp errcode.Error
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
-		assert.Contains(t, errResp.Error, "only owners or platform admins can rename a channel")
+		assert.Contains(t, errResp.Message, "only owners or platform admins can rename a channel")
 	})
 }
 
@@ -2470,6 +2470,6 @@ func TestIntegration_RoomRestricted(t *testing.T) {
 
 		var errResp errcode.Error
 		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
-		assert.Contains(t, errResp.Error, "only admins can change room restricted state")
+		assert.Contains(t, errResp.Message, "only admins can change room restricted state")
 	})
 }

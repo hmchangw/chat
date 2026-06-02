@@ -173,7 +173,6 @@ func TestIsPlatformAdmin(t *testing.T) {
 	}
 }
 
-
 func TestDetermineRoomType(t *testing.T) {
 	tests := []struct {
 		name string

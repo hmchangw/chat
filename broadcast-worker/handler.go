@@ -111,12 +111,8 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		}
 	}
 
-	// Room-metadata sys messages (room_renamed, room_restricted) ride the
-	// canonical-message pipeline so that history reflects them, but on the
-	// fan-out side they publish a flat typed event (RoomRenamedRoomEvent /
-	// RoomRestrictedRoomEvent) instead of the new_message RoomEvent envelope.
-	// That avoids shipping unrelated message fields (mentions, sender meta,
-	// encrypted body) on a pure metadata change.
+	// Room-metadata sys messages publish typed RoomEvents instead of new_message
+	// so mention/sender/encryption fields they don't carry stay off the wire.
 	switch msg.Type {
 	case model.MessageTypeRoomRenamed:
 		return h.publishRoomRenamedEvent(ctx, meta, &msg)

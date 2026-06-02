@@ -1598,9 +1598,9 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 		return nil, errInvalidName
 	}
 
-	requesterUser, err := h.store.GetUser(ctx, account)
-	if err != nil && !errors.Is(err, ErrUserNotFound) {
-		return nil, fmt.Errorf("get user: %w", err)
+	requesterUser, getUserErr := h.store.GetUser(ctx, account)
+	if getUserErr != nil && !errors.Is(getUserErr, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", getUserErr)
 	}
 
 	room, err := h.store.GetRoom(ctx, roomID)
@@ -1659,10 +1659,10 @@ func (h *Handler) natsRoomRestricted(m otelnats.Msg) {
 	}
 }
 
-// handleRoomRestricted is the sync server-to-server handler for the restricted
-// RPC. It does ALL the work in this call — Mongo writes, sys-message publish,
-// per-remote outbox publishes — and returns the result to the caller. No
-// AsyncJobResult is emitted because the reply IS the result.
+// handleRoomRestricted is the sync chat.server.> RPC. Account in the body is
+// the audit identity (no subject prefix authenticates the caller — this RPC
+// is server-side admin tooling). Mongo writes + sys-message publish + outbox
+// fan-out happen inline; caller retries safely via dedup IDs.
 func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 
@@ -1680,9 +1680,9 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 		"roomID", req.RoomID,
 		"requestID", requestID)
 
-	requesterUser, err := h.store.GetUser(ctx, req.Account)
-	if err != nil && !errors.Is(err, ErrUserNotFound) {
-		return nil, fmt.Errorf("get user: %w", err)
+	requesterUser, getUserErr := h.store.GetUser(ctx, req.Account)
+	if getUserErr != nil && !errors.Is(getUserErr, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", getUserErr)
 	}
 	if !isPlatformAdmin(requesterUser) {
 		return nil, errOnlyAdmins
@@ -1720,7 +1720,6 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 
 	req.Timestamp = time.Now().UTC().UnixMilli()
 
-	// Do the writes synchronously.
 	if err := h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
 		if errors.Is(err, ErrRoomNotFound) {
 			return nil, errRoomNotFound
@@ -1734,8 +1733,6 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 		return nil, fmt.Errorf("apply subscription restricted: %w", err)
 	}
 
-	// One room-scoped sys message (room_restricted) — replaces the per-user
-	// SubscriptionUpdateEvent fan-out the old async path used.
 	sysData, err := json.Marshal(model.RoomRestrictedSysData{
 		Restricted:     req.Restricted,
 		ExternalAccess: req.ExternalAccess,
@@ -1768,7 +1765,6 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 		return nil, fmt.Errorf("publish room_restricted sys message: %w", err)
 	}
 
-	// Cross-site outbox fan-out: one event per remote site that homes a member.
 	subs, err := h.store.ListSubscriptionsByRoom(ctx, req.RoomID)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)

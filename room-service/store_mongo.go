@@ -1077,6 +1077,9 @@ func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID str
 	filter := bson.M{"roomId": roomID}
 
 	if restricted && ownerAccount != "" {
+		// TOCTOU: if the owner unsubscribes between this count and the
+		// UpdateMany below, the room is left with zero owners. Acceptable for
+		// an admin RPC (rare, recoverable by retry).
 		n, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "u.account": ownerAccount})
 		if err != nil {
 			return fmt.Errorf("count owner subscription: %w", err)
