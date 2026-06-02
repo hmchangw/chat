@@ -13,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -1684,7 +1688,9 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status, "failure event must have Status=error")
-	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
+	// Raw infra error collapses to internal — the cause never leaks to the client.
+	assert.Equal(t, "internal error", result.Error, "failure event must carry sanitized error message")
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
 	assert.Greater(t, result.Timestamp, int64(0))
 }
 
@@ -1710,7 +1716,8 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status)
-	assert.Equal(t, "operation failed", result.Error)
+	assert.Equal(t, "internal error", result.Error)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
 	assert.Equal(t, "r1", result.RoomID)
 }
 
@@ -1806,6 +1813,27 @@ func TestProcessAddMembers_RequiresRequestID(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing X-Request-ID")
 	assert.ErrorIs(t, err, errPermanent)
+}
+
+func TestProcessAddMembers_MalformedJSON_IsPermanent(t *testing.T) {
+	// Regression for the Nak-forever bug: a malformed payload must be Acked
+	// (Permanent), not Naked. Pre-fix the bare fmt.Errorf made JetStream
+	// redeliver the same corrupt JSON until MaxDeliver.
+	h, _, _ := newAddMembersTestHandler(t)
+	err := h.processAddMembers(context.Background(), []byte(`{not json`))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent, "unmarshal failure must be Permanent so JetStream Acks")
+	assert.NotContains(t, err.Error(), "not json", "must not echo raw payload bytes into the user-facing message")
+}
+
+func TestProcessRemoveMember_MalformedJSON_IsPermanent(t *testing.T) {
+	// Unmarshal failure short-circuits before any store call — a bare Handler
+	// is enough.
+	h := &Handler{publish: func(context.Context, string, []byte, string) error { return nil }}
+	err := h.processRemoveMember(context.Background(), []byte(`{not json`))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent, "unmarshal failure must be Permanent so JetStream Acks")
+	assert.NotContains(t, err.Error(), "not json")
 }
 
 // Task 14: subscription must carry Name == room.Name and RoomType == channel.
@@ -2596,7 +2624,7 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
 }
 
-// ---- Permanent-error coverage for HandleJetStreamMsg Ack path + new permanentError type ----
+// ---- Permanent-error coverage for HandleJetStreamMsg Ack path + errcode.Permanent marker ----
 
 func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testing.T) {
 	h, mockStore, getPublished := newCreateRoomTestHandler(t)
@@ -2627,35 +2655,52 @@ func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testi
 	err := h.processCreateRoom(ctx, body)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
+	var pe *errcode.PermanentError
+	assert.True(t, errors.As(err, &pe), "collision must be an explicit permanent error")
 	assert.Contains(t, err.Error(), "room ID collision")
 
 	// Async-job error event must be published (defer fires before return).
+	// Collision classifies to conflict (mirrors the sync-DM errRoomIDCollision
+	// path); permanence is explicit, not category-inferred.
 	responses := userResponseFor(getPublished(), "alice")
 	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(responses[0].data, &result))
 	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "room ID collision")
-	// Sanitized error must NOT contain the trailing ": permanent" suffix.
-	assert.NotContains(t, result.Error, ": permanent")
+	assert.Equal(t, string(errcode.CodeConflict), result.Code)
 }
 
-func TestSanitizeAsyncJobError_PermanentErrorTypeReturnsCleanMessage(t *testing.T) {
-	err := newPermanent("counterpart not found")
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "counterpart not found", got)
+func TestFillAsyncError_PermanentForbiddenWithReason(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := permanent(errcode.Forbidden("only room members can act", errcode.WithReason(errcode.RoomNotMember)))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Equal(t, "only room members can act", result.Error)
+	assert.Equal(t, string(errcode.CodeForbidden), result.Code)
+	assert.Equal(t, string(errcode.RoomNotMember), result.Reason)
 }
 
-func TestSanitizeAsyncJobError_LegacyWrappedSentinelStillTrimmed(t *testing.T) {
-	err := fmt.Errorf("legacy reason: %w", errPermanent)
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "legacy reason", got)
+func TestFillAsyncError_RawInfraCollapsesToInternal(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Equal(t, "internal error", result.Error)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
+	assert.Empty(t, result.Reason)
 }
 
-func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
-	err := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "operation failed", got)
+func TestFillAsyncError_PermanentInternalCollision(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := permanent(errcode.Internal("room ID collision (existing type=channel)"))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
+	// Permanence is explicit; an internal-category permanent error still Acks.
+	var pe *errcode.PermanentError
+	assert.True(t, errors.As(jobErr, &pe))
 }
 
 // newRequestCtx returns a context carrying a syntactically-valid X-Request-ID.
@@ -2703,24 +2748,45 @@ func marshalReq(t *testing.T, v any) []byte {
 	return data
 }
 
-func TestSanitizeSyncDMError(t *testing.T) {
+// assertSyncDMInternal asserts err marshals (via errnats) to an internal-code
+// envelope with the generic "internal error" message and no leaked cause.
+func assertSyncDMInternal(t *testing.T, err error) {
+	t.Helper()
+	data := errnats.Marshal(context.Background(), err)
+	e, ok := errcode.Parse(data)
+	require.True(t, ok, "must marshal to an error envelope: %s", data)
+	assert.Equal(t, errcode.CodeInternal, e.Code)
+	assert.Equal(t, "internal error", e.Message)
+}
+
+// TestSyncDMErrorEnvelope asserts the wire envelope errnats produces for each
+// sync-DM failure mode (replacing the deleted sanitizeSyncDMError). Validation
+// sentinels surface as bad_request with their message; lookup/infra/collision
+// detail never leaks — user-lookup and unknown errors collapse to internal,
+// the collision becomes a conflict with a generic message.
+func TestSyncDMErrorEnvelope(t *testing.T) {
 	cases := []struct {
-		name string
-		in   error
-		want string
+		name     string
+		in       error
+		wantCode errcode.Code
+		wantMsg  string
 	}{
-		{"nil returns empty", nil, ""},
-		{"missing request ID surfaced", errMissingRequestID, "missing X-Request-ID header"},
-		{"invalid request ID surfaced", errInvalidRequestID, "invalid X-Request-ID header"},
-		{"invalid sync DM request surfaced", errInvalidSyncDMRequest, "invalid sync DM request"},
-		{"user lookup failed surfaced", errUserLookupFailed, "user lookup failed"},
-		{"cross-site requester surfaced", errCrossSiteRequester, "requester is not on this site"},
-		{"room ID collision masked as internal", errRoomIDCollision, "internal error"},
-		{"unknown error masked as internal", errors.New("mongo: connection refused"), "internal error"},
+		{"missing request ID", errMissingRequestID, errcode.CodeBadRequest, "missing X-Request-ID header"},
+		{"invalid request ID", errInvalidRequestID, errcode.CodeBadRequest, "invalid X-Request-ID header"},
+		{"invalid sync DM request", errInvalidSyncDMRequest, errcode.CodeBadRequest, "invalid sync DM request"},
+		{"cross-site requester", errCrossSiteRequester, errcode.CodeBadRequest, "requester is not on this site"},
+		{"user lookup failed collapses to internal", errUserLookupFailed, errcode.CodeInternal, "internal error"},
+		{"room ID collision is a conflict", errRoomIDCollision, errcode.CodeConflict, "room id collision (existing room metadata mismatch)"},
+		{"unknown error collapses to internal", errors.New("mongo: connection refused"), errcode.CodeInternal, "internal error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, sanitizeSyncDMError(tc.in))
+			data := errnats.Marshal(context.Background(), tc.in)
+			e, ok := errcode.Parse(data)
+			require.True(t, ok, "must marshal to an error envelope: %s", data)
+			assert.Equal(t, tc.wantCode, e.Code)
+			assert.Equal(t, tc.wantMsg, e.Message)
+			assert.NotContains(t, string(data), "mongo", "infra cause must never leak")
 		})
 	}
 }
@@ -3088,9 +3154,9 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
 }
 
-// Transient store errors on GetUser must NOT be sanitized as errUserLookupFailed (which
-// signals "user does not exist"); they should propagate as wrapped errors and surface
-// as "internal error" via sanitizeSyncDMError.
+// Transient store errors on GetUser must NOT be tagged as errUserLookupFailed (which
+// signals "user does not exist"); they propagate as wrapped errors and surface
+// as "internal error" in the errnats envelope.
 func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
@@ -3102,7 +3168,7 @@ func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errUserLookupFailed,
 		"transient error must not be tagged as user-not-found")
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T) {
@@ -3225,7 +3291,7 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 // BulkCreateSubscriptions returning a transient error must surface as "internal error".
@@ -3243,7 +3309,7 @@ func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
 	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 // On a CreateRoom dup-key with matching existing room (idempotent re-delivery),
@@ -3571,6 +3637,11 @@ func TestProcessCreateRoom_PermanentErrorWhenKeyMissing(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "missing key must be permanent")
 	assert.True(t, errors.Is(err, errRoomKeyAbsent), "missing key must satisfy errRoomKeyAbsent sentinel")
+	// The SAME error value must yield the *errcode.Error (internal) for the reply
+	// envelope AND still satisfy errors.Is(errRoomKeyAbsent) for the alert path.
+	var ee *errcode.Error
+	require.True(t, errors.As(err, &ee), "absent-key error must carry an *errcode.Error")
+	assert.Equal(t, errcode.CodeInternal, ee.Code)
 }
 
 // ---- Task 11: fan-out current key to newly-added channel members ----
@@ -4826,4 +4897,77 @@ func TestHandleSyncCreateDM_DEKFailure_AbortsBeforeCreate(t *testing.T) {
 	_, err := h.handleSyncCreateDM(ctx, data)
 	require.Error(t, err)
 	assert.Len(t, prov.calls, 1, "EnsureDEK should have been attempted once")
+}
+
+// ---- HandleJetStreamMsg Ack/Nak + async-consumer panic recovery ----
+
+// fakeJSMsg is a minimal jetstream.Msg stub recording Ack/Nak calls so tests
+// can assert the consumer's permanence-driven decision without a NATS server.
+type fakeJSMsg struct {
+	subject string
+	data    []byte
+	headers nats.Header
+	acked   bool
+	naked   bool
+	ackErr  error
+	nakErr  error
+}
+
+func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *fakeJSMsg) Data() []byte                              { return m.data }
+func (m *fakeJSMsg) Headers() nats.Header                      { return m.headers }
+func (m *fakeJSMsg) Subject() string                           { return m.subject }
+func (m *fakeJSMsg) Reply() string                             { return "" }
+func (m *fakeJSMsg) Ack() error                                { m.acked = true; return m.ackErr }
+func (m *fakeJSMsg) DoubleAck(context.Context) error           { m.acked = true; return m.ackErr }
+func (m *fakeJSMsg) Nak() error                                { m.naked = true; return m.nakErr }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error          { m.naked = true; return m.nakErr }
+func (m *fakeJSMsg) InProgress() error                         { return nil }
+func (m *fakeJSMsg) Term() error                               { return nil }
+func (m *fakeJSMsg) TermWithReason(string) error               { return nil }
+
+// processRoleUpdate's "unsupported role" path was historically Nak'd forever
+// (a bare fmt.Errorf). It is now an explicit permanent error so the consumer
+// Acks and JetStream stops redelivering.
+func TestHandleJetStreamMsg_UnsupportedRole_Acks(t *testing.T) {
+	h, _, _ := newCreateRoomTestHandler(t)
+	body := marshalReq(t, model.UpdateRoleRequest{
+		Account: "alice", RoomID: "room-1", NewRole: model.Role("bogus"),
+	})
+	msg := &fakeJSMsg{subject: "chat.room.room-1.member.role-update", data: body}
+	h.HandleJetStreamMsg(context.Background(), msg)
+	assert.True(t, msg.acked, "unsupported role must Ack (permanent), not Nak forever")
+	assert.False(t, msg.naked)
+}
+
+// A transient store error on a role update must Nak (retryable), confirming the
+// Ack/Nak decision is keyed on the explicit permanent marker, not the category.
+func TestHandleJetStreamMsg_TransientRoleUpdate_Naks(t *testing.T) {
+	h, mockStore, _ := newCreateRoomTestHandler(t)
+	mockStore.EXPECT().AddRole(gomock.Any(), "alice", "room-1", model.RoleOwner).
+		Return(errors.New("mongo: connection reset"))
+	body := marshalReq(t, model.UpdateRoleRequest{
+		Account: "alice", RoomID: "room-1", NewRole: model.RoleOwner,
+	})
+	msg := &fakeJSMsg{subject: "chat.room.room-1.member.role-update", data: body}
+	h.HandleJetStreamMsg(context.Background(), msg)
+	assert.True(t, msg.naked, "transient infra error must Nak for redelivery")
+	assert.False(t, msg.acked)
+}
+
+// panicProcessor panics on every message — stands in for a WithCause/WithMetadata
+// misuse that would otherwise crash the async consumer goroutine.
+type panicProcessor struct{}
+
+func (panicProcessor) HandleJetStreamMsg(context.Context, jetstream.Msg) {
+	panic("boom: errcode option misuse")
+}
+
+func TestRunJobWithRecovery_PanicAcksAndDoesNotCrash(t *testing.T) {
+	msg := &fakeJSMsg{subject: "chat.room.room-1.create"}
+	assert.NotPanics(t, func() {
+		runJobWithRecovery(context.Background(), panicProcessor{}, msg)
+	}, "a panicking handler must be recovered, not crash the worker")
+	assert.True(t, msg.acked, "panic must Ack (poison-pill drop), not Nak — a deterministic panic would otherwise loop on redelivery")
+	assert.False(t, msg.naked)
 }

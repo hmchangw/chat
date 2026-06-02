@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/displayfmt"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/pipelines"
 )
@@ -709,8 +710,8 @@ func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName
 // GetUserWithMembership): an org added by a dept-only match stores
 // member.id = deptId in room_members, so the expansion RPC must look up
 // users by deptId too. Both (sectId, account) and (deptId, account) indexes
-// exist (see ensureIndexes) so the $or stays index-backed. Returns
-// errInvalidOrg when neither branch matches any users.
+// exist (see ensureIndexes) so the $or stays index-backed. Returns a
+// RoomInvalidOrg-reason errcode when neither branch matches any users.
 func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "account", Value: 1}}).
@@ -735,7 +736,7 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 		return nil, fmt.Errorf("decode users for org %q: %w", orgID, err)
 	}
 	if len(members) == 0 {
-		return nil, fmt.Errorf("list org members for %q: %w", orgID, errInvalidOrg)
+		return nil, errcode.BadRequest(fmt.Sprintf("list org members for %q", orgID), errcode.WithReason(errcode.RoomInvalidOrg))
 	}
 	return members, nil
 }

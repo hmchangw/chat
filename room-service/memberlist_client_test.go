@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -64,10 +64,10 @@ func TestNATSMemberListClient_RemoteError(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
-	// Generic remote error (not the "not a member" sentinel mapping) passes through
-	// verbatim behind the "remote member.list:" prefix whitelisted by sanitizeError.
+	// Generic remote error (not the not-member reason) is reconstructed as a
+	// typed *errcode.Error preserving the remote code and message.
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
-		data := natsutil.MarshalError("room not found")
+		data, _ := json.Marshal(errcode.NotFound("room not found"))
 		_ = m.Respond(data)
 	})
 	require.NoError(t, err)
@@ -75,8 +75,10 @@ func TestNATSMemberListClient_RemoteError(t *testing.T) {
 
 	_, err = client.ListMembers(context.Background(), requester, ch, 0)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remote member.list:")
 	assert.Contains(t, err.Error(), "room not found")
+	var ee *errcode.Error
+	require.ErrorAs(t, err, &ee)
+	assert.Equal(t, errcode.CodeNotFound, ee.Code)
 	assert.False(t, errors.Is(err, errNotRoomMember), "generic remote errors must not masquerade as the sentinel")
 }
 
@@ -87,11 +89,12 @@ func TestNATSMemberListClient_RemoteNotMember_MapsToSentinel(t *testing.T) {
 	ch := model.ChannelRef{RoomID: "room-eng", SiteID: "site-us"}
 	requester := "alice"
 
-	// Remote site returns errNotRoomMember's exact message — the client must map
-	// it back onto the local errNotRoomMember sentinel so cross-site and
-	// same-site "not a member" behave uniformly under errors.Is.
+	// Remote site replies with an errcode envelope carrying reason
+	// not_room_member — the client must map it back onto the local
+	// errNotRoomMember sentinel so cross-site and same-site "not a member"
+	// behave uniformly under errors.Is.
 	sub, err := nc.Subscribe(subject.MemberList(requester, ch.RoomID, ch.SiteID), func(m *nats.Msg) {
-		data := natsutil.MarshalError(errNotRoomMember.Error())
+		data := []byte(`{"code":"forbidden","reason":"not_room_member","error":"only room members can perform this action"}`)
 		_ = m.Respond(data)
 	})
 	require.NoError(t, err)

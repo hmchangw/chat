@@ -20,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -794,17 +795,17 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.ElementsMatch(t, []string{"alice", "bob"}, accounts)
 	})
 
-	t.Run("empty org returns errInvalidOrg", func(t *testing.T) {
+	t.Run("empty org returns RoomInvalidOrg reason", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SectID: "sect-eng"})
 
 		_, err := store.ListOrgMembers(ctx, "sect-nope")
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+		assert.True(t, errcode.HasReason(err, errcode.RoomInvalidOrg), "want RoomInvalidOrg in chain, got %v", err)
 	})
 
-	t.Run("returns errInvalidOrg when neither sectId nor deptId matches", func(t *testing.T) {
+	t.Run("returns RoomInvalidOrg reason when neither sectId nor deptId matches", func(t *testing.T) {
 		// Users carry both sectId and deptId, but neither field equals the
 		// queried orgID — guards against an accidental match on the wrong
 		// branch of the $or (e.g. a future query rewrite that collapses to
@@ -816,7 +817,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 
 		_, err := store.ListOrgMembers(ctx, "sect-nope")
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+		assert.True(t, errcode.HasReason(err, errcode.RoomInvalidOrg), "want RoomInvalidOrg in chain, got %v", err)
 	})
 
 	t.Run("returns expected OrgMember shape", func(t *testing.T) {
@@ -1330,13 +1331,12 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
-	// Cross-site member.list deadline → typed channelExpandTimeoutError naming
-	// the offending site+roomId. sanitizeError surfaces the message verbatim.
-	var te *channelExpandTimeoutError
-	require.ErrorAs(t, err, &te, "expected channelExpandTimeoutError, got %v", err)
-	assert.Equal(t, "site-b", te.SiteID)
-	assert.Equal(t, "source", te.RoomID)
-	assert.Equal(t, "timeout listing members of channel source@site-b", sanitizeError(err))
+	// Cross-site member.list deadline → Unavailable errcode naming the offending
+	// site+roomId so the requester can see which channel source stalled.
+	var ee *errcode.Error
+	require.ErrorAs(t, err, &ee, "expected *errcode.Error, got %v", err)
+	assert.Equal(t, errcode.CodeUnavailable, ee.Code)
+	assert.Equal(t, "timeout listing members of channel source@site-b", ee.Message)
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
@@ -1651,13 +1651,13 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	body, err := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
 	require.NoError(t, err)
 
-	_, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
-	require.Error(t, herr)
+	resp, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.NoError(t, herr)
 
-	var dmErr *dmExistsError
-	require.True(t, errors.As(herr, &dmErr), "expected dmExistsError, got %T: %v", herr, herr)
-	assert.Equal(t, "dm already exists", dmErr.Error())
-	assert.Equal(t, roomID, dmErr.RoomID())
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, roomID, reply.RoomID)
 }
 
 func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
