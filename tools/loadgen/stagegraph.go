@@ -8,7 +8,7 @@ type stage struct {
 	Container     string   // cAdvisor compose-service label value
 	Durable       string   // durable consumer fronting this stage; "" if none
 	LatencySeries string   // loadgen latency series measuring this stage; "" if none
-	DependsOn     []string // downstream components this stage calls into
+	DependsOn     []string // external dependencies this stage calls into (e.g. databases)
 }
 
 // messagesStageGraph describes the messages pipeline:
