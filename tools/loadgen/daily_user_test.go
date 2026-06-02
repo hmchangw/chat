@@ -45,3 +45,19 @@ func TestActionRate_PerSecond(t *testing.T) {
 	r := actionRatePerSecond(defaultActionWeights().totalPerDay(), 8*time.Hour)
 	require.InDelta(t, 0.00326, r, 0.0002)
 }
+
+func TestNewUserState_ChannelRoomsExcludesDMs(t *testing.T) {
+	rooms := []string{
+		"room-dm-000001",
+		"room-small-000007",
+		"room-dm-000042",
+		"room-medium-000003",
+		"room-large-000000",
+	}
+	u := newUserState("u-1", "user-1", rooms, 0)
+	require.Equal(t, rooms, u.Rooms, "Rooms preserved verbatim")
+	require.Equal(t,
+		[]string{"room-small-000007", "room-medium-000003", "room-large-000000"},
+		u.ChannelRooms,
+		"ChannelRooms drops DMs by ID prefix and preserves order of the rest")
+}

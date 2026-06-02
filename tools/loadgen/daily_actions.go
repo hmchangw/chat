@@ -138,12 +138,16 @@ func roomCreate(a actionCtx, u *userState) error {
 	return nil
 }
 
-// memberAdd adds a target account to a random room u belongs to.
+// memberAdd adds a target account to a random channel room u belongs to.
+// Picks from u.ChannelRooms (DMs excluded) — room-service rejects member-add
+// on DM rooms with "cannot add members to a non-channel room", so picking
+// from u.Rooms uniformly would generate ~45% wasted error_rate noise on
+// the daily-heavy preset (25 DMs out of 56 rooms/user).
 func memberAdd(a actionCtx, u *userState, targetAccount string) error {
-	if len(u.Rooms) == 0 {
+	if len(u.ChannelRooms) == 0 {
 		return nil
 	}
-	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
+	roomID := u.ChannelRooms[a.rand().Intn(len(u.ChannelRooms))]
 	payload, err := json.Marshal(map[string]any{"accounts": []string{targetAccount}})
 	if err != nil {
 		return fmt.Errorf("marshal member-add: %w", err)

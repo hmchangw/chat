@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -109,17 +110,30 @@ func pickAction(r *rand.Rand, w actionWeights) actionKind {
 
 // userState is the per-user runtime state for a daily-IM simulated user.
 type userState struct {
-	ID         string
-	Account    string
-	Rooms      []string
-	active     bool
-	activeProb float64 // P(stay active | active)
-	idleProb   float64 // P(stay idle | idle)
+	ID      string
+	Account string
+	Rooms   []string
+	// ChannelRooms is the subset of Rooms that are NOT DMs — pre-filtered
+	// at activation so the memberAdd action (which room-service rejects
+	// on DMs with "cannot add members to a non-channel room") doesn't
+	// have to scan + filter every tick. DMs are detected by the fixture
+	// builder's ID convention: BuildFixtures names DM rooms
+	// "room-dm-NNNNNN" and the other bands "room-small-…"/"medium"/"large".
+	ChannelRooms []string
+	active       bool
+	activeProb   float64 // P(stay active | active)
+	idleProb     float64 // P(stay idle | idle)
 }
 
 func newUserState(id, account string, rooms []string, _seed int64) *userState {
+	channels := make([]string, 0, len(rooms))
+	for _, r := range rooms {
+		if !strings.HasPrefix(r, "room-dm-") {
+			channels = append(channels, r)
+		}
+	}
 	return &userState{
-		ID: id, Account: account, Rooms: rooms,
+		ID: id, Account: account, Rooms: rooms, ChannelRooms: channels,
 		active: false,
 		// Tuned so stationary active fraction ≈ 25%: P(idle->active)=0.05, P(active->idle)=0.15.
 		activeProb: 0.85, idleProb: 0.95,

@@ -108,11 +108,28 @@ func TestRoomCreate_Requests(t *testing.T) {
 
 func TestMemberAdd_Requests(t *testing.T) {
 	c := &captured{}
-	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
+	// memberAdd picks from u.ChannelRooms (not u.Rooms) to avoid hitting
+	// DM rooms — which room-service rejects with "cannot add members to a
+	// non-channel room". Set ChannelRooms explicitly for the test.
+	u := &userState{ID: "u-1", Account: "user-1",
+		Rooms:        []string{"room-a"},
+		ChannelRooms: []string{"room-a"}}
 	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
 	require.NoError(t, memberAdd(ctx, u, "user-2"))
 	require.Len(t, c.reqs, 1)
 	require.Equal(t, subject.MemberAdd("user-1", "room-a", "site-test"), c.reqs[0].Subj)
+}
+
+func TestMemberAdd_SkipsWhenNoChannelRooms(t *testing.T) {
+	c := &captured{}
+	// User with only DMs (ChannelRooms empty) — memberAdd should no-op
+	// rather than fail or pick a DM.
+	u := &userState{ID: "u-1", Account: "user-1",
+		Rooms:        []string{"room-dm-000001"},
+		ChannelRooms: nil}
+	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
+	require.NoError(t, memberAdd(ctx, u, "user-2"))
+	require.Len(t, c.reqs, 0)
 }
 
 func TestThreadReply_Publishes(t *testing.T) {
