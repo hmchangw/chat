@@ -17,6 +17,7 @@ func TestParseContainerMap(t *testing.T) {
 func TestParseContainerMap_Empty(t *testing.T) {
 	m, err := parseContainerMap("")
 	require.NoError(t, err)
+	assert.NotNil(t, m) // empty string must yield a non-nil (usable) map
 	assert.Empty(t, m)
 }
 
