@@ -42,10 +42,10 @@ type Subscription struct {
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
 	Favorite           bool             `json:"favorite" bson:"favorite"`
-	// Denormalized from Room.Restricted / Room.ExternalAccess so a single
-	// SubscriptionUpdateEvent carries every client-facing room field.
-	// Readers MUST treat missing as false. Room remains the access-control
-	// source of truth.
+	// Denormalized from Room.{Restricted,ExternalAccess} on the home site —
+	// and the only place remote sites carry the room's restricted state since
+	// the cross-site outbox event mirrors only subscription rows, not the
+	// Room doc. Treat missing as false.
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 }

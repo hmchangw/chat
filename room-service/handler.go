@@ -1578,11 +1578,14 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 	}
 	requestID := natsutil.RequestIDFromContext(ctx)
 
-	var req model.RenameRoomRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	// Client body carries only newName — roomID and account are taken from the
+	// subject (the authoritative identity), never from the wire body.
+	var body struct {
+		NewName string `json:"newName"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
-	req.RoomID, req.Account = roomID, account
 
 	slog.Debug("processing room.rename",
 		"op", model.AsyncJobOpRoomRename,
@@ -1590,11 +1593,10 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 		"roomID", roomID,
 		"requestID", requestID)
 
-	name := strings.TrimSpace(req.NewName)
+	name := strings.TrimSpace(body.NewName)
 	if name == "" || utf8.RuneCountInString(name) > 100 {
 		return nil, errInvalidName
 	}
-	req.NewName = name
 
 	requesterUser, err := h.store.GetUser(ctx, account)
 	if err != nil && !errors.Is(err, ErrUserNotFound) {
@@ -1625,8 +1627,13 @@ func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte
 		}
 	}
 
-	req.Timestamp = time.Now().UTC().UnixMilli()
-	out, err := json.Marshal(req)
+	canonical := model.RenameRoomRequest{
+		RoomID:    roomID,
+		Account:   account,
+		NewName:   name,
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	out, err := json.Marshal(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("marshal rename request: %w", err)
 	}
@@ -1983,7 +1990,7 @@ func (h *Handler) handleFavoriteToggle(ctx context.Context, subj string, _ []byt
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionFavoriteToggled), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionFavoriteToggled), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish favorite-toggled outbox: %w", err)
 		}
 	}

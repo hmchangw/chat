@@ -1864,35 +1864,6 @@ func (h *Handler) findRemoteSitesForAccounts(ctx context.Context, accounts []str
 	return out, nil
 }
 
-// publishSubscriptionEvents fans out one SubscriptionUpdateEvent per subscription.
-// Best-effort: errors are logged, not returned.
-func (h *Handler) publishSubscriptionEvents(ctx context.Context, subs []model.Subscription, action string) {
-	now := time.Now().UTC().UnixMilli()
-	var failures int
-	for i := range subs {
-		evt := model.SubscriptionUpdateEvent{
-			UserID:       subs[i].User.ID,
-			Subscription: subs[i],
-			Action:       action,
-			Timestamp:    now,
-		}
-		data, err := json.Marshal(evt)
-		if err != nil {
-			failures++
-			slog.Error("marshal subscription update", "error", err, "account", subs[i].User.Account, "action", action)
-			continue
-		}
-		if err := h.publish(ctx, subject.SubscriptionUpdate(subs[i].User.Account), data, ""); err != nil {
-			failures++
-			slog.Error("publish subscription update", "error", err, "account", subs[i].User.Account, "action", action)
-		}
-	}
-	if failures > 0 {
-		slog.Warn("subscription event fan-out had failures",
-			"action", action, "failures", failures, "total", len(subs))
-	}
-}
-
 func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error) {
 	var requesterAccount, roomID string
 	defer func() {

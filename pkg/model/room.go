@@ -66,7 +66,10 @@ func BuildDMParticipants(a, b *User) (uids, accounts []string) {
 }
 
 // RenameRoomRequest is the canonical event for renaming a channel room.
-// Account and Timestamp are server-set by room-service before publishing.
+// Clients send only NewName; RoomID and Account are derived from the request
+// subject by room-service and Timestamp is stamped at acceptance — those three
+// fields are server-set before the canonical event is published, never trusted
+// from the wire body.
 type RenameRoomRequest struct {
 	RoomID    string `json:"roomId"    bson:"roomId"`
 	NewName   string `json:"newName"   bson:"newName"`

@@ -4984,43 +4984,6 @@ func TestFindRemoteSitesForAccounts_StoreError(t *testing.T) {
 	assert.Contains(t, err.Error(), "find users by accounts")
 }
 
-func TestPublishSubscriptionEvents(t *testing.T) {
-	var got []model.SubscriptionUpdateEvent
-	publish := func(_ context.Context, _ string, data []byte, _ string) error {
-		var evt model.SubscriptionUpdateEvent
-		require.NoError(t, json.Unmarshal(data, &evt))
-		got = append(got, evt)
-		return nil
-	}
-	h := &Handler{siteID: "site-a", publish: publish}
-	subs := []model.Subscription{
-		{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
-		{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
-	}
-	h.publishSubscriptionEvents(context.Background(), subs, "renamed")
-	require.Len(t, got, 2)
-	assert.Equal(t, "renamed", got[0].Action)
-	assert.Equal(t, "alice", got[0].Subscription.User.Account)
-}
-
-func TestPublishSubscriptionEvents_PublishErrorContinues(t *testing.T) {
-	callCount := 0
-	publish := func(_ context.Context, _ string, _ []byte, _ string) error {
-		callCount++
-		if callCount == 1 {
-			return errors.New("nats down")
-		}
-		return nil
-	}
-	h := &Handler{siteID: "site-a", publish: publish}
-	subs := []model.Subscription{
-		{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1"},
-		{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1"},
-	}
-	h.publishSubscriptionEvents(context.Background(), subs, "renamed")
-	assert.Equal(t, 2, callCount, "loop should continue past failures")
-}
-
 // --- processRoomRename tests ---
 
 // Test 1: Missing X-Request-ID → permanent error, no store calls.

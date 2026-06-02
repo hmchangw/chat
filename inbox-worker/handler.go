@@ -290,7 +290,6 @@ func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent)
 		return fmt.Errorf("unmarshal room_renamed payload: %w", err)
 	}
 	slog.Info("processing room_renamed",
-		"op", "room_renamed",
 		"roomID", payload.RoomID,
 		"newName", payload.NewName,
 		"requestID", natsutil.RequestIDFromContext(ctx))
@@ -306,7 +305,6 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, evt *model.OutboxEve
 		return fmt.Errorf("unmarshal room_restricted payload: %w", err)
 	}
 	slog.Info("processing room_restricted",
-		"op", "room_restricted",
 		"roomID", payload.RoomID,
 		"restricted", payload.Restricted,
 		"externalAccess", payload.ExternalAccess,

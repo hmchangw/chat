@@ -592,11 +592,12 @@ Only channel rooms may be renamed. This RPC may be called by a **platform admin*
 
 | Field     | Type   | Required | Notes |
 |-----------|--------|----------|-------|
-| `roomId`  | string | yes      | Must match the `{roomID}` in the subject. |
 | `newName` | string | yes      | New room name. 1–100 characters after trimming whitespace. |
 
+The room ID and requesting account are taken from the subject — clients do not include them in the body.
+
 ```json
-{ "roomId": "01970a4f8c2d7c9aQ", "newName": "engineering-general" }
+{ "newName": "engineering-general" }
 ```
 
 ##### Success response
@@ -618,7 +619,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"room not found"` — no room matches the subject `{roomID}`.
 - `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
 - `"only owners or platform admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` role in the room.
-- `"invalid request"` — body is malformed or `roomId` does not match the subject.
+- `"invalid request"` — body is malformed.
 - `"missing X-Request-ID header"` — the NATS header is absent.
 - `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
 

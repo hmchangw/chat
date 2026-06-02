@@ -4589,7 +4589,7 @@ func TestHandler_FavoriteToggle_Success(t *testing.T) {
 	h := &Handler{
 		store:  store,
 		siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
 			t.Fatal("publishToStream must not be called for same-site favorite toggle")
 			return nil
 		},
@@ -4639,7 +4639,7 @@ func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	var streamData []byte
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, s string, d []byte) error {
+		publishToStream: func(_ context.Context, s string, d []byte, _ string) error {
 			streamSubj = s
 			streamData = d
 			return nil
@@ -4677,7 +4677,7 @@ func TestHandler_FavoriteToggle_NotRoomMember(t *testing.T) {
 
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
 		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
 
@@ -4689,7 +4689,7 @@ func TestHandler_FavoriteToggle_NotRoomMember(t *testing.T) {
 func TestHandler_FavoriteToggle_InvalidSubject(t *testing.T) {
 	h := &Handler{
 		siteID:          "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
 		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
 	_, err := h.handleFavoriteToggle(context.Background(), "garbage.subject", nil)
@@ -4707,7 +4707,7 @@ func TestHandler_FavoriteToggle_StoreError(t *testing.T) {
 
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
 		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
 	subj := subject.FavoriteToggle("alice", "r1", "site-a")
@@ -4731,7 +4731,7 @@ func TestHandler_FavoriteToggle_GetUserSiteIDError(t *testing.T) {
 
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
 			t.Fatal("publishToStream must not be called when GetUserSiteID fails")
 			return nil
 		},
@@ -4762,7 +4762,7 @@ func TestHandler_FavoriteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
 			return fmt.Errorf("nats unavailable")
 		},
 		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
@@ -4795,7 +4795,7 @@ func TestHandler_FavoriteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 		publishCore: func(_ context.Context, _ string, _ []byte) error {
 			return fmt.Errorf("core nats down")
 		},
-		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
 			t.Fatal("publishToStream must not be called for same-site favorite toggle")
 			return nil
 		},
