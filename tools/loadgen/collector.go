@@ -83,18 +83,6 @@ func NewCollector(m *Metrics, preset string) *Collector {
 	return c
 }
 
-// Reset clears all correlation state and accumulated samples. Used by the
-// max-rps ramp to start each step's hold window from a clean slate while the
-// E1/E2 subscriptions (which hold this *Collector pointer) stay alive.
-func (c *Collector) Reset() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.byReqID = make(map[string]publishEntry)
-	c.byMsgID = make(map[string]publishEntry)
-	c.e1 = nil
-	c.e2 = nil
-}
-
 // RecordPublish stores the publish time under both correlation keys.
 // The two writes land on independent shards (no nesting), so concurrent
 // callers contend per shard, not on a global mutex.

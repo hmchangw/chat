@@ -224,7 +224,7 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 			"activation_elapsed", activationElapsed.Round(time.Millisecond))
 	}
 
-	if !waitOrCancel(ctx, env.warmup) {
+	if err := waitOrCancel(ctx, env.warmup); err != nil {
 		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during warmup")
 	}
 
@@ -250,7 +250,7 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 
 	env.collector.Reset()
 
-	if !waitOrCancel(ctx, env.hold) {
+	if err := waitOrCancel(ctx, env.hold); err != nil {
 		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during hold")
 	}
 
@@ -285,21 +285,6 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 
 	_ = waitOrCancel(ctx, env.cooldown)
 	return r
-}
-
-// waitOrCancel returns true if d elapsed, false if ctx was canceled first.
-func waitOrCancel(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 func inconclusiveResult(n int, startedAt time.Time, hold time.Duration, reason string) StepResult {
