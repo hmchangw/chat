@@ -38,6 +38,31 @@ type SubscriptionUpdateEvent struct {
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
+// Canonical room-member event types — see CanonicalMemberEvent.
+const (
+	CanonicalMemberEventAdded   = "added"
+	CanonicalMemberEventRemoved = "removed"
+	CanonicalMemberEventMuted   = "muted"
+)
+
+// CanonicalMemberEvent is the room-scoped post-mutation event published on the
+// canonical room stream and consumed by notification-worker for cache
+// invalidation. One event per (room, affected account) — bulk operations emit
+// one event per member, but the consumer dedups identical roomID invalidations
+// via its buffered channel.
+//
+// Muted carries the post-toggle state; populated only for Type == "muted" and
+// omitted via omitempty for added/removed. The string "muted" is the canonical
+// vocabulary for this stream; SubscriptionUpdateEvent.Action uses "mute_toggled"
+// for the per-user fan-out — different vocabulary, same underlying state change.
+type CanonicalMemberEvent struct {
+	Type      string `json:"type"` // CanonicalMemberEvent{Added|Removed|Muted}
+	RoomID    string `json:"roomId"`
+	Account   string `json:"account"`         // affected member
+	Muted     bool   `json:"muted,omitempty"` // post-toggle state, only set for Type=="muted"
+	Timestamp int64  `json:"timestamp"`
+}
+
 type UpdateRoleRequest struct {
 	RoomID  string `json:"roomId"  bson:"roomId"`
 	Account string `json:"account" bson:"account"`
@@ -67,13 +92,6 @@ type InboxMemberEvent struct {
 	HistorySharedSince *int64   `json:"historySharedSince,omitempty"`
 	JoinedAt           int64    `json:"joinedAt,omitempty"`
 	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
-}
-
-type NotificationEvent struct {
-	Type      string  `json:"type"` // "new_message"
-	RoomID    string  `json:"roomId"`
-	Message   Message `json:"message"`
-	Timestamp int64   `json:"timestamp" bson:"timestamp"`
 }
 
 // OutboxEventType is the type tag on an OutboxEvent used to route it to the
@@ -140,12 +158,17 @@ type MemberAddEvent struct {
 }
 
 // Participant represents a user with display name info for client rendering.
+// DisplayName is the render-ready composed name (see pkg/displayfmt.CombineWithFallback)
+// and is the field push-service uses to render notifications; it is populated only
+// where pre-composition is meaningful (push event senders), left empty in
+// fan-out shapes that carry raw EngName/ChineseName (mentions, ClientMessage).
 type Participant struct {
-	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
-	Account     string `json:"account" bson:"account"`
-	SiteID      string `json:"siteId,omitempty" bson:"siteId,omitempty"`
-	ChineseName string `json:"chineseName" bson:"chineseName"`
-	EngName     string `json:"engName" bson:"engName"`
+	UserID      string `json:"userId,omitempty"      bson:"userId,omitempty"`
+	Account     string `json:"account"               bson:"account"`
+	SiteID      string `json:"siteId,omitempty"      bson:"siteId,omitempty"`
+	ChineseName string `json:"chineseName"           bson:"chineseName"`
+	EngName     string `json:"engName"               bson:"engName"`
+	DisplayName string `json:"displayName,omitempty" bson:"displayName,omitempty"`
 }
 
 // ClientMessage wraps Message with enriched sender info for client consumption.

@@ -101,6 +101,26 @@ func RoomCanonical(siteID, operation string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
 }
 
+// RoomCanonicalMemberEvent returns the canonical room-stream subject for a
+// post-mutation member event. eventType is one of "added" | "removed" | "muted".
+//
+// Published by room-worker (added/removed) and room-service (muted) AFTER a
+// successful mutation. Consumed by notification-worker for room-member cache
+// invalidation — one event per room mutation, not per affected user.
+//
+// The "event" infix distinguishes these from the command subjects
+// (member.add, member.remove, member.role-update) that room-service publishes
+// for room-worker to execute.
+func RoomCanonicalMemberEvent(siteID, eventType string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.event.member.%s", siteID, eventType)
+}
+
+// RoomCanonicalMemberEventFilter is the wildcard for consumers that want all
+// member events. Does not overlap with command subjects.
+func RoomCanonicalMemberEventFilter(siteID string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.event.member.>", siteID)
+}
+
 func SubscriptionUpdate(account string) string {
 	return fmt.Sprintf("chat.user.%s.event.subscription.update", account)
 }
@@ -801,4 +821,41 @@ func UserRoomWildCard(siteID string) string {
 
 func UserAppsWildCard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.user.%s.apps.>", siteID)
+}
+
+// PushNotification is the per-recipient mobile-push subject. Lives under chat.server.* so
+// client JWTs cannot subscribe. The stream filter covers the .send leaf and future siblings.
+func PushNotification(siteID string) string {
+	return fmt.Sprintf("chat.server.notification.push.%s.send", siteID)
+}
+
+// PushNotificationFilter is the stream-binding wildcard covering .send and any future siblings.
+func PushNotificationFilter(siteID string) string {
+	return fmt.Sprintf("chat.server.notification.push.%s.>", siteID)
+}
+
+// PresenceSnapshot is the bulk presence RPC subject (request/reply).
+func PresenceSnapshot(siteID string) string {
+	return fmt.Sprintf("chat.presence.%s.request.snapshot", siteID)
+}
+
+// SubscriptionUpdateWildcard matches every subscription.update fanout event.
+func SubscriptionUpdateWildcard() string {
+	return "chat.user.*.event.subscription.update"
+}
+
+// ParseSubscriptionUpdateAccount extracts the account from a subscription.update subject; ok=false on malformed input.
+func ParseSubscriptionUpdateAccount(s string) (account string, ok bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 6 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "event" ||
+		parts[4] != "subscription" || parts[5] != "update" {
+		return "", false
+	}
+	if !isValidAccountToken(parts[2]) {
+		return "", false
+	}
+	return parts[2], true
 }
