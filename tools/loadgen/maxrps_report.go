@@ -58,6 +58,10 @@ func pctFor(r *rpsStepResult, name string) Percentiles {
 
 // renderRPSReport writes the per-step table and the ANSWER line.
 func renderRPSReport(w io.Writer, results []rpsStepResult, workload, preset string) error {
+	return renderRPSReportWithBottleneck(w, results, workload, preset, nil)
+}
+
+func renderRPSReportWithBottleneck(w io.Writer, results []rpsStepResult, workload, preset string, bn *bottleneckVerdict) error {
 	fmt.Fprintf(w, "=== loadgen max-rps complete (workload=%s, preset=%s) ===\n\n", workload, preset)
 	names := seriesNames(results)
 
@@ -97,12 +101,16 @@ func renderRPSReport(w io.Writer, results []rpsStepResult, workload, preset stri
 	if trip := firstTrip(results); trip != nil {
 		fmt.Fprintf(w, "        Next limit: %s\n", strings.Join(trip.Reasons, "; "))
 	}
+	if bn != nil {
+		renderBottleneck(w, bn)
+	}
 	return nil
 }
 
 // writeRPSCSV writes one row per step. Series percentile columns are emitted in
-// the union order of series names across all steps.
-func writeRPSCSV(w io.Writer, results []rpsStepResult) error {
+// the union order of series names across all steps. When bn is non-nil the three
+// bottleneck columns are appended to the trip row; pass rows get empty cells.
+func writeRPSCSV(w io.Writer, results []rpsStepResult, bn *bottleneckVerdict) error {
 	cw := csv.NewWriter(w)
 	names := seriesNames(results)
 
@@ -110,7 +118,7 @@ func writeRPSCSV(w io.Writer, results []rpsStepResult) error {
 	for _, n := range names {
 		header = append(header, n+"_p95_ms", n+"_p99_ms")
 	}
-	header = append(header, "error_rate", "attempted", "failed", "saturation", "worst_durable", "worst_pending_delta", "verdict", "reasons")
+	header = append(header, "error_rate", "attempted", "failed", "saturation", "worst_durable", "worst_pending_delta", "verdict", "reasons", "bottleneck_component", "bottleneck_resource", "bottleneck_confidence")
 	if err := cw.Write(header); err != nil {
 		return fmt.Errorf("write csv header: %w", err)
 	}
@@ -129,6 +137,11 @@ func writeRPSCSV(w io.Writer, results []rpsStepResult) error {
 			strconv.Itoa(r.AttemptedOps), strconv.Itoa(r.FailedOps), strconv.Itoa(r.Saturation),
 			r.WorstDurable, strconv.FormatInt(r.WorstDelta, 10),
 			r.Kind.String(), strings.Join(r.Reasons, "; "))
+		if bn != nil && r.Kind == verdictTrip {
+			row = append(row, bottleneckCSVColumns(bn)...)
+		} else {
+			row = append(row, "", "", "")
+		}
 		if err := cw.Write(row); err != nil {
 			return fmt.Errorf("write csv row: %w", err)
 		}

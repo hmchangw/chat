@@ -76,7 +76,7 @@ func (e *bottleneckEngine) saturated(ctx context.Context, service string, pass, 
 
 // stageBackingUp reports whether a stage is accumulating backlog or breaching
 // its latency SLO at the tripping step.
-func stageBackingUp(st stage, trip *rpsStepResult, th rpsThresholds) bool {
+func stageBackingUp(st *stage, trip *rpsStepResult, th rpsThresholds) bool {
 	if st.Durable != "" {
 		for _, p := range trip.Pending {
 			if p.Durable == st.Durable && p.Delta() > 0 {
@@ -115,7 +115,7 @@ func (e *bottleneckEngine) Diagnose(ctx context.Context, trip, pass *rpsStepResu
 	evals := make([]stageEval, 0, len(graph))
 	sawData := false
 	for _, st := range graph {
-		ev := stageEval{st: st, backingUp: stageBackingUp(st, trip, th)}
+		ev := stageEval{st: st, backingUp: stageBackingUp(&st, trip, th)}
 		if ev.backingUp {
 			sat, ok := e.saturated(ctx, st.Container, pass, trip)
 			ev.satStage = sat

@@ -57,10 +57,10 @@ type config struct {
 	// Cassandra is optional at startup so the existing messages/members
 	// workloads keep working with no extra env. The history-* subcommands
 	// fail-fast if CASSANDRA_HOSTS is empty.
-	CassandraHosts     string `env:"CASSANDRA_HOSTS"        envDefault:""`
-	CassandraKeyspace  string `env:"CASSANDRA_KEYSPACE"     envDefault:"chat"`
-	CassandraUsername  string `env:"CASSANDRA_USERNAME"     envDefault:""`
-	CassandraPassword  string `env:"CASSANDRA_PASSWORD"     envDefault:""`
+	CassandraHosts     string           `env:"CASSANDRA_HOSTS"        envDefault:""`
+	CassandraKeyspace  string           `env:"CASSANDRA_KEYSPACE"     envDefault:"chat"`
+	CassandraUsername  string           `env:"CASSANDRA_USERNAME"     envDefault:""`
+	CassandraPassword  string           `env:"CASSANDRA_PASSWORD"     envDefault:""`
 	MessageBucketHours int              `env:"MESSAGE_BUCKET_HOURS"   envDefault:"72"`
 	Bottleneck         bottleneckConfig `envPrefix:"BOTTLENECK_"`
 }

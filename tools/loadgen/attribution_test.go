@@ -165,7 +165,7 @@ func TestEngine_BacksUpNoKnee_Medium(t *testing.T) {
 func TestEngine_NoBackup_FallbackRanking_Low(t *testing.T) {
 	passT, tripT := time.Unix(1000, 0), time.Unix(2000, 0)
 	trip := tripResult(tripT)
-	trip.Pending[0].End = 0 // nothing backs up, no latency breach
+	trip.Pending[0].End = 0                           // nothing backs up, no latency breach
 	trip.Latencies[1].Pct.P95 = 50 * time.Millisecond // E2 under SLO: broadcast-worker not backing up
 	// cassandra has the clearest plateau at the highest cores -> low-confidence pick.
 	q := stageProm(passT, tripT, map[string]float64{"cassandra": 3.8})

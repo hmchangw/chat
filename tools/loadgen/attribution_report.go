@@ -9,7 +9,7 @@ import (
 // renderBottleneck writes the BOTTLENECK: block. For an undetermined verdict it
 // writes a single line naming why; otherwise it names the culprit, the causal
 // reasons, and the confidence.
-func renderBottleneck(w io.Writer, v bottleneckVerdict) {
+func renderBottleneck(w io.Writer, v *bottleneckVerdict) {
 	if !v.Determined {
 		reason := "no signal"
 		if len(v.Reasons) > 0 {
@@ -26,7 +26,7 @@ func renderBottleneck(w io.Writer, v bottleneckVerdict) {
 }
 
 // bottleneckCSVColumns returns the trip-row culprit columns appended to the CSV.
-func bottleneckCSVColumns(v bottleneckVerdict) []string {
+func bottleneckCSVColumns(v *bottleneckVerdict) []string {
 	if !v.Determined {
 		return []string{"undetermined", "", ""}
 	}
