@@ -24,7 +24,8 @@ type promSeries struct {
 	Samples []promSample
 }
 
-// promClient queries the Prometheus HTTP API. It is the production promQuerier.
+// promClient queries the Prometheus HTTP API. It satisfies the promQuerier
+// interface (defined in attribution.go) used as the production querier.
 type promClient struct {
 	rc *resty.Client
 }
@@ -87,6 +88,8 @@ func (c *promClient) RangeQuery(ctx context.Context, query string, start, end ti
 			if err != nil {
 				continue
 			}
+			// Prometheus timestamps are float64 seconds; truncating to int64
+			// loses at most 1s, acceptable at the attribution query step.
 			s.Samples = append(s.Samples, promSample{T: time.Unix(int64(ts), 0).UTC(), V: val})
 		}
 		out = append(out, s)
