@@ -187,6 +187,20 @@ func RoomKeyEnsure(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
 }
 
+// RoomKeyGet is the user-facing request subject for the room key get RPC.
+// Callers (chat-frontend) send a model.RoomKeyGetRequest and receive a
+// model.RoomKeyGetResponse with the room key bytes for the given version
+// (or the current version when Version is nil).
+func RoomKeyGet(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.key.get", account, roomID, siteID)
+}
+
+// RoomKeyGetWildcard is the subscription pattern room-service uses to
+// receive RoomKeyGet requests from any account / roomID at its siteID.
+func RoomKeyGetWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.key.get", siteID)
+}
+
 // RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
 func RoomCreateDMSync(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
