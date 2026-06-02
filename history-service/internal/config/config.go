@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -55,5 +56,31 @@ type Config struct {
 
 // Load parses environment variables into Config; returns an error when required vars are absent.
 func Load() (Config, error) {
-	return env.ParseAs[Config]()
+	cfg, err := env.ParseAs[Config]()
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validate(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// validate rejects negative cache sizes/TTLs that would silently disable a
+// cache (because the main wiring guards on size>0 && ttl>0). Zero is the
+// documented disable value and is accepted.
+func validate(cfg *Config) error {
+	if cfg.SubCacheSize < 0 {
+		return fmt.Errorf("HISTORY_SUB_CACHE_SIZE must be >= 0, got %d", cfg.SubCacheSize)
+	}
+	if cfg.SubCacheTTL < 0 {
+		return fmt.Errorf("HISTORY_SUB_CACHE_TTL must be >= 0, got %s", cfg.SubCacheTTL)
+	}
+	if cfg.RoomCacheSize < 0 {
+		return fmt.Errorf("HISTORY_ROOM_CACHE_SIZE must be >= 0, got %d", cfg.RoomCacheSize)
+	}
+	if cfg.RoomCacheTTL < 0 {
+		return fmt.Errorf("HISTORY_ROOM_CACHE_TTL must be >= 0, got %s", cfg.RoomCacheTTL)
+	}
+	return nil
 }
