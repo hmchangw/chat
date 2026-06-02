@@ -64,13 +64,23 @@ func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberL
 	}
 }
 
-// wrappedCtx returns m.Context() augmented with X-Request-ID from the inbound
-// msg header; entry ctx for every nats* handler. It also seeds the request_id
-// onto the ctx logger so the centralized errcode.Classify log line (emitted by
-// errnats.Reply) carries it without per-handler enrichment.
-func wrappedCtx(m otelnats.Msg) context.Context {
-	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
-	return errcode.WithLogValues(ctx, "request_id", natsutil.RequestIDFromContext(ctx))
+// wrappedCtx validates the inbound X-Request-ID via natsutil.RequireRequestID
+// (strict mode) and returns m.Context() seeded with the id for the centralized
+// errcode.Classify log line. Missing/malformed headers return an
+// errcode.BadRequest that the caller must reply to via errnats.Reply.
+//
+// Strict mode is required here — not the mint-on-missing default — because
+// room-service handlers fan out to room-worker, whose JetStream publishes
+// derive Nats-Msg-Id / message IDs from this request ID (OutboxDedupID,
+// messageDedupSeed, idgen.MessageIDFromRequestID). A silently-minted server-
+// side ID would break dedup across client retries. See docs/error-handling.md
+// §3a.
+func wrappedCtx(m otelnats.Msg) (context.Context, error) {
+	ctx, id, err := natsutil.RequireRequestID(m.Context(), m.Msg.Header, m.Msg.Subject)
+	if err != nil {
+		return m.Context(), err
+	}
+	return errcode.WithLogValues(ctx, "request_id", id), nil
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -119,7 +129,11 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 }
 
 func (h *Handler) natsCreateRoom(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleCreateRoom(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -134,14 +148,6 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 	requesterAccount, ok := subject.ParseRoomCreateSubject(subj)
 	if !ok {
 		return nil, fmt.Errorf("invalid create-room subject: %s", subj)
-	}
-
-	requestID := natsutil.RequestIDFromContext(ctx)
-	if requestID == "" {
-		return nil, errMissingRequestID
-	}
-	if !idgen.IsValidUUID(requestID) {
-		return nil, errInvalidRequestID
 	}
 
 	var req model.CreateRoomRequest
@@ -379,7 +385,11 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 
 // NatsHandleRemoveMember handles remove-member authorization requests.
 func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleRemoveMember(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -391,7 +401,11 @@ func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleListMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -401,7 +415,11 @@ func (h *Handler) natsListMembers(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleListOrgMembers(ctx, m.Msg.Subject)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -616,7 +634,11 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 }
 
 func (h *Handler) natsUpdateRole(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleUpdateRole(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -699,7 +721,11 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 }
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleAddMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -967,7 +993,11 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleRoomsInfoBatch(ctx, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -1101,7 +1131,11 @@ func chunkedGetKeys(ctx context.Context, ks RoomKeyStore, ids []string) (map[str
 }
 
 func (h *Handler) natsMessageRead(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageRead(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -1218,7 +1252,11 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 }
 
 func (h *Handler) natsMessageReadReceipt(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageReadReceipt(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -1310,7 +1348,11 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 }
 
 func (h *Handler) natsMessageThreadRead(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageThreadRead(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -1440,7 +1482,11 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 // bytes — encryption/decryption is performed by broadcast-worker and clients,
 // which read keys from Valkey directly.
 func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
@@ -1495,7 +1541,11 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 }
 
 func (h *Handler) natsMuteToggle(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMuteToggle(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)

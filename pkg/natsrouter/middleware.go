@@ -5,9 +5,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errnats"
-	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
@@ -24,15 +25,17 @@ const requestIDKey = "requestID"
 // handlers don't need to re-pass it.
 func RequestID() HandlerFunc {
 	return func(c *Context) {
-		reqID := ""
-		if c.Msg != nil && c.Msg.Header != nil {
-			reqID = c.Msg.Header.Get(natsutil.RequestIDHeader)
+		var (
+			headers nats.Header
+			subj    string
+		)
+		if c.Msg != nil {
+			headers = c.Msg.Header
+			subj = c.Msg.Subject
 		}
-		if !idgen.IsValidUUID(reqID) {
-			reqID = idgen.GenerateRequestID()
-		}
+		ctx, reqID := natsutil.StampRequestID(c.ctx, headers, subj)
 		c.Set(requestIDKey, reqID)
-		c.SetContext(natsutil.WithRequestID(c.ctx, reqID))
+		c.SetContext(ctx)
 		c.WithLogValues("request_id", reqID)
 		c.Next()
 	}

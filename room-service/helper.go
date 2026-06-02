@@ -45,8 +45,6 @@ var (
 	errBotInChannel        = errcode.BadRequest("bots cannot be added to a channel", errcode.WithReason(errcode.RoomBotInChannel))
 	errBotNotAvailable     = errcode.NotFound("bot not available", errcode.WithReason(errcode.RoomBotNotAvailable))
 	errInvalidUserData     = errcode.BadRequest("user is missing required name fields")
-	errMissingRequestID    = errcode.BadRequest("missing X-Request-ID header")
-	errInvalidRequestID    = errcode.BadRequest("invalid X-Request-ID format")
 	errChannelNameRequired = errcode.BadRequest("channel name is required")
 	errChannelNameTooLong  = errcode.BadRequest("channel name must be at most 100 characters")
 

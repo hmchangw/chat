@@ -131,7 +131,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 					if err := msg.Nak(); err != nil {

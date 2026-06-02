@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -248,7 +249,23 @@ func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstr
 			}
 		}
 	}()
-	handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+	// Defensive mint: room-service rejects missing/malformed X-Request-ID at
+	// publish time (RequireRequestID), so by the time a message lands on the
+	// ROOMS stream the header should always be a valid UUID. If we end up
+	// minting here, that's an upstream contract violation worth an Error log —
+	// downstream OutboxDedupID / message-ID generation will derive dedup keys
+	// from the fresh mint, breaking client-retry dedup. See
+	// docs/error-handling.md §3a.
+	inbound := ""
+	if h := msg.Headers(); h != nil {
+		inbound = h.Get(natsutil.RequestIDHeader)
+	}
+	id, replaced := idgen.ResolveRequestID(inbound)
+	if replaced || inbound == "" {
+		slog.Error("ROOMS stream message missing or invalid X-Request-ID — minting defensively; upstream contract broken",
+			"inbound", inbound, "subject", msg.Subject())
+	}
+	handlerCtx := natsutil.WithRequestID(msgCtx, id)
 	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 

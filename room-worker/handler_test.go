@@ -1798,22 +1798,12 @@ func setupAddMembersHappyPath(t *testing.T, mockStore *MockSubscriptionStore, ac
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
 }
 
-// Task 12: missing X-Request-ID must return a permanent error immediately.
-func TestProcessAddMembers_RequiresRequestID(t *testing.T) {
-	h, _, _ := newAddMembersTestHandler(t)
-	body, err := json.Marshal(model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob"},
-		RequesterID: "u_alice", RequesterAccount: "alice",
-		Timestamp: time.Now().UnixMilli(),
-	})
-	require.NoError(t, err)
-
-	// ctx has no request ID
-	err = h.processAddMembers(context.Background(), body)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing X-Request-ID")
-	assert.ErrorIs(t, err, errPermanent)
-}
+// The legacy TestProcessAddMembers_RequiresRequestID test pinned the old
+// reject-on-missing behavior. Under the repo-wide "mint everywhere" policy
+// (docs/error-handling.md), missing/malformed X-Request-ID is no longer a
+// rejectable condition — the boundary (main.go JetStream consume loop /
+// natsrouter.RequestID middleware) mints a fresh UUIDv7 via
+// natsutil.StampRequestID before the handler sees the ctx.
 
 func TestProcessAddMembers_MalformedJSON_IsPermanent(t *testing.T) {
 	// Regression for the Nak-forever bug: a malformed payload must be Acked
@@ -2148,18 +2138,9 @@ func makeCreateRoomBody(t *testing.T, req *model.CreateRoomRequest) []byte {
 
 // ---- Task 32: skeleton tests ----
 
-func TestProcessCreateRoom_RequiresRequestID(t *testing.T) {
-	h, _, _ := newCreateRoomTestHandler(t)
-	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
-		RoomID: "room1", RequesterAccount: "alice", Timestamp: time.Now().UnixMilli(),
-		Users: []string{"bob"},
-	})
-
-	err := h.processCreateRoom(context.Background(), body)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing X-Request-ID")
-	assert.ErrorIs(t, err, errPermanent)
-}
+// TestProcessCreateRoom_RequiresRequestID retired: see comment above the
+// add-members equivalent. Missing X-Request-ID is now minted at the boundary
+// rather than rejected at the handler.
 
 // ---- Task 33: DM branch tests ----
 
@@ -2771,8 +2752,6 @@ func TestSyncDMErrorEnvelope(t *testing.T) {
 		wantCode errcode.Code
 		wantMsg  string
 	}{
-		{"missing request ID", errMissingRequestID, errcode.CodeBadRequest, "missing X-Request-ID header"},
-		{"invalid request ID", errInvalidRequestID, errcode.CodeBadRequest, "invalid X-Request-ID header"},
 		{"invalid sync DM request", errInvalidSyncDMRequest, errcode.CodeBadRequest, "invalid sync DM request"},
 		{"cross-site requester", errCrossSiteRequester, errcode.CodeBadRequest, "requester is not on this site"},
 		{"user lookup failed collapses to internal", errUserLookupFailed, errcode.CodeInternal, "internal error"},
@@ -2791,17 +2770,8 @@ func TestSyncDMErrorEnvelope(t *testing.T) {
 	}
 }
 
-func TestHandleSyncCreateDM_MissingRequestID(t *testing.T) {
-	h := &Handler{siteID: "site-a"}
-	req := model.SyncCreateDMRequest{
-		RoomType:         model.RoomTypeDM,
-		RequesterAccount: "alice",
-		OtherAccount:     "bob",
-	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(context.Background(), data)
-	assert.ErrorIs(t, err, errMissingRequestID)
-}
+// TestHandleSyncCreateDM_MissingRequestID retired — see the comment above
+// TestProcessAddMembers_RequiresRequestID.
 
 func TestHandleSyncCreateDM_InvalidJSON(t *testing.T) {
 	h := &Handler{siteID: "site-a"}
@@ -4666,42 +4636,39 @@ func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing
 	assert.Contains(t, err.Error(), "check existing org room members")
 }
 
-// X-Request-ID must be a hyphenated UUID; non-UUIDs leak into reply subjects.
-func TestHandler_ProcessAddMembers_InvalidRequestID_ReturnsPermanent(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	// No store mocks — validation must short-circuit before any store call.
+// natsServerCreateDM and the JetStream consume loop call this helper to
+// validate the inbound X-Request-ID before any downstream dedup-key derivation
+// runs. Missing/malformed → BadRequest (no server-side mint). The asymmetric
+// policy vs the consume loop (which still mints defensively) lives in
+// docs/error-handling.md §3a.
+func TestRequireDedupRequestID(t *testing.T) {
+	const validUUID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.AddMembersRequest{
-		RoomID: "r1", RequesterID: "u_a", RequesterAccount: "alice",
-		Users: []string{"u1"}, Timestamp: 1,
-	}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
-
-	err := h.processAddMembers(ctx, data)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-	assert.Contains(t, err.Error(), "invalid X-Request-ID")
-}
-
-func TestProcessCreateRoom_InvalidRequestID_ReturnsPermanent(t *testing.T) {
-	h, mockStore, _ := newCreateRoomTestHandler(t)
-	_ = mockStore // store mocks intentionally unset — must short-circuit before any call
-	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
-
-	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
-		RoomID:           "room-1",
-		RequesterAccount: "alice",
-		Users:            []string{"bob"},
-		Timestamp:        time.Now().UnixMilli(),
+	t.Run("valid_passes", func(t *testing.T) {
+		h := nats.Header{natsutil.RequestIDHeader: []string{validUUID}}
+		ctx, id, err := requireDedupRequestID(context.Background(), h, "chat.test.subject")
+		require.NoError(t, err)
+		assert.Equal(t, validUUID, id)
+		assert.Equal(t, validUUID, natsutil.RequestIDFromContext(ctx))
 	})
 
-	err := h.processCreateRoom(ctx, body)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-	assert.Contains(t, err.Error(), "invalid X-Request-ID")
+	cases := []struct {
+		name    string
+		headers nats.Header
+	}{
+		{name: "nil_rejects", headers: nil},
+		{name: "empty_rejects", headers: nats.Header{}},
+		{name: "malformed_rejects", headers: nats.Header{natsutil.RequestIDHeader: []string{"not-a-uuid"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := requireDedupRequestID(context.Background(), tc.headers, "chat.test.subject")
+			require.Error(t, err)
+			var ec *errcode.Error
+			require.True(t, errors.As(err, &ec))
+			assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+		})
+	}
 }
 
 // TestHandler_RotateAndFanOut_ErrNoCurrentKey_UsesPredictedVersion pins the

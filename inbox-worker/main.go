@@ -297,7 +297,7 @@ func main() {
 	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
-		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
+		handlerCtx, _ := natsutil.StampRequestID(m.Context(), m.Headers(), m.Subject())
 		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
 			// Permanent failures (poison messages) Ack so JetStream stops
 			// redelivering; transient infra errors Nak for redelivery.

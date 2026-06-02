@@ -100,8 +100,6 @@ func TestSentinelCodesAndReasons(t *testing.T) {
 		{"bot in channel", errBotInChannel, errcode.CodeBadRequest, errcode.RoomBotInChannel},
 		{"bot not available", errBotNotAvailable, errcode.CodeNotFound, errcode.RoomBotNotAvailable},
 		{"invalid user data", errInvalidUserData, errcode.CodeBadRequest, ""},
-		{"missing request id", errMissingRequestID, errcode.CodeBadRequest, ""},
-		{"invalid request id", errInvalidRequestID, errcode.CodeBadRequest, ""},
 		{"channel name required", errChannelNameRequired, errcode.CodeBadRequest, ""},
 		{"channel name too long", errChannelNameTooLong, errcode.CodeBadRequest, ""},
 		{"message not found", errMessageNotFound, errcode.CodeNotFound, ""},
@@ -130,8 +128,6 @@ func TestNewSentinelErrorsExist(t *testing.T) {
 	assert.Equal(t, "bots cannot be added to a channel", errBotInChannel.Error())
 	assert.Equal(t, "bot not available", errBotNotAvailable.Error())
 	assert.Equal(t, "user is missing required name fields", errInvalidUserData.Error())
-	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())
-	assert.Equal(t, "invalid X-Request-ID format", errInvalidRequestID.Error())
 	assert.Equal(t, "channel name is required", errChannelNameRequired.Error())
 	assert.Equal(t, "channel name must be at most 100 characters", errChannelNameTooLong.Error())
 }

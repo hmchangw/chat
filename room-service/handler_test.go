@@ -2196,33 +2196,57 @@ func TestHandler_handleUpdateRole_PropagatesRequestID(t *testing.T) {
 	assert.Equal(t, "req-room-svc-test", capturedHeader.Get(natsutil.RequestIDHeader))
 }
 
-func TestWrappedCtx_PropagatesXRequestIDFromHeaderToContext(t *testing.T) {
+func TestWrappedCtx_PropagatesValidUUIDFromHeader(t *testing.T) {
+	const inbound = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	rawMsg := &nats.Msg{
 		Subject: "chat.room.test",
 		Data:    []byte("ignored"),
-		Header:  nats.Header{natsutil.RequestIDHeader: []string{"req-from-inbound-header"}},
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{inbound}},
 	}
 	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
 
-	got := wrappedCtx(m)
+	got, err := wrappedCtx(m)
 
-	assert.Equal(t, "req-from-inbound-header", natsutil.RequestIDFromContext(got),
-		"wrappedCtx must extract X-Request-ID from m.Msg.Header into the returned context")
+	require.NoError(t, err)
+	assert.Equal(t, inbound, natsutil.RequestIDFromContext(got),
+		"valid inbound UUID must pass through unchanged")
 }
 
-func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
+// room-service handlers feed dedup-critical paths in room-worker
+// (OutboxDedupID, messageDedupSeed, idgen.MessageIDFromRequestID) where a
+// server-side mint would break client-retry dedup. wrappedCtx therefore uses
+// the strict natsutil.RequireRequestID and surfaces an errcode.BadRequest when
+// the inbound header is missing or malformed.
+func TestWrappedCtx_MalformedHeaderRejects(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{"not-a-uuid"}},
+	}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
+
+	_, err := wrappedCtx(m)
+
+	require.Error(t, err)
+	var ec *errcode.Error
+	require.True(t, errors.As(err, &ec))
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+}
+
+func TestWrappedCtx_NoHeaderRejects(t *testing.T) {
 	rawMsg := &nats.Msg{
 		Subject: "chat.room.test",
 		Data:    []byte("ignored"),
 		Header:  nats.Header{},
 	}
-	parent := context.Background()
-	m := otelnats.Msg{Msg: rawMsg, Ctx: parent}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
 
-	got := wrappedCtx(m)
+	_, err := wrappedCtx(m)
 
-	assert.Empty(t, natsutil.RequestIDFromContext(got),
-		"missing inbound header → empty request ID on returned ctx")
+	require.Error(t, err)
+	var ec *errcode.Error
+	require.True(t, errors.As(err, &ec))
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
 }
 
 // --- Phase 5c: handleCreateRoom (3-arg) tests ---
@@ -2263,16 +2287,10 @@ func TestHandleCreateRoom_InvalidSubject(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid create-room subject")
 }
 
-func TestHandleCreateRoom_MissingRequestID(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
-
-	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
-	_, err := h.handleCreateRoom(context.Background(), createRoomSubj("alice", "site-a"), body)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errMissingRequestID))
-}
+// Boundary-level reject behavior is tested via wrappedCtx (above); the
+// helper itself is unit-tested in pkg/natsutil.RequireRequestID. The
+// dedup-critical paths fanned out from room-service make server-side minting
+// unsafe — see docs/error-handling.md §3a.
 
 func TestHandleCreateRoom_EmptyPayload(t *testing.T) {
 	ctrl := gomock.NewController(t)

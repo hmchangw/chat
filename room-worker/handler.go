@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
@@ -766,13 +767,6 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 	requesterAccount = req.RequesterAccount
 	roomID = req.RoomID
-	requestID := natsutil.RequestIDFromContext(ctx)
-	if requestID == "" {
-		return permanent(errcode.BadRequest("missing X-Request-ID"))
-	}
-	if !idgen.IsValidUUID(requestID) {
-		return permanent(errcode.BadRequest("invalid X-Request-ID: must be a hyphenated UUID"))
-	}
 	if req.Timestamp <= 0 {
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
@@ -1230,12 +1224,6 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	}()
 
 	requestID := natsutil.RequestIDFromContext(ctx)
-	if requestID == "" {
-		return permanent(errcode.BadRequest("missing X-Request-ID"))
-	}
-	if !idgen.IsValidUUID(requestID) {
-		return permanent(errcode.BadRequest("invalid X-Request-ID: must be a hyphenated UUID"))
-	}
 
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -1608,8 +1596,6 @@ func (h *Handler) publishCanonical(ctx context.Context, msg *model.Message, site
 // Sync DM endpoint handlers (chat.server.request.room.{siteID}.create.dm).
 
 var (
-	errMissingRequestID     = errcode.BadRequest("missing X-Request-ID header")
-	errInvalidRequestID     = errcode.BadRequest("invalid X-Request-ID header")
 	errInvalidSyncDMRequest = errcode.BadRequest("invalid sync DM request")
 	// errUserLookupFailed stays a raw error so Classify collapses it to internal
 	// (the requester learns the room couldn't be created, not who is missing).
@@ -1625,12 +1611,6 @@ var (
 // sanitizeSyncDMError helper was retired by the errcode migration).
 func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.SyncCreateDMReply, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
-	if requestID == "" {
-		return nil, errMissingRequestID
-	}
-	if !idgen.IsValidUUID(requestID) {
-		return nil, errInvalidRequestID
-	}
 
 	var req model.SyncCreateDMRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -1879,10 +1859,23 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	)
 }
 
+// requireDedupRequestID is the strict X-Request-ID gate used by sync entry
+// points (natsServerCreateDM) whose downstream pipeline derives JetStream
+// Nats-Msg-Id and message-ID dedup keys from the request ID. Silently minting
+// would break client-retry dedup; see docs/error-handling.md §3a. Thin wrapper
+// over natsutil.RequireRequestID so the test sits in the same package.
+func requireDedupRequestID(ctx context.Context, headers nats.Header, subject string) (context.Context, string, error) {
+	return natsutil.RequireRequestID(ctx, headers, subject)
+}
+
 // natsServerCreateDM is the NATS entry point for chat.server.request.room.{siteID}.create.dm.
 func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
-	ctx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
-	ctx = errcode.WithLogValues(ctx, "request_id", natsutil.RequestIDFromContext(ctx), "subject", m.Msg.Subject)
+	ctx, id, err := requireDedupRequestID(m.Context(), m.Msg.Header, m.Msg.Subject)
+	if err != nil {
+		errnats.Reply(errcode.WithLogValues(m.Context(), "subject", m.Msg.Subject), m.Msg, err)
+		return
+	}
+	ctx = errcode.WithLogValues(ctx, "request_id", id, "subject", m.Msg.Subject)
 	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)

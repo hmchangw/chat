@@ -127,6 +127,64 @@ consumers / raw NATS handlers call `errnats.Reply` directly.
 
 ---
 
+## 3a. Request-ID policy: mint by default, reject on dedup-critical paths
+
+Every NATS and HTTP entry point in this repo enforces a rule on the inbound
+`X-Request-ID` header. The repo runs **two** policies side by side:
+
+### Default — mint on missing/malformed
+
+Used by every entry point whose request ID is logging/tracing only — most
+read paths, auth-service, gatekeeper validation reply, etc.
+
+- **Valid hyphenated UUID** (`idgen.IsValidUUID`) → pass through unchanged.
+- **Missing** (header absent or empty) → silently mint a fresh UUIDv7 via
+  `idgen.GenerateRequestID`. No log line — this is the benign common case.
+- **Malformed** (present but not a valid UUID) → mint a fresh UUIDv7 AND emit
+  a single `slog.Warn("minted request_id (inbound invalid)", ...)` carrying
+  the original inbound value, so a buggy client stays traceable.
+
+Chokepoint: `idgen.ResolveRequestID(inbound) (id, replaced bool)`. NATS
+wrapper: `natsutil.StampRequestID(ctx, headers, subject) (ctx, id)`. HTTP:
+auth-service `requestIDMiddleware` calls `idgen.ResolveRequestID` directly.
+The `pkg/natsrouter` `RequestID()` middleware applies the default policy
+automatically.
+
+### Strict — reject missing/malformed (dedup-critical paths)
+
+Some handlers in **room-service** and **room-worker** fan out to JetStream
+publishes whose `Nats-Msg-Id` (via `natsutil.OutboxDedupID`,
+`natsutil.CanonicalDedupID`, and the in-package `messageDedupSeed` helper) and
+whose canonical message IDs (via `idgen.MessageIDFromRequestID`) are derived
+from the request ID. A server-side mint there would break client-retry
+deduplication: a client retrying without `X-Request-ID` (or with a malformed
+value) would get a fresh server-minted ID each attempt, produce a different
+dedup key each time, and silently duplicate outbox events and system
+messages.
+
+These entry points use the **strict** helper instead:
+
+- **NATS**: `natsutil.RequireRequestID(ctx, headers, subject) (ctx, id, error)`
+  returns an `errcode.BadRequest` when the inbound header is missing or
+  malformed. The error flows through `errnats.Reply` as a normal envelope.
+- **Strict callers today**: every handler in `room-service` (via the
+  `wrappedCtx` helper, which now returns an error) and
+  `room-worker.natsServerCreateDM` (sync DM endpoint).
+- **The room-worker JetStream consume loop** keeps the default mint policy
+  defensively — by the time a message lands on the ROOMS stream, room-service
+  validated the header at publish time. The consume loop logs an `slog.Error`
+  if it ever has to mint, because that indicates an upstream contract
+  violation (and downstream dedup will be broken for that message).
+
+**Client contract**: any client calling room-service or room-worker MUST
+send a stable `X-Request-ID` header (a valid hyphenated UUIDv4 or v7) and
+reuse the same value across retries of the same logical operation. See
+`docs/client-api.md` for the wire-level contract.
+
+Once stamped, `errcode.Classify(ctx, err)` and every `slog.…Context(ctx, ...)`
+call automatically carries `request_id` — handlers never need to pass it
+explicitly.
+
 ## 4. Logging contract
 
 `errcode.Classify(ctx, err)` emits **exactly one** `slog` line per failed
