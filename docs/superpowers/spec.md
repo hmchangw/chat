@@ -230,7 +230,7 @@ Roles: `"owner"`, `"member"`
 
 **HistoryResponse**: `messages` ([]Message), `hasMore` (bool)
 
-**ErrorResponse**: `error` (string)
+**Error envelope** (every transport — NATS reply, HTTP, AsyncJobResult): owned by `pkg/errcode`; shape `{error, code, reason?, metadata?}`. See `docs/error-handling.md` and `docs/client-api.md` §6.
 
 ---
 
@@ -436,7 +436,8 @@ All client publishes are under `chat.user.{account}.>`:
 |---------|---------|
 | `pkg/model` | All domain structs with `json` + `bson` tags |
 | `pkg/subject` | NATS subject builder functions and wildcard patterns |
-| `pkg/natsutil` | `ReplyJSON`, `ReplyError`, `MarshalResponse`, `MarshalError`, `HeaderCarrier` (OTel) |
+| `pkg/natsutil` | `ReplyJSON`, `MarshalResponse`, `HeaderCarrier` (OTel) — success-reply mechanics only |
+| `pkg/errcode` | `Code`/`Reason` types, `Error` (the wire envelope, leak-safe), named constructors (`BadRequest`, `NotFound`, …), `Classify` boundary, `Parse` for remote replies. Adapters: `errnats.Reply` (NATS) and `errhttp.Write` (Gin). Test helper: `errtest.AssertCode`/`AssertReason`. See `docs/error-handling.md`. |
 | `pkg/stream` | JetStream `StreamConfig` builders for all 5 streams |
 | `pkg/mongoutil` | `Connect`, `Disconnect` wrappers |
 | `pkg/cassutil` | `Connect`, `Close` wrappers (LocalQuorum, 10s timeout) |

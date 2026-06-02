@@ -70,9 +70,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always wrap with context: `fmt.Errorf("short description: %w", err)` — describe what the current function was doing, not what failed underneath
 - Never return bare `err` or `fmt.Errorf("error: %w", err)`
 - Never ignore errors silently — comment if intentionally discarded
-- Use `model.ErrorResponse` via `natsutil.ReplyError` for all NATS reply errors
+- Use `pkg/errcode` for ALL client-facing errors; reply via `errnats.Reply` (NATS) / `errhttp.Write` (Gin). Construct with the named constructors (`errcode.NotFound`, `errcode.Forbidden`, …), attach a domain `reason` from `codes_<service>.go` where the frontend must distinguish cases, and return raw `fmt.Errorf("…: %w", err)` for infra failures (they collapse to `internal` at the boundary). Full guide: `docs/error-handling.md`. Wire-side reference for clients: `docs/client-api.md` §6.
 - Never compare errors by string — use `errors.Is` and `errors.As`
-- Never expose raw internal errors to clients — sanitize errors at service boundaries, return user-safe messages
+- Never expose raw internal errors to clients — the unexported `errcode.Error.cause` is never serialized; `Classify` logs it once server-side. Never wrap raw message bodies/tokens into a cause.
 
 ### Interfaces & Dependency Injection
 - Define interfaces in the consumer, not the implementer
@@ -222,7 +222,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Use `iter.Stop()` + `wg.Wait()` + `nc.Drain()` for graceful shutdown — see "JetStream Consumer Pattern" and "Graceful Shutdown" sections
 - All NATS payloads are JSON — use `encoding/json` with typed structs from `pkg/model`, never `map[string]interface{}`
 - Use NATS request/reply for synchronous operations; `nc.QueueSubscribe` with service name as queue group
-- Use `natsutil.ReplyJSON` for success responses, `natsutil.ReplyError` for errors
+- Use `natsutil.ReplyJSON` for success responses; for errors return a typed `*errcode.Error` from the handler and let `errnats.Reply` / `errhttp.Write` marshal the envelope (see `docs/error-handling.md`).
 - Define all stream configs in `pkg/stream/stream.go` with name pattern `<STREAM>_<siteID>`
 - Use durable consumers named after the service
 - Stream creation is gated by `BOOTSTRAP_STREAMS` (see below); when enabled, use `js.CreateOrUpdateStream` (it's idempotent) via the service's `bootstrapStreams` helper, never inline
