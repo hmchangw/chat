@@ -104,6 +104,9 @@ var slo = buildThresholds(100*time.Millisecond, 250*time.Millisecond, 0.001, 100
 
 // stageProm returns per-service cores keyed by service, with a plateau for
 // services in `plateau` (same cores in both windows) and growth otherwise.
+// Caller contract: plateau keys must be disjoint — no key may be a substring
+// of another — because the helper matches the first key contained in the query
+// and map iteration order is unspecified.
 func stageProm(passT, tripT time.Time, plateau map[string]float64) fakeProm {
 	return fakeProm{fn: func(query string, s, _ time.Time) []promSample {
 		for svc, cores := range plateau {
@@ -181,11 +184,30 @@ func TestEngine_NoPassStep_Undetermined(t *testing.T) {
 }
 
 func TestEngine_PromError_Undetermined(t *testing.T) {
-	eng := newBottleneckEngine(fakeProm{err: assertAnErr{}}, identityResolver{}, 0.10, 5*time.Second)
+	eng := newBottleneckEngine(fakeProm{err: assertErr{}}, identityResolver{}, 0.10, 5*time.Second)
 	v := eng.Diagnose(context.Background(), tripResult(time.Unix(2000, 0)), passResult(time.Unix(1000, 0)), messagesStageGraph(), slo)
 	assert.False(t, v.Determined)
 }
 
-type assertAnErr struct{}
-
-func (assertAnErr) Error() string { return "prom down" }
+func TestEngine_AllClear_Undetermined(t *testing.T) {
+	passT, tripT := time.Unix(1000, 0), time.Unix(2000, 0)
+	trip := &rpsStepResult{
+		TargetRPS: 2000,
+		HoldStart: tripT, HoldEnd: tripT.Add(30 * time.Second),
+		// no latency breaches, no backlog growth
+		Latencies: []seriesPercentile{
+			{Name: "E1", Pct: Percentiles{P95: 10 * time.Millisecond}},
+			{Name: "E2", Pct: Percentiles{P95: 20 * time.Millisecond}},
+		},
+		Pending: []consumerPendingDelta{
+			{Durable: "message-worker", Start: 0, End: 0},
+			{Durable: "broadcast-worker", Start: 0, End: 0},
+		},
+	}
+	// nil plateau -> every container's CPU grows (rise >> knee) -> nothing saturated.
+	q := stageProm(passT, tripT, nil)
+	eng := newBottleneckEngine(q, identityResolver{}, 0.10, 5*time.Second)
+	v := eng.Diagnose(context.Background(), trip, passResult(passT), messagesStageGraph(), slo)
+	assert.False(t, v.Determined)
+	assert.Contains(t, v.Reasons[0], "no stage backed up")
+}

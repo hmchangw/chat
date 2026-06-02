@@ -137,7 +137,7 @@ func (e *bottleneckEngine) Diagnose(ctx context.Context, trip, pass *rpsStepResu
 		}
 	}
 
-	// Pass 2: first backing-up stage whose downstream dependency is saturated -> high.
+	// Pass 2: first backing-up stage whose backing dependency is saturated -> high.
 	for _, ev := range evals {
 		if !ev.backingUp {
 			continue
