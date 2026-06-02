@@ -103,9 +103,10 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history")
+	workload := fs.String("workload", "messages", "messages|members|history|read-receipt")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
+	readRatio := fs.Float64("read-ratio", 0.7, "read-receipt only: fraction of each room's subscribers to mark as readers")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -118,6 +119,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return runSeedMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runSeedHistory(ctx, cfg, *preset, *seed)
+	case "read-receipt":
+		return runSeedReadReceipt(ctx, cfg, *preset, *seed, *readRatio)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
