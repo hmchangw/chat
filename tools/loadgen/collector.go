@@ -56,6 +56,14 @@ type Collector struct {
 	multiplexDrops atomic.Int64
 	attempted      atomic.Int64
 	failed         atomic.Int64
+
+	// actMu guards actSamples. Per-action latency samples are kept here
+	// (one slice per action kind) so the daily-IM report can surface
+	// p50/p95/p99 broken down by sendMessage / scrollHistory / memberAdd /
+	// etc. — separate from the broadcast-correlation samples in msgShards
+	// (which only capture publish→broadcast for sendMessage/threadReply).
+	actMu      sync.Mutex
+	actSamples map[int][]time.Duration
 }
 
 func shardIdx(s string) uint32 {
@@ -73,7 +81,7 @@ func (c *Collector) MultiplexDrops() int64 { return c.multiplexDrops.Load() }
 
 // NewCollector returns a ready-to-use Collector.
 func NewCollector(m *Metrics, preset string) *Collector {
-	c := &Collector{m: m, preset: preset}
+	c := &Collector{m: m, preset: preset, actSamples: make(map[int][]time.Duration)}
 	for i := range c.reqShards {
 		c.reqShards[i] = &reqShard{byReqID: make(map[string]publishEntry)}
 	}
@@ -253,6 +261,33 @@ func (c *Collector) AttemptedOps() int64 { return c.attempted.Load() }
 // FailedOps returns the total count of failed actions since last Reset.
 func (c *Collector) FailedOps() int64 { return c.failed.Load() }
 
+// RecordActionLatency stores one wall-clock latency sample for the given
+// action kind. Called by the daily emitter after each handler returns so
+// the per-action breakdown in the report covers every action — not just
+// the publish→broadcast round-trip the Collector's e2 slice captures.
+func (c *Collector) RecordActionLatency(kind int, d time.Duration) {
+	c.actMu.Lock()
+	c.actSamples[kind] = append(c.actSamples[kind], d)
+	c.actMu.Unlock()
+}
+
+// ActionLatencies returns a copy of the per-action latency samples in
+// milliseconds, keyed by action-kind int. The caller computes whatever
+// percentiles it needs.
+func (c *Collector) ActionLatencies() map[int][]float64 {
+	c.actMu.Lock()
+	defer c.actMu.Unlock()
+	out := make(map[int][]float64, len(c.actSamples))
+	for k, v := range c.actSamples {
+		ms := make([]float64, len(v))
+		for i, d := range v {
+			ms[i] = float64(d.Microseconds()) / 1000.0
+		}
+		out[k] = ms
+	}
+	return out
+}
+
 // Reset clears all per-step counters and sample slices.
 // Called at the end of warmup so the hold window starts fresh.
 func (c *Collector) Reset() {
@@ -268,6 +303,9 @@ func (c *Collector) Reset() {
 		clear(ms.byMsgID)
 		ms.mu.Unlock()
 	}
+	c.actMu.Lock()
+	clear(c.actSamples)
+	c.actMu.Unlock()
 	c.attempted.Store(0)
 	c.failed.Store(0)
 }

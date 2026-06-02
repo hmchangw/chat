@@ -40,6 +40,9 @@ func renderConsole(w io.Writer, results []StepResult) {
 		if (r.Tripped || r.Inconclusive) && len(r.TrippedReasons) > 0 {
 			fmt.Fprintf(w, "    reasons: %s\n", joinReasons(r.TrippedReasons))
 		}
+		if len(r.ActionLatencies) > 0 {
+			fmt.Fprintf(w, "    actions: %s\n", formatActionLatencies(r.ActionLatencies))
+		}
 	}
 	fmt.Fprintln(w)
 	if lastPass > 0 {
@@ -74,6 +77,25 @@ func joinReasons(rs []string) string {
 	return strings.Join(rs, "; ")
 }
 
+// formatActionLatencies renders per-action stats on a single line in
+// canonical action order. Skips actions with zero samples so the line
+// stays readable when only a subset fired during the hold.
+//
+// Example: "send n=8920 p50=12 p95=180 p99=320 | scroll_history n=540 p50=8 p95=42 p99=95"
+func formatActionLatencies(stats map[string]ActionLatencyStats) string {
+	var parts []string
+	for _, k := range allActionKinds {
+		name := k.String()
+		s, ok := stats[name]
+		if !ok || s.Count == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s n=%d p50=%.0f p95=%.0f p99=%.0f",
+			name, s.Count, s.P50Ms, s.P95Ms, s.P99Ms))
+	}
+	return strings.Join(parts, " | ")
+}
+
 // writeDailyCSV writes one row per StepResult, sorted ascending by N.
 func writeDailyCSV(path string, results []StepResult) error {
 	f, err := os.Create(path)
@@ -84,12 +106,21 @@ func writeDailyCSV(path string, results []StepResult) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	if err := w.Write([]string{
+	header := []string{
 		"n", "effective_n", "started_at", "p50_ms", "p95_ms", "p99_ms",
 		"error_rate", "attempted_ops", "failed_ops",
 		"worst_durable", "worst_pending_delta",
 		"tripped", "inconclusive", "tripped_reasons",
-	}); err != nil {
+	}
+	// Per-action columns in stable order: <name>_count, _p50_ms, _p95_ms, _p99_ms.
+	// Every step writes every column even when count=0, so the schema is
+	// fixed across the file and downstream tools can column-index reliably.
+	for _, k := range allActionKinds {
+		name := k.String()
+		header = append(header,
+			name+"_count", name+"_p50_ms", name+"_p95_ms", name+"_p99_ms")
+	}
+	if err := w.Write(header); err != nil {
 		return fmt.Errorf("write csv header: %w", err)
 	}
 	rs := make([]StepResult, len(results))
@@ -104,7 +135,7 @@ func writeDailyCSV(path string, results []StepResult) error {
 				worstDelta, worstName = d.Delta, name
 			}
 		}
-		if err := w.Write([]string{
+		row := []string{
 			strconv.Itoa(r.N),
 			strconv.Itoa(r.EffectiveN),
 			r.StartedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -119,7 +150,17 @@ func writeDailyCSV(path string, results []StepResult) error {
 			strconv.FormatBool(r.Tripped),
 			strconv.FormatBool(r.Inconclusive),
 			joinReasons(r.TrippedReasons),
-		}); err != nil {
+		}
+		for _, k := range allActionKinds {
+			s := r.ActionLatencies[k.String()]
+			row = append(row,
+				strconv.Itoa(s.Count),
+				fmt.Sprintf("%.0f", s.P50Ms),
+				fmt.Sprintf("%.0f", s.P95Ms),
+				fmt.Sprintf("%.0f", s.P99Ms),
+			)
+		}
+		if err := w.Write(row); err != nil {
 			return fmt.Errorf("write csv row: %w", err)
 		}
 	}

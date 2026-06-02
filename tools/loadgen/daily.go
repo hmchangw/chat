@@ -272,10 +272,19 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 		pendingDeltas = diffPending(startPending, endPending)
 	}
 
+	// Re-key per-action latency samples by their stable name so
+	// evaluateStep + reporting code don't need to know the actionKind int.
+	rawActions := env.collector.ActionLatencies()
+	actionSamples := make(map[string][]float64, len(rawActions))
+	for kind, ss := range rawActions {
+		actionSamples[actionKind(kind).String()] = ss
+	}
+
 	in := stepInputs{
 		N: n, StartedAt: startedAt, HoldDuration: env.hold,
 		EffectiveN:      int(env.activatedCount.Load()),
 		LatencySamples:  env.collector.LatencySamples(),
+		ActionSamplesMs: actionSamples,
 		AttemptedOps:    env.collector.AttemptedOps(),
 		FailedOps:       env.collector.FailedOps(),
 		ConsumerPending: pendingDeltas,
@@ -417,8 +426,10 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 		Ctx: ctx, Publish: env.publish, Request: env.request,
 		SiteID: env.siteID, Rand: r, Collector: env.collector,
 	}
+	kind := pickAction(r, w)
+	start := time.Now()
 	var err error
-	switch pickAction(r, w) {
+	switch kind {
 	case actionSend:
 		err = sendMessage(a, u, "loadtest content")
 	case actionReadReceipt:
@@ -433,6 +444,16 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 		err = roomCreate(a, u)
 	case actionMuteToggle:
 		err = muteToggle(a, u)
+	}
+	elapsed := time.Since(start)
+	if env.collector != nil {
+		// Per-action latency: wall-clock around the handler. For request
+		// actions (memberAdd, roomCreate, etc.) this is the full
+		// request/reply round-trip. For publish actions (sendMessage,
+		// threadReply) this measures only the local publish cost — not
+		// the publish→broadcast pipeline, which the existing
+		// LatencySamples flow already covers via RecordBroadcast.
+		env.collector.RecordActionLatency(int(kind), elapsed)
 	}
 	if err != nil && env.collector != nil {
 		env.collector.RecordActionFailure()

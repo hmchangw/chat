@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -17,6 +18,37 @@ const (
 	actionRoomCreate
 	actionMuteToggle
 )
+
+// String gives a stable lowercase name for use in reports, CSV headers,
+// and log fields. Keep in sync with the const block above — the report
+// code keys per-action stats by this name.
+func (k actionKind) String() string {
+	switch k {
+	case actionSend:
+		return "send"
+	case actionReadReceipt:
+		return "read_receipt"
+	case actionScrollHistory:
+		return "scroll_history"
+	case actionRefreshRoomList:
+		return "refresh_room_list"
+	case actionMemberAdd:
+		return "member_add"
+	case actionRoomCreate:
+		return "room_create"
+	case actionMuteToggle:
+		return "mute_toggle"
+	default:
+		return fmt.Sprintf("action_%d", k)
+	}
+}
+
+// allActionKinds is the canonical ordered list, used by report code so
+// the CSV column order is stable across runs.
+var allActionKinds = []actionKind{
+	actionSend, actionReadReceipt, actionScrollHistory, actionRefreshRoomList,
+	actionMemberAdd, actionRoomCreate, actionMuteToggle,
+}
 
 // actionWeights is the per-user-per-day count for each action kind.
 // Source of truth: spec section 4 "daily-heavy" budget.

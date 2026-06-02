@@ -56,12 +56,26 @@ type stepInputs struct {
 	EffectiveN      int // count of users actually activated (may be < N)
 	StartedAt       time.Time
 	HoldDuration    time.Duration
-	LatencySamples  []float64 // milliseconds
+	LatencySamples  []float64            // milliseconds (broadcast latency)
+	ActionSamplesMs map[string][]float64 // per-action wall-clock latency in ms
 	AttemptedOps    int64
 	FailedOps       int64
 	ConsumerPending map[string]ConsumerPendingDelta
 	ServiceErrors   map[string]int64
 	Self            SelfMetrics
+}
+
+// ActionLatencyStats summarises one action kind's wall-clock latency
+// distribution over the hold window. Surfaced in the report so the
+// operator can see per-handler timing (sendMessage, scrollHistory,
+// memberAdd, etc.) in addition to the system-wide broadcast latency.
+// Does not feed the verdict — kept observational so the PASS/TRIP
+// criteria stay focused on the messaging-pipeline SLO.
+type ActionLatencyStats struct {
+	Count int
+	P50Ms float64
+	P95Ms float64
+	P99Ms float64
 }
 
 // StepResult is the verdict for a single ramp step.
@@ -79,9 +93,29 @@ type StepResult struct {
 	ConsumerPending       map[string]ConsumerPendingDelta
 	ServiceErrorIncreases map[string]int64
 	LoadgenSelfMetrics    SelfMetrics
+	ActionLatencies       map[string]ActionLatencyStats
 	Tripped               bool
 	Inconclusive          bool
 	TrippedReasons        []string
+}
+
+// summariseActions reduces the per-action latency sample slices to
+// Count + P50 + P95 + P99 stats so StepResult can carry a compact
+// per-handler breakdown without holding the raw samples.
+func summariseActions(samples map[string][]float64) map[string]ActionLatencyStats {
+	if len(samples) == 0 {
+		return nil
+	}
+	out := make(map[string]ActionLatencyStats, len(samples))
+	for name, ss := range samples {
+		out[name] = ActionLatencyStats{
+			Count: len(ss),
+			P50Ms: percentile(ss, 0.50),
+			P95Ms: percentile(ss, 0.95),
+			P99Ms: percentile(ss, 0.99),
+		}
+	}
+	return out
 }
 
 // percentile returns the value at quantile p using ceil-based nearest-rank
@@ -117,6 +151,7 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 		P50LatencyMs:          percentile(in.LatencySamples, 0.50),
 		P95LatencyMs:          percentile(in.LatencySamples, 0.95),
 		P99LatencyMs:          percentile(in.LatencySamples, 0.99),
+		ActionLatencies:       summariseActions(in.ActionSamplesMs),
 	}
 	if in.AttemptedOps > 0 {
 		r.ErrorRate = float64(in.FailedOps) / float64(in.AttemptedOps)
