@@ -1845,32 +1845,23 @@ func TestMongoStore_ListReadReceipts_Integration(t *testing.T) {
 	store := NewMongoStore(db)
 	require.NoError(t, store.EnsureIndexes(ctx))
 
-	_, err := db.Collection("users").InsertMany(ctx, []any{
-		bson.M{"_id": "uA", "account": "alice", "chineseName": "愛麗絲", "engName": "Alice"},
-		bson.M{"_id": "uB", "account": "bob", "chineseName": "鮑勃", "engName": "Bob"},
-		bson.M{"_id": "uC", "account": "carol", "chineseName": "卡羅", "engName": "Carol"},
-	})
-	require.NoError(t, err)
-
 	msgTime := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
+	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
 		bson.M{"_id": "sA", "roomId": "r1", "u": bson.M{"_id": "uA", "account": "alice"}, "lastSeenAt": msgTime.Add(time.Hour)},
 		bson.M{"_id": "sB", "roomId": "r1", "u": bson.M{"_id": "uB", "account": "bob"}, "lastSeenAt": msgTime.Add(time.Minute)},
 		bson.M{"_id": "sC", "roomId": "r1", "u": bson.M{"_id": "uC", "account": "carol"}, "lastSeenAt": msgTime.Add(-time.Minute)},
 	})
 	require.NoError(t, err)
 
-	rows, err := store.ListReadReceipts(ctx, "r1", msgTime, "alice", 100)
+	// alice is excluded, carol is below since, only bob qualifies
+	accounts, err := store.ListReadReceipts(ctx, "r1", msgTime, "alice", 100)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	require.Equal(t, "uB", rows[0].UserID)
-	require.Equal(t, "bob", rows[0].Account)
-	require.Equal(t, "鮑勃", rows[0].ChineseName)
-	require.Equal(t, "Bob", rows[0].EngName)
+	assert.ElementsMatch(t, []string{"bob"}, accounts)
 
-	rows, err = store.ListReadReceipts(ctx, "r1", msgTime.Add(2*time.Hour), "alice", 100)
+	// above the highest lastSeenAt — no results
+	accounts, err = store.ListReadReceipts(ctx, "r1", msgTime.Add(2*time.Hour), "alice", 100)
 	require.NoError(t, err)
-	require.Empty(t, rows)
+	assert.Empty(t, accounts)
 }
 
 func TestMongoStore_GetThreadSubscriptionByParent(t *testing.T) {
@@ -2095,4 +2086,48 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *te
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "Y", got[0].Member.SectName, "no matching users → falls back to member.id")
+}
+
+func TestMongoStore_ListReadReceipts_Lean(t *testing.T) {
+	db := testutil.MongoDB(t, "readreceipt")
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(context.Background()))
+
+	ctx := context.Background()
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	older := since.Add(-time.Hour)
+	newer := since.Add(time.Hour)
+
+	subs := db.Collection("subscriptions")
+	_, err := subs.InsertMany(ctx, []any{
+		bson.M{"_id": "s1", "roomId": "r1", "lastSeenAt": newer, "u": bson.M{"_id": "u-bob", "account": "bob"}},
+		bson.M{"_id": "s2", "roomId": "r1", "lastSeenAt": newer, "u": bson.M{"_id": "u-sndr", "account": "sender"}},
+		bson.M{"_id": "s3", "roomId": "r1", "lastSeenAt": older, "u": bson.M{"_id": "u-old", "account": "stale"}},
+		bson.M{"_id": "s4", "roomId": "r2", "lastSeenAt": newer, "u": bson.M{"_id": "u-oth", "account": "other"}},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListReadReceipts(ctx, "r1", since, "sender", 1000)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"bob"}, got) // sender excluded, stale below since, r2 excluded
+
+	// The covering index exists and the redundant 2-field index is gone.
+	names := indexNames(t, ctx, subs)
+	assert.Contains(t, names, "roomId_1_lastSeenAt_1_u.account_1_u._id_1")
+	assert.NotContains(t, names, "roomId_1_lastSeenAt_1")
+}
+
+func indexNames(t *testing.T, ctx context.Context, col *mongo.Collection) []string {
+	t.Helper()
+	cur, err := col.Indexes().List(ctx)
+	require.NoError(t, err)
+	var idx []struct {
+		Name string `bson:"name"`
+	}
+	require.NoError(t, cur.All(ctx, &idx))
+	names := make([]string, 0, len(idx))
+	for _, i := range idx {
+		names = append(names, i.Name)
+	}
+	return names
 }

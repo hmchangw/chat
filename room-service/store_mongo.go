@@ -86,10 +86,28 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.apps.Indexes().CreateOne(ctx, appsIndex); err != nil {
 		return fmt.Errorf("ensure apps index: %w", err)
 	}
+	// Covering index for the read-receipt query: serves roomId(eq) +
+	// lastSeenAt(range), evaluates the u.account residual on index keys, and
+	// covers the u.account projection — no document FETCH.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "lastSeenAt", Value: 1}},
+		Keys: bson.D{
+			{Key: "roomId", Value: 1},
+			{Key: "lastSeenAt", Value: 1},
+			{Key: "u.account", Value: 1},
+			{Key: "u._id", Value: 1},
+		},
 	}); err != nil {
-		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
+		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt,u.account,u._id) index: %w", err)
+	}
+	// Drop the now-redundant (roomId, lastSeenAt) index — its key is a strict
+	// prefix of the covering index above (and still serves
+	// MinSubscriptionLastSeenByRoomID via that prefix). Tolerate IndexNotFound
+	// (code 27) so EnsureIndexes stays idempotent on fresh databases.
+	if err := s.subscriptions.Indexes().DropOne(ctx, "roomId_1_lastSeenAt_1"); err != nil {
+		var ce mongo.CommandError
+		if !errors.As(err, &ce) || ce.Code != 27 {
+			return fmt.Errorf("drop redundant subscriptions (roomId,lastSeenAt) index: %w", err)
+		}
 	}
 	// Backs room-worker's ReconcileMemberCounts, which counts bot vs non-bot
 	// subs per room off u.isBot — keeps both CountDocuments index-only instead
