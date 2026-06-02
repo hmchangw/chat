@@ -99,13 +99,14 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt,u.account,u._id) index: %w", err)
 	}
-	// Drop the now-redundant (roomId, lastSeenAt) index — its key is a strict
-	// prefix of the covering index above (and still serves
-	// MinSubscriptionLastSeenByRoomID via that prefix). Tolerate IndexNotFound
-	// (code 27) so EnsureIndexes stays idempotent on fresh databases.
+	// Drop the now-redundant (roomId, lastSeenAt) index: its keys are a strict
+	// prefix of the covering index above, whose (roomId, lastSeenAt) prefix
+	// still serves MinSubscriptionLastSeenByRoomID. Tolerate IndexNotFound
+	// (code 27) so EnsureIndexes stays idempotent on fresh databases where the
+	// legacy index never existed.
 	if err := s.subscriptions.Indexes().DropOne(ctx, "roomId_1_lastSeenAt_1"); err != nil {
-		var ce mongo.CommandError
-		if !errors.As(err, &ce) || ce.Code != 27 {
+		var se mongo.ServerError
+		if !errors.As(err, &se) || !se.HasErrorCode(27) {
 			return fmt.Errorf("drop redundant subscriptions (roomId,lastSeenAt) index: %w", err)
 		}
 	}
