@@ -58,3 +58,21 @@ func TestEngine_cpuCores_CounterReset(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, reset)
 }
+
+func TestEngine_cpuCores_QueryError(t *testing.T) {
+	q := fakeProm{err: assertErr{}}
+	eng := newBottleneckEngine(q, identityResolver{}, 0.10, 5*time.Second)
+	_, _, ok := eng.cpuCores(context.Background(), "x", time.Unix(0, 0), time.Unix(30, 0))
+	assert.False(t, ok)
+}
+
+func TestEngine_cpuCores_EmptyResult(t *testing.T) {
+	q := fakeProm{fn: func(_ string, _, _ time.Time) []promSample { return nil }}
+	eng := newBottleneckEngine(q, identityResolver{}, 0.10, 5*time.Second)
+	_, _, ok := eng.cpuCores(context.Background(), "x", time.Unix(0, 0), time.Unix(30, 0))
+	assert.False(t, ok)
+}
+
+type assertErr struct{}
+
+func (assertErr) Error() string { return "prom down" }

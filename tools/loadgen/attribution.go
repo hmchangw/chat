@@ -36,6 +36,9 @@ type bottleneckEngine struct {
 	step  time.Duration // PromQL query step
 }
 
+// newBottleneckEngine builds an engine over a promQuerier and identity resolver.
+// knee is the max relative CPU rise still treated as a plateau; step is the
+// PromQL query step.
 func newBottleneckEngine(q promQuerier, ident identityResolver, knee float64, step time.Duration) *bottleneckEngine {
 	return &bottleneckEngine{q: q, ident: ident, knee: knee, step: step}
 }
@@ -60,6 +63,8 @@ func (e *bottleneckEngine) cpuCores(ctx context.Context, service string, start, 
 		}
 		first += s.Samples[0].V
 		last += s.Samples[len(s.Samples)-1].V
+		// cAdvisor emits its series aligned to the same scrape window, so the
+		// timestamps from any one series suffice as the shared [t0,t1] divisor.
 		t0 = s.Samples[0].T
 		t1 = s.Samples[len(s.Samples)-1].T
 		have = true
