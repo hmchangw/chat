@@ -2072,17 +2072,10 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 	assert.Equal(t, int64(1740000000000), dst.Timestamp)
 }
 
-func TestErrorResponseRoomIDOmitempty(t *testing.T) {
-	er := model.ErrorResponse{Error: "internal"}
-	body, err := json.Marshal(er)
-	require.NoError(t, err)
-	assert.NotContains(t, string(body), "roomId")
-
-	er2 := model.ErrorResponse{Error: "dm already exists", RoomID: "r1"}
-	body2, err := json.Marshal(er2)
-	require.NoError(t, err)
-	assert.Contains(t, string(body2), `"roomId":"r1"`)
-}
+// TestErrorResponseRoomIDOmitempty was removed: model.ErrorResponse was deleted
+// alongside the rest of the legacy error machinery (see pkg/errcode for the
+// canonical client-facing error type). The DM-exists path now returns a success
+// reply (model.CreateRoomReply{Status: CreateRoomStatusExists, RoomID}).
 
 func TestAsyncJobResultShape(t *testing.T) {
 	r := model.AsyncJobResult{
@@ -2102,10 +2095,24 @@ func TestAsyncJobResultShape(t *testing.T) {
 	assert.NotContains(t, string(data), `"job"`)
 	assert.NotContains(t, string(data), `"success"`)
 
-	r2 := model.AsyncJobResult{Operation: model.AsyncJobOpRoomMemberAdd, Status: "error", Error: "failed"}
+	// Success case must omit the error-only fields.
+	assert.NotContains(t, string(data), `"code"`)
+	assert.NotContains(t, string(data), `"reason"`)
+
+	r2 := model.AsyncJobResult{
+		Operation: model.AsyncJobOpRoomMemberAdd,
+		Status:    "error",
+		Error:     "not subscribed",
+		Code:      "forbidden",
+		Reason:    "not_subscribed",
+	}
 	raw2, err := json.Marshal(r2)
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw2), `"roomId"`)
+	var dst2 model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(raw2, &dst2))
+	assert.Equal(t, "forbidden", dst2.Code)
+	assert.Equal(t, "not_subscribed", dst2.Reason)
 }
 
 func TestAsyncJobResultOpConstants(t *testing.T) {
@@ -2128,23 +2135,8 @@ func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	assert.NotContains(t, string(body), "requestId")
 }
 
-func TestErrorResponseJSON(t *testing.T) {
-	t.Run("without code, omitempty hides the field", func(t *testing.T) {
-		src := model.ErrorResponse{Error: "boom"}
-		data, err := json.Marshal(src)
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"error":"boom"}`, string(data))
-		roundTrip(t, &src, &model.ErrorResponse{})
-	})
-
-	t.Run("with code, both fields present", func(t *testing.T) {
-		src := model.ErrorResponse{Error: "blocked", Code: "large_room_post_restricted"}
-		data, err := json.Marshal(src)
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"error":"blocked","code":"large_room_post_restricted"}`, string(data))
-		roundTrip(t, &src, &model.ErrorResponse{})
-	})
-}
+// TestErrorResponseJSON was removed alongside model.ErrorResponse. The wire
+// envelope is now owned by pkg/errcode (see pkg/errcode/error_test.go).
 
 func TestReadReceiptRequestJSON(t *testing.T) {
 	r := model.ReadReceiptRequest{MessageID: "m1"}
