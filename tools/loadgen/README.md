@@ -280,3 +280,34 @@ healthy — i.e. the load generator itself, not the service under test, was
 the limiting factor, so the step's result can't be trusted. An
 INCONCLUSIVE step does **not** count as a pass and does **not** stop the
 ramp, even with `--stop-on-trip`; only a hard TRIP stops the ramp.
+
+### Bottleneck attribution
+
+When a `max-rps --workload=messages` ramp trips, loadgen appends a
+`BOTTLENECK:` block naming the culprit component, the saturated resource,
+and a confidence:
+
+```
+ANSWER: max RPS = 2000 (workload=messages, preset=medium)
+        Next limit: E2 p95=143ms > 100ms
+BOTTLENECK: message-worker (Cassandra-bound)
+        message-worker consumer backlog grew (first stage to back up)
+        cassandra CPU plateaued between 1000 and 2000 rps while load rose
+        confidence: high
+```
+
+It fuses loadgen's per-stage signals (E1/E2 latency, per-durable backlog)
+with cAdvisor container CPU trends from Prometheus. The deploy stack brings
+up cAdvisor automatically. Tunables (env, `BOTTLENECK_` prefix):
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `BOTTLENECK_ENABLED` | `true` | Set `false` to disable; run behaves as before. |
+| `BOTTLENECK_PROM_URL` | (set in compose) | Prometheus that scrapes cAdvisor. Empty = disabled. |
+| `BOTTLENECK_KNEE_TOLERANCE` | `0.10` | Max relative CPU rise still counted as a plateau. |
+| `BOTTLENECK_QUERY_STEP` | `5s` | PromQL step; match the scrape interval. |
+| `BOTTLENECK_CONTAINER_MAP` | (empty) | `shortid:name,…` fallback when cAdvisor omits the compose-service label. |
+
+The verdict is best-effort: if Prometheus is unreachable or the data is too
+thin (e.g. the breach was on the first step), the line reads
+`BOTTLENECK: undetermined (<reason>)` and the run still reports normally.
