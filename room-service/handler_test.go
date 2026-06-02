@@ -4019,6 +4019,16 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 			want: want{errSubstr: "internal error"},
 		},
 		{
+			name: "store error on explicit version",
+			body: []byte(`{"version":5}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().GetByVersion(gomock.Any(), roomID, 5).Return(nil, errors.New("valkey down"))
+			},
+			want: want{errSubstr: "internal error"},
+		},
+		{
 			name: "malformed body",
 			body: []byte(`not-json`),
 			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
