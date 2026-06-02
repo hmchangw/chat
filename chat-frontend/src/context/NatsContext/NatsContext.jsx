@@ -2,7 +2,11 @@ import { createContext, useContext, useRef, useState, useCallback, useMemo } fro
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 import { AUTH_URL, NATS_URL } from '@/lib/runtimeConfig'
-import { requestWithAsyncResult as asyncJobRequest } from '@/api/_transport/asyncJob'
+import {
+  requestWithAsyncResult as asyncJobRequest,
+  AsyncJobError,
+  ASYNC_JOB_ERROR_KINDS,
+} from '@/api/_transport/asyncJob'
 
 export const NatsContext = createContext(null)
 
@@ -49,8 +53,15 @@ export function NatsProvider({ children }) {
     })
 
     if (!authResp.ok) {
+      // auth-service emits the errcode envelope {code, reason?, error, metadata?}
+      // via errhttp.Write. Older auth deployments may return {error} only —
+      // err.code is then undefined and consumers fall back to err.message text.
       const errBody = await authResp.json().catch(() => ({}))
-      throw new Error(errBody.error || `Auth failed: ${authResp.status}`)
+      throw new AsyncJobError(
+        errBody.error || `Auth failed: ${authResp.status}`,
+        ASYNC_JOB_ERROR_KINDS.SyncError,
+        { code: errBody.code, reason: errBody.reason, metadata: errBody.metadata },
+      )
     }
 
     const { natsJwt, user: userInfo } = await authResp.json()
@@ -80,16 +91,27 @@ export function NatsProvider({ children }) {
    * @param {string} subject
    * @param {unknown} [data={}]  JSON-serialisable payload.
    * @returns {Promise<unknown>} Parsed JSON reply.
-   * @throws if not connected, the request times out (5s), or the reply
-   *   carries `{error}` — in the last case the thrown Error's message
-   *   is the server's user-safe error string.
+   * @throws {AsyncJobError} On error replies the thrown error carries
+   *   `.code` (always) and `.reason`/`.metadata` (when the backend emits
+   *   them). Branch on `reason ?? code`; `.message` is the user-safe text
+   *   for display only. Wire-level failures (not connected, request
+   *   timeout) still throw a plain Error.
    */
   const request = useCallback(async (subject, data = {}) => {
     if (!ncRef.current) throw new Error('Not connected')
     const payload = sc.encode(JSON.stringify(data))
     const resp = await ncRef.current.request(subject, payload, { timeout: 5000 })
     const parsed = JSON.parse(sc.decode(resp.data))
-    if (parsed.error) throw new Error(parsed.error)
+    if (parsed.error) {
+      // errcode envelope {code, reason?, error, metadata?}. Legacy replies
+      // (pre-migration backend during rollout) lack code/reason — consumers
+      // fall back to err.message.
+      throw new AsyncJobError(parsed.error, ASYNC_JOB_ERROR_KINDS.SyncError, {
+        code: parsed.code,
+        reason: parsed.reason,
+        metadata: parsed.metadata,
+      })
+    }
     return parsed
   }, [])
 

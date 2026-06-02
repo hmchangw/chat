@@ -1,5 +1,5 @@
 import { useNats } from '@/context/NatsContext'
-import { leaveRoom } from '@/api'
+import { leaveRoom, formatAsyncJobError } from '@/api'
 
 export default function LeaveRoomButton({ room }) {
   const nats = useNats()
@@ -11,7 +11,7 @@ export default function LeaveRoomButton({ room }) {
     try {
       await leaveRoom(nats, { roomId: room.id, siteId: room.siteId })
     } catch (err) {
-      window.alert(`Failed to leave: ${err.message}`)
+      window.alert(`Failed to leave: ${formatAsyncJobError(err)}`)
     }
   }
 

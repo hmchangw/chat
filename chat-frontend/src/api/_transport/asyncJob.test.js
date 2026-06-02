@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { StringCodec } from 'nats.ws'
-import { requestWithAsyncResult, ASYNC_JOB_ERROR_KINDS, formatAsyncJobError } from './asyncJob'
+import { requestWithAsyncResult, ASYNC_JOB_ERROR_KINDS, formatAsyncJobError, AsyncJobError } from './asyncJob'
 
 const sc = StringCodec()
 
@@ -218,16 +218,51 @@ describe('formatAsyncJobError', () => {
     expect(formatAsyncJobError(err)).toMatch(/connection|disconnected|interrupted/i)
   })
 
-  it('returns the raw message for SyncError (server-supplied user-safe text)', () => {
+  it('falls back to message for SyncError when no reason is attached (server-supplied user-safe text)', () => {
     const err = new Error('only owners can add members')
     err.kind = ASYNC_JOB_ERROR_KINDS.SyncError
     expect(formatAsyncJobError(err)).toBe('only owners can add members')
   })
 
-  it('returns the raw message for AsyncError', () => {
+  it('falls back to message for AsyncError when no reason is attached', () => {
     const err = new Error('exceeds maximum capacity')
     err.kind = ASYNC_JOB_ERROR_KINDS.AsyncError
     expect(formatAsyncJobError(err)).toBe('exceeds maximum capacity')
+  })
+
+  it('returns the humanized REASON_COPY copy when a SyncError carries a known reason', () => {
+    const err = new AsyncJobError('exceeds maximum capacity (50)', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'max_room_size_reached',
+    })
+    expect(formatAsyncJobError(err)).toBe('This room is at capacity.')
+  })
+
+  it('returns the humanized copy for not_room_member', () => {
+    const err = new AsyncJobError('only room members can do that', ASYNC_JOB_ERROR_KINDS.AsyncError, {
+      reason: 'not_room_member',
+    })
+    expect(formatAsyncJobError(err)).toBe("You're not a member of this room.")
+  })
+
+  it('returns the humanized copy for not_subscribed', () => {
+    const err = new AsyncJobError('not subscribed', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'not_subscribed',
+    })
+    expect(formatAsyncJobError(err)).toBe('You need to join this room first.')
+  })
+
+  it('returns the humanized copy for large_room_post_restricted', () => {
+    const err = new AsyncJobError('only owners/admins may post', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'large_room_post_restricted',
+    })
+    expect(formatAsyncJobError(err)).toBe('Only owners and admins can post here.')
+  })
+
+  it('falls back to err.message when the reason is unrecognized', () => {
+    const err = new AsyncJobError('some unmapped error', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'not_in_catalog',
+    })
+    expect(formatAsyncJobError(err)).toBe('some unmapped error')
   })
 
   it('falls back to message for unknown / untagged errors', () => {
