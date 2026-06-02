@@ -56,6 +56,7 @@ func TestWriteRPSCSV(t *testing.T) {
 	assert.Contains(t, lines[0], "achieved_rps")
 	assert.Contains(t, lines[0], "E1_p95_ms")
 	assert.Contains(t, lines[0], "verdict")
+	assert.Contains(t, lines[0], "bottleneck_component")
 	assert.Contains(t, lines[3], "2000")
 	assert.Contains(t, lines[3], "TRIP")
 }

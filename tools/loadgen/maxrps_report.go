@@ -56,11 +56,13 @@ func pctFor(r *rpsStepResult, name string) Percentiles {
 	return Percentiles{}
 }
 
-// renderRPSReport writes the per-step table and the ANSWER line.
+// renderRPSReport delegates to renderRPSReportWithBottleneck with no bottleneck block.
 func renderRPSReport(w io.Writer, results []rpsStepResult, workload, preset string) error {
 	return renderRPSReportWithBottleneck(w, results, workload, preset, nil)
 }
 
+// renderRPSReportWithBottleneck writes the per-step table and ANSWER line, then
+// appends the BOTTLENECK block when bn is non-nil. renderRPSReport delegates here.
 func renderRPSReportWithBottleneck(w io.Writer, results []rpsStepResult, workload, preset string, bn *bottleneckVerdict) error {
 	fmt.Fprintf(w, "=== loadgen max-rps complete (workload=%s, preset=%s) ===\n\n", workload, preset)
 	names := seriesNames(results)
@@ -118,7 +120,12 @@ func writeRPSCSV(w io.Writer, results []rpsStepResult, bn *bottleneckVerdict) er
 	for _, n := range names {
 		header = append(header, n+"_p95_ms", n+"_p99_ms")
 	}
-	header = append(header, "error_rate", "attempted", "failed", "saturation", "worst_durable", "worst_pending_delta", "verdict", "reasons", "bottleneck_component", "bottleneck_resource", "bottleneck_confidence")
+	header = append(header,
+		"error_rate", "attempted", "failed",
+		"saturation", "worst_durable", "worst_pending_delta", "verdict", "reasons",
+		// bottleneck attribution columns (nil when bottleneck detection is disabled)
+		"bottleneck_component", "bottleneck_resource", "bottleneck_confidence",
+	)
 	if err := cw.Write(header); err != nil {
 		return fmt.Errorf("write csv header: %w", err)
 	}

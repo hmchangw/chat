@@ -133,12 +133,7 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 		Thresholds: thresholds, StopOnTrip: *stopOnTrip,
 	})
 
-	var bn *bottleneckVerdict
-	if *workload == "messages" {
-		if v := diagnoseBottleneck(ctx, cfg, results, thresholds); v != nil {
-			bn = v
-		}
-	}
+	bn := diagnoseBottleneck(ctx, cfg, *workload, results, thresholds)
 	if err := renderRPSReportWithBottleneck(os.Stdout, results, w.Label(), presetID, bn); err != nil {
 		slog.Warn("render report", "error", err)
 	}
@@ -159,9 +154,10 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 // diagnoseBottleneck runs the attribution engine for a messages ramp that
 // tripped. Returns nil when disabled, unconfigured, or no step tripped — the
 // report then prints normally with no BOTTLENECK line.
-func diagnoseBottleneck(ctx context.Context, cfg *config, results []rpsStepResult, th rpsThresholds) *bottleneckVerdict {
+func diagnoseBottleneck(ctx context.Context, cfg *config, workload string, results []rpsStepResult, th rpsThresholds) *bottleneckVerdict {
 	bc := cfg.Bottleneck
-	if !bc.Enabled || bc.PromURL == "" {
+	// Attribution is messages-only for v1; other workloads have no stage graph.
+	if workload != "messages" || !bc.Enabled || bc.PromURL == "" {
 		return nil
 	}
 	trip := firstTrip(results)
@@ -176,7 +172,7 @@ func diagnoseBottleneck(ctx context.Context, cfg *config, results []rpsStepResul
 	}
 	fallback, err := parseContainerMap(bc.ContainerMap)
 	if err != nil {
-		slog.Warn("bad BOTTLENECK_CONTAINER_MAP; ignoring", "error", err)
+		slog.Warn("bad BOTTLENECK_CONTAINER_MAP; ignoring", "value", bc.ContainerMap, "error", err)
 		fallback = map[string]string{}
 	}
 	eng := newBottleneckEngine(newPromClient(bc.PromURL), identityResolver{fallback: fallback}, bc.KneeTolerance, bc.QueryStep)
