@@ -33,6 +33,7 @@ type dailyConfig struct {
 	MultiplexPoolSize  int
 	MaxConnsPerProcess int
 	CSVPath            string
+	Users              int // 0 = use preset default; otherwise overrides preset.Users
 }
 
 func parseDailyConfig(args []string) (dailyConfig, error) {
@@ -96,6 +97,7 @@ for the full design and SLO rationale.
 	mux := fs.Int("multiplex-pool-size", 200, "number of shared nats.Conn instances in the multiplex pool")
 	maxConns := fs.Int("max-conns-per-process", 25000, "safety ceiling on total nats.Conn count to this process")
 	csvPath := fs.String("csv", "", "optional CSV output path (one row per step)")
+	usersOverride := fs.Int("users", 0, "override preset.Users (0 = use preset default; must match `loadgen seed --users` if you used it)")
 	if err := fs.Parse(args); err != nil {
 		return dailyConfig{}, err
 	}
@@ -127,6 +129,7 @@ for the full design and SLO rationale.
 		MultiplexPoolSize:  *mux,
 		MaxConnsPerProcess: *maxConns,
 		CSVPath:            *csvPath,
+		Users:              *usersOverride,
 	}, nil
 }
 
@@ -474,15 +477,24 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	if len(cfg.Steps) == 0 {
 		return nil, fmt.Errorf("cfg.Steps cannot be empty")
 	}
+	// --users overrides preset.Users for callers who need to run above the
+	// preset's hard-coded ceiling (10000 for the daily-* presets). The
+	// same value MUST be passed to `loadgen seed --users=N`, otherwise
+	// the two BuildFixtures invocations produce different IDs and the
+	// gatekeeper rejects every send. Zero (default) means "use preset
+	// default" — the safe path for normal runs.
+	if cfg.Users > 0 {
+		preset.Users = cfg.Users
+	}
 	// IMPORTANT: do NOT override preset.Users from --steps. BuildFixtures
 	// is deterministic in (preset, seed, siteID); changing preset.Users
 	// changes every generated ID (the per-band stub shuffle depends on
 	// totalUsers). If daily ran with one Users value while `loadgen seed`
-	// was invoked with the preset's default, the IDs don't line up and
-	// the gatekeeper rejects every send with "user X not subscribed to
-	// room Y". The activateUsers loop already caps at len(env.users), so
-	// a --steps entry that exceeds preset.Users surfaces as INCONCLUSIVE
-	// via the EffectiveN-shortfall guard (clearer than silent ID drift).
+	// was invoked with a different one, the IDs don't line up and the
+	// gatekeeper rejects every send. The activateUsers loop already caps
+	// at len(env.users), so a --steps entry that exceeds preset.Users
+	// surfaces as INCONCLUSIVE via the EffectiveN-shortfall guard
+	// (clearer than silent ID drift).
 	maxStep := slices.Max(cfg.Steps)
 	if maxStep > preset.Users {
 		slog.Warn("max step exceeds preset.Users; effective N will cap at preset.Users",
@@ -665,7 +677,7 @@ func runDaily(ctx context.Context, baseCfg *config, args []string) int {
 		slog.Error("parse daily config", "error", err)
 		return 2
 	}
-	if err := verifyDailySeeded(ctx, baseCfg); err != nil {
+	if err := verifyDailySeeded(ctx, baseCfg, cfg); err != nil {
 		slog.Error("daily pre-flight", "error", err)
 		return 2
 	}
@@ -685,14 +697,22 @@ func runDaily(ctx context.Context, baseCfg *config, args []string) int {
 }
 
 // verifyDailySeeded checks that the subscriptions collection has at least one
-// row for the configured siteID. If not, the gatekeeper rejects every send
-// with "user X is not subscribed to room Y" and the whole ramp INCONCLUSIVEs
-// or TRIPs on error_rate — silently, from the operator's point of view.
-// Bail fast with a message that names the exact command to run.
+// row for the configured siteID, AND that the count of users in Mongo
+// matches the count daily will generate at runtime. If not, the gatekeeper
+// rejects every send with "user X is not subscribed to room Y" (silent
+// INCONCLUSIVE / TRIP from the operator's point of view).
+//
+// The user-count check catches the most common misuse: seeding with one
+// --users value and running daily with a different one. BuildFixtures is
+// deterministic in (preset, seed, siteID); the per-band stub shuffles use
+// totalUsers as length, so a mismatch produces entirely different room
+// memberships even though the user IDs `u-000000...` overlap.
 //
 // Uses a short context independent of the run-level ctx so a transient
 // Mongo blip at startup doesn't burn the whole run window before failing.
-func verifyDailySeeded(ctx context.Context, baseCfg *config) error {
+//
+//nolint:gocritic // cfg passed by value to match the call shape used elsewhere
+func verifyDailySeeded(ctx context.Context, baseCfg *config, cfg dailyConfig) error {
 	siteID := baseCfg.SiteID
 	if siteID == "" {
 		siteID = "site-local"
@@ -704,16 +724,38 @@ func verifyDailySeeded(ctx context.Context, baseCfg *config) error {
 		return fmt.Errorf("preflight mongo connect: %w", err)
 	}
 	defer mongoutil.Disconnect(checkCtx, client)
-	subs := client.Database(baseCfg.MongoDB).Collection("subscriptions")
-	count, err := subs.CountDocuments(checkCtx, bson.M{"siteId": siteID})
+	db := client.Database(baseCfg.MongoDB)
+	subCount, err := db.Collection("subscriptions").CountDocuments(checkCtx, bson.M{"siteId": siteID})
 	if err != nil {
 		return fmt.Errorf("preflight count subscriptions: %w", err)
 	}
-	if count == 0 {
+	if subCount == 0 {
 		return fmt.Errorf("no subscriptions found in mongo for siteID=%q; "+
 			"run `loadgen seed --workload=messages --preset=<your daily preset>` first "+
 			"(or `make -C tools/loadgen/deploy seed PRESET=<your preset>`)", siteID)
 	}
-	slog.Info("preflight subscriptions ok", "siteID", siteID, "count", count)
+	// User-count consistency check. Daily generates exactly preset.Users
+	// (overridden by cfg.Users when set). If Mongo has a different count,
+	// seed was run with mismatched --users; re-seeding is required.
+	preset, ok := BuiltinPreset(cfg.Preset)
+	if !ok {
+		return fmt.Errorf("preflight: unknown preset %q", cfg.Preset)
+	}
+	if cfg.Users > 0 {
+		preset.Users = cfg.Users
+	}
+	wantUsers := int64(preset.Users)
+	gotUsers, err := db.Collection("users").CountDocuments(checkCtx, bson.M{"siteId": siteID})
+	if err != nil {
+		return fmt.Errorf("preflight count users: %w", err)
+	}
+	if gotUsers != wantUsers {
+		return fmt.Errorf("user-count mismatch: mongo has %d users for siteID=%q "+
+			"but daily expects %d (preset %q with --users=%d). Re-seed: "+
+			"`loadgen teardown --workload=messages --preset=%s` then "+
+			"`loadgen seed --workload=messages --preset=%s --users=%d`",
+			gotUsers, siteID, wantUsers, cfg.Preset, cfg.Users, cfg.Preset, cfg.Preset, preset.Users)
+	}
+	slog.Info("preflight subscriptions ok", "siteID", siteID, "subs", subCount, "users", gotUsers)
 	return nil
 }
