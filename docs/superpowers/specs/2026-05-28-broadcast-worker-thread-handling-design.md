@@ -13,7 +13,7 @@ The PR delivered everything in this spec plus several additions discovered durin
 - **Thread delete badge**: `handleThreadDeleted` also publishes the badge update (`publishThreadMetadata`) when `evt.NewTCount != nil`, so clients see the reply count decrement immediately.
 - **TShow=true thread-reply badge on delete**: when a `TShow=true` thread reply is deleted it flows through `handleDeleted` (normal room broadcast), bypassing `handleThreadDeleted`. `handleDeleted` detects `ThreadParentMessageID != ""` and publishes the tcount badge there, so the reply-count decrement reaches clients regardless of TShow.
 - **@-mention fan-out on delete**: `handleThreadDeleted` channel path parses @-mentions from the deleted message content so non-subscriber recipients who received the `EventCreated` (via mention fan-out) also receive the `EventDeleted`.
-- **`SetSubscriptionMentions` in `handleThreadCreated`**: when a thread reply @-mentions room members, those accounts' room subscriptions get the mention flag set (same as regular messages).
+- **`SetSubscriptionMentions` — DM/BotDM branch only**: `handleThreadCreated` sets the room-subscription mention flag for @-mentioned members *only on the DM/BotDM path*. The channel path deliberately does **not** call `SetSubscriptionMentions`: a `TShow=false` reply is invisible in the main channel feed, so a room-level mention badge would appear with no visible message to explain it. (Thread-level mention state for channel replies is handled upstream by message-worker via `MarkThreadSubscriptionMention`.)
 - **`channelThreadFanOut` helper**: extracted to avoid repeating the subscriber-query + dedup logic across all three channel-path handlers.
 - **`evt.Timestamp` propagation**: `EditRoomEvent` and `DeleteRoomEvent` set `Timestamp` from `evt.Timestamp` (the canonical event's publish time), not from `time.Now()` at broadcast time. Using wall-clock time at broadcast would make the timestamp differ across redeliveries and lag behind the canonical timeline.
 - **`shouldUseThreadFanOut` rename** (was `isThreadReply`): the predicate encodes a routing decision (fan-out to thread subscribers vs. room broadcast), not a structural "is a thread reply" test — the new name makes that intent explicit.
@@ -24,7 +24,8 @@ The PR delivered everything in this spec plus several additions discovered durin
 
 ### message-worker additions
 - **`SaveThreadMessage` returns `*int` (new tcount)**: the store method was extended to return the post-CAS tcount from Cassandra so message-worker can publish the `EventThreadReplyAdded` event with an authoritative count.
-- **`publishThreadReplyEvent`**: new handler method that publishes `EventThreadReplyAdded` to `subject.MsgCanonicalThreadReply(siteID)`. Publish errors are intentionally swallowed (Cassandra write already committed; propagating would cause JetStream nack → retry → double-increment).
+- **Idempotent CAS increment via `IF NOT EXISTS`**: `SaveThreadMessage` inserts the reply into `messages_by_id` with an `IF NOT EXISTS` LWT. On a JetStream redelivery the insert reports `applied=false`, so the handler reads back the existing tcount (`readParentTcount`) instead of re-incrementing (`incrementParentTcount`). This is what makes publish-error retries safe — a redelivered reply never double-counts the badge.
+- **`publishThreadReplyEvent`**: new handler method that publishes `EventThreadReplyAdded` to `subject.MsgCanonicalThreadReply(siteID)`. Publish errors are **propagated** (NAK → JetStream redelivery), not swallowed — otherwise a dropped publish would permanently lose the badge update. Redelivery is safe because of the `IF NOT EXISTS` LWT above (the increment is idempotent), so there is no double-increment risk.
 - **Thread subscription outbox**: `message-worker` publishes `OutboxThreadSubscriptionUpserted` events for remote-site thread subscribers.
 
 ### history-service additions
@@ -36,8 +37,10 @@ The PR delivered everything in this spec plus several additions discovered durin
 ### notification-worker — intentionally unchanged
 notification-worker was scoped out of this PR. All planned changes to it are documented in [`docs/thread-reply-notifications.md`](../../thread-reply-notifications.md). The engineer who owns notification-worker should read that file before starting. The three things that need to be built there are: (1) filter to `EventCreated` only, (2) route thread replies to thread subscribers only, (3) notify @-mentioned non-subscribers via `EventThreadReplyAdded`.
 
-### Known remaining gap
-`Subscription.ThreadUnread` — the array that drives the unread thread badge on the client — is still not updated when a thread reply arrives. This was out of scope here (noted in the original design) and must be addressed in a separate task.
+### Known remaining gaps
+- **`Subscription.ThreadUnread`** — the array that drives the unread thread badge on the client — is still not updated when a thread reply arrives. This was out of scope here (noted in the original design) and must be addressed in a separate task.
+- **Parent-message mentionees are not subscribed.** A user @-mentioned only in the parent message who never replies is never added to the thread subscription set (only the parent author, repliers, and reply-mentionees are). They receive no thread events. Closing this requires carrying the parent's resolved mention list onto the reply event so message-worker can seed those subscriptions on thread-room creation.
+- **Edit/delete fan-out uses the current subscriber set.** A user @-mentioned in the *original* reply but later un-mentioned (or whose mention was edited out) will not receive the edit/delete event, because the fan-out re-derives recipients from current subscribers + current content. Fixing this would require persisting the original recipient list per reply.
 
 ---
 
@@ -52,8 +55,9 @@ The message model already supports threads via `ThreadParentMessageID`, `ThreadP
 The following thread state is already managed by message-worker and is **not** broadcast-worker's responsibility:
 
 - Creating `ThreadRoom` on the first reply to a parent message
-- Inserting/upserting `ThreadSubscription` records for the parent author, replier, and @mentioned users
-- Setting `ThreadSubscription.hasMention=true` for @mentioned users via `MarkThreadSubscriptionMention`
+- Inserting/upserting `ThreadSubscription` records for the **parent message author** and the **replier** (on every reply)
+- Setting `ThreadSubscription.hasMention=true` (auto-creating the subscription if absent) for users **@-mentioned in a reply**, via `MarkThreadSubscriptionMention`
+  - **Gap:** a user @-mentioned only in the *parent* message who never replies is **not** subscribed — no code path reads the parent's mention list. Such a user receives no thread events. Subscribing them would require carrying the parent's resolved mentions onto the reply event (see "Known remaining gap" below).
 - Updating `ThreadRoom.LastMsgAt` and `ThreadRoom.LastMsgID`
 - Publishing cross-site outbox events (`thread_subscription_upserted`)
 
@@ -96,35 +100,36 @@ The `//go:generate mockgen` directive in `store.go` regenerates `mock_store_test
 
 ## New Handler Methods
 
-Three new unexported methods on the handler struct, mirroring the structure of the existing `handleCreated`, `handleUpdated`, `handleDeleted` methods.
+Three new unexported methods on the handler struct, mirroring the structure of the existing `handleCreated`, `handleUpdated`, `handleDeleted` methods. Each **branches on room type** (`meta.Type` / `room.Type`): channel rooms fan out to the thread-subscriber set, while DM/BotDM rooms fan out to all human members (see the DM/BotDM note in "Implementation Notes"). The channel-path subscriber-query + dedup logic is shared via the `channelThreadFanOut` helper.
 
-### `handleThreadCreated`
+> The numbered flows below describe the **channel path**. The DM/BotDM path delegates to `publishDMEvents` and is summarized in "Implementation Notes".
+
+### `handleThreadCreated` (channel path)
 
 1. Look up users — sender + mentioned accounts from the message payload (same user lookup as existing `handleCreated`).
-2. Query `ListThreadSubscriptions(parentMessageID, siteID)` → collect subscriber accounts.
-3. Build fan-out set:
+2. `channelThreadFanOut(parentMessageID, siteID, sender, mentions)` → query `ListThreadSubscriptions`, then build the fan-out set via `threadFanOutAccounts`:
    - Union of thread subscriber accounts + mentioned accounts from the message payload.
-   - Deduplicate using a `seen` map seeded with the sender's account (sender is excluded from fan-out). `dedupedAccounts` is not used here — it puts the sender first, which is the opposite of what's needed.
-   - Exclude the sender's account.
-4. Build `ClientMessage` — same enrichment flow as existing created handler (sender display name, user IDs, etc.).
-5. Publish to `subject.UserRoomEvent(account)` for each account in the fan-out set.
+   - Deduplicate using a `seen` map seeded with the sender's account (sender excluded).
+   - **Bot accounts are excluded** (`isBot`), consistent with every other fan-out path (`publishMutation`, `publishDMEvents`).
+3. Build `ClientMessage` — same enrichment flow as existing created handler (sender display name, user IDs, etc.).
+4. `publishToThreadAccounts` → publish to `subject.UserRoomEvent(account)` for each account; on the first publish failure it **returns the error** so JetStream redelivers.
 
 **Why union of DB subscribers + mentioned accounts?**
 Message-worker and broadcast-worker consume `MESSAGES_CANONICAL` independently with no guaranteed ordering. If broadcast-worker processes the event before message-worker creates the `ThreadSubscription` for a newly @mentioned user, the DB query will not include that user. Including mentioned accounts directly from the message payload closes this race, ensuring @mentioned users always receive the real-time notification. All mentioned accounts are guaranteed to be room members (enforced by message-gatekeeper).
 
-### `handleThreadUpdated`
+### `handleThreadUpdated` (channel path)
 
-1. Query `ListThreadSubscriptions(parentMessageID, siteID)` → subscriber accounts.
-2. Fan-out set: thread subscriber accounts only, sender excluded. (Edits do not introduce new mentioned users.)
-3. Build edit event payload.
-4. Publish to `subject.UserRoomEvent(account)` for each subscriber.
+1. Defensive `EditedAt`/`UpdatedAt` nil guard (mirrors `handleUpdated`).
+2. `channelThreadFanOut` → subscriber accounts (sender + bots excluded). Edits do not introduce new mentioned users, but the deleted/edited content is still parsed for @-mentions so the recipient set matches the original create fan-out.
+3. Build the edit event via `buildEditRoomEvent` (timestamp from `evt.Timestamp`, not `time.Now()`).
+4. `publishToThreadAccounts` → publish to each subscriber; returns error on failure for redelivery.
 
-### `handleThreadDeleted`
+### `handleThreadDeleted` (channel path)
 
-1. Query `ListThreadSubscriptions(parentMessageID, siteID)` → subscriber accounts.
-2. Fan-out set: thread subscriber accounts only, sender excluded.
-3. Build delete event payload.
-4. Publish to `subject.UserRoomEvent(account)` for each subscriber.
+1. `channelThreadFanOut`, parsing @-mentions from the **deleted message content** so non-subscriber recipients who received the `EventCreated` (via mention fan-out) also receive the `EventDeleted`.
+2. Build the delete event via `buildDeleteRoomEvent` (timestamp from `evt.Timestamp`).
+3. `publishToThreadAccounts` → publish to each recipient; returns error on failure.
+4. After the room-type switch, publish the reply-count badge (`publishThreadBadge`) when `evt.NewTCount != nil`, so clients see the decrement immediately.
 
 ## Delivery Subject
 
@@ -136,7 +141,8 @@ All thread events are published to `subject.UserRoomEvent(account)` — the same
 |-------|----------|
 | `ListThreadSubscriptions` fails | Log error, return error → JetStream redelivers the message |
 | User lookup fails | Log warning, continue — sender display name falls back to the account string |
-| Individual NATS publish fails | Log error, continue to remaining subscribers — partial delivery is acceptable (consistent with existing DM publish error handling) |
+| NATS publish fails (channel thread path, `publishToThreadAccounts`) | Log error and **return the error** on the first failure → JetStream redelivers. Thread per-user events must have the same delivery guarantee as channel room events; redelivery is safe because the upstream CAS increment is idempotent. |
+| NATS publish fails (DM/BotDM path, `publishDMEvents`/`publishMutation`) | Log error, continue to remaining members — partial delivery accepted (consistent with existing DM mutation handling). |
 | No thread subscribers found | Log at debug level, return nil — nothing to fan-out |
 
 ## Encryption
