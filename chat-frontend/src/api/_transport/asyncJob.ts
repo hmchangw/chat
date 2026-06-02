@@ -213,3 +213,96 @@ export async function requestWithAsyncResult<S = unknown, A = unknown>(
     throw err
   }
 }
+
+/**
+ * Single-phase variant of {@link requestWithAsyncResult} for handlers whose
+ * request subject is a JetStream stream publish (no synchronous responder),
+ * but which still reply once, out-of-band, on
+ * `chat.user.{account}.response.{requestId}`.
+ *
+ * This is the message-send contract: the client publishes to the MESSAGES
+ * stream (`chat.user.{account}.room.{roomId}.{siteId}.msg.send`) and
+ * `message-gatekeeper` validates it and publishes the result — the canonical
+ * `Message` on success, or `{error}` on a validation failure — to the response
+ * subject. Unlike `requestWithAsyncResult` there is NO `nc.request` phase; the
+ * publish is fire-and-forget and the only reply is the gatekeeper's.
+ *
+ * Subscribes to the response subject BEFORE publishing so a fast gatekeeper
+ * can't beat the client. The `requestId` MUST match the one carried in the
+ * payload body — the gatekeeper reads it from the body (`SendMessageRequest.
+ * requestId`), not from a NATS header.
+ *
+ * @throws {AsyncJobError} `kind=AsyncError` on a server error reply
+ *   (`{error}` or `{status:'error'}`), `kind=AsyncTimeout` if no reply
+ *   arrives, `kind=SubscriptionClosed` if the subscription ends first.
+ */
+export async function publishWithAsyncResult<R = unknown>(
+  nc: NatsConnection,
+  account: string,
+  subject: string,
+  payload: unknown,
+  opts: AsyncJobOptions = {},
+): Promise<{ requestId: string; result: R }> {
+  const { requestId = uuidv7(), asyncTimeout = DEFAULT_ASYNC_TIMEOUT } = opts
+
+  const sub: NatsSubscription = nc.subscribe(userResponse(account, requestId), { max: 1 })
+
+  let resolveAsync!: (env: Envelope) => void
+  const asyncPromise = new Promise<Envelope>((res) => { resolveAsync = res })
+  ;(async () => {
+    try {
+      for await (const msg of sub) {
+        resolveAsync({ kind: 'data', data: JSON.parse(sc.decode(msg.data)) })
+        return
+      }
+      resolveAsync({ kind: 'closed' })
+    } catch (err) {
+      resolveAsync({ kind: 'error', error: err })
+    }
+  })()
+
+  const cleanupSub = () => {
+    try { sub.unsubscribe() } catch { /* already closed */ }
+  }
+
+  // Fire-and-forget publish — the request subject is a JetStream stream, so
+  // there is no synchronous reply to await; the gatekeeper's out-of-band reply
+  // on the response subject is the only result.
+  nc.publish(subject, sc.encode(JSON.stringify(payload)))
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeoutPromise = new Promise<Envelope>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'timeout' }), asyncTimeout)
+    })
+    const envelope = await Promise.race([asyncPromise, timeoutPromise])
+    if (timer) clearTimeout(timer)
+    if (envelope.kind === 'timeout') {
+      throw new AsyncJobError('async result timeout', ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
+    }
+    if (envelope.kind === 'error') {
+      const cause = envelope.error
+      const msg = cause instanceof Error ? cause.message : 'subscription error'
+      throw new AsyncJobError(msg, ASYNC_JOB_ERROR_KINDS.SubscriptionClosed, cause)
+    }
+    if (envelope.kind === 'closed') {
+      throw new AsyncJobError(
+        'subscription closed before result arrived',
+        ASYNC_JOB_ERROR_KINDS.SubscriptionClosed,
+      )
+    }
+    const reply = envelope.data as AsyncReplyEnvelope
+    if (reply?.error || reply?.status === 'error') {
+      throw new AsyncJobError(
+        reply.error || 'operation failed',
+        ASYNC_JOB_ERROR_KINDS.AsyncError,
+      )
+    }
+    cleanupSub()
+    return { requestId, result: envelope.data as R }
+  } catch (err) {
+    if (timer) clearTimeout(timer)
+    cleanupSub()
+    throw err
+  }
+}

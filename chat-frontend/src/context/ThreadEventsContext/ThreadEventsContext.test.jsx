@@ -3,11 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ThreadEventsProvider, useThreadEvents } from './ThreadEventsContext'
 
 const request = vi.fn()
-const publish = vi.fn()
+const publishWithAsyncResult = vi.fn()
 vi.mock('../NatsContext/NatsContext', () => ({
   useNats: () => ({
     user: { account: 'alice', siteId: 's1' },
-    request, publish,
+    request, publishWithAsyncResult,
   }),
 }))
 vi.mock('@/lib/idgen', () => ({ generateMessageID: () => 'OPT-000000000000000000' }))
@@ -62,7 +62,8 @@ const setup = () =>
 describe('ThreadEventsContext', () => {
   beforeEach(() => {
     request.mockReset()
-    publish.mockReset()
+    publishWithAsyncResult.mockReset()
+    publishWithAsyncResult.mockResolvedValue({ requestId: 'req-uuid', result: {} })
     registerThreadReplyHandler.mockClear()
     registeredThreadReplyHandler = null
   })
@@ -110,14 +111,13 @@ describe('ThreadEventsContext', () => {
     expect(screen.getByText('count:0')).toBeInTheDocument()
   })
 
-  it('sendReply optimistically appends and publishes msg.send with thread parent fields', async () => {
+  it('sendReply optimistically appends and sends msg.send with thread parent fields', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    // publish is sync void — default no-op is fine.
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
     expect(screen.getByText('count:1')).toBeInTheDocument()
-    expect(publish).toHaveBeenCalledWith(
+    expect(publishWithAsyncResult).toHaveBeenCalledWith(
       'chat.user.alice.room.r1.s1.msg.send',
       {
         id: 'OPT-000000000000000000',
@@ -125,7 +125,8 @@ describe('ThreadEventsContext', () => {
         requestId: 'req-uuid',
         threadParentMessageId: 'p1',
         threadParentMessageCreatedAt: 1000,
-      }
+      },
+      { requestId: 'req-uuid' },
     )
   })
 
@@ -134,13 +135,13 @@ describe('ThreadEventsContext', () => {
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send-quote').click() })
-    const call = publish.mock.calls[0]
+    const call = publishWithAsyncResult.mock.calls[0]
     expect(call[1].quotedParentMessageId).toBe('q-id')
   })
 
-  it('sendReply publish failure (sync throw) tags _status=failed on the optimistic row', async () => {
+  it('sendReply send failure (async reject) tags _status=failed on the optimistic row', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockImplementation(() => { throw new Error('Not connected') })
+    publishWithAsyncResult.mockRejectedValue(new Error('Not connected'))
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -151,7 +152,7 @@ describe('ThreadEventsContext', () => {
 
   it('dismissReply removes the row', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockImplementation(() => { throw new Error('Not connected') })
+    publishWithAsyncResult.mockRejectedValue(new Error('Not connected'))
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -163,13 +164,14 @@ describe('ThreadEventsContext', () => {
 describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
   beforeEach(() => {
     request.mockReset()
-    publish.mockReset()
+    publishWithAsyncResult.mockReset()
+    publishWithAsyncResult.mockResolvedValue({ requestId: 'req-uuid', result: {} })
     roomDispatch.mockClear()
   })
 
   it('on successful sendReply, dispatches OWN_THREAD_REPLY_SENT to RoomEventsContext', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    // publish is sync void — default no-op is success.
+    // default mock resolves — success.
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -181,9 +183,9 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
     })
   })
 
-  it('does NOT dispatch when publish throws synchronously', async () => {
+  it('does NOT dispatch when the send fails', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    publish.mockImplementation(() => { throw new Error('Not connected') })
+    publishWithAsyncResult.mockRejectedValue(new Error('Not connected'))
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
@@ -192,15 +194,15 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
 
   it('retryReply does NOT re-dispatch OWN_THREAD_REPLY_SENT (the original send already counted)', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
-    // First send fails synchronously so retryReply has something to retry.
-    publish.mockImplementationOnce(() => { throw new Error('Not connected') })
+    // First send fails so retryReply has something to retry.
+    publishWithAsyncResult.mockRejectedValueOnce(new Error('Not connected'))
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send').click() })
     // The initial send failed — no roomDispatch fired (covered by the test above).
     expect(roomDispatch).not.toHaveBeenCalled()
     // Now succeed on retry.
-    publish.mockImplementation(() => {})
+    publishWithAsyncResult.mockResolvedValue({ requestId: 'req-uuid', result: {} })
     await act(async () => { screen.getByText('retry').click() })
     // Even though the retry succeeded, the tcount should not be bumped by the
     // retry path — the room reducer assumes one increment per logical send,
@@ -214,7 +216,8 @@ describe('ThreadEventsContext — cross-dispatch OWN_THREAD_REPLY_SENT', () => {
 describe('ThreadEventsContext — live THREAD_REPLY_RECEIVED bridge', () => {
   beforeEach(() => {
     request.mockReset()
-    publish.mockReset()
+    publishWithAsyncResult.mockReset()
+    publishWithAsyncResult.mockResolvedValue({ requestId: 'req-uuid', result: {} })
     registerThreadReplyHandler.mockClear()
     registeredThreadReplyHandler = null
   })
@@ -260,7 +263,8 @@ describe('ThreadEventsContext — live THREAD_REPLY_RECEIVED bridge', () => {
 describe('ThreadEventsContext — live thread-message mutation bridge', () => {
   beforeEach(() => {
     request.mockReset()
-    publish.mockReset()
+    publishWithAsyncResult.mockReset()
+    publishWithAsyncResult.mockResolvedValue({ requestId: 'req-uuid', result: {} })
     registerThreadMessageMutationHandler.mockClear()
     registeredThreadMessageMutationHandler = null
   })

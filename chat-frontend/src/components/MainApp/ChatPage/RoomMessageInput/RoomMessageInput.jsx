@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { useNats } from '@/context/NatsContext'
 import { useRoomDispatch } from '@/context/RoomEventsContext'
-import { sendMessage } from '@/api'
+import { sendMessage, formatAsyncJobError } from '@/api'
 import { generateMessageID } from '@/lib/idgen'
 import { roomPrefix, roomDisplayName } from '@/lib/roomFormat'
 import MessageInputForm from '@/components/shared/MessageInputForm/MessageInputForm'
@@ -57,7 +57,14 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
       }
     }
     dispatch({ type: 'MESSAGE_SENT_LOCAL', roomId: room.id, message: optimistic })
-    sendMessage(nats, { roomId: room.id, siteId: user.siteId, payload })
+    // sendMessage awaits the gatekeeper's reply. Keep the handler synchronous
+    // (optimistic dispatch + clear stay immediate) and observe failures off
+    // the returned promise so a rejected send doesn't become an unhandled
+    // rejection — and so validation errors are no longer silently dropped.
+    sendMessage(nats, { roomId: room.id, siteId: user.siteId, payload }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('message send failed:', formatAsyncJobError(err))
+    })
     setText('')
     onClearQuote?.()
   }

@@ -7,7 +7,7 @@ import {
   useRegisterThreadMessageMutationHandler,
 } from '../RoomEventsContext/RoomEventsContext'
 import { generateMessageID } from '@/lib/idgen'
-import { fetchThreadMessages, sendMessage } from '@/api'
+import { fetchThreadMessages, sendMessage, formatAsyncJobError } from '@/api'
 import { threadEventsReducer, initialState } from './reducer'
 
 const ThreadEventsContext = createContext(null)
@@ -93,8 +93,10 @@ export function ThreadEventsProvider({ children }) {
     dispatch({ type: 'CLOSE_THREAD' })
   }, [])
 
-  // publishReply is synchronous — `publish` is sync void and throws if not
-  // connected. Callers wrap in try/catch.
+  // publishReply returns the sendMessage promise — it resolves once
+  // message-gatekeeper acks and rejects on a validation error (or a wire
+  // failure). Throws synchronously only when there's no active thread; callers
+  // attach .then/.catch for the async outcome.
   const publishReply = useCallback(
     (id, content, opts) => {
       const parent = stateRef.current.activeParent
@@ -107,7 +109,7 @@ export function ThreadEventsProvider({ children }) {
         threadParentMessageCreatedAt: parent.createdAtMs,
       }
       if (opts?.quotedParentMessageId) payload.quotedParentMessageId = opts.quotedParentMessageId
-      sendMessage(nats, { roomId: parent.roomId, siteId: parent.siteId, payload })
+      return sendMessage(nats, { roomId: parent.roomId, siteId: parent.siteId, payload })
     },
     [user, nats]
   )
@@ -138,20 +140,26 @@ export function ThreadEventsProvider({ children }) {
         }
       }
       dispatch({ type: 'REPLY_SENT_LOCAL', message: optimistic })
-      try {
-        publishReply(id, content.trim(), opts)
-        if (parent) {
-          // replyId lets the room reducer dedupe the inbound echo on tcount.
-          roomDispatch({
-            type: 'OWN_THREAD_REPLY_SENT',
-            roomId: parent.roomId,
-            parentId: parent.messageId,
-            replyId: id,
-          })
-        }
-      } catch (err) {
-        dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: err?.message ?? String(err) })
-      }
+      // OWN_THREAD_REPLY_SENT bumps the parent's tcount and must fire only on a
+      // confirmed send — moved into the success branch now that sendMessage is
+      // async (the gatekeeper ack is the confirmation). A rejected send tags
+      // the optimistic row failed instead, surfacing the (previously silent)
+      // validation error.
+      publishReply(id, content.trim(), opts)
+        .then(() => {
+          if (parent) {
+            // replyId lets the room reducer dedupe the inbound echo on tcount.
+            roomDispatch({
+              type: 'OWN_THREAD_REPLY_SENT',
+              roomId: parent.roomId,
+              parentId: parent.messageId,
+              replyId: id,
+            })
+          }
+        })
+        .catch((err) => {
+          dispatch({ type: 'REPLY_SEND_FAILED', messageId: id, error: formatAsyncJobError(err) })
+        })
     },
     [user, publishReply, roomDispatch]
   )
@@ -161,22 +169,20 @@ export function ThreadEventsProvider({ children }) {
       const row = stateRef.current.messages.find((m) => m.id === messageId)
       if (!row) return
       dispatch({ type: 'REPLY_RETRIED', messageId })
-      try {
-        publishReply(
-          messageId,
-          row.content,
-          row.quotedParentMessage
-            ? { quotedParentMessageId: row.quotedParentMessage.messageId ?? row.quotedParentMessage.id }
-            : undefined
-        )
-        // Intentionally NOT dispatching OWN_THREAD_REPLY_SENT here. A retry is
-        // the continuation of a logical send, not a new one; double-bumping the
-        // parent's tcount would inflate the badge across repeated failures and
-        // recoveries. The optimistic count stays at 0 until the next
-        // msg.thread reload reconciles from the authoritative server state.
-      } catch (err) {
-        dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: err?.message ?? String(err) })
-      }
+      // Intentionally NOT dispatching OWN_THREAD_REPLY_SENT on success. A retry
+      // is the continuation of a logical send, not a new one; double-bumping
+      // the parent's tcount would inflate the badge across repeated failures
+      // and recoveries. The optimistic count stays at 0 until the next
+      // msg.thread reload reconciles from the authoritative server state.
+      publishReply(
+        messageId,
+        row.content,
+        row.quotedParentMessage
+          ? { quotedParentMessageId: row.quotedParentMessage.messageId ?? row.quotedParentMessage.id }
+          : undefined
+      ).catch((err) => {
+        dispatch({ type: 'REPLY_SEND_FAILED', messageId, error: formatAsyncJobError(err) })
+      })
     },
     [publishReply]
   )

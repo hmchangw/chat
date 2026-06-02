@@ -2,7 +2,10 @@ import { createContext, useContext, useRef, useState, useCallback, useMemo } fro
 import { connect as natsConnect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 import { AUTH_URL, NATS_URL } from '@/lib/runtimeConfig'
-import { requestWithAsyncResult as asyncJobRequest } from '@/api/_transport/asyncJob'
+import {
+  requestWithAsyncResult as asyncJobRequest,
+  publishWithAsyncResult as asyncJobPublish,
+} from '@/api/_transport/asyncJob'
 
 export const NatsContext = createContext(null)
 
@@ -118,6 +121,31 @@ export function NatsProvider({ children }) {
   }, [user])
 
   /**
+   * Single-phase async result: publish fire-and-forget to a stream subject,
+   * then await the handler's out-of-band reply on the per-request response
+   * subject. Used by the message-send path — the publish lands on the
+   * MESSAGES stream and `message-gatekeeper` replies once on
+   * `chat.user.{account}.response.{requestId}`.
+   *
+   * Injects the current `user.account` and the live `nc`; for the full
+   * contract see {@link asyncJobPublish} in `api/_transport/asyncJob.ts`.
+   *
+   * @param {string} subject
+   * @param {unknown} [data={}]
+   * @param {Object} [opts]  Forwarded to the helper (`requestId`,
+   *   `asyncTimeout`).
+   * @returns {Promise<{requestId: string, result: unknown}>}
+   * @throws Tagged Error with `.kind` from ASYNC_JOB_ERROR_KINDS on every
+   *   failure path; use `formatAsyncJobError` for user-facing text.
+   */
+  const publishWithAsyncResult = useCallback(async (subject, data = {}, opts = {}) => {
+    if (!ncRef.current) throw new Error('Not connected')
+    const account = user?.account
+    if (!account) throw new Error('Not authenticated')
+    return asyncJobPublish(ncRef.current, account, subject, data, opts)
+  }, [user])
+
+  /**
    * Fire-and-forget JSON publish. Use for events the server consumes
    * via QueueSubscribe (no reply expected); for request/reply use
    * `request` or `requestWithAsyncResult`.
@@ -180,9 +208,9 @@ export function NatsProvider({ children }) {
   const value = useMemo(
     () => ({
       connected, user, error,
-      connect: connectToNats, request, requestWithAsyncResult, publish, subscribe, disconnect,
+      connect: connectToNats, request, requestWithAsyncResult, publishWithAsyncResult, publish, subscribe, disconnect,
     }),
-    [connected, user, error, connectToNats, request, requestWithAsyncResult, publish, subscribe, disconnect]
+    [connected, user, error, connectToNats, request, requestWithAsyncResult, publishWithAsyncResult, publish, subscribe, disconnect]
   )
 
   return <NatsContext.Provider value={value}>{children}</NatsContext.Provider>

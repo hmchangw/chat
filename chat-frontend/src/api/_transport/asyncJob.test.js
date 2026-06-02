@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { StringCodec } from 'nats.ws'
-import { requestWithAsyncResult, ASYNC_JOB_ERROR_KINDS, formatAsyncJobError } from './asyncJob'
+import {
+  requestWithAsyncResult,
+  publishWithAsyncResult,
+  ASYNC_JOB_ERROR_KINDS,
+  formatAsyncJobError,
+} from './asyncJob'
 
 const sc = StringCodec()
 
@@ -54,6 +59,7 @@ function makeNc({ syncReply, subFactory } = {}) {
       return encode(syncReply ?? { status: 'accepted' })
     }),
     subscribe: vi.fn(() => sub),
+    publish: vi.fn(),
   }
 }
 
@@ -198,6 +204,114 @@ describe('requestWithAsyncResult', () => {
     expect(m).not.toBeNull()
     const generatedId = m[1]
     nc.sub.push(encode({ requestId: generatedId, operation: 'room.create', status: 'ok', timestamp: 1 }))
+    const result = await p
+    expect(result.requestId).toBe(generatedId)
+  })
+})
+
+describe('publishWithAsyncResult', () => {
+  it('subscribes to the per-request response subject before publishing', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'chat.user.alice.room.r1.s1.msg.send', { id: 'm1', requestId: 'req-1' }, {
+      requestId: 'req-1',
+    })
+    expect(nc.subscribe).toHaveBeenCalledWith('chat.user.alice.response.req-1', { max: 1 })
+    // subscribe must have been called BEFORE the fire-and-forget publish.
+    expect(nc.subscribe.mock.invocationCallOrder[0])
+      .toBeLessThan(nc.publish.mock.invocationCallOrder[0])
+    nc.sub.push(encode({ id: 'm1', content: 'hi' }))
+    await p
+  })
+
+  it('publishes the payload fire-and-forget to the given subject (no request/reply)', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'chat.user.alice.room.r1.s1.msg.send', { id: 'm1' }, {
+      requestId: 'req-1',
+    })
+    expect(nc.publish).toHaveBeenCalledTimes(1)
+    expect(nc.publish.mock.calls[0][0]).toBe('chat.user.alice.room.r1.s1.msg.send')
+    // The publish path must NOT use request/reply.
+    expect(nc.request).not.toHaveBeenCalled()
+    nc.sub.push(encode({ id: 'm1', content: 'hi' }))
+    await p
+  })
+
+  it('resolves with the parsed reply when the gatekeeper acks (a Message, no error/status)', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, { requestId: 'req-1' })
+    nc.sub.push(encode({ id: 'm1', content: 'hi', sender: { account: 'alice' } }))
+    const result = await p
+    expect(result.requestId).toBe('req-1')
+    expect(result.result).toMatchObject({ id: 'm1', content: 'hi' })
+  })
+
+  it('throws with kind=async-error when the reply carries {error} (gatekeeper validation error)', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, { requestId: 'req-1' })
+    nc.sub.push(encode({ error: 'content exceeds maximum size of 20480 bytes' }))
+    const err = await p.catch((e) => e)
+    expect(err.message).toBe('content exceeds maximum size of 20480 bytes')
+    expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncError)
+  })
+
+  it('throws with kind=async-error when the reply carries status:error', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, { requestId: 'req-1' })
+    nc.sub.push(encode({ status: 'error', error: 'not subscribed to room' }))
+    const err = await p.catch((e) => e)
+    expect(err.message).toBe('not subscribed to room')
+    expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncError)
+  })
+
+  it('rejects with kind=async-timeout if no reply arrives in time', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const nc = makeNc()
+      const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, {
+        requestId: 'req-1',
+        asyncTimeout: 500,
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+      vi.advanceTimersByTime(600)
+      const err = await p.catch((e) => e)
+      expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
+      expect(err.message).toMatch(/timeout/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects with kind=subscription-closed when the sub closes before a reply arrives', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, {
+      requestId: 'req-1',
+      asyncTimeout: 10000,
+    })
+    await Promise.resolve(); await Promise.resolve()
+    nc.sub.unsubscribe()
+    const err = await p.catch((e) => e)
+    expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.SubscriptionClosed)
+    expect(err.message).toMatch(/subscription closed/i)
+  })
+
+  it('unsubscribes the response subscription on the success path', async () => {
+    const nc = makeNc()
+    const unsubSpy = vi.spyOn(nc.sub, 'unsubscribe')
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' }, { requestId: 'req-1' })
+    nc.sub.push(encode({ id: 'm1', content: 'hi' }))
+    await p
+    expect(unsubSpy).toHaveBeenCalled()
+  })
+
+  it('auto-generates a request id when caller does not supply one', async () => {
+    const nc = makeNc()
+    const p = publishWithAsyncResult(nc, 'alice', 'subj', { id: 'm1' })
+    const subCall = nc.subscribe.mock.calls[0][0]
+    const m = subCall.match(/^chat\.user\.alice\.response\.([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i)
+    expect(m).not.toBeNull()
+    const generatedId = m[1]
+    nc.sub.push(encode({ id: 'm1', content: 'hi' }))
     const result = await p
     expect(result.requestId).toBe(generatedId)
   })

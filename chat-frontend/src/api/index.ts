@@ -55,6 +55,7 @@ export type {
   SubscriptionUpdateAction,
   AsyncJobOptions,
   AsyncJobResult,
+  AsyncPublishResult,
   // Domain types
   User,
   Room,

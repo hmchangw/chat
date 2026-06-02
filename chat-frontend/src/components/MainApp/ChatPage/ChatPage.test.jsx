@@ -146,12 +146,12 @@ describe('ChatPage — quote-reply staging', () => {
 })
 
 describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
-  it('publish call carries quotedParentMessageId after Reply staging', async () => {
+  it('send call carries quotedParentMessageId after Reply staging', async () => {
     viE2E.resetModules()
-    const publish = viE2E.fn()
+    const publishWithAsyncResult = viE2E.fn().mockResolvedValue({ requestId: 'req-1', result: {} })
 
     viE2E.doMock('@/context/NatsContext', () => ({
-      useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publish }),
+      useNats: () => ({ user: { account: 'alice', siteId: 's1' }, publishWithAsyncResult }),
     }))
     viE2E.doMock('@/lib/idgen', () => ({ generateMessageID: () => '12345678901234567890' }))
     viE2E.doMock('uuid', () => ({ v4: () => 'req-1' }))
@@ -173,7 +173,7 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
       useRoomDispatch: () => viE2E.fn(),
     }))
     viE2E.doMock('./RoomMembersBadge/RoomMembersBadge', () => ({ default: () => null }))
-    // Use the real RoomMessageInput so we can assert on the publish payload.
+    // Use the real RoomMessageInput so we can assert on the send payload.
     // vi.mock (hoisted) would otherwise override it; doMock + importActual wins
     // for modules loaded via the subsequent dynamic import.
     viE2E.doMock('./RoomMessageInput/RoomMessageInput', async () => await viE2E.importActual('./RoomMessageInput/RoomMessageInput'))
@@ -186,14 +186,15 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
     fireEvent.change(input, { target: { value: 'a reply' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(publish).toHaveBeenCalledWith(
+    expect(publishWithAsyncResult).toHaveBeenCalledWith(
       'chat.user.alice.room.r1.s1.msg.send',
       {
         id: '12345678901234567890',
         content: 'a reply',
         requestId: 'req-1',
         quotedParentMessageId: 'orig',
-      }
+      },
+      { requestId: 'req-1' },
     )
   })
 })

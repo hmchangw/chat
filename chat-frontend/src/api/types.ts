@@ -281,6 +281,13 @@ export interface AsyncJobResult<S = unknown, A = unknown> {
   async: A | null
 }
 
+/** Single-phase async-job result returned by `publishWithAsyncResult` — the
+ *  send path has no synchronous reply, only the out-of-band gatekeeper ack. */
+export interface AsyncPublishResult<R = unknown> {
+  requestId: string
+  result: R
+}
+
 /** Options forwarded to `requestWithAsyncResult` from the api layer. */
 export interface AsyncJobOptions {
   /** When set, a sync reply matching this predicate is treated as
@@ -313,4 +320,9 @@ export interface Nats {
     data?: unknown,
     opts?: AsyncJobOptions,
   ) => Promise<AsyncJobResult<S, A>>
+  publishWithAsyncResult: <R = unknown>(
+    subject: string,
+    data?: unknown,
+    opts?: AsyncJobOptions,
+  ) => Promise<AsyncPublishResult<R>>
 }
