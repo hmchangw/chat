@@ -15,10 +15,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
 // dailyConfig is the parsed CLI input for `loadgen daily`.
@@ -599,21 +602,37 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		slog.Error("publisher connection failed; emitters will no-op", "err", err)
 		pubConn = nil
 	}
+	// Build a *nats.Msg with an X-Request-ID header on every publish or
+	// request. Backend services (notably room-service → room-worker via
+	// canonical) require the header — without it the canonical event
+	// arrives with no request ID and room-worker rejects it as a
+	// permanent error ("missing X-Request-ID"). Each emitter call gets
+	// a fresh UUID so request-tracing across the pipeline works for
+	// every action.
+	newMsg := func(subj string, data []byte) *nats.Msg {
+		return &nats.Msg{
+			Subject: subj,
+			Data:    data,
+			Header: nats.Header{
+				natsutil.RequestIDHeader: []string{idgen.GenerateRequestID()},
+			},
+		}
+	}
 	publish := func(ctx context.Context, subj string, data []byte) error {
 		if pubConn == nil {
 			return fmt.Errorf("no publisher conn")
 		}
-		return pubConn.Publish(subj, data)
+		return pubConn.PublishMsg(newMsg(subj, data))
 	}
 	request := func(ctx context.Context, subj string, data []byte, timeout time.Duration) ([]byte, error) {
 		if pubConn == nil {
 			return nil, fmt.Errorf("no publisher conn")
 		}
-		msg, err := pubConn.RequestWithContext(ctx, subj, data)
+		reply, err := pubConn.RequestMsgWithContext(ctx, newMsg(subj, data))
 		if err != nil {
 			return nil, err
 		}
-		return msg.Data, nil
+		return reply.Data, nil
 	}
 
 	jszURL := f.baseCfg.NatsMonitoringURL
