@@ -415,7 +415,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect: subscription update + member change event + local INBOX + system message = 4 publishes
-	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, local INBOX, sys msg")
+	assert.Len(t, published, 5, "expected 5 publishes: sub update, canonical member event, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -424,6 +424,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 
 	assert.True(t, subjSet[subject.SubscriptionUpdate(account)], "expected subscription update published")
 	assert.True(t, subjSet[subject.MemberEvent(roomID)], "expected member event published")
+	assert.True(t, subjSet[subject.RoomCanonicalMemberEvent("site-a", model.CanonicalMemberEventRemoved)], "expected canonical member.removed event published")
 	assert.True(t, subjSet[subject.InboxMemberRemoved(siteID)], "expected local INBOX member_removed published")
 
 	for _, p := range published {
@@ -604,7 +605,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	assert.Len(t, published, 4, "expected 4 publishes: sub update, member event, local INBOX, sys msg")
+	assert.Len(t, published, 5, "expected 5 publishes: sub update, canonical member event, member event, local INBOX, sys msg")
 
 	// Verify the sys msg has type "member_removed"
 	for _, p := range published {
@@ -1196,8 +1197,8 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
-	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, local INBOX, sys msg")
+	// Expect: 2 sub updates + 2 canonical member events (one per removed account) + 1 member event + 1 local INBOX + 1 sys msg = 7 publishes
+	assert.Len(t, published, 7, "expected 7 publishes: 2 sub updates, 2 canonical member events, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
 	for _, p := range published {
@@ -1267,8 +1268,8 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: sub update + member event + local INBOX + sys msg + outbox = 5 publishes
-	assert.Len(t, published, 5, "expected 5 publishes including local INBOX and outbox for federated user")
+	// Expect: sub update + canonical member event + member event + local INBOX + sys msg + outbox = 6 publishes
+	assert.Len(t, published, 6, "expected 6 publishes including local INBOX, outbox for federated user, and canonical member event")
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	subjSet := make(map[string]bool)
@@ -2863,9 +2864,10 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 	// Reply returns the in-memory sub directly (no read-back round-trip).
 	assert.Equal(t, *captured[0], reply.Subscription)
 
-	// One subscription.update; no outbox (same-site by definition).
-	require.Len(t, capture.captured, 1)
+	// subscription.update + canonical member.added event; no outbox (same-site by definition).
+	require.Len(t, capture.captured, 2)
 	assert.Equal(t, subject.SubscriptionUpdate("alice"), capture.captured[0].subject)
+	assert.Equal(t, subject.RoomCanonicalMemberEvent("site-a", model.CanonicalMemberEventAdded), capture.captured[1].subject)
 }
 
 func TestHandleSyncCreateDM_SelfBotDMRejected(t *testing.T) {
