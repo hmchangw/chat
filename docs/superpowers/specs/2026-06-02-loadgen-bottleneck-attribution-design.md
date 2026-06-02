@@ -176,6 +176,7 @@ up cAdvisor alongside loadgen's Prometheus.
   present vs short-ID fallback).
 - `attribution_report_test.go` — golden-string formatting incl.
   undetermined.
-- Optional `//go:build integration` test standing up cAdvisor + Prometheus
-  to assert a real range query parses — only if it fits the existing
-  `pkg/testutil` posture; otherwise the fake covers unit scope.
+
+No integration test in v1: the fake promclient (injected via the
+consumer-defined interface) covers the engine end-to-end at unit scope,
+and there is no store/container dependency to exercise.
