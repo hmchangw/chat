@@ -297,9 +297,9 @@ BOTTLENECK: message-worker (Cassandra-bound)
 ```
 
 It fuses loadgen's per-stage signals (E1/E2 latency, per-durable backlog)
-with cAdvisor container CPU trends from Prometheus. The deploy stack brings
-up cAdvisor automatically. `make run-max-rps` starts cAdvisor + Prometheus
-automatically (you do not need the dashboards stack). Tunables (env, `BOTTLENECK_` prefix):
+with cAdvisor container CPU trends from Prometheus. `make run-max-rps`
+starts cAdvisor + Prometheus for you (no need to run `make run-dashboards`
+first). Tunables (env, `BOTTLENECK_` prefix):
 
 | Var | Default | Notes |
 |-----|---------|-------|
