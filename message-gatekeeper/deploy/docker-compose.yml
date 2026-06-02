@@ -12,6 +12,11 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - CHAT_BASE_URL=http://localhost:3000
+      # User-meta cache fronts users-collection lookups so the per-message sender
+      # display-name composition stays off the hot Mongo path. Sized like the
+      # room-meta cache; TTL slightly longer because user records change rarely.
+      - USER_META_CACHE_SIZE=10000
+      - USER_META_CACHE_TTL=5m
       - BOOTSTRAP_STREAMS=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
