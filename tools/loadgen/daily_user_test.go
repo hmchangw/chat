@@ -35,8 +35,8 @@ func TestPickAction_WeightsApproximatelyMatch(t *testing.T) {
 		counts[pickAction(r, w)]++
 	}
 	// Send should dominate (largest weight). Mute/Create should be rare.
-	require.Greater(t, counts[actionSend], counts[actionReadReceipt])
-	require.Greater(t, counts[actionReadReceipt], counts[actionScrollHistory])
+	require.Greater(t, counts[actionSend], counts[actionMarkRead])
+	require.Greater(t, counts[actionMarkRead], counts[actionScrollHistory])
 	require.Less(t, counts[actionMuteToggle], counts[actionRoomCreate]+counts[actionMemberAdd]+10) // tiny
 }
 

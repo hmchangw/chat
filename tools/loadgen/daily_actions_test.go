@@ -55,11 +55,11 @@ func TestSendMessage_PublishesToFrontdoor(t *testing.T) {
 	require.Equal(t, "hello", req.Content)
 }
 
-func TestReadReceipt_Requests(t *testing.T) {
+func TestMarkRead_Requests(t *testing.T) {
 	c := &captured{}
 	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-a"}}
 	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
-	err := readReceipt(ctx, u, "msg-1")
+	err := markRead(ctx, u, "msg-1")
 	require.NoError(t, err)
 	// Must be a Request — room-service registers MessageRead via QueueSubscribe
 	// and calls msg.Respond, which fails on a fire-and-forget Publish.

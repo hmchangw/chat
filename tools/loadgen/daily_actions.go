@@ -64,22 +64,27 @@ func sendMessage(a actionCtx, u *userState, content string) error {
 	return nil
 }
 
-// readReceipt publishes a read-receipt event for a random room.
-// readReceipt issues a NATS request to mark a message as read. room-service
-// registers the MessageRead subject via QueueSubscribe and calls
-// msg.Respond, so this must be a Request (not a Publish) — otherwise the
-// service-side Respond fails with "nats: message does not have a reply".
-func readReceipt(a actionCtx, u *userState, lastMsgID string) error {
+// markRead issues a NATS request to mark a random room as read. The wire
+// subject is "msg.read" (room-service's MessageRead handler), which
+// updates the user's subscription.lastReadAt and recomputes the room's
+// read-floor. Despite the wire name, this is the user's own act of
+// reading, not a "read receipt" notification — that's a separate
+// MessageReadReceipt handler in room-service.
+//
+// Must be a Request (not a Publish) — room-service's natsMessageRead
+// calls msg.Respond unconditionally, which fails with "nats: message
+// does not have a reply" on a fire-and-forget Publish.
+func markRead(a actionCtx, u *userState, lastMsgID string) error {
 	if len(u.Rooms) == 0 {
 		return nil
 	}
 	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
 	payload, err := json.Marshal(map[string]string{"messageId": lastMsgID})
 	if err != nil {
-		return fmt.Errorf("marshal read-receipt: %w", err)
+		return fmt.Errorf("marshal mark-read: %w", err)
 	}
 	if _, err := a.Request(a.Ctx, subject.MessageRead(u.Account, roomID, a.SiteID), payload, defaultRequestTimeout); err != nil {
-		return fmt.Errorf("request read-receipt: %w", err)
+		return fmt.Errorf("request mark-read: %w", err)
 	}
 	return nil
 }

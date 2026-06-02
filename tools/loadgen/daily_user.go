@@ -12,7 +12,7 @@ type actionKind int
 
 const (
 	actionSend actionKind = iota
-	actionReadReceipt
+	actionMarkRead
 	actionScrollHistory
 	actionRefreshRoomList
 	actionMemberAdd
@@ -27,8 +27,8 @@ func (k actionKind) String() string {
 	switch k {
 	case actionSend:
 		return "send"
-	case actionReadReceipt:
-		return "read_receipt"
+	case actionMarkRead:
+		return "mark_read"
 	case actionScrollHistory:
 		return "scroll_history"
 	case actionRefreshRoomList:
@@ -47,7 +47,7 @@ func (k actionKind) String() string {
 // allActionKinds is the canonical ordered list, used by report code so
 // the CSV column order is stable across runs.
 var allActionKinds = []actionKind{
-	actionSend, actionReadReceipt, actionScrollHistory, actionRefreshRoomList,
+	actionSend, actionMarkRead, actionScrollHistory, actionRefreshRoomList,
 	actionMemberAdd, actionRoomCreate, actionMuteToggle,
 }
 
@@ -55,7 +55,7 @@ var allActionKinds = []actionKind{
 // Source of truth: spec section 4 "daily-heavy" budget.
 type actionWeights struct {
 	Send            float64
-	ReadReceipt     float64
+	MarkRead        float64
 	ScrollHistory   float64
 	RefreshRoomList float64
 	MemberAdd       float64
@@ -65,13 +65,13 @@ type actionWeights struct {
 
 func defaultActionWeights() actionWeights {
 	return actionWeights{
-		Send: 60, ReadReceipt: 25, ScrollHistory: 3,
+		Send: 60, MarkRead: 25, ScrollHistory: 3,
 		RefreshRoomList: 5, MemberAdd: 0.5, RoomCreate: 0.2, MuteToggle: 0.2,
 	}
 }
 
 func (w actionWeights) totalPerDay() float64 {
-	return w.Send + w.ReadReceipt + w.ScrollHistory + w.RefreshRoomList +
+	return w.Send + w.MarkRead + w.ScrollHistory + w.RefreshRoomList +
 		w.MemberAdd + w.RoomCreate + w.MuteToggle
 }
 
@@ -91,7 +91,7 @@ func pickAction(r *rand.Rand, w actionWeights) actionKind {
 		w float64
 	}{
 		{actionSend, w.Send},
-		{actionReadReceipt, w.ReadReceipt},
+		{actionMarkRead, w.MarkRead},
 		{actionScrollHistory, w.ScrollHistory},
 		{actionRefreshRoomList, w.RefreshRoomList},
 		{actionMemberAdd, w.MemberAdd},

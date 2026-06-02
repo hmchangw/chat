@@ -46,7 +46,7 @@ type Thresholds struct {
 	// Read in evaluateStep; defaults populated by defaultThresholds.
 	//
 	// Keys are stable action names from actionKind.String() — e.g.
-	// "read_receipt", "scroll_history", "member_add". These run in the
+	// "mark_read", "scroll_history", "member_add". These run in the
 	// loadgen process: each sample is the wall-clock around the per-action
 	// handler call, so the thresholds reflect *handler* latency (not the
 	// publish→broadcast pipeline gated by P95LatencyMs / P99LatencyMs).
@@ -66,7 +66,7 @@ func defaultThresholds() Thresholds {
 		// (e.g. send, thread_reply) don't gate at this layer — sends
 		// gate via the broadcast-latency p95/p99 above.
 		ActionP95Ms: map[string]float64{
-			"read_receipt":      100,
+			"mark_read":         100,
 			"refresh_room_list": 200,
 			"scroll_history":    500,
 			"member_add":        200,
@@ -74,7 +74,7 @@ func defaultThresholds() Thresholds {
 			"room_create":       500,
 		},
 		ActionP99Ms: map[string]float64{
-			"read_receipt":      250,
+			"mark_read":         250,
 			"refresh_room_list": 500,
 			"scroll_history":    1500,
 			"member_add":        500,

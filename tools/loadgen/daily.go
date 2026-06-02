@@ -500,8 +500,8 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 	switch kind {
 	case actionSend:
 		err = sendMessage(a, u, "loadtest content")
-	case actionReadReceipt:
-		err = readReceipt(a, u, "msg-stub")
+	case actionMarkRead:
+		err = markRead(a, u, "msg-stub")
 	case actionScrollHistory:
 		err = scrollHistory(a, u)
 	case actionRefreshRoomList:

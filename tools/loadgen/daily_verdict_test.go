@@ -188,7 +188,7 @@ func TestEvaluateStep_TripsOnPerActionP95(t *testing.T) {
 		N: 1000, EffectiveN: 1000, HoldDuration: 60 * time.Second,
 		LatencySamples: []float64{10, 20, 30}, AttemptedOps: 100,
 		ActionSamplesMs: map[string][]float64{
-			"read_receipt": repeatFloat(60, 100), // p95 ≈ 60ms, under 100ms cap
+			"mark_read": repeatFloat(60, 100), // p95 ≈ 60ms, under 100ms cap
 			"scroll_history": append( // p95 lands at 800ms, over 500ms cap
 				repeatFloat(50, 90), repeatFloat(800, 10)...,
 			),
@@ -208,7 +208,7 @@ func TestEvaluateStep_NoTripWhenActionLatenciesUnderCap(t *testing.T) {
 		N: 1000, EffectiveN: 1000, HoldDuration: 60 * time.Second,
 		LatencySamples: []float64{10, 20, 30}, AttemptedOps: 100,
 		ActionSamplesMs: map[string][]float64{
-			"read_receipt":      repeatFloat(50, 100),
+			"mark_read":         repeatFloat(50, 100),
 			"scroll_history":    repeatFloat(200, 100),
 			"member_add":        repeatFloat(80, 100),
 			"refresh_room_list": repeatFloat(40, 100),
