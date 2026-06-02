@@ -1278,18 +1278,25 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 		return nil, errNotMessageSender
 	}
 
-	rows, err := h.store.ListReadReceipts(ctx, roomID, msgCreatedAt, msgSender, h.maxRoomSize)
+	accounts, err := h.store.ListReadReceipts(ctx, roomID, msgCreatedAt, msgSender, h.maxRoomSize)
 	if err != nil {
 		return nil, fmt.Errorf("list read receipts: %w", err)
 	}
 
-	entries := make([]model.ReadReceiptEntry, len(rows))
-	for i, r := range rows {
-		entries[i] = model.ReadReceiptEntry{
-			UserID:      r.UserID,
-			Account:     r.Account,
-			ChineseName: r.ChineseName,
-			EngName:     r.EngName,
+	entries := make([]model.ReadReceiptEntry, 0, len(accounts))
+	if len(accounts) > 0 {
+		users, err := h.userResolver.FindUsersByAccounts(ctx, accounts)
+		if err != nil {
+			return nil, fmt.Errorf("resolve reader names: %w", err)
+		}
+		for i := range users {
+			u := users[i]
+			entries = append(entries, model.ReadReceiptEntry{
+				UserID:      u.ID,
+				Account:     u.Account,
+				ChineseName: u.ChineseName,
+				EngName:     u.EngName,
+			})
 		}
 	}
 

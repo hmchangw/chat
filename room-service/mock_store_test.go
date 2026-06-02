@@ -254,10 +254,10 @@ func (mr *MockRoomStoreMockRecorder) ListOrgMembers(ctx, orgID any) *gomock.Call
 }
 
 // ListReadReceipts mocks base method.
-func (m *MockRoomStore) ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error) {
+func (m *MockRoomStore) ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListReadReceipts", ctx, roomID, since, excludeAccount, limit)
-	ret0, _ := ret[0].([]ReadReceiptRow)
+	ret0, _ := ret[0].([]string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

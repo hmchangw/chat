@@ -84,7 +84,7 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	var baseUserStore userstore.UserStore = userstore.NewMongoStore(db.Collection("users"))
+	baseUserStore := userstore.NewMongoStore(db.Collection("users"))
 	var userResolver UserResolver = baseUserStore
 	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
 		userResolver = usercache.New(baseUserStore, cfg.UserCacheSize, cfg.UserCacheTTL)

@@ -33,13 +33,6 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
-type ReadReceiptRow struct {
-	UserID      string `bson:"_id"`
-	Account     string `bson:"account"`
-	ChineseName string `bson:"chineseName"`
-	EngName     string `bson:"engName"`
-}
-
 type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
@@ -101,7 +94,7 @@ type RoomStore interface {
 	// A nil value clears the field via $unset; a non-nil value writes via $set.
 	UpdateRoomMinUserLastSeenAt(ctx context.Context, roomID string, t *time.Time) error
 
-	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]ReadReceiptRow, error)
+	ListReadReceipts(ctx context.Context, roomID string, since time.Time, excludeAccount string, limit int) ([]string, error)
 
 	// GetUser returns the user by account, or ErrUserNotFound.
 	GetUser(ctx context.Context, account string) (*model.User, error)

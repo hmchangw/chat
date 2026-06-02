@@ -3152,40 +3152,6 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 
 	tests := []tc{
 		{
-			name:    "happy path",
-			subject: subj,
-			body:    body,
-			prep: func(s setup) {
-				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
-					Return(&model.Subscription{}, nil)
-				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
-					Return(roomID, createdAt, account, true, nil)
-				s.store.EXPECT().ListReadReceipts(gomock.Any(), roomID, createdAt, account, gomock.Any()).
-					Return([]ReadReceiptRow{
-						{UserID: "uB", Account: "bob", ChineseName: "鮑勃", EngName: "Bob"},
-					}, nil)
-			},
-			wantReply: &model.ReadReceiptResponse{
-				Readers: []model.ReadReceiptEntry{
-					{UserID: "uB", Account: "bob", ChineseName: "鮑勃", EngName: "Bob"},
-				},
-			},
-		},
-		{
-			name:    "empty readers",
-			subject: subj,
-			body:    body,
-			prep: func(s setup) {
-				s.store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
-					Return(&model.Subscription{}, nil)
-				s.reader.EXPECT().GetMessageRoomAndCreatedAt(gomock.Any(), messageID).
-					Return(roomID, createdAt, account, true, nil)
-				s.store.EXPECT().ListReadReceipts(gomock.Any(), roomID, createdAt, account, gomock.Any()).
-					Return([]ReadReceiptRow{}, nil)
-			},
-			wantReply: &model.ReadReceiptResponse{Readers: []model.ReadReceiptEntry{}},
-		},
-		{
 			name:      "invalid subject",
 			subject:   "garbage",
 			body:      body,
@@ -3314,6 +3280,93 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 			require.Equal(t, *tt.wantReply, got)
 		})
 	}
+}
+
+type stubMsgReader struct {
+	roomID  string
+	created time.Time
+	sender  string
+	found   bool
+}
+
+func (s stubMsgReader) GetMessageRoomAndCreatedAt(_ context.Context, _ string) (string, time.Time, string, bool, error) {
+	return s.roomID, s.created, s.sender, s.found, nil
+}
+
+func TestHandler_handleMessageReadReceipt_Resolution(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	const (
+		roomID    = "room-1"
+		requester = "alice"
+		msgID     = "msg-1"
+	)
+	created := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	subj := subject.MessageReadReceipt(requester, roomID, "site-a")
+	body, _ := json.Marshal(model.ReadReceiptRequest{MessageID: msgID})
+
+	t.Run("resolves reader names via userResolver", func(t *testing.T) {
+		store := NewMockRoomStore(ctrl)
+		resolver := NewMockUserResolver(ctrl)
+		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+			Return(&model.Subscription{}, nil)
+		store.EXPECT().ListReadReceipts(gomock.Any(), roomID, created, requester, 1000).
+			Return([]string{"bob", "carol"}, nil)
+		resolver.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob", "carol"}).
+			Return([]model.User{
+				{ID: "u-bob", Account: "bob", ChineseName: "鮑伯", EngName: "Bob"},
+				{ID: "u-carol", Account: "carol", ChineseName: "卡蘿", EngName: "Carol"},
+			}, nil)
+
+		h := &Handler{store: store, userResolver: resolver, siteID: "site-a", maxRoomSize: 1000,
+			msgReader: stubMsgReader{roomID: roomID, created: created, sender: requester, found: true}}
+
+		out, err := h.handleMessageReadReceipt(context.Background(), subj, body)
+		require.NoError(t, err)
+		var resp model.ReadReceiptResponse
+		require.NoError(t, json.Unmarshal(out, &resp))
+		require.Len(t, resp.Readers, 2)
+		assert.Equal(t, "u-bob", resp.Readers[0].UserID)
+		assert.Equal(t, "Carol", resp.Readers[1].EngName)
+	})
+
+	t.Run("empty reader set skips resolver", func(t *testing.T) {
+		store := NewMockRoomStore(ctrl)
+		resolver := NewMockUserResolver(ctrl)
+		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+			Return(&model.Subscription{}, nil)
+		store.EXPECT().ListReadReceipts(gomock.Any(), roomID, created, requester, 1000).
+			Return([]string{}, nil)
+		// resolver.FindUsersByAccounts must NOT be called.
+
+		h := &Handler{store: store, userResolver: resolver, siteID: "site-a", maxRoomSize: 1000,
+			msgReader: stubMsgReader{roomID: roomID, created: created, sender: requester, found: true}}
+
+		out, err := h.handleMessageReadReceipt(context.Background(), subj, body)
+		require.NoError(t, err)
+		var resp model.ReadReceiptResponse
+		require.NoError(t, json.Unmarshal(out, &resp))
+		assert.Empty(t, resp.Readers)
+	})
+
+	t.Run("resolver error propagates", func(t *testing.T) {
+		store := NewMockRoomStore(ctrl)
+		resolver := NewMockUserResolver(ctrl)
+		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
+			Return(&model.Subscription{}, nil)
+		store.EXPECT().ListReadReceipts(gomock.Any(), roomID, created, requester, 1000).
+			Return([]string{"bob"}, nil)
+		resolver.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+			Return(nil, errors.New("mongo down"))
+
+		h := &Handler{store: store, userResolver: resolver, siteID: "site-a", maxRoomSize: 1000,
+			msgReader: stubMsgReader{roomID: roomID, created: created, sender: requester, found: true}}
+
+		_, err := h.handleMessageReadReceipt(context.Background(), subj, body)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolve reader names")
+	})
 }
 
 func TestHandler_CreateRoom_WritesKeyBeforePublish(t *testing.T) {

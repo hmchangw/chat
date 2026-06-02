@@ -920,28 +920,15 @@ func (s *MongoStore) ListReadReceipts(
 	since time.Time,
 	excludeAccount string,
 	limit int,
-) ([]ReadReceiptRow, error) {
+) ([]string, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{
 			"roomId":     roomID,
 			"lastSeenAt": bson.M{"$gte": since},
 			"u.account":  bson.M{"$ne": excludeAccount},
 		}}},
-		{{Key: "$lookup", Value: bson.M{
-			"from": "users",
-			"let":  bson.M{"uid": "$u._id"},
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"$expr": bson.M{"$eq": []any{"$_id", "$$uid"}}}},
-				bson.M{"$project": bson.M{"_id": 1, "account": 1, "chineseName": 1, "engName": 1}},
-			},
-			"as": "user",
-		}}},
-		{{Key: "$unwind", Value: bson.M{
-			"path":                       "$user",
-			"preserveNullAndEmptyArrays": false,
-		}}},
-		{{Key: "$replaceWith", Value: "$user"}},
 		{{Key: "$limit", Value: int64(limit)}},
+		{{Key: "$project", Value: bson.M{"_id": 0, "account": "$u.account"}}},
 	}
 	cursor, err := s.subscriptions.Aggregate(ctx, pipeline)
 	if err != nil {
@@ -949,18 +936,20 @@ func (s *MongoStore) ListReadReceipts(
 	}
 	defer cursor.Close(ctx)
 
-	rows := make([]ReadReceiptRow, 0)
+	accounts := make([]string, 0)
 	for cursor.Next(ctx) {
-		var r ReadReceiptRow
-		if err := cursor.Decode(&r); err != nil {
+		var row struct {
+			Account string `bson:"account"`
+		}
+		if err := cursor.Decode(&row); err != nil {
 			return nil, fmt.Errorf("decode read-receipt row for room %q: %w", roomID, err)
 		}
-		rows = append(rows, r)
+		accounts = append(accounts, row.Account)
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("iterate read receipts for room %q: %w", roomID, err)
 	}
-	return rows, nil
+	return accounts, nil
 }
 
 func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error) {
