@@ -65,6 +65,10 @@ func sendMessage(a actionCtx, u *userState, content string) error {
 }
 
 // readReceipt publishes a read-receipt event for a random room.
+// readReceipt issues a NATS request to mark a message as read. room-service
+// registers the MessageRead subject via QueueSubscribe and calls
+// msg.Respond, so this must be a Request (not a Publish) — otherwise the
+// service-side Respond fails with "nats: message does not have a reply".
 func readReceipt(a actionCtx, u *userState, lastMsgID string) error {
 	if len(u.Rooms) == 0 {
 		return nil
@@ -74,8 +78,8 @@ func readReceipt(a actionCtx, u *userState, lastMsgID string) error {
 	if err != nil {
 		return fmt.Errorf("marshal read-receipt: %w", err)
 	}
-	if err := a.Publish(a.Ctx, subject.MessageRead(u.Account, roomID, a.SiteID), payload); err != nil {
-		return fmt.Errorf("publish read-receipt: %w", err)
+	if _, err := a.Request(a.Ctx, subject.MessageRead(u.Account, roomID, a.SiteID), payload, defaultRequestTimeout); err != nil {
+		return fmt.Errorf("request read-receipt: %w", err)
 	}
 	return nil
 }
