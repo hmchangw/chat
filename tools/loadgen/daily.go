@@ -453,7 +453,20 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 	if len(cfg.Steps) == 0 {
 		return nil, fmt.Errorf("cfg.Steps cannot be empty")
 	}
-	preset.Users = slices.Max(cfg.Steps) // size fixtures for the largest step
+	// IMPORTANT: do NOT override preset.Users from --steps. BuildFixtures
+	// is deterministic in (preset, seed, siteID); changing preset.Users
+	// changes every generated ID (the per-band stub shuffle depends on
+	// totalUsers). If daily ran with one Users value while `loadgen seed`
+	// was invoked with the preset's default, the IDs don't line up and
+	// the gatekeeper rejects every send with "user X not subscribed to
+	// room Y". The activateUsers loop already caps at len(env.users), so
+	// a --steps entry that exceeds preset.Users surfaces as INCONCLUSIVE
+	// via the EffectiveN-shortfall guard (clearer than silent ID drift).
+	maxStep := slices.Max(cfg.Steps)
+	if maxStep > preset.Users {
+		slog.Warn("max step exceeds preset.Users; effective N will cap at preset.Users",
+			"max_step", maxStep, "preset_users", preset.Users)
+	}
 
 	siteID := "site-local"
 	if cfg, ok := factoryBaseCfg(factory); ok && cfg.SiteID != "" {
