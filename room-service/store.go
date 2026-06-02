@@ -140,3 +140,9 @@ type MessageReader interface {
 		roomID string, createdAt time.Time, senderAccount string, found bool, err error,
 	)
 }
+
+// UserResolver resolves user directory records (names) by account, for
+// building read-receipt responses.
+type UserResolver interface {
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
+}

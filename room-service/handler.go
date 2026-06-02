@@ -34,6 +34,7 @@ type Handler struct {
 	keyStore          RoomKeyStore
 	memberListClient  MemberListClient
 	msgReader         MessageReader
+	userResolver      UserResolver
 	siteID            string
 	maxRoomSize       int
 	maxBatchSize      int
@@ -42,12 +43,13 @@ type Handler struct {
 	publishCore       func(ctx context.Context, subj string, data []byte) error
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, userResolver UserResolver, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
 	return &Handler{
 		store:             store,
 		keyStore:          keyStore,
 		memberListClient:  memberListClient,
 		msgReader:         msgReader,
+		userResolver:      userResolver,
 		siteID:            siteID,
 		maxRoomSize:       maxRoomSize,
 		maxBatchSize:      maxBatchSize,

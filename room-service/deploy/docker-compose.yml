@@ -18,6 +18,9 @@ services:
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
       - BOOTSTRAP_STREAMS=true
+      # In-process user cache. Set USER_CACHE_SIZE=0 to disable caching.
+      - USER_CACHE_SIZE=10000
+      - USER_CACHE_TTL=5m
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

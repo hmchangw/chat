@@ -509,3 +509,42 @@ func (mr *MockMessageReaderMockRecorder) GetMessageRoomAndCreatedAt(ctx, message
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageRoomAndCreatedAt", reflect.TypeOf((*MockMessageReader)(nil).GetMessageRoomAndCreatedAt), ctx, messageID)
 }
+
+// MockUserResolver is a mock of UserResolver interface.
+type MockUserResolver struct {
+	ctrl     *gomock.Controller
+	recorder *MockUserResolverMockRecorder
+	isgomock struct{}
+}
+
+// MockUserResolverMockRecorder is the mock recorder for MockUserResolver.
+type MockUserResolverMockRecorder struct {
+	mock *MockUserResolver
+}
+
+// NewMockUserResolver creates a new mock instance.
+func NewMockUserResolver(ctrl *gomock.Controller) *MockUserResolver {
+	mock := &MockUserResolver{ctrl: ctrl}
+	mock.recorder = &MockUserResolverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockUserResolver) EXPECT() *MockUserResolverMockRecorder {
+	return m.recorder
+}
+
+// FindUsersByAccounts mocks base method.
+func (m *MockUserResolver) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindUsersByAccounts", ctx, accounts)
+	ret0, _ := ret[0].([]model.User)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindUsersByAccounts indicates an expected call of FindUsersByAccounts.
+func (mr *MockUserResolverMockRecorder) FindUsersByAccounts(ctx, accounts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindUsersByAccounts", reflect.TypeOf((*MockUserResolver)(nil).FindUsersByAccounts), ctx, accounts)
+}

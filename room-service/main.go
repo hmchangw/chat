@@ -17,6 +17,8 @@ import (
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
+	"github.com/hmchangw/chat/pkg/usercache"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type config struct {
@@ -30,6 +32,8 @@ type config struct {
 	MaxRoomSize       int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
 	MaxBatchSize      int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
 	MemberListTimeout time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
+	UserCacheSize     int             `env:"USER_CACHE_SIZE"           envDefault:"10000"`
+	UserCacheTTL      time.Duration   `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	ValkeyAddrs       []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
 	ValkeyPassword    string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
@@ -80,6 +84,15 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
+	var baseUserStore userstore.UserStore = userstore.NewMongoStore(db.Collection("users"))
+	var userResolver UserResolver = baseUserStore
+	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
+		userResolver = usercache.New(baseUserStore, cfg.UserCacheSize, cfg.UserCacheTTL)
+		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
+	} else {
+		slog.Info("user-cache disabled")
+	}
+
 	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
 		Addrs:       cfg.ValkeyAddrs,
 		Password:    cfg.ValkeyPassword,
@@ -119,7 +132,7 @@ func main() {
 	cassReader := NewCassMessageReader(cassSession)
 
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
-	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout,
+	handler := NewHandler(store, keyStore, memberListClient, cassReader, userResolver, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout,
 		func(ctx context.Context, subj string, data []byte) error {
 			if _, err := js.PublishMsg(ctx, natsutil.NewMsg(ctx, subj, data)); err != nil {
 				return fmt.Errorf("publish to %q: %w", subj, err)
