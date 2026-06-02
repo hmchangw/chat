@@ -10,10 +10,14 @@ import (
 )
 
 func defaultSteps(workload string) string {
-	if workload == "history" {
+	switch workload {
+	case "history":
 		return "200,500,1000,2000,5000"
+	case "read-receipt":
+		return "200,500,1000,2000,5000"
+	default:
+		return "500,1000,2000,5000,10000"
 	}
-	return "500,1000,2000,5000,10000"
 }
 
 func buildThresholds(p95, p99 time.Duration, errRate float64, pendingGrowth uint64, rateTol float64) rpsThresholds {
@@ -24,7 +28,7 @@ func buildThresholds(p95, p99 time.Duration, errRate float64, pendingGrowth uint
 // the report. Returns the process exit code.
 func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("max-rps", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|history")
+	workload := fs.String("workload", "messages", "messages|history|read-receipt")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	stepsFlag := fs.String("steps", "", "ascending RPS list, e.g. 500,1k,2k,5k,10k (default depends on workload)")
@@ -122,6 +126,22 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			return 1
 		}
 		w, cleanup, presetID = hw, clean, p.Name
+	case "read-receipt":
+		p, ok := BuiltinHistoryPreset(*preset)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown history preset: %s\n", *preset)
+			return 2
+		}
+		if *requestTimeout <= 0 {
+			fmt.Fprintln(os.Stderr, "--request-timeout must be > 0")
+			return 2
+		}
+		rw, clean, err := newReadReceiptWorkload(ctx, cfg, &p, *seed, *requestTimeout)
+		if err != nil {
+			slog.Error("init read-receipt workload", "error", err)
+			return 1
+		}
+		w, cleanup, presetID = rw, clean, p.Name
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
