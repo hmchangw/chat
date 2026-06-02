@@ -333,86 +333,110 @@ func buildBandedFixtures(p *Preset, r *rand.Rand, users []model.User, siteID str
 			continue
 		}
 
-		// Assign memberships: for each user, pick `spec.perUser` distinct
-		// rooms from this band, weighted by remaining capacity. If the
-		// initially-randomised sizes can't satisfy demand at the tail
-		// (because earlier users consumed the most-capacity rooms), we
-		// expand a deficit room within sizeMax until the user is full.
-		// This guarantees every user gets exactly `perUser` memberships
-		// while keeping room sizes within their band range whenever
-		// feasible.
-		capacity := make([]int, len(bandRooms))
+		// Non-DM bands: configuration-model with a shuffled slot bag.
+		//
+		// Each room contributes bandSizes[i] slots; we pick `spec.perUser`
+		// distinct rooms per user by repeatedly drawing a random slot from
+		// the LIVE region of the bag. Successful pick swap-with-end-shrinks
+		// the live region; full-room (memberCounts == bandSizes) swap-with-
+		// end-shrinks too; picked-by-this-user is a soft skip that does
+		// NOT consume the slot — the slot stays available for later users.
+		// Conservation: every slot is either consumed (room picked, room
+		// full) or untouched (stays live), no burns. Expansion fallback
+		// handles tail infeasibility identically to the legacy algorithm.
+		//
+		// Replaces the legacy O(N × perUser × R) weighted-scan picker that
+		// was quadratic at production scale (Small at N=100k = 8×10^11
+		// inner-loop iterations, ~30+ min of CPU). New cost is amortised
+		// O(N × perUser) with constant retry overhead from picked-by-user
+		// rerolls (probability bounded by perUser / live-bag-rooms).
 		memberCounts := make([]int, len(bandRooms))
-		copy(capacity, bandSizes)
+		totalSlots := 0
+		for _, sz := range bandSizes {
+			totalSlots += sz
+		}
+		slots := make([]int, totalSlots)
+		pos := 0
+		for i, sz := range bandSizes {
+			for k := 0; k < sz; k++ {
+				slots[pos] = i
+				pos++
+			}
+		}
+		r.Shuffle(len(slots), func(a, b int) { slots[a], slots[b] = slots[b], slots[a] })
+		end := len(slots)
+
+		// maxReroll guards against pathological cases where the remaining
+		// live region happens to be dominated by rooms this user has
+		// already picked. Under normal headroom (bands sized so total >
+		// demand by ~25%) reroll rate is well under 10%, so the bound
+		// rarely matters; falling through triggers the expansion path.
+		const maxReroll = 32
+
+		// emit appends a subscription for u and rIdx; helper hoisted so the
+		// pick loop and the expansion fallback share one emission path.
+		// Emit-as-you-pick (rather than collecting into a map for batch
+		// emit) preserves determinism — `range picked` over a Go map
+		// iterates in randomized order and would make two seed=42 runs
+		// produce different Subscriptions slices.
+		emit := func(u *model.User, rIdx int) {
+			roomID := bandRooms[rIdx].ID
+			subs = append(subs, model.Subscription{
+				ID:     fmt.Sprintf("sub-%s-%s", roomID, u.ID),
+				User:   model.SubscriptionUser{ID: u.ID, Account: u.Account},
+				RoomID: roomID, SiteID: siteID,
+				Roles:    []model.Role{model.RoleMember},
+				JoinedAt: now,
+			})
+		}
 
 		for ui := range users {
 			u := &users[ui]
-			// Distinct room indices already picked for this user.
 			picked := make(map[int]bool, spec.perUser)
-			for k := 0; k < spec.perUser; k++ {
-				// Build a weighted pool: indices with capacity>0 not yet picked.
-				totalCap := 0
-				for i, c := range capacity {
-					if c > 0 && !picked[i] {
-						totalCap += c
-					}
+			reroll := 0
+
+			for len(picked) < spec.perUser && end > 0 && reroll < maxReroll {
+				idx := r.Intn(end)
+				rIdx := slots[idx]
+				if memberCounts[rIdx] >= bandSizes[rIdx] {
+					// Room reached its band-size cap. Slot is dead;
+					// swap-shrink so we don't draw it again.
+					slots[idx] = slots[end-1]
+					end--
+					continue
 				}
-				if totalCap == 0 {
-					// Every room is either full or already picked for this user.
-					// Expand a not-yet-picked room within sizeMax to make room.
-					grew := false
-					// Walk indices deterministically so seed reproducibility holds.
-					base := r.Intn(len(bandRooms))
-					for off := 0; off < len(bandRooms); off++ {
-						i := (base + off) % len(bandRooms)
-						if !picked[i] && bandSizes[i] < spec.sizeMax {
-							bandSizes[i]++
-							capacity[i]++
-							grew = true
-							break
-						}
-					}
-					if !grew {
-						// Hard infeasibility (e.g. nRooms<perUser): skip the rest
-						// of this user's quota. Should not happen with the floors
-						// applied above.
-						break
-					}
-					totalCap = 0
-					for i, c := range capacity {
-						if c > 0 && !picked[i] {
-							totalCap += c
-						}
-					}
+				if picked[rIdx] {
+					reroll++
+					continue
 				}
-				// Weighted pick.
-				draw := r.Intn(totalCap)
-				acc := 0
-				chosen := -1
-				for i, c := range capacity {
-					if c == 0 || picked[i] {
-						continue
-					}
-					acc += c
-					if draw < acc {
-						chosen = i
+				reroll = 0
+				picked[rIdx] = true
+				memberCounts[rIdx]++
+				slots[idx] = slots[end-1]
+				end--
+				emit(u, rIdx)
+			}
+
+			// Expansion fallback: grow a not-yet-picked room within sizeMax
+			// for any quota still unfilled. Same intent as the legacy
+			// algorithm's grow branch.
+			for len(picked) < spec.perUser {
+				grew := false
+				base := r.Intn(len(bandRooms))
+				for off := 0; off < len(bandRooms); off++ {
+					i := (base + off) % len(bandRooms)
+					if !picked[i] && bandSizes[i] < spec.sizeMax {
+						bandSizes[i]++
+						picked[i] = true
+						memberCounts[i]++
+						grew = true
+						emit(u, i)
 						break
 					}
 				}
-				if chosen < 0 {
-					break
+				if !grew {
+					break // hard infeasibility; floors above should prevent
 				}
-				picked[chosen] = true
-				capacity[chosen]--
-				memberCounts[chosen]++
-				roomID := bandRooms[chosen].ID
-				subs = append(subs, model.Subscription{
-					ID:     fmt.Sprintf("sub-%s-%s", roomID, u.ID),
-					User:   model.SubscriptionUser{ID: u.ID, Account: u.Account},
-					RoomID: roomID, SiteID: siteID,
-					Roles:    []model.Role{model.RoleMember},
-					JoinedAt: now,
-				})
 			}
 		}
 
