@@ -172,7 +172,7 @@ func TestEngine_NoBackup_FallbackRanking_Low(t *testing.T) {
 	eng := newBottleneckEngine(q, identityResolver{}, 0.10, 5*time.Second)
 	v := eng.Diagnose(context.Background(), trip, passResult(passT), messagesStageGraph(), slo)
 	require.True(t, v.Determined)
-	assert.Equal(t, "cassandra", v.Component)
+	assert.Equal(t, "Cassandra", v.Component)
 	assert.Equal(t, "low", v.Confidence)
 }
 

@@ -19,7 +19,7 @@ func messagesStageGraph() []stage {
 	return []stage{
 		{Name: "message-gatekeeper", Container: "message-gatekeeper", LatencySeries: "E1"},
 		{Name: "message-worker", Container: "message-worker", Durable: "message-worker", DependsOn: []string{"cassandra"}},
-		{Name: "broadcast-worker", Container: "broadcast-worker", Durable: "broadcast-worker", LatencySeries: "E2", DependsOn: []string{"mongo", "valkey"}},
+		{Name: "broadcast-worker", Container: "broadcast-worker", Durable: "broadcast-worker", LatencySeries: "E2", DependsOn: []string{"mongodb", "valkey"}},
 	}
 }
 
@@ -29,7 +29,7 @@ func dependencyDisplayName(dep string) string {
 	switch dep {
 	case "cassandra":
 		return "Cassandra"
-	case "mongo":
+	case "mongodb":
 		return "MongoDB"
 	default:
 		return dep

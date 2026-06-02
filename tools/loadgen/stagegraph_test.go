@@ -24,11 +24,11 @@ func TestMessagesStageGraph_Shape(t *testing.T) {
 	assert.Equal(t, "broadcast-worker", g[2].Container)
 	assert.Equal(t, "broadcast-worker", g[2].Durable)
 	assert.Equal(t, "E2", g[2].LatencySeries)
-	assert.Equal(t, []string{"mongo", "valkey"}, g[2].DependsOn)
+	assert.Equal(t, []string{"mongodb", "valkey"}, g[2].DependsOn)
 }
 
 func TestDependencyDisplayName(t *testing.T) {
 	assert.Equal(t, "Cassandra", dependencyDisplayName("cassandra"))
-	assert.Equal(t, "MongoDB", dependencyDisplayName("mongo"))
+	assert.Equal(t, "MongoDB", dependencyDisplayName("mongodb"))
 	assert.Equal(t, "valkey", dependencyDisplayName("valkey")) // unknown -> as-is
 }

@@ -66,8 +66,12 @@ func (e *bottleneckEngine) saturated(ctx context.Context, service string, pass, 
 	}
 	passCores, _, okP := e.cpuCores(ctx, service, pass.HoldStart, pass.HoldEnd)
 	if !okP || passCores <= 0 {
-		// No usable baseline, but trip-window usage is already above the
-		// saturation floor -> treat as saturated.
+		// No usable baseline (pass-window query failed or read zero), but
+		// trip-window usage is already above the saturation floor -> treat as
+		// saturated. Caveat: without a baseline we can't confirm a plateau, so a
+		// busy-but-still-scaling container could be over-blamed here. Rare: it
+		// needs the pass query to fail while the trip query succeeds against the
+		// same Prometheus.
 		return true, true
 	}
 	rise := (tripCores - passCores) / passCores
@@ -211,7 +215,7 @@ func (e *bottleneckEngine) fallbackRanking(ctx context.Context, pass, trip *rpsS
 		return bottleneckVerdict{}, false
 	}
 	return bottleneckVerdict{
-		Component: best, Resource: "CPU", Confidence: "low", Determined: true,
+		Component: dependencyDisplayName(best), Resource: "CPU", Confidence: "low", Determined: true,
 		Reasons: []string{fmt.Sprintf("resource-ranking fallback: %s had the clearest CPU plateau (%.1f cores)", best, bestCores)},
 	}, true
 }
