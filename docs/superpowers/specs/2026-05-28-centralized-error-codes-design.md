@@ -447,3 +447,7 @@ The `errRoomKeyAbsent` sentinel in `room-service/helper.go` (introduced by the r
 ### A7 — `history-service` infra errors intentionally use `fmt.Errorf` (clarification)
 
 Several `fmt.Errorf("...: %w", err)` calls in `history-service/internal/service/messages.go` are correct by design. They wrap Cassandra read/write errors (infra tier) and collapse to `internal error` at the handler boundary via `Classify`. Client-visible logic (access window, not-found, forbidden) correctly uses `errcode.*` constructors. This two-tier pattern is the intended usage per CLAUDE.md §3 and `docs/error-handling.md` §2.
+
+### A8 — Worker-side logging boundary (follow-on)
+
+The errcode boundary (`Classify` → one structured log line + leak-safe envelope) covers only client-facing paths (NATS req/rep, Gin HTTP). JetStream worker paths log errors in several ad-hoc shapes. A follow-on `errcode.LogJobError` helper to unify them was designed but **considered and deferred (YAGNI)**: measurement showed the candidate workers are ~100% raw `fmt.Errorf` with no `WithCause`, so the unification would standardize things that don't actually differ. Only the one concrete gap (`message-worker` missing `request_id`) was fixed directly. See `docs/superpowers/specs/2026-06-02-unified-worker-error-logging-design.md` for the design and the deferral rationale; revisit if workers adopt typed errcode errors.

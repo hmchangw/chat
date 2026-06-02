@@ -42,7 +42,7 @@ func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadSt
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
-		slog.Error("process message failed", "error", err)
+		slog.Error("process message failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
 		if nakErr := msg.Nak(); nakErr != nil {
 			slog.Error("failed to nack message", "error", nakErr)
 		}

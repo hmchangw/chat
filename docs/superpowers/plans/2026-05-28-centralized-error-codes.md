@@ -2435,3 +2435,7 @@ When `errcode.Parse` returns an envelope with a non-canonical `Code` or empty `M
 The `errRoomKeyAbsent` sentinel in `room-service/helper.go` (introduced by main's room-key-fetch RPC feature) was converted from `errors.New(...)` to `errcode.NotFound("room key not available")`. The `handleGetRoomKey` inline `fmt.Errorf("invalid request: %w", err)` was also converted to `errcode.BadRequest("invalid request")`. `natsGetRoomKey` handler updated to use `errnats.Reply` + the new two-return `wrappedCtx`.
 
 Note: room-worker's own `errRoomKeyAbsent = errors.New(...)` is intentionally a raw sentinel — it is wrapped via `errcode.WithCause(errRoomKeyAbsent)` so both `errors.Is` (alert path) and `errors.As` (errcode classification) resolve in the same chain.
+
+### PA-7 — Worker-side logging boundary (designed, deferred)
+
+This plan standardized the **client-facing** error boundary and left JetStream worker error logging out of scope. A follow-on `errcode.LogJobError` helper to unify worker logs was designed but **considered and deferred (YAGNI)** after measuring that the candidate workers are ~100% raw `fmt.Errorf` with no `WithCause` — so the unification would standardize things that don't actually differ. The one concrete gap (`message-worker` missing `request_id`) was fixed directly. Rationale + retained design: `docs/superpowers/specs/2026-06-02-unified-worker-error-logging-design.md`.
