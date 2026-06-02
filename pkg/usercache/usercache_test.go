@@ -75,7 +75,7 @@ func (f *fakeUserStore) lastCall() []string {
 
 var _ userstore.UserStore = (*CachedUserStore)(nil)
 
-func TestNewCachedUserStore_ConstructsEmpty(t *testing.T) {
+func TestNew_ConstructsEmpty(t *testing.T) {
 	inner := newFakeUserStore()
 	c := New(inner, 10, time.Minute)
 	require.NotNil(t, c)

@@ -20,6 +20,7 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/usercache"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
@@ -81,7 +82,7 @@ func main() {
 	slog.Info("room-meta-cache enabled", "size", cfg.RoomMetaCacheSize, "ttl", cfg.RoomMetaCacheTTL)
 	us := userstore.NewMongoStore(db.Collection("users"))
 	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
-		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
+		us = usercache.New(us, cfg.UserCacheSize, cfg.UserCacheTTL)
 		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
 	} else {
 		slog.Info("user-cache disabled")
