@@ -3,6 +3,8 @@ package natsrouter
 import (
 	"fmt"
 	"strings"
+
+	"github.com/hmchangw/chat/pkg/errcode"
 )
 
 // Params holds named tokens extracted from a NATS subject at request time.
@@ -38,7 +40,7 @@ func (p Params) MustGet(key string) string {
 func (p Params) Require(key string) (string, error) {
 	v, ok := p.values[key]
 	if !ok || v == "" {
-		return "", ErrBadRequest("missing required param: " + key)
+		return "", errcode.BadRequest("missing required param: " + key)
 	}
 	return v, nil
 }

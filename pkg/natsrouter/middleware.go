@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
@@ -16,7 +18,10 @@ type Middleware = HandlerFunc
 // requestIDKey is the context key used to store the request ID.
 const requestIDKey = "requestID"
 
-// RequestID returns middleware that extracts X-Request-ID (or mints via idgen) and stores it on both the natsrouter keys map and the underlying ctx.
+// RequestID extracts X-Request-ID (or mints via idgen), stores it on the
+// natsrouter keys map AND the underlying ctx, AND enriches the ctx logger so
+// every Classify line on this request automatically carries request_id —
+// handlers don't need to re-pass it.
 func RequestID() HandlerFunc {
 	return func(c *Context) {
 		reqID := ""
@@ -28,6 +33,7 @@ func RequestID() HandlerFunc {
 		}
 		c.Set(requestIDKey, reqID)
 		c.SetContext(natsutil.WithRequestID(c.ctx, reqID))
+		c.WithLogValues("request_id", reqID)
 		c.Next()
 	}
 }
@@ -39,7 +45,7 @@ func requestAttrs(c *Context) []any {
 		attrs = append(attrs, "subject", c.Msg.Subject)
 	}
 	if id, ok := c.Get(requestIDKey); ok {
-		attrs = append(attrs, "requestID", id)
+		attrs = append(attrs, "request_id", id)
 	}
 	return attrs
 }
@@ -51,7 +57,8 @@ func Recovery() HandlerFunc {
 			if r := recover(); r != nil {
 				attrs := append(requestAttrs(c), "panic", r)
 				slog.Error("panic recovered", attrs...)
-				c.ReplyError("internal error")
+				// Already logged above; ReplyQuiet avoids a redundant Classify line.
+				errnats.ReplyQuiet(c.Msg, errcode.Internal("internal error"))
 				c.Abort()
 			}
 		}()
@@ -82,12 +89,13 @@ func Logging() HandlerFunc {
 //
 // Reply mapping — when a context-aware downstream call returns
 // context.DeadlineExceeded and the handler returns
-// `fmt.Errorf("...: %w", err)`, the router's replyErr path falls through
-// to `"internal error"` (no RouteError match). Recommended pattern: in
-// the handler, map the deadline-expired sentinel explicitly, e.g.
+// `fmt.Errorf("...: %w", err)`, the router's replyErr path collapses
+// to `{"code":"internal","error":"internal error"}` (no typed errcode
+// match). Recommended pattern: in the handler, map the deadline-expired
+// sentinel explicitly, e.g.
 //
 //	if errors.Is(err, context.DeadlineExceeded) {
-//	    return nil, natsrouter.ErrUnavailable("request timed out")
+//	    return nil, errcode.Unavailable("request timed out")
 //	}
 //
 // so the caller sees a structured "unavailable" code instead of a
