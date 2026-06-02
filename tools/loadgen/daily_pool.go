@@ -68,6 +68,13 @@ func (p *directPool) Add(u *userState) error {
 		return fmt.Errorf("subscribe user %s: %w", u.ID, err)
 	}
 	du.subs = append(du.subs, userSub)
+	// Flush so SUB commands reach the server before Add returns; otherwise
+	// a publish immediately after Add can be dropped because the broker
+	// hasn't registered interest yet. Same rationale as multiplexPool.Add.
+	if err := nc.Flush(); err != nil {
+		_ = nc.Drain()
+		return fmt.Errorf("flush subs for %s: %w", u.ID, err)
+	}
 	p.mu.Lock()
 	p.users[u.ID] = du
 	p.mu.Unlock()
@@ -178,6 +185,19 @@ func (p *multiplexPool) Add(u *userState) error {
 	for _, roomID := range u.Rooms {
 		p.dispatch[roomID] = append(p.dispatch[roomID], inbox)
 		p.roomRefs[roomID]++
+	}
+
+	// Flush every shared conn so the SUB commands reach the server before
+	// Add returns. Without this, a caller (or test) that publishes
+	// immediately after Add() may see the broadcast dropped because the
+	// server hasn't registered the subscription interest yet. Production
+	// emitters tick on a 1s schedule so they don't hit this race, but
+	// tests and synchronous callers do. Flush per conn is one round-trip;
+	// dominated by the Subscribe overhead already incurred.
+	for _, nc := range p.conns {
+		if err := nc.Flush(); err != nil {
+			return fmt.Errorf("multiplex flush %s: %w", u.ID, err)
+		}
 	}
 	return nil
 }
