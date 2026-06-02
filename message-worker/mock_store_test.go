@@ -72,11 +72,12 @@ func (mr *MockStoreMockRecorder) SaveMessage(ctx, msg, sender, siteID any) *gomo
 }
 
 // SaveThreadMessage mocks base method.
-func (m *MockStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID, threadRoomID string) error {
+func (m *MockStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID, threadRoomID string) (*int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SaveThreadMessage", ctx, msg, sender, siteID, threadRoomID)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(*int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // SaveThreadMessage indicates an expected call of SaveThreadMessage.

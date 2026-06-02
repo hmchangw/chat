@@ -95,8 +95,14 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err := h.markThreadMentions(ctx, &evt.Message, threadRoomID, evt.SiteID); err != nil {
 			return fmt.Errorf("mark thread mentions: %w", err)
 		}
-		if err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID); err != nil {
+		newTcount, err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID)
+		if err != nil {
 			return fmt.Errorf("save thread message: %w", err)
+		}
+		if newTcount != nil {
+			if err := h.publishThreadReplyEvent(ctx, &evt.Message, *newTcount); err != nil {
+				return fmt.Errorf("publish thread reply event: %w", err)
+			}
 		}
 	} else {
 		if err := h.store.SaveMessage(ctx, &evt.Message, sender, evt.SiteID); err != nil {
@@ -404,4 +410,29 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 		return fmt.Errorf("publish thread subscription outbox to %s: %w", ownerSiteID, err)
 	}
 	return nil
+}
+
+// publishThreadReplyEvent publishes a MessageEvent to the MESSAGES_CANONICAL
+// JetStream stream via the thread reply subject so broadcast-worker can do
+// DM-aware routing of the reply-count badge update. The dedup ID is stable
+// across MESSAGES_CANONICAL redeliveries so JetStream stream-level dedup
+// absorbs duplicates within the dedup window.
+func (h *Handler) publishThreadReplyEvent(ctx context.Context, msg *model.Message, newTcount int) error {
+	evt := model.MessageEvent{
+		Event: model.EventThreadReplyAdded,
+		Message: model.Message{
+			ID:                    msg.ID,
+			RoomID:                msg.RoomID,
+			ThreadParentMessageID: msg.ThreadParentMessageID,
+		},
+		SiteID:    h.siteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		NewTCount: &newTcount,
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal thread reply event: %w", err)
+	}
+	dedupID := fmt.Sprintf("thread-reply-added:%s:%s", h.siteID, msg.ID)
+	return h.publish(ctx, subject.MsgCanonicalThreadReply(h.siteID), data, dedupID)
 }

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1239,15 +1238,14 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 	// Plain errgroup.Group (not WithContext) so a NotFound from one goroutine does NOT cancel
 	// the siblings — otherwise context.Canceled in subErr/userSiteErr would outrank tsubErr.
 	var (
-		sub                          *model.Subscription
 		tsub                         *model.ThreadSubscription
 		userSiteID                   string
 		subErr, tsubErr, userSiteErr error
 	)
 	var g errgroup.Group
 	g.Go(func() error {
-		s, err := h.store.GetSubscription(ctx, account, roomID)
-		sub, subErr = s, err
+		_, err := h.store.GetSubscription(ctx, account, roomID)
+		subErr = err
 		return err
 	})
 	g.Go(func() error {
@@ -1276,19 +1274,25 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		return nil, fmt.Errorf("get user siteId: %w", userSiteErr)
 	}
 
-	newThreadUnread := slices.DeleteFunc(slices.Clone(sub.ThreadUnread), func(s string) bool { return s == req.ThreadID })
-	newAlert := sub.Alert && len(newThreadUnread) > 0
 	now := time.Now().UTC()
 
-	wg, wctx := errgroup.WithContext(ctx)
+	// Capture return values from UpdateSubscriptionThreadRead for the outbox event.
+	var newThreadUnread []string
+	var newAlert bool
+
+	// Plain errgroup.Group (not WithContext) so a failure in the first write
+	// does NOT cancel the sibling — both writes must be attempted independently.
+	var wg errgroup.Group
 	wg.Go(func() error {
-		if err := h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, newThreadUnread, newAlert); err != nil {
+		var err error
+		newThreadUnread, newAlert, err = h.store.UpdateSubscriptionThreadRead(ctx, roomID, account, req.ThreadID)
+		if err != nil {
 			return fmt.Errorf("update subscription thread-read: %w", err)
 		}
 		return nil
 	})
 	wg.Go(func() error {
-		if err := h.store.UpdateThreadSubscriptionRead(wctx, tsub.ThreadRoomID, account, now); err != nil {
+		if err := h.store.UpdateThreadSubscriptionRead(ctx, tsub.ThreadRoomID, account, now); err != nil {
 			return fmt.Errorf("update thread subscription read: %w", err)
 		}
 		return nil

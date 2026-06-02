@@ -72,7 +72,16 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	{
+		ensureCtx, ensureCancel := context.WithTimeout(ctx, 10*time.Second)
+		ensureErr := store.EnsureIndexes(ensureCtx)
+		ensureCancel()
+		if ensureErr != nil {
+			slog.Error("ensure indexes failed", "error", ensureErr)
+			os.Exit(1)
+		}
+	}
 	cachedStore, err := newCachedMetaStore(store, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
 	if err != nil {
 		slog.Error("init room meta cache failed", "error", err)

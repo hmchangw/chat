@@ -77,7 +77,7 @@ func TestBroadcastWorker_ChannelRoom_Integration(t *testing.T) {
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
@@ -123,7 +123,7 @@ func TestBroadcastWorker_ChannelRoom_MentionAll_Integration(t *testing.T) {
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
@@ -163,7 +163,7 @@ func TestBroadcastWorker_ChannelRoom_IndividualMention_Integration(t *testing.T)
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 	key := testRoomKey(t)
@@ -214,7 +214,7 @@ func TestBroadcastWorker_DMRoom_Integration(t *testing.T) {
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 	keyStore := &fakeRoomKeyProvider{pair: nil}
@@ -275,7 +275,7 @@ func TestBroadcastWorker_ChannelRoom_EncryptionDisabled_Integration(t *testing.T
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	us := userstore.NewMongoStore(db.Collection("users"))
 	pub := &recordingPublisher{}
 
@@ -326,7 +326,7 @@ func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
 	require.NoError(t, err)
 	seedUsers(t, db)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	cached, err := newCachedMetaStore(store, 10, time.Minute)
 	require.NoError(t, err)
 
@@ -361,6 +361,409 @@ func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
 	assert.WithinDuration(t, msgTime, got.LastMsgAt, time.Millisecond)
 }
 
+func TestBroadcastWorker_ListThreadSubscriptions_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	parentMsgID := "parent-msg-1"
+	siteID := "site-a"
+
+	_, err := db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{
+			ID: "ts1", ParentMessageID: parentMsgID, RoomID: "r1",
+			ThreadRoomID: "tr1", UserAccount: "alice", UserID: "u-alice", SiteID: siteID,
+		},
+		model.ThreadSubscription{
+			ID: "ts2", ParentMessageID: parentMsgID, RoomID: "r1",
+			ThreadRoomID: "tr1", UserAccount: "bob", UserID: "u-bob", SiteID: siteID,
+		},
+		// different parent — must NOT be returned
+		model.ThreadSubscription{
+			ID: "ts3", ParentMessageID: "other-parent", RoomID: "r1",
+			ThreadRoomID: "tr2", UserAccount: "charlie", UserID: "u-charlie", SiteID: siteID,
+		},
+		// different siteID — must NOT be returned
+		model.ThreadSubscription{
+			ID: "ts4", ParentMessageID: parentMsgID, RoomID: "r1",
+			ThreadRoomID: "tr1", UserAccount: "diana", UserID: "u-diana", SiteID: "site-b",
+		},
+	})
+	require.NoError(t, err)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	subs, err := store.ListThreadSubscriptions(ctx, parentMsgID, siteID)
+	require.NoError(t, err)
+	require.Len(t, subs, 2)
+	accounts := []string{subs[0].UserAccount, subs[1].UserAccount}
+	assert.ElementsMatch(t, []string{"alice", "bob"}, accounts)
+}
+
+func TestBroadcastWorker_ThreadSubscriptionsIndex_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	col := db.Collection("thread_subscriptions")
+	cursor, err := col.Indexes().List(ctx)
+	require.NoError(t, err)
+	defer cursor.Close(ctx)
+
+	type indexSpec struct {
+		Key bson.D `bson:"key"`
+	}
+	var indexes []indexSpec
+	require.NoError(t, cursor.All(ctx, &indexes))
+
+	// Look for a compound index on {parentMessageId:1, siteId:1}.
+	found := false
+	for _, idx := range indexes {
+		if len(idx.Key) == 2 &&
+			idx.Key[0].Key == "parentMessageId" && idx.Key[0].Value == int32(1) &&
+			idx.Key[1].Key == "siteId" && idx.Key[1].Value == int32(1) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected compound index on {parentMessageId:1, siteId:1} in thread_subscriptions")
+}
+
+func TestBroadcastWorker_ThreadCreated_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	const parentMsgID = "tc-parent-1"
+	const siteID = "site-a"
+	const sender = "alice"
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-tc", Name: "general", Type: model.RoomTypeChannel, UserCount: 3, SiteID: siteID,
+	})
+	require.NoError(t, err)
+
+	_, err = db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{
+			ID: "tc-ts1", ParentMessageID: parentMsgID, RoomID: "r-tc",
+			ThreadRoomID: "tr-tc1", UserAccount: "bob", UserID: "u-bob", SiteID: siteID,
+		},
+		model.ThreadSubscription{
+			ID: "tc-ts2", ParentMessageID: parentMsgID, RoomID: "r-tc",
+			ThreadRoomID: "tr-tc1", UserAccount: "carol", UserID: "u-carol", SiteID: siteID,
+		},
+	})
+	require.NoError(t, err)
+
+	seedUsers(t, db)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, us, pub, &fakeRoomKeyProvider{}, false)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	evt := model.MessageEvent{
+		Event:  model.EventCreated,
+		SiteID: siteID,
+		Message: model.Message{
+			ID:                    "tc-reply-1",
+			RoomID:                "r-tc",
+			UserID:                "u-alice",
+			UserAccount:           sender,
+			Content:               "first thread reply",
+			CreatedAt:             now,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, handler.HandleMessage(ctx, data))
+
+	records := pub.getRecords()
+	require.Len(t, records, 2, "two subscribers should each receive the event")
+
+	var subjects []string
+	for _, rec := range records {
+		subjects = append(subjects, rec.subject)
+	}
+	assert.ElementsMatch(t, []string{
+		subject.UserRoomEvent("bob"),
+		subject.UserRoomEvent("carol"),
+	}, subjects)
+
+	// Each payload should be a valid RoomEvent carrying the reply message.
+	for _, rec := range records {
+		var roomEvt model.RoomEvent
+		require.NoError(t, json.Unmarshal(rec.data, &roomEvt))
+		assert.Equal(t, model.RoomEventNewMessage, roomEvt.Type)
+		assert.Equal(t, "r-tc", roomEvt.RoomID)
+		assert.Equal(t, siteID, roomEvt.SiteID)
+		require.NotNil(t, roomEvt.Message)
+		assert.Equal(t, "tc-reply-1", roomEvt.Message.ID)
+		assert.Equal(t, parentMsgID, roomEvt.Message.ThreadParentMessageID)
+	}
+}
+
+func TestBroadcastWorker_ThreadCreated_SenderExcluded_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	const parentMsgID = "tce-parent-1"
+	const siteID = "site-a"
+	const sender = "alice"
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-tce", Name: "dev", Type: model.RoomTypeChannel, UserCount: 2, SiteID: siteID,
+	})
+	require.NoError(t, err)
+
+	// alice is both sender and a subscriber — must NOT appear in fan-out.
+	_, err = db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{
+			ID: "tce-ts1", ParentMessageID: parentMsgID, RoomID: "r-tce",
+			ThreadRoomID: "tr-tce1", UserAccount: sender, UserID: "u-alice", SiteID: siteID,
+		},
+		model.ThreadSubscription{
+			ID: "tce-ts2", ParentMessageID: parentMsgID, RoomID: "r-tce",
+			ThreadRoomID: "tr-tce1", UserAccount: "bob", UserID: "u-bob", SiteID: siteID,
+		},
+	})
+	require.NoError(t, err)
+
+	seedUsers(t, db)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, us, pub, &fakeRoomKeyProvider{}, false)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	evt := model.MessageEvent{
+		Event:  model.EventCreated,
+		SiteID: siteID,
+		Message: model.Message{
+			ID:                    "tce-reply-1",
+			RoomID:                "r-tce",
+			UserID:                "u-alice",
+			UserAccount:           sender,
+			Content:               "alice replies to own parent",
+			CreatedAt:             now,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, handler.HandleMessage(ctx, data))
+
+	records := pub.getRecords()
+	require.Len(t, records, 1, "sender must be excluded from thread fan-out")
+	assert.Equal(t, subject.UserRoomEvent("bob"), records[0].subject)
+}
+
+func TestBroadcastWorker_ThreadUpdated_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	const parentMsgID = "tu-parent-1"
+	const siteID = "site-a"
+	const sender = "alice"
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-tu", Name: "general", Type: model.RoomTypeChannel, UserCount: 2, SiteID: siteID,
+	})
+	require.NoError(t, err)
+
+	_, err = db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{
+			ID: "tu-ts1", ParentMessageID: parentMsgID, RoomID: "r-tu",
+			ThreadRoomID: "tr-tu1", UserAccount: "bob", UserID: "u-bob", SiteID: siteID,
+		},
+	})
+	require.NoError(t, err)
+
+	seedUsers(t, db)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, us, pub, &fakeRoomKeyProvider{}, false)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	editedAt := now.Add(time.Minute)
+	evt := model.MessageEvent{
+		Event:  model.EventUpdated,
+		SiteID: siteID,
+		Message: model.Message{
+			ID:                    "tu-reply-1",
+			RoomID:                "r-tu",
+			UserID:                "u-alice",
+			UserAccount:           sender,
+			Content:               "edited thread reply",
+			CreatedAt:             now,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, handler.HandleMessage(ctx, data))
+
+	records := pub.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, subject.UserRoomEvent("bob"), records[0].subject)
+
+	var editEvt model.EditRoomEvent
+	require.NoError(t, json.Unmarshal(records[0].data, &editEvt))
+	assert.Equal(t, model.RoomEventMessageEdited, editEvt.Type)
+	assert.Equal(t, "r-tu", editEvt.RoomID)
+	assert.Equal(t, siteID, editEvt.SiteID)
+	assert.Equal(t, "tu-reply-1", editEvt.MessageID)
+	assert.Equal(t, "edited thread reply", editEvt.NewContent)
+}
+
+func TestBroadcastWorker_ThreadDeleted_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	const parentMsgID = "td-parent-1"
+	const siteID = "site-a"
+	const sender = "alice"
+
+	// Seed the room — handleThreadDeleted calls GetRoom to use room.SiteID
+	// (authoritative) rather than evt.SiteID for the DeleteRoomEvent.
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-td", Type: model.RoomTypeChannel, SiteID: siteID,
+	})
+	require.NoError(t, err)
+
+	_, err = db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{
+			ID: "td-ts1", ParentMessageID: parentMsgID, RoomID: "r-td",
+			ThreadRoomID: "tr-td1", UserAccount: "bob", UserID: "u-bob", SiteID: siteID,
+		},
+		model.ThreadSubscription{
+			ID: "td-ts2", ParentMessageID: parentMsgID, RoomID: "r-td",
+			ThreadRoomID: "tr-td1", UserAccount: "carol", UserID: "u-carol", SiteID: siteID,
+		},
+	})
+	require.NoError(t, err)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, us, pub, &fakeRoomKeyProvider{}, false)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	deletedAt := now.Add(time.Minute)
+	evtTimestamp := now.UnixMilli()
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    siteID,
+		Timestamp: evtTimestamp,
+		Message: model.Message{
+			ID:                    "td-reply-1",
+			RoomID:                "r-td",
+			UserID:                "u-alice",
+			UserAccount:           sender,
+			Content:               "reply to be deleted",
+			CreatedAt:             now,
+			UpdatedAt:             &deletedAt,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, handler.HandleMessage(ctx, data))
+
+	records := pub.getRecords()
+	require.Len(t, records, 2, "two subscribers should receive the delete event")
+
+	var subjects []string
+	for _, rec := range records {
+		subjects = append(subjects, rec.subject)
+	}
+	assert.ElementsMatch(t, []string{
+		subject.UserRoomEvent("bob"),
+		subject.UserRoomEvent("carol"),
+	}, subjects)
+
+	for _, rec := range records {
+		var delEvt model.DeleteRoomEvent
+		require.NoError(t, json.Unmarshal(rec.data, &delEvt))
+		assert.Equal(t, model.RoomEventMessageDeleted, delEvt.Type)
+		assert.Equal(t, "r-td", delEvt.RoomID)
+		assert.Equal(t, siteID, delEvt.SiteID)
+		assert.Equal(t, "td-reply-1", delEvt.MessageID)
+		assert.Equal(t, sender, delEvt.DeletedBy)
+		assert.True(t, delEvt.DeletedAt.Equal(deletedAt))
+		assert.Equal(t, evtTimestamp, delEvt.Timestamp, "Timestamp must propagate from evt.Timestamp, not time.Now()")
+	}
+}
+
+// TestBroadcastWorker_ThreadDeleted_DMRoom_Integration verifies that a thread
+// reply deleted in a DM room fans the delete event out to ALL members, even
+// when no one subscribed to the thread — DM thread replies are visible to
+// every member, so the delete must reach them regardless of thread
+// subscription state.
+func TestBroadcastWorker_ThreadDeleted_DMRoom_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	const parentMsgID = "tddm-parent-1"
+	const siteID = "site-a"
+	const sender = "alice"
+
+	// DM room with two members; deliberately NO thread_subscriptions seeded.
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r-tddm", Type: model.RoomTypeDM, SiteID: siteID,
+		Accounts: []string{"alice", "bob"},
+	})
+	require.NoError(t, err)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	us := userstore.NewMongoStore(db.Collection("users"))
+	pub := &recordingPublisher{}
+	handler := NewHandler(store, us, pub, &fakeRoomKeyProvider{}, false)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	deletedAt := now.Add(time.Minute)
+	evt := model.MessageEvent{
+		Event:  model.EventDeleted,
+		SiteID: siteID,
+		Message: model.Message{
+			ID:                    "tddm-reply-1",
+			RoomID:                "r-tddm",
+			UserID:                "u-alice",
+			UserAccount:           sender,
+			Content:               "dm thread reply to be deleted",
+			CreatedAt:             now,
+			UpdatedAt:             &deletedAt,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, handler.HandleMessage(ctx, data))
+
+	records := pub.getRecords()
+	require.Len(t, records, 2, "both DM members receive the delete despite no thread subscriptions")
+
+	var subjects []string
+	for _, rec := range records {
+		subjects = append(subjects, rec.subject)
+		var delEvt model.DeleteRoomEvent
+		require.NoError(t, json.Unmarshal(rec.data, &delEvt))
+		assert.Equal(t, model.RoomEventMessageDeleted, delEvt.Type)
+		assert.Equal(t, "r-tddm", delEvt.RoomID)
+		assert.Equal(t, "tddm-reply-1", delEvt.MessageID)
+	}
+	assert.ElementsMatch(t, []string{
+		subject.UserRoomEvent("alice"),
+		subject.UserRoomEvent("bob"),
+	}, subjects)
+}
+
 func TestBroadcastWorker_BulkUpdateRoomLastMessage_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -371,7 +774,7 @@ func TestBroadcastWorker_BulkUpdateRoomLastMessage_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 
 	t1 := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	t2 := t1.Add(time.Second)
@@ -400,7 +803,7 @@ func TestBroadcastWorker_BulkUpdateRoomLastMessage_Integration(t *testing.T) {
 
 func TestBroadcastWorker_BulkUpdateRoomLastMessage_EmptyIsNoOp_Integration(t *testing.T) {
 	db := setupMongo(t)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
 	require.NoError(t, store.BulkUpdateRoomLastMessage(context.Background(), nil))
 	require.NoError(t, store.BulkUpdateRoomLastMessage(context.Background(), map[string]roomLastMsgUpdate{}))
 }

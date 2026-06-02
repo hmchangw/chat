@@ -99,7 +99,7 @@ func TestCasIncrement(t *testing.T) {
 				return fn(newVal, expected)
 			}
 
-			err := casIncrement(tt.maxRetries, tt.initial, update)
+			_, err := casIncrement(tt.maxRetries, tt.initial, update)
 
 			assert.Equal(t, tt.wantCalls, idx, "number of update calls")
 			if tt.wantErr {

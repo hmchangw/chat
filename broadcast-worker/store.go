@@ -17,6 +17,7 @@ type Store interface {
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error)
 	ListSubscriptions(ctx context.Context, roomID string) ([]model.Subscription, error)
+	ListThreadSubscriptions(ctx context.Context, parentMessageID, siteID string) ([]model.ThreadSubscription, error)
 	UpdateRoomLastMessage(ctx context.Context, roomID, msgID string, msgAt time.Time, mentionAll bool) error
 	SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error
 }

@@ -33,6 +33,16 @@ func NewHandler(members MemberLookup, pub Publisher) *Handler {
 }
 
 // HandleMessage processes a single JetStream message payload.
+//
+// NOT COVERED — thread reply notifications (tracked in docs/thread-reply-notifications.md):
+//  1. This handler sends "new_message" notifications for ALL event types (EventCreated,
+//     EventUpdated, EventDeleted). It should filter to EventCreated only.
+//  2. Thread replies (ThreadParentMessageID != "" && TShow == false) are invisible in the
+//     main room — they should notify thread subscribers only, not all room members.
+//     Requires a ThreadSubscriberLookup backed by the thread_subscriptions collection.
+//  3. @-mentioned non-subscribers in thread replies should also be notified. The resolved
+//     Mentions are available on the EventThreadReplyAdded event (not EventCreated), so
+//     this requires handling EventThreadReplyAdded in addition to EventCreated.
 func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {

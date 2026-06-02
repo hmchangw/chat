@@ -13,13 +13,26 @@ import (
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
-type mongoStore struct {
-	roomCol *mongo.Collection
-	subCol  *mongo.Collection
+// EnsureIndexes creates indexes that back the store's read paths.
+// Must be called once at startup; index creation is idempotent when the key
+// spec matches.
+func (m *mongoStore) EnsureIndexes(ctx context.Context) error {
+	if _, err := m.threadSubCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "siteId", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,siteId) index: %w", err)
+	}
+	return nil
 }
 
-func NewMongoStore(roomCol, subCol *mongo.Collection) *mongoStore {
-	return &mongoStore{roomCol: roomCol, subCol: subCol}
+type mongoStore struct {
+	roomCol      *mongo.Collection
+	subCol       *mongo.Collection
+	threadSubCol *mongo.Collection
+}
+
+func NewMongoStore(roomCol, subCol, threadSubCol *mongo.Collection) *mongoStore {
+	return &mongoStore{roomCol: roomCol, subCol: subCol, threadSubCol: threadSubCol}
 }
 
 func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -110,4 +123,18 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 		return fmt.Errorf("set subscription mentions for room %s: %w", roomID, err)
 	}
 	return nil
+}
+
+func (m *mongoStore) ListThreadSubscriptions(ctx context.Context, parentMessageID, siteID string) ([]model.ThreadSubscription, error) {
+	filter := bson.M{"parentMessageId": parentMessageID, "siteId": siteID}
+	cursor, err := m.threadSubCol.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("query thread subscriptions for parent %s: %w", parentMessageID, err)
+	}
+	defer cursor.Close(ctx)
+	var subs []model.ThreadSubscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, fmt.Errorf("decode thread subscriptions: %w", err)
+	}
+	return subs, nil
 }

@@ -246,7 +246,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	}
 
 	const threadRoomID = "tr-test-1"
-	err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
+	_, err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
 	require.NoError(t, err)
 
 	t.Run("thread_messages_by_thread mentions persisted", func(t *testing.T) {
@@ -880,7 +880,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		ThreadParentMessageID:        "tcount-parent",
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1"))
+	_, err := store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1")
+	require.NoError(t, err)
 
 	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
 		var tcount int
@@ -913,7 +914,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		ThreadParentMessageID:        "tcount-parent",
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1"))
+	_, err2 := store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1")
+	require.NoError(t, err2)
 
 	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
 		var tcount int
@@ -945,7 +947,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 			ThreadParentMessageID: "tcount-parent",
 			// ThreadParentMessageCreatedAt intentionally nil
 		}
-		err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
+		_, err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
 		assert.NoError(t, err)
 
 		// tcount must stay at 2 — nil timestamp skips the increment
@@ -956,6 +958,65 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, tcount)
+	})
+}
+
+func TestCassandraStore_SaveThreadMessage_IdempotentOnRedelivery(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	parentBucket := msgbucket.New(24 * time.Hour).Of(parentCreatedAt)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-idem-parent", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "idem-parent",
+		RoomID:    "idem-room",
+		UserID:    "u-idem-parent",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent message",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-idem-replier", Account: "bob", EngName: "Bob"}
+	replyMsg := &model.Message{
+		ID:                           "idem-reply-1",
+		RoomID:                       "idem-room",
+		UserID:                       "u-idem-replier",
+		Content:                      "reply message",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "idem-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+
+	// First delivery.
+	_, err := store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-idem-1")
+	require.NoError(t, err)
+
+	// JetStream redelivery — same message ID, must not increment tcount again.
+	_, err = store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-idem-1")
+	require.NoError(t, err)
+
+	t.Run("tcount stays at 1 in messages_by_id after redelivery", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"idem-parent", parentCreatedAt,
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
+	})
+
+	t.Run("tcount stays at 1 in messages_by_room after redelivery", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"idem-room", parentBucket, parentCreatedAt, "idem-parent",
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
 	})
 }
 
@@ -1116,7 +1177,8 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 		ThreadParentMessageID:        parentID,
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, reply, sender, "site-A", "thread-room-1"))
+	_, errSave := store.SaveThreadMessage(ctx, reply, sender, "site-A", "thread-room-1")
+	require.NoError(t, errSave)
 
 	// 1. The reply must land in the partition keyed by thread_room_id.
 	var gotRoomID string
@@ -1134,6 +1196,72 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 		reply.RoomID, parentBucket, parentCreatedAt, parentID,
 	).Scan(&tcount))
 	assert.Equal(t, 1, tcount)
+}
+
+func TestCassandraStore_SaveThreadMessage_ReturnsTcount(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-parent-ret", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "ret-parent",
+		RoomID:    "ret-room",
+		UserID:    "u-parent-ret",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent for return-value test",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-replier-ret", Account: "bob", EngName: "Bob"}
+
+	// First reply: returned tcount must be non-nil and equal 1.
+	reply1 := &model.Message{
+		ID:                           "ret-reply-1",
+		RoomID:                       "ret-room",
+		UserID:                       "u-replier-ret",
+		Content:                      "first reply",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "ret-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	tcount1, err := store.SaveThreadMessage(ctx, reply1, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	require.NotNil(t, tcount1, "SaveThreadMessage must return non-nil tcount for a reply with ThreadParentMessageCreatedAt set")
+	assert.Equal(t, 1, *tcount1, "first reply must produce tcount == 1")
+
+	// Second reply: returned tcount must be non-nil and equal 2.
+	reply2CreatedAt := replyCreatedAt.Add(5 * time.Minute)
+	reply2 := &model.Message{
+		ID:                           "ret-reply-2",
+		RoomID:                       "ret-room",
+		UserID:                       "u-replier-ret",
+		Content:                      "second reply",
+		CreatedAt:                    reply2CreatedAt,
+		ThreadParentMessageID:        "ret-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	tcount2, err := store.SaveThreadMessage(ctx, reply2, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	require.NotNil(t, tcount2, "SaveThreadMessage must return non-nil tcount after second reply")
+	assert.Equal(t, 2, *tcount2, "second reply must produce tcount == 2")
+
+	// Reply with nil ThreadParentMessageCreatedAt: returned tcount must be nil.
+	reply3 := &model.Message{
+		ID:                    "ret-reply-3",
+		RoomID:                "ret-room",
+		UserID:                "u-replier-ret",
+		Content:               "reply without parent timestamp",
+		CreatedAt:             reply2CreatedAt.Add(5 * time.Minute),
+		ThreadParentMessageID: "ret-parent",
+		// ThreadParentMessageCreatedAt intentionally nil
+	}
+	tcount3, err := store.SaveThreadMessage(ctx, reply3, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	assert.Nil(t, tcount3, "SaveThreadMessage must return nil tcount when ThreadParentMessageCreatedAt is nil")
 }
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
@@ -1165,7 +1293,8 @@ func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	}
 
 	const threadRoomID = "tr-quote-1"
-	require.NoError(t, store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID))
+	_, errThread := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
+	require.NoError(t, errThread)
 
 	t.Run("thread_messages_by_thread round-trips QuotedParentMessage", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage

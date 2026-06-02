@@ -989,27 +989,53 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
-func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
+// UpdateSubscriptionThreadRead atomically removes threadID from the subscription's
+// threadUnread array and recalculates alert using a MongoDB aggregation pipeline.
+// Using $pull (via $filter) instead of a full-array $set prevents lost-update races
+// when concurrent thread-read requests arrive for the same user and room.
+// Empty threadUnread is $unset (field removed) to preserve the omitempty contract.
+func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) ([]string, bool, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
-	var update bson.M
-	if len(threadUnread) == 0 {
-		update = bson.M{
-			"$set":   bson.M{"alert": alert},
-			"$unset": bson.M{"threadUnread": ""},
-		}
-	} else {
-		update = bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}
+
+	pipeline := mongo.Pipeline{
+		// Stage 1: atomically remove threadID from the array.
+		{{Key: "$set", Value: bson.M{"threadUnread": bson.M{"$filter": bson.M{
+			"input": bson.M{"$ifNull": bson.A{"$threadUnread", bson.A{}}},
+			"cond":  bson.M{"$ne": bson.A{"$$this", threadID}},
+		}}}}},
+		// Stage 2: alert stays true only while unread threads remain.
+		{{Key: "$set", Value: bson.M{"alert": bson.M{"$and": bson.A{
+			"$alert",
+			bson.M{"$gt": bson.A{
+				bson.M{"$size": bson.M{"$ifNull": bson.A{"$threadUnread", bson.A{}}}},
+				0,
+			}},
+		}}}}},
+		// Stage 3: $unset threadUnread when empty (preserves omitempty JSON/BSON contract).
+		{{Key: "$set", Value: bson.M{"threadUnread": bson.M{"$cond": bson.M{
+			"if": bson.M{"$eq": bson.A{
+				bson.M{"$size": bson.M{"$ifNull": bson.A{"$threadUnread", bson.A{}}}},
+				0,
+			}},
+			"then": "$$REMOVE",
+			"else": "$threadUnread",
+		}}}}},
 	}
-	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
+
+	var updated model.Subscription
+	err := s.subscriptions.FindOneAndUpdate(
+		ctx, filter, pipeline,
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&updated)
 	if err != nil {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+				account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+			account, roomID, err)
 	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w",
-			account, roomID, model.ErrSubscriptionNotFound)
-	}
-	return nil
+	return updated.ThreadUnread, updated.Alert, nil
 }
 
 // No order-safety guard on the source-site write; the $lt guard lives on the inbox-worker side.

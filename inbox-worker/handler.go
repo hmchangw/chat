@@ -242,8 +242,8 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 	}
 	lastSeenAt := time.UnixMilli(e.LastSeenAt).UTC()
 	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
-		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
-			e.RoomID, e.ParentMessageID, e.Account, err)
+		return fmt.Errorf("apply thread read (room %q, thread %q, account %q): %w",
+			e.RoomID, e.ThreadRoomID, e.Account, err)
 	}
 	return nil
 }

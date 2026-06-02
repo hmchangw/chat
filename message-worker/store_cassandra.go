@@ -94,24 +94,40 @@ func (s *CassandraStore) SaveMessage(ctx context.Context, msg *model.Message, se
 	return nil
 }
 
-// SaveThreadMessage batches the two regular inserts (messages_by_id and
-// thread_messages_by_thread) into one round-trip via UnloggedBatch — same
-// rationale as SaveMessage. incrementParentTcount stays separate because
-// it uses Lightweight Transactions (CAS), which cannot be combined with
-// non-LWT statements in a single batch.
-func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+// SaveThreadMessage persists the thread reply to messages_by_id and
+// thread_messages_by_thread, then increments tcount on the parent message.
+//
+// messages_by_id uses IF NOT EXISTS (LWT) to detect JetStream redeliveries.
+// thread_messages_by_thread is always written (idempotent regular INSERT) so
+// that a crash between the two writes does not leave thread_messages_by_thread
+// permanently missing. tcount is only incremented when messages_by_id is newly
+// written (applied=true); on redelivery the current tcount is read back so the
+// handler can re-publish the badge event if the previous NATS publish failed.
+// LWT statements cannot be combined with non-LWT statements in a Cassandra batch.
+func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) (*int, error) {
 	mentions := toMentionSet(msg.Mentions)
 
-	batch := s.cassSession.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-	batch.Query(
+	// MapScanCAS is required: on conflict (applied=false) gocql returns the full
+	// existing row which must be consumed into a destination — ScanCAS with no
+	// args fails with "not enough columns to scan into". The map is never read
+	// because the only information needed is the applied bool.
+	m := make(map[string]interface{})
+	applied, err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
-	)
-	batch.Query(
+	).WithContext(ctx).MapScanCAS(m)
+	if err != nil {
+		return nil, fmt.Errorf("save thread message %s: %w", msg.ID, err)
+	}
+
+	// Always write thread_messages_by_thread. The regular INSERT is idempotent on
+	// its primary key, so re-running it on a redelivery (when !applied) completes
+	// any partial work from a prior attempt that crashed between the two writes.
+	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg,
 		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message)
@@ -119,16 +135,45 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
-	)
-	if err := s.cassSession.ExecuteBatch(batch); err != nil {
-		return fmt.Errorf("save thread message %s: %w", msg.ID, err)
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("save thread message %s: %w", msg.ID, err)
 	}
 
-	if err := s.incrementParentTcount(ctx, msg); err != nil {
-		return err
+	if !applied {
+		// Redelivery: messages_by_id row already exists from a prior attempt.
+		// We skip incrementParentTcount to avoid double-counting. Known limitation:
+		// if the prior attempt crashed after inserting messages_by_id but before
+		// completing incrementParentTcount, the tcount was never incremented and
+		// will be one too low until the next reply arrives (inherent in this
+		// non-atomic three-step sequence without a separate idempotency token).
+		// Read the current tcount so the handler can re-publish the badge event
+		// when it was the NATS publish — not the DB write — that failed.
+		return s.readParentTcount(ctx, msg)
 	}
 
-	return nil
+	return s.incrementParentTcount(ctx, msg)
+}
+
+// readParentTcount reads the current tcount from the parent message row in
+// messages_by_id. Used on redelivery to recover the badge count without
+// re-incrementing. Returns nil when ThreadParentMessageCreatedAt is absent or
+// the parent row is not found.
+func (s *CassandraStore) readParentTcount(ctx context.Context, msg *model.Message) (*int, error) {
+	if msg.ThreadParentMessageCreatedAt == nil {
+		return nil, nil
+	}
+	var tcount *int
+	err := s.cassSession.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		msg.ThreadParentMessageID, *msg.ThreadParentMessageCreatedAt,
+	).WithContext(ctx).Scan(&tcount)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read tcount for parent %s: %w", msg.ThreadParentMessageID, err)
+	}
+	return tcount, nil
 }
 
 // casMaxRetries is the maximum number of CAS attempts per tcount increment.
@@ -139,9 +184,9 @@ const casMaxRetries = 16
 
 // casIncrement atomically increments the nullable INT counter starting at
 // initial by calling update(newVal, expected) in a retry loop. On conflict
-// (applied==false) it retries with the value returned by update.  Returns an
-// error after maxRetries consecutive failures.
-func casIncrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
+// (applied==false) it retries with the value returned by update. Returns the
+// successfully applied new value, or an error after maxRetries consecutive failures.
+func casIncrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) (int, error) {
 	tcount := initial
 	for range maxRetries {
 		newVal := 1
@@ -150,14 +195,14 @@ func casIncrement(maxRetries int, initial *int, update func(newVal int, expected
 		}
 		applied, current, err := update(newVal, tcount)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if applied {
-			return nil
+			return newVal, nil
 		}
 		tcount = current
 	}
-	return fmt.Errorf("cas increment exceeded %d retries", maxRetries)
+	return 0, fmt.Errorf("cas increment exceeded %d retries", maxRetries)
 }
 
 // incrementParentTcount increments tcount on the parent message row in both
@@ -168,9 +213,11 @@ func casIncrement(maxRetries int, initial *int, update func(newVal int, expected
 // handles the initial case where tcount has never been set on the parent row.
 // If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
 // tcount cannot be updated without the full primary key of the parent row.
-func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
+// Returns the authoritative post-CAS tcount from messages_by_id, or nil when
+// the increment was skipped (ThreadParentMessageCreatedAt absent or row not found).
+func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) (*int, error) {
 	if msg.ThreadParentMessageCreatedAt == nil {
-		return nil
+		return nil, nil
 	}
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
@@ -183,19 +230,20 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		parentID, parentCreatedAt,
 	).WithContext(ctx).Scan(&tcount); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
+		return nil, fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
 	}
-	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+	newTcount, err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
 			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
 			newVal, parentID, parentCreatedAt, expected,
 		).WithContext(ctx).ScanCAS(&current)
 		return applied, current, err
-	}); err != nil {
-		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
 	}
 
 	if err := s.cassSession.Query(
@@ -203,11 +251,20 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Scan(&tcount); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
+			// messages_by_id was updated but messages_by_room has no row at this
+			// (room_id, bucket, created_at, message_id) coordinate. This indicates
+			// a data inconsistency — history-service reads tcount from messages_by_room,
+			// so clients will see a stale thread count for this parent message.
+			slog.Error("tcount divergence: parent row not found in messages_by_room after messages_by_id update",
+				"parentMessageID", parentID,
+				"roomID", msg.RoomID,
+				"bucket", parentBucket,
+			)
+			return &newTcount, nil
 		}
-		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
+		return nil, fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
 	}
-	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
+	if _, err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
 		var current *int
 		applied, err := s.cassSession.Query(
 			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
@@ -215,10 +272,10 @@ func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.M
 		).WithContext(ctx).ScanCAS(&current)
 		return applied, current, err
 	}); err != nil {
-		return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
+		return nil, fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
 	}
 
-	return nil
+	return &newTcount, nil
 }
 
 // IF EXISTS prevents phantom rows on missing parents; misses log at ERROR

@@ -88,6 +88,21 @@ func (mr *MockStoreMockRecorder) ListSubscriptions(ctx, roomID any) *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSubscriptions", reflect.TypeOf((*MockStore)(nil).ListSubscriptions), ctx, roomID)
 }
 
+// ListThreadSubscriptions mocks base method.
+func (m *MockStore) ListThreadSubscriptions(ctx context.Context, parentMessageID, siteID string) ([]model.ThreadSubscription, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListThreadSubscriptions", ctx, parentMessageID, siteID)
+	ret0, _ := ret[0].([]model.ThreadSubscription)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListThreadSubscriptions indicates an expected call of ListThreadSubscriptions.
+func (mr *MockStoreMockRecorder) ListThreadSubscriptions(ctx, parentMessageID, siteID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListThreadSubscriptions", reflect.TypeOf((*MockStore)(nil).ListThreadSubscriptions), ctx, parentMessageID, siteID)
+}
+
 // SetSubscriptionMentions mocks base method.
 func (m *MockStore) SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error {
 	m.ctrl.T.Helper()
