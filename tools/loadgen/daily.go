@@ -628,7 +628,15 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		if pubConn == nil {
 			return nil, fmt.Errorf("no publisher conn")
 		}
-		reply, err := pubConn.RequestMsgWithContext(ctx, newMsg(subj, data))
+		// Apply the caller's per-request timeout. RequestMsgWithContext uses
+		// the context's deadline; the emitter's ctx is the run-level ctx
+		// with no deadline, so without this wrap the timeout argument is
+		// silently ignored and a slow handler can hang forever (manifests
+		// as huge per-action p50 like 25s instead of cleanly timing out
+		// at 5s and contributing to error_rate).
+		rctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		reply, err := pubConn.RequestMsgWithContext(rctx, newMsg(subj, data))
 		if err != nil {
 			return nil, err
 		}
