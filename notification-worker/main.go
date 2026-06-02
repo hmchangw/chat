@@ -45,13 +45,13 @@ func (m *mongoMemberLookup) ListSubscriptions(ctx context.Context, roomID string
 	filter := map[string]string{"roomId": roomID}
 	cursor, err := m.col.Find(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find subscriptions for room %s: %w", roomID, err)
 	}
 	defer cursor.Close(ctx)
 
 	var subs []model.Subscription
 	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode subscriptions for room %s: %w", roomID, err)
 	}
 	return subs, nil
 }

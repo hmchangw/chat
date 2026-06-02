@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -107,7 +108,7 @@ func NewHandler(siteID string) *Handler {
 
 func (h *Handler) checkSite(c *natsrouter.Context) error {
 	if c.Param("siteID") != h.siteID {
-		return natsrouter.ErrNotFound("unknown site")
+		return errcode.NotFound("unknown site")
 	}
 	return nil
 }

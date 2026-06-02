@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
@@ -146,7 +148,8 @@ func TestHandleAuth_ExpiredToken(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Body.String(), "expired")
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeUnauthenticated)
+	errtest.AssertReason(t, w.Body.Bytes(), errcode.AuthTokenExpired)
 }
 
 func TestHandleAuth_InvalidToken(t *testing.T) {
@@ -163,7 +166,8 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid SSO token")
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeUnauthenticated)
+	errtest.AssertReason(t, w.Body.Bytes(), errcode.AuthInvalidToken)
 }
 
 func TestHandleAuth_InvalidNKey(t *testing.T) {
@@ -179,7 +183,7 @@ func TestHandleAuth_InvalidNKey(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid natsPublicKey format")
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
 }
 
 func TestHandleAuth_MissingFields(t *testing.T) {
@@ -204,6 +208,7 @@ func TestHandleAuth_MissingFields(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			router.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusBadRequest, w.Code)
+			errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
 		})
 	}
 }
@@ -286,7 +291,7 @@ func TestHandleAuth_DevMode_MissingAccount(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "account")
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
 }
 
 func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
@@ -302,7 +307,34 @@ func TestHandleAuth_DevMode_InvalidNKey(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid natsPublicKey")
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
+}
+
+func TestHandleAuth_DevMode_TokenGenerationFailure(t *testing.T) {
+	// Force signNATSJWT (uc.Encode) to fail by supplying a non-account
+	// signing key. A user key pair cannot sign a NATS user JWT, so Encode
+	// returns an error, exercising the 500 internal-error path. The real
+	// cause is logged via Classify and must NOT appear in the response body.
+	userKP, err := nkeys.CreateUser()
+	require.NoError(t, err, "create user key")
+
+	handler := NewAuthHandler(nil, userKP, 2*time.Hour, true)
+	router := setupRouter(t, handler)
+
+	userPub := mustUserNKey(t)
+	body := `{"account":"alice","natsPublicKey":"` + userPub + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeInternal)
+
+	var env errcode.Error
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	assert.Equal(t, "internal error", env.Message)
+	assert.NotContains(t, w.Body.String(), "generating NATS token")
 }
 
 func TestHandleHealth(t *testing.T) {

@@ -119,7 +119,7 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, meta, clientMsg, resolved.Accounts)
 	default:
-		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "roomID", meta.ID)
+		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "room_id", meta.ID)
 		return nil
 	}
 }
@@ -251,14 +251,14 @@ func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvt
 					"type", roomEvtType,
 					"account", account,
 					"messageID", messageID,
-					"roomID", room.ID,
+					"room_id", room.ID,
 				)
 			}
 		}
 		return nil
 
 	default:
-		slog.Warn("unknown room type, skipping mutation fan-out", "type", room.Type, "roomID", room.ID)
+		slog.Warn("unknown room type, skipping mutation fan-out", "type", room.Type, "room_id", room.ID)
 		return nil
 	}
 }

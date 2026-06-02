@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -22,12 +23,12 @@ func TestHandler_CheckSite(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("mismatch returns ErrNotFound", func(t *testing.T) {
+	t.Run("mismatch returns CodeNotFound", func(t *testing.T) {
 		err := h.checkSite(newCtx(map[string]string{"siteID": "site-other"}))
 		require.Error(t, err)
-		var routeErr *natsrouter.RouteError
-		require.True(t, errors.As(err, &routeErr), "want *natsrouter.RouteError, got %T", err)
-		assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+		var ee *errcode.Error
+		require.True(t, errors.As(err, &ee), "want *errcode.Error, got %T", err)
+		assert.Equal(t, errcode.CodeNotFound, ee.Code)
 	})
 }
 
