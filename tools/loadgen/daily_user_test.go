@@ -46,6 +46,22 @@ func TestActionRate_PerSecond(t *testing.T) {
 	require.InDelta(t, 0.00326, r, 0.0002)
 }
 
+func TestNeighborOf(t *testing.T) {
+	cases := []struct {
+		account string
+		want    string
+	}{
+		{"user-0", "user-1"},
+		{"user-1", "user-0"},
+		{"user-9999", "user-9998"},
+		{"not-a-user-account", "user-0"}, // fallback
+		{"", "user-0"},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, neighborOf(tc.account), "account=%q", tc.account)
+	}
+}
+
 func TestNewUserState_ChannelRoomsExcludesDMs(t *testing.T) {
 	rooms := []string{
 		"room-dm-000001",

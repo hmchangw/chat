@@ -445,7 +445,7 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 	case actionRefreshRoomList:
 		err = refreshRoomList(a, u)
 	case actionMemberAdd:
-		err = memberAdd(a, u, "user-stub")
+		err = memberAdd(a, u, u.Neighbor)
 	case actionRoomCreate:
 		err = roomCreate(a, u)
 	case actionMuteToggle:

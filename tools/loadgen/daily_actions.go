@@ -119,14 +119,21 @@ func muteToggle(a actionCtx, u *userState) error {
 	return nil
 }
 
-// roomCreate creates a new channel room owned by u. The resulting roomID is
-// not added to u.Rooms — this is a deliberately leaky abstraction since the
-// simulated user wouldn't immediately be active in a brand-new room within
-// the same hold window.
+// roomCreate creates a new channel room owned by u, inviting u.Neighbor.
+// room-service rejects channel-create with no member targets via a second
+// validation pass (after the empty-request check) — `allUsers == 0 &&
+// allOrgs == 0 → errEmptyCreateRequest`. So we include one valid invitee.
+// The resulting roomID is not added to u.Rooms — deliberately leaky, since
+// the simulated user wouldn't immediately be active in a brand-new room
+// within the same hold window.
 func roomCreate(a actionCtx, u *userState) error {
+	users := []string{}
+	if u.Neighbor != "" {
+		users = append(users, u.Neighbor)
+	}
 	payload, err := json.Marshal(map[string]any{
-		"name": fmt.Sprintf("loadtest-%s-%d", u.ID, time.Now().UnixNano()),
-		"type": string(model.RoomTypeChannel),
+		"name":  fmt.Sprintf("loadtest-%s-%d", u.ID, time.Now().UnixNano()),
+		"users": users,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal room-create: %w", err)

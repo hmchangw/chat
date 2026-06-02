@@ -120,9 +120,17 @@ type userState struct {
 	// builder's ID convention: BuildFixtures names DM rooms
 	// "room-dm-NNNNNN" and the other bands "room-small-…"/"medium"/"large".
 	ChannelRooms []string
-	active       bool
-	activeProb   float64 // P(stay active | active)
-	idleProb     float64 // P(stay idle | idle)
+	// Neighbor is an account guaranteed to exist in Mongo, != Account.
+	// Used as a valid target for memberAdd and as the initial-user list
+	// for roomCreate. Without it, those actions hit errUserNotFound
+	// (memberAdd) or errEmptyCreateRequest (roomCreate, because a channel
+	// needs at least one invitee besides the creator).
+	Neighbor string
+	active   bool
+	// activeProb / idleProb: stay-in-state probabilities for the
+	// idle/active Markov chain. Tuned in newUserState.
+	activeProb float64
+	idleProb   float64
 }
 
 func newUserState(id, account string, rooms []string, _seed int64) *userState {
@@ -134,10 +142,27 @@ func newUserState(id, account string, rooms []string, _seed int64) *userState {
 	}
 	return &userState{
 		ID: id, Account: account, Rooms: rooms, ChannelRooms: channels,
-		active: false,
+		Neighbor: neighborOf(account),
+		active:   false,
 		// Tuned so stationary active fraction ≈ 25%: P(idle->active)=0.05, P(active->idle)=0.15.
 		activeProb: 0.85, idleProb: 0.95,
 	}
+}
+
+// neighborOf returns an account known to exist in Mongo that is != account.
+// Account format is "user-N" per preset.go's BuildFixtures; we shift N by 1
+// (wrapping at zero to N+1, so "user-0" → "user-1"). Falls back to "user-0"
+// if the account doesn't match the expected format. For any preset with
+// N ≥ 2 (which is all daily presets) this always produces a valid target.
+func neighborOf(account string) string {
+	var n int
+	if _, err := fmt.Sscanf(account, "user-%d", &n); err != nil {
+		return "user-0"
+	}
+	if n == 0 {
+		return "user-1"
+	}
+	return fmt.Sprintf("user-%d", n-1)
 }
 
 // step advances the Markov chain by one tick. Call at the per-user tick

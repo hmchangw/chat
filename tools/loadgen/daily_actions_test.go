@@ -99,11 +99,21 @@ func TestMuteToggle_Publishes(t *testing.T) {
 
 func TestRoomCreate_Requests(t *testing.T) {
 	c := &captured{}
-	u := &userState{ID: "u-1", Account: "user-1"}
+	u := &userState{ID: "u-1", Account: "user-1", Neighbor: "user-0"}
 	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
 	require.NoError(t, roomCreate(ctx, u))
 	require.Len(t, c.reqs, 1)
 	require.Equal(t, subject.RoomCreate("user-1", "site-test"), c.reqs[0].Subj)
+	// Payload must include a `users` list with at least one invitee, or
+	// room-service rejects channel-create with errEmptyCreateRequest after
+	// the empty-request check passes on Name alone.
+	var payload struct {
+		Name  string   `json:"name"`
+		Users []string `json:"users"`
+	}
+	require.NoError(t, json.Unmarshal(c.reqs[0].Data, &payload))
+	require.NotEmpty(t, payload.Name)
+	require.Equal(t, []string{"user-0"}, payload.Users)
 }
 
 func TestMemberAdd_Requests(t *testing.T) {
