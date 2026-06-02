@@ -906,6 +906,36 @@ func TestRoomKeyEnsureResponseJSON(t *testing.T) {
 	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
 }
 
+func TestRoomKeyGetRequestJSON(t *testing.T) {
+	t.Run("RoomKeyGetRequest_currentVersion", func(t *testing.T) {
+		v := 3
+		src := model.RoomKeyGetRequest{Version: &v}
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var dst model.RoomKeyGetRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.Version)
+		require.Equal(t, 3, *dst.Version)
+	})
+
+	t.Run("RoomKeyGetRequest_nilVersion", func(t *testing.T) {
+		src := model.RoomKeyGetRequest{Version: nil}
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
+		require.Nil(t, dst.Version)
+	})
+}
+
+func TestRoomKeyGetResponseJSON(t *testing.T) {
+	src := model.RoomKeyGetResponse{
+		RoomID:     "r1",
+		Version:    2,
+		PrivateKey: []byte{0x01, 0x02, 0x03},
+	}
+	dst := model.RoomKeyGetResponse{}
+	roundTrip(t, &src, &dst)
+}
+
 func TestNotificationEventJSON(t *testing.T) {
 	src := model.NotificationEvent{
 		Type:   "new_message",
