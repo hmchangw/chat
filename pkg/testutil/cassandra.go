@@ -14,9 +14,15 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/hmchangw/chat/pkg/testutil/testimages"
 )
 
-const cassandraImage = "cassandra:5"
+// Pinned via pkg/testutil/testimages so every integration test (and the
+// docker-local compose stack) tracks a single Cassandra tag. See testimages
+// doc for why this diverges from prod (cassandra:5 OOMs the testcontainers-go
+// default heap on standard CI runners).
+const cassandraImage = testimages.Cassandra
 
 var (
 	cassOnce      sync.Once
