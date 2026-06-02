@@ -316,3 +316,11 @@ loadgen max-rps --workload=read-receipt --preset=history-medium --steps=200,500,
 
 The gated latency series is named `read-receipt`; the verdict, INCONCLUSIVE
 guard, and CSV output behave exactly as for the other workloads.
+
+To tear down, use the history teardown — read-receipt seeds the identical
+history fixtures, so `loadgen teardown --workload=history --preset=<name>` drops
+everything (dropping `subscriptions` removes the stamped `lastSeenAt` too):
+
+```bash
+loadgen teardown --workload=history --preset=history-medium
+```
