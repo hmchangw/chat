@@ -15,8 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/nats.go"
-
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -534,11 +532,11 @@ type prodEnvFactory struct {
 //nolint:gocritic // cfg passed by value to satisfy envFactory interface
 func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 	col := NewCollector(NewMetrics(), cfg.Preset)
-	direct := newDirectPool(f.baseCfg.NatsURL, col)
+	direct := newDirectPool(f.baseCfg.NatsURL, f.baseCfg.NatsCredsFile, col)
 	var mux *multiplexPool
 	if cfg.MultiplexPoolSize > 0 {
 		var err error
-		mux, err = newMultiplexPool(f.baseCfg.NatsURL, col, cfg.MultiplexPoolSize)
+		mux, err = newMultiplexPool(f.baseCfg.NatsURL, f.baseCfg.NatsCredsFile, col, cfg.MultiplexPoolSize)
 		if err != nil {
 			slog.Error("multiplex pool init failed; continuing without multiplex", "err", err)
 			mux = nil
@@ -547,7 +545,7 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 
 	// Dedicated publisher connection for emitter actions. Separate from the
 	// receiver pools so a slow consumer can't backpressure publishes.
-	pubConn, err := nats.Connect(f.baseCfg.NatsURL, nats.Name("loadgen-daily-publisher"))
+	pubConn, err := connectWithCreds(f.baseCfg.NatsURL, "loadgen-daily-publisher", f.baseCfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("publisher connection failed; emitters will no-op", "err", err)
 		pubConn = nil

@@ -18,6 +18,7 @@ import (
 // against the shared Collector for latency correlation.
 type directPool struct {
 	url       string
+	credsFile string
 	collector *Collector
 
 	mu    sync.Mutex
@@ -30,9 +31,9 @@ type directUser struct {
 	subs []*nats.Subscription
 }
 
-func newDirectPool(natsURL string, c *Collector) *directPool {
+func newDirectPool(natsURL, credsFile string, c *Collector) *directPool {
 	return &directPool{
-		url: natsURL, collector: c, users: make(map[string]*directUser),
+		url: natsURL, credsFile: credsFile, collector: c, users: make(map[string]*directUser),
 	}
 }
 
@@ -44,7 +45,7 @@ func newDirectPool(natsURL string, c *Collector) *directPool {
 // broadcasts arrive on subject.UserRoomEvent(account) — both are needed for
 // realistic IM coverage since daily presets are DM-heavy.
 func (p *directPool) Add(u *userState) error {
-	nc, err := nats.Connect(p.url, nats.Name("loadgen-daily-"+u.ID))
+	nc, err := connectWithCreds(p.url, "loadgen-daily-"+u.ID, p.credsFile)
 	if err != nil {
 		return fmt.Errorf("connect for %s: %w", u.ID, err)
 	}
@@ -126,7 +127,7 @@ type multiplexPool struct {
 	nextConn  int                         // round-robin assignment
 }
 
-func newMultiplexPool(natsURL string, c *Collector, size int) (*multiplexPool, error) {
+func newMultiplexPool(natsURL, credsFile string, c *Collector, size int) (*multiplexPool, error) {
 	p := &multiplexPool{
 		url: natsURL, collector: c,
 		roomRefs:  make(map[string]int),
@@ -134,7 +135,7 @@ func newMultiplexPool(natsURL string, c *Collector, size int) (*multiplexPool, e
 		userInbox: make(map[string]chan *nats.Msg),
 	}
 	for i := 0; i < size; i++ {
-		nc, err := nats.Connect(natsURL, nats.Name(fmt.Sprintf("loadgen-daily-mux-%d", i)))
+		nc, err := connectWithCreds(natsURL, fmt.Sprintf("loadgen-daily-mux-%d", i), credsFile)
 		if err != nil {
 			p.Close()
 			return nil, fmt.Errorf("multiplex conn %d: %w", i, err)
@@ -142,6 +143,21 @@ func newMultiplexPool(natsURL string, c *Collector, size int) (*multiplexPool, e
 		p.conns = append(p.conns, nc)
 	}
 	return p, nil
+}
+
+// connectWithCreds is the single dial helper for daily-IM pools and the
+// publisher conn. When credsFile is non-empty, the connection is opened
+// with nats.UserCredentials so it authenticates against operator-mode
+// NATS servers; otherwise it falls back to anonymous dial (only valid
+// against servers that allow anonymous, e.g. a minimal test setup).
+// Without this, the daily-IM pools were silently dialing anonymous and
+// getting "permissions violation" on subscribe.
+func connectWithCreds(url, name, credsFile string) (*nats.Conn, error) {
+	opts := []nats.Option{nats.Name(name)}
+	if credsFile != "" {
+		opts = append(opts, nats.UserCredentials(credsFile))
+	}
+	return nats.Connect(url, opts...)
 }
 
 // Add registers a user with the multiplex pool. Subscribes the shared

@@ -22,7 +22,7 @@ func TestDirectPool_ReceivesBroadcast(t *testing.T) {
 	t.Cleanup(func() { ncPub.Close() })
 
 	col := NewCollector(NewMetrics(), "test")
-	pool := newDirectPool(url, col)
+	pool := newDirectPool(url, "" /*no creds: testcontainer NATS allows anonymous*/, col)
 	t.Cleanup(pool.Close)
 
 	u := &userState{ID: "u-1", Account: "user-1", Rooms: []string{"room-test"}}
@@ -49,7 +49,7 @@ func TestMultiplexPool_RoutesBroadcastToInbox(t *testing.T) {
 	t.Cleanup(func() { ncPub.Close() })
 
 	col := NewCollector(NewMetrics(), "test")
-	pool, err := newMultiplexPool(url, col, 2 /*pool size*/)
+	pool, err := newMultiplexPool(url, "" /*no creds*/, col, 2 /*pool size*/)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
