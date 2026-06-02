@@ -907,13 +907,11 @@ func TestRoomKeyEnsureResponseJSON(t *testing.T) {
 }
 
 func TestRoomKeyGetRequestJSON(t *testing.T) {
-	t.Run("RoomKeyGetRequest_currentVersion", func(t *testing.T) {
+	t.Run("RoomKeyGetRequest_explicitVersion", func(t *testing.T) {
 		v := 3
 		src := model.RoomKeyGetRequest{Version: &v}
-		data, err := json.Marshal(&src)
-		require.NoError(t, err)
-		var dst model.RoomKeyGetRequest
-		require.NoError(t, json.Unmarshal(data, &dst))
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
 		require.NotNil(t, dst.Version)
 		require.Equal(t, 3, *dst.Version)
 	})
