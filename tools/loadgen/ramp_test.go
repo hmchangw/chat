@@ -139,6 +139,26 @@ func TestRunRamp_StopsWhenCooldownCancelled(t *testing.T) {
 	require.Len(t, results, 1)
 }
 
+type windowFakeWorkload struct{}
+
+func (f windowFakeWorkload) Label() string { return "fake" }
+func (f windowFakeWorkload) RunStep(ctx context.Context, rps int, warmup, hold time.Duration) (rpsStepInputs, error) {
+	time.Sleep(2 * time.Millisecond) // simulate a measurement window
+	return rpsStepInputs{TargetRPS: rps, Hold: hold, AttemptedOps: rps}, nil
+}
+
+func TestRunRamp_RecordsHoldWindow(t *testing.T) {
+	results := runRamp(context.Background(), windowFakeWorkload{}, &rampConfig{
+		Steps:      []int{100},
+		Hold:       30 * time.Second,
+		Thresholds: buildThresholds(time.Second, time.Second, 1, 1<<62, 0),
+	})
+	require.Len(t, results, 1)
+	assert.False(t, results[0].HoldStart.IsZero(), "HoldStart should be set")
+	assert.False(t, results[0].HoldEnd.IsZero(), "HoldEnd should be set")
+	assert.True(t, results[0].HoldEnd.After(results[0].HoldStart))
+}
+
 func TestMaxRPSExitCode(t *testing.T) {
 	pass := []rpsStepResult{{Kind: verdictPass}, {Kind: verdictTrip}}
 	none := []rpsStepResult{{Kind: verdictInconclusive}, {Kind: verdictTrip}}
