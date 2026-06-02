@@ -265,7 +265,7 @@ make -C tools/loadgen/deploy run-max-rps WORKLOAD=history PRESET=history-medium 
 At the end of the run the tool prints a per-step table and a final
 verdict line:
 
-```
+```text
 ANSWER: max RPS = 2000 (workload=messages, preset=medium)
         Next limit: E2 p95=143ms > 100ms
 ```
@@ -287,7 +287,7 @@ When a `max-rps --workload=messages` ramp trips, loadgen appends a
 `BOTTLENECK:` block naming the culprit component, the saturated resource,
 and a confidence:
 
-```
+```text
 ANSWER: max RPS = 2000 (workload=messages, preset=medium)
         Next limit: E2 p95=143ms > 100ms
 BOTTLENECK: message-worker (Cassandra-bound)

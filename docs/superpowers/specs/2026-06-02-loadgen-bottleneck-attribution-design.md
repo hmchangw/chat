@@ -49,7 +49,7 @@ Prometheus that scrapes cAdvisor for per-container trends over the same
 window (and the prior step's window, for the knee test), fuses them with
 loadgen's owned stage signals, walks the messages stage graph, and appends:
 
-```
+```text
 ANSWER: max RPS = 2000 (workload=messages, preset=medium)
         Next limit: E2 p95=143ms > 100ms
 BOTTLENECK: message-worker (Cassandra-bound)
