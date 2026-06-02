@@ -2391,3 +2391,47 @@ Branch-review MEDIUM finding (performance lens). `Classify` builds the log-line 
 - **Review round 1 fixes applied:** ctx-cycle seam, `natsutil.ReplyJSON` for DM-exists, complete caller sweep, shim ordering, explicit permanence, Code/Reason split, constructor naming, Ch 13 contradiction resolved (forbidden+reason), 503/429 noted, AsyncJobResult string fields + omitempty test.
 - **Review round 2 fixes applied:** (Critical) natsrouter's own tests + ~40 cross-service `.Code` test asserts migrated in-chapter (Ch 10 Step 1/5); `Context.ReplyError` + `register.go:20` covered (Ch 10 Step 3); `query_rooms.go:74` return-type change (Ch 12 Step 5); one production `metrics.go` break folded into Ch 10 to keep `go build` green; room-worker async `recover()` now a REQUIRED task (Ch 15 Step 6). (High) category-aware `Classify` log level (Ch 4); `*f` constructors removed (Ch 3); CLAUDE.md rule updated in Ch 10 not Ch 18. (Medium) `WithMetadata`/`WithLogValues` trust-boundary documented (Decision 9, doc.go); `errnats.MarshalQuiet`/`ReplyQuiet` for already-logged paths (Ch 8/10); single-`%w` invariant + semgrep rule; `newPermanentAbsent` chain locked + tested (Ch 15); DM-exists co-release gate (Ch 14.3). (Low) `errtest` helper (Ch 5.3); `ReasonOf`/`HasReason` (Ch 5.2); semgrep `prefer-named-constructor`.
 - **Review round 3 (per-service exhaustive audits) fixes applied:** (Critical) message-gatekeeper — ~10 inline validation `fmt.Errorf` re-homed so they don't collapse to internal, and the `not_subscribed` reply now returns the sentinel not a fresh error (Ch 13 Step 4); room-service — the `sanitizeError` allowlist's ~14 inline passthrough sites (`"only owners can"`, `"invalid request"`, `"cannot add members"`, `"requester not in room"`, mute-toggle) re-homed at source BEFORE deleting the allowlist (Ch 14 Step 2); room-worker — 21 (not "≈10") `newPermanent` sites enumerated, `errRoomIDCollision`/sync-DM reconcile branch + `processRoleUpdate`'s Nak-forever bug covered (Ch 15 Step 1/1b). (High) gatekeeper test line-range corrected (`TestHandler_marshalErrorReply` 1159-1188 vs real assertion 686-688); room-service `*dmExistsError` routing tests (`integration_test.go:1588`, `handler_test.go:2333/2427/2662`) added (Ch 14.3 Step 5); search-service test count 18 (not ~17) + the `CodeInternal` integration assert (Ch 12 Step 8). (Medium) `wrappedCtx` log-enrichment fold (Ch 14 Step 4); gatekeeper ctx-enrich placed after parse (Ch 13 Step 5); memberlist legacy-remote empty-code rollout note (Ch 14.2); auth 500-message change + missing 500 test + all five error tests + docs rows (Ch 16); per-service docs row specifics. (Low) history test count 16 (not ~22) + mandatory roomID (Ch 11); CreateRoomReply.RoomType confirm (Ch 14.3); errRoomKeyAbsent alert is call-site-driven, framing corrected (Ch 15). mock-user-service: audited clean, no change.
+
+---
+
+## Post-Plan Amendments (implemented after plan was written)
+
+### PA-1 — `Code.Valid()` + `New()` panic on bad code/empty message
+
+`Code.Valid()` added to `pkg/errcode/category.go`. `New()` in `options.go` now panics on a non-canonical `Code` or empty `Message` (programmer errors surfaced at init time rather than producing silent broken envelopes). `Parse` uses `Code.Valid()` and message-emptiness to detect legacy/non-canonical remote envelopes (see PA-4).
+
+### PA-2 — `TooManyRequests` (429) added
+
+Resolved the spec open-item: `CodeTooManyRequests Code = "too_many_requests"` (HTTP 429) and the named constructor `TooManyRequests(msg, opts...)` were added alongside the other 7 categories. `Code.Valid()` covers it. `too_many_requests` = per-caller quota/rate-limit; `unavailable` = server-wide saturation. Both are INFO-level in `logLevel()`.
+
+### PA-3 — Request-ID policy split: `StampRequestID` vs `RequireRequestID`
+
+The uniform "mint-on-missing" approach in the original plan was discovered to break dedup for room-service and room-worker handlers that derive `Nats-Msg-Id` / message IDs from the inbound request ID. Two policies were implemented:
+
+**`natsutil.StampRequestID(ctx, headers, subject) (ctx, id)`** — default; mints on missing, warns on malformed. Applied by all other handlers and the `pkg/natsrouter` RequestID middleware.
+
+**`natsutil.RequireRequestID(ctx, headers, subject) (ctx, id, error)`** — strict; returns `errcode.BadRequest` on missing or malformed. Applied by:
+- All room-service NATS handlers via `wrappedCtx(m otelnats.Msg) (context.Context, error)` (signature changed from `context.Context` to `(context.Context, error)`)
+- `room-worker.natsServerCreateDM` via `requireDedupRequestID` wrapper
+
+The room-worker JetStream consume loop keeps `StampRequestID` defensively but logs `slog.Error` on a forced mint.
+
+Tests added: `TestRequireRequestID` (pkg/natsutil), `TestWrappedCtx_*` (room-service), `TestRequireDedupRequestID` (room-worker).
+
+Documented in `docs/error-handling.md` §3a.
+
+### PA-4 — Cross-site memberlist: propagate X-Request-ID
+
+`room-service/memberlist_client.go` constructed a bare `nats.Msg` with empty headers, so `X-Request-ID` was never forwarded to the remote site. Since remote room-service uses `RequireRequestID` (strict — PA-3), this caused integration tests to fail with `bad_request`. Fixed by using `natsutil.NewMsg(reqCtx, subject, body)`.
+
+Integration tests `TestRoomsInfoBatchRPC` and `TestAddMembers_TwoSiteEndToEnd` in `room-service/integration_test.go` were updated to stamp valid UUIDs on the request context before calling handlers.
+
+### PA-5 — Legacy remote peer handling in `memberlist_client`
+
+When `errcode.Parse` returns an envelope with a non-canonical `Code` or empty `Message` (old peer), `memberlist_client` now falls back to `errcode.Internal("remote site returned an error")` and emits `slog.Warn("legacy peer emitted non-canonical errcode", ...)` instead of panicking in `errcode.New`. This implements safe mixed-version rollout.
+
+### PA-6 — `errRoomKeyAbsent` (room-service) converted to typed errcode
+
+The `errRoomKeyAbsent` sentinel in `room-service/helper.go` (introduced by main's room-key-fetch RPC feature) was converted from `errors.New(...)` to `errcode.NotFound("room key not available")`. The `handleGetRoomKey` inline `fmt.Errorf("invalid request: %w", err)` was also converted to `errcode.BadRequest("invalid request")`. `natsGetRoomKey` handler updated to use `errnats.Reply` + the new two-return `wrappedCtx`.
+
+Note: room-worker's own `errRoomKeyAbsent = errors.New(...)` is intentionally a raw sentinel — it is wrapped via `errcode.WithCause(errRoomKeyAbsent)` so both `errors.Is` (alert path) and `errors.As` (errcode classification) resolve in the same chain.

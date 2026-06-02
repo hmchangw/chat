@@ -478,7 +478,11 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 }
 
 func (h *Handler) natsGetRoomKey(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleGetRoomKey(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)

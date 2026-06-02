@@ -1,7 +1,8 @@
 # Centralized Error Codes — Design Spec
 
-**Date:** 2026-05-28
-**Status:** Approved (design locked; implementation pending — see plan `docs/superpowers/plans/2026-05-28-centralized-error-codes.md`)
+**Date:** 2026-05-28  
+**Updated:** 2026-06-02 (post-implementation amendments — see §Amendment Log)  
+**Status:** Implemented
 
 ---
 
@@ -402,3 +403,47 @@ Sequenced as a clean DAG (full step-by-step in the plan):
 - `pkg/model.ErrorResponse`
 - `pkg/natsutil` `MarshalError`/`MarshalErrorWithCode`/`ReplyError`/`TryParseError`
 - room-service `sanitizeError` + allowlist; message-gatekeeper `codedError`/`marshalErrorReply`; room-worker `sanitizeAsyncJobError`/`sanitizeSyncDMError`
+
+---
+
+## Amendment Log (post-implementation decisions)
+
+### A1 — `Code.Valid()` and `New()` panic guards (implemented)
+
+`Code.Valid()` was added to `pkg/errcode/category.go` — it reports whether a value is one of the canonical `Code*` constants (necessary for the `Parse` path to detect non-canonical remote envelopes). `New()` in `options.go` now panics on both a non-canonical `Code` and an empty `Message`; these are programmer errors and fail-fast is preferable to silently producing a broken envelope. `Parse` treats a non-canonical code or empty message in a remote reply as a legacy/non-canonical envelope (see A4 below).
+
+### A2 — `TooManyRequests` constructor and HTTP 429 (implemented)
+
+`CodeTooManyRequests` (`too_many_requests`, HTTP 429) and its named constructor `TooManyRequests(msg, opts...)` were added alongside the other 7 categories, resolving the "open item" in the original spec. The distinction from `unavailable` (503) is preserved: `too_many_requests` is per-caller quota/rate-limiting; `unavailable` is server-wide saturation.
+
+### A3 — Request-ID policy split: StampRequestID vs RequireRequestID (implemented)
+
+Implementation revealed that a uniform "mint-on-missing" policy breaks client-retry deduplication for handlers that derive JetStream `Nats-Msg-Id` keys and canonical message IDs from the inbound request ID. Two policies now coexist (documented in `docs/error-handling.md` §3a):
+
+**Default (mint-on-missing):** `natsutil.StampRequestID(ctx, headers, subject) (ctx, id)` — if the header is absent, mint a fresh UUIDv7 silently; if malformed, mint and emit a single `slog.Warn`. Used by all handlers where the request ID is logging/tracing only.
+
+**Strict (reject-on-missing):** `natsutil.RequireRequestID(ctx, headers, subject) (ctx, id, error)` — returns `errcode.BadRequest` on missing or malformed `X-Request-ID`. Used by:
+- All room-service handlers (via the `wrappedCtx(m otelnats.Msg) (context.Context, error)` helper)
+- `room-worker.natsServerCreateDM` (sync DM endpoint)
+
+Rationale: room-service fans out to JetStream publishes whose `Nats-Msg-Id` (via `OutboxDedupID`, `CanonicalDedupID`, `messageDedupSeed`) and message IDs (`idgen.MessageIDFromRequestID`) are derived from the request ID. A silently-minted server-side ID across client retries produces a different dedup key each attempt, silently duplicating outbox events and system messages.
+
+The room-worker JetStream consume loop keeps the default mint policy defensively (messages arrive from room-service which already validated the header) but logs `slog.Error` if forced to mint, signalling an upstream contract violation.
+
+**Client contract:** callers targeting room-service or room-worker MUST send a stable `X-Request-ID` header (valid hyphenated UUIDv4 or v7) and reuse it across retries.
+
+### A4 — Cross-site memberlist: propagate X-Request-ID to remote handler (implemented)
+
+`room-service/memberlist_client.go` previously constructed a bare `nats.Msg` with an empty header, so the inbound `X-Request-ID` was never forwarded when making cross-site `member.list` NATS requests. Because remote room-service uses `RequireRequestID` (strict mode per A3), the remote handler rejected with `bad_request`. Fixed by using `natsutil.NewMsg(reqCtx, subject, body)` which copies the `X-Request-ID` from the context into the outbound message header. Integration tests (`TestAddMembers_TwoSiteEndToEnd`, `TestRoomsInfoBatchRPC`) were updated correspondingly.
+
+### A5 — Legacy peer handling in `Parse` / `memberlist_client` (implemented)
+
+`errcode.Parse` returns `(*Error, bool)`. When `memberlist_client` receives a remote envelope with a non-canonical `Code` (old peer) or empty `Message`, it falls back to `errcode.Internal("remote site returned an error")` and emits a single `slog.Warn("legacy peer emitted non-canonical errcode", ...)`. This ensures graceful mixed-version rollout without a hard dependency on the remote being up-to-date.
+
+### A6 — `errRoomKeyAbsent` converted to typed errcode (implemented)
+
+The `errRoomKeyAbsent` sentinel in `room-service/helper.go` (introduced by the room-key-fetch RPC) was converted from `errors.New(...)` to `errcode.NotFound("room key not available")` so it flows through `errnats.Reply` without requiring `sanitizeError`. The room-worker package retains its own `errRoomKeyAbsent = errors.New(...)` sentinel specifically so `errors.Is(err, errRoomKeyAbsent)` can trigger an operational alert path (wrapped via `errcode.Internal(..., errcode.WithCause(errRoomKeyAbsent))`).
+
+### A7 — `history-service` infra errors intentionally use `fmt.Errorf` (clarification)
+
+Several `fmt.Errorf("...: %w", err)` calls in `history-service/internal/service/messages.go` are correct by design. They wrap Cassandra read/write errors (infra tier) and collapse to `internal error` at the handler boundary via `Classify`. Client-visible logic (access window, not-found, forbidden) correctly uses `errcode.*` constructors. This two-tier pattern is the intended usage per CLAUDE.md §3 and `docs/error-handling.md` §2.
