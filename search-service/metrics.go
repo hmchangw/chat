@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/errcode"
 )
 
 // All collectors register with the default Prometheus registry via
@@ -34,7 +34,7 @@ var (
 )
 
 // Per-kind handles for the request-path metrics. The `status` label on
-// requests_total is resolved lazily (5 values × 2 kinds = 10 perms would
+// requests_total is resolved lazily (9 values × 4 kinds = 36 perms would
 // clutter here); the duration handles are fully bound.
 const (
 	metricKindMessages = "messages"
@@ -90,18 +90,39 @@ func durFor(kind string) prometheus.Observer {
 }
 
 // statusLabel maps a handler's returned error onto the requests_total
-// `status` label. nil → "ok"; non-internal RouteError → its Code
-// (bad_request, not_found, forbidden, conflict) so operators can
-// distinguish 4xx-equivalents; everything else → "internal".
+// `status` label. nil → "ok"; a non-empty *errcode.Error in the chain → its
+// Code (one of the 9 canonical values below); everything else → "internal".
+//
+// The label set is pinned to keep Prometheus cardinality bounded — at most
+// 9 × len(kinds) series. A non-canonical Code (e.g. a future Code constant
+// added without updating this allowlist, or a foreign envelope on a federation
+// path) collapses to "internal" rather than minting a fresh time series.
 func statusLabel(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	var rerr *natsrouter.RouteError
-	if errors.As(err, &rerr) && rerr.Code != "" && rerr.Code != natsrouter.CodeInternal {
-		return rerr.Code
+	var ee *errcode.Error
+	if errors.As(err, &ee) && ee.Code != "" {
+		if _, ok := allowedStatusLabels[string(ee.Code)]; ok {
+			return string(ee.Code)
+		}
 	}
-	return natsrouter.CodeInternal
+	return string(errcode.CodeInternal)
+}
+
+// allowedStatusLabels pins the cardinality of the requests_total status label
+// to the 8 canonical errcode Codes + "ok". Any label outside this set
+// collapses to "internal" via statusLabel.
+var allowedStatusLabels = map[string]struct{}{
+	"ok":                                {},
+	string(errcode.CodeBadRequest):      {},
+	string(errcode.CodeUnauthenticated): {},
+	string(errcode.CodeForbidden):       {},
+	string(errcode.CodeNotFound):        {},
+	string(errcode.CodeConflict):        {},
+	string(errcode.CodeTooManyRequests): {},
+	string(errcode.CodeUnavailable):     {},
+	string(errcode.CodeInternal):        {},
 }
 
 func metricsHandler() http.Handler { return promhttp.Handler() }

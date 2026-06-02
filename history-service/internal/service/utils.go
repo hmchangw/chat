@@ -2,23 +2,24 @@ package service
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/errcode"
 )
 
 // getAccessSince checks subscription and returns the historySharedSince lower bound (nil = full access).
 func (s *HistoryService) getAccessSince(ctx context.Context, account, roomID string) (*time.Time, error) {
 	accessSince, subscribed, err := s.subscriptions.GetHistorySharedSince(ctx, account, roomID)
 	if err != nil {
-		slog.Error("checking subscription", "error", err, "account", account, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("unable to verify room access")
+		return nil, fmt.Errorf("verifying room access for %s/%s: %w", account, roomID, err)
 	}
 	if !subscribed {
-		return nil, natsrouter.ErrForbidden("not subscribed to room")
+		// Parity with message-gatekeeper's identical condition: same reason
+		// lets the frontend branch consistently without service-by-service text matching.
+		return nil, errcode.Forbidden("not subscribed to room", errcode.WithReason(errcode.MessageNotSubscribed))
 	}
 	return accessSince, nil
 }
@@ -33,26 +34,26 @@ func millisToTime(millis *int64) time.Time {
 func parsePageRequest(cursor string, limit int) (cassrepo.PageRequest, error) {
 	q, err := cassrepo.ParsePageRequest(cursor, limit)
 	if err != nil {
-		slog.Error("invalid pagination cursor", "error", err, "cursor", cursor)
-		return cassrepo.PageRequest{}, natsrouter.ErrBadRequest("invalid pagination cursor")
+		// Cause is the parse error (cursor format/decode) — server-only;
+		// the user-safe message stays generic.
+		return cassrepo.PageRequest{}, errcode.BadRequest("invalid pagination cursor", errcode.WithCause(err))
 	}
 	return q, nil
 }
 
 func (s *HistoryService) findMessage(ctx context.Context, roomID, messageID string) (*models.Message, error) {
 	if messageID == "" {
-		return nil, natsrouter.ErrBadRequest("messageId is required")
+		return nil, errcode.BadRequest("messageId is required")
 	}
 	msg, err := s.msgReader.GetMessageByID(ctx, messageID)
 	if err != nil {
-		slog.Error("finding message", "error", err, "messageID", messageID)
-		return nil, natsrouter.ErrInternal("failed to retrieve message")
+		return nil, fmt.Errorf("retrieving message %s: %w", messageID, err)
 	}
 	if msg == nil {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, errcode.NotFound("message not found")
 	}
 	if msg.RoomID != roomID {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, errcode.NotFound("message not found")
 	}
 	return msg, nil
 }
