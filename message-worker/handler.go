@@ -72,7 +72,7 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if evt.Message.Type != "" {
 			// System messages may have no real user; proceed with nil sender.
 			slog.Warn("user not found for system message, using nil sender",
-				"userID", evt.Message.UserID, "type", evt.Message.Type)
+				"user_id", evt.Message.UserID, "type", evt.Message.Type)
 		} else {
 			return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
 		}
@@ -199,7 +199,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", threadRoomID,
-			"roomID", msg.RoomID,
+			"room_id", msg.RoomID,
 		)
 	}
 
@@ -279,7 +279,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", existingRoom.ID,
-			"roomID", msg.RoomID,
+			"room_id", msg.RoomID,
 		)
 	default: // msg.ThreadParentMessageCreatedAt == nil
 		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
@@ -287,7 +287,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
 			"threadRoomID", existingRoom.ID,
-			"roomID", msg.RoomID,
+			"room_id", msg.RoomID,
 		)
 	}
 
@@ -303,7 +303,7 @@ func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (s
 	if err != nil {
 		if errors.Is(err, userstore.ErrUserNotFound) {
 			slog.Warn("owner user not found — skipping cross-site outbox publish; local thread subscription insert/upsert continues",
-				"userID", userID, "role", role)
+				"user_id", userID, "role", role)
 			return "", nil
 		}
 		return "", fmt.Errorf("lookup user %s: %w", userID, err)
@@ -371,7 +371,7 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model.ThreadSubscription, ownerSiteID, msgID string) error {
 	if ownerSiteID == "" {
 		slog.Warn("owner siteID empty, skipping outbox publish",
-			"threadRoomID", sub.ThreadRoomID, "userID", sub.UserID, "msgID", msgID)
+			"threadRoomID", sub.ThreadRoomID, "user_id", sub.UserID, "msgID", msgID)
 		return nil
 	}
 	if ownerSiteID == h.siteID {

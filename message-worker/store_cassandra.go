@@ -404,7 +404,7 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 		slog.Error("thread_room_id stamp on messages_by_room missed: parent row not found at the given (room_id, bucket, created_at, message_id) coordinates",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"messageID", parentMessageID,
-			"roomID", roomID,
+			"room_id", roomID,
 			"bucket", parentBucket,
 			"parentCreatedAt", parentCreatedAt,
 			"threadRoomID", threadRoomID,

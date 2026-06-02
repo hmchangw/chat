@@ -12,7 +12,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
-	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -81,11 +81,11 @@ func TestHistoryParentFetcher_FetchQuotedParent(t *testing.T) {
 		assert.Equal(t, threadParentCreatedAt, got.ThreadParentCreatedAt.UTC())
 	})
 
-	t.Run("history returns natsrouter error envelope — returns error", func(t *testing.T) {
+	t.Run("history returns errcode error envelope — returns error", func(t *testing.T) {
 		nc := startTestNATS(t)
 
 		_, err := nc.Subscribe(subject.MsgGet(account, roomID, siteID), func(m otelnats.Msg) {
-			data, _ := json.Marshal(model.ErrorResponse{Error: "message not found"})
+			data, _ := json.Marshal(errcode.NotFound("message not found"))
 			_ = m.Msg.Respond(data)
 		})
 		require.NoError(t, err)

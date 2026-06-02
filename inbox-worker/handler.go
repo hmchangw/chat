@@ -10,6 +10,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -184,7 +185,11 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 	roomID := subEvt.Subscription.RoomID
 	roles := subEvt.Subscription.Roles
 	if len(roles) == 0 {
-		return fmt.Errorf("role_updated event has empty roles")
+		// Poison message — return errcode.Permanent so main.go's consume loop
+		// Acks (vs Nak-forever on a malformed payload).
+		slog.WarnContext(ctx, "role_updated event has empty roles",
+			"account", account, "room_id", roomID)
+		return errcode.Permanent(errcode.BadRequest("role_updated event has empty roles"))
 	}
 	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles); err != nil {
 		return fmt.Errorf("update subscription roles: %w", err)
