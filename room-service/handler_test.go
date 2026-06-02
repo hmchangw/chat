@@ -3147,7 +3147,6 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 		prep      func(s setup)
 		wantErr   error
 		wantSubst string
-		wantReply *model.ReadReceiptResponse
 	}
 
 	tests := []tc{
@@ -3263,21 +3262,14 @@ func TestHandler_handleMessageReadReceipt(t *testing.T) {
 			}
 
 			h := NewHandler(store, nil, nil, reader, nil, siteID, 1000, 1000, time.Second, nil, nil)
-			gotBytes, err := h.handleMessageReadReceipt(context.Background(), tt.subject, tt.body)
+			_, err := h.handleMessageReadReceipt(context.Background(), tt.subject, tt.body)
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
 				return
 			}
-			if tt.wantSubst != "" {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tt.wantSubst)
-				return
-			}
-			require.NoError(t, err)
-			var got model.ReadReceiptResponse
-			require.NoError(t, json.Unmarshal(gotBytes, &got))
-			require.Equal(t, *tt.wantReply, got)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantSubst)
 		})
 	}
 }
@@ -3294,9 +3286,6 @@ func (s stubMsgReader) GetMessageRoomAndCreatedAt(_ context.Context, _ string) (
 }
 
 func TestHandler_handleMessageReadReceipt_Resolution(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
 	const (
 		roomID    = "room-1"
 		requester = "alice"
@@ -3307,6 +3296,7 @@ func TestHandler_handleMessageReadReceipt_Resolution(t *testing.T) {
 	body, _ := json.Marshal(model.ReadReceiptRequest{MessageID: msgID})
 
 	t.Run("resolves reader names via userResolver", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
 		store := NewMockRoomStore(ctrl)
 		resolver := NewMockUserResolver(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
@@ -3332,6 +3322,7 @@ func TestHandler_handleMessageReadReceipt_Resolution(t *testing.T) {
 	})
 
 	t.Run("empty reader set skips resolver", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
 		store := NewMockRoomStore(ctrl)
 		resolver := NewMockUserResolver(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
@@ -3351,6 +3342,7 @@ func TestHandler_handleMessageReadReceipt_Resolution(t *testing.T) {
 	})
 
 	t.Run("resolver error propagates", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
 		store := NewMockRoomStore(ctrl)
 		resolver := NewMockUserResolver(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), requester, roomID).
