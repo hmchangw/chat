@@ -1533,11 +1533,9 @@ func TestIntegration_HandleGetRoomKey(t *testing.T) {
 	{
 		body, _ := json.Marshal(model.RoomKeyGetRequest{})
 		_, err := h.handleGetRoomKey(ctx, subject.RoomKeyGet("bob", roomID, "site-A"), body)
-		require.Error(t, err)
-		// The error message should contain the "only room members" text,
-		// confirming errNotRoomMember (a typed *errcode.Error) was returned and
-		// surfaced for clients via errnats.Reply.
-		assert.Contains(t, err.Error(), "only room members")
+		// errNotRoomMember (a typed *errcode.Error) is returned and surfaced for
+		// clients via errnats.Reply; assert on identity, not the message text.
+		require.ErrorIs(t, err, errNotRoomMember)
 	}
 }
 

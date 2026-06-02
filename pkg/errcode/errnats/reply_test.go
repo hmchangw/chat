@@ -12,6 +12,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/errcode"
@@ -48,22 +49,19 @@ func ctxQuiet() context.Context {
 func TestMarshal_TypedError(t *testing.T) {
 	data := Marshal(ctxQuiet(), errcode.NotFound("room not found", errcode.WithReason(errcode.RoomNotMember)))
 	var got map[string]any
-	_ = json.Unmarshal(data, &got)
-	if got["code"] != "not_found" || got["reason"] != "not_room_member" || got["error"] != "room not found" {
-		t.Fatalf("envelope = %v", got)
-	}
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "not_found", got["code"])
+	assert.Equal(t, "not_room_member", got["reason"])
+	assert.Equal(t, "room not found", got["error"])
 }
 
 func TestMarshal_UnknownCollapsesToInternal(t *testing.T) {
 	data := Marshal(ctxQuiet(), errors.New("mongo down"))
 	var got map[string]any
-	_ = json.Unmarshal(data, &got)
-	if got["code"] != "internal" || got["error"] != "internal error" {
-		t.Fatalf("envelope = %v", got)
-	}
-	if _, leaked := got["reason"]; leaked {
-		t.Fatal("reason should be absent")
-	}
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "internal", got["code"])
+	assert.Equal(t, "internal error", got["error"])
+	assert.NotContains(t, got, "reason", "reason should be absent")
 }
 
 func TestMarshalQuiet_DoesNotLogButStillCollapses(t *testing.T) {
@@ -74,13 +72,10 @@ func TestMarshalQuiet_DoesNotLogButStillCollapses(t *testing.T) {
 
 	data := MarshalQuiet(errors.New("mongo down"))
 	var got map[string]any
-	_ = json.Unmarshal(data, &got)
-	if got["code"] != "internal" || got["error"] != "internal error" {
-		t.Fatalf("envelope = %v", got)
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("MarshalQuiet must not log; got %s", buf.String())
-	}
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "internal", got["code"])
+	assert.Equal(t, "internal error", got["error"])
+	assert.Empty(t, buf.String(), "MarshalQuiet must not log")
 }
 
 // requestAndCaptureReply opens a subscriber on subj that runs handler on each
@@ -105,20 +100,16 @@ func TestReply_RespondsWithEnvelopeAndLogsOnce(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	if got["code"] != "forbidden" || got["reason"] != "not_room_member" || got["error"] != "not allowed" {
-		t.Fatalf("envelope = %v", got)
-	}
+	assert.Equal(t, "forbidden", got["code"])
+	assert.Equal(t, "not_room_member", got["reason"])
+	assert.Equal(t, "not allowed", got["error"])
 
 	// Exactly one Classify log line.
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("want 1 log line, got %d: %s", len(lines), buf.String())
-	}
+	require.Len(t, lines, 1, "want exactly one log line, got: %s", buf.String())
 	var line map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &line))
-	if line["msg"] != "request failed" {
-		t.Fatalf("unexpected log line: %v", line)
-	}
+	assert.Equal(t, "request failed", line["msg"])
 }
 
 func TestReply_LogsAtErrorLevelOnInternal(t *testing.T) {
@@ -131,9 +122,7 @@ func TestReply_LogsAtErrorLevelOnInternal(t *testing.T) {
 
 	var line map[string]any
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &line))
-	if line["level"] != "ERROR" {
-		t.Fatalf("internal must log at ERROR, got level=%v", line["level"])
-	}
+	assert.Equal(t, "ERROR", line["level"], "internal must log at ERROR")
 }
 
 func TestReply_UnknownErrorCollapsesToInternal(t *testing.T) {
@@ -146,15 +135,10 @@ func TestReply_UnknownErrorCollapsesToInternal(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	if got["code"] != "internal" || got["error"] != "internal error" {
-		t.Fatalf("wire envelope leaked: %v", got)
-	}
-	if strings.Contains(string(data), "mongo") {
-		t.Fatal("raw cause must NOT appear on the wire")
-	}
-	if !strings.Contains(buf.String(), "mongo down") {
-		t.Fatalf("raw cause must appear in the SERVER log: %s", buf.String())
-	}
+	assert.Equal(t, "internal", got["code"])
+	assert.Equal(t, "internal error", got["error"])
+	assert.NotContains(t, string(data), "mongo", "raw cause must NOT appear on the wire")
+	assert.Contains(t, buf.String(), "mongo down", "raw cause must appear in the SERVER log")
 }
 
 func TestReplyQuiet_RespondsButEmitsNoClassifyLine(t *testing.T) {
@@ -171,10 +155,7 @@ func TestReplyQuiet_RespondsButEmitsNoClassifyLine(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	if got["code"] != "unavailable" || got["error"] != "service busy" {
-		t.Fatalf("envelope = %v", got)
-	}
-	if strings.Contains(buf.String(), "request failed") {
-		t.Fatalf("ReplyQuiet must not emit a Classify log line; got %s", buf.String())
-	}
+	assert.Equal(t, "unavailable", got["code"])
+	assert.Equal(t, "service busy", got["error"])
+	assert.NotContains(t, buf.String(), "request failed", "ReplyQuiet must not emit a Classify log line")
 }

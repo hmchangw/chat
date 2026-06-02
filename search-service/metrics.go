@@ -91,7 +91,7 @@ func durFor(kind string) prometheus.Observer {
 
 // statusLabel maps a handler's returned error onto the requests_total
 // `status` label. nil → "ok"; a non-empty *errcode.Error in the chain → its
-// Code (one of the 9 canonical values below); everything else → "internal".
+// Code (one of the 8 canonical Codes below); everything else → "internal".
 //
 // The label set is pinned to keep Prometheus cardinality bounded — at most
 // 9 × len(kinds) series. A non-canonical Code (e.g. a future Code constant

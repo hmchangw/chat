@@ -20,13 +20,16 @@ import (
 // reason matching, and construct fresh *Error values via the named
 // constructors when a caller needs a wrapped message or extra metadata.
 var (
-	errInvalidRole      = errcode.BadRequest("invalid role: must be owner or member")
-	errOnlyOwners       = errcode.Forbidden("only owners can update roles", errcode.WithReason(errcode.RoomNotOwner))
-	errAlreadyOwner     = errcode.Conflict("user is already an owner", errcode.WithReason(errcode.RoomAlreadyOwner))
-	errNotOwner         = errcode.Forbidden("user is not an owner", errcode.WithReason(errcode.RoomNotOwner))
-	errCannotDemoteLast = errcode.Conflict("cannot demote the last owner", errcode.WithReason(errcode.RoomCannotDemoteLastOwner))
-	errRoomTypeGuard    = errcode.BadRequest("role update is only allowed in channel rooms")
-	errTargetNotMember  = errcode.BadRequest("target user is not a member of this room", errcode.WithReason(errcode.RoomTargetNotMember))
+	errInvalidRole           = errcode.BadRequest("invalid role: must be owner or member")
+	errOnlyOwners            = errcode.Forbidden("only owners can update roles", errcode.WithReason(errcode.RoomNotOwner))
+	errOnlyOwnersCanRemove   = errcode.Forbidden("only owners can remove members", errcode.WithReason(errcode.RoomNotOwner))
+	errOnlyOwnersCanAddToRes = errcode.Forbidden("only owners can add members to a restricted room", errcode.WithReason(errcode.RoomNotOwner))
+	errAlreadyOwner          = errcode.Conflict("user is already an owner", errcode.WithReason(errcode.RoomAlreadyOwner))
+	errNotOwner              = errcode.Forbidden("user is not an owner", errcode.WithReason(errcode.RoomNotOwner))
+	errCannotDemoteLast      = errcode.Conflict("cannot demote the last owner", errcode.WithReason(errcode.RoomCannotDemoteLastOwner))
+	errRoomTypeGuard         = errcode.BadRequest("role update is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
+	errAddMembersChannelOnly = errcode.BadRequest("cannot add members to a non-channel room", errcode.WithReason(errcode.RoomNonChannelOperation))
+	errTargetNotMember       = errcode.BadRequest("target user is not a member of this room", errcode.WithReason(errcode.RoomTargetNotMember))
 	// Used by both list-members (requester subscription check) and add-member
 	// channel-source expansion. Both contexts mean "the requester is not a
 	// member of the room they are asking about".
@@ -58,7 +61,7 @@ var (
 	errLastOwnerCannotLeave     = errcode.Conflict("last owner cannot leave the room", errcode.WithReason(errcode.RoomLastOwnerCannotLeave))
 	errOrgMemberCannotLeaveSolo = errcode.Forbidden("org members cannot leave individually")
 	errRoomIDMismatch           = errcode.BadRequest("room ID mismatch")
-	errRemoveChannelOnly        = errcode.BadRequest("remove-member only supported on channel rooms")
+	errRemoveChannelOnly        = errcode.BadRequest("remove-member only supported on channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 
 	// Sentinels for list-members pagination validation.
 	errListLimitInvalid  = errcode.BadRequest("limit must be > 0")

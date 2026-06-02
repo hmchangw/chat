@@ -97,7 +97,10 @@ func RequireRequestID(ctx context.Context, headers nats.Header, subject string) 
 		inbound = headers.Get(RequestIDHeader)
 	}
 	if !idgen.IsValidUUID(inbound) {
-		return ctx, "", errcode.BadRequest("X-Request-ID header is required (must be a valid hyphenated UUID per docs/error-handling.md §3a)")
+		return ctx, "", errcode.BadRequest(
+			"X-Request-ID header is required (must be a valid hyphenated UUID per docs/error-handling.md §3a)",
+			errcode.WithReason(errcode.RequestIDRequired),
+		)
 	}
 	return WithRequestID(ctx, inbound), inbound, nil
 }

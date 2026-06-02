@@ -16,4 +16,9 @@ const (
 	RoomAlreadyOwner              Reason = "already_owner"
 	RoomCannotDemoteLastOwner     Reason = "cannot_demote_last_owner"
 	RoomPromoteRequiresIndividual Reason = "promote_requires_individual"
+	// RoomNonChannelOperation marks operations that are only supported on
+	// channel rooms (add-member, remove-member, role update) but were invoked
+	// against a DM or bot-DM. The frontend uses it to render a "this only
+	// works in channels" hint instead of a generic 400.
+	RoomNonChannelOperation Reason = "non_channel_operation"
 )

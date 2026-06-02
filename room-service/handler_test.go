@@ -95,12 +95,7 @@ func TestHandler_UpdateRole_NonOwnerRejected(t *testing.T) {
 	subj := subject.MemberRoleUpdate("bob", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for non-owner role update")
-	}
-	if err.Error() != "only owners can update roles" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errOnlyOwners)
 }
 
 func TestHandler_UpdateRole_DMRejected(t *testing.T) {
@@ -120,12 +115,7 @@ func TestHandler_UpdateRole_DMRejected(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for DM room role update")
-	}
-	if err.Error() != "role update is only allowed in channel rooms" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errRoomTypeGuard)
 }
 
 func TestHandler_UpdateRole_InvalidRole(t *testing.T) {
@@ -141,12 +131,7 @@ func TestHandler_UpdateRole_InvalidRole(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for invalid role")
-	}
-	if err.Error() != "invalid role: must be owner or member" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errInvalidRole)
 }
 
 func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
@@ -175,12 +160,7 @@ func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for duplicate role")
-	}
-	if err.Error() != "user is already an owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errAlreadyOwner)
 }
 
 // Bug 5: an org-only subscriber must not be promotable to owner.
@@ -294,12 +274,7 @@ func TestHandler_UpdateRole_DemoteNonOwner(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for demoting non-owner")
-	}
-	if err.Error() != "user is not an owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errNotOwner)
 }
 
 func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
@@ -331,12 +306,7 @@ func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for last owner demotion")
-	}
-	if err.Error() != "cannot demote the last owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errCannotDemoteLast)
 }
 
 // --- Error-path tests ---

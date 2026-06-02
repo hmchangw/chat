@@ -11,8 +11,10 @@ var allReasons = []Reason{
 	RoomUserNotFound, RoomInvalidOrg,
 	RoomSelfDM, RoomLastMemberCannotRemove, RoomTargetNotMember,
 	RoomAlreadyOwner, RoomCannotDemoteLastOwner, RoomPromoteRequiresIndividual,
+	RoomNonChannelOperation,
 	MessageLargeRoomPostRestricted, MessageNotSubscribed, MessageOutsideAccessWindow,
 	AuthTokenExpired, AuthInvalidToken, AuthInvalidRequest, AuthInvalidNKey, AuthMissingFields,
+	RequestIDRequired,
 }
 
 func TestReasons_SnakeCase(t *testing.T) {

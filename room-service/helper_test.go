@@ -86,10 +86,13 @@ func TestSentinelCodesAndReasons(t *testing.T) {
 	}{
 		{"invalid role", errInvalidRole, errcode.CodeBadRequest, ""},
 		{"only owners", errOnlyOwners, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"only owners can remove", errOnlyOwnersCanRemove, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"only owners can add to restricted", errOnlyOwnersCanAddToRes, errcode.CodeForbidden, errcode.RoomNotOwner},
 		{"already owner", errAlreadyOwner, errcode.CodeConflict, errcode.RoomAlreadyOwner},
 		{"not owner", errNotOwner, errcode.CodeForbidden, errcode.RoomNotOwner},
 		{"cannot demote last", errCannotDemoteLast, errcode.CodeConflict, errcode.RoomCannotDemoteLastOwner},
-		{"room type guard", errRoomTypeGuard, errcode.CodeBadRequest, ""},
+		{"room type guard", errRoomTypeGuard, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
+		{"add members channel only", errAddMembersChannelOnly, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
 		{"target not member", errTargetNotMember, errcode.CodeBadRequest, errcode.RoomTargetNotMember},
 		{"not room member", errNotRoomMember, errcode.CodeForbidden, errcode.RoomNotMember},
 		{"invalid thread id", errInvalidThreadID, errcode.CodeBadRequest, ""},
@@ -110,7 +113,7 @@ func TestSentinelCodesAndReasons(t *testing.T) {
 		{"last owner cannot leave", errLastOwnerCannotLeave, errcode.CodeConflict, errcode.RoomLastOwnerCannotLeave},
 		{"org member cannot leave solo", errOrgMemberCannotLeaveSolo, errcode.CodeForbidden, ""},
 		{"room id mismatch", errRoomIDMismatch, errcode.CodeBadRequest, ""},
-		{"remove channel only", errRemoveChannelOnly, errcode.CodeBadRequest, ""},
+		{"remove channel only", errRemoveChannelOnly, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
 		{"list limit invalid", errListLimitInvalid, errcode.CodeBadRequest, ""},
 		{"list offset invalid", errListOffsetInvalid, errcode.CodeBadRequest, ""},
 	}

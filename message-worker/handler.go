@@ -42,15 +42,15 @@ func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadSt
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
-		slog.Error("process message failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
+		slog.ErrorContext(ctx, "process message failed", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
 		if nakErr := msg.Nak(); nakErr != nil {
-			slog.Error("failed to nack message", "error", nakErr)
+			slog.ErrorContext(ctx, "failed to nack message", "error", nakErr, "request_id", natsutil.RequestIDFromContext(ctx))
 		}
 		return
 	}
 
 	if err := msg.Ack(); err != nil {
-		slog.Error("failed to ack message", "err", err)
+		slog.ErrorContext(ctx, "failed to ack message", "error", err, "request_id", natsutil.RequestIDFromContext(ctx))
 	}
 }
 
@@ -71,8 +71,9 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 	if err != nil {
 		if evt.Message.Type != "" {
 			// System messages may have no real user; proceed with nil sender.
-			slog.Warn("user not found for system message, using nil sender",
-				"user_id", evt.Message.UserID, "type", evt.Message.Type)
+			slog.WarnContext(ctx, "user not found for system message, using nil sender",
+				"user_id", evt.Message.UserID, "type", evt.Message.Type,
+				"request_id", natsutil.RequestIDFromContext(ctx))
 		} else {
 			return fmt.Errorf("lookup user %s: %w", evt.Message.UserID, err)
 		}
@@ -153,9 +154,10 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	if err != nil {
 		if errors.Is(err, errMessageNotFound) {
-			slog.Warn("thread reply parent not found — skipping subscription creation",
+			slog.WarnContext(ctx, "thread reply parent not found — skipping subscription creation",
 				"parentMessageID", msg.ThreadParentMessageID,
-				"replyID", msg.ID)
+				"replyID", msg.ID,
+				"request_id", natsutil.RequestIDFromContext(ctx))
 			return nil
 		}
 		return fmt.Errorf("get parent message sender: %w", err)
@@ -194,7 +196,7 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 			return fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
 	} else {
-		slog.Error("first thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+		slog.ErrorContext(ctx, "first thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
@@ -246,9 +248,10 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		}
 	case errors.Is(err, errMessageNotFound):
 		parentFound = false
-		slog.Warn("thread reply parent not found — skipping parent subscription upsert",
+		slog.WarnContext(ctx, "thread reply parent not found — skipping parent subscription upsert",
 			"parentMessageID", msg.ThreadParentMessageID,
-			"replyID", msg.ID)
+			"replyID", msg.ID,
+			"request_id", natsutil.RequestIDFromContext(ctx))
 		if replier != nil {
 			replierSub := h.buildThreadSubscription(msg, existingRoom.ID, msg.UserID, msg.UserAccount, eventSiteID, now)
 			if err := h.threadStore.UpsertThreadSubscription(ctx, replierSub); err != nil {
@@ -274,7 +277,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			return "", fmt.Errorf("stamp thread_room_id on parent message: %w", err)
 		}
 	case !parentFound:
-		slog.Error("subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
+		slog.ErrorContext(ctx, "subsequent thread reply: parent not found in messages_by_id, thread_room_id stamp skipped",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
@@ -282,7 +285,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 			"room_id", msg.RoomID,
 		)
 	default: // msg.ThreadParentMessageCreatedAt == nil
-		slog.Error("subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
+		slog.ErrorContext(ctx, "subsequent thread reply: ThreadParentMessageCreatedAt is nil, parent thread_room_id stamp skipped",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"replyID", msg.ID,
 			"parentMessageID", msg.ThreadParentMessageID,
@@ -302,8 +305,9 @@ func (h *Handler) lookupOwnerSiteID(ctx context.Context, userID, role string) (s
 	user, err := h.userStore.FindUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, userstore.ErrUserNotFound) {
-			slog.Warn("owner user not found — skipping cross-site outbox publish; local thread subscription insert/upsert continues",
-				"user_id", userID, "role", role)
+			slog.WarnContext(ctx, "owner user not found — skipping cross-site outbox publish; local thread subscription insert/upsert continues",
+				"user_id", userID, "role", role,
+				"request_id", natsutil.RequestIDFromContext(ctx))
 			return "", nil
 		}
 		return "", fmt.Errorf("lookup user %s: %w", userID, err)
@@ -370,8 +374,9 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 // absorbs duplicates within the dedup window.
 func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model.ThreadSubscription, ownerSiteID, msgID string) error {
 	if ownerSiteID == "" {
-		slog.Warn("owner siteID empty, skipping outbox publish",
-			"threadRoomID", sub.ThreadRoomID, "user_id", sub.UserID, "msgID", msgID)
+		slog.WarnContext(ctx, "owner siteID empty, skipping outbox publish",
+			"threadRoomID", sub.ThreadRoomID, "user_id", sub.UserID, "msgID", msgID,
+			"request_id", natsutil.RequestIDFromContext(ctx))
 		return nil
 	}
 	if ownerSiteID == h.siteID {

@@ -598,7 +598,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 				return nil, fmt.Errorf("get requester subscription: %w", err)
 			}
 			if !hasRole(requesterSub.Roles, model.RoleOwner) {
-				return nil, errcode.Forbidden("only owners can remove members", errcode.WithReason(errcode.RoomNotOwner))
+				return nil, errOnlyOwnersCanRemove
 			}
 		}
 		counts, err := h.store.CountMembersAndOwners(ctx, roomID)
@@ -618,7 +618,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("get requester subscription: %w", err)
 		}
 		if !hasRole(sub.Roles, model.RoleOwner) {
-			return nil, errcode.Forbidden("only owners can remove members", errcode.WithReason(errcode.RoomNotOwner))
+			return nil, errOnlyOwnersCanRemove
 		}
 	}
 
@@ -764,10 +764,10 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, errcode.BadRequest("cannot add members to a non-channel room")
+		return nil, errAddMembersChannelOnly
 	}
 	if room.Restricted && !hasRole(sub.Roles, model.RoleOwner) {
-		return nil, errcode.Forbidden("only owners can add members to a restricted room", errcode.WithReason(errcode.RoomNotOwner))
+		return nil, errOnlyOwnersCanAddToRes
 	}
 
 	// 4. Unmarshal request
@@ -1563,7 +1563,7 @@ func (h *Handler) natsMuteToggle(m otelnats.Msg) {
 func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) ([]byte, error) {
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
-		return nil, errcode.BadRequest(fmt.Sprintf("invalid mute-toggle subject: %s", subj))
+		return nil, fmt.Errorf("invalid mute-toggle subject: %s", subj)
 	}
 
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {

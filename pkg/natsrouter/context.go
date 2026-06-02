@@ -8,7 +8,6 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/hmchangw/chat/pkg/errcode"
-	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
@@ -213,10 +212,4 @@ func (c *Context) GetHeader(key string) string {
 // ReplyJSON marshals v as JSON and sends it as the reply.
 func (c *Context) ReplyJSON(v any) {
 	natsutil.ReplyJSON(c.Msg, v)
-}
-
-// ReplyError replies with a bad_request envelope; new code should return a
-// typed errcode error from the handler instead.
-func (c *Context) ReplyError(msg string) {
-	errnats.Reply(c, c.Msg, errcode.BadRequest(msg))
 }
