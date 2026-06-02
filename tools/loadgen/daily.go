@@ -15,7 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 )
 
 // dailyConfig is the parsed CLI input for `loadgen daily`.
@@ -628,6 +631,10 @@ func runDaily(ctx context.Context, baseCfg *config, args []string) int {
 		slog.Error("parse daily config", "error", err)
 		return 2
 	}
+	if err := verifyDailySeeded(ctx, baseCfg); err != nil {
+		slog.Error("daily pre-flight", "error", err)
+		return 2
+	}
 	results, err := runDailyForTest(ctx, cfg, &prodEnvFactory{baseCfg: baseCfg})
 	if err != nil {
 		slog.Error("daily run", "error", err)
@@ -641,4 +648,38 @@ func runDaily(ctx context.Context, baseCfg *config, args []string) int {
 		}
 	}
 	return 0
+}
+
+// verifyDailySeeded checks that the subscriptions collection has at least one
+// row for the configured siteID. If not, the gatekeeper rejects every send
+// with "user X is not subscribed to room Y" and the whole ramp INCONCLUSIVEs
+// or TRIPs on error_rate — silently, from the operator's point of view.
+// Bail fast with a message that names the exact command to run.
+//
+// Uses a short context independent of the run-level ctx so a transient
+// Mongo blip at startup doesn't burn the whole run window before failing.
+func verifyDailySeeded(ctx context.Context, baseCfg *config) error {
+	siteID := baseCfg.SiteID
+	if siteID == "" {
+		siteID = "site-local"
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	client, err := mongoutil.Connect(checkCtx, baseCfg.MongoURI, baseCfg.MongoUsername, baseCfg.MongoPassword)
+	if err != nil {
+		return fmt.Errorf("preflight mongo connect: %w", err)
+	}
+	defer mongoutil.Disconnect(checkCtx, client)
+	subs := client.Database(baseCfg.MongoDB).Collection("subscriptions")
+	count, err := subs.CountDocuments(checkCtx, bson.M{"siteId": siteID})
+	if err != nil {
+		return fmt.Errorf("preflight count subscriptions: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("no subscriptions found in mongo for siteID=%q; "+
+			"run `loadgen seed --workload=messages --preset=<your daily preset>` first "+
+			"(or `make -C tools/loadgen/deploy seed PRESET=<your preset>`)", siteID)
+	}
+	slog.Info("preflight subscriptions ok", "siteID", siteID, "count", count)
+	return nil
 }
