@@ -13,6 +13,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -53,11 +54,10 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	out := &nats.Msg{
-		Subject: subject.MemberList(requester, ch.RoomID, ch.SiteID),
-		Data:    body,
-		Header:  nats.Header{},
-	}
+	// natsutil.NewMsg forwards the X-Request-ID from ctx; the remote
+	// room-service.handleListMembers uses RequireRequestID (strict) and would
+	// reject a header-less call with bad_request.
+	out := natsutil.NewMsg(reqCtx, subject.MemberList(requester, ch.RoomID, ch.SiteID), body)
 	reply, err := c.nc.RequestMsgWithContext(reqCtx, out)
 	if err != nil {
 		return nil, fmt.Errorf("member.list request to %s: %w", ch.SiteID, err)

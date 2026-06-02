@@ -1218,7 +1218,10 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNCb.Drain() })
 
-	ctx := context.Background()
+	// Test bypasses wrappedCtx by calling handleAddMembers directly, so we stamp
+	// a request_id here — the cross-site memberlist client forwards it to site-B,
+	// whose handler now enforces RequireRequestID (strict).
+	ctx := natsutil.WithRequestID(context.Background(), idgen.GenerateRequestID())
 
 	// Site-A: target room; requester subscribed; user document needed for ResolveAccounts.
 	mustInsertRoom(t, dbA, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
@@ -1381,7 +1384,11 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	msg, err := nc.Request(subject.RoomsInfoBatch("site-a"), data, 3*time.Second)
+	ctxReq, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	reqMsg := natsutil.NewMsg(natsutil.WithRequestID(ctxReq, idgen.GenerateRequestID()),
+		subject.RoomsInfoBatch("site-a"), data)
+	msg, err := nc.RequestMsgWithContext(ctxReq, reqMsg)
 	require.NoError(t, err)
 
 	var resp model.RoomsInfoBatchResponse
