@@ -122,8 +122,9 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
   }, [userAccount])
 
   const hasKey = useCallback((roomId: string, version: number) => {
-    const cacheKey = `${roomId}|${version}`
-    return knownKeysRef.current.has(cacheKey) || !!stateRef.current.byRoom[roomId]?.[version]
+    // knownKeysRef may retain entries evicted by trimVersions; hasKey must
+    // reflect what decrypt can actually use.
+    return !!stateRef.current.byRoom[roomId]?.[version]
   }, [])
 
   const decrypt = useCallback(async ({ roomId, version, nonceB64, ciphertextB64 }: DecryptInput): Promise<string | null> => {

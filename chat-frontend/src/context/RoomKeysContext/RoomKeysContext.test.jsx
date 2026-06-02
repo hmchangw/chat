@@ -114,7 +114,8 @@ describe('RoomKeysProvider.ensureKey', () => {
     await expect(p1).resolves.toBe(true)
     await expect(p2).resolves.toBe(true)
     expect(requestRoomKey).toHaveBeenCalledTimes(1)
-    expect(lastDecryptHook.hasKey('r1', 0)).toBe(true)
+    // hasKey reflects reducer state after re-render, not the synchronous ref
+    await waitFor(() => expect(lastDecryptHook.hasKey('r1', 0)).toBe(true))
   })
 
   it('records failure and backs off for 60s, then retries', async () => {
