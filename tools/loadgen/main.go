@@ -30,6 +30,17 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// bottleneckConfig tunes the max-rps(messages) bottleneck attribution. It is
+// additive: when Enabled is false (or PromURL is empty) the run behaves exactly
+// as before.
+type bottleneckConfig struct {
+	Enabled       bool          `env:"ENABLED"        envDefault:"true"`
+	PromURL       string        `env:"PROM_URL"       envDefault:""`
+	KneeTolerance float64       `env:"KNEE_TOLERANCE" envDefault:"0.10"`
+	QueryStep     time.Duration `env:"QUERY_STEP"     envDefault:"5s"`
+	ContainerMap  string        `env:"CONTAINER_MAP"  envDefault:""`
+}
+
 type config struct {
 	NatsURL        string   `env:"NATS_URL,required"`
 	NatsCredsFile  string   `env:"NATS_CREDS_FILE" envDefault:""`
@@ -50,7 +61,8 @@ type config struct {
 	CassandraKeyspace  string `env:"CASSANDRA_KEYSPACE"     envDefault:"chat"`
 	CassandraUsername  string `env:"CASSANDRA_USERNAME"     envDefault:""`
 	CassandraPassword  string `env:"CASSANDRA_PASSWORD"     envDefault:""`
-	MessageBucketHours int    `env:"MESSAGE_BUCKET_HOURS"   envDefault:"72"`
+	MessageBucketHours int              `env:"MESSAGE_BUCKET_HOURS"   envDefault:"72"`
+	Bottleneck         bottleneckConfig `envPrefix:"BOTTLENECK_"`
 }
 
 func main() {
