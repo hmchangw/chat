@@ -25,6 +25,12 @@ func TestRenderBottleneck_Undetermined(t *testing.T) {
 	assert.Contains(t, sb.String(), "BOTTLENECK: undetermined (prometheus unreachable)")
 }
 
+func TestRenderBottleneck_UndeterminedNoReasons(t *testing.T) {
+	var sb strings.Builder
+	renderBottleneck(&sb, bottleneckVerdict{}) // Determined=false, empty Reasons
+	assert.Contains(t, sb.String(), "BOTTLENECK: undetermined (no signal)")
+}
+
 func TestBottleneckCSVColumns(t *testing.T) {
 	det := bottleneckCSVColumns(bottleneckVerdict{Component: "message-worker", Resource: "Cassandra", Confidence: "high", Determined: true})
 	assert.Equal(t, []string{"message-worker", "cassandra", "high"}, det)
