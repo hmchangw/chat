@@ -80,6 +80,21 @@ shared helper `pkg/natsutil.DecodePayload(*nats.Msg)` implements this — it ret
 `msg.Data` verbatim for absent/`identity` encoding, gunzips for `gzip`, and errors
 loudly on any other encoding to keep silent mis-parses out.
 
+### Payload size cap
+
+The wire payload (after gzip) is bounded by the broker's `max_payload`. The worker
+reads `NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB) and **rejects any
+gzipped batch larger than the cap before publishing** — the emitter surfaces a
+clear `exceeds NATS max_payload` error instead of letting the broker NACK with a
+less informative one. The `PUSH_RECIPIENT_BATCH_SIZE=100` default leaves a wide
+margin under 256 KiB for typical recipient/metadata sizes; the cap exists as a
+last-resort guard against pathological events (huge bodies, oversized metadata).
+
+Set `NATS_MAX_PAYLOAD_BYTES` to match your broker's configured `max_payload`. The
+push service should decode with `natsutil.DecodePayloadWithLimit(msg, <same value>)`
+(or rely on the default 256 KiB) so the gzip-bomb defense matches the producer's
+commitment.
+
 ### Routing predicate notes
 
 - **`@here` is not a push trigger.** The worker treats `@all` as the broad-mention
@@ -257,6 +272,7 @@ Required before a production rollout:
    - `ROOMSUBCACHE_TTL` (default `5m`), `L1_MEMBER_CACHE_SIZE` (1000), `L1_MEMBER_CACHE_TTL` (`5s`)
    - `LARGE_ROOM_THRESHOLD` (default `500` — same knob as message-gatekeeper)
    - `PUSH_RECIPIENT_BATCH_SIZE` (default `100` — recipients per push event; tune toward provider multicast caps)
+   - `NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB — must match broker `max_payload`; see §1 Payload size cap)
    - `ROOM_META_CACHE_SIZE` (default `10000`), `ROOM_META_CACHE_TTL` (default `2m`) — fronts `rooms` collection lookups for title resolution
    - `PUSH_ASYNC_MAX_PENDING` (default `1024`)
 

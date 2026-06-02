@@ -26,12 +26,13 @@ type Emitter interface {
 }
 
 type mobileEmitter struct {
-	pub    publisher
-	siteID string
+	pub             publisher
+	siteID          string
+	maxPayloadBytes int
 }
 
-func newMobileEmitter(pub publisher, siteID string) *mobileEmitter {
-	return &mobileEmitter{pub: pub, siteID: siteID}
+func newMobileEmitter(pub publisher, siteID string, maxPayloadBytes int) *mobileEmitter {
+	return &mobileEmitter{pub: pub, siteID: siteID, maxPayloadBytes: maxPayloadBytes}
 }
 
 func (e *mobileEmitter) Emit(ctx context.Context, evt model.PushNotificationEvent) error { //nolint:gocritic // hugeParam: spec requires value semantics for Emitter interface
@@ -42,6 +43,9 @@ func (e *mobileEmitter) Emit(ctx context.Context, evt model.PushNotificationEven
 	msg, err := natsutil.NewGzipMsg(subject.PushNotification(e.siteID), data, "application/json")
 	if err != nil {
 		return fmt.Errorf("encode push batch %s: %w", evt.ID, err)
+	}
+	if e.maxPayloadBytes > 0 && len(msg.Data) > e.maxPayloadBytes {
+		return fmt.Errorf("push batch %s exceeds NATS max_payload: gzipped=%d, cap=%d", evt.ID, len(msg.Data), e.maxPayloadBytes)
 	}
 	msg.Header.Set("Nats-Msg-Id", evt.ID) // dedup key — see contract doc § Dedup
 	if err := e.pub.PublishMsg(ctx, msg); err != nil {

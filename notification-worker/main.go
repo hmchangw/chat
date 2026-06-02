@@ -49,7 +49,8 @@ type config struct {
 	L1MemberCacheTTL       time.Duration           `env:"L1_MEMBER_CACHE_TTL"       envDefault:"5s"`
 	PresenceBatchSize      int                     `env:"PRESENCE_BATCH_SIZE"       envDefault:"512"`
 	PresenceRPCTimeout     time.Duration           `env:"PRESENCE_RPC_TIMEOUT"      envDefault:"2s"`
-	PresenceEnabled        bool                    `env:"PRESENCE_RPC_ENABLED"      envDefault:"false"` // false → noopPresenceSnapshotter; set true once presence service is available
+	PresenceEnabled        bool                    `env:"PRESENCE_RPC_ENABLED"      envDefault:"false"`  // false → noopPresenceSnapshotter; set true once presence service is available
+	NatsMaxPayloadBytes    int                     `env:"NATS_MAX_PAYLOAD_BYTES"    envDefault:"262144"` // must match broker max_payload; emitter rejects any gzipped batch exceeding this
 	Consumer               stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap              bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
@@ -182,7 +183,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	emitter := newMobileEmitter(&jsPublisher{js: otelJS}, cfg.SiteID)
+	emitter := newMobileEmitter(&jsPublisher{js: otelJS}, cfg.SiteID, cfg.NatsMaxPayloadBytes)
 
 	var presence PresenceSnapshotter = noopPresenceSnapshotter{}
 	if cfg.PresenceEnabled {

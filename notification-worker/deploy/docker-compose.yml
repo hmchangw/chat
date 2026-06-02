@@ -25,6 +25,10 @@ services:
       - ROOM_META_CACHE_SIZE=10000
       - ROOM_META_CACHE_TTL=2m
       - PRESENCE_RPC_ENABLED=false
+      # Must match the broker's max_payload. Emitter rejects gzipped batches
+      # larger than this before publish so the failure surfaces with a clear
+      # error instead of a NATS NACK.
+      - NATS_MAX_PAYLOAD_BYTES=262144
       - BOOTSTRAP_STREAMS=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
