@@ -8,9 +8,11 @@ import (
 type EventType string
 
 const (
-	EventCreated EventType = "created"
-	EventUpdated EventType = "updated"
-	EventDeleted EventType = "deleted"
+	EventCreated            EventType = "created"
+	EventUpdated            EventType = "updated"
+	EventDeleted            EventType = "deleted"
+	EventThreadReplyAdded   EventType = "thread_reply_added"
+	EventThreadReplyDeleted EventType = "thread_reply_deleted"
 )
 
 type MessageEvent struct {
@@ -18,6 +20,10 @@ type MessageEvent struct {
 	Message   Message   `json:"message"`
 	SiteID    string    `json:"siteId"`
 	Timestamp int64     `json:"timestamp" bson:"timestamp"`
+	// NewTCount is the authoritative post-CAS tcount of the parent message after a
+	// thread reply is added (EventThreadReplyAdded) or deleted (EventThreadReplyDeleted).
+	// Nil for all other event types.
+	NewTCount *int `json:"newTcount,omitempty" bson:"newTcount,omitempty"`
 }
 
 type RoomMetadataUpdateEvent struct {
@@ -152,10 +158,33 @@ type ClientMessage struct {
 type RoomEventType string
 
 const (
-	RoomEventNewMessage     RoomEventType = "new_message"
-	RoomEventMessageEdited  RoomEventType = "message_edited"
-	RoomEventMessageDeleted RoomEventType = "message_deleted"
+	RoomEventNewMessage            RoomEventType = "new_message"
+	RoomEventMessageEdited         RoomEventType = "message_edited"
+	RoomEventMessageDeleted        RoomEventType = "message_deleted"
+	RoomEventThreadMetadataUpdated RoomEventType = "thread_metadata_updated"
 )
+
+// ThreadAction identifies what operation triggered a ThreadMetadataUpdatedEvent.
+type ThreadAction string
+
+const (
+	ThreadActionReplyAdded   ThreadAction = "reply_added"
+	ThreadActionReplyDeleted ThreadAction = "reply_deleted"
+)
+
+// ThreadMetadataUpdatedEvent is published to chat.room.{roomID}.event when a
+// thread reply is added or deleted. The authoritative post-CAS tcount lets the
+// frontend update the parent message's reply badge without computing deltas.
+type ThreadMetadataUpdatedEvent struct {
+	Type            RoomEventType `json:"type"`
+	RoomID          string        `json:"roomId"`
+	SiteID          string        `json:"siteId"`
+	ParentMessageID string        `json:"parentMessageId"`
+	NewTCount       int           `json:"newTcount"`
+	Action          ThreadAction  `json:"action"`
+	ReplyMessageID  string        `json:"replyMessageId"`
+	Timestamp       int64         `json:"timestamp"`
+}
 
 // RoomEvent is the live fan-out event for a newly created message
 // (RoomEventNewMessage). Edits and deletes use the flattened EditRoomEvent /

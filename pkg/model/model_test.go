@@ -818,6 +818,24 @@ func TestRoomEventTypeValues(t *testing.T) {
 	}
 }
 
+func TestRoomEventThreadMetadataUpdatedValue(t *testing.T) {
+	assert.Equal(t, model.RoomEventType("thread_metadata_updated"), model.RoomEventThreadMetadataUpdated)
+}
+
+func TestThreadMetadataUpdatedEventJSON(t *testing.T) {
+	src := model.ThreadMetadataUpdatedEvent{
+		Type:            model.RoomEventThreadMetadataUpdated,
+		RoomID:          "room-1",
+		SiteID:          "site-a",
+		ParentMessageID: "parent-msg-1",
+		NewTCount:       5,
+		Action:          "reply_added",
+		ReplyMessageID:  "reply-msg-1",
+		Timestamp:       1735689600000,
+	}
+	roundTrip(t, &src, &model.ThreadMetadataUpdatedEvent{})
+}
+
 func TestParticipantJSON(t *testing.T) {
 	t.Run("with userID", func(t *testing.T) {
 		p := model.Participant{
