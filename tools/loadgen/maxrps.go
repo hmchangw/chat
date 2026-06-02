@@ -11,9 +11,7 @@ import (
 
 func defaultSteps(workload string) string {
 	switch workload {
-	case "history":
-		return "200,500,1000,2000,5000"
-	case "read-receipt":
+	case "history", "read-receipt":
 		return "200,500,1000,2000,5000"
 	default:
 		return "500,1000,2000,5000,10000"
@@ -47,7 +45,7 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	beforeModeFlag := fs.String("before-mode", "open:70,scrollback:30", "history only: before-cursor mix")
 	scrollbackPages := fs.Int("scrollback-pages", 5, "history only: pages per scrollback chain")
 	pageLimit := fs.Int("page-limit", 20, "history only: page limit")
-	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history only: per-request timeout")
+	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history/read-receipt: per-request timeout")
 	csvPath := fs.String("csv", "", "optional CSV output path")
 	_ = fs.Parse(args)
 
