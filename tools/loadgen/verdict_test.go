@@ -197,7 +197,7 @@ func TestVerdictKind_String(t *testing.T) {
 	assert.Equal(t, "INCONCLUSIVE", verdictInconclusive.String())
 }
 
-func TestEvaluateRPSStep_CopiesPendingAndWindow(t *testing.T) {
+func TestEvaluateRPSStep_CopiesPending(t *testing.T) {
 	in := &rpsStepInputs{
 		TargetRPS:    1000,
 		Hold:         30 * time.Second,

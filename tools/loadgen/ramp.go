@@ -100,6 +100,8 @@ func runRamp(ctx context.Context, w rpsWorkload, cfg *rampConfig) []rpsStepResul
 		res := evaluateRPSStep(&in, cfg.Thresholds)
 		// RunStep does warmup then hold sequentially; approximate the hold
 		// window as [start+warmup, end] so metric queries skip the ramp-up.
+		// Note: stepEnd includes any post-hold drain the adapter performs, so
+		// HoldEnd may trail the true hold end by the drain duration.
 		res.HoldStart = stepStart.Add(cfg.Warmup)
 		res.HoldEnd = stepEnd
 		results = append(results, res)
