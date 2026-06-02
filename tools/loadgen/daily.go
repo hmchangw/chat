@@ -37,6 +37,10 @@ type dailyConfig struct {
 	MaxConnsPerProcess int
 	CSVPath            string
 	Users              int // 0 = use preset default; otherwise overrides preset.Users
+	// ActionP95Ms / ActionP99Ms are raw "name:N,name:N" strings parsed
+	// later into per-action threshold maps. Empty string keeps defaults.
+	ActionP95Ms string
+	ActionP99Ms string
 }
 
 func parseDailyConfig(args []string) (dailyConfig, error) {
@@ -101,6 +105,8 @@ for the full design and SLO rationale.
 	maxConns := fs.Int("max-conns-per-process", 25000, "safety ceiling on total nats.Conn count to this process")
 	csvPath := fs.String("csv", "", "optional CSV output path (one row per step)")
 	usersOverride := fs.Int("users", 0, "override preset.Users (0 = use preset default; must match `loadgen seed --users` if you used it)")
+	actionP95 := fs.String("action-p95-ms", "", "comma-separated per-action p95 latency caps in ms (e.g. \"read_receipt:80,scroll_history:300\"). Overrides defaults. Action names: send, read_receipt, scroll_history, refresh_room_list, member_add, room_create, mute_toggle.")
+	actionP99 := fs.String("action-p99-ms", "", "comma-separated per-action p99 latency caps in ms; same format as --action-p95-ms.")
 	if err := fs.Parse(args); err != nil {
 		return dailyConfig{}, err
 	}
@@ -133,6 +139,8 @@ for the full design and SLO rationale.
 		MaxConnsPerProcess: *maxConns,
 		CSVPath:            *csvPath,
 		Users:              *usersOverride,
+		ActionP95Ms:        *actionP95,
+		ActionP99Ms:        *actionP99,
 	}, nil
 }
 
@@ -156,6 +164,60 @@ func parseStepList(s string) ([]int, error) {
 		out = append(out, n*mult)
 	}
 	return out, nil
+}
+
+// parseActionLatencyOverrides parses "name:N,name:N" into a map of action
+// name to threshold in ms. Empty input returns an empty map (caller treats
+// as "no overrides"). Invalid format or unknown action names are errors.
+func parseActionLatencyOverrides(s string) (map[string]float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	known := make(map[string]bool, len(allActionKinds))
+	for _, k := range allActionKinds {
+		known[k.String()] = true
+	}
+	out := make(map[string]float64)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		colon := strings.IndexByte(part, ':')
+		if colon < 0 {
+			return nil, fmt.Errorf("expected name:N, got %q", part)
+		}
+		name := strings.TrimSpace(part[:colon])
+		valStr := strings.TrimSpace(part[colon+1:])
+		if !known[name] {
+			return nil, fmt.Errorf("unknown action name %q (valid: send, read_receipt, scroll_history, refresh_room_list, member_add, room_create, mute_toggle)", name)
+		}
+		n, err := strconv.ParseFloat(valStr, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid ms value %q for %s: must be non-negative number", valStr, name)
+		}
+		out[name] = n
+	}
+	return out, nil
+}
+
+// mergeActionThresholds replaces any default thresholds for the actions
+// named in overrides. Untouched actions keep their defaults; this lets
+// the operator tune only the ones that matter to their environment
+// without re-specifying the whole set.
+func mergeActionThresholds(th *Thresholds, p95Overrides, p99Overrides map[string]float64) {
+	if th.ActionP95Ms == nil && len(p95Overrides) > 0 {
+		th.ActionP95Ms = make(map[string]float64)
+	}
+	for k, v := range p95Overrides {
+		th.ActionP95Ms[k] = v
+	}
+	if th.ActionP99Ms == nil && len(p99Overrides) > 0 {
+		th.ActionP99Ms = make(map[string]float64)
+	}
+	for k, v := range p99Overrides {
+		th.ActionP99Ms[k] = v
+	}
 }
 
 // stepEnv bundles the runtime dependencies of a step. Stub-able for unit tests.
@@ -504,6 +566,19 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 			"max_step", maxStep, "preset_users", preset.Users)
 	}
 
+	// Parse per-action latency overrides and merge into defaults. Empty
+	// override string keeps the default; an explicit "name:N" replaces
+	// that action's threshold (set N to a very large number to effectively
+	// disable the gate).
+	p95Overrides, err := parseActionLatencyOverrides(cfg.ActionP95Ms)
+	if err != nil {
+		return nil, fmt.Errorf("--action-p95-ms: %w", err)
+	}
+	p99Overrides, err := parseActionLatencyOverrides(cfg.ActionP99Ms)
+	if err != nil {
+		return nil, fmt.Errorf("--action-p99-ms: %w", err)
+	}
+
 	siteID := "site-local"
 	if cfg, ok := factoryBaseCfg(factory); ok && cfg.SiteID != "" {
 		siteID = cfg.SiteID
@@ -528,6 +603,7 @@ func runDailyForTest(ctx context.Context, cfg dailyConfig, factory envFactory) (
 		env.siteID = siteID
 	}
 	env.runSeed = dailyRunSeed
+	mergeActionThresholds(&env.thresholds, p95Overrides, p99Overrides)
 	defer closePools(env)
 
 	prevN := 0

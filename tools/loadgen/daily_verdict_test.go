@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -180,4 +181,48 @@ func TestServiceScraper_DeltaAfterBaseline(t *testing.T) {
 	out, err = s.Scrape(context.Background(), urls)
 	require.NoError(t, err)
 	require.Equal(t, int64(3), out["svc"])
+}
+
+func TestEvaluateStep_TripsOnPerActionP95(t *testing.T) {
+	in := stepInputs{
+		N: 1000, EffectiveN: 1000, HoldDuration: 60 * time.Second,
+		LatencySamples: []float64{10, 20, 30}, AttemptedOps: 100,
+		ActionSamplesMs: map[string][]float64{
+			"read_receipt": repeatFloat(60, 100), // p95 ≈ 60ms, under 100ms cap
+			"scroll_history": append( // p95 lands at 800ms, over 500ms cap
+				repeatFloat(50, 90), repeatFloat(800, 10)...,
+			),
+		},
+	}
+	r := evaluateStep(in, defaultThresholds())
+	require.True(t, r.Tripped)
+	require.NotEmpty(t, r.TrippedReasons)
+	// One reason should mention scroll_history p95
+	joined := strings.Join(r.TrippedReasons, "|")
+	require.Contains(t, joined, "scroll_history p95=")
+	require.NotContains(t, joined, "read_receipt p95=")
+}
+
+func TestEvaluateStep_NoTripWhenActionLatenciesUnderCap(t *testing.T) {
+	in := stepInputs{
+		N: 1000, EffectiveN: 1000, HoldDuration: 60 * time.Second,
+		LatencySamples: []float64{10, 20, 30}, AttemptedOps: 100,
+		ActionSamplesMs: map[string][]float64{
+			"read_receipt":      repeatFloat(50, 100),
+			"scroll_history":    repeatFloat(200, 100),
+			"member_add":        repeatFloat(80, 100),
+			"refresh_room_list": repeatFloat(40, 100),
+		},
+	}
+	r := evaluateStep(in, defaultThresholds())
+	require.False(t, r.Tripped, "reasons: %v", r.TrippedReasons)
+	require.False(t, r.Inconclusive)
+}
+
+func repeatFloat(v float64, n int) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
 }

@@ -145,3 +145,47 @@ func TestRunStep_PassesWhenTrafficFlows(t *testing.T) {
 	// just confirms the new guard fires.
 	_ = r
 }
+
+func TestParseActionLatencyOverrides(t *testing.T) {
+	t.Run("empty returns nil", func(t *testing.T) {
+		m, err := parseActionLatencyOverrides("")
+		require.NoError(t, err)
+		require.Nil(t, m)
+	})
+	t.Run("single entry", func(t *testing.T) {
+		m, err := parseActionLatencyOverrides("read_receipt:80")
+		require.NoError(t, err)
+		require.Equal(t, map[string]float64{"read_receipt": 80}, m)
+	})
+	t.Run("multiple entries with whitespace", func(t *testing.T) {
+		m, err := parseActionLatencyOverrides(" read_receipt:80 , scroll_history:300 ")
+		require.NoError(t, err)
+		require.Equal(t, map[string]float64{"read_receipt": 80, "scroll_history": 300}, m)
+	})
+	t.Run("rejects unknown action", func(t *testing.T) {
+		_, err := parseActionLatencyOverrides("nope:80")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unknown action name")
+	})
+	t.Run("rejects missing colon", func(t *testing.T) {
+		_, err := parseActionLatencyOverrides("read_receipt 80")
+		require.Error(t, err)
+	})
+	t.Run("rejects negative value", func(t *testing.T) {
+		_, err := parseActionLatencyOverrides("read_receipt:-5")
+		require.Error(t, err)
+	})
+}
+
+func TestMergeActionThresholds(t *testing.T) {
+	th := defaultThresholds()
+	mergeActionThresholds(&th,
+		map[string]float64{"read_receipt": 50, "scroll_history": 1000},
+		map[string]float64{"member_add": 800},
+	)
+	require.Equal(t, 50.0, th.ActionP95Ms["read_receipt"], "override applied")
+	require.Equal(t, 1000.0, th.ActionP95Ms["scroll_history"], "override applied")
+	require.Equal(t, 200.0, th.ActionP95Ms["member_add"], "default preserved for non-overridden")
+	require.Equal(t, 800.0, th.ActionP99Ms["member_add"], "p99 override applied")
+	require.Equal(t, 250.0, th.ActionP99Ms["read_receipt"], "p99 default preserved")
+}

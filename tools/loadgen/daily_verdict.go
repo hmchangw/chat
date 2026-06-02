@@ -40,6 +40,18 @@ type Thresholds struct {
 	PendingGrowth       int64
 	GCPauseInconclusive float64
 	CPUInconclusive     float64
+
+	// ActionP95Ms and ActionP99Ms gate per-action latency. Empty map (or
+	// missing key for a given action) means "don't gate this action".
+	// Read in evaluateStep; defaults populated by defaultThresholds.
+	//
+	// Keys are stable action names from actionKind.String() — e.g.
+	// "read_receipt", "scroll_history", "member_add". These run in the
+	// loadgen process: each sample is the wall-clock around the per-action
+	// handler call, so the thresholds reflect *handler* latency (not the
+	// publish→broadcast pipeline gated by P95LatencyMs / P99LatencyMs).
+	ActionP95Ms map[string]float64
+	ActionP99Ms map[string]float64
 }
 
 func defaultThresholds() Thresholds {
@@ -47,6 +59,28 @@ func defaultThresholds() Thresholds {
 		P95LatencyMs: 500, P99LatencyMs: 1000,
 		ErrorRate: 0.001, PendingGrowth: 1000,
 		GCPauseInconclusive: 50, CPUInconclusive: 80,
+		// Per-action defaults reflect typical handler latencies for the
+		// chat backend. They're observational floors — runs against
+		// faster or slower infrastructure may want to tune via the
+		// --action-p95/--action-p99 flags. Actions not listed here
+		// (e.g. send, thread_reply) don't gate at this layer — sends
+		// gate via the broadcast-latency p95/p99 above.
+		ActionP95Ms: map[string]float64{
+			"read_receipt":      100,
+			"refresh_room_list": 200,
+			"scroll_history":    500,
+			"member_add":        200,
+			"mute_toggle":       100,
+			"room_create":       500,
+		},
+		ActionP99Ms: map[string]float64{
+			"read_receipt":      250,
+			"refresh_room_list": 500,
+			"scroll_history":    1500,
+			"member_add":        500,
+			"mute_toggle":       250,
+			"room_create":       1500,
+		},
 	}
 }
 
@@ -218,6 +252,26 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 			r.Tripped = true
 			r.TrippedReasons = append(r.TrippedReasons,
 				fmt.Sprintf("%s errors +%d", svc, n))
+		}
+	}
+	// Per-action latency gates. Each gated action contributes at most two
+	// trip reasons (p95 and p99). Walk allActionKinds for stable ordering
+	// so reason output doesn't depend on map iteration.
+	for _, k := range allActionKinds {
+		name := k.String()
+		s, ok := r.ActionLatencies[name]
+		if !ok || s.Count == 0 {
+			continue
+		}
+		if cap, ok := th.ActionP95Ms[name]; ok && s.P95Ms > cap {
+			r.Tripped = true
+			r.TrippedReasons = append(r.TrippedReasons,
+				fmt.Sprintf("%s p95=%.0fms > %.0f", name, s.P95Ms, cap))
+		}
+		if cap, ok := th.ActionP99Ms[name]; ok && s.P99Ms > cap {
+			r.Tripped = true
+			r.TrippedReasons = append(r.TrippedReasons,
+				fmt.Sprintf("%s p99=%.0fms > %.0f", name, s.P99Ms, cap))
 		}
 	}
 	return r
