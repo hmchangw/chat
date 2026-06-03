@@ -5,10 +5,9 @@ import (
 	"regexp"
 )
 
-// htmlTagRE matches a single HTML tag, including multi-line tags. (?s) makes
-// `.`-class behavior span newlines via the negated class already, but we keep
-// it explicit for clarity.
-var htmlTagRE = regexp.MustCompile(`(?s)<[^>]*>`)
+// htmlTagRE matches a single HTML tag. [^>] already spans newlines, so
+// multi-line tags are handled without the (?s) flag.
+var htmlTagRE = regexp.MustCompile(`<[^>]*>`)
 
 // stripHTML removes HTML tags and decodes HTML entities, mirroring the
 // html_strip char filter that preceded tokenization in the old ES analyzer.

@@ -23,19 +23,23 @@ func Analyze(text string) []string {
 	for _, tok := range tokenizePattern(stripped) {
 		for _, wd := range wordDelimiter(tok) {
 			if hasDelimiter(wd) {
-				if low := strings.ToLower(wd); low != "" {
-					out = append(out, low)
-				}
+				out = appendLower(out, wd)
 				continue
 			}
 			for _, cj := range cjkBigram(wd) {
-				if low := strings.ToLower(cj); low != "" {
-					out = append(out, low)
-				}
+				out = appendLower(out, cj)
 			}
 		}
 	}
 	return out
+}
+
+// appendLower lowercases s and appends it to dst unless it is empty.
+func appendLower(dst []string, s string) []string {
+	if low := strings.ToLower(s); low != "" {
+		return append(dst, low)
+	}
+	return dst
 }
 
 // hasDelimiter reports whether s contains any non-word rune — i.e. a character

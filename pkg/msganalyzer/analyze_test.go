@@ -48,3 +48,21 @@ func TestAnalyze_Deterministic(t *testing.T) {
 	in := "<i>Quarterly</i> revenue_报告 up 12%"
 	assert.Equal(t, Analyze(in), Analyze(in))
 }
+
+func TestAppendLower(t *testing.T) {
+	tests := []struct {
+		name string
+		dst  []string
+		in   string
+		want []string
+	}{
+		{name: "appends lowercased", dst: nil, in: "ABC", want: []string{"abc"}},
+		{name: "appends to existing", dst: []string{"x"}, in: "Y", want: []string{"x", "y"}},
+		{name: "skips empty", dst: []string{"x"}, in: "", want: []string{"x"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, appendLower(tt.dst, tt.in))
+		})
+	}
+}
