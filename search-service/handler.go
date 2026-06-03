@@ -150,6 +150,9 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 // the server's configured default arm wins (which is C whenever encryption is
 // disabled).
 func (h *handler) resolveArm(variant string) (string, error) {
+	// Normalize the inbound variant the same way EncDefaultArm is uppercased at
+	// startup, so a bench client sending e.g. "a" resolves to arm A.
+	variant = strings.ToUpper(strings.TrimSpace(variant))
 	if h.cfg.BenchModeEnabled && variant != "" {
 		switch variant {
 		case armC, armA, armB:

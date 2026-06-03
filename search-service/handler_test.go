@@ -380,6 +380,25 @@ func TestHandler_SearchMessages_InvalidVariantRejected(t *testing.T) {
 	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
+func TestHandler_SearchMessages_LowercaseVariant_BenchOn_ResolvesToArm(t *testing.T) {
+	store := &fakeStore{searchBody: encHitBody(t, "m1", "r1", []byte("CT"), []byte("N"))}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	d := &fakeDecrypter{byRoom: map[string]string{"r1": "decrypted-hi"}}
+	h := newEncTestHandler(store, cache, "C", true, testHasher(t), d, &fakeHistoryBatchClient{})
+
+	// A bench client sending lowercase " a " must normalize to arm A, not 400.
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi", Variant: " a "})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, EncMessageIndexPattern, store.searchCalls[0].indices, "lowercase 'a' must route to arm A")
+	require.Len(t, resp.Messages, 1)
+	assert.Equal(t, "decrypted-hi", resp.Messages[0].Content)
+	require.Len(t, d.calls, 1, "decrypter must be invoked for arm A")
+}
+
 func TestHandler_SearchMessages_DefaultArmA_NoVariant(t *testing.T) {
 	store := &fakeStore{searchBody: encHitBody(t, "m1", "r1", []byte("CT"), []byte("N"))}
 	cache := newFakeCache()

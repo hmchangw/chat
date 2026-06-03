@@ -127,6 +127,42 @@ type encDeps struct {
 	indexPattern  []string
 }
 
+// validateEncConfig validates the flag-gated encrypted-search config WITHOUT
+// constructing any infra (Vault/Mongo/NATS), so each validation branch is unit
+// testable. buildEncDeps calls it first, then does the infra wiring. The
+// DefaultArm is read from enc.DefaultArm (already uppercased by the caller in
+// main.go before this runs in production; the test exercises the raw struct).
+//
+// Rules: when encryption is disabled the only valid default arm is C; when
+// enabled the arm must be one of C/A/B, the index prefix must carry a -v<N>
+// suffix, and the blind key must decode to a long-enough HMAC key.
+func validateEncConfig(enc EncConfig, blind BlindConfig) error {
+	defaultArm := strings.ToUpper(strings.TrimSpace(enc.DefaultArm))
+
+	if !enc.Enabled {
+		if defaultArm != armC {
+			return fmt.Errorf("SEARCH_ENC_DEFAULT_ARM=%q requires SEARCH_ENC_ENABLED=true", defaultArm)
+		}
+		return nil
+	}
+
+	switch defaultArm {
+	case armC, armA, armB:
+	default:
+		return fmt.Errorf("invalid SEARCH_ENC_DEFAULT_ARM %q: must be one of C, A, B", defaultArm)
+	}
+
+	if _, _, ok := searchindex.StripVersion(enc.MsgIndexPrefix); !ok {
+		return fmt.Errorf("invalid SEARCH_ENC_MSG_INDEX_PREFIX %q: must end with -v<N>, e.g. enc-messages-v1", enc.MsgIndexPrefix)
+	}
+
+	if _, err := blindsearch.LoadHasher(blind.Key, blind.Version); err != nil {
+		return fmt.Errorf("load blind hasher: %w", err)
+	}
+
+	return nil
+}
+
 // buildEncDeps validates the enc config and constructs the dependencies each
 // honored arm needs, failing fast on a misconfiguration. The hasher is always
 // required when encryption is on; the cipher is required if any honored arm is
@@ -134,17 +170,12 @@ type encDeps struct {
 // plus (in bench mode) every variant a request may select, so a bench-mode
 // deployment must wire BOTH A and B.
 func buildEncDeps(ctx context.Context, cfg *Config, mongoDB *mongo.Database, nc *otelnats.Conn, defaultArm string) (encDeps, error) {
-	if !cfg.Enc.Enabled {
-		if defaultArm != armC {
-			return encDeps{}, fmt.Errorf("SEARCH_ENC_DEFAULT_ARM=%q requires SEARCH_ENC_ENABLED=true", defaultArm)
-		}
-		return encDeps{}, nil
+	if err := validateEncConfig(cfg.Enc, cfg.Blind); err != nil {
+		return encDeps{}, err
 	}
 
-	switch defaultArm {
-	case armC, armA, armB:
-	default:
-		return encDeps{}, fmt.Errorf("invalid SEARCH_ENC_DEFAULT_ARM %q: must be one of C, A, B", defaultArm)
+	if !cfg.Enc.Enabled {
+		return encDeps{}, nil
 	}
 
 	// In bench mode any of A/B may be selected per request, so both content
@@ -152,10 +183,7 @@ func buildEncDeps(ctx context.Context, cfg *Config, mongoDB *mongo.Database, nc 
 	needA := defaultArm == armA || cfg.Enc.BenchModeEnabled
 	needB := defaultArm == armB || cfg.Enc.BenchModeEnabled
 
-	base, _, ok := searchindex.StripVersion(cfg.Enc.MsgIndexPrefix)
-	if !ok {
-		return encDeps{}, fmt.Errorf("invalid SEARCH_ENC_MSG_INDEX_PREFIX %q: must end with -v<N>, e.g. enc-messages-v1", cfg.Enc.MsgIndexPrefix)
-	}
+	base, _, _ := searchindex.StripVersion(cfg.Enc.MsgIndexPrefix)
 	indexPattern := []string{fmt.Sprintf("%s-*", base), fmt.Sprintf("*:%s-*", base)}
 
 	hasher, err := blindsearch.LoadHasher(cfg.Blind.Key, cfg.Blind.Version)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -93,6 +94,88 @@ func TestRetrieveContentB_Empty(t *testing.T) {
 	assert.Empty(t, out)
 	assert.NotNil(t, out, "must return a non-nil empty slice")
 	assert.Empty(t, client.callIDs, "no hits → no history call")
+}
+
+// chunkingHistoryBatchClient returns content keyed by message ID across any
+// number of chunked calls and records each call's IDs. failChunkContaining, if
+// set, makes any call whose ID set includes that ID return an error — so a test
+// can drive a single failing chunk in a multi-chunk fetch.
+type chunkingHistoryBatchClient struct {
+	byID                map[string]string
+	failChunkContaining string
+	callIDs             [][]string
+}
+
+func (c *chunkingHistoryBatchClient) GetByIDs(_ context.Context, _ string, ids []string) ([]cassandra.Message, error) {
+	idsCopy := append([]string(nil), ids...)
+	c.callIDs = append(c.callIDs, idsCopy)
+	if c.failChunkContaining != "" {
+		for _, id := range ids {
+			if id == c.failChunkContaining {
+				return nil, errors.New("history down for this chunk")
+			}
+		}
+	}
+	out := make([]cassandra.Message, 0, len(ids))
+	for _, id := range ids {
+		if msg, ok := c.byID[id]; ok {
+			out = append(out, cassandra.Message{MessageID: id, Msg: msg})
+		}
+	}
+	return out, nil
+}
+
+func TestRetrieveContentB_ChunksAtServerCap(t *testing.T) {
+	const n = 250
+	hits := make([]encMessageSearchHit, 0, n)
+	byID := make(map[string]string, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("m%03d", i)
+		hits = append(hits, encMessageSearchHit{MessageID: id, RoomID: "r1"})
+		byID[id] = fmt.Sprintf("body-%03d", i)
+	}
+	client := &chunkingHistoryBatchClient{byID: byID}
+
+	out := retrieveContentB(context.Background(), client, "alice", hits)
+
+	require.Len(t, out, n)
+	// 250 hits → two GetByIDs calls of 200 + 50.
+	require.Len(t, client.callIDs, 2, "250 hits must split into 2 chunks")
+	assert.Len(t, client.callIDs[0], historyBatchChunkSize)
+	assert.Len(t, client.callIDs[1], n-historyBatchChunkSize)
+	assert.LessOrEqual(t, len(client.callIDs[0]), 200, "no chunk may exceed the server cap")
+
+	// All content mapped correctly, in ES order.
+	for i := 0; i < n; i++ {
+		assert.Equal(t, fmt.Sprintf("m%03d", i), out[i].MessageID)
+		assert.Equal(t, fmt.Sprintf("body-%03d", i), out[i].Content)
+	}
+}
+
+func TestRetrieveContentB_OneChunkErrorsOthersFilled(t *testing.T) {
+	const n = 250
+	hits := make([]encMessageSearchHit, 0, n)
+	byID := make(map[string]string, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("m%03d", i)
+		hits = append(hits, encMessageSearchHit{MessageID: id, RoomID: "r1"})
+		byID[id] = fmt.Sprintf("body-%03d", i)
+	}
+	// The second chunk (hits 200..249) contains m249 → make that chunk error.
+	client := &chunkingHistoryBatchClient{byID: byID, failChunkContaining: "m249"}
+
+	out := retrieveContentB(context.Background(), client, "alice", hits)
+
+	require.Len(t, out, n)
+	require.Len(t, client.callIDs, 2)
+	// First chunk filled, second chunk (errored) left empty — no dropped hits.
+	for i := 0; i < historyBatchChunkSize; i++ {
+		assert.Equal(t, fmt.Sprintf("body-%03d", i), out[i].Content, "first chunk must be filled")
+	}
+	for i := historyBatchChunkSize; i < n; i++ {
+		assert.Equal(t, fmt.Sprintf("m%03d", i), out[i].MessageID)
+		assert.Equal(t, "", out[i].Content, "errored chunk must leave content empty, hits kept")
+	}
 }
 
 // fakeDecrypter is a hand-written stub matching the decrypter interface.

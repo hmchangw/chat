@@ -20,6 +20,13 @@ import (
 // by the other history-service requesters in the codebase.
 const historyBatchRequestTimeout = 2 * time.Second
 
+// historyBatchChunkSize caps the message IDs sent in a single GetByIDs call.
+// It mirrors history-service's server-side maxBatchMessageIDs (200, in
+// history-service/internal/service/messages_batch.go) — exceeding it makes the
+// batch RPC reject the whole request, so search-service splits its hit IDs into
+// chunks no larger than this regardless of SEARCH_MAX_DOC_COUNTS.
+const historyBatchChunkSize = 200
+
 // encMessageSearchHit is the `_source` shape of an encrypted-message ES hit.
 // It mirrors messageSearchHit's metadata but carries the per-room atrest
 // ciphertext (contentEnc) + nonce (encNonce) INSTEAD of plaintext content —
@@ -98,14 +105,19 @@ type historyBatchClient interface {
 }
 
 // retrieveContentB is Approach B content retrieval: collect every hit's
-// messageId, ask history-service for those bodies in a SINGLE batch RPC, then
-// project the hits back in ES order filling Content from the returned map.
+// messageId, ask history-service for those bodies in batch RPC(s), then project
+// the hits back in ES order filling Content from the returned map.
 //
-// The batch call is best-effort: if it fails entirely the hits are still
-// returned (with empty Content) so a transient history outage degrades the
-// response rather than failing the whole search. A messageId absent from the
-// reply (inaccessible per server-side enforcement, or simply missing) projects
-// to empty Content — never a dropped hit.
+// The hit IDs are split into chunks of at most historyBatchChunkSize because
+// history-service rejects a batch larger than its server-side cap; this keeps
+// arm B working even when SEARCH_MAX_DOC_COUNTS is raised above that cap.
+//
+// Each chunk's fetch is best-effort and independent: a chunk that errors is
+// logged (no content leaked — only the account and ID count) and leaves its
+// hits with empty Content, while the other chunks still fill, so a transient
+// history outage degrades the response rather than failing the whole search. A
+// messageId absent from a reply (inaccessible per server-side enforcement, or
+// simply missing) projects to empty Content — never a dropped hit.
 func retrieveContentB(ctx context.Context, client historyBatchClient, account string, hits []encMessageSearchHit) []model.SearchMessage {
 	out := make([]model.SearchMessage, 0, len(hits))
 	if len(hits) == 0 {
@@ -118,11 +130,18 @@ func retrieveContentB(ctx context.Context, client historyBatchClient, account st
 	}
 
 	byID := make(map[string]string, len(hits))
-	msgs, err := client.GetByIDs(ctx, account, ids)
-	if err != nil {
-		slog.WarnContext(ctx, "history batch fetch failed; returning empty content",
-			"account", account, "ids", len(ids), "error", err)
-	} else {
+	for start := 0; start < len(ids); start += historyBatchChunkSize {
+		end := start + historyBatchChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		msgs, err := client.GetByIDs(ctx, account, chunk)
+		if err != nil {
+			slog.WarnContext(ctx, "history batch fetch chunk failed; leaving chunk content empty",
+				"account", account, "ids", len(chunk), "error", err)
+			continue
+		}
 		for i := range msgs {
 			byID[msgs[i].MessageID] = msgs[i].Msg
 		}
