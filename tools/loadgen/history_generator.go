@@ -232,67 +232,21 @@ func (g *HistoryGenerator) Run(ctx context.Context) error {
 	return g.runPaced(ctx)
 }
 
-// runSerial issues one request per tick on the ticker goroutine. Legacy path
-// (MaxInFlight == 0): does not batch and will not ramp past the single-ticker
-// ceiling — retained for bisection, never for real load runs.
+// runSerial is the legacy one-request-per-tick path (MaxInFlight == 0), retained
+// for bisection; it will not ramp past the single-ticker ceiling.
 func (g *HistoryGenerator) runSerial(ctx context.Context) error {
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-			g.requestOne(ctx)
-		}
-	}
+	serialDispatch(ctx, g.cfg.Rate, g.requestOne)
+	return nil
 }
 
-// runPaced drives a coarse-tick batched pacer into a bounded worker pool, so
-// achieved RPS is not capped by single-ticker resolution. A full pool is
-// recorded as saturation (raise MaxInFlight); events the pacer could not release
-// on schedule are recorded as underrun (the load box could not keep up).
+// runPaced drives the batched pacer into a bounded worker pool so achieved RPS
+// is not capped by single-ticker resolution. A full pool is recorded as
+// saturation (raise MaxInFlight); events the pacer could not release on schedule
+// as underrun (the load box could not keep up).
 func (g *HistoryGenerator) runPaced(ctx context.Context) error {
-	p := newPacer(g.cfg.Rate, time.Now())
-	tick := time.NewTicker(p.interval)
-	defer tick.Stop()
-
-	sem := make(chan struct{}, g.cfg.MaxInFlight)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(drainGracePeriod):
-			}
-			return nil
-		case <-tick.C:
-			emit, underrun := p.tick(time.Now())
-			g.cfg.Collector.RecordUnderrun(underrun)
-			for i := 0; i < emit; i++ {
-				select {
-				case sem <- struct{}{}:
-					wg.Add(1)
-					go func() {
-						defer func() {
-							<-sem
-							wg.Done()
-						}()
-						g.requestOne(ctx)
-					}()
-				default:
-					g.cfg.Collector.RecordSaturation()
-				}
-			}
-		}
-	}
+	pacedDispatch(ctx, g.cfg.Rate, g.cfg.MaxInFlight,
+		g.cfg.Collector.RecordUnderrun, g.cfg.Collector.RecordSaturation, g.requestOne)
+	return nil
 }
 
 func (g *HistoryGenerator) requestOne(ctx context.Context) {

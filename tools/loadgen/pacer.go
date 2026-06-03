@@ -1,6 +1,10 @@
 package main
 
-import "time"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 const (
 	// minEmitInterval is the floor for the open-loop ticker. A single
@@ -69,4 +73,72 @@ func (p *pacer) tick(now time.Time) (emit, underrun int) {
 	emit = int(deficit)
 	p.emitted += float64(emit + underrun)
 	return emit, underrun
+}
+
+// serialDispatch ticks at the natural 1s/rate interval and runs do once per
+// tick on the ticker goroutine. Legacy path (MaxInFlight == 0): no batching, so
+// it cannot ramp past single-ticker resolution — retained for bisection only.
+func serialDispatch(ctx context.Context, rate int, do func(context.Context)) {
+	interval := time.Second / time.Duration(rate)
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			do(ctx)
+		}
+	}
+}
+
+// pacedDispatch drives a batched pacer into a bounded worker pool until ctx
+// cancels, so achieved rate is not capped by single-ticker resolution. do runs
+// per released event on a pool goroutine; recordUnderrun tallies events the
+// pacer could not release on schedule (per tick) and recordSaturation tallies
+// events dropped because the in-flight pool was full (per event). On ctx
+// cancellation it drains in-flight work up to drainGracePeriod.
+func pacedDispatch(
+	ctx context.Context, rate, maxInFlight int,
+	recordUnderrun func(int), recordSaturation func(), do func(context.Context),
+) {
+	p := newPacer(rate, time.Now())
+	tick := time.NewTicker(p.interval)
+	defer tick.Stop()
+
+	sem := make(chan struct{}, maxInFlight)
+	var wg sync.WaitGroup
+	for {
+		select {
+		case <-ctx.Done():
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(drainGracePeriod):
+			}
+			return
+		case <-tick.C:
+			emit, underrun := p.tick(time.Now())
+			recordUnderrun(underrun)
+			for i := 0; i < emit; i++ {
+				select {
+				case sem <- struct{}{}:
+					wg.Add(1)
+					go func() {
+						defer func() {
+							<-sem
+							wg.Done()
+						}()
+						do(ctx)
+					}()
+				default:
+					recordSaturation()
+				}
+			}
+		}
+	}
 }

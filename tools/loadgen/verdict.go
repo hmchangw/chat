@@ -163,7 +163,7 @@ func evaluateRPSStep(in *rpsStepInputs, th rpsThresholds) rpsStepResult {
 	// (3) Healthy-but-cannot-push -> INCONCLUSIVE.
 	if th.RateTolerance > 0 && res.AchievedRPS < float64(in.TargetRPS)*(1-th.RateTolerance) {
 		res.Kind = verdictInconclusive
-		res.Reasons = []string{shortfallReason(in, &res, th)}
+		res.Reasons = []string{shortfallReason(&res, th)}
 		return res
 	}
 
@@ -176,20 +176,20 @@ func evaluateRPSStep(in *rpsStepInputs, th rpsThresholds) rpsStepResult {
 // load-box limit so the operator knows which knob to turn. Emit underrun
 // (the pacer couldn't release on schedule) and pool saturation (in-flight cap
 // too small) point at different fixes, so the message distinguishes them.
-func shortfallReason(in *rpsStepInputs, res *rpsStepResult, th rpsThresholds) string {
+func shortfallReason(res *rpsStepResult, th rpsThresholds) string {
 	base := fmt.Sprintf("achieved %.0f rps < %.0f%% of target %d rps",
-		res.AchievedRPS, (1-th.RateTolerance)*100, in.TargetRPS)
+		res.AchievedRPS, (1-th.RateTolerance)*100, res.TargetRPS)
 	switch {
-	case in.EmitUnderrun > in.Saturation:
+	case res.EmitUnderrun > res.Saturation:
 		return fmt.Sprintf("%s — load box could not emit on schedule (emit underrun=%d, saturation=%d); "+
 			"reduce per-box rate, add load shards, or give the load box more CPU",
-			base, in.EmitUnderrun, in.Saturation)
-	case in.Saturation > 0:
+			base, res.EmitUnderrun, res.Saturation)
+	case res.Saturation > 0:
 		return fmt.Sprintf("%s — in-flight pool saturated (saturation=%d, emit underrun=%d); "+
 			"raise MaxInFlight (and/or reduce backend latency)",
-			base, in.Saturation, in.EmitUnderrun)
+			base, res.Saturation, res.EmitUnderrun)
 	default:
 		return fmt.Sprintf("%s (saturation=%d, emit underrun=%d) — load box limited",
-			base, in.Saturation, in.EmitUnderrun)
+			base, res.Saturation, res.EmitUnderrun)
 	}
 }
