@@ -2,69 +2,75 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-// Sentinel errors for user-facing validation failures.
+// Sentinel errors for user-facing validation failures, typed as *errcode.Error
+// so they classify directly at the reply boundary (errnats.Reply) without a
+// per-message allowlist.
+//
+// These are package-level singletons SHARED across all goroutines. Callers
+// MUST NOT mutate (today's Options return fresh *Error values so mutation is
+// not a concern, but a future Option that wrote in place would silently alias
+// state across callers). Use errors.Is for identity, errcode.HasReason for
+// reason matching, and construct fresh *Error values via the named
+// constructors when a caller needs a wrapped message or extra metadata.
 var (
-	errInvalidRole      = errors.New("invalid role: must be owner or member")
-	errOnlyOwners       = errors.New("only owners can update roles")
-	errAlreadyOwner     = errors.New("user is already an owner")
-	errNotOwner         = errors.New("user is not an owner")
-	errCannotDemoteLast = errors.New("cannot demote the last owner")
-	errRoomTypeGuard    = errors.New("role update is only allowed in channel rooms")
-	errTargetNotMember  = errors.New("target user is not a member of this room")
+	errInvalidRole           = errcode.BadRequest("invalid role: must be owner or member")
+	errOnlyOwners            = errcode.Forbidden("only owners can update roles", errcode.WithReason(errcode.RoomNotOwner))
+	errOnlyOwnersCanRemove   = errcode.Forbidden("only owners can remove members", errcode.WithReason(errcode.RoomNotOwner))
+	errOnlyOwnersCanAddToRes = errcode.Forbidden("only owners can add members to a restricted room", errcode.WithReason(errcode.RoomNotOwner))
+	errAlreadyOwner          = errcode.Conflict("user is already an owner", errcode.WithReason(errcode.RoomAlreadyOwner))
+	errNotOwner              = errcode.Forbidden("user is not an owner", errcode.WithReason(errcode.RoomNotOwner))
+	errCannotDemoteLast      = errcode.Conflict("cannot demote the last owner", errcode.WithReason(errcode.RoomCannotDemoteLastOwner))
+	errRoomTypeGuard         = errcode.BadRequest("role update is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
+	errAddMembersChannelOnly = errcode.BadRequest("cannot add members to a non-channel room", errcode.WithReason(errcode.RoomNonChannelOperation))
+	errTargetNotMember       = errcode.BadRequest("target user is not a member of this room", errcode.WithReason(errcode.RoomTargetNotMember))
 	// Used by both list-members (requester subscription check) and add-member
 	// channel-source expansion. Both contexts mean "the requester is not a
 	// member of the room they are asking about".
-	errNotRoomMember     = errors.New("only room members can list members")
-	errInvalidOrg        = errors.New("invalid org")
-	errInvalidThreadID   = errors.New("threadId is required")
-	errThreadSubNotFound = errors.New("thread subscription not found")
+	errNotRoomMember     = errcode.Forbidden("only room members can perform this action", errcode.WithReason(errcode.RoomNotMember))
+	errInvalidThreadID   = errcode.BadRequest("threadId is required")
+	errThreadSubNotFound = errcode.NotFound("thread subscription not found")
 	// Only subscribers with an individual membership source can hold the owner
 	// role. Remove-member's dual-membership path relies on this invariant:
 	// stripping the owner role during an individual-leave is only sound when
 	// the role can only be held alongside an individual entry.
-	errPromoteRequiresIndividual = errors.New("only individual members can be promoted to owner")
+	errPromoteRequiresIndividual = errcode.BadRequest("only individual members can be promoted to owner", errcode.WithReason(errcode.RoomPromoteRequiresIndividual))
 
 	// Sentinels for create-room validation.
-	errEmptyCreateRequest  = errors.New("request must include at least one of users, orgs, channels, or name")
-	errSelfDM              = errors.New("cannot create a DM with yourself")
-	errBotInChannel        = errors.New("bots cannot be added to a channel")
-	errBotNotAvailable     = errors.New("bot not available")
-	errInvalidUserData     = errors.New("user is missing required name fields")
-	errMissingRequestID    = errors.New("missing X-Request-ID header")
-	errInvalidRequestID    = errors.New("invalid X-Request-ID format")
-	errChannelNameRequired = errors.New("channel name is required")
-	errChannelNameTooLong  = errors.New("channel name must be at most 100 characters")
-	errUserNotFound        = errors.New("user not found")
+	errEmptyCreateRequest  = errcode.BadRequest("request must include at least one of users, orgs, channels, or name")
+	errSelfDM              = errcode.BadRequest("cannot create a DM with yourself", errcode.WithReason(errcode.RoomSelfDM))
+	errBotInChannel        = errcode.BadRequest("bots cannot be added to a channel", errcode.WithReason(errcode.RoomBotInChannel))
+	errBotNotAvailable     = errcode.NotFound("bot not available", errcode.WithReason(errcode.RoomBotNotAvailable))
+	errInvalidUserData     = errcode.BadRequest("user is missing required name fields")
+	errChannelNameRequired = errcode.BadRequest("channel name is required")
+	errChannelNameTooLong  = errcode.BadRequest("channel name must be at most 100 characters")
 
-	errMessageNotFound     = errors.New("message not found")
-	errMessageRoomMismatch = errors.New("message does not belong to this room")
-	errNotMessageSender    = errors.New("only the message sender can view read receipts")
+	errMessageNotFound     = errcode.NotFound("message not found")
+	errMessageRoomMismatch = errcode.BadRequest("message does not belong to this room")
+	errNotMessageSender    = errcode.Forbidden("only the message sender can view read receipts")
 
 	// Sentinels for remove-member validation (surfaced to the client verbatim).
-	errRemoveTargetAmbiguous    = errors.New("exactly one of account or orgId must be set")
-	errCannotRemoveLastMember   = errors.New("cannot remove the last member of the room")
-	errLastOwnerCannotLeave     = errors.New("last owner cannot leave the room")
-	errOrgMemberCannotLeaveSolo = errors.New("org members cannot leave individually")
-	errRoomIDMismatch           = errors.New("room ID mismatch")
-	errRemoveChannelOnly        = errors.New("remove-member only supported on channel rooms")
+	errRemoveTargetAmbiguous    = errcode.BadRequest("exactly one of account or orgId must be set")
+	errCannotRemoveLastMember   = errcode.Conflict("cannot remove the last member of the room", errcode.WithReason(errcode.RoomLastMemberCannotRemove))
+	errLastOwnerCannotLeave     = errcode.Conflict("last owner cannot leave the room", errcode.WithReason(errcode.RoomLastOwnerCannotLeave))
+	errOrgMemberCannotLeaveSolo = errcode.Forbidden("org members cannot leave individually")
+	errRoomIDMismatch           = errcode.BadRequest("room ID mismatch")
+	errRemoveChannelOnly        = errcode.BadRequest("remove-member only supported on channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 
 	// Sentinels for list-members pagination validation.
-	errListLimitInvalid  = errors.New("limit must be > 0")
-	errListOffsetInvalid = errors.New("offset must be >= 0")
+	errListLimitInvalid  = errcode.BadRequest("limit must be > 0")
+	errListOffsetInvalid = errcode.BadRequest("offset must be >= 0")
 
 	// errRoomKeyAbsent is returned when the requested key version is not held
 	// by the key store (either the current key is missing or the historical
 	// version has aged out of the grace window).
-	errRoomKeyAbsent = errors.New("room key not available")
+	errRoomKeyAbsent = errcode.NotFound("room key not available")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
@@ -135,27 +141,6 @@ func determineRoomType(req *model.CreateRoomRequest) model.RoomType {
 	return model.RoomTypeChannel
 }
 
-// channelExpandTimeoutError reports which (site, room) the channel-expansion
-// step failed to read within the per-ref deadline. The sync reply surfaces it
-// so the requester can see exactly which channel source stalled.
-type channelExpandTimeoutError struct {
-	SiteID string
-	RoomID string
-}
-
-func newChannelExpandTimeoutError(siteID, roomID string) *channelExpandTimeoutError {
-	return &channelExpandTimeoutError{SiteID: siteID, RoomID: roomID}
-}
-
-func (e *channelExpandTimeoutError) Error() string {
-	return fmt.Sprintf("timeout listing members of channel %s@%s", e.RoomID, e.SiteID)
-}
-
-func (e *channelExpandTimeoutError) Is(target error) bool {
-	_, ok := target.(*channelExpandTimeoutError)
-	return ok
-}
-
 // contextWithMemberListTimeout returns a derived context bounded by the
 // configured per-ref member-list timeout. When the configured timeout is
 // non-positive, the parent ctx is returned unchanged with a no-op cancel.
@@ -164,23 +149,6 @@ func (h *Handler) contextWithMemberListTimeout(ctx context.Context) (context.Con
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, h.memberListTimeout)
-}
-
-// Compile-time check that channelExpandTimeoutError satisfies error.
-var _ error = (*channelExpandTimeoutError)(nil)
-
-// dmExistsError carries the existing DM/botDM room ID for the "dm already exists" reply.
-type dmExistsError struct{ existingRoomID string }
-
-func newDMExistsError(roomID string) *dmExistsError {
-	return &dmExistsError{existingRoomID: roomID}
-}
-
-func (e *dmExistsError) Error() string  { return "dm already exists" }
-func (e *dmExistsError) RoomID() string { return e.existingRoomID }
-func (e *dmExistsError) Is(target error) bool {
-	_, ok := target.(*dmExistsError)
-	return ok
 }
 
 // stripAccount returns slice with all occurrences of account removed (order preserved).
@@ -192,65 +160,4 @@ func stripAccount(slice []string, account string) []string {
 		}
 	}
 	return out
-}
-
-// sanitizeError returns a user-safe error message for known error sentinels and approved patterns.
-func sanitizeError(err error) string {
-	// Typed timeout error: surface the underlying message (site+roomId) directly,
-	// stripping any "expand channels: %w" or other wrapper context.
-	var ct *channelExpandTimeoutError
-	if errors.As(err, &ct) {
-		return ct.Error()
-	}
-	switch {
-	case errors.Is(err, errNotRoomMember):
-		// Always return the sentinel message, even when wrapped (e.g. by
-		// add-member's "expand channels: %w"), so callers get a clean
-		// user-safe message without the wrapping context.
-		return errNotRoomMember.Error()
-	case errors.Is(err, errInvalidRole),
-		errors.Is(err, errOnlyOwners),
-		errors.Is(err, errAlreadyOwner),
-		errors.Is(err, errNotOwner),
-		errors.Is(err, errCannotDemoteLast),
-		errors.Is(err, errRoomTypeGuard),
-		errors.Is(err, errTargetNotMember),
-		errors.Is(err, errInvalidOrg),
-		errors.Is(err, errPromoteRequiresIndividual),
-		errors.Is(err, errEmptyCreateRequest),
-		errors.Is(err, errSelfDM),
-		errors.Is(err, errBotInChannel),
-		errors.Is(err, errBotNotAvailable),
-		errors.Is(err, errInvalidUserData),
-		errors.Is(err, errMissingRequestID),
-		errors.Is(err, errInvalidRequestID),
-		errors.Is(err, errChannelNameRequired),
-		errors.Is(err, errChannelNameTooLong),
-		errors.Is(err, errUserNotFound),
-		errors.Is(err, errMessageNotFound),
-		errors.Is(err, errMessageRoomMismatch),
-		errors.Is(err, errNotMessageSender),
-		errors.Is(err, errInvalidThreadID),
-		errors.Is(err, errThreadSubNotFound),
-		errors.Is(err, errRemoveTargetAmbiguous),
-		errors.Is(err, errCannotRemoveLastMember),
-		errors.Is(err, errLastOwnerCannotLeave),
-		errors.Is(err, errOrgMemberCannotLeaveSolo),
-		errors.Is(err, errRoomIDMismatch),
-		errors.Is(err, errRemoveChannelOnly),
-		errors.Is(err, errListLimitInvalid),
-		errors.Is(err, errListOffsetInvalid),
-		errors.Is(err, errRoomKeyAbsent),
-		errors.Is(err, &dmExistsError{}),
-		errors.Is(err, &channelExpandTimeoutError{}):
-		return err.Error()
-	default:
-		msg := err.Error()
-		for _, safe := range []string{"only owners can", "cannot add members", "room is at maximum capacity", "exceeds maximum capacity", "requester not in room", "invalid request", "remote member.list:", "invalid mute-toggle subject"} {
-			if strings.Contains(msg, safe) {
-				return msg
-			}
-		}
-		return "internal error"
-	}
 }

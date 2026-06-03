@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useNats } from '@/context/NatsContext'
 import { DEFAULT_SITE_ID, DEV_MODE } from '@/lib/runtimeConfig'
-import { getOidcManager } from '@/api/auth/oidcClient'
+import { getOidcManager, isSSOTokenInvalidError, redirectToReloginOnTokenInvalid } from '@/api/auth/oidcClient'
+import { formatAsyncJobError } from '@/api'
 import './style.css'
 
 export default function LoginPage() {
@@ -26,7 +27,11 @@ export default function LoginPage() {
         siteId: siteId.trim(),
       })
     } catch (err) {
-      setError(err.message)
+      if (isSSOTokenInvalidError(err)) {
+        await redirectToReloginOnTokenInvalid()
+        return
+      }
+      setError(formatAsyncJobError(err))
     } finally {
       setLoading(false)
     }
@@ -42,7 +47,11 @@ export default function LoginPage() {
       await manager.signinRedirect()
       // Browser navigates away — code below this point is unreachable in prod.
     } catch (err) {
-      setError(err.message)
+      if (isSSOTokenInvalidError(err)) {
+        await redirectToReloginOnTokenInvalid()
+        return
+      }
+      setError(formatAsyncJobError(err))
       setLoading(false)
     }
   }

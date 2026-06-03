@@ -8,7 +8,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
-	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -55,12 +55,12 @@ func (f *historyParentFetcher) FetchQuotedParent(
 		return nil, fmt.Errorf("history request: %w", err)
 	}
 
-	// natsrouter encodes errors as {"error":"...","code":"..."}. Detect that
-	// shape first; a successful Message has no top-level "error" field, so
-	// this can't false-positive on a real response.
-	var errEnv model.ErrorResponse
-	if jsonErr := json.Unmarshal(msg.Data, &errEnv); jsonErr == nil && errEnv.Error != "" {
-		return nil, fmt.Errorf("history response error: %s", errEnv.Error)
+	// Detect the errcode error envelope first; a real Message has no top-level
+	// "error" field so this cannot false-positive. Propagate the typed remote
+	// errcode so the caller can preserve the upstream classification (a
+	// transient infra failure stays unavailable, not collapsed to not_found).
+	if ee, ok := errcode.Parse(msg.Data); ok && ee.Code.Valid() {
+		return nil, ee
 	}
 
 	var parent cassandra.Message

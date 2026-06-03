@@ -45,13 +45,13 @@ func (m *mongoMemberLookup) ListSubscriptions(ctx context.Context, roomID string
 	filter := map[string]string{"roomId": roomID}
 	cursor, err := m.col.Find(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find subscriptions for room %s: %w", roomID, err)
 	}
 	defer cursor.Close(ctx)
 
 	var subs []model.Subscription
 	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode subscriptions for room %s: %w", roomID, err)
 	}
 	return subs, nil
 }
@@ -131,7 +131,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 					if err := msg.Nak(); err != nil {

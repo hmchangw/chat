@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -177,12 +178,15 @@ func main() {
 			sem <- struct{}{}
 			wg.Add(1)
 			go func() {
+				// recover() must run BEFORE the slot release so a panicking handler
+				// (e.g. a WithCause/WithMetadata misuse) Naks and is redelivered
+				// instead of crashing the worker — the async path runs outside
+				// natsrouter's recovery middleware.
 				defer func() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
-				handler.HandleJetStreamMsg(handlerCtx, msg)
+				runJobWithRecovery(msgCtx, handler, msg)
 			}()
 		}
 	}()
@@ -221,6 +225,48 @@ func main() {
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
+}
+
+// jobProcessor is the slice of the handler that the consumer goroutine drives;
+// narrowing it to an interface lets runJobWithRecovery be unit-tested with a
+// panicking stub (no NATS connection required).
+type jobProcessor interface {
+	HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg)
+}
+
+// runJobWithRecovery processes one async job and contains any panic so the
+// worker survives. A panic ACKS the message (poison-pill drop) rather than
+// Naking — a deterministic panic (e.g. odd-arg WithMetadata, WithCause on an
+// *errcode.Error) would otherwise loop on redelivery until MaxDeliver and
+// hammer the worker through every backoff. This mirrors natsrouter.Recovery,
+// which Acks-on-panic with an Internal reply.
+func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstream.Msg) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in async job handler — dropping (Ack)", "panic", r, "subject", msg.Subject())
+			if ackErr := msg.Ack(); ackErr != nil {
+				slog.Error("failed to ack after panic", "error", ackErr)
+			}
+		}
+	}()
+	// Defensive mint: room-service rejects missing/malformed X-Request-ID at
+	// publish time (RequireRequestID), so by the time a message lands on the
+	// ROOMS stream the header should always be a valid UUID. If we end up
+	// minting here, that's an upstream contract violation worth an Error log —
+	// downstream OutboxDedupID / message-ID generation will derive dedup keys
+	// from the fresh mint, breaking client-retry dedup. See
+	// docs/error-handling.md §3a.
+	inbound := ""
+	if h := msg.Headers(); h != nil {
+		inbound = h.Get(natsutil.RequestIDHeader)
+	}
+	id, replaced := idgen.ResolveRequestID(inbound)
+	if replaced || inbound == "" {
+		slog.Error("ROOMS stream message missing or invalid X-Request-ID — minting defensively; upstream contract broken",
+			"inbound", inbound, "subject", msg.Subject())
+	}
+	handlerCtx := natsutil.WithRequestID(msgCtx, id)
+	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 
 // buildConsumerConfig returns the durable consumer config for

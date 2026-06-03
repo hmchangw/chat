@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -27,6 +29,7 @@ const (
 func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHistoryRequest) (*models.LoadHistoryResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
@@ -84,15 +87,14 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	g.Go(func() error {
 		t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
 		if rErr != nil {
-			slog.Warn("loading minUserLastSeenAt", "error", rErr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
+			slog.Warn("loading minUserLastSeenAt", "error", rErr, "room_id", roomID)
 			return nil
 		}
 		lastSeenFloor = t
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		slog.Error("loading history", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to load message history")
+		return nil, fmt.Errorf("loading history: %w", err)
 	}
 
 	var minMs *int64
@@ -111,6 +113,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.LoadNextMessagesRequest) (*models.LoadNextMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
@@ -148,8 +151,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		page, err = s.msgReader.GetMessagesAfter(c, roomID, lowerBound, ceiling, pageReq)
 	}
 	if err != nil {
-		slog.Error("loading next messages", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to load messages")
+		return nil, fmt.Errorf("loading next messages: %w", err)
 	}
 
 	redactUnavailableQuotes(page.Data, accessSince)
@@ -163,6 +165,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req models.LoadSurroundingMessagesRequest) (*models.LoadSurroundingMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
@@ -174,7 +177,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		return nil, err
 	}
 	if accessSince != nil && centralMsg.CreatedAt.Before(*accessSince) {
-		return nil, natsrouter.ErrForbidden("message is outside access window")
+		return nil, errcode.Forbidden("message is outside access window", errcode.WithReason(errcode.MessageOutsideAccessWindow))
 	}
 
 	now := time.Now().UTC()
@@ -225,20 +228,21 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 			beforePage, berr = s.msgReader.GetMessagesBetweenDesc(gctx, roomID, *accessSince, centralMsg.CreatedAt, beforePageReq)
 		}
 		if berr != nil {
-			slog.Error("loading surrounding messages", "error", berr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "direction", "before")
+			return fmt.Errorf("loading surrounding messages (before): %w", berr)
 		}
-		return berr
+		return nil
 	})
 	g.Go(func() error {
 		var aerr error
 		afterPage, aerr = s.msgReader.GetMessagesAfter(gctx, roomID, centralMsg.CreatedAt, ceiling, afterPageReq)
 		if aerr != nil {
-			slog.Error("loading surrounding messages", "error", aerr, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "direction", "after")
+			return fmt.Errorf("loading surrounding messages (after): %w", aerr)
 		}
-		return aerr
+		return nil
 	})
 	if err := g.Wait(); err != nil {
-		return nil, natsrouter.ErrInternal("failed to load surrounding messages")
+		// errgroup error already carries the (before|after) direction.
+		return nil, err
 	}
 
 	// Assemble in ASC order: reverse the DESC before-page, append central, then after-page.
@@ -260,6 +264,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMessageByIDRequest) (*models.Message, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
@@ -272,7 +277,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	}
 
 	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
-		return nil, natsrouter.ErrForbidden("message is outside access window")
+		return nil, errcode.Forbidden("message is outside access window", errcode.WithReason(errcode.MessageOutsideAccessWindow))
 	}
 
 	redactUnavailableQuote(msg, accessSince)
@@ -284,6 +289,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	if _, err := s.getAccessSince(c, account, roomID); err != nil {
 		return nil, err
@@ -296,18 +302,18 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 
 	// Editing a soft-deleted message would emit updated after deleted, which consumers can't reconcile.
 	if msg.Deleted {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, errcode.NotFound("message not found")
 	}
 
 	if !canModify(msg, account) {
-		return nil, natsrouter.ErrForbidden("only the sender can edit")
+		return nil, errcode.Forbidden("only the sender can edit")
 	}
 
 	if strings.TrimSpace(req.NewMsg) == "" {
-		return nil, natsrouter.ErrBadRequest("newMsg must not be empty")
+		return nil, errcode.BadRequest("newMsg must not be empty")
 	}
 	if len(req.NewMsg) > maxContentBytes {
-		return nil, natsrouter.ErrBadRequest("newMsg exceeds maximum size")
+		return nil, errcode.BadRequest("newMsg exceeds maximum size")
 	}
 
 	editedAt := time.Now().UTC()
@@ -317,10 +323,9 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 		// the repo. Map it to 4xx so it doesn't pollute 5xx telemetry —
 		// it's a benign race, not a server fault.
 		if errors.Is(err, cassrepo.ErrMessageNotFound) {
-			return nil, natsrouter.ErrNotFound("message not found")
+			return nil, errcode.NotFound("message not found")
 		}
-		slog.Error("edit: update content", "error", err, "messageID", req.MessageID)
-		return nil, natsrouter.ErrInternal("failed to edit message")
+		return nil, fmt.Errorf("editing message %s: %w", req.MessageID, err)
 	}
 
 	editedAtMs := editedAt.UnixMilli()
@@ -354,6 +359,7 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	if _, err := s.getAccessSince(c, account, roomID); err != nil {
 		return nil, err
@@ -365,7 +371,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	}
 
 	if !canModify(msg, account) {
-		return nil, natsrouter.ErrForbidden("only the sender can delete")
+		return nil, errcode.Forbidden("only the sender can delete")
 	}
 
 	if msg.Deleted {
@@ -382,8 +388,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	deletedAt := time.Now().UTC()
 	actualDeletedAt, applied, err := s.msgWriter.SoftDeleteMessage(c, msg, deletedAt)
 	if err != nil {
-		slog.Error("delete: soft-delete", "error", err, "messageID", req.MessageID)
-		return nil, natsrouter.ErrInternal("failed to delete message")
+		return nil, fmt.Errorf("deleting message %s: %w", req.MessageID, err)
 	}
 	if !applied {
 		// Concurrent delete won the CAS — skip publish to avoid a duplicate event.
@@ -421,11 +426,11 @@ func (s *HistoryService) publishCanonicalBestEffort(c *natsrouter.Context, subj 
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		slog.Warn("canonical marshal failed",
-			"error", err, "subject", subj, "messageID", evt.Message.ID, "roomID", evt.Message.RoomID)
+			"error", err, "subject", subj, "messageID", evt.Message.ID, "room_id", evt.Message.RoomID)
 		return
 	}
 	if err := s.publisher.Publish(c, subj, payload, natsutil.CanonicalDedupID(evt)); err != nil {
 		slog.Warn("canonical publish failed",
-			"error", err, "subject", subj, "messageID", evt.Message.ID, "roomID", evt.Message.RoomID)
+			"error", err, "subject", subj, "messageID", evt.Message.ID, "room_id", evt.Message.RoomID)
 	}
 }

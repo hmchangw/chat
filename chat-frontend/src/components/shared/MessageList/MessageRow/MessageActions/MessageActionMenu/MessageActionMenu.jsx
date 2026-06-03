@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNats } from '@/context/NatsContext'
-import { fetchReadReceipt } from '@/api'
+import { fetchReadReceipt, formatAsyncJobError } from '@/api'
 import './style.css'
 
 function formatReaderName(r) {
@@ -66,7 +66,7 @@ export default function MessageActionMenu({ message, room }) {
       })
       .catch((err) => {
         if (!mountedRef.current) return
-        setError(err?.message || 'Failed to load read receipts')
+        setError(formatAsyncJobError(err) || 'Failed to load read receipts')
         setLoading(false)
       })
   }

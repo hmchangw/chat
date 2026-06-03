@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -94,12 +95,7 @@ func TestHandler_UpdateRole_NonOwnerRejected(t *testing.T) {
 	subj := subject.MemberRoleUpdate("bob", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for non-owner role update")
-	}
-	if err.Error() != "only owners can update roles" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errOnlyOwners)
 }
 
 func TestHandler_UpdateRole_DMRejected(t *testing.T) {
@@ -119,12 +115,7 @@ func TestHandler_UpdateRole_DMRejected(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for DM room role update")
-	}
-	if err.Error() != "role update is only allowed in channel rooms" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errRoomTypeGuard)
 }
 
 func TestHandler_UpdateRole_InvalidRole(t *testing.T) {
@@ -140,12 +131,7 @@ func TestHandler_UpdateRole_InvalidRole(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for invalid role")
-	}
-	if err.Error() != "invalid role: must be owner or member" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errInvalidRole)
 }
 
 func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
@@ -174,12 +160,7 @@ func TestHandler_UpdateRole_AlreadyHasRole(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for duplicate role")
-	}
-	if err.Error() != "user is already an owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errAlreadyOwner)
 }
 
 // Bug 5: an org-only subscriber must not be promotable to owner.
@@ -293,12 +274,7 @@ func TestHandler_UpdateRole_DemoteNonOwner(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for demoting non-owner")
-	}
-	if err.Error() != "user is not an owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errNotOwner)
 }
 
 func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
@@ -330,12 +306,7 @@ func TestHandler_UpdateRole_LastOwnerCannotDemote(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err == nil {
-		t.Fatal("expected error for last owner demotion")
-	}
-	if err.Error() != "cannot demote the last owner" {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorIs(t, err, errCannotDemoteLast)
 }
 
 // --- Error-path tests ---
@@ -383,7 +354,7 @@ func TestHandler_UpdateRole_RoomIDMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for RoomID mismatch")
 	}
-	if err.Error() != "invalid request: room ID mismatch" {
+	if !errors.Is(err, errRoomIDMismatch) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -1091,8 +1062,9 @@ func expectAliceOwnerOfR1(store *MockRoomStore) {
 }
 
 // errStoreFailure is a sentinel used in store-error branch tests. Distinct
-// from the validators' errInvalidOrg/errUserNotFound so the test can verify
-// that the store error wraps cleanly without being masked by the sentinel.
+// from the validators' RoomInvalidOrg/RoomUserNotFound reasons so the test can
+// verify that the store error wraps cleanly without being masked by the
+// reason-keyed identity check.
 var errStoreFailure = errors.New("store boom")
 
 // TestHandler_AddMembers_PhantomValidation covers the gate that converts the
@@ -1108,6 +1080,7 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 		req             model.AddMembersRequest
 		setupMocks      func(store *MockRoomStore)
 		wantErr         bool
+		wantReason      errcode.Reason
 		wantErrSentinel error
 		wantPublish     bool
 	}{
@@ -1117,7 +1090,7 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 			setupMocks: func(store *MockRoomStore) {
 				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
 			},
-			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomInvalidOrg, wantPublish: false,
 		},
 		{
 			name: "partially invalid org rejected",
@@ -1126,7 +1099,7 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingOrgIDs(gomock.Any(), gomock.InAnyOrder([]string{"good-org", "bad-org"})).
 					Return([]string{"good-org"}, nil)
 			},
-			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomInvalidOrg, wantPublish: false,
 		},
 		{
 			name: "no orgs skips org validation",
@@ -1145,7 +1118,7 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingAccounts(gomock.Any(), gomock.InAnyOrder([]string{"bob", "ghost"})).
 					Return([]string{"bob"}, nil)
 			},
-			wantErr: true, wantErrSentinel: errUserNotFound, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomUserNotFound, wantPublish: false,
 		},
 		{
 			name: "no users skips user validation",
@@ -1183,7 +1156,7 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
 				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
 			},
-			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomInvalidOrg, wantPublish: false,
 		},
 	}
 
@@ -1205,6 +1178,9 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 			_, err := h.handleAddMembers(context.Background(), subject.MemberAdd("alice", "r1", "site-a"), body)
 			if tc.wantErr {
 				require.Error(t, err)
+				if tc.wantReason != "" {
+					assert.True(t, errcode.HasReason(err, tc.wantReason), "want reason %v, got %v", tc.wantReason, err)
+				}
 				if tc.wantErrSentinel != nil {
 					assert.True(t, errors.Is(err, tc.wantErrSentinel), "want %v, got %v", tc.wantErrSentinel, err)
 				}
@@ -1226,6 +1202,7 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 		req             model.CreateRoomRequest
 		setupMocks      func(store *MockRoomStore)
 		wantErr         bool
+		wantReason      errcode.Reason
 		wantErrSentinel error
 		wantPublish     bool
 	}{
@@ -1235,7 +1212,7 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 			setupMocks: func(store *MockRoomStore) {
 				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
 			},
-			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomInvalidOrg, wantPublish: false,
 		},
 		{
 			name: "phantom user rejected",
@@ -1244,7 +1221,7 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingAccounts(gomock.Any(), gomock.InAnyOrder([]string{"bob", "ghost"})).
 					Return([]string{"bob"}, nil)
 			},
-			wantErr: true, wantErrSentinel: errUserNotFound, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomUserNotFound, wantPublish: false,
 		},
 		{
 			name: "FindExistingOrgIDs store error propagates",
@@ -1269,7 +1246,7 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
 				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
 			},
-			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+			wantErr: true, wantReason: errcode.RoomInvalidOrg, wantPublish: false,
 		},
 	}
 
@@ -1291,6 +1268,9 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 			_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
 			if tc.wantErr {
 				require.Error(t, err)
+				if tc.wantReason != "" {
+					assert.True(t, errcode.HasReason(err, tc.wantReason), "want reason %v, got %v", tc.wantReason, err)
+				}
 				if tc.wantErrSentinel != nil {
 					assert.True(t, errors.Is(err, tc.wantErrSentinel), "want %v, got %v", tc.wantErrSentinel, err)
 				}
@@ -1449,14 +1429,12 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
-		var te *channelExpandTimeoutError
-		require.ErrorAs(t, err, &te)
-		assert.Equal(t, "site-a", te.SiteID)
-		assert.Equal(t, "ch-slow", te.RoomID)
-		// User-facing message includes site+roomId.
-		assert.Equal(t, "timeout listing members of channel ch-slow@site-a", te.Error())
-		// sanitizeError surfaces it verbatim, NOT "internal error".
-		assert.Equal(t, te.Error(), sanitizeError(err))
+		var ee *errcode.Error
+		require.ErrorAs(t, err, &ee)
+		// Channel-expand timeouts surface as Unavailable with site+roomId so the
+		// requester sees which channel stalled, NOT a collapsed "internal error".
+		assert.Equal(t, errcode.CodeUnavailable, ee.Code)
+		assert.Equal(t, "timeout listing members of channel ch-slow@site-a", ee.Message)
 	})
 
 	t.Run("cross-site member.list deadline-exceeded yields typed timeout error", func(t *testing.T) {
@@ -1472,11 +1450,10 @@ func TestHandler_AddMembers_ChannelExpansion(t *testing.T) {
 		_, _, err := h.expandChannelRefs(context.Background(), "alice", []model.ChannelRef{ch})
 
 		require.Error(t, err)
-		var te *channelExpandTimeoutError
-		require.ErrorAs(t, err, &te)
-		assert.Equal(t, "site-b", te.SiteID)
-		assert.Equal(t, "ch-remote", te.RoomID)
-		assert.Equal(t, "timeout listing members of channel ch-remote@site-b", sanitizeError(err))
+		var ee *errcode.Error
+		require.ErrorAs(t, err, &ee)
+		assert.Equal(t, errcode.CodeUnavailable, ee.Code)
+		assert.Equal(t, "timeout listing members of channel ch-remote@site-b", ee.Message)
 	})
 
 	t.Run("same-site ListRoomMembers error", func(t *testing.T) {
@@ -1822,6 +1799,7 @@ func TestHandler_ListOrgMembers(t *testing.T) {
 	type want struct {
 		errContains string
 		errIs       error
+		wantReason  errcode.Reason
 		members     []model.OrgMember
 	}
 	tests := []struct {
@@ -1845,12 +1823,12 @@ func TestHandler_ListOrgMembers(t *testing.T) {
 			want:      want{errContains: "invalid org-members subject"},
 		},
 		{
-			name:    "empty org returns errInvalidOrg",
+			name:    "empty org returns RoomInvalidOrg-reason errcode",
 			subject: subj,
 			setupMock: func(s *MockRoomStore) {
-				s.EXPECT().ListOrgMembers(gomock.Any(), orgID).Return(nil, errInvalidOrg)
+				s.EXPECT().ListOrgMembers(gomock.Any(), orgID).Return(nil, errcode.BadRequest(fmt.Sprintf("list org members for %q", orgID), errcode.WithReason(errcode.RoomInvalidOrg)))
 			},
-			want: want{errIs: errInvalidOrg},
+			want: want{wantReason: errcode.RoomInvalidOrg},
 		},
 		{
 			name:    "store error is wrapped",
@@ -1880,6 +1858,11 @@ func TestHandler_ListOrgMembers(t *testing.T) {
 			if tc.want.errIs != nil {
 				require.Error(t, err)
 				assert.True(t, errors.Is(err, tc.want.errIs), "error chain should contain %v, got %v", tc.want.errIs, err)
+				return
+			}
+			if tc.want.wantReason != "" {
+				require.Error(t, err)
+				assert.True(t, errcode.HasReason(err, tc.want.wantReason), "want reason %v, got %v", tc.want.wantReason, err)
 				return
 			}
 			require.NoError(t, err)
@@ -2183,33 +2166,57 @@ func TestHandler_handleUpdateRole_PropagatesRequestID(t *testing.T) {
 	assert.Equal(t, "req-room-svc-test", capturedHeader.Get(natsutil.RequestIDHeader))
 }
 
-func TestWrappedCtx_PropagatesXRequestIDFromHeaderToContext(t *testing.T) {
+func TestWrappedCtx_PropagatesValidUUIDFromHeader(t *testing.T) {
+	const inbound = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	rawMsg := &nats.Msg{
 		Subject: "chat.room.test",
 		Data:    []byte("ignored"),
-		Header:  nats.Header{natsutil.RequestIDHeader: []string{"req-from-inbound-header"}},
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{inbound}},
 	}
 	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
 
-	got := wrappedCtx(m)
+	got, err := wrappedCtx(m)
 
-	assert.Equal(t, "req-from-inbound-header", natsutil.RequestIDFromContext(got),
-		"wrappedCtx must extract X-Request-ID from m.Msg.Header into the returned context")
+	require.NoError(t, err)
+	assert.Equal(t, inbound, natsutil.RequestIDFromContext(got),
+		"valid inbound UUID must pass through unchanged")
 }
 
-func TestWrappedCtx_NoHeaderReturnsCtxUnchanged(t *testing.T) {
+// room-service handlers feed dedup-critical paths in room-worker
+// (OutboxDedupID, messageDedupSeed, idgen.MessageIDFromRequestID) where a
+// server-side mint would break client-retry dedup. wrappedCtx therefore uses
+// the strict natsutil.RequireRequestID and surfaces an errcode.BadRequest when
+// the inbound header is missing or malformed.
+func TestWrappedCtx_MalformedHeaderRejects(t *testing.T) {
+	rawMsg := &nats.Msg{
+		Subject: "chat.room.test",
+		Data:    []byte("ignored"),
+		Header:  nats.Header{natsutil.RequestIDHeader: []string{"not-a-uuid"}},
+	}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
+
+	_, err := wrappedCtx(m)
+
+	require.Error(t, err)
+	var ec *errcode.Error
+	require.True(t, errors.As(err, &ec))
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+}
+
+func TestWrappedCtx_NoHeaderRejects(t *testing.T) {
 	rawMsg := &nats.Msg{
 		Subject: "chat.room.test",
 		Data:    []byte("ignored"),
 		Header:  nats.Header{},
 	}
-	parent := context.Background()
-	m := otelnats.Msg{Msg: rawMsg, Ctx: parent}
+	m := otelnats.Msg{Msg: rawMsg, Ctx: context.Background()}
 
-	got := wrappedCtx(m)
+	_, err := wrappedCtx(m)
 
-	assert.Empty(t, natsutil.RequestIDFromContext(got),
-		"missing inbound header → empty request ID on returned ctx")
+	require.Error(t, err)
+	var ec *errcode.Error
+	require.True(t, errors.As(err, &ec))
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
 }
 
 // --- Phase 5c: handleCreateRoom (3-arg) tests ---
@@ -2250,16 +2257,10 @@ func TestHandleCreateRoom_InvalidSubject(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid create-room subject")
 }
 
-func TestHandleCreateRoom_MissingRequestID(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockRoomStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
-
-	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
-	_, err := h.handleCreateRoom(context.Background(), createRoomSubj("alice", "site-a"), body)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errMissingRequestID))
-}
+// Boundary-level reject behavior is tested via wrappedCtx (above); the
+// helper itself is unit-tested in pkg/natsutil.RequireRequestID. The
+// dedup-critical paths fanned out from room-service make server-side minting
+// unsafe — see docs/error-handling.md §3a.
 
 func TestHandleCreateRoom_EmptyPayload(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -2282,7 +2283,7 @@ func TestHandleCreateRoom_RequesterNotFound(t *testing.T) {
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
 	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errUserNotFound))
+	assert.True(t, errcode.HasReason(err, errcode.RoomUserNotFound), "want RoomUserNotFound, got %v", err)
 }
 
 func TestHandleCreateRoom_RequesterMissingNameFields(t *testing.T) {
@@ -2349,11 +2350,13 @@ func TestHandleCreateRoom_DM_AlreadyExists(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
-	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
-	require.Error(t, err)
-	var dmErr *dmExistsError
-	require.True(t, errors.As(err, &dmErr))
-	assert.Equal(t, "existing-dm-room", dmErr.RoomID())
+	resp, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, "existing-dm-room", reply.RoomID)
 }
 
 func TestHandleCreateRoom_BotDM_HappyPath(t *testing.T) {
@@ -2445,8 +2448,8 @@ func TestHandleCreateRoom_BotDM_Disabled(t *testing.T) {
 }
 
 // New: existing botDM where the bot was later disabled MUST still return the
-// existing roomId via dmExistsError, not errBotNotAvailable. This is the
-// idempotent open-or-create contract.
+// existing roomId via the success "exists" reply, not errBotNotAvailable. This
+// is the idempotent open-or-create contract.
 func TestHandleCreateRoom_BotDM_DisabledButExisting(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
@@ -2458,11 +2461,13 @@ func TestHandleCreateRoom_BotDM_DisabledButExisting(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	body, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"helper.bot"}})
-	_, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
-	require.Error(t, err)
-	var de *dmExistsError
-	require.ErrorAs(t, err, &de)
-	assert.Equal(t, "existing-bot-dm", de.RoomID())
+	resp, err := h.handleCreateRoom(ctxWithReqID(), createRoomSubj("alice", "site-a"), body)
+	require.NoError(t, err)
+
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, "existing-bot-dm", reply.RoomID)
 }
 
 func TestHandleCreateRoom_Channel_HappyPath(t *testing.T) {
@@ -2666,22 +2671,20 @@ func TestHandleCreateRoom_BotDM_PUnderscoreWebhookBot(t *testing.T) {
 // --- Phase 5c: natsCreateRoom adapter tests ---
 
 func TestNatsCreateRoom_DMExistsReply(t *testing.T) {
-	// Verify the ErrorResponse shape that replyDMExists marshals is correct.
-	// We can't hook *nats.Msg.Respond in unit tests without a NATS server, so we
-	// verify the JSON shape by marshaling the same struct directly.
-	body, err := json.Marshal(model.ErrorResponse{Error: "dm already exists", RoomID: "existing-dm"})
+	// DM-exists is now a SUCCESS reply: {status:"exists", roomId:…}, not an error.
+	body, err := json.Marshal(model.CreateRoomReply{Status: model.CreateRoomStatusExists, RoomID: "existing-dm"})
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
-	require.NoError(t, json.Unmarshal(body, &errResp))
-	assert.Equal(t, "dm already exists", errResp.Error)
-	assert.Equal(t, "existing-dm", errResp.RoomID)
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(body, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, "existing-dm", reply.RoomID)
 	assert.Contains(t, string(body), `"roomId":"existing-dm"`)
 }
 
-func TestNatsCreateRoom_DMExistsError_FlowTriggered(t *testing.T) {
-	// Verify that handleCreateRoom returns a dmExistsError when FindDMSubscription
-	// returns an existing subscription — this is what natsCreateRoom routes to replyDMExists.
+func TestNatsCreateRoom_DMExistsSuccess_FlowTriggered(t *testing.T) {
+	// Verify handleCreateRoom returns a SUCCESS "exists" reply (not an error)
+	// when FindDMSubscription returns an existing subscription.
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(aliceUser(), nil)
@@ -2692,20 +2695,21 @@ func TestNatsCreateRoom_DMExistsError_FlowTriggered(t *testing.T) {
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000}
 
 	reqBody, _ := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
-	_, err := h.handleCreateRoom(
+	resp, err := h.handleCreateRoom(
 		natsutil.WithRequestID(context.Background(), idgen.GenerateRequestID()),
 		createRoomSubj("alice", "site-a"),
 		reqBody,
 	)
-	require.Error(t, err)
-	var dmErr *dmExistsError
-	require.True(t, errors.As(err, &dmErr), "natsCreateRoom must receive *dmExistsError to route to replyDMExists")
-	assert.Equal(t, "existing-dm", dmErr.RoomID())
+	require.NoError(t, err)
+
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, "existing-dm", reply.RoomID)
 }
 
 func TestNatsCreateRoom_GenericErrorReply(t *testing.T) {
-	// Verify sanitizeError is called for generic errors by testing the
-	// error handling path of natsCreateRoom via its handler function.
+	// A bare DB error collapses to internal at the reply boundary (Classify).
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(nil, fmt.Errorf("mongo connection refused"))
@@ -2718,8 +2722,9 @@ func TestNatsCreateRoom_GenericErrorReply(t *testing.T) {
 		body,
 	)
 	require.Error(t, err)
-	// sanitizeError on an unwrapped db error returns "internal error"
-	assert.Equal(t, "internal error", sanitizeError(err))
+	// Not a typed *errcode.Error — Classify will collapse it to internal.
+	var ee *errcode.Error
+	assert.False(t, errors.As(err, &ee), "bare DB error must not be a typed errcode")
 }
 
 // --- message.read tests ---
@@ -4056,7 +4061,7 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 
 	type want struct {
 		replyJSON string // expected JSON of the success reply (empty when err)
-		errSubstr string // expected substring in sanitizeError(err) (empty when ok)
+		errSubstr string // expected substring in err.Error() (empty when ok)
 	}
 
 	cases := []struct {
@@ -4122,7 +4127,7 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 					Return(&model.Subscription{}, nil)
 				ks.EXPECT().Get(gomock.Any(), roomID).Return(nil, errors.New("valkey down"))
 			},
-			want: want{errSubstr: "internal error"},
+			want: want{errSubstr: "get room key:"},
 		},
 		{
 			name: "store error on explicit version",
@@ -4132,7 +4137,7 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 					Return(&model.Subscription{}, nil)
 				ks.EXPECT().GetByVersion(gomock.Any(), roomID, 5).Return(nil, errors.New("valkey down"))
 			},
-			want: want{errSubstr: "internal error"},
+			want: want{errSubstr: "get room key:"},
 		},
 		{
 			name: "malformed body",
@@ -4156,7 +4161,7 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 			resp, err := h.handleGetRoomKey(t.Context(), subj, tc.body)
 			if tc.want.errSubstr != "" {
 				require.Error(t, err)
-				require.Contains(t, sanitizeError(err), tc.want.errSubstr)
+				require.Contains(t, err.Error(), tc.want.errSubstr)
 				return
 			}
 			require.NoError(t, err)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -764,6 +766,38 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	}
 	if len(store.getRoleUpdates()) != 0 {
 		t.Error("no role update should have been applied")
+	}
+}
+
+// Empty-roles payload is a poison message. Handler returns errcode.Permanent
+// so main.go's consume loop Acks (not Nak) — preventing infinite redelivery.
+// Store is not called.
+func TestHandleEvent_RoleUpdated_EmptyRoles(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	subEvt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			Roles:  nil,
+		},
+	}
+	payload, _ := json.Marshal(subEvt)
+	evt := model.OutboxEvent{Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b", Payload: payload}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Fatal("expected errcode.Permanent for empty-roles payload")
+	}
+	if _, ok := errcode.IsPermanent(err); !ok {
+		t.Fatalf("expected errcode.Permanent, got %T: %v", err, err)
+	}
+	if !errors.Is(err, errcode.ErrPermanent) {
+		t.Fatalf("expected errors.Is(err, ErrPermanent), got %v", err)
+	}
+	if len(store.getRoleUpdates()) != 0 {
+		t.Error("store should NOT be called on empty-roles event")
 	}
 }
 

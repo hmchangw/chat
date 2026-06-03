@@ -7,6 +7,8 @@ vi.mock('@/context/NatsContext', () => ({
 
 vi.mock('@/api/auth/oidcClient', () => ({
   getOidcManager: vi.fn(),
+  isSSOTokenInvalidError: vi.fn(() => false),
+  redirectToReloginOnTokenInvalid: vi.fn(() => Promise.resolve()),
 }))
 
 import OidcCallback from './OidcCallback'

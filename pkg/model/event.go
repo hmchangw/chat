@@ -329,6 +329,10 @@ type AsyncJobResult struct {
 	Status    string `json:"status"`
 	RoomID    string `json:"roomId,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Code and Reason mirror the errcode envelope; typed as string so pkg/model
+	// does not import pkg/errcode.
+	Code      string `json:"code,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -367,3 +371,7 @@ type CreateRoomReply struct {
 
 // CreateRoomReplyAccepted means validated + queued; persistence happens later in room-worker.
 const CreateRoomReplyAccepted = "accepted"
+
+// CreateRoomStatusExists indicates the requested DM already existed; RoomID is
+// the existing room. Clients treat it as success and open that room.
+const CreateRoomStatusExists = "exists"

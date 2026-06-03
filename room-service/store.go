@@ -62,8 +62,9 @@ type RoomStore interface {
 	// display fields are left zero.
 	ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error)
 	// ListOrgMembers returns all users whose sectId OR deptId equals orgID,
-	// projected as OrgMember rows sorted by account ascending. Returns
-	// errInvalidOrg when no users match (treated as "orgId is not valid").
+	// projected as OrgMember rows sorted by account ascending. Returns a
+	// RoomInvalidOrg-reason errcode when no users match (treated as "orgId is
+	// not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 	// FindExistingOrgIDs returns the subset of orgIDs that match at least
 	// one user via sectId or deptId. Used by handleAddMembers and

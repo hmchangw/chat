@@ -30,31 +30,99 @@ export type AsyncJobErrorKind =
   (typeof ASYNC_JOB_ERROR_KINDS)[keyof typeof ASYNC_JOB_ERROR_KINDS]
 
 /**
- * Error class thrown by `requestWithAsyncResult`. Use `instanceof` to
- * narrow without string-matching the message.
+ * The 7+1 generic error categories the backend's `pkg/errcode` package emits
+ * on every error envelope (NATS reply, JetStream result, HTTP). Mirrors the
+ * closed set in `pkg/errcode/category.go`. `string & {}` is a JSDoc-style
+ * escape hatch so a not-yet-mirrored future category still typechecks.
+ */
+export type ErrorCode =
+  | 'bad_request'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'too_many_requests'
+  | 'unavailable'
+  | 'internal'
+  | (string & {})
+
+/**
+ * Error class thrown by `requestWithAsyncResult` AND `NatsContext.request`.
+ * Use `instanceof` to narrow without string-matching the message.
  *
  * Why a class (not just an interface): callers can do
  *   `if (err instanceof AsyncJobError) …`
  * which is the idiomatic way to discriminate caught `unknown` in TS.
+ *
+ * `code` / `reason` / `metadata` are populated from the backend errcode
+ * envelope when the failure carries one (`SyncError`, `AsyncError`); they are
+ * undefined for wire-level failures (`AsyncTimeout`, `SubscriptionClosed`).
+ * Branch on `reason ?? code` — never on `message`.
  */
 export class AsyncJobError extends Error {
   readonly kind: AsyncJobErrorKind
-  constructor(message: string, kind: AsyncJobErrorKind, cause?: unknown) {
+  readonly code?: ErrorCode
+  readonly reason?: string
+  readonly metadata?: Record<string, string>
+  constructor(
+    message: string,
+    kind: AsyncJobErrorKind,
+    opts?: {
+      cause?: unknown
+      code?: ErrorCode
+      reason?: string
+      metadata?: Record<string, string>
+    },
+  ) {
     super(message)
     this.name = 'AsyncJobError'
     this.kind = kind
-    if (cause !== undefined) this.cause = cause
+    if (opts?.cause !== undefined) this.cause = opts.cause
+    if (opts?.code !== undefined) this.code = opts.code
+    if (opts?.reason !== undefined) this.reason = opts.reason
+    if (opts?.metadata !== undefined) this.metadata = opts.metadata
   }
+}
+
+/**
+ * Reason-keyed humanized copy for the errcode reasons emitted today
+ * (catalog: docs/client-api.md §6 + chat-frontend/CLAUDE.md). Used by
+ * formatAsyncJobError so consumers don't have to maintain their own per-call
+ * map of reason→copy. sso_token_expired / invalid_sso_token are intentionally
+ * absent — they drive a redirect (Task 20.7), not a user-facing message.
+ */
+const REASON_COPY: Record<string, string> = {
+  max_room_size_reached: 'This room is at capacity.',
+  not_room_member: "You're not a member of this room.",
+  not_room_owner: 'Only owners can do that.',
+  last_owner_cannot_leave: "You're the last owner — promote someone else first.",
+  bot_in_channel: "Bots can't join channels.",
+  bot_not_available: "This bot isn't available right now.",
+  user_not_found: "We couldn't find that user.",
+  invalid_org: "We couldn't find that group.",
+  self_dm: "You can't DM yourself.",
+  last_member_cannot_remove: "Can't remove the last member — delete the room instead.",
+  target_not_member: "That user isn't in this room.",
+  already_owner: 'That user is already an owner.',
+  cannot_demote_last_owner: "Can't demote the last owner — promote someone else first.",
+  promote_requires_individual: 'Only individual members can be promoted to owner.',
+  large_room_post_restricted: 'Only owners and admins can post here.',
+  not_subscribed: 'You need to join this room first.',
+  outside_access_window: 'This message is older than your access to this room.',
+  pin_disabled: 'Pinning is turned off for this site.',
+  pin_limit_reached: 'This room has reached its pin limit — unpin a message first.',
+  pin_room_too_large: 'This room is too large for non-admins to pin.',
 }
 
 /**
  * User-facing message for an error thrown by `requestWithAsyncResult`.
  *
- * Server-side errors (`SyncError`, `AsyncError`) already carry a sanitised,
- * user-safe message and are returned as-is. Wire-level failures
- * (`AsyncTimeout`, `SubscriptionClosed`) get a friendlier hint that says what
- * happened and what the user can do about it — the raw "async result timeout"
- * isn't actionable.
+ * Server-side errors (`SyncError`, `AsyncError`) carry the errcode envelope's
+ * `reason` when applicable — preferred over `message` because reasons are
+ * stable machine codes (the english text can change without notice). Falls
+ * back to `err.message` when the reason isn't in the catalog (or absent, e.g.
+ * a bare `Error` from a non-backend caller). Wire-level failures
+ * (`AsyncTimeout`, `SubscriptionClosed`) get friendlier actionable hints.
  */
 export function formatAsyncJobError(err: unknown): string {
   if (!err) return ''
@@ -70,8 +138,16 @@ export function formatAsyncJobError(err: unknown): string {
       return "The server didn't respond in time. The action may still complete — refresh to check."
     case ASYNC_JOB_ERROR_KINDS.SubscriptionClosed:
       return 'Connection interrupted before the server confirmed. Refresh to check the result.'
-    default:
+    default: {
+      const reason =
+        err instanceof AsyncJobError
+          ? err.reason
+          : (err as { reason?: string })?.reason
+      if (reason && REASON_COPY[reason]) {
+        return REASON_COPY[reason]
+      }
       return err instanceof Error ? err.message : String(err)
+    }
   }
 }
 
@@ -84,18 +160,27 @@ type Envelope =
   | { kind: 'timeout' }
 
 /** Common shape of any sync reply we treat specially — `error` triggers
- *  the failure branch, `status` is the typical 'accepted'/'error' marker. */
+ *  the failure branch, `status` is the typical 'accepted'/'error'/'exists'
+ *  marker. `code`/`reason`/`metadata` are the new errcode envelope fields
+ *  (present on errors from any post-migration backend; absent on a legacy
+ *  reply during the rollout window). */
 interface SyncReplyEnvelope {
   error?: string
   status?: string
+  code?: ErrorCode
+  reason?: string
+  metadata?: Record<string, string>
 }
 
 /** Common shape of any async-job result envelope we receive on the
- *  response subject. Both `status` and `error` may be set; status === 'error'
- *  takes the failure path. */
+ *  response subject. `status === 'error'` takes the failure path.
+ *  `code`/`reason` mirror the backend `AsyncJobResult.Code`/`Reason` fields. */
 interface AsyncReplyEnvelope {
   status?: string
   error?: string
+  code?: ErrorCode
+  reason?: string
+  metadata?: Record<string, string>
 }
 
 /**
@@ -161,20 +246,26 @@ export async function requestWithAsyncResult<S = unknown, A = unknown>(
   } catch (err) {
     cleanupSub()
     const msg = err instanceof Error ? err.message : String(err)
-    throw new AsyncJobError(msg, ASYNC_JOB_ERROR_KINDS.SyncError, err)
+    throw new AsyncJobError(msg, ASYNC_JOB_ERROR_KINDS.SyncError, { cause: err })
   }
 
   // `sync` is generic, but we always inspect the same envelope fields.
   const syncEnv = sync as unknown as SyncReplyEnvelope
   if (syncEnv?.error) {
-    // DM-exists and similar "200 with error+roomId" replies are success cases
-    // for the caller. The caller opts into this with treatAsSuccess(reply).
+    // DM-exists and similar replies the caller wants to treat as success
+    // (legacy `{error:"dm already exists", roomId}` shape, or any other
+    // 200-with-error contract). The new `{status:"exists", roomId}` shape
+    // never has `.error`, so it skips this branch entirely.
     if (treatAsSuccess && treatAsSuccess(sync)) {
       cleanupSub()
       return { requestId, sync, async: null }
     }
     cleanupSub()
-    throw new AsyncJobError(syncEnv.error, ASYNC_JOB_ERROR_KINDS.SyncError)
+    throw new AsyncJobError(syncEnv.error, ASYNC_JOB_ERROR_KINDS.SyncError, {
+      code: syncEnv.code,
+      reason: syncEnv.reason,
+      metadata: syncEnv.metadata,
+    })
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -190,7 +281,7 @@ export async function requestWithAsyncResult<S = unknown, A = unknown>(
     if (envelope.kind === 'error') {
       const cause = envelope.error
       const msg = cause instanceof Error ? cause.message : 'subscription error'
-      throw new AsyncJobError(msg, ASYNC_JOB_ERROR_KINDS.SubscriptionClosed, cause)
+      throw new AsyncJobError(msg, ASYNC_JOB_ERROR_KINDS.SubscriptionClosed, { cause })
     }
     if (envelope.kind === 'closed') {
       throw new AsyncJobError(
@@ -203,6 +294,11 @@ export async function requestWithAsyncResult<S = unknown, A = unknown>(
       throw new AsyncJobError(
         asyncEnv.error || 'operation failed',
         ASYNC_JOB_ERROR_KINDS.AsyncError,
+        {
+          code: asyncEnv.code,
+          reason: asyncEnv.reason,
+          metadata: asyncEnv.metadata,
+        },
       )
     }
     cleanupSub()

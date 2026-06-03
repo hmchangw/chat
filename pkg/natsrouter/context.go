@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
@@ -62,6 +63,10 @@ func releaseContext(c *Context) {
 	c.chain.handlers = nil
 	c.chain.index = 0
 	chainPool.Put(c.chain)
+	// Nil out so Next/Abort/IsAborted panic loudly if a post-handler
+	// goroutine calls them — otherwise it would silently read the next
+	// request's chain state from the pool.
+	c.chain = nil
 	// c itself is left to GC. External ctx consumers may still hold it;
 	// every field they can observe is stable from the moment of construction
 	// (Msg, Params, keys); the underlying ctx may have been swapped by
@@ -84,8 +89,16 @@ func (c *Context) Done() <-chan struct{}       { return c.ctx.Done() }
 func (c *Context) Err() error                  { return c.ctx.Err() }
 func (c *Context) Value(key any) any           { return c.ctx.Value(key) }
 
+// Chain methods are handler-internal. Calling them from a post-handler
+// goroutine panics — chainState is pooled and would otherwise silently read
+// the next request's state.
+const chainAfterReleasePanic = "natsrouter: chain method called after handler chain ended; pass values out via c.Value/c.Get before returning"
+
 // Next executes the next handler in the chain.
 func (c *Context) Next() {
+	if c.chain == nil {
+		panic(chainAfterReleasePanic)
+	}
 	c.chain.index++
 	for c.chain.index < len(c.chain.handlers) {
 		c.chain.handlers[c.chain.index](c)
@@ -95,11 +108,17 @@ func (c *Context) Next() {
 
 // Abort stops the middleware chain.
 func (c *Context) Abort() {
+	if c.chain == nil {
+		panic(chainAfterReleasePanic)
+	}
 	c.chain.index = len(c.chain.handlers)
 }
 
 // IsAborted returns true if the chain was aborted.
 func (c *Context) IsAborted() bool {
+	if c.chain == nil {
+		panic(chainAfterReleasePanic)
+	}
 	return c.chain.index >= len(c.chain.handlers)
 }
 
@@ -149,6 +168,12 @@ func (c *Context) SetContext(ctx context.Context) {
 	c.ctx = ctx
 }
 
+// WithLogValues enriches the ctx logger with key/value pairs for the errcode
+// log line. Derives from c.ctx (avoids the SetContext Value-delegation cycle).
+func (c *Context) WithLogValues(args ...any) {
+	c.SetContext(errcode.WithLogValues(c.ctx, args...))
+}
+
 // Param returns a named parameter from the subject. Shortcut for c.Params.Get(key).
 func (c *Context) Param(key string) string {
 	return c.Params.Get(key)
@@ -187,15 +212,4 @@ func (c *Context) GetHeader(key string) string {
 // ReplyJSON marshals v as JSON and sends it as the reply.
 func (c *Context) ReplyJSON(v any) {
 	natsutil.ReplyJSON(c.Msg, v)
-}
-
-// ReplyError sends an error response to the client.
-func (c *Context) ReplyError(msg string) {
-	natsutil.ReplyError(c.Msg, msg)
-}
-
-// ReplyRouteError sends a structured error response with an optional code.
-// Use this from middleware when you need machine-readable error codes.
-func (c *Context) ReplyRouteError(e *RouteError) {
-	natsutil.ReplyJSON(c.Msg, e)
 }

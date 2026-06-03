@@ -310,3 +310,49 @@ func TestIsValidUUID_AcceptsGenerateRequestIDOutput(t *testing.T) {
 		assert.True(t, idgen.IsValidUUID(idgen.GenerateRequestID()))
 	}
 }
+
+func TestResolveRequestID(t *testing.T) {
+	cases := []struct {
+		name         string
+		inbound      string
+		wantID       string // "" means "any minted UUID, just not the inbound"
+		wantReplaced bool
+	}{
+		{
+			name:         "valid_uuid_passes_through",
+			inbound:      "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+			wantID:       "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+			wantReplaced: false,
+		},
+		{
+			name:         "empty_mints_fresh_not_replaced",
+			inbound:      "",
+			wantID:       "",
+			wantReplaced: false, // empty inbound is "missing", not "replaced"
+		},
+		{
+			name:         "malformed_mints_fresh_and_reports_replaced",
+			inbound:      "not-a-uuid",
+			wantID:       "",
+			wantReplaced: true,
+		},
+		{
+			name:         "wrong_length_mints_fresh_and_reports_replaced",
+			inbound:      "01970a4f-8c2d-7c9a-abcd",
+			wantID:       "",
+			wantReplaced: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, replaced := idgen.ResolveRequestID(tc.inbound)
+			assert.Equal(t, tc.wantReplaced, replaced)
+			if tc.wantID != "" {
+				assert.Equal(t, tc.wantID, id)
+			} else {
+				assert.True(t, idgen.IsValidUUID(id), "minted id must be a valid UUID, got %q", id)
+				assert.NotEqual(t, tc.inbound, id)
+			}
+		})
+	}
+}

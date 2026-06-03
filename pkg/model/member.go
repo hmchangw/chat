@@ -158,7 +158,7 @@ type SyncCreateDMRequest struct {
 	OtherAccount     string   `json:"otherAccount"     bson:"otherAccount"`
 }
 
-// SyncCreateDMReply is the success reply; errors flow via natsutil.ReplyError instead.
+// SyncCreateDMReply is the success reply; errors flow via errnats.Reply (pkg/errcode envelope) instead.
 type SyncCreateDMReply struct {
 	Success      bool         `json:"success"      bson:"success"`
 	Subscription Subscription `json:"subscription" bson:"subscription"`

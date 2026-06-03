@@ -4,20 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
-	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/errcode"
 )
 
-// resolveRoomTimesOrError invokes resolveRoomTimes and translates the result
-// into a natsrouter error suitable for handler return: a wrapped
-// mongo.ErrNoDocuments becomes ErrNotFound (the room genuinely does not
-// exist), anything else becomes ErrInternal. The raw error is logged
-// server-side; only the sanitized RouteError is returned to clients.
+// resolveRoomTimesOrError calls resolveRoomTimes and translates the result for
+// handler return: mongo.ErrNoDocuments → errcode.NotFound; anything else wraps.
 func (s *HistoryService) resolveRoomTimesOrError(
 	ctx context.Context,
 	roomID string,
@@ -28,11 +24,10 @@ func (s *HistoryService) resolveRoomTimesOrError(
 	if err == nil {
 		return lastMsgAt, createdAt, nil
 	}
-	slog.Error("resolve room times", "error", err, "roomID", roomID)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return time.Time{}, time.Time{}, natsrouter.ErrNotFound("room not found")
+		return time.Time{}, time.Time{}, errcode.NotFound("room not found")
 	}
-	return time.Time{}, time.Time{}, natsrouter.ErrInternal("failed to resolve room metadata")
+	return time.Time{}, time.Time{}, fmt.Errorf("resolving room metadata for %s: %w", roomID, err)
 }
 
 // clockSkewTolerance allows clients with mildly out-of-sync clocks to still

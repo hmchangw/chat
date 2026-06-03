@@ -158,6 +158,9 @@ func main() {
 	svc := service.New(cassRepo, subSource, roomSource, pub, threadRoomRepo, &cfg)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
+	// RequestID must precede any handler that reads request_id from ctx —
+	// otherwise Classify's log line records an empty value.
+	router.Use(natsrouter.RequestID())
 	router.Use(natsrouter.Logging())
 
 	svc.RegisterHandlers(router, cfg.SiteID)

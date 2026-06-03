@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/history-service/internal/service/mocks"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -83,36 +84,43 @@ func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockM
 	return service.New(msgs, subs, rooms, pub, threadRooms, cfg), msgs, subs, rooms, pub, threadRooms
 }
 
-func assertInternalErr(t *testing.T, err error, wantMsg string) {
+// assertInternalErr verifies err collapses to the internal category. Internal
+// failures are now propagated as raw wrapped errors (fmt.Errorf("...: %w", err))
+// that errcode.Classify turns into a generic "internal error" envelope at the
+// transport boundary, so the test classifies the error the same way. wantCause
+// is asserted against the (server-only) wrapped chain, never the client message.
+func assertInternalErr(t *testing.T, err error, wantCause string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeInternal, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), wantCause)
+	ec := errcode.Classify(context.Background(), err)
+	require.NotNil(t, ec)
+	assert.Equal(t, errcode.CodeInternal, ec.Code)
+	assert.Equal(t, "internal error", ec.Message)
 }
 
 func assertForbiddenErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeForbidden, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func assertBadRequestErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func assertNotFoundErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeNotFound, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func makePage(msgs []models.Message, hasNext bool) cassrepo.Page[models.Message] {
@@ -154,7 +162,7 @@ func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load message history")
+	assertInternalErr(t, err, "loading history")
 }
 
 func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
@@ -165,7 +173,7 @@ func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
@@ -381,7 +389,7 @@ func TestHistoryService_LoadNextMessages_SubscriptionStoreError(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
@@ -394,7 +402,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load messages")
+	assertInternalErr(t, err, "loading next messages")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
@@ -407,7 +415,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load messages")
+	assertInternalErr(t, err, "loading next messages")
 }
 
 func TestHistoryService_LoadNextMessages_HasNext(t *testing.T) {
@@ -523,7 +531,7 @@ func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
 
 	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to retrieve message")
+	assertInternalErr(t, err, "retrieving message")
 }
 
 func TestHistoryService_GetMessageByID_NoHSS(t *testing.T) {
@@ -668,7 +676,7 @@ func TestHistoryService_LoadSurroundingMessages_SubscriptionError(t *testing.T) 
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadSurroundingMessages_WrongRoom(t *testing.T) {
@@ -729,7 +737,7 @@ func TestHistoryService_LoadSurroundingMessages_StoreError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to retrieve message")
+	assertInternalErr(t, err, "retrieving message")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
@@ -747,7 +755,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing.T) {
@@ -765,7 +773,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
@@ -783,7 +791,7 @@ func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T) {
@@ -911,9 +919,9 @@ func TestHistoryService_EditMessage_NotSubscribed(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "not subscribed to room", routeErr.Message)
 }
 
@@ -934,9 +942,9 @@ func TestHistoryService_EditMessage_NotSender(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "only the sender can edit", routeErr.Message)
 }
 
@@ -950,9 +958,9 @@ func TestHistoryService_EditMessage_NotFound(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "missing", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
@@ -972,9 +980,9 @@ func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_AlreadyDeleted(t *testing.T) {
@@ -997,9 +1005,9 @@ func TestHistoryService_EditMessage_AlreadyDeleted(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
@@ -1018,9 +1026,9 @@ func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "   "})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 	assert.Equal(t, "newMsg must not be empty", routeErr.Message)
 }
 
@@ -1043,9 +1051,9 @@ func TestHistoryService_EditMessage_TooLarge(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: oversize})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 	assert.Equal(t, "newMsg exceeds maximum size", routeErr.Message)
 }
 
@@ -1071,7 +1079,7 @@ func TestHistoryService_EditMessage_UpdateFails(t *testing.T) {
 
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
 	assert.Nil(t, resp)
-	assertInternalErr(t, err, "failed to edit message")
+	assertInternalErr(t, err, "editing message")
 }
 
 // TestHistoryService_EditMessage_RaceWithDelete_MapsToNotFound verifies the
@@ -1237,9 +1245,9 @@ func TestHistoryService_DeleteMessage_NotSubscribed(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "not subscribed to room", routeErr.Message)
 }
 
@@ -1259,9 +1267,9 @@ func TestHistoryService_DeleteMessage_NotSender(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "only the sender can delete", routeErr.Message)
 }
 
@@ -1275,9 +1283,9 @@ func TestHistoryService_DeleteMessage_NotFound(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "missing"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
@@ -1297,9 +1305,9 @@ func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
@@ -1322,7 +1330,7 @@ func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
 
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
-	assertInternalErr(t, err, "failed to delete message")
+	assertInternalErr(t, err, "deleting message")
 }
 
 // TestHistoryService_DeleteMessage_ConcurrentDeleteSkipsPublish covers the

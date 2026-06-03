@@ -64,6 +64,7 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		}
 		subj := subject.Notification(subs[i].User.Account)
 		if err := h.pub.Publish(ctx, subj, notifData); err != nil {
+			// account is intentionally logged for operability; do NOT add message body / token fields.
 			slog.Error("publish notification failed", "error", err, "account", subs[i].User.Account)
 		}
 	}
