@@ -1,0 +1,70 @@
+# Opt-in overlay: run message-worker against Vault using AppRole auth with a
+# file-delivered secret ID. This mirrors the production "Pattern A" setup where
+# a Kubernetes Secret is mounted into the pod as a file and read via
+# VAULT_APPROLE_SECRET_ID_FILE.
+#
+# The default stack (docker-compose.yml) authenticates with the dev root token.
+# This overlay swaps in AppRole so you can exercise the VAULT_APPROLE_* code
+# path locally without touching the default flow:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.approle.yml up
+#
+# Success = message-worker boots without a "vault: approle login" error
+# (NewVaultKeyWrapper logs in at startup and fails fast on bad credentials).
+
+name: message-worker
+
+services:
+  # Override the bootstrap step: keep the transit engine + KEK setup, then
+  # provision AppRole and deliver the secret ID as a file on a shared volume.
+  vault-bootstrap:
+    volumes:
+      - vault-approle:/vault-approle
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        # Transit engine + KEK (same as the default bootstrap).
+        vault secrets enable -path=transit transit || true
+        vault write -f transit/keys/chat-kek
+
+        # AppRole auth method (idempotent across restarts).
+        vault auth enable approle || true
+
+        # Policy scoped to exactly the chat-kek transit ops the wrapper needs.
+        printf '%s\n' \
+          'path "transit/datakey/plaintext/chat-kek" { capabilities = ["update"] }' \
+          'path "transit/encrypt/chat-kek"           { capabilities = ["update"] }' \
+          'path "transit/decrypt/chat-kek"           { capabilities = ["update"] }' \
+          > /tmp/atrest-transit.hcl
+        vault policy write atrest-transit /tmp/atrest-transit.hcl
+
+        # Non-expiring secret ID is the Pattern A requirement: a file-mounted
+        # secret ID can't rotate itself, so the role must not expire it.
+        vault write auth/approle/role/atrest \
+          secret_id_ttl=0 secret_id_num_uses=0 \
+          token_policies=atrest-transit token_ttl=1h token_max_ttl=24h
+        # Pin a known role ID so it can live in plain config / an env var.
+        vault write auth/approle/role/atrest/role-id role_id=local-dev-role-id
+
+        # Deliver the secret ID as a file, exactly like a mounted K8s Secret.
+        vault write -f -field=secret_id auth/approle/role/atrest/secret-id \
+          > /vault-approle/secret-id
+        chmod 0400 /vault-approle/secret-id
+    networks:
+      - chat-local
+
+  message-worker:
+    environment:
+      # Blank the dev token and select AppRole instead. (AppRole already takes
+      # precedence over a token in the wrapper; blanking it makes the intent
+      # explicit and proves the AppRole path is what's exercised.)
+      - VAULT_TOKEN=
+      - VAULT_APPROLE_ROLE_ID=local-dev-role-id
+      - VAULT_APPROLE_SECRET_ID_FILE=/vault-approle/secret-id
+    volumes:
+      - vault-approle:/vault-approle:ro
+
+volumes:
+  vault-approle:
