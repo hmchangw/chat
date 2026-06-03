@@ -164,3 +164,12 @@ Industry approaches to "don't let the search backend expose readable message con
 - **search-service key surface (Approach A)** — A puts per-room `atrest` access into `search-service`. Acceptable per D6 latency priority; benchmark surfaces the tradeoff explicitly.
 - **Reindex on cutover (Phase 3)** — historical plaintext docs must be reindexed into the blind index; needs a backfill plan (the existing `SYNC_MESSAGES_FROM` cutover mechanism is the model).
 - **Two ciphertext copies (Approach A)** — message bodies encrypted in both Cassandra and ES. Same scheme, marginal blast-radius increase; noted for the security review.
+
+## 13. Phase-0 review — carry-forward flags
+
+`pkg/msganalyzer` and `pkg/blindidx` are built, reviewed, and merged (100% coverage, SAST clean). The final holistic review raised four non-blocking items to resolve in later phases:
+
+1. **ASCII `\s` vs Unicode whitespace (analyzer parity — Phase 2).** Go's `regexp` `\s` matches only `[\t\n\f\r ]`, so NBSP (U+00A0), em-space (U+2003), NEL (U+0085), vertical-tab survive into the preserved-original token. Split *parts* are still correct and blind hashing means it never breaks the space-join, but it is a likely divergence from Lucene. The Phase-2 `_analyze` quality harness should surface it; if exact parity matters, widen the tokenizer class to `[\s\p{Z}\x{0085}\x{000B}…]`. Deliberately NOT fixed in Phase 0 (self-consistent now; parity is measured, not guessed).
+2. **Empty content (Phase 1).** `Analyze("")` returns `nil` → `blindidx.Tokens` → `""` joined field. Phase 1 must decide: skip indexing empty content vs. index an empty field, and ensure the query side treats an empty analyzed query as "no match" (no match-all surprise).
+3. **Key decode before `blindidx.New` (Phase 1, important).** `New` enforces a ≥32-byte raw-key floor. A 32-byte key arrives hex/base64-encoded (64 / ~44 chars) and would *pass* the length check while using the wrong bytes. Phase-1 Vault/config wiring MUST decode to raw bytes first and assert the decoded length.
+4. **Collision rate (Phase 2).** 128-bit truncation is collision-safe at corpus scale; the Phase-2 harness should still measure false-positive (term-collision) rate on the real multilingual corpus alongside CJK recall.
