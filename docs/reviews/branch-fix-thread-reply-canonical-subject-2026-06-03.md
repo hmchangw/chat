@@ -233,3 +233,21 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `low` — `broadcast-worker/handler.go:492–510` — `buildEditRoomEvent` and `buildDeleteRoomEvent` now correctly use `evt.Timestamp` from the source event rather than `time.Now()`. This is a correctness fix (edit/delete timestamps reflect event time, not processing time). No security issue; noted as a positive correctness change.
 
 - `low` — `broadcast-worker/store.go` — `GetThreadFollowers` integration test against a live MongoDB collection is absent. Unit mock coverage is adequate but a store-level integration test would verify the projection and index usage end-to-end.
+
+---
+
+## Performance
+
+### Critical
+
+- `critical` — `broadcast-worker/handler.go` — **N+1 NATS publish in `publishToThreadAccounts`.** For each account in the follower set, `publishToThreadAccounts` calls `nc.Publish` individually (one NATS publish per follower). For a thread with 200 followers this is 200 sequential publish calls per event. NATS publish is fast but not free at scale; more critically this is 200 round-trips through the NATS subscription dispatch layer. **Recommended fix:** batch into a single publish to a room-scoped subject (`chat.room.{roomID}.thread.{parentID}.event`) with subscriber-side filtering, or use a fan-out subject pattern already established by broadcast-worker's room-level events. If per-account delivery is a hard requirement, use `nc.PublishMsg` with a pre-allocated `nats.Msg` to avoid per-call allocation.
+
+### High
+
+- `high` — `broadcast-worker/handler.go` — `channelThreadFanOut` calls `h.store.GetThreadFollowers` on every canonical event — including `EventUpdated` and `EventDeleted` events that do not change the thread follower set. For high-traffic threads, every edit/delete triggers an unnecessary MongoDB round-trip. Cache the follower set per `parentMessageID` with a short TTL (e.g. 30s) or skip the lookup for non-follower-modifying events.
+
+- `high` — `message-worker/store_cassandra.go` — `incrementParentTcount` issues a Cassandra `UPDATE` (counter increment) followed by a separate `SELECT` to read the post-increment value. Cassandra counter tables do not return the post-update value in the write response. The two-query approach is correct but adds one extra round-trip per thread-reply insertion. Consider whether the tcount can be derived from a `SELECT count(*)` on `thread_messages_by_thread` (cheaper for small threads) or accepted as approximate (skip the SELECT, derive client-side from the event sequence number).
+
+### Medium
+
+- `medium` — `broadcast-worker/handler.go` — `threadFanOutAccounts` allocates a new `[]string` on every call by iterating the map. For empty maps (no followers) this allocates a non-nil slice. A `if len(followers) == 0 { return nil, nil }` early-return avoids the allocation and makes the no-follower fast path explicit.
