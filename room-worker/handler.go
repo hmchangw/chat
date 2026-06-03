@@ -1123,36 +1123,21 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 
 	// 10. Outbox for cross-site members — one event per destination site.
-	// Bucket remote sites from the already-fetched users (no second DB round-trip).
-	var remoteSites []string
-	{
-		seenSites := make(map[string]struct{})
-		for acc := range userMap {
-			siteID := userMap[acc].SiteID
-			if siteID == h.siteID {
-				continue
-			}
-			if _, dup := seenSites[siteID]; dup {
-				continue
-			}
-			seenSites[siteID] = struct{}{}
-			remoteSites = append(remoteSites, siteID)
-		}
-	}
-	// Each remote site receives only the accounts it homes — filter actualAccounts
-	// against userMap[].SiteID. Sending the full list would over-pressure NATS
-	// and ship subscription identities to sites that have no business knowing
-	// them, even though inbox-worker would filter on the destination.
-	for _, destSiteID := range remoteSites {
-		siteAccounts := make([]string, 0, len(actualAccounts))
-		for _, acc := range actualAccounts {
-			if userMap[acc].SiteID == destSiteID {
-				siteAccounts = append(siteAccounts, acc)
-			}
-		}
-		if len(siteAccounts) == 0 {
+	// Single-pass bucket: accounts → home site, skipping the local site. The map
+	// keys are the distinct remote sites; each entry already carries the
+	// per-site filtered account list, so the downstream loop is O(sites) not
+	// O(sites × accounts). Sending the full list would over-pressure NATS and
+	// ship subscription identities to sites that have no business knowing them,
+	// even though inbox-worker would filter on the destination.
+	accountsBySite := make(map[string][]string)
+	for _, acc := range actualAccounts {
+		siteID := userMap[acc].SiteID
+		if siteID == "" || siteID == h.siteID {
 			continue
 		}
+		accountsBySite[siteID] = append(accountsBySite[siteID], acc)
+	}
+	for destSiteID, siteAccounts := range accountsBySite {
 		siteEvt := model.MemberAddEvent{
 			Type:               model.OutboxMemberAdded,
 			RoomID:             req.RoomID,
