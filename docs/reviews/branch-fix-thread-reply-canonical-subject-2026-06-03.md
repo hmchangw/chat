@@ -96,3 +96,37 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `medium` — `handler.go` — `handleThreadRead` and `handleSubscriptionRead` are new in this diff. Both are missing OTel spans (see Observability chapter for full details).
 
 - `nitpick` — `store_mongo.go` — Variable name `threadUnreadEntry` is used in 3 aggregation pipeline stages but represents a different computed value in each. Renaming intermediate values to `threadUnreadFiltered` / `threadUnreadAfterFilter` would aid readability.
+
+---
+
+## Service: search-sync-worker / notification-worker / inbox-worker
+
+### search-sync-worker
+
+**Findings:**
+
+- `medium` — `messages.go` — The new `handleThreadReplyAdded` handler correctly skips indexing for `EventThreadReplyAdded` events (badge-only events carry no new message content to index). The guard is present and correct. No issues beyond missing request-ID in log lines (see Observability chapter).
+
+### notification-worker
+
+**Findings:**
+
+- `critical` — `handler.go:46` — **`HandleMessage` has no event-type guard.** The handler fires `"new_message"` push notifications for **all 4 canonical event types** including `EventThreadReplyAdded`, `EventUpdated`, and `EventDeleted`. Thread-reply badge events carry `Content=""` and `UserID=""` in the message payload. Every thread reply will spam **all room members** with an empty push notification. This is a user-visible regression that must be fixed before merge.
+
+  **Required fix:**
+  ```go
+  // At the top of HandleMessage, after unmarshalling evt:
+  if evt.Event != model.EventCreated {
+      return nil
+  }
+  ```
+
+  This matches the intent described in `docs/thread-reply-notifications.md` (priority #1: only notify on new messages, not on badge-only events).
+
+### inbox-worker
+
+**Findings:**
+
+- `critical` — `handler.go:245–246` — The error log for a failed `OutboxThreadSubscriptionUpserted` handler references the wrong field. The log emits `slog.String("account", event.RoomID)` (using `RoomID` for the `account` key). This silently records the room ID in place of the account, making the log useless for debugging.
+
+  **Required fix:** `slog.String("account", event.Account)`
