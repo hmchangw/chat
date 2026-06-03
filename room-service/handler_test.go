@@ -4019,11 +4019,10 @@ func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
 
 	h := &Handler{
 		store: store, siteID: "site-a",
-		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
-			t.Fatal("publishToStream must not be called when GetUserSiteID fails")
-			return nil
-		},
-		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+		// Canonical member event publish happens before GetUserSiteID and is
+		// independent of the outbox path — it represents the successful DB mutation.
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
 	}
 
 	subj := subject.MuteToggle("alice", "r1", "site-a")
