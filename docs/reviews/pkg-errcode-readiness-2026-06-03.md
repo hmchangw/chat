@@ -128,3 +128,56 @@ A tight, intentional library. The wire contract is minimal, the daily handler AP
 
 ---
 
+## Chapter 4 — Test coverage
+
+**Score: 5 / 5**
+
+### Coverage numbers
+
+| Package | Coverage |
+|---|---|
+| `pkg/errcode` | **100.0%** |
+| `pkg/errcode/errhttp` | **100.0%** |
+| `pkg/errcode/errnats` | 73.3% (4 uncovered statements — log-on-Respond-error + 2 marshal-fail fallbacks) |
+| `pkg/errcode/errtest` | 88.9% |
+| **Total** | **95.2%** |
+
+All four packages well above the 80% floor in CLAUDE.md Section 4.
+
+### Test pass/fail
+
+**PASS.** `go test -race -count=1 ./pkg/errcode/...` is clean across all four packages in ~1s each. Race detector enforced via Makefile and verified explicitly.
+
+### Mock staleness
+
+**Clean for `pkg/errcode`.** `make generate` fails repo-wide due to a `mockgen` toolchain mismatch (built against go1.24, several services on go1.25 — `broadcast-worker`, `history-service`, `message-gatekeeper`, `message-worker`, `room-worker`, `search-sync-worker`, `tools/nats-debug`). **No `pkg/errcode` mocks are stale.** The repo-wide failure is out of audit scope but worth flagging separately.
+
+### Integration tests
+
+None present, appropriately. `errnats` tests spin up an in-process `nats-server` directly (`reply_test.go:23-36`) without the integration tag.
+
+### Findings
+
+- **`low` — `errnats.Reply` / `ReplyQuiet` log-on-Respond-error branches uncovered** (`errnats/reply.go:42-44, 49-51`). Triggering requires `nc.Close()` before `Respond`; awkward but possible. Two-statement fallback — cosmetic.
+- **`low` — `errnats.Marshal` / `MarshalQuiet` `json.Marshal` failure fallbacks uncovered** (`errnats/reply.go:20-22, 33-37`). Effectively dead-branch defensive code — `*Error` contains only `string` / `map[string]string` / canonical-set enums, all of which marshal infallibly.
+- **`low` — `errtest.AssertCode` / `AssertReason` early-return-after-Decode-failure paths uncovered** (`errtest/assert.go:26-28, 38-40`). Easy fix: pass a non-envelope payload to `AssertCode(rt, …)` with a `recordingT`. ~6 lines of test, lifts errtest to 100%.
+- **`nitpick` — `category_test.go` is cursorier than its siblings.** 22 LOC, 100% coverage. No action.
+
+### Strengths
+
+- **Wire-shape invariants are explicitly asserted at three layers:** `error_test.go:25-44` (`MarshalJSON_NeverLeaksCause`), `classify_test.go:62-83`, `errnats/reply_test.go:128-142` (`raw cause must NOT appear on the wire` + `must appear in the SERVER log`). The single most important invariant in the package has triple-redundant test coverage.
+- **All four panic invariants have dedicated tests** — `New` non-canonical Code, `New` empty message, `WithMetadata` odd args, `WithCause` nested errcode (both direct and `%w`-wrapped).
+- **Log-level matrix is explicit** — `classify_test.go:121-143` table-drives 4xx→INFO, internal→ERROR, unavailable→ERROR.
+- **`errtest` helpers are themselves tested** via a `recordingT` fixture (`assert_test.go:21-48`).
+- **TDD evidence is strong** — every exported function has at least one dedicated test, most with multiple scenarios.
+
+### Recommendations
+
+1. **`low`** — Add the 6-line `errtest` test that exercises the guarded early-returns in `AssertCode` / `AssertReason`. Lifts `errtest` from 88.9% to 100%.
+2. **`low`** — Optionally cover the `Reply` Respond-error path by closing the connection before responding. Lifts `errnats` from 73.3% to ~95%. Skip if you treat that branch as dead-defensive.
+3. **`nitpick`** — Consider a `testing.F` fuzz test for `Parse` to harden cross-site envelope decoding for Tier-3 callers (`memberlist_client.go`).
+4. **`nitpick`** — Add a "Classify is not idempotent" test — calling `Classify(ctx, Classify(ctx, err))` should log twice. Pins the per-boundary log-once contract from `docs/error-handling.md`.
+5. **`low`** *(out of scope but flagged)* — Fix the repo-wide `mockgen` toolchain mismatch so `make generate` is a reliable staleness signal again.
+
+---
+
