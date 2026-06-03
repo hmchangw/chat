@@ -53,16 +53,16 @@ func newBottleneckEngine(q promQuerier, ident identityResolver, knee float64, st
 // under pressure). A container below the floor is NOT blamed — it is idle or
 // low-and-flat because it is waiting on something downstream. dataOK=false means
 // the measurement itself failed (e.g. Prometheus unreachable).
-func (e *bottleneckEngine) saturated(ctx context.Context, service string, pass, trip *rpsStepResult) (sat, dataOK bool) {
+func (e *bottleneckEngine) saturated(ctx context.Context, service string, pass, trip *rpsStepResult) (sat, dataOK bool, tripCores float64) {
 	tripCores, reset, okT := e.cpuCores(ctx, service, trip.HoldStart, trip.HoldEnd)
 	if !okT {
-		return false, false
+		return false, false, 0
 	}
 	if reset {
-		return true, true
+		return true, true, tripCores
 	}
 	if tripCores < cpuSaturatedFloorCores {
-		return false, true
+		return false, true, tripCores
 	}
 	passCores, _, okP := e.cpuCores(ctx, service, pass.HoldStart, pass.HoldEnd)
 	if !okP || passCores <= 0 {
@@ -72,10 +72,10 @@ func (e *bottleneckEngine) saturated(ctx context.Context, service string, pass, 
 		// busy-but-still-scaling container could be over-blamed here. Rare: it
 		// needs the pass query to fail while the trip query succeeds against the
 		// same Prometheus.
-		return true, true
+		return true, true, tripCores
 	}
 	rise := (tripCores - passCores) / passCores
-	return rise < e.knee, true
+	return rise < e.knee, true, tripCores
 }
 
 // stageBackingUp reports whether a stage is accumulating backlog or breaching
@@ -121,7 +121,7 @@ func (e *bottleneckEngine) Diagnose(ctx context.Context, trip, pass *rpsStepResu
 	for _, st := range graph {
 		ev := stageEval{st: st, backingUp: stageBackingUp(&st, trip, th)}
 		if ev.backingUp {
-			sat, ok := e.saturated(ctx, st.Container, pass, trip)
+			sat, ok, _ := e.saturated(ctx, st.Container, pass, trip)
 			ev.satStage = sat
 			sawData = sawData || ok
 		}
@@ -147,7 +147,7 @@ func (e *bottleneckEngine) Diagnose(ctx context.Context, trip, pass *rpsStepResu
 			continue
 		}
 		for _, dep := range ev.st.DependsOn {
-			sat, ok := e.saturated(ctx, dep, pass, trip)
+			sat, ok, _ := e.saturated(ctx, dep, pass, trip)
 			sawData = sawData || ok
 			if sat {
 				return bottleneckVerdict{
@@ -196,11 +196,10 @@ func (e *bottleneckEngine) fallbackRanking(ctx context.Context, pass, trip *rpsS
 			return
 		}
 		seen[svc] = true
-		sat, ok := e.saturated(ctx, svc, pass, trip)
+		sat, ok, cores := e.saturated(ctx, svc, pass, trip)
 		if !ok || !sat {
 			return
 		}
-		cores, _, _ := e.cpuCores(ctx, svc, trip.HoldStart, trip.HoldEnd)
 		if cores > bestCores {
 			bestCores, best = cores, svc
 		}
