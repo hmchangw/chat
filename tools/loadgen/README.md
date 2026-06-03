@@ -152,6 +152,47 @@ for the rationale and the v2 plan.
   `--target-size`. A row with `count > 0` whose `e2_p99` is much larger
   than smaller-size buckets indicates a per-room-size degradation.
 
+## Room-read workload (mark-as-read benchmark)
+
+Finds the maximum sustainable RPS for marking a room as read
+(`room-service.handleMessageRead`, the `message.read` request/reply RPC). The
+workload reuses the messages presets but seeds read-state so the room
+read-floor recompute path stays exercised: every room's `lastMsgAt` is stamped
+ahead of the run window and members' `lastSeenAt` are spread behind it, so each
+read is "a user opening a room with unread content" — the floor scan fires on
+every request and the floor write fires at a rate set by room size and the read
+distribution.
+
+### Quick start
+
+```
+make -C tools/loadgen/deploy up
+make -C tools/loadgen/deploy seed-roomread PRESET=medium
+make -C tools/loadgen/deploy run-max-rps WORKLOAD=room-read PRESET=medium
+```
+
+Override the ramp with `STEPS` (default `200,500,1000,2000,5000`):
+
+```
+make -C tools/loadgen/deploy run-max-rps WORKLOAD=room-read PRESET=medium STEPS=500,1k,2k,5k
+```
+
+Tear down the fixtures:
+
+```
+make -C tools/loadgen/deploy teardown-roomread PRESET=medium
+```
+
+### Notes
+
+- Synchronous request/reply: gated on p95/p99 latency and error rate only
+  (no consumer-pending signal). Defaults: `--slo-p95=100ms`, `--slo-p99=250ms`,
+  `--slo-error-rate=0.001`; override via the shared `max-rps` flags.
+- Single-site only: all seeded users are local, so no cross-site outbox event is
+  published on the read path.
+- Presets are the messages presets (`small`/`medium`/`large`/`realistic`); room
+  size distribution drives floor-write contention.
+
 ## History workload (LoadHistory / GetThreadMessages benchmark)
 
 Benchmarks the synchronous read path:
