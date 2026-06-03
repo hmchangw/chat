@@ -72,4 +72,12 @@ type SearchEngine interface {
 	// indistinguishable to the caller and are treated uniformly as
 	// "no document" — same convention as GetIndexMapping.
 	GetDoc(ctx context.Context, index, docID string) (json.RawMessage, bool, error)
+
+	// Analyze runs ES `_analyze` against the named analyzer and returns the
+	// ordered token strings it emits for text. When index is non-empty the
+	// call is scoped to that index (so an index-defined analyzer like
+	// `custom_analyzer` resolves); an empty index hits the cluster-level
+	// `/_analyze` endpoint for built-in analyzers. Used as the parity oracle
+	// that cross-checks the Go-side analyzer against the real ES pipeline.
+	Analyze(ctx context.Context, index, analyzer, text string) ([]string, error)
 }

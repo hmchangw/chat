@@ -259,6 +259,64 @@ func TestAdapter_Search(t *testing.T) {
 	})
 }
 
+func TestAdapter_Analyze(t *testing.T) {
+	t.Run("returns ordered token strings", func(t *testing.T) {
+		var capturedMethod, capturedPath, capturedBody string
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			capturedMethod = req.Method
+			capturedPath = req.URL.Path
+			b, _ := io.ReadAll(req.Body)
+			capturedBody = string(b)
+			assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+			return jsonResponse(200, `{"tokens":[{"token":"foo","position":0},{"token":"bar","position":1}]}`), nil
+		}}
+		a := newAdapter(ft)
+		tokens, err := a.Analyze(context.Background(), "messages-v1-2026-01", "custom_analyzer", "Foo bar!")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"foo", "bar"}, tokens)
+		assert.Equal(t, http.MethodPost, capturedMethod)
+		assert.Equal(t, "/messages-v1-2026-01/_analyze", capturedPath)
+
+		var reqBody map[string]any
+		require.NoError(t, json.Unmarshal([]byte(capturedBody), &reqBody))
+		assert.Equal(t, "custom_analyzer", reqBody["analyzer"])
+		assert.Equal(t, "Foo bar!", reqBody["text"])
+	})
+
+	t.Run("empty token list", func(t *testing.T) {
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(200, `{"tokens":[]}`), nil
+		}}
+		a := newAdapter(ft)
+		tokens, err := a.Analyze(context.Background(), "idx", "custom_analyzer", "")
+		require.NoError(t, err)
+		assert.Empty(t, tokens)
+	})
+
+	t.Run("index-less analyze omits the index from the path", func(t *testing.T) {
+		var capturedPath string
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			capturedPath = req.URL.Path
+			return jsonResponse(200, `{"tokens":[{"token":"hi"}]}`), nil
+		}}
+		a := newAdapter(ft)
+		tokens, err := a.Analyze(context.Background(), "", "standard", "hi")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"hi"}, tokens)
+		assert.Equal(t, "/_analyze", capturedPath)
+	})
+
+	t.Run("ES error status", func(t *testing.T) {
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(400, `{"error":"bad analyzer"}`), nil
+		}}
+		a := newAdapter(ft)
+		_, err := a.Analyze(context.Background(), "idx", "nope", "x")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "400")
+	})
+}
+
 func TestAdapter_GetDoc(t *testing.T) {
 	t.Run("found", func(t *testing.T) {
 		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {

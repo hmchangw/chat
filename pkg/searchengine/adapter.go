@@ -218,6 +218,56 @@ func (a *httpAdapter) Search(ctx context.Context, indices []string, body json.Ra
 	return data, nil
 }
 
+type analyzeResponse struct {
+	Tokens []struct {
+		Token string `json:"token"`
+	} `json:"tokens"`
+}
+
+// Analyze runs ES `_analyze` and returns the emitted token strings in order.
+// When index is non-empty the request is scoped to that index so an
+// index-defined analyzer (e.g. `custom_analyzer`) resolves; otherwise it hits
+// the cluster-level `/_analyze` endpoint for built-in analyzers.
+func (a *httpAdapter) Analyze(ctx context.Context, index, analyzer, text string) ([]string, error) {
+	path := "/_analyze"
+	if index != "" {
+		path = fmt.Sprintf("/%s/_analyze", url.PathEscape(index))
+	}
+	reqBody, err := json.Marshal(map[string]string{"analyzer": analyzer, "text": text})
+	if err != nil {
+		return nil, fmt.Errorf("marshal analyze request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("create analyze request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.transport.Perform(req)
+	if err != nil {
+		return nil, fmt.Errorf("analyze request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("analyze: status %d, read body: %w", resp.StatusCode, readErr)
+		}
+		return nil, fmt.Errorf("analyze: status %d, body: %s", resp.StatusCode, respBody)
+	}
+
+	var parsed analyzeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("decode analyze response: %w", err)
+	}
+	tokens := make([]string, 0, len(parsed.Tokens))
+	for _, tk := range parsed.Tokens {
+		tokens = append(tokens, tk.Token)
+	}
+	return tokens, nil
+}
+
 // GetDoc fetches a single document by id. Returns (nil, false, nil) on 404.
 //
 // Both `index` and `docID` are URL-path-escaped defensively — ES doc IDs
