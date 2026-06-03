@@ -82,3 +82,17 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `medium` — `internal/service/integration_test.go` — Integration tests for the `SoftDeleteMessage → publishCanonicalBestEffort` path exist but do not inject a failing publisher to exercise the best-effort swallow; they rely on the unit test. Given the best-effort contract is critical for consistency, adding an integration-level check would raise confidence.
 
 - `low` — `internal/publisher/publisher.go` — The `Publisher` interface is minimal and correct. The one export `Publish` is the same signature as `nc.Publish`. No issues.
+
+---
+
+## Service: room-service
+
+**Overall assessment:** Correct patterns followed throughout. The `UpdateSubscriptionThreadRead` pipeline addition correctly uses a MongoDB aggregation pipeline to update `threadUnread` and recompute `alert` atomically from the post-update state.
+
+**Findings:**
+
+- `medium` — `store_mongo.go:1010–1030` — `UpdateSubscriptionThreadRead` uses a three-stage aggregation pipeline (`$set` → `$set` → `$set`). On concurrent requests for the same `(account, roomID)`, both requests read the same pre-update `threadUnread`, and the second write's `$filter` operates on the pre-first-update state. The result is that one concurrent read "wins" and the other's alert recomputation is based on stale data. **Impact:** Incorrect unread badge until the next read event. **Mitigation:** The outbox event uses the returned value so cross-site consistency is preserved; this is a local-only display glitch. The existing design accepts best-effort badge accuracy for concurrent read-marks, consistent with the room-level unread counters. Document this in a comment.
+
+- `medium` — `handler.go` — `handleThreadRead` and `handleSubscriptionRead` are new in this diff. Both are missing OTel spans (see Observability chapter for full details).
+
+- `nitpick` — `store_mongo.go` — Variable name `threadUnreadEntry` is used in 3 aggregation pipeline stages but represents a different computed value in each. Renaming intermediate values to `threadUnreadFiltered` / `threadUnreadAfterFilter` would aid readability.
