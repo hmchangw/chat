@@ -67,46 +67,57 @@ func wrappedCtx(m otelnats.Msg) context.Context {
 	return natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
 }
 
-// RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
-func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
+// RegisterCRUD registers NATS request/reply handlers for room CRUD with
+// queue group. Each handler is wrapped by d.dispatch so it runs in a
+// bounded worker pool — see asyncDispatcher for the rationale. A nil
+// dispatcher runs handlers inline on the delivery goroutine (legacy
+// serial behavior) and is intended for tests; main.go must always pass a
+// non-nil dispatcher in production.
+func (h *Handler) RegisterCRUD(nc *otelnats.Conn, d *asyncDispatcher) error {
 	const queue = "room-service"
-	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, h.natsCreateRoom); err != nil {
+	wrap := func(fn func(otelnats.Msg)) func(otelnats.Msg) {
+		if d == nil {
+			return fn
+		}
+		return d.dispatch(fn)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomCreateWildcard(h.siteID), queue, wrap(h.natsCreateRoom)); err != nil {
 		return fmt.Errorf("subscribe room.create: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, h.natsRoomsInfoBatch); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomsInfoBatchSubscribe(h.siteID), queue, wrap(h.natsRoomsInfoBatch)); err != nil {
 		return err
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, h.natsUpdateRole); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MemberRoleUpdateWildcard(h.siteID), queue, wrap(h.natsUpdateRole)); err != nil {
 		return fmt.Errorf("subscribe member role update: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, h.NatsHandleRemoveMember); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MemberRemoveWildcard(h.siteID), queue, wrap(h.NatsHandleRemoveMember)); err != nil {
 		return fmt.Errorf("subscribe member remove: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, h.natsAddMembers); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MemberAddWildcard(h.siteID), queue, wrap(h.natsAddMembers)); err != nil {
 		return fmt.Errorf("subscribe member add: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MessageReadWildcard(h.siteID), queue, h.natsMessageRead); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MessageReadWildcard(h.siteID), queue, wrap(h.natsMessageRead)); err != nil {
 		return fmt.Errorf("subscribe message read: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MessageReadReceiptWildcard(h.siteID), queue, h.natsMessageReadReceipt); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MessageReadReceiptWildcard(h.siteID), queue, wrap(h.natsMessageReadReceipt)); err != nil {
 		return fmt.Errorf("subscribe message read-receipt: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MessageThreadReadWildcard(h.siteID), queue, h.natsMessageThreadRead); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MessageThreadReadWildcard(h.siteID), queue, wrap(h.natsMessageThreadRead)); err != nil {
 		return fmt.Errorf("subscribe message thread read: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, wrap(h.natsListMembers)); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
+	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, wrap(h.natsListOrgMembers)); err != nil {
 		return fmt.Errorf("subscribe org members: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, wrap(h.NatsHandleEnsureRoomKey)); err != nil {
 		return fmt.Errorf("subscribe room key ensure: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomKeyGetWildcard(h.siteID), queue, h.natsGetRoomKey); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomKeyGetWildcard(h.siteID), queue, wrap(h.natsGetRoomKey)); err != nil {
 		return fmt.Errorf("subscribe room key get: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, h.natsMuteToggle); err != nil {
+	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, wrap(h.natsMuteToggle)); err != nil {
 		return fmt.Errorf("subscribe mute toggle: %w", err)
 	}
 	return nil

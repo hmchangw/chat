@@ -1243,7 +1243,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
 	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
-	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
+	require.NoError(t, handlerB.RegisterCRUD(otelNCb, nil))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
 	// Site-A's cross-site client: connect a plain nats.Conn directly to site-B's server.
@@ -1370,7 +1370,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
 	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
-	require.NoError(t, handler.RegisterCRUD(otelNC))
+	require.NoError(t, handler.RegisterCRUD(otelNC, nil))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
 	nc, err := nats.Connect(natsURL)

@@ -21,25 +21,30 @@ import (
 )
 
 type config struct {
-	NatsURL           string          `env:"NATS_URL,required"`
-	NatsCredsFile     string          `env:"NATS_CREDS_FILE"           envDefault:""`
-	SiteID            string          `env:"SITE_ID"                   envDefault:"site-local"`
-	MongoURI          string          `env:"MONGO_URI,required"`
-	MongoDB           string          `env:"MONGO_DB"                  envDefault:"chat"`
-	MongoUsername     string          `env:"MONGO_USERNAME"            envDefault:""`
-	MongoPassword     string          `env:"MONGO_PASSWORD"            envDefault:""`
-	MaxRoomSize       int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
-	MaxBatchSize      int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
-	MemberListTimeout time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
-	ValkeyAddrs       []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
-	ValkeyPassword    string          `env:"VALKEY_PASSWORD"           envDefault:""`
-	ValkeyGracePeriod time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-	CassandraHosts    string          `env:"CASSANDRA_HOSTS,required"`
-	CassandraKeyspace string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
-	CassandraUsername string          `env:"CASSANDRA_USERNAME"        envDefault:""`
-	CassandraPassword string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
-	CassandraNumConns int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
-	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	NatsURL           string        `env:"NATS_URL,required"`
+	NatsCredsFile     string        `env:"NATS_CREDS_FILE"           envDefault:""`
+	SiteID            string        `env:"SITE_ID"                   envDefault:"site-local"`
+	MongoURI          string        `env:"MONGO_URI,required"`
+	MongoDB           string        `env:"MONGO_DB"                  envDefault:"chat"`
+	MongoUsername     string        `env:"MONGO_USERNAME"            envDefault:""`
+	MongoPassword     string        `env:"MONGO_PASSWORD"            envDefault:""`
+	MaxRoomSize       int           `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
+	MaxBatchSize      int           `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
+	MemberListTimeout time.Duration `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
+	ValkeyAddrs       []string      `env:"VALKEY_ADDRS,required"     envSeparator:","`
+	ValkeyPassword    string        `env:"VALKEY_PASSWORD"           envDefault:""`
+	ValkeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+	CassandraHosts    string        `env:"CASSANDRA_HOSTS,required"`
+	CassandraKeyspace string        `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
+	CassandraUsername string        `env:"CASSANDRA_USERNAME"        envDefault:""`
+	CassandraPassword string        `env:"CASSANDRA_PASSWORD"        envDefault:""`
+	CassandraNumConns int           `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
+	// MaxWorkers caps concurrent NATS request handlers per process. Without
+	// it, every subject's delivery goroutine processes one message at a
+	// time, capping throughput at 1/handler-latency. 100 matches the
+	// MAX_WORKERS default used by the JetStream worker services.
+	MaxWorkers int             `env:"MAX_WORKERS"               envDefault:"100"`
+	Bootstrap  bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
 	// When Atrest.Enabled is false the DEK is created lazily by message-worker.
 	Atrest atrest.Config      // env vars already prefixed ATREST_*
@@ -157,15 +162,22 @@ func main() {
 	)
 	handler.dekProvisioner = dekProvisioner
 
-	if err := handler.RegisterCRUD(nc); err != nil {
+	dispatcher := newAsyncDispatcher(cfg.MaxWorkers)
+	if err := handler.RegisterCRUD(nc, dispatcher); err != nil {
 		slog.Error("register CRUD handlers failed", "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("room-service running", "site", cfg.SiteID)
+	slog.Info("room-service running", "site", cfg.SiteID, "maxWorkers", cfg.MaxWorkers)
 
+	// Shutdown order matters: Drain stops new deliveries and waits for the
+	// subscription's delivery goroutines (which only enqueue work into the
+	// dispatcher). dispatcher.Wait then blocks for in-flight handlers to
+	// finish — otherwise Mongo/Cassandra close while workers still hold
+	// sessions.
 	shutdown.Wait(ctx, 25*time.Second,
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return dispatcher.Wait(ctx) },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error {
 			if closer, ok := keyStore.(interface{ Close() error }); ok {
