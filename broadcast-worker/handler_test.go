@@ -1468,7 +1468,6 @@ func TestHandler_HandleThreadCreated_DMRoom(t *testing.T) {
 	}
 }
 
-
 func TestHandler_ThreadCreated_TShow_FallsThroughToRoomBroadcast(t *testing.T) {
 	msgTime := time.Date(2026, 5, 28, 9, 0, 0, 0, time.UTC)
 	ctrl := gomock.NewController(t)
@@ -1638,8 +1637,8 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(
-					[]model.ThreadSubscription{{UserAccount: "bob"}}, nil,
+				store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(
+					map[string]struct{}{"bob": {}}, nil,
 				)
 			},
 			wantSubjects:   []string{subject.UserRoomEvent("bob"), subject.UserRoomEvent("dave")},
@@ -1688,7 +1687,7 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 				tc.setupMocks(store, us, keyStore)
 			} else if tc.customData == nil {
 				// Channel-room cases. GetRoom is fetched first so the handler
-				// can route by room type; ListThreadSubscriptions follows only
+				// can route by room type; GetThreadFollowers follows only
 				// for channel rooms.
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				switch {
@@ -1696,10 +1695,10 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 					store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, tc.getRoomErr)
 				case tc.listErr != nil:
 					store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-					store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(nil, tc.listErr)
+					store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(nil, tc.listErr)
 				default:
 					store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-					store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(tc.threadSubs, nil)
+					store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(tc.threadFollowers, nil)
 				}
 			}
 
@@ -1771,7 +1770,7 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		threadSubs      []model.ThreadSubscription
+		threadFollowers map[string]struct{}
 		tshow           bool
 		listErr         error
 		wantSubjects    []string
@@ -1782,41 +1781,35 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 		skipPayloadLoop bool // skip the DeleteRoomEvent payload loop for tests with mixed event types
 	}{
 		{
-			name: "all thread subscribers receive the delete event, sender excluded",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-				{UserAccount: "carol"},
-			},
+			name:            "all thread subscribers receive the delete event, sender excluded",
+			threadFollowers: map[string]struct{}{"bob": {}, "carol": {}},
 			wantSubjects: []string{
 				subject.UserRoomEvent("bob"),
 				subject.UserRoomEvent("carol"),
 			},
 		},
 		{
-			name: "sender in subscriber list is excluded",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: sender},
-				{UserAccount: "bob"},
-			},
-			wantSubjects: []string{subject.UserRoomEvent("bob")},
+			name:            "sender in subscriber list is excluded",
+			threadFollowers: map[string]struct{}{sender: {}, "bob": {}},
+			wantSubjects:    []string{subject.UserRoomEvent("bob")},
 		},
 		{
-			name:         "empty subscriber list → no publish, no error",
-			threadSubs:   []model.ThreadSubscription{},
-			wantSubjects: nil,
+			name:            "empty subscriber list → no publish, no error",
+			threadFollowers: map[string]struct{}{},
+			wantSubjects:    nil,
 		},
 		{
-			name:            "ListThreadSubscriptions error → error returned, no publish",
+			name:            "GetThreadFollowers error → error returned, no publish",
 			listErr:         errors.New("db error"),
-			wantErrContains: "list thread subscriptions for parent",
+			wantErrContains: "get thread followers for parent",
 		},
 		{
-			name:  "TShow=true → falls through to room broadcast, ListThreadSubscriptions NOT called",
+			name:  "TShow=true → falls through to room broadcast, GetThreadFollowers NOT called",
 			tshow: true,
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called
+				// GetThreadFollowers must NOT be called
 			},
 			wantSubjects: []string{subject.RoomEvent("room-1")},
 		},
@@ -1827,7 +1820,7 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called (TShow=true uses room broadcast)
+				// GetThreadFollowers must NOT be called (TShow=true uses room broadcast)
 			},
 			wantSubjects: []string{
 				subject.RoomEvent("room-1"), // room delete event
@@ -1858,17 +1851,15 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 		},
 		{
 			name:            "empty subscriber list with NewTCount publishes badge event to channel",
-			threadSubs:      []model.ThreadSubscription{},
+			threadFollowers: map[string]struct{}{},
 			newTCount:       func() *int { v := 3; return &v }(),
 			wantSubjects:    []string{subject.RoomEvent("room-1")},
 			skipPayloadLoop: true,
 		},
 		{
-			name: "thread subscribers + NewTCount publishes both delete and badge events",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
-			newTCount: func() *int { v := 2; return &v }(),
+			name:            "thread subscribers + NewTCount publishes both delete and badge events",
+			threadFollowers: map[string]struct{}{"bob": {}},
+			newTCount:       func() *int { v := 2; return &v }(),
 			wantSubjects: []string{
 				subject.UserRoomEvent("bob"),
 				subject.RoomEvent("room-1"),
@@ -1886,7 +1877,7 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 					Accounts: []string{"alice", "bob"},
 				}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called for DM rooms.
+				// GetThreadFollowers must NOT be called for DM rooms.
 			},
 			newTCount: func() *int { v := 1; return &v }(),
 			wantSubjects: []string{
@@ -1931,7 +1922,7 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 			wantErrContains: "get room",
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(nil, errors.New("mongo: connection refused"))
-				// GetRoom is the first store call; ListThreadSubscriptions never runs.
+				// GetRoom is the first store call; GetThreadFollowers never runs.
 			},
 		},
 		{
@@ -1939,7 +1930,7 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: "unknown", SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called for unknown room types.
+				// GetThreadFollowers must NOT be called for unknown room types.
 				// publishThreadBadge is called but publishThreadMetadata's own default
 				// branch logs a warning and publishes nothing.
 			},
@@ -1971,8 +1962,8 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(
-					[]model.ThreadSubscription{{UserAccount: "bob"}}, nil,
+				store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(
+					map[string]struct{}{"bob": {}}, nil,
 				)
 			},
 			wantSubjects: []string{
@@ -2003,14 +1994,14 @@ func TestHandler_HandleThreadDeleted(t *testing.T) {
 				tc.setupMocks(store, us, keyStore)
 			} else if tc.customData == nil {
 				// Channel-room cases. GetRoom is fetched first to route by room
-				// type; ListThreadSubscriptions follows for channel rooms.
+				// type; GetThreadFollowers follows for channel rooms.
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
 				switch {
 				case tc.listErr != nil:
-					store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(nil, tc.listErr)
+					store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(nil, tc.listErr)
 				default:
-					store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(tc.threadSubs, nil)
+					store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(tc.threadFollowers, nil)
 				}
 			}
 
@@ -2288,67 +2279,53 @@ func TestThreadFanOutAccounts(t *testing.T) {
 	tests := []struct {
 		name          string
 		senderAccount string
-		subs          []model.ThreadSubscription
+		followers     map[string]struct{}
 		extraAccounts []string
 		want          []string
 	}{
 		{
-			name:          "sender in subs is excluded",
+			name:          "sender in followers is excluded",
 			senderAccount: "alice",
-			subs: []model.ThreadSubscription{
-				{UserAccount: "alice"},
-				{UserAccount: "bob"},
-			},
-			want: []string{"bob"},
+			followers:     map[string]struct{}{"alice": {}, "bob": {}},
+			want:          []string{"bob"},
 		},
 		{
-			name:          "duplicate in subs is deduped",
+			name:          "duplicate via extra accounts is deduped",
 			senderAccount: "alice",
-			subs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-				{UserAccount: "bob"},
-				{UserAccount: "carol"},
-			},
-			want: []string{"bob", "carol"},
+			followers:     map[string]struct{}{"bob": {}, "carol": {}},
+			want:          []string{"bob", "carol"},
 		},
 		{
-			name:          "extra account not in subs is included",
+			name:          "extra account not in followers is included",
 			senderAccount: "alice",
-			subs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
+			followers:     map[string]struct{}{"bob": {}},
 			extraAccounts: []string{"dave"},
 			want:          []string{"bob", "dave"},
 		},
 		{
-			name:          "extra account already in subs is not duplicated",
+			name:          "extra account already in followers is not duplicated",
 			senderAccount: "alice",
-			subs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
+			followers:     map[string]struct{}{"bob": {}},
 			extraAccounts: []string{"bob"},
 			want:          []string{"bob"},
 		},
 		{
-			name:          "empty subs and no extras returns nil",
+			name:          "empty followers and no extras returns nil",
 			senderAccount: "alice",
-			subs:          []model.ThreadSubscription{},
+			followers:     map[string]struct{}{},
 			extraAccounts: nil,
 			want:          nil,
 		},
 		{
-			name:          "bot account in subs is excluded",
+			name:          "bot account in followers is excluded",
 			senderAccount: "alice",
-			subs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-				{UserAccount: "helper.bot"},
-			},
-			want: []string{"bob"},
+			followers:     map[string]struct{}{"bob": {}, "helper.bot": {}},
+			want:          []string{"bob"},
 		},
 		{
 			name:          "bot account in extra accounts is excluded",
 			senderAccount: "alice",
-			subs:          []model.ThreadSubscription{{UserAccount: "bob"}},
+			followers:     map[string]struct{}{"bob": {}},
 			extraAccounts: []string{"agent.bot", "carol"},
 			want:          []string{"bob", "carol"},
 		},
@@ -2356,7 +2333,7 @@ func TestThreadFanOutAccounts(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := threadFanOutAccounts(tc.senderAccount, tc.subs, tc.extraAccounts)
+			got := threadFanOutAccounts(tc.senderAccount, tc.followers, tc.extraAccounts)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -2380,8 +2357,8 @@ func TestHandler_HandleThreadCreated_PublishError_PropagatesForJetStreamRetry(t 
 	pub := &errorPublisher{err: pubErr}
 
 	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
-	store.EXPECT().ListThreadSubscriptions(gomock.Any(), "parent-1", "site-a").
-		Return([]model.ThreadSubscription{{UserAccount: "bob"}}, nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), "parent-1").
+		Return(map[string]struct{}{"bob": {}}, nil)
 	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
 
 	evt := model.MessageEvent{

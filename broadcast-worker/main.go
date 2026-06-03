@@ -72,7 +72,7 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_rooms"))
 	{
 		ensureCtx, ensureCancel := context.WithTimeout(ctx, 10*time.Second)
 		ensureErr := store.EnsureIndexes(ensureCtx)

@@ -148,7 +148,7 @@ func (h *Handler) handleThreadCreated(ctx context.Context, evt *model.MessageEve
 	// event. Fetch the subscriber list and build fanOut before any further work.
 	var fanOut []string
 	if meta.Type == model.RoomTypeChannel {
-		fanOut, err = h.channelThreadFanOut(ctx, parentMsgID, evt.SiteID, msg.UserAccount, parsed.Accounts)
+		fanOut, err = h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return err
 		}
@@ -235,12 +235,11 @@ func (h *Handler) handleThreadUpdated(ctx context.Context, evt *model.MessageEve
 	if msg.EditedAt == nil || msg.UpdatedAt == nil {
 		return fmt.Errorf("updated event missing EditedAt or UpdatedAt for thread reply %s", msg.ID)
 	}
-	siteID := evt.SiteID
 	parentMsgID := msg.ThreadParentMessageID
 
 	// GetRoom (not GetRoomMeta) so the DM/BotDM branch has room.Accounts for
 	// fan-out. Fetched first so the routing decision is made before any
-	// thread-subscriber lookup.
+	// thread-follower lookup.
 	room, err := h.store.GetRoom(ctx, msg.RoomID)
 	if err != nil {
 		return fmt.Errorf("get room %s: %w", msg.RoomID, err)
@@ -251,7 +250,7 @@ func (h *Handler) handleThreadUpdated(ctx context.Context, evt *model.MessageEve
 	switch room.Type {
 	case model.RoomTypeChannel:
 		parsed := mention.Parse(msg.Content)
-		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, siteID, msg.UserAccount, parsed.Accounts)
+		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return err
 		}
@@ -283,14 +282,13 @@ func (h *Handler) handleThreadUpdated(ctx context.Context, evt *model.MessageEve
 
 func (h *Handler) handleThreadDeleted(ctx context.Context, evt *model.MessageEvent) error {
 	msg := evt.Message
-	siteID := evt.SiteID
 	parentMsgID := msg.ThreadParentMessageID
 
 	if msg.UpdatedAt == nil {
 		return fmt.Errorf("missing UpdatedAt for thread message %s", msg.ID)
 	}
 
-	// GetRoom first so the routing decision (thread subscribers vs all DM
+	// GetRoom first so the routing decision (thread followers vs all DM
 	// members) is made from the authoritative room type and Accounts.
 	room, err := h.store.GetRoom(ctx, msg.RoomID)
 	if err != nil {
@@ -301,12 +299,12 @@ func (h *Handler) handleThreadDeleted(ctx context.Context, evt *model.MessageEve
 
 	switch room.Type {
 	case model.RoomTypeChannel:
-		// Parse @-mentions from the deleted message so that non-subscriber
+		// Parse @-mentions from the deleted message so that non-follower
 		// recipients who received the create event (via mention fan-out) also
 		// receive the delete. Only the channel path uses mentions; the DM path
 		// fans out to all members.
 		parsed := mention.Parse(msg.Content)
-		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, siteID, msg.UserAccount, parsed.Accounts)
+		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return err
 		}
@@ -658,12 +656,11 @@ func (h *Handler) publishToThreadAccounts(ctx context.Context, accounts []string
 // threadFanOutAccounts builds the deduplicated fan-out recipient list for
 // a thread event. senderAccount is always excluded. extraAccounts
 // (e.g. @mentioned users from the message payload) are added after the
-// subscriber pass.
-func threadFanOutAccounts(senderAccount string, subs []model.ThreadSubscription, extraAccounts []string) []string {
+// follower pass.
+func threadFanOutAccounts(senderAccount string, followers map[string]struct{}, extraAccounts []string) []string {
 	seen := map[string]struct{}{senderAccount: {}}
 	var fanOut []string
-	for i := range subs {
-		acc := subs[i].UserAccount
+	for acc := range followers {
 		if _, ok := seen[acc]; ok {
 			continue
 		}
@@ -687,15 +684,15 @@ func threadFanOutAccounts(senderAccount string, subs []model.ThreadSubscription,
 }
 
 // channelThreadFanOut resolves the deduplicated recipient list for a channel
-// thread event: it fetches the parent message's thread subscribers and merges
+// thread event: it fetches the parent message's thread followers and merges
 // them with the @-mentioned accounts, excluding the sender. Shared by the
 // channel branch of every thread handler (created/updated/deleted).
-func (h *Handler) channelThreadFanOut(ctx context.Context, parentMsgID, siteID, sender string, mentions []string) ([]string, error) {
-	threadSubs, err := h.store.ListThreadSubscriptions(ctx, parentMsgID, siteID)
+func (h *Handler) channelThreadFanOut(ctx context.Context, parentMsgID, sender string, mentions []string) ([]string, error) {
+	followers, err := h.store.GetThreadFollowers(ctx, parentMsgID)
 	if err != nil {
-		return nil, fmt.Errorf("list thread subscriptions for parent %s: %w", parentMsgID, err)
+		return nil, fmt.Errorf("get thread followers for parent %s: %w", parentMsgID, err)
 	}
-	return threadFanOutAccounts(sender, threadSubs, mentions), nil
+	return threadFanOutAccounts(sender, followers, mentions), nil
 }
 
 // usersByAccount indexes a slice of users by their Account for O(1) lookup

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,22 +18,22 @@ import (
 // Must be called once at startup; index creation is idempotent when the key
 // spec matches.
 func (m *mongoStore) EnsureIndexes(ctx context.Context) error {
-	if _, err := m.threadSubCol.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "siteId", Value: 1}},
+	if _, err := m.threadRoomCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "parentMessageId", Value: 1}},
 	}); err != nil {
-		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,siteId) index: %w", err)
+		return fmt.Errorf("ensure thread_rooms (parentMessageId) index: %w", err)
 	}
 	return nil
 }
 
 type mongoStore struct {
-	roomCol      *mongo.Collection
-	subCol       *mongo.Collection
-	threadSubCol *mongo.Collection
+	roomCol       *mongo.Collection
+	subCol        *mongo.Collection
+	threadRoomCol *mongo.Collection
 }
 
-func NewMongoStore(roomCol, subCol, threadSubCol *mongo.Collection) *mongoStore {
-	return &mongoStore{roomCol: roomCol, subCol: subCol, threadSubCol: threadSubCol}
+func NewMongoStore(roomCol, subCol, threadRoomCol *mongo.Collection) *mongoStore {
+	return &mongoStore{roomCol: roomCol, subCol: subCol, threadRoomCol: threadRoomCol}
 }
 
 func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -125,16 +126,23 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 	return nil
 }
 
-func (m *mongoStore) ListThreadSubscriptions(ctx context.Context, parentMessageID, siteID string) ([]model.ThreadSubscription, error) {
-	filter := bson.M{"parentMessageId": parentMessageID, "siteId": siteID}
-	cursor, err := m.threadSubCol.Find(ctx, filter)
+func (m *mongoStore) GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error) {
+	var doc struct {
+		ReplyAccounts []string `bson:"replyAccounts"`
+	}
+	opts := options.FindOne().SetProjection(bson.M{"replyAccounts": 1, "_id": 0})
+	err := m.threadRoomCol.FindOne(ctx, bson.M{"parentMessageId": parentMessageID}, opts).Decode(&doc)
 	if err != nil {
-		return nil, fmt.Errorf("query thread subscriptions for parent %s: %w", parentMessageID, err)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, err)
 	}
-	defer cursor.Close(ctx)
-	var subs []model.ThreadSubscription
-	if err := cursor.All(ctx, &subs); err != nil {
-		return nil, fmt.Errorf("decode thread subscriptions: %w", err)
+	out := make(map[string]struct{}, len(doc.ReplyAccounts))
+	for _, a := range doc.ReplyAccounts {
+		if a != "" {
+			out[a] = struct{}{}
+		}
 	}
-	return subs, nil
+	return out, nil
 }
