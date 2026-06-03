@@ -1307,6 +1307,68 @@ See [Error envelope](#6-error-envelope-reference).
 
 ---
 
+#### Batch Get Messages By IDs
+
+> **Internal / service-to-service RPC.** This subject is not part of the normal client surface — it backs the encrypted-search content fetch (Approach B), where `search-service` resolves the bodies of a page of search hits from `history-service`. It follows the standard `chat.user.{account}.request.…` convention (the `{account}` is the authenticated identity and access is enforced per message), and is documented here for completeness and for backend authors.
+
+**Subject:** `chat.user.{account}.request.{siteID}.msg.batchget`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- The subject is **flat** (not room-scoped): the IDs may span arbitrary rooms.
+- `{siteID}` is the home site of the `history-service` that owns the messages.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageIds` | string[] | yes | The messages to fetch. Must be non-empty and contain at most **200** IDs. |
+
+```json
+{ "messageIds": ["01970a4f8c2d7c9aQRST", "01970a4f8c2d7c9aWXYZ"] }
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages` | Message[] | The accessible, decrypted messages (see [Message schema](#message-schema)). Always an array. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "morning team"
+    }
+  ]
+}
+```
+
+Messages are returned as **plaintext** (`history-service` decrypts them), with the same per-message access enforcement as the single `msg.get` path: a message the caller cannot access (not subscribed to its room, or created before the room's access window) is **silently omitted** rather than erroring, and IDs that don't exist are likewise omitted. The returned set is therefore a subset of the requested IDs, in no guaranteed order — callers match by `messageId`.
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference).
+
+| `code` | `error` | When |
+|--------|---------|------|
+| `bad_request` | `messageIds must not be empty` | Empty `messageIds`. |
+| `bad_request` | `too many messageIds requested` | More than 200 IDs. |
+| `internal` | `internal error` | Store read failure; real cause logged server-side. |
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
 #### Edit Message
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit`
@@ -1922,6 +1984,7 @@ See [Error envelope](#6-error-envelope-reference).
 | `roomIds` | string[] | no | Scope the search to these rooms. Omit for global search across all accessible rooms. Unknown room IDs and rooms the user cannot access are silently excluded (enforced by the ES terms-lookup + restricted-rooms floor). |
 | `size` | integer | no | Page size. Default `25`, capped at `100`. |
 | `offset` | integer | no | Page offset. Default `0`. |
+| `variant` | string | no | **Benchmark-only.** Selects the search arm (`"C"` plaintext / `"A"` / `"B"` encrypted). Honored **only** when the server runs with `SEARCH_BENCH_MODE_ENABLED=true`; in production it is **ignored** and the server uses its configured default arm. Setting it never changes the response shape — results are identical regardless of arm. Omit it; it exists for the latency-comparison harness, not for clients. |
 
 ##### Success response
 
@@ -1966,6 +2029,10 @@ See [Error envelope](#6-error-envelope-reference).
 | `threadParentMessageCreatedAt` | RFC3339 timestamp (nullable) | omitted when not a thread reply |
 
 Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via the `user-service` lookups (`user.{siteID}.profile.getByName`) or their own subscription cache.
+
+##### Encryption is transparent to clients
+
+The `content` field is always returned as **plaintext** to authorized callers, exactly as before. The search index may be encrypted at rest on the server (the message body is HMAC-blinded for matching and the plaintext is stored only as AES-GCM ciphertext), and the server decrypts matching hits in-process before replying. This is entirely server-internal: **there is no wire/format change, no new field, and no client-side decryption** — the request and response schemas are identical whether the server runs the plaintext or the encrypted search path. Clients neither opt in nor see any difference.
 
 ##### Error response
 
