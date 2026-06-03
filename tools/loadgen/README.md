@@ -115,6 +115,7 @@ make -C tools/loadgen/deploy reset-members PRESET=members-medium
 |--------------------|-------|----------|----------------|-----------------------------------------|
 | `members-small`    | 5     | 10       | 50             | smoke / dev                             |
 | `members-medium`   | 100   | 100      | 900            | sustained-throughput default            |
+| `members-heavy`    | 700   | 10       | 990            | high-rate sustained (≈1000 req/s)       |
 | `members-capacity` | 5     | 1        | 990            | capacity-growth, fills up to ~MAX_ROOM_SIZE |
 
 A candidate is single-use — once added it's a room member and can't be
@@ -123,6 +124,18 @@ So a sustained run can make at most `rooms × ⌊candidate pool ÷ users-per-add
 add-member publishes total. `members-medium` (100 × ⌊900÷10⌋ = 9000 ops)
 sustains the default `RATE=100 DURATION=60s` (6000 ops) with margin;
 `members-small` is a smoke preset and cannot sustain that load.
+
+For higher rates, add rooms rather than pool (pool is capped per room). To
+sustain **1000 req/s for 60s** (60,000 ops) at the default `users-per-add=10`,
+use `members-heavy` (700 × ⌊990÷10⌋ = 69,300 ops, ≈69s of headroom):
+
+```
+make -C tools/loadgen/deploy seed-members  PRESET=members-heavy
+make -C tools/loadgen/deploy run-sustained PRESET=members-heavy RATE=1000 DURATION=60s
+```
+
+If instead each request need only add one member, `members-medium` at
+`USERS_PER_ADD=1` already supplies 90,000 ops — no heavy preset required.
 
 ### Subcommands
 

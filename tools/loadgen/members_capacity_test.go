@@ -105,3 +105,26 @@ func TestMembersMedium_SustainsDefaultInvocation(t *testing.T) {
 			"room %s baseline+pool must fit under MAX_ROOM_SIZE", roomID)
 	}
 }
+
+// members-heavy is the high-rate preset: it must sustain rate=1000 for 60s at
+// the default users-per-add=10 (60,000 ops) so a 1000 req/s steady-state run
+// clears the preflight guard instead of being capped to a short burst.
+func TestMembersHeavy_SustainsThousandRPS(t *testing.T) {
+	p, ok := BuiltinMembersPreset("members-heavy")
+	require.True(t, ok)
+	_, pools := BuildMembersFixtures(&p, 42, "site-A")
+
+	const (
+		rate        = 1000
+		duration    = 60 * time.Second
+		usersPerAdd = 10
+	)
+	require.NoError(t,
+		ValidateSustainedCapacity(p.Name, pools, rate, duration, usersPerAdd),
+		"members-heavy must sustain rate=1000/60s at users-per-add=10")
+
+	for roomID, pool := range pools {
+		assert.LessOrEqual(t, p.BaselineSize+len(pool), 1000,
+			"room %s baseline+pool must fit under MAX_ROOM_SIZE", roomID)
+	}
+}
