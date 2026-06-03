@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -165,6 +166,71 @@ func Vault(t *testing.T, ctx context.Context) *VaultHandle {
 		TransitKey:   keyName,
 		client:       base.client,
 	}
+}
+
+// EnableAppRole provisions an AppRole on the shared Vault scoped to this
+// handle's per-test transit key and returns a freshly-minted
+// (roleID, secretID) pair for it. The approle auth method is mounted once
+// per process (tolerating "path is already in use" from sibling tests);
+// the policy and role are named from a hash of t.Name() so concurrent
+// tests stay isolated. The role is granted exactly the transit
+// capabilities the atrest KeyWrapper needs — datakey, encrypt, decrypt —
+// against this handle's key and nothing else. Policy and role are dropped
+// on t.Cleanup.
+func (v *VaultHandle) EnableAppRole(t *testing.T, ctx context.Context) (roleID, secretID string) {
+	t.Helper()
+
+	if err := v.client.Sys().EnableAuthWithOptionsWithContext(ctx, "approle", &vaultapi.EnableAuthOptions{
+		Type: "approle",
+	}); err != nil && !strings.Contains(err.Error(), "path is already in use") {
+		t.Fatalf("testutil.EnableAppRole: enable approle: %v", err)
+	}
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name())) // hash.Hash.Write never errors
+	suffix := fmt.Sprintf("%x", h.Sum64())
+	policyName := "test-policy-" + suffix
+	roleName := "test-role-" + suffix
+
+	policy := fmt.Sprintf(`
+path "%[1]s/datakey/plaintext/%[2]s" { capabilities = ["update"] }
+path "%[1]s/encrypt/%[2]s"           { capabilities = ["update"] }
+path "%[1]s/decrypt/%[2]s"           { capabilities = ["update"] }
+`, v.TransitMount, v.TransitKey)
+	if err := v.client.Sys().PutPolicyWithContext(ctx, policyName, policy); err != nil {
+		t.Fatalf("testutil.EnableAppRole: put policy %s: %v", policyName, err)
+	}
+
+	if _, err := v.client.Logical().WriteWithContext(ctx, "auth/approle/role/"+roleName, map[string]any{
+		"token_policies": []string{policyName},
+		"token_ttl":      "10m",
+		"token_max_ttl":  "30m",
+		"secret_id_ttl":  "20m",
+	}); err != nil {
+		t.Fatalf("testutil.EnableAppRole: create role %s: %v", roleName, err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = v.client.Logical().DeleteWithContext(ctx, "auth/approle/role/"+roleName)
+		_ = v.client.Sys().DeletePolicyWithContext(ctx, policyName)
+	})
+
+	ridResp, err := v.client.Logical().ReadWithContext(ctx, "auth/approle/role/"+roleName+"/role-id")
+	if err != nil || ridResp == nil {
+		t.Fatalf("testutil.EnableAppRole: read role-id: %v", err)
+	}
+	roleID, _ = ridResp.Data["role_id"].(string)
+
+	sidResp, err := v.client.Logical().WriteWithContext(ctx, "auth/approle/role/"+roleName+"/secret-id", map[string]any{})
+	if err != nil || sidResp == nil {
+		t.Fatalf("testutil.EnableAppRole: generate secret-id: %v", err)
+	}
+	secretID, _ = sidResp.Data["secret_id"].(string)
+
+	if roleID == "" || secretID == "" {
+		t.Fatalf("testutil.EnableAppRole: empty role-id or secret-id")
+	}
+	return roleID, secretID
 }
 
 // Rotate triggers a transit-key rotation on this handle's per-test key,
