@@ -58,10 +58,10 @@ permissions:
   contents: read
 
 env:
-  # Bumped to 1.25.10 for the May 2026 security release (govulncheck
-  # flagged reachable net / net/mail / html/template stdlib advisories
-  # fixed in 1.25.10).
-  GO_VERSION: "1.25.10"
+  # Bumped to 1.25.11 for the June 2026 security release (govulncheck
+  # flagged reachable net/textproto (GO-2026-5039) and crypto/x509
+  # (GO-2026-5037) stdlib advisories fixed in 1.25.11).
+  GO_VERSION: "1.25.11"
   GOLANGCI_LINT_VERSION: "v2.11.4"
 
 jobs:
