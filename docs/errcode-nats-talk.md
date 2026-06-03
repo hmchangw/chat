@@ -1,6 +1,6 @@
 # A Unified Error Contract over NATS Request/Reply
 
-### `pkg/errcode` — one envelope from handler to frontend
+## `pkg/errcode` — one envelope from handler to frontend
 
 > Every service speaks the same contract. Three of them as a representative cross-section:
 > **room-service** uses raw core request/reply — the wiring is explicit.

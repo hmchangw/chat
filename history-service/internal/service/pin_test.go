@@ -523,7 +523,7 @@ func TestPinMessage_SubscriptionError(t *testing.T) {
 
 	_, err := svc.PinMessage(testContext(), "site-a", models.PinMessageRequest{MessageID: "m1"})
 
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "get subscription")
 }
 
 func TestPinMessage_RoomUserCountError(t *testing.T) {
@@ -534,7 +534,7 @@ func TestPinMessage_RoomUserCountError(t *testing.T) {
 
 	_, err := svc.PinMessage(testContext(), "site-a", models.PinMessageRequest{MessageID: "m1"})
 
-	assertInternalErr(t, err, "unable to verify room size")
+	assertInternalErr(t, err, "get room user count")
 }
 
 func TestPinMessage_WriteError(t *testing.T) {
@@ -548,7 +548,7 @@ func TestPinMessage_WriteError(t *testing.T) {
 
 	_, err := svc.PinMessage(testContext(), "site-a", models.PinMessageRequest{MessageID: "m1"})
 
-	assertInternalErr(t, err, "failed to pin message")
+	assertInternalErr(t, err, "pin message m1")
 }
 
 func TestUnpinMessage_WriteError(t *testing.T) {
@@ -564,7 +564,7 @@ func TestUnpinMessage_WriteError(t *testing.T) {
 
 	_, err := svc.UnpinMessage(testContext(), "site-a", models.UnpinMessageRequest{MessageID: "m1"})
 
-	assertInternalErr(t, err, "failed to unpin message")
+	assertInternalErr(t, err, "unpin message m1")
 }
 
 func TestListPinnedMessages_StoreError(t *testing.T) {
@@ -575,7 +575,7 @@ func TestListPinnedMessages_StoreError(t *testing.T) {
 
 	_, err := svc.ListPinnedMessages(testContext(), models.ListPinnedMessagesRequest{})
 
-	assertInternalErr(t, err, "failed to list pinned messages")
+	assertInternalErr(t, err, "list pinned messages")
 }
 
 func TestPinMessage_BotAccountBypassesLargeRoom(t *testing.T) {
@@ -686,7 +686,7 @@ func TestPinMessage_PinLimitJustUnderSucceeds(t *testing.T) {
 }
 
 func TestPinMessage_PinLimitCountError(t *testing.T) {
-	// GetAllPinnedMessages error → internal "unable to verify pin count"; no write/publish.
+	// GetAllPinnedMessages error → wrapped "count pinned messages" → internal at boundary; no write/publish.
 	svc, msgs, subs, rooms, _, _ := newPinTestService(t)
 	subs.EXPECT().GetSubscription(gomock.Any(), "u1", "r1").Return(subFor(model.RoleMember), nil)
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m1").Return(pinnableMsg(), nil)
@@ -696,7 +696,7 @@ func TestPinMessage_PinLimitCountError(t *testing.T) {
 
 	_, err := svc.PinMessage(testContext(), "site-a", models.PinMessageRequest{MessageID: "m1"})
 
-	assertInternalErr(t, err, "unable to verify pin count")
+	assertInternalErr(t, err, "count pinned messages")
 }
 
 func TestPinMessage_PinLimitSkippedOnIdempotentRepin(t *testing.T) {

@@ -1,11 +1,12 @@
 package service
 
 import (
-	"log/slog"
+	"fmt"
 	"regexp"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -31,16 +32,15 @@ func canBypassLargeRoomPin(sub *model.Subscription) bool {
 // UnpinMessage intentionally accepts it so a soft-deleted pin can still be unpinned to free its slot.
 func (s *HistoryService) pinPreCheck(c *natsrouter.Context, account, roomID, messageID string) (*models.Message, *model.Subscription, error) {
 	if !s.pinEnabled {
-		return nil, nil, natsrouter.ErrForbidden("pinning is disabled")
+		return nil, nil, errcode.Forbidden("pinning is disabled")
 	}
 
 	sub, err := s.subscriptions.GetSubscription(c, account, roomID)
 	if err != nil {
-		slog.Error("get subscription", "error", err, "account", account, "roomID", roomID)
-		return nil, nil, natsrouter.ErrInternal("unable to verify room access")
+		return nil, nil, fmt.Errorf("get subscription: %w", err)
 	}
 	if sub == nil {
-		return nil, nil, natsrouter.ErrForbidden("not subscribed to room")
+		return nil, nil, errcode.Forbidden("not subscribed to room")
 	}
 
 	msg, err := s.findMessage(c, roomID, messageID)
@@ -56,8 +56,7 @@ func (s *HistoryService) pinPreCheck(c *natsrouter.Context, account, roomID, mes
 func (s *HistoryService) enforcePinLimit(c *natsrouter.Context, roomID, messageID string) (*time.Time, error) {
 	pinned, err := s.msgReader.GetAllPinnedMessages(c, roomID)
 	if err != nil {
-		slog.Error("count pinned messages", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("unable to verify pin count")
+		return nil, fmt.Errorf("count pinned messages: %w", err)
 	}
 	for i := range pinned {
 		if pinned[i].MessageID == messageID {
@@ -65,7 +64,7 @@ func (s *HistoryService) enforcePinLimit(c *natsrouter.Context, roomID, messageI
 		}
 	}
 	if len(pinned) >= s.maxPinnedPerRoom {
-		return nil, natsrouter.ErrForbidden("room pin limit reached")
+		return nil, errcode.Forbidden("room pin limit reached")
 	}
 	return nil, nil
 }
@@ -75,11 +74,10 @@ func (s *HistoryService) enforceLargeRoomPin(c *natsrouter.Context, roomID strin
 	if !canBypassLargeRoomPin(sub) {
 		count, err := s.rooms.GetRoomUserCount(c, roomID)
 		if err != nil {
-			slog.Error("get room user count", "error", err, "roomID", roomID)
-			return natsrouter.ErrInternal("unable to verify room size")
+			return fmt.Errorf("get room user count: %w", err)
 		}
 		if count > s.largeRoomThreshold {
-			return natsrouter.ErrForbidden("room is too large to pin")
+			return errcode.Forbidden("room is too large to pin")
 		}
 	}
 	return nil
@@ -95,7 +93,7 @@ func (s *HistoryService) PinMessage(c *natsrouter.Context, siteID string, req mo
 		return nil, err
 	}
 	if msg.Deleted {
-		return nil, natsrouter.ErrNotFound("message not found")
+		return nil, errcode.NotFound("message not found")
 	}
 
 	// Already pinned: echo existing pinnedAt, no write/publish/large-room check.
@@ -119,8 +117,7 @@ func (s *HistoryService) PinMessage(c *natsrouter.Context, siteID string, req mo
 	}
 	pinnedBy := models.Participant{ID: sub.User.ID, Account: sub.User.Account}
 	if err := s.msgWriter.PinMessage(c, msg, pinnedAt, pinnedBy); err != nil {
-		slog.Error("pin: write", "error", err, "messageID", req.MessageID)
-		return nil, natsrouter.ErrInternal("failed to pin message")
+		return nil, fmt.Errorf("pin message %s: %w", req.MessageID, err)
 	}
 
 	pinnedAtMs := pinnedAt.UnixMilli()
@@ -163,8 +160,7 @@ func (s *HistoryService) UnpinMessage(c *natsrouter.Context, siteID string, req 
 	}
 
 	if err := s.msgWriter.UnpinMessage(c, msg); err != nil {
-		slog.Error("unpin: write", "error", err, "messageID", req.MessageID)
-		return nil, natsrouter.ErrInternal("failed to unpin message")
+		return nil, fmt.Errorf("unpin message %s: %w", req.MessageID, err)
 	}
 
 	evt := model.MessageEvent{
@@ -202,8 +198,7 @@ func (s *HistoryService) ListPinnedMessages(c *natsrouter.Context, req models.Li
 
 	page, err := s.msgReader.GetPinnedMessages(c, roomID, pageReq)
 	if err != nil {
-		slog.Error("list pinned messages", "error", err, "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to list pinned messages")
+		return nil, fmt.Errorf("list pinned messages: %w", err)
 	}
 
 	// Stub pre-access pins, then stub pre-access quoted parents inside survivors.
