@@ -133,7 +133,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomRenameWildcard(h.siteID), queue, h.natsRoomRename); err != nil {
 		return fmt.Errorf("subscribe room rename: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.RoomRestricted(h.siteID), "room-service", h.natsRoomRestricted); err != nil {
+	if _, err := nc.QueueSubscribe(subject.RoomRestricted(h.siteID), queue, h.natsRoomRestricted); err != nil {
 		return fmt.Errorf("subscribe room restricted: %w", err)
 	}
 	return nil
