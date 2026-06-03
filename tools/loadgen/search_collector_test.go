@@ -48,9 +48,9 @@ func TestSearchCollector_DiscardBefore_DropsWarmup(t *testing.T) {
 	c := NewSearchCollector(m, "search-small")
 	base := time.Unix(1000, 0)
 
-	c.Record("C", 1*time.Millisecond, base, nil)               // warmup
+	c.Record("C", 1*time.Millisecond, base, nil)                  // warmup
 	c.Record("C", 2*time.Millisecond, base.Add(time.Second), nil) // kept
-	c.Record("A", 3*time.Millisecond, base, nil)               // warmup
+	c.Record("A", 3*time.Millisecond, base, nil)                  // warmup
 
 	cutoff := base.Add(500 * time.Millisecond)
 	c.DiscardBefore(cutoff)

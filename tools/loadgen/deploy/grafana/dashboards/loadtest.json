@@ -48,6 +48,16 @@
       "title": "Publish errors/sec",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [{"expr": "rate(loadgen_publish_errors_total[10s])", "legendFormat": "{{reason}}", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Search latency by arm (P50/P95/P99)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(loadgen_search_latency_seconds_bucket[30s])) by (le, arm))", "legendFormat": "p50 {{arm}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum(rate(loadgen_search_latency_seconds_bucket[30s])) by (le, arm))", "legendFormat": "p95 {{arm}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum(rate(loadgen_search_latency_seconds_bucket[30s])) by (le, arm))", "legendFormat": "p99 {{arm}}", "refId": "C"}
+      ]
     }
   ]
 }
