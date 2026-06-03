@@ -64,3 +64,21 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `medium` — `handler_test.go` — Error path for `incrementParentTcount` failure is not tested. The test coverage for the `SaveThreadMessage → publish` pipeline covers the happy path but does not verify the "publish must be skipped on tcount failure" invariant.
 
 - `medium` — `store_cassandra.go` — `incrementParentTcount` uses a Cassandra lightweight transaction but does not validate `applied=false` (concurrent identical increment is impossible by design, so this is low risk — but a comment explaining why the LWT result is not checked would prevent future confusion).
+
+---
+
+## Service: history-service
+
+**Overall assessment:** Sound implementation. The `SoftDeleteMessage` signature change (`→ (*int, error)` for tcount) is correctly propagated through all call sites. `publishCanonicalBestEffort` correctly swallows publish errors with a log line, satisfying the best-effort contract. The new test `TestHistoryService_DeleteMessage_ThreadReply_PublishFailsButDeleteSucceeds` verifies this contract.
+
+**Findings:**
+
+- `medium` — `internal/service/messages.go` — `publishCanonicalBestEffort` logs the publish error with `slog.Error` but does not include the `requestID` from context. All log lines in new code must include the correlation ID (see Observability chapter).
+
+- `medium` — `internal/service/messages.go` — The `EventThreadReplyAdded` path in `DeleteMessage` constructs the canonical event with `NewTCount` from `SoftDeleteMessage`'s return. If `SoftDeleteMessage` returns a non-nil tcount and a non-nil error simultaneously (an edge case that should not happen but is not contractually excluded), the code publishes the event with potentially stale data. A comment asserting the mutual exclusivity would clarify intent.
+
+- `medium` — `internal/cassrepo/write.go` — `SoftDeleteMessage`'s tcount decrement is a Cassandra counter decrement. If the service crashes after decrement but before returning, the canonical delete event will never be published on retry (the LWT `IF deleted_at = null` guard prevents re-deletion). The tcount will be decremented twice on the next delivery attempt if the message is still `deleted_at = null`. This is the same partial-write concern as message-worker; a comment noting the retry behaviour would be appropriate.
+
+- `medium` — `internal/service/integration_test.go` — Integration tests for the `SoftDeleteMessage → publishCanonicalBestEffort` path exist but do not inject a failing publisher to exercise the best-effort swallow; they rely on the unit test. Given the best-effort contract is critical for consistency, adding an integration-level check would raise confidence.
+
+- `low` — `internal/publisher/publisher.go` — The `Publisher` interface is minimal and correct. The one export `Publish` is the same signature as `nc.Publish`. No issues.
