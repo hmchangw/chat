@@ -80,9 +80,9 @@ type vaultKeyWrapper struct {
 	watcher      *vault.LifetimeWatcher // nil when using a static token
 }
 
-// Close stops the background token-renewal goroutine if Kubernetes auth
-// is in use. Safe to call repeatedly; safe to call when the wrapper was
-// constructed with a static token.
+// Close stops the background token-renewal goroutine if Kubernetes or
+// AppRole auth is in use. Safe to call repeatedly; safe to call when the
+// wrapper was constructed with a static token.
 func (w *vaultKeyWrapper) Close() error {
 	if w.watcher != nil {
 		w.watcher.Stop()
@@ -143,7 +143,7 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		}
 		watcher, err = loginWithRenewal(ctx, client, k8sAuth)
 		if err != nil {
-			return nil, fmt.Errorf("vault: kubernetes %w", err)
+			return nil, fmt.Errorf("vault: kubernetes: %w", err)
 		}
 	case cfg.AppRoleID != "":
 		// The secret ID is the sensitive half of the AppRole credential and
@@ -172,7 +172,7 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		}
 		watcher, err = loginWithRenewal(ctx, client, appRoleAuth)
 		if err != nil {
-			return nil, fmt.Errorf("vault: approle %w", err)
+			return nil, fmt.Errorf("vault: approle: %w", err)
 		}
 	case cfg.Token != "":
 		client.SetToken(cfg.Token)
