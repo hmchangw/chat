@@ -243,7 +243,9 @@ func TestEncMessageTemplateBody_PatternAndNoCustomAnalyzer(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &parsed))
 
 	patterns := parsed["index_patterns"].([]any)
-	assert.Equal(t, "enc-messages-v1-*", patterns[0])
+	// StripVersionBase drops the -vN suffix; the version lives in the rolling
+	// index name, never in the template index_patterns (mirrors messages.go).
+	assert.Equal(t, "enc-messages-*", patterns[0])
 
 	// No custom_analyzer block on the encrypted template.
 	tmpl := parsed["template"].(map[string]any)
