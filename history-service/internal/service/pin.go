@@ -32,7 +32,7 @@ func canBypassLargeRoomPin(sub *model.Subscription) bool {
 // UnpinMessage intentionally accepts it so a soft-deleted pin can still be unpinned to free its slot.
 func (s *HistoryService) pinPreCheck(c *natsrouter.Context, account, roomID, messageID string) (*models.Message, *model.Subscription, error) {
 	if !s.pinEnabled {
-		return nil, nil, errcode.Forbidden("pinning is disabled")
+		return nil, nil, errcode.Forbidden("pinning is disabled", errcode.WithReason(errcode.PinDisabled))
 	}
 
 	sub, err := s.subscriptions.GetSubscription(c, account, roomID)
@@ -40,7 +40,7 @@ func (s *HistoryService) pinPreCheck(c *natsrouter.Context, account, roomID, mes
 		return nil, nil, fmt.Errorf("get subscription: %w", err)
 	}
 	if sub == nil {
-		return nil, nil, errcode.Forbidden("not subscribed to room")
+		return nil, nil, errcode.Forbidden("not subscribed to room", errcode.WithReason(errcode.MessageNotSubscribed))
 	}
 
 	msg, err := s.findMessage(c, roomID, messageID)
@@ -64,7 +64,7 @@ func (s *HistoryService) enforcePinLimit(c *natsrouter.Context, roomID, messageI
 		}
 	}
 	if len(pinned) >= s.maxPinnedPerRoom {
-		return nil, errcode.Forbidden("room pin limit reached")
+		return nil, errcode.Forbidden("room pin limit reached", errcode.WithReason(errcode.PinLimitReached))
 	}
 	return nil, nil
 }
@@ -77,7 +77,7 @@ func (s *HistoryService) enforceLargeRoomPin(c *natsrouter.Context, roomID strin
 			return fmt.Errorf("get room user count: %w", err)
 		}
 		if count > s.largeRoomThreshold {
-			return errcode.Forbidden("room is too large to pin")
+			return errcode.Forbidden("room is too large to pin", errcode.WithReason(errcode.PinRoomTooLarge))
 		}
 	}
 	return nil
@@ -87,6 +87,7 @@ func (s *HistoryService) enforceLargeRoomPin(c *natsrouter.Context, roomID strin
 func (s *HistoryService) PinMessage(c *natsrouter.Context, siteID string, req models.PinMessageRequest) (*models.PinMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	msg, sub, err := s.pinPreCheck(c, account, roomID, req.MessageID)
 	if err != nil {
@@ -144,6 +145,7 @@ func (s *HistoryService) PinMessage(c *natsrouter.Context, siteID string, req mo
 func (s *HistoryService) UnpinMessage(c *natsrouter.Context, siteID string, req models.UnpinMessageRequest) (*models.UnpinMessageResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	msg, sub, err := s.pinPreCheck(c, account, roomID, req.MessageID)
 	if err != nil {
@@ -185,6 +187,7 @@ func (s *HistoryService) UnpinMessage(c *natsrouter.Context, siteID string, req 
 func (s *HistoryService) ListPinnedMessages(c *natsrouter.Context, req models.ListPinnedMessagesRequest) (*models.ListPinnedMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {

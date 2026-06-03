@@ -13,6 +13,7 @@ var allReasons = []Reason{
 	RoomAlreadyOwner, RoomCannotDemoteLastOwner, RoomPromoteRequiresIndividual,
 	RoomNonChannelOperation,
 	MessageLargeRoomPostRestricted, MessageNotSubscribed, MessageOutsideAccessWindow,
+	PinDisabled, PinLimitReached, PinRoomTooLarge,
 	AuthTokenExpired, AuthInvalidToken, AuthInvalidRequest, AuthInvalidNKey, AuthMissingFields,
 	RequestIDRequired,
 }

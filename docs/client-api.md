@@ -1515,18 +1515,14 @@ Pins a message in the room. Idempotent — pinning an already-pinned message suc
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-| Code | Message | Cause |
-|------|---------|-------|
-| `forbidden` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
-| `forbidden` | `"not subscribed to room"` | Caller has no subscription to the room. |
-| `forbidden` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
-| `forbidden` | `"room pin limit reached"` | Room already has `MAX_PINNED_PER_ROOM` pinned messages (default 10). Hard cap — no role-based bypass. Unpin an existing message to free a slot. |
-| `not_found` | `"message not found"` | Message does not exist, belongs to a different room, or has been deleted. |
-| `internal` | `"failed to retrieve message"` | Cassandra read failed while looking up the target message. |
-| `internal` | `"unable to verify room access"` | Failed to look up the caller's subscription. |
-| `internal` | `"unable to verify room size"` | Failed to read the room member count. |
-| `internal` | `"unable to verify pin count"` | Failed to read the current pinned-messages count for the room. |
-| `internal` | `"failed to pin message"` | Write to the message store failed. |
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `pin_disabled` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `forbidden` | `pin_room_too_large` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
+| `forbidden` | `pin_limit_reached` | `"room pin limit reached"` | Room already has `MAX_PINNED_PER_ROOM` pinned messages (default 10). Hard cap — no role-based bypass. Unpin an existing message to free a slot. |
+| `not_found` | — | `"message not found"` | Message does not exist, belongs to a different room, or has been deleted. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read or write failed (subscription lookup, room user count, pinned-messages count, message lookup, or pin write). Specific cause appears in the server log. |
 
 ##### Triggered events — success path
 
@@ -1624,16 +1620,13 @@ Unpins a message in the room. Idempotent — unpinning a message that is not pin
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-| Code | Message | Cause |
-|------|---------|-------|
-| `forbidden` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
-| `forbidden` | `"not subscribed to room"` | Caller has no subscription to the room. |
-| `forbidden` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
-| `not_found` | `"message not found"` | Message does not exist or belongs to a different room. Unlike pin, **soft-deleted messages are still unpinnable** — a pinned message that was later deleted retains its slot in `pinned_messages_by_room`, and unpin is the only way to free it. |
-| `internal` | `"failed to retrieve message"` | Cassandra read failed while looking up the target message. |
-| `internal` | `"unable to verify room access"` | Failed to look up the caller's subscription. |
-| `internal` | `"unable to verify room size"` | Failed to read the room member count. |
-| `internal` | `"failed to unpin message"` | Write to the message store failed. |
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `pin_disabled` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `forbidden` | `pin_room_too_large` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
+| `not_found` | — | `"message not found"` | Message does not exist or belongs to a different room. Unlike pin, **soft-deleted messages are still unpinnable** — a pinned message that was later deleted retains its slot in `pinned_messages_by_room`, and unpin is the only way to free it. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read or write failed (subscription lookup, room user count, message lookup, or unpin write). Specific cause appears in the server log. |
 
 ##### Triggered events — success path
 
@@ -1758,12 +1751,11 @@ The response is cursor-paginated (`cursor`/`limit` in the request, `nextCursor`/
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-| Code | Message | Cause |
-|------|---------|-------|
-| `forbidden` | `"not subscribed to room"` | Caller has no subscription to the room. |
-| `bad_request` | `"invalid pagination cursor"` | The `cursor` value is not a valid base64 page-state token. |
-| `internal` | `"unable to verify room access"` | Failed to look up the caller's subscription. |
-| `internal` | `"failed to list pinned messages"` | Read from the message store failed. |
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `bad_request` | — | `"invalid pagination cursor"` | The `cursor` value is not a valid base64 page-state token. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read failed (subscription lookup or pinned-messages page). Specific cause appears in the server log. |
 
 ##### Triggered events — success path
 
@@ -2478,7 +2470,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 ```json
 {
   "error": "<human-readable, user-safe message>",
-  "code": "<one of 7 generic categories>",
+  "code": "<one of 8 generic categories>",
   "reason": "<optional, domain-specific machine code>",
   "metadata": { "<key>": "<value>" }
 }
@@ -2525,6 +2517,9 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `large_room_post_restricted`   | forbidden     | message-gatekeeper (non-owner/admin posting in a large room) |
 | `not_subscribed`               | forbidden     | message-gatekeeper / history-service (caller not subscribed) |
 | `outside_access_window`        | forbidden     | history-service (subscribed but message predates HSS) |
+| `pin_disabled`                 | forbidden     | history-service pin/unpin/list (kill-switch `PIN_ENABLED=false`) |
+| `pin_limit_reached`            | forbidden     | history-service pin (room at `MAX_PINNED_PER_ROOM` hard cap) |
+| `pin_room_too_large`           | forbidden     | history-service pin/unpin (non-owner/admin/bot in a room above `LARGE_ROOM_THRESHOLD`) |
 | `sso_token_expired`            | unauthenticated | auth-service `POST /auth` |
 | `invalid_sso_token`            | unauthenticated | auth-service `POST /auth` |
 | `invalid_request`              | bad_request   | auth-service (body parse / required field missing) |

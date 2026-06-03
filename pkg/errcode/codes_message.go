@@ -8,4 +8,10 @@ const (
 	// message predates HSS" from MessageNotSubscribed — the frontend renders
 	// different UX ("history hidden before you joined").
 	MessageOutsideAccessWindow Reason = "outside_access_window"
+	// Pin-feature reasons — all three are "forbidden" cases the frontend needs
+	// to distinguish to render the right copy (kill-switch vs hard cap vs
+	// large-room gate). "not subscribed" reuses MessageNotSubscribed above.
+	PinDisabled     Reason = "pin_disabled"
+	PinLimitReached Reason = "pin_limit_reached"
+	PinRoomTooLarge Reason = "pin_room_too_large"
 )

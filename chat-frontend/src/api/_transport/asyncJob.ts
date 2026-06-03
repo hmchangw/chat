@@ -109,6 +109,9 @@ const REASON_COPY: Record<string, string> = {
   large_room_post_restricted: 'Only owners and admins can post here.',
   not_subscribed: 'You need to join this room first.',
   outside_access_window: 'This message is older than your access to this room.',
+  pin_disabled: 'Pinning is turned off for this site.',
+  pin_limit_reached: 'This room has reached its pin limit — unpin a message first.',
+  pin_room_too_large: 'This room is too large for non-admins to pin.',
 }
 
 /**
