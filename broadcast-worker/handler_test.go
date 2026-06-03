@@ -1119,7 +1119,7 @@ func TestHandler_HandleThreadCreated(t *testing.T) {
 	tests := []struct {
 		name            string
 		content         string
-		threadSubs      []model.ThreadSubscription
+		threadFollowers map[string]struct{}
 		metaErr         error
 		listErr         error
 		userLookupErr   error
@@ -1127,70 +1127,60 @@ func TestHandler_HandleThreadCreated(t *testing.T) {
 		wantErrContains string
 	}{
 		{
-			name:    "fans out to thread subscribers excluding sender",
-			content: "hello thread",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: sender},
-				{UserAccount: "bob"},
-				{UserAccount: "carol"},
-			},
+			name:            "fans out to thread subscribers excluding sender",
+			content:         "hello thread",
+			threadFollowers: map[string]struct{}{sender: {}, "bob": {}, "carol": {}},
 			wantSubjects: []string{
 				subject.UserRoomEvent("bob"),
 				subject.UserRoomEvent("carol"),
 			},
 		},
 		{
-			name:    "mentioned non-subscriber included in fan-out",
-			content: "hey @dave",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
+			name:            "mentioned non-subscriber included in fan-out",
+			content:         "hey @dave",
+			threadFollowers: map[string]struct{}{"bob": {}},
 			wantSubjects: []string{
 				subject.UserRoomEvent("bob"),
 				subject.UserRoomEvent("dave"),
 			},
 		},
 		{
-			name:    "mentioned user already a thread subscriber - deduped",
-			content: "hey @bob",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
-			wantSubjects: []string{subject.UserRoomEvent("bob")},
+			name:            "mentioned user already a thread subscriber - deduped",
+			content:         "hey @bob",
+			threadFollowers: map[string]struct{}{"bob": {}},
+			wantSubjects:    []string{subject.UserRoomEvent("bob")},
 		},
 		{
-			name:         "only sender in subscriber list - no publish",
-			content:      "hello",
-			threadSubs:   []model.ThreadSubscription{{UserAccount: sender}},
-			wantSubjects: nil,
+			name:            "only sender in subscriber list - no publish",
+			content:         "hello",
+			threadFollowers: map[string]struct{}{sender: {}},
+			wantSubjects:    nil,
 		},
 		{
-			name:         "empty subscriber list and no mentions - no publish",
-			content:      "hello",
-			threadSubs:   []model.ThreadSubscription{},
-			wantSubjects: nil,
+			name:            "empty subscriber list and no mentions - no publish",
+			content:         "hello",
+			threadFollowers: map[string]struct{}{},
+			wantSubjects:    nil,
 		},
 		{
-			name:    "GetRoomMeta error - returns error",
-			content: "hello",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-			},
+			name:            "GetRoomMeta error - returns error",
+			content:         "hello",
+			threadFollowers: map[string]struct{}{"bob": {}},
 			metaErr:         errors.New("mongo down"),
 			wantErrContains: "get room meta",
 		},
 		{
-			name:            "ListThreadSubscriptions error - returns error",
+			name:            "GetThreadFollowers error - returns error",
 			content:         "hello",
 			listErr:         errors.New("db error"),
-			wantErrContains: "list thread subscriptions",
+			wantErrContains: "get thread followers",
 		},
 		{
-			name:          "user lookup error - warns and continues, subscriber still notified",
-			content:       "hello",
-			threadSubs:    []model.ThreadSubscription{{UserAccount: "bob"}},
-			userLookupErr: errors.New("db error"),
-			wantSubjects:  []string{subject.UserRoomEvent("bob")},
+			name:            "user lookup error - warns and continues, subscriber still notified",
+			content:         "hello",
+			threadFollowers: map[string]struct{}{"bob": {}},
+			userLookupErr:   errors.New("db error"),
+			wantSubjects:    []string{subject.UserRoomEvent("bob")},
 		},
 	}
 
@@ -1218,10 +1208,10 @@ func TestHandler_HandleThreadCreated(t *testing.T) {
 			}
 			data, _ := json.Marshal(evt)
 
-			// Call order: GetRoomMeta (always) → ListThreadSubscriptions (channel only) →
+			// Call order: GetRoomMeta (always) → GetThreadFollowers (channel only) →
 			// early-return if empty fanOut → FindUsersByAccounts → publish.
 			// SetSubscriptionMentions is NOT called for channel room TShow=false replies.
-			fanOut := threadFanOutAccounts(sender, tc.threadSubs, mention.Parse(tc.content).Accounts)
+			fanOut := threadFanOutAccounts(sender, tc.threadFollowers, mention.Parse(tc.content).Accounts)
 			needsUserLookup := tc.listErr == nil && tc.metaErr == nil && len(fanOut) > 0
 
 			if needsUserLookup {
@@ -1239,15 +1229,15 @@ func TestHandler_HandleThreadCreated(t *testing.T) {
 
 			switch {
 			case tc.metaErr != nil:
-				// GetRoomMeta is always first; a meta error short-circuits before ListThreadSubscriptions.
+				// GetRoomMeta is always first; a meta error short-circuits before GetThreadFollowers.
 				store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(roommetacache.Meta{}, tc.metaErr)
 			case tc.listErr != nil:
-				// GetRoomMeta succeeds (channel room), then ListThreadSubscriptions errors.
+				// GetRoomMeta succeeds (channel room), then GetThreadFollowers errors.
 				store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
-				store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(nil, tc.listErr)
+				store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(nil, tc.listErr)
 			default:
 				store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
-				store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(tc.threadSubs, nil)
+				store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(tc.threadFollowers, nil)
 				// SetSubscriptionMentions must NOT be called for TShow=false channel thread replies:
 				// the reply is invisible in the main channel, so a channel-room mention badge would
 				// show up without any visible message to explain it.
@@ -1352,8 +1342,8 @@ func TestHandler_HandleThreadCreated_MentionFieldsOnRoomEvent(t *testing.T) {
 			data, _ := json.Marshal(evt)
 
 			store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
-			store.EXPECT().ListThreadSubscriptions(gomock.Any(), parentMsgID, siteID).Return(
-				[]model.ThreadSubscription{{UserAccount: "bob"}}, nil,
+			store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID).Return(
+				map[string]struct{}{"bob": {}}, nil,
 			)
 			// SetSubscriptionMentions must NOT be called for TShow=false channel thread replies.
 			var lookupAccounts []string
@@ -1407,20 +1397,17 @@ func TestHandler_HandleThreadCreated_DMRoom(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		threadSubs   []model.ThreadSubscription
 		wantSubjects []string
 	}{
 		{
-			name:       "only sender in thread subs - still publishes to all DM members",
-			threadSubs: []model.ThreadSubscription{{UserAccount: sender}},
+			name: "only sender in thread subs - still publishes to all DM members",
 			wantSubjects: []string{
 				subject.UserRoomEvent("alice"),
 				subject.UserRoomEvent("bob"),
 			},
 		},
 		{
-			name:       "empty thread subs - still publishes to all DM members",
-			threadSubs: []model.ThreadSubscription{},
+			name: "empty thread subs - still publishes to all DM members",
 			wantSubjects: []string{
 				subject.UserRoomEvent("alice"),
 				subject.UserRoomEvent("bob"),
@@ -1550,7 +1537,7 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		threadSubs      []model.ThreadSubscription
+		threadFollowers map[string]struct{}
 		tshow           bool
 		getRoomErr      error
 		listErr         error
@@ -1561,28 +1548,22 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 		setupMocks      func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider)
 	}{
 		{
-			name: "all thread subscribers receive edit event, sender excluded",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: "bob"},
-				{UserAccount: "carol"},
-			},
+			name:            "all thread subscribers receive edit event, sender excluded",
+			threadFollowers: map[string]struct{}{"bob": {}, "carol": {}},
 			wantSubjects: []string{
 				subject.UserRoomEvent("bob"),
 				subject.UserRoomEvent("carol"),
 			},
 		},
 		{
-			name:         "empty subscriber list → no publish, no error",
-			threadSubs:   []model.ThreadSubscription{},
-			wantSubjects: nil,
+			name:            "empty subscriber list → no publish, no error",
+			threadFollowers: map[string]struct{}{},
+			wantSubjects:    nil,
 		},
 		{
-			name: "sender in subscriber list is excluded",
-			threadSubs: []model.ThreadSubscription{
-				{UserAccount: sender},
-				{UserAccount: "bob"},
-			},
-			wantSubjects: []string{subject.UserRoomEvent("bob")},
+			name:            "sender in subscriber list is excluded",
+			threadFollowers: map[string]struct{}{sender: {}, "bob": {}},
+			wantSubjects:    []string{subject.UserRoomEvent("bob")},
 		},
 		{
 			name:            "GetRoom error → error returned, no publish",
@@ -1590,9 +1571,9 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 			wantErrContains: "get room",
 		},
 		{
-			name:            "ListThreadSubscriptions error → error returned, no publish",
+			name:            "GetThreadFollowers error → error returned, no publish",
 			listErr:         errors.New("db error"),
-			wantErrContains: "list thread subscriptions for parent",
+			wantErrContains: "get thread followers for parent",
 		},
 		{
 			name: "DM room → edit fans out to all members",
@@ -1602,7 +1583,7 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 					Accounts: []string{"alice", "bob"},
 				}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called for DM rooms.
+				// GetThreadFollowers must NOT be called for DM rooms.
 			},
 			wantSubjects: []string{
 				subject.UserRoomEvent("alice"),
@@ -1626,7 +1607,7 @@ func TestHandler_HandleThreadUpdated(t *testing.T) {
 			setupMocks: func(store *MockStore, us *MockUserStore, keyStore *MockRoomKeyProvider) {
 				room := &model.Room{ID: "room-1", Type: model.RoomTypeChannel, SiteID: siteID}
 				store.EXPECT().GetRoom(gomock.Any(), "room-1").Return(room, nil)
-				// ListThreadSubscriptions must NOT be called
+				// GetThreadFollowers must NOT be called
 			},
 			wantSubjects: []string{subject.RoomEvent("room-1")},
 		},
