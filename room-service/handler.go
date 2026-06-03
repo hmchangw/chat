@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hmchangw/chat/pkg/displayfmt"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
@@ -1742,12 +1743,13 @@ func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal restricted sys data: %w", err)
 	}
+	requesterDisplay := displayfmt.CombineWithFallback(requesterUser.EngName, requesterUser.ChineseName, requesterUser.Account)
 	sysMsg := model.Message{
 		ID:          idgen.MessageIDFromRequestID(requestID, "room_restricted"),
 		RoomID:      req.RoomID,
 		UserAccount: req.Account,
 		Type:        model.MessageTypeRoomRestricted,
-		Content:     fmt.Sprintf("%s changed the channel restricted state", req.Account),
+		Content:     fmt.Sprintf("%q changed the channel restricted state", requesterDisplay),
 		SysMsgData:  sysData,
 		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
 	}
