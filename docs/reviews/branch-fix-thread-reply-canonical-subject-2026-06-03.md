@@ -48,3 +48,19 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `low` — `store_mongo.go` `EnsureIndexes` creates an index on `thread_rooms(parentMessageId)` but there is no integration test verifying that `GetThreadFollowers` works correctly against a live MongoDB collection. The unit-test mock covers the happy path and `ErrNoDocuments`; a store integration test would complete coverage.
 
 **Overall:** No critical or high findings in broadcast-worker specifically. The core fan-out logic is correct and the PR #237 migration pattern is faithfully applied.
+
+---
+
+## Service: message-worker
+
+**Diff correctness:** The tcount CAS pipeline is the key addition: `SaveThreadMessage` performs an LWT insert (`IF NOT EXISTS`) into `messages_by_id`, increments the parent's `tcount` with `incrementParentTcount` (Cassandra LWT counter), and publishes the authoritative post-CAS value to the canonical stream as `EventThreadReplyAdded`. The flow is correct and idempotent — duplicate NATS deliveries are safely handled.
+
+**Findings:**
+
+- `critical` — `handler.go` — The canonical event published after `SaveThreadMessage` sets `NewTCount` from `incrementParentTcount`'s return, but if `incrementParentTcount` returns an error, the handler currently logs and **continues to publish** the canonical event with a nil `NewTCount`. Downstream consumers (`broadcast-worker`, history-service) rely on `NewTCount` being non-nil for `EventThreadReplyAdded` events. Publishing a badge event with a nil count will cause clients to display a stale badge until the next event. The handler must **not** publish if `incrementParentTcount` fails.
+
+- `high` — `store_cassandra.go:108–120` — `SaveThreadMessage` writes `messages_by_id` (LWT) and `thread_messages_by_thread` (non-LWT) in separate statements with no transaction. On redelivery (`applied=false`), the code correctly skips `incrementParentTcount`, but the non-LWT `thread_messages_by_thread` INSERT is always re-executed. If the first attempt crashed between the two writes, the thread row would be missing. The second delivery writes it correctly (idempotent INSERT), but the tcount is already one too low from the first attempt's partial success. This is a known limitation of multi-statement Cassandra writes; it should be documented in a comment.
+
+- `medium` — `handler_test.go` — Error path for `incrementParentTcount` failure is not tested. The test coverage for the `SaveThreadMessage → publish` pipeline covers the happy path but does not verify the "publish must be skipped on tcount failure" invariant.
+
+- `medium` — `store_cassandra.go` — `incrementParentTcount` uses a Cassandra lightweight transaction but does not validate `applied=false` (concurrent identical increment is impossible by design, so this is low risk — but a comment explaining why the LWT result is not checked would prevent future confusion).
