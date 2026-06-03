@@ -11,7 +11,89 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
 )
+
+// fakeHistoryBatchClient is a hand-written stub matching historyBatchClient.
+// It records each call's account+ids and returns the configured messages.
+type fakeHistoryBatchClient struct {
+	msgs    []cassandra.Message
+	err     error
+	callIDs [][]string
+	callAcc []string
+}
+
+func (f *fakeHistoryBatchClient) GetByIDs(_ context.Context, account string, ids []string) ([]cassandra.Message, error) {
+	f.callAcc = append(f.callAcc, account)
+	f.callIDs = append(f.callIDs, ids)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.msgs, nil
+}
+
+func TestRetrieveContentB_FetchesOnceAndMapsByID(t *testing.T) {
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	hits := []encMessageSearchHit{
+		{MessageID: "m1", RoomID: "r1", SiteID: "site-a", UserAccount: "alice", CreatedAt: created},
+		{MessageID: "m2", RoomID: "r2", SiteID: "site-a", UserAccount: "bob", CreatedAt: created},
+	}
+	// History returns the messages out of ES order on purpose: the result
+	// must be projected in ES order, content filled from the ID map.
+	client := &fakeHistoryBatchClient{msgs: []cassandra.Message{
+		{MessageID: "m2", RoomID: "r2", Msg: "world"},
+		{MessageID: "m1", RoomID: "r1", Msg: "hello"},
+	}}
+
+	out := retrieveContentB(context.Background(), client, "alice", hits)
+	require.Len(t, out, 2)
+	assert.Equal(t, "m1", out[0].MessageID)
+	assert.Equal(t, "hello", out[0].Content)
+	assert.Equal(t, "m2", out[1].MessageID)
+	assert.Equal(t, "world", out[1].Content)
+
+	// Exactly one batch call, with all hit IDs and the caller's account.
+	require.Len(t, client.callIDs, 1, "history must be queried exactly once")
+	assert.Equal(t, []string{"m1", "m2"}, client.callIDs[0])
+	assert.Equal(t, []string{"alice"}, client.callAcc)
+}
+
+func TestRetrieveContentB_MissingIDYieldsEmptyContent(t *testing.T) {
+	hits := []encMessageSearchHit{
+		{MessageID: "m1", RoomID: "r1"},
+		{MessageID: "m2", RoomID: "r2"},
+	}
+	// History only returns m1 (m2 inaccessible/missing) → m2 content empty.
+	client := &fakeHistoryBatchClient{msgs: []cassandra.Message{
+		{MessageID: "m1", Msg: "hello"},
+	}}
+
+	out := retrieveContentB(context.Background(), client, "alice", hits)
+	require.Len(t, out, 2)
+	assert.Equal(t, "hello", out[0].Content)
+	assert.Equal(t, "m2", out[1].MessageID)
+	assert.Equal(t, "", out[1].Content, "missing id must project to empty content, not drop the hit")
+}
+
+func TestRetrieveContentB_ClientErrorReturnsHitsWithEmptyContent(t *testing.T) {
+	hits := []encMessageSearchHit{
+		{MessageID: "m1", RoomID: "r1"},
+	}
+	client := &fakeHistoryBatchClient{err: errors.New("history down")}
+
+	out := retrieveContentB(context.Background(), client, "alice", hits)
+	require.Len(t, out, 1)
+	assert.Equal(t, "m1", out[0].MessageID)
+	assert.Equal(t, "", out[0].Content)
+}
+
+func TestRetrieveContentB_Empty(t *testing.T) {
+	client := &fakeHistoryBatchClient{}
+	out := retrieveContentB(context.Background(), client, "alice", nil)
+	assert.Empty(t, out)
+	assert.NotNil(t, out, "must return a non-nil empty slice")
+	assert.Empty(t, client.callIDs, "no hits → no history call")
+}
 
 // fakeDecrypter is a hand-written stub matching the decrypter interface.
 // It returns a per-roomID plaintext, or an error for roomIDs in failRooms.

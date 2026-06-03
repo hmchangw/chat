@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
 )
 
 // encMessageSearchHit is the `_source` shape of an encrypted-message ES hit.
@@ -74,6 +75,54 @@ func retrieveContentA(ctx context.Context, d decrypter, hits []encMessageSearchH
 			content = fields.Msg
 		}
 		out = append(out, toEncSearchMessage(hit, content))
+	}
+	return out
+}
+
+// historyBatchClient fetches decrypted message bodies from history-service's
+// batch GetMessagesByIDs RPC. It is the Approach-B counterpart to the
+// in-process decrypter: instead of decrypting ciphertext stored in the ES
+// hit, search-service asks history-service (which owns Cassandra + the
+// per-message access enforcement) for the plaintext. Defined in the consumer
+// so tests can inject a fake.
+type historyBatchClient interface {
+	GetByIDs(ctx context.Context, account string, ids []string) ([]cassandra.Message, error)
+}
+
+// retrieveContentB is Approach B content retrieval: collect every hit's
+// messageId, ask history-service for those bodies in a SINGLE batch RPC, then
+// project the hits back in ES order filling Content from the returned map.
+//
+// The batch call is best-effort: if it fails entirely the hits are still
+// returned (with empty Content) so a transient history outage degrades the
+// response rather than failing the whole search. A messageId absent from the
+// reply (inaccessible per server-side enforcement, or simply missing) projects
+// to empty Content — never a dropped hit.
+func retrieveContentB(ctx context.Context, client historyBatchClient, account string, hits []encMessageSearchHit) []model.SearchMessage {
+	out := make([]model.SearchMessage, 0, len(hits))
+	if len(hits) == 0 {
+		return out
+	}
+
+	ids := make([]string, 0, len(hits))
+	for i := range hits {
+		ids = append(ids, hits[i].MessageID)
+	}
+
+	byID := make(map[string]string, len(hits))
+	msgs, err := client.GetByIDs(ctx, account, ids)
+	if err != nil {
+		slog.WarnContext(ctx, "history batch fetch failed; returning empty content",
+			"account", account, "ids", len(ids), "error", err)
+	} else {
+		for i := range msgs {
+			byID[msgs[i].MessageID] = msgs[i].Msg
+		}
+	}
+
+	for i := range hits {
+		hit := &hits[i]
+		out = append(out, toEncSearchMessage(hit, byID[hit.MessageID]))
 	}
 	return out
 }
