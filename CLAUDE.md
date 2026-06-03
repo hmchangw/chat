@@ -293,6 +293,12 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - **Bucketed message table.** `messages_by_room` uses a composite partition key `(room_id, bucket)`. The bucket is `floor(created_at_unix_ms / windowMs) * windowMs`. The window is configured per service via `MESSAGE_BUCKET_HOURS` (default 72). All services that read or write this table MUST be configured with the same `MESSAGE_BUCKET_HOURS`; mismatches will cause writes and reads to target different partitions and silently lose data. Bucket math lives in `pkg/msgbucket`.
 - **Thread reply table.** `thread_messages_by_thread` is partitioned by `thread_room_id` alone — one partition per thread. Reads slice the partition by `created_at` clustering, no bucket walk required.
 
+### At-Rest Message Encryption (`pkg/atrest`)
+- User-authored message content is envelope-encrypted at rest. Ciphertext lives in Cassandra's `enc_payload` column (per-row `enc_meta` carries the nonce); the per-room 256-bit DEK is wrapped by Vault's transit engine and stored in MongoDB (one row per room, collection `atrest.CollectionName`). Plaintext KEK never leaves Vault; unwrapped DEKs are held in a bounded LRU cache in process.
+- `atrest.EncryptedFields` is the bundle that gets encrypted: `msg`, `attachments`, `card`, `cardAction`, `file`, `quotedParentContent`. System-generated fields stay plaintext — `sys_msg_data`, `mentionedUserIDs`, sender, timestamps, IDs. Don't add user-authored secrets to plaintext columns; don't add system metadata to `EncryptedFields`.
+- Wired in `message-worker` (writes ciphertext + lazy DEK creation), `history-service` (decrypts on read), and `room-worker` (eager DEK provisioning on the synchronous `room.create.dm` path, which bypasses message-worker). Any new service that reads or writes message bodies MUST take an `atrest.Cipher` and route content through it — never read/write plaintext columns directly.
+- Config: `ATREST_ENABLED` (default `true`), `ATREST_DEK_CACHE_SIZE`, `ATREST_DEK_CACHE_TTL`, plus Vault settings (`VAULT_*` / `ATREST_VAULT_*`). When `Enabled=false`, the service runs as a passthrough — used for local dev without Vault.
+
 ### HTTP (Gin + Resty)
 - Use Gin for all HTTP servers — never `net/http` mux directly
 - Register routes in `routes.go`, not `main.go`
