@@ -251,3 +251,33 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 ### Medium
 
 - `medium` — `broadcast-worker/handler.go` — `threadFanOutAccounts` allocates a new `[]string` on every call by iterating the map. For empty maps (no followers) this allocates a non-nil slice. A `if len(followers) == 0 { return nil, nil }` early-return avoids the allocation and makes the no-follower fast path explicit.
+
+---
+
+## Observability
+
+### Critical
+
+- `critical` — All new handler log lines across broadcast-worker, message-worker, history-service, notification-worker, inbox-worker, search-sync-worker — **Request/correlation ID is not propagated in any new log lines.** CLAUDE.md Section 3 ("Request Logging & Tracing") requires the correlation ID to be extracted from context and included in all structured log lines. New `slog.Error` / `slog.Warn` / `slog.Info` calls in the diff uniformly omit `slog.String("requestId", ...)`. Without this, all thread-related errors are invisible in log aggregation queries that filter by request ID.
+
+  **Pattern to follow** (from existing handlers in the same files):
+  ```go
+  reqID := requestid.FromContext(ctx)
+  slog.ErrorContext(ctx, "get thread followers", slog.String("requestId", reqID), slog.String("parentMessageId", parentMsgID), slog.Any("error", err))
+  ```
+
+### High
+
+- `high` — `broadcast-worker/handler.go` — `handleThreadCreated`, `handleThreadUpdated`, `handleThreadDeleted`, `channelThreadFanOut`, and `publishToThreadAccounts` are all new code paths with no OTel span. The broadcast-worker processes high-volume events; without spans, latency breakdowns (follower lookup vs. publish time) are invisible. Add `otel.Tracer(...).Start(ctx, "broadcast.handleThreadCreated")` at each handler entry.
+
+- `high` — `message-worker/handler.go` — `handleThreadReply` (new code path for `EventThreadReplyAdded`) has no OTel span and no Prometheus counter. The message-worker already has Prometheus metrics for non-thread messages (`messagesProcessedTotal`). A `threadRepliesProcessedTotal` counter with `result` label (`"ok"/"error"`) would provide the visibility needed to detect tcount increment failures in production.
+
+### Medium
+
+- `medium` — `history-service/internal/service/messages.go` — `publishCanonicalBestEffort` logs publish errors without the request ID from context. Because this is a best-effort call, the error is swallowed; without a request ID the log line is disconnected from the trace that triggered it.
+
+- `medium` — `inbox-worker/handler.go` — All new `OutboxThreadSubscriptionUpserted` and `OutboxThreadRead` handler log lines are missing `requestId`. Additionally the wrong-field bug (see Bug & Security chapter) means the `account` key currently logs the room ID.
+
+### Low
+
+- `low` — `room-service/handler.go` — `handleThreadRead` lacks an OTel span. Room-service is an HTTP+NATS hybrid; the NATS handlers already have spans in the existing code but the new thread-read handler was added without one.
