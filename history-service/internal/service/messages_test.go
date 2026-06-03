@@ -1742,6 +1742,45 @@ func TestHistoryService_DeleteMessage_ThreadReply_PublishesThreadMetadataEvent(t
 	assert.Equal(t, "reply-1", resp.MessageID)
 }
 
+// TestHistoryService_DeleteMessage_ThreadReply_PublishFailsButDeleteSucceeds verifies
+// the best-effort contract for thread reply deletes: if publishCanonicalBestEffort
+// fails to publish the canonical deleted event (e.g. NATS is disconnected),
+// DeleteMessage still returns success — Cassandra is the source of truth.
+func TestHistoryService_DeleteMessage_ThreadReply_PublishFailsButDeleteSucceeds(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	parentCreatedAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	hydrated := &models.Message{
+		MessageID:             "reply-1",
+		RoomID:                "r1",
+		Sender:                models.Participant{Account: "u1", ID: "u1-id"},
+		CreatedAt:             time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC),
+		Msg:                   "reply content",
+		ThreadParentID:        "parent-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+
+	newTcount := 4
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, &newTcount, nil
+		})
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-1"})
+	require.NoError(t, err, "best-effort publish: failure must be logged, not returned")
+	require.NotNil(t, resp)
+	assert.Equal(t, "reply-1", resp.MessageID)
+}
+
 // TestHistoryService_DeleteMessage_ThreadReply_NoMetadataEventWhenTCountNil verifies
 // that no ThreadMetadataUpdatedEvent is published when the repository returns nil tcount
 // (CAS was skipped because the parent row was not found or tcount was never written).
