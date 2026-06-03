@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
@@ -66,8 +67,16 @@ func NewHandler(store Store, collection Collection, bulkSize int) *Handler {
 func (h *Handler) Add(ctx context.Context, msg jetstream.Msg) {
 	actions, err := h.collection.BuildAction(ctx, msg.Data())
 	if err != nil {
-		slog.Error("build action", "error", err)
-		natsutil.Ack(msg, "build action failed")
+		// Poison (permanent) errors can never succeed on redelivery — drop
+		// them by acking. Transient errors (e.g. a cipher/Vault failure in
+		// the enc dual-write) must NAK so JetStream redelivers with backoff.
+		if _, permanent := errcode.IsPermanent(err); permanent {
+			slog.WarnContext(ctx, "dropping poison message", "error", err)
+			natsutil.Ack(msg, "build action poison")
+			return
+		}
+		slog.WarnContext(ctx, "transient build error; will redeliver", "error", err)
+		natsutil.Nak(msg, "build action transient")
 		return
 	}
 

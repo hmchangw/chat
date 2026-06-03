@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
@@ -262,6 +263,48 @@ func (c stubCollection) TemplateBody() json.RawMessage              { return nil
 func (c stubCollection) AuxTemplates() []NamedTemplate              { return nil }
 func (c stubCollection) BuildAction(context.Context, []byte) ([]searchengine.BulkAction, error) {
 	return []searchengine.BulkAction{{Action: c.action, Index: "stub", DocID: "id-1"}}, nil
+}
+
+// errCollection is a Collection whose BuildAction always fails with a
+// configurable error, used to exercise the handler's poison-vs-transient
+// branch.
+type errCollection struct {
+	stubCollection
+	err error
+}
+
+func (c errCollection) BuildAction(context.Context, []byte) ([]searchengine.BulkAction, error) {
+	return nil, c.err
+}
+
+func TestHandler_Add_BuildActionError(t *testing.T) {
+	t.Run("permanent error is acked (poison drop)", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		coll := errCollection{err: errcode.Permanent(errcode.BadRequest("poison"))}
+		h := NewHandler(store, coll, 500)
+
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(context.Background(), msg)
+
+		assert.True(t, msg.acked, "poison message is acked (dropped)")
+		assert.False(t, msg.nacked)
+		assert.Equal(t, 0, h.MessageCount())
+	})
+
+	t.Run("transient error is nakked (redeliver)", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockStore(ctrl)
+		coll := errCollection{err: fmt.Errorf("vault unavailable")}
+		h := NewHandler(store, coll, 500)
+
+		msg := &stubMsg{data: []byte(`{}`)}
+		h.Add(context.Background(), msg)
+
+		assert.False(t, msg.acked)
+		assert.True(t, msg.nacked, "transient error naks for redelivery")
+		assert.Equal(t, 0, h.MessageCount())
+	})
 }
 
 type (
