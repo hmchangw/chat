@@ -23,6 +23,10 @@ type Metrics struct {
 	MemberE1Latency     *prometheus.HistogramVec
 	MemberE2Latency     *prometheus.HistogramVec
 	MemberRoomSize      *prometheus.GaugeVec
+
+	// SearchLatency tracks message-search request latency per preset/arm
+	// (C=plaintext, A=blind+ES-decrypt, B=blind+Cassandra-fetch).
+	SearchLatency *prometheus.HistogramVec
 }
 
 // NewMetrics constructs a dedicated Prometheus registry with all loadgen
@@ -84,12 +88,17 @@ func NewMetrics() *Metrics {
 		prometheus.GaugeOpts{Name: "loadgen_member_room_size", Help: "Current member count per room (capacity mode only)."},
 		[]string{"room_id"},
 	)
+	m.SearchLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "loadgen_search_latency_seconds", Help: "Message-search request latency by preset and benchmark arm.", Buckets: buckets},
+		[]string{"preset", "arm"},
+	)
 	r.MustRegister(
 		m.Published, m.PublishErrors,
 		m.E1Latency, m.E2Latency,
 		m.ConsumerPending, m.ConsumerAckPending, m.ConsumerRedelivered,
 		m.MemberPublished, m.MemberPublishErrors,
 		m.MemberE1Latency, m.MemberE2Latency, m.MemberRoomSize,
+		m.SearchLatency,
 	)
 	return m
 }
