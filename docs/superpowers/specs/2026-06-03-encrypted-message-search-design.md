@@ -142,7 +142,24 @@ Phase 1 is deliberately non-destructive (parallel index, flagged path) so we ben
 - Live blind-key rotation machinery (D5 — seam only).
 - Fuzzy/typo-tolerant and substring/infix matching (impossible/too costly over hashed tokens).
 
-## 11. Key risks
+## 11. Prior art / alternatives considered
+
+Industry approaches to "don't let the search backend expose readable message content," chosen by threat model. (Company specifics below are from general knowledge, not live-verified.)
+
+| Pattern | Who (typical) | What | Rotation | Why not chosen here |
+|---------|---------------|------|----------|---------------------|
+| **At-rest + KMS envelope + RBAC** | Slack, Microsoft 365, standard Google Workspace | Index holds *readable* content; disk/snapshot encrypted via KMS-wrapped DEK; access is gated by strict RBAC + audit | Cheap — re-wrap the DEK, no re-encryption | Does **not** stop an authorized Kibana/cluster insider from reading content — the exact threat in D2. |
+| **E2EE + client-side search** | WhatsApp, Signal, iMessage, Meta Messenger (E2EE) | Server has no searchable index; clients decrypt locally and search an **on-device** index | Per-conversation ratchet; no server index to rotate | Eliminates server-side search entirely — incompatible with our ES product requirement. |
+| **Searchable / structured encryption (blind index, SSE)** | MongoDB Queryable Encryption; CipherStash; Acra; CipherSweet | Deterministic keyed hashing or formal SSE; server never sees plaintext | **No shortcut** — the hash *is* the stored artifact → rotation = reindex (versioned keys + background reindex + dual-version OR-query) | **This is our design (D1).** MongoDB QE is equality/range only, so it can't replace ES free-text search. |
+| **Confidential computing / TEE** | MS SQL "Always Encrypted with secure enclaves"; bespoke on AWS Nitro / Azure confidential VMs | Decrypt only inside an attested enclave; full analyzer fidelity on plaintext *inside* the boundary | Arbitrary — plaintext is available in-enclave | ES is not enclave-native; attestation + perf overhead make this impractical to retrofit. |
+
+**Two keys rotate differently (the core rotation insight):**
+- **Content key** (readable blob) → envelope encryption (KEK wraps DEK). Rotate the KEK = re-wrap the DEK, **zero data re-encryption.** Already true via `pkg/atrest` + Vault.
+- **Blind-index key** (search tokens) → **no industry shortcut exists.** Deterministic searchable encryption stores the hash itself, so a new key invalidates every stored hash. State of the art (CipherStash, Acra) = **versioned keys + reindex**, which is exactly D5's seam.
+
+**Conclusion:** for self-hosted ES + threat model D2 ("insiders can't *read* content, keep server-side search"), blind indexing is the correct pragmatic choice and our rotation approach matches state-of-the-art. We would only pivot for a stricter threat model (→ E2EE + client-side search) or with investment in enclaves.
+
+## 12. Key risks
 - **CJK parity** — `cjk_bigram` divergence craters Chinese recall. Mitigated by a dedicated CJK query set + per-language gate + `_analyze` oracle.
 - **search-service key surface (Approach A)** — A puts per-room `atrest` access into `search-service`. Acceptable per D6 latency priority; benchmark surfaces the tradeoff explicitly.
 - **Reindex on cutover (Phase 3)** — historical plaintext docs must be reindexed into the blind index; needs a backfill plan (the existing `SYNC_MESSAGES_FROM` cutover mechanism is the model).
