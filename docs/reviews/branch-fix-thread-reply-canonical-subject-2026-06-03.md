@@ -195,3 +195,41 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `low` — `message-worker/handler_test.go` — The `incrementParentTcount` failure path (where the tcount call fails) is not tested. The test should verify that the canonical publish is skipped and the error is returned (not swallowed).
 
 - `low` — `mock_store_test.go` (broadcast-worker) — Mocks are up-to-date. No staleness issues detected (`make generate` matches committed mock).
+
+---
+
+## Bug & Security
+
+**SAST (gosec + govulncheck + semgrep):** PASS — no medium+ findings introduced by this branch.
+
+### Critical
+
+- `critical` — `notification-worker/handler.go:46` — **Regression: push notifications fired for all 4 event types.** The branch introduces `EventThreadReplyAdded` events on `MESSAGES_CANONICAL`, but `notification-worker.HandleMessage` has no event-type guard. It fires `"new_message"` push notifications for every canonical event (created, updated, deleted, thread_reply_added) including badge-only events that carry `Content=""` and `UserID=""`. Every thread reply will spam all room members with an empty notification. **Fix (one line at handler entry):**
+  ```go
+  if evt.Event != model.EventCreated {
+      return nil
+  }
+  ```
+
+### High
+
+- `high` — `room-service/store_mongo.go:1010–1030` — MongoDB aggregation pipeline in `UpdateSubscriptionThreadRead` has a race window. Two concurrent read-marks for the same `(account, roomID)` both read the same pre-update `threadUnread`. Each stages its `$filter` against stale data; the loser's recomputed `alert` is wrong. The `alert` value in the outbox event (cross-site) is derived from the pipeline return, so cross-site consistency is preserved — only the local badge is incorrect until the next read. This is an accepted best-effort trade-off but the race window should be documented.
+
+### Medium
+
+- `medium` — `broadcast-worker/handler.go:371–375` — **Nil pointer dereference risk in `handleThreadDeleted`.** `msg.UpdatedAt` is dereferenced on line 372 without a nil check. `handleThreadCreated` (line 132) guards against this; `handleThreadDeleted` does not. A malformed event with `UpdatedAt == nil` will panic the worker.
+
+  **Fix:**
+  ```go
+  if msg.UpdatedAt == nil {
+      return fmt.Errorf("thread deleted event missing UpdatedAt for message %s", msg.ID)
+  }
+  ```
+
+- `medium` — `message-worker/store_cassandra.go:108–120` — `SaveThreadMessage` two-phase write (`messages_by_id` LWT then `thread_messages_by_thread` non-LWT) has partial-write risk on crash-between-statements. The idempotent INSERT on redelivery mitigates data loss, but the tcount may be decremented one too few times. This is a known Cassandra limitation; a comment explaining the invariant and trade-off is required.
+
+### Low
+
+- `low` — `broadcast-worker/handler.go:492–510` — `buildEditRoomEvent` and `buildDeleteRoomEvent` now correctly use `evt.Timestamp` from the source event rather than `time.Now()`. This is a correctness fix (edit/delete timestamps reflect event time, not processing time). No security issue; noted as a positive correctness change.
+
+- `low` — `broadcast-worker/store.go` — `GetThreadFollowers` integration test against a live MongoDB collection is absent. Unit mock coverage is adequate but a store-level integration test would verify the projection and index usage end-to-end.
