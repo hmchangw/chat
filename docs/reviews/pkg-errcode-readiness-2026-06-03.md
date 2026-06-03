@@ -89,3 +89,42 @@ Spot-checked `room-service/handler.go:161, 318-321, 423-424, 856, 883`, `auth-se
 
 ---
 
+## Chapter 3 — API design
+
+**Score: 4.5 / 5**
+
+A tight, intentional library. The wire contract is minimal, the daily handler API is two patterns (`errcode.X(msg, opts...)` + one adapter call), invariants are enforced in code, and every "advanced" symbol has at least one external caller (verified — see Surface table below). The few warts are real but small.
+
+### Surface size — every advanced symbol earns its place
+
+| Symbol | External callers | Verdict |
+|---|---|---|
+| `Classify` | `room-worker/handler.go:136, 1854` (outbox AsyncError formatting); tests in `search-service`, `history-service`, `pkg/natsrouter` | Justified — workers need it to build async-error envelopes for the outbox before publishing. |
+| `Parse` | `room-service/memberlist_client.go:66`; `message-gatekeeper/fetcher_history.go:62` | Justified — cross-site reply decoding. |
+| `New` | `room-service/memberlist_client.go:99` | Justified — the only legitimate path is Parse-then-New with a dynamically-chosen `Code`. Doc could call this out explicitly. |
+| `Permanent` / `IsPermanent` / `ErrPermanent` / `PermanentError` | `inbox-worker/main.go:304`, `inbox-worker/handler.go:192`; `room-worker/handler.go:36, 130, 193, 1691` | Justified — JetStream Ack-vs-Nak decisions. |
+| `errnats.Marshal` | `message-gatekeeper/handler.go:75, 88, 103` | Justified — gatekeeper publishes the envelope to a derived subject, not the reply subject; needs raw bytes. |
+| `errnats.MarshalQuiet` / `ReplyQuiet` | `pkg/natsrouter/middleware.go:64`, `router.go:124, 207` | Justified — panic backstop / admission overflow paths that already logged. |
+| `WithLogger` | Tests only | Could move to `errtest` and unexport, but saving 3 lines isn't worth breaking symmetry with `WithLogValues`. Leave it. |
+
+### Findings
+
+- **`high` — `WithLogValues` looks like an `Option` but isn't.** `logctx.go:18` is a `context.Context` mutator. `WithReason` / `WithMetadata` / `WithCause` all return `Option`. A reader skimming `options.go` reasonably expects `WithLogValues` to match the family. The collision is documented at `doc.go:50-58` ("Never call the package func `errcode.WithLogValues` with a `*natsrouter.Context` as parent"), but documentation isn't enough — rename the package func to break the visual parallelism. Suggested: `WithLogContext(ctx, args...)` or `LogValuesContext(ctx, args...)`.
+- **`medium` — `errnats` vs `errhttp` shape divergence.** `errhttp.Write` is 3 lines (`errhttp/write.go:13-16`). `errnats` exposes four public symbols (`Marshal`, `MarshalQuiet`, `Reply`, `ReplyQuiet` — `errnats/reply.go:18-52`). The `Marshal`/`Reply` split is justified by `message-gatekeeper`'s delayed-reply pattern. But `errhttp` has no analogous `Marshal`, even though a Gin handler that wants to inject the envelope into a multi-payload non-2xx response would need one. Today it's "we haven't needed it yet" silence — document or add for symmetry.
+- **`medium` — `Quiet` variants are a discoverability hazard.** `MarshalQuiet` / `ReplyQuiet` exist solely to suppress double-logging from `Classify`. Nothing prevents a handler author from reaching for `ReplyQuiet` to silence routine errors, breaking the log-once invariant repo-wide. Consider moving them behind `pkg/errcode/errnats/internal/quiet/` re-exported under a discouraging name, or at minimum a `// Deprecated for handler use` tag.
+- **`low` — `New` exported but should arguably stay so.** Single external non-test caller (`memberlist_client.go:99`); semgrep rule `errcode-prefer-named-constructor` already discourages common misuse. Keeping it exported is correct, but its godoc should name the cross-site re-emission use case so reviewers don't flag the lone call site as "should refactor."
+- **`low` — `Parse` does not validate `Code` even though `New` panics on invalid code.** `parse.go:11-18` happily returns a non-canonical `Code`; downstream callers must `Code.Valid()` before forwarding (both real callers do — `memberlist_client.go:82`, `fetcher_history.go:62`). Documented at `parse.go:9-10` but a `ParseValidated` helper would encode the warning as a type-level guarantee.
+- **`nitpick` — `Reason` is an unenforced open string.** `reason.go:1-5` allows `errcode.WithReason("ad_hoc")` outside any `codes_*.go`. The semgrep rule `errcode-no-reason-literal-outside-catalog` catches it at lint, but not the compiler. Acceptable for an open set.
+- **`nitpick` — `errhttp` / `errnats` location.** Living under `pkg/errcode/` rather than as separate `pkg/errhttp`, `pkg/errnats` keeps the adapter contract physically adjacent to the type it adapts. Today this is fine — every caller already depends on both gin and nats.go. No change recommended.
+
+### Recommendations
+
+1. **`high`** — Rename `errcode.WithLogValues` (the package func) to break the visual collision with `Option`-returning `With*` constructors. Update `doc.go §Logging` and the call sites at `room-service/handler.go:78`, `auth-service/handler.go:79, 119, 149, 164`, `message-gatekeeper/handler.go:66, 82`, `room-worker/handler.go:118, 1857`.
+2. **`medium`** — Add `errhttp.Marshal(ctx, err) ([]byte, int)` for shape symmetry with `errnats.Marshal`, OR remove `errnats.Marshal` if symmetry the other way is preferred (probably not — gatekeeper needs it).
+3. **`medium`** — Move `MarshalQuiet` / `ReplyQuiet` behind an internal package, or rename to `…AfterLog` to encode the invariant in the name.
+4. **`low`** — Add `ParseCanonical(data) (*Error, bool)` that rejects non-canonical codes upstream; deprecate raw `Parse` for new cross-site code.
+5. **`low`** — Expand `New`'s godoc to name its single legitimate use case (Parse → New for cross-site envelopes).
+6. **`nitpick`** — Add a `doc.go` subsection that lists symbols by tier ("Handler API: BadRequest, NotFound, …; Boundary: Classify, Reply, Write; Worker: Permanent, IsPermanent; Cross-site: Parse, New") so the conceptual map surfaces from `go doc pkg/errcode`.
+
+---
+
