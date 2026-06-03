@@ -9,9 +9,13 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/blindsearch"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/searchengine"
@@ -85,8 +89,58 @@ type config struct {
 	// idle / low-traffic periods.
 	BulkFlushInterval int `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
 
+	// Encrypted dual-write (Phase 1). All fields below are ignored unless
+	// EncEnabled is true; when false nothing new connects (no Vault, no
+	// Mongo). When true the worker also writes a parallel encrypted index:
+	// EncMsgIndexPrefix must be version-suffixed (-v<N>); BlindKey is the
+	// hex-encoded blind-index HMAC key; BlindKeyVersion is its version tag.
+	EncEnabled        bool   `env:"ENC_ENABLED"          envDefault:"false"`
+	EncMsgIndexPrefix string `env:"ENC_MSG_INDEX_PREFIX" envDefault:""`
+	BlindKey          string `env:"BLINDIDX_KEY"         envDefault:""`
+	BlindKeyVersion   string `env:"BLINDIDX_KEY_VERSION" envDefault:""`
+
+	Atrest atrest.Config      // ATREST_*
+	Vault  atrest.VaultConfig // VAULT_* / ATREST_VAULT_*
+	Mongo  mongoConfig        `envPrefix:""`
+
 	Consumer  stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+}
+
+// mongoConfig is the DEK-store connection, only used when EncEnabled. The
+// connection string is never defaulted (a secret); the DB name is.
+type mongoConfig struct {
+	URI      string `env:"MONGO_URI"      envDefault:""`
+	Username string `env:"MONGO_USERNAME" envDefault:""`
+	Password string `env:"MONGO_PASSWORD" envDefault:""`
+	DB       string `env:"MONGO_DB"       envDefault:"chat"`
+}
+
+// buildEncOptions validates the encrypted dual-write config and loads the
+// blind hasher. It performs NO network I/O — the cipher (which needs live
+// Vault + Mongo) is wired separately in main and attached to the returned
+// options. When EncEnabled is false it returns a zero-value (disabled)
+// encOptions so the message collection emits only the plaintext action.
+func buildEncOptions(cfg *config) (encOptions, error) {
+	if !cfg.EncEnabled {
+		return encOptions{}, nil
+	}
+	if _, _, ok := searchindex.StripVersion(cfg.EncMsgIndexPrefix); !ok {
+		return encOptions{}, fmt.Errorf("ENC_MSG_INDEX_PREFIX must end with -v<N>, got %q", cfg.EncMsgIndexPrefix)
+	}
+	if cfg.BlindKeyVersion == "" {
+		return encOptions{}, fmt.Errorf("BLINDIDX_KEY_VERSION is required when ENC_ENABLED")
+	}
+	hasher, err := blindsearch.LoadHasher(cfg.BlindKey, cfg.BlindKeyVersion)
+	if err != nil {
+		return encOptions{}, fmt.Errorf("load blind hasher: %w", err)
+	}
+	return encOptions{
+		enabled:     true,
+		indexPrefix: cfg.EncMsgIndexPrefix,
+		keyVersion:  cfg.BlindKeyVersion,
+		hasher:      hasher,
+	}, nil
 }
 
 func main() {
@@ -150,8 +204,38 @@ func main() {
 		os.Exit(1)
 	}
 
+	encOpts, err := buildEncOptions(&cfg)
+	if err != nil {
+		slog.Error("invalid enc config", "error", err)
+		os.Exit(1)
+	}
+
+	// Only when enc is enabled do we connect Mongo (DEK store) and Vault and
+	// build the cipher — mirrors message-worker/main.go. When disabled,
+	// mongoClient stays nil and nothing new connects.
+	var (
+		mongoClient  = (*mongo.Client)(nil)
+		vaultWrapper atrest.KeyWrapperCloser
+	)
+	if encOpts.enabled {
+		mongoClient, err = mongoutil.Connect(ctx, cfg.Mongo.URI, cfg.Mongo.Username, cfg.Mongo.Password)
+		if err != nil {
+			slog.Error("mongodb connect failed", "error", err)
+			os.Exit(1)
+		}
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if err != nil {
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
+			os.Exit(1)
+		}
+		vaultWrapper = w
+		dekColl := mongoClient.Database(cfg.Mongo.DB).Collection(atrest.CollectionName)
+		encOpts.cipher = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+		slog.Info("encrypted dual-write enabled", "encMsgPrefix", encOpts.indexPrefix, "blindKeyVersion", encOpts.keyVersion)
+	}
+
 	collections := []Collection{
-		newMessageCollection(cfg.MsgIndexPrefix, syncMessagesFrom),
+		newMessageCollectionEnc(cfg.MsgIndexPrefix, syncMessagesFrom, encOpts),
 		newSpotlightCollection(cfg.SpotlightIndex),
 		newUserRoomCollection(cfg.UserRoomIndex),
 	}
@@ -159,14 +243,22 @@ func main() {
 	for _, coll := range collections {
 		name := coll.TemplateName()
 		body := coll.TemplateBody()
-		if name == "" || body == nil {
-			continue
+		if name != "" && body != nil {
+			if err := engine.UpsertTemplate(ctx, name, body); err != nil {
+				slog.Error("upsert index template failed", "template", name, "error", err)
+				os.Exit(1)
+			}
+			slog.Info("index template upserted", "name", name)
 		}
-		if err := engine.UpsertTemplate(ctx, name, body); err != nil {
-			slog.Error("upsert index template failed", "template", name, "error", err)
-			os.Exit(1)
+		// Aux templates (e.g. the encrypted parallel message index) are
+		// owned by the collection and upserted the same way as the primary.
+		for _, aux := range coll.AuxTemplates() {
+			if err := engine.UpsertTemplate(ctx, aux.Name, aux.Body); err != nil {
+				slog.Error("upsert aux index template failed", "template", aux.Name, "error", err)
+				os.Exit(1)
+			}
+			slog.Info("aux index template upserted", "name", aux.Name)
 		}
-		slog.Info("index template upserted", "name", name)
 	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
@@ -262,6 +354,21 @@ func main() {
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error {
+			// Disconnect the DEK-store Mongo client and stop Vault token
+			// renewal only when enc wired them up; both are nil when disabled.
+			if mongoClient != nil {
+				if err := mongoClient.Disconnect(ctx); err != nil {
+					return fmt.Errorf("disconnect mongo: %w", err)
+				}
+			}
+			if vaultWrapper != nil {
+				if err := vaultWrapper.Close(); err != nil {
+					return fmt.Errorf("close vault wrapper: %w", err)
+				}
+			}
+			return nil
+		},
 	)
 }
 
