@@ -181,3 +181,67 @@ None present, appropriately. `errnats` tests spin up an in-process `nats-server`
 
 ---
 
+## Chapter 5 — Maintainability
+
+**Score: 4.5 / 5**
+
+A senior Go engineer can extend this confidently with near-zero hand-holding. The package is small, well-factored, internally consistent, and backed by an unusually thorough design doc. The one real soft spot is the `codes_*.go` registry as service count grows.
+
+### File-size table
+
+| File | LOC |
+|---|---|
+| `pkg/errcode/category.go` | 49 |
+| `pkg/errcode/classify.go` | 51 |
+| `pkg/errcode/codes_auth.go` | 10 |
+| `pkg/errcode/codes_message.go` | 11 |
+| `pkg/errcode/codes_platform.go` | 11 |
+| `pkg/errcode/codes_room.go` | 24 |
+| `pkg/errcode/doc.go` | 63 |
+| `pkg/errcode/error.go` | 21 |
+| `pkg/errcode/logctx.go` | 28 |
+| `pkg/errcode/match.go` | 15 |
+| `pkg/errcode/options.go` | 71 |
+| `pkg/errcode/parse.go` | 18 |
+| `pkg/errcode/permanent.go` | 41 |
+| `pkg/errcode/reason.go` | 5 |
+| `pkg/errcode/errhttp/write.go` | 16 |
+| `pkg/errcode/errnats/reply.go` | 52 |
+| `pkg/errcode/errtest/assert.go` | 44 |
+| **Production total** | **567** |
+| Tests total | 780 |
+
+No file exceeds 75 lines of production code. SRP holds throughout.
+
+### Findings
+
+- **`medium` — `codes_*.go` registry doesn't scale by construction.** `codes_test.go:8-18` hard-codes `allReasons` as a literal slice. Each new reason needs an entry in *two* places: the catalog file AND `allReasons`. With 4 catalogs and 24 reasons today it's fine; at the 20th service this becomes a merge-conflict hotspot and a place to silently forget. `docs/error-handling.md:226-230` lists step (3) "Add the constant to allReasons" but nothing enforces it.
+- **`medium` — `codes_platform.go` blurs catalog ownership.** `codes_<service>.go` is named for ownership, but `codes_platform.go:1-11` holds reasons emitted by *middleware*, not a service. The naming convention is now "per-service OR cross-cutting", which weakens the rule a new contributor would learn.
+- **`low` — `MarshalQuiet` / `ReplyQuiet` have very narrow legitimate use.** Three production call sites (`pkg/natsrouter/middleware.go:64`, `router.go:124, 207`). The doc warns repeatedly that "Quiet" is a footgun — with such a small caller set this pair is one mis-use away from a silent error.
+- **`low` — `Marshal` in `errnats/reply.go:18-24` is essentially a half-Reply.** Only used in `message-gatekeeper/handler.go:75, 88, 103` because the gatekeeper has a custom `sendReply` that publishes to a derived subject. Promote to a documented Tier-3 specialist in `doc.go` (currently only in `CLAUDE.md`).
+- **`low` — `Code.HTTPStatus` returns `int` literals instead of `http.StatusXxx`** (`category.go:30-49`). Cosmetic, but `net/http` constants are more grep-able.
+- **`low` — `Classify`'s cause/underlying double-attribute is subtle** (`classify.go:28-39`). When `hasErrcode && err == e`, `cause` repeats the user-safe message; when there's a wrapping `fmt.Errorf` on top of a typed error, `cause` is the wrapper's `err.Error()` and `underlying` is the typed `e.cause.Error()`. The inline comment at L26-27 explains the optimization but not the three-state matrix. Extract a `causeAttr` helper or add an ASCII matrix comment.
+- **`low` — `Parse` returns non-validated `Code`** (`parse.go:11-18`). The comment warns callers to call `Code.Valid()`; both real callers do. Safer would be `Parse` itself rejecting non-canonical `Code`, with a `ParseLenient` escape hatch.
+- **`nitpick` — `reason.go` is 5 lines.** Could be folded into `codes_*.go` or `error.go`. Standalone is defensible (mirrors `category.go` for `Code`).
+- **`nitpick` — No dead code, no `TODO`/`FIXME` markers, every exported symbol carries an accurate doc comment.** Verified across all files.
+- **`nitpick` — Adapter import cycle is one-way and minimal.** `errnats` / `errhttp` / `errtest` each import only `pkg/errcode`; core has no adapter import. Clean.
+
+### Recommendations
+
+1. **`medium`** — Auto-derive `allReasons` via `go:generate` (walk the package AST for `Reason`-typed constants) or a reflection-based init test. Removes the dual-list maintenance and the "20th service" footgun.
+2. **`medium`** — Add a "Catalogs" section to `doc.go` describing the `codes_*.go` convention, the two flavors (per-service / cross-cutting), and the four-step add-a-reason checklist (currently only in `docs/error-handling.md`).
+3. **`low`** — Make `Parse` strict-by-default: reject envelopes with `!Code.Valid()`. Expose `ParseLenient` for cross-site fan-in.
+4. **`low`** — Replace integer literals in `category.go:30-49` with `http.StatusXxx`.
+5. **`low`** — Reduce `errnats` adapter surface to `Reply` + `ReplyQuiet` + (deliberately) `Marshal`, and document the latter two as Tier-3 in `doc.go`.
+6. **`low`** — Add a 1-line `// Adding a new category:` note in `category.go` pointing to the 3 places to keep in sync (`Code` const, `Valid()` switch, `HTTPStatus()` switch) — or fold those into one `var codeStatus = map[Code]int{…}` and derive `Valid()` from it.
+7. **`nitpick`** — In `classify.go:28-39`, extract a `causeAttr(err, e, hasErrcode)` helper or add a 3-line ASCII matrix comment.
+
+### Highlights worth preserving
+
+- `doc.go:1-63` gives the mental model in under a minute, including the "two types by design", leak guarantee, wrapping invariant, and the why behind the `*natsrouter.Context` method/func split.
+- Constructors `panic` early on programmer errors (`options.go:11-23, 49-50, 65-67`; `permanent.go:17-20`) — the right call at a library boundary.
+- The Tier-1/2/3 framing in `CLAUDE.md` plus semgrep enforcement (`docs/error-handling.md:269-278`) keeps most call sites one-line and uniform.
+- Every public symbol carries an accurate Go doc comment, and comments earn their place — they explain *why* (e.g. `classify.go:26-27`, `permanent.go:7-11`, `options.go:26-27`).
+
+---
+
