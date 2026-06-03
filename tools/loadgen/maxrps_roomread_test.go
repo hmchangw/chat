@@ -16,6 +16,7 @@ func TestBuildRoomReadInputs_MapsCollector(t *testing.T) {
 	c.RecordSample(RoomReadSample{Latency: 4 * time.Millisecond, At: time.Now()})
 	c.RecordSample(RoomReadSample{Latency: 6 * time.Millisecond, At: time.Now()})
 	c.RecordError(errClassTimeout, time.Millisecond)
+	c.RecordError(errClassReply, time.Millisecond)
 	c.RecordBadReply(time.Millisecond)
 	c.RecordSaturation()
 
@@ -23,8 +24,8 @@ func TestBuildRoomReadInputs_MapsCollector(t *testing.T) {
 
 	assert.Equal(t, 1000, in.TargetRPS)
 	assert.Equal(t, 30*time.Second, in.Hold)
-	assert.Equal(t, 2, in.FailedOps)    // 1 timeout + 1 bad reply
-	assert.Equal(t, 4, in.AttemptedOps) // 2 samples + 2 failed
+	assert.Equal(t, 3, in.FailedOps)    // 1 timeout + 1 reply + 1 bad reply
+	assert.Equal(t, 5, in.AttemptedOps) // 2 samples + 3 failed
 	assert.Equal(t, 1, in.Saturation)
 	assert.Empty(t, in.Pending, "synchronous RPC has no pending durables")
 	require.Len(t, in.Latencies, 1)

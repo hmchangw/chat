@@ -268,6 +268,7 @@ func runSeedRoomRead(ctx context.Context, cfg *config, preset string, seed int64
 	}
 	defer cleanup()
 	fixtures := BuildRoomReadFixtures(&p, seed, cfg.SiteID, time.Now().UTC())
+	// No SeedRoomKeys: the read path never decrypts, so no room keys are written.
 	if err := Seed(ctx, db, &fixtures); err != nil {
 		slog.Error("seed", "error", err)
 		return 1
@@ -290,6 +291,7 @@ func runTeardownRoomRead(ctx context.Context, cfg *config, preset string, seed i
 		return 1
 	}
 	defer cleanup()
+	// No TeardownRoomKeys: runSeedRoomRead writes no room keys, so there are none to remove.
 	if err := Teardown(ctx, db); err != nil {
 		slog.Error("teardown", "error", err)
 		return 1
