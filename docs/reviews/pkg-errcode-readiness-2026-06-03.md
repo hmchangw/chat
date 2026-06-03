@@ -245,3 +245,73 @@ No file exceeds 75 lines of production code. SRP holds throughout.
 
 ---
 
+## Chapter 6 — Consumer ergonomics
+
+**Score: 4.5 / 5**
+
+Among the strongest library APIs in the repo. A new contributor lands in `doc.go`, picks a named constructor, returns it, and the boundary adapter does everything else. The footguns that exist are either guarded by runtime panics, semgrep, or both. One real wire-contract gap and a handful of nitpicks keep this from a perfect 5.
+
+### Reasons declared backend-side vs frontend `REASON_COPY` coverage
+
+23 reasons declared across `pkg/errcode/codes_*.go`; 17 mapped in `chat-frontend/src/api/_transport/asyncJob.ts:94-112`.
+
+**Missing from `REASON_COPY` but emitted by backend:**
+
+| Reason | Source | Status |
+|---|---|---|
+| `non_channel_operation` (`RoomNonChannelOperation`) | `codes_room.go:23`; emitted at `room-service/helper.go:30, 31, 64`, `room-worker/handler.go:312` | **High** — actually emitted, no humanized copy |
+| `request_id_required` (`RequestIDRequired`) | `codes_platform.go:10`; emitted by `natsutil.RequireRequestID` on every strict path | **High** — actually emitted, no humanized copy |
+| `sso_token_expired`, `invalid_sso_token` | `codes_auth.go:5-6` | OK — intentional per TS comment (drives redirect) |
+| `invalid_request`, `invalid_nkey`, `missing_fields` | `codes_auth.go:7-9` | OK — auth form-validation, surfaced via own UX |
+
+Two client-facing reasons fall through to raw English on the client today.
+
+### Findings
+
+- **`high` — Catalog drift between Go reasons and TS `REASON_COPY` is not enforced.** `non_channel_operation` and `request_id_required` (see table above). The snake-case test (`codes_test.go:22-31`) and `docs/error-handling.md:230-236` step 5 ask contributors to update `client-api.md` and the TS map, but nothing fails CI when they forget.
+- **`high` — `docs/client-api.md:2186` says "one of 7 generic categories"; the closed set is 8.** `CodeUnavailable` (`category.go:13`) is in the catalog table at `docs/client-api.md:2209` but the prose count is stale. The frontend TS comment (`asyncJob.ts:33`) correctly reads "7+1". Minor doc bug, but the first paragraph a client integrator reads.
+- **`medium` — Boilerplate at raw-NATS call sites.** Every `room-service/handler.go` entry handler spends ~5 lines on `wrappedCtx` + double `errnats.Reply` pattern (e.g., `handler.go:126-139`, repeated at `:373, :389, :403, :466, :626, :713, :985, :1123, :1244, :1340, :1474, :1533`). ~75 lines of pure plumbing across one file. `pkg/natsrouter` solves this for `history-service` (one line per handler — see `messages.go:28-36`). Recommendation: migrate room-service to `natsrouter`.
+- **`medium` — `WithCause` panic vs the `Permanent(Internal(WithCause(ErrX)))` idiom.** `room-worker/handler.go:1240, 1885` does `permanent(errcode.Internal("room key absent", errcode.WithCause(errRoomKeyAbsent)))`. Safe today because `errRoomKeyAbsent` is a raw sentinel, but `room-service/helper.go:73` defines a same-named sentinel that IS an `*errcode.Error`. A new contributor reusing the wrong package's sentinel would trip `options.go:66`'s panic at runtime, in a JetStream handler, on a code path that only fires under cache miss. Semgrep catches the `WithCause(errcode.X(...))` literal but not `WithCause(somePkgLevelVar)` where the var is typed `*Error`.
+- **`medium` — `errnats.Marshal` is on the "specialist" tier but used in mainline code.** `message-gatekeeper/handler.go:75, 88, 103`. The doc could give it a first-class section: "When the reply target is computed (async-job pattern), use Marshal + publish; do NOT use Reply."
+- **`medium` — Two diverging ways to attach log values.** `errcode.WithLogValues(ctx, …)` (package func) for Gin/raw NATS, `c.WithLogValues(…)` (method) for natsrouter. Documented at `doc.go:52-58` and `error-handling.md:204-216`, but easy to confuse.
+- **`low` — `Parse` returns `(*Error, bool)` with no Code validation.** Documented at `parse.go:7-10`. Today only `inbox-worker` cross-site path uses it. Safe today; brittle if anyone uses Parse to reconstruct without the `Code.Valid()` check.
+- **`low` — No constructor for `request_id_required` on auth-service.** Strict path in `natsutil.RequireRequestID` covers NATS handlers; the equivalent HTTP path in `auth-service/middleware.go:18-30` runs mint-on-missing. Fine for auth (no dedup); a contributor adding a dedup-critical HTTP endpoint won't find a helper.
+- **`nitpick` — `errtest.Decode` returns `nil` on Fatalf path** (`errtest/assert.go:17`). Comment explains it's for recording mocks. Nil-check pattern in `AssertCode`/`AssertReason` (`assert.go:26, 38`) is non-obvious.
+- **`nitpick` — `errnats.Reply` swallows the message body on a marshal failure.** `reply.go:42` falls back to a hard-coded `"internal"` envelope (`reply.go:15`); drops the original `request_id` from the log. Low impact (marshal errors on `*Error` are essentially impossible).
+- **`nitpick` — `room-worker` defines local aliases `errPermanent` (`handler.go:36`) and `permanent(ec)` (`handler.go:130`).** Pattern works, but if four services each invent their own shim, the "use the named API" guidance fragments.
+
+### Adapter symmetry
+
+`errnats.Reply(ctx, msg, err)` / `errhttp.Write(ctx, c, err)` are perfectly symmetric: 1-line, identical signature shape, both classify+log+marshal. `natsrouter` handlers are zero-line (return the error). The asymmetric case is `errnats.Marshal` for the gatekeeper/async-job pattern — works but is filed as "Tier 3 specialist" while serving mainstream traffic.
+
+### Discoverability
+
+`doc.go` is a strong entry point but does NOT link to `docs/error-handling.md` or `docs/client-api.md §6`. A contributor landing via `go doc` won't discover them.
+
+### Footguns — what the package catches vs trusts
+
+| Footgun | Detection |
+|---|---|
+| `WithCause(otherErrcodeErr)` | runtime panic (`options.go:66`) + semgrep |
+| Multi-`%w` two errcode errors | semgrep only |
+| Inline `Reason("foo")` outside catalog | semgrep only |
+| `errcode.New(CodeBadRequest, …)` instead of `BadRequest(…)` | semgrep WARNING only |
+| `New` with non-canonical Code | runtime panic (`options.go:11`) |
+| Empty message | runtime panic (`options.go:16`) |
+| `WithMetadata` odd-len | runtime panic (`options.go:48`) |
+| log-then-reply double-log | **trust contributor** (doc warns; nothing detects) |
+| New `Reason` without TS REASON_COPY | **trust contributor** (no test) |
+| Frontend reading raw English on a missing reason | **silently degrades** to `err.message` |
+
+### Recommendations
+
+1. **`high`** — Add a TS↔Go catalog parity check. A small Go test that reads `chat-frontend/src/api/_transport/asyncJob.ts` `REASON_COPY` keys and diffs against `allReasons` (excluding the explicit auth allowlist of redirect-/form-only reasons). Add `non_channel_operation` and decide whether `request_id_required` deserves humanized copy or stays raw.
+2. **`high`** — Fix the "7 generic categories" → "8" count in `docs/client-api.md:2186`.
+3. **`medium`** — Migrate `room-service` to `pkg/natsrouter` so `wrappedCtx` and the double `errnats.Reply` collapse to the one-line-per-handler shape `history-service` enjoys. Deletes ~75 boilerplate lines.
+4. **`medium`** — Expose `errnats.Publish(ctx, nc, subject, err)` (or document the gatekeeper pattern as a first-class tier-2 adapter in CLAUDE.md).
+5. **`medium`** — Have `doc.go` link to `docs/error-handling.md` and `docs/client-api.md §6` explicitly so `go doc errcode` surfaces them.
+6. **`low`** — Add `errtest.AssertMetadata(t, data, k, v)`. Trivial; closes the last common assertion.
+7. **`low`** — Drop the local `errPermanent` / `permanent(...)` aliases in `room-worker/handler.go:36, 130` in favor of the package API; document a "no service-local shim" rule in CLAUDE.md before a second service copies the pattern.
+
+---
+
