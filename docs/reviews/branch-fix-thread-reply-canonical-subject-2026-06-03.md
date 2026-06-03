@@ -130,3 +130,44 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `critical` — `handler.go:245–246` — The error log for a failed `OutboxThreadSubscriptionUpserted` handler references the wrong field. The log emits `slog.String("account", event.RoomID)` (using `RoomID` for the `account` key). This silently records the room ID in place of the account, making the log useless for debugging.
 
   **Required fix:** `slog.String("account", event.Account)`
+
+---
+
+## Go Expert
+
+**Scope:** Full branch diff reviewed for Go idioms, naming, error wrapping, struct tags, and CLAUDE.md Section 3 compliance.
+
+### Critical
+
+- `critical` — `pkg/model/event.go` — **`ThreadMetadataUpdatedEvent` is missing all `bson` tags.** CLAUDE.md Section 3 mandates: "All model structs get both `json` and `bson` tags." Every field — `Type`, `RoomID`, `SiteID`, `ParentMessageID`, `NewTCount`, `Action`, `ReplyMessageID`, `Timestamp` — has only a `json` tag. Any MongoDB round-trip (outbox serialisation, replay, storage) will silently lose all field values. Fix required before merge.
+
+  ```go
+  type ThreadMetadataUpdatedEvent struct {
+      Type            RoomEventType `json:"type"            bson:"type"`
+      RoomID          string        `json:"roomId"          bson:"roomId"`
+      SiteID          string        `json:"siteId"          bson:"siteId"`
+      ParentMessageID string        `json:"parentMessageId" bson:"parentMessageId"`
+      NewTCount       int           `json:"newTcount"       bson:"newTcount"`
+      Action          ThreadAction  `json:"action"          bson:"action"`
+      ReplyMessageID  string        `json:"replyMessageId"  bson:"replyMessageId"`
+      Timestamp       int64         `json:"timestamp"       bson:"timestamp"`
+  }
+  ```
+
+### High
+
+- `high` — `broadcast-worker/handler.go:79,111,191,200,245,253,261,430,476` — **12 bare `return err` statements** violate CLAUDE.md Section 3 ("Always wrap with context: `fmt.Errorf("short description: %w", err)`"). Examples of required fixes:
+  - Line 79: `return fmt.Errorf("channel thread fan-out for parent %s: %w", parentMsgID, err)`
+  - Line 111: `return fmt.Errorf("encrypt thread created event for parent %s: %w", parentMsgID, err)`
+  - Line 191: `return fmt.Errorf("fan-out thread updated event for parent %s: %w", parentMsgID, err)`
+  - Line 245: `return fmt.Errorf("fan-out thread deleted event for parent %s: %w", parentMsgID, err)`
+  - Line 430: `return fmt.Errorf("get current room key for room %s: %w", roomID, err)`
+  - Line 476: `return fmt.Errorf("encrypt room event for room %s: %w", roomID, err)`
+
+  The pattern is consistent: whenever a helper call's error is returned directly, it needs wrapping to locate the failure in logs.
+
+### Low / nitpick
+
+- `low` — `broadcast-worker/handler.go` — `threadFanOutAccounts` iterates a `map[string]struct{}` and appends to a `[]string`. The helper is correct but a comment noting why duplicate subscribers are already excluded (the map key uniqueness guarantee) would aid future readers.
+
+- `nitpick` — `pkg/model/event.go` — `ThreadAction` type defined adjacent to `RoomEventType` constants is fine idiomatically, but the `ThreadActionReplyAdded` / `ThreadActionReplyDeleted` constants are separated from the `ThreadMetadataUpdatedEvent` struct they exclusively serve. Co-locating them (or grouping with a blank-line separator + comment) would improve discoverability.
