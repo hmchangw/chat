@@ -147,12 +147,19 @@ spec, CJK is judged on recall@10, so the substantive quality bar is met.
 
 ## 2. Performance / loadgen harness (`tools/loadgen search-sustained`)
 
-> **Status: NOT executed in the build sandbox.** This harness needs the full
-> services stack (`search-service` + `search-sync-worker` + Mongo + Cassandra +
-> NATS + Vault/atrest). The sandbox's Docker (VFS driver) had only
-> `elasticsearch:8.17.0`, `nats:2.11-alpine`, and `valkey:8.1.7-alpine` cached;
-> `mongo:8.2.9` and `cassandra:5` were not pullable (Docker Hub rate-limit). The
-> commands below are for **your real stack**.
+> **Status: partially exercised in the build sandbox; full A/B/C benchmark
+> deferred to a real stack.** This harness needs the full services stack
+> (`search-service` + `search-sync-worker` + Mongo + Cassandra + NATS +
+> Vault/atrest). Update (2026-06-03 re-run): `mongo:8.2.9` and `cassandra:5`
+> **are now pullable** and were brought up **healthy** alongside NATS, Valkey,
+> and Elasticsearch — the entire data tier stands up, and both
+> `search-service` and `search-sync-worker` **build cleanly** (`make build`). The
+> remaining blocker is **not** image availability but the sandbox's VFS disk
+> ceiling: with no copy-on-write, the data tier already sits at ~98% disk, leaving
+> no headroom to also stand up the service images plus the enc-path
+> Vault/auth-callout/seed pipeline without tripping Elasticsearch's disk
+> low-watermark (see §3). The A/B/C latency comparison is therefore still a
+> **real-stack** activity; the commands below are ready to run there.
 
 ### 2.1 What it does
 
@@ -221,6 +228,17 @@ Seed a corpus so there is something to search (history/messages fixtures). The
 fixtures from the matching `history-*` preset, then publishes search RPCs; the
 indexed messages come from your seeded stack (e.g. `loadgen history-*` seeding or
 a normal message run feeding `search-sync-worker`).
+
+> **Seed content is searchable by construction.** The `history-*` seeder draws
+> message bodies from a deterministic multilingual vocabulary
+> (`tools/loadgen/searchcontent.go`) that **embeds every term in the
+> `search-sustained` query pool** (English single tokens + phrases and CJK terms).
+> Earlier the seeder emitted random alphanumeric filler, so every benchmark query
+> matched **zero** documents and arms A/B never exercised the result-decrypt path
+> — the latency numbers would have been meaningless. With the vocabulary seeder,
+> a seeded corpus is guaranteed to contain documents each query pool term hits, so
+> the measured latency reflects real scoring + (for A/B) decrypt work. Coverage is
+> enforced by `TestSearchableContent_CoversQueryPool`.
 
 ### 2.3 Run one arm at a time
 
@@ -452,7 +470,8 @@ rest, searchable in motion.
 | Item | Status |
 |---|---|
 | **Quality harness** (`tools/searchquality`) against real `elasticsearch:8.17.0` | **RAN.** Produced the committed `tools/searchquality/sample-report.md`. English/HTML/mixed PASS; CJK shows recall@10 = 1.0 with RBO/Jaccard = 0 (documented §15 CJK divergence, not a defect). |
-| **Performance harness** (`loadgen search-sustained`, arms C/A/B) | **DEFERRED to your stack.** Not runnable in the build sandbox: `mongo:8.2.9` / `cassandra:5` images were not pullable (Docker Hub rate-limit on the VFS host), so the full services stack (search-service + search-sync-worker + Mongo + Cassandra + Vault) could not be stood up. Commands in §2 are ready to run on a real stack. |
+| **Performance harness** (`loadgen search-sustained`, arms C/A/B) | **PARTIALLY exercised; full A/B/C benchmark DEFERRED to your stack.** 2026-06-03 re-run: `mongo:8.2.9` + `cassandra:5` now pull and run **healthy** (with NATS + Valkey + ES the full data tier stands up), and `search-service` / `search-sync-worker` **build cleanly** on the host. The remaining blocker is the VFS disk ceiling (~98% with the data tier alone — no room for the service images + Vault/auth/seed pipeline without tripping the ES disk watermark), **not** image availability. Commands in §2 are ready to run on a real stack. |
+| **Load-test seed content** (`tools/loadgen/searchcontent.go`) | **FIXED + unit-tested.** Seeded message bodies now come from a deterministic multilingual vocabulary embedding the full query pool, so benchmark searches return real hits (arms A/B exercise decrypt) instead of zero-result latency. Previously random alphanumeric filler. |
 | **Kibana / ES "encrypted-yet-searchable" demo** | **DEFERRED to your stack** (needs the enc index from a live `search-sync-worker`). Procedure documented in §3. |
 
 The quality harness needs only Elasticsearch, which is why it produced a real

@@ -368,7 +368,7 @@ func buildRoomMessages(p *HistoryPreset, roomID string, members []model.User, no
 			SenderID:      sender.ID,
 			SenderAccount: sender.Account,
 			SenderEngName: sender.EngName,
-			Content:       deterministicContent(contentR, p.ContentBytes),
+			Content:       searchableContent(contentR, p.ContentBytes),
 			CreatedAt:     top.createdAt,
 		}
 		if threadSet[i] {
@@ -385,7 +385,7 @@ func buildRoomMessages(p *HistoryPreset, roomID string, members []model.User, no
 					SenderID:       replySender.ID,
 					SenderAccount:  replySender.Account,
 					SenderEngName:  replySender.EngName,
-					Content:        deterministicContent(contentR, p.ContentBytes),
+					Content:        searchableContent(contentR, p.ContentBytes),
 					CreatedAt:      replyAt,
 					ThreadRoomID:   pm.ThreadRoomID,
 					ThreadParentID: msgID,
@@ -396,18 +396,4 @@ func buildRoomMessages(p *HistoryPreset, roomID string, members []model.User, no
 		}
 	}
 	return out
-}
-
-// deterministicContent fills a fixed-size string with deterministic alphanum
-// bytes from r. Avoids non-printable bytes so logs stay readable.
-func deterministicContent(r *rand.Rand, size int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	if size <= 0 {
-		return ""
-	}
-	buf := make([]byte, size)
-	for i := range buf {
-		buf[i] = alphabet[r.Intn(len(alphabet))]
-	}
-	return string(buf)
 }
