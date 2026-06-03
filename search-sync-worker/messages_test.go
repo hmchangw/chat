@@ -461,6 +461,75 @@ func TestMessageCollection_BuildAction_ValidationError_IsPermanent(t *testing.T)
 	assert.True(t, permanent, "validation failures are poison → ack-drop")
 }
 
+func TestMessageCollection_BuildAction_PlaintextOnly(t *testing.T) {
+	// Default collection: plaintext on, enc off → exactly one plaintext action.
+	coll := newMessageCollection("msgs-v1", time.Time{})
+	data := mkMsgEvent(model.EventCreated, "m1", "hello world", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC))
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, "msgs-v1-2026-01", actions[0].Index, "plaintext-only emits the plaintext index action")
+}
+
+func TestMessageCollection_BuildAction_EncOnly(t *testing.T) {
+	// Plaintext write disabled, enc enabled → exactly one enc action.
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	coll.plaintextEnabled = false
+	createdAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	data := mkMsgEvent(model.EventCreated, "m1", "hello world", createdAt)
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "enc-only emits a single enc action")
+	assert.Equal(t, "enc-msgs-v1-2026-01", actions[0].Index)
+	assert.Equal(t, "m1", actions[0].DocID)
+
+	var doc EncMessageDoc
+	require.NoError(t, json.Unmarshal(actions[0].Doc, &doc))
+	assert.NotEmpty(t, doc.ContentBlind)
+	assert.Equal(t, "v1", doc.BlindKeyVersion)
+}
+
+func TestMessageCollection_BuildAction_EncOnly_Deleted(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	coll.plaintextEnabled = false
+	createdAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	data := mkMsgEvent(model.EventDeleted, "m1", "", createdAt)
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "enc-only delete emits a single enc delete action")
+	assert.Equal(t, searchengine.ActionDelete, actions[0].Action)
+	assert.Equal(t, "enc-msgs-v1-2026-01", actions[0].Index)
+}
+
+func TestMessageCollection_BuildAction_Both(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	assert.True(t, coll.plaintextEnabled, "plaintext defaults on")
+	createdAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	data := mkMsgEvent(model.EventCreated, "m1", "hello world", createdAt)
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 2, "dual-write emits plaintext + enc actions")
+	assert.Equal(t, "msgs-v1-2026-01", actions[0].Index)
+	assert.Equal(t, "enc-msgs-v1-2026-01", actions[1].Index)
+}
+
+func TestMessageCollection_TemplateBody_PlaintextGate(t *testing.T) {
+	// Plaintext on (default): primary template body is present.
+	on := newMessageCollection("msgs-v1", time.Time{})
+	assert.NotNil(t, on.TemplateBody(), "plaintext-enabled collection emits its primary template")
+	assert.Equal(t, "msgs_template", on.TemplateName())
+
+	// Plaintext off: primary template body is nil so main skips upserting a
+	// template for an index it no longer writes. TemplateName is unchanged.
+	off := newMessageCollection("msgs-v1", time.Time{})
+	off.plaintextEnabled = false
+	assert.Nil(t, off.TemplateBody(), "plaintext-disabled collection emits no primary template")
+}
+
 func TestMessageCollection_AuxTemplates(t *testing.T) {
 	off := newMessageCollection("msgs-v1", time.Time{})
 	assert.Empty(t, off.AuxTemplates())

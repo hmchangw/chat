@@ -99,6 +99,14 @@ type config struct {
 	BlindKey          string `env:"BLINDIDX_KEY"         envDefault:""`
 	BlindKeyVersion   string `env:"BLINDIDX_KEY_VERSION" envDefault:""`
 
+	// PlaintextIndexEnabled gates the plaintext message-index write. Defaults
+	// true so production keeps writing the plaintext index until an explicit
+	// ops cutover; once the encrypted index is primary it can be set false to
+	// leave only the encrypted index. At least one of PlaintextIndexEnabled /
+	// EncEnabled must be true (validateIndexWrites enforces this at startup) —
+	// with both off a message would produce zero index actions.
+	PlaintextIndexEnabled bool `env:"PLAINTEXT_INDEX_ENABLED" envDefault:"true"`
+
 	Atrest atrest.Config      // ATREST_*
 	Vault  atrest.VaultConfig // VAULT_* / ATREST_VAULT_*
 	Mongo  mongoConfig        `envPrefix:""`
@@ -144,6 +152,18 @@ func buildEncOptions(cfg *config) (encOptions, error) {
 		keyVersion:  cfg.BlindKeyVersion,
 		hasher:      hasher,
 	}, nil
+}
+
+// validateIndexWrites rejects a config that disables every message-index write.
+// The plaintext write (PLAINTEXT_INDEX_ENABLED) and the encrypted write
+// (ENC_ENABLED) are independent toggles; with both off the message collection
+// would emit zero index actions per message and silently drop them. Fail fast
+// at startup instead.
+func validateIndexWrites(cfg *config) error {
+	if !cfg.PlaintextIndexEnabled && !cfg.EncEnabled {
+		return fmt.Errorf("PLAINTEXT_INDEX_ENABLED and ENC_ENABLED are both false: at least one message-index write must be enabled")
+	}
+	return nil
 }
 
 func main() {
@@ -213,6 +233,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := validateIndexWrites(&cfg); err != nil {
+		slog.Error("invalid index-write config", "error", err)
+		os.Exit(1)
+	}
+
 	// Only when enc is enabled do we connect Mongo (DEK store) and Vault and
 	// build the cipher — mirrors message-worker/main.go. When disabled,
 	// mongoClient stays nil and nothing new connects.
@@ -237,8 +262,14 @@ func main() {
 		slog.Info("encrypted dual-write enabled", "encMsgPrefix", encOpts.indexPrefix, "blindKeyVersion", encOpts.keyVersion)
 	}
 
+	msgColl := newMessageCollectionEnc(cfg.MsgIndexPrefix, syncMessagesFrom, encOpts)
+	// Thread the PLAINTEXT_INDEX_ENABLED gate in. Post-cutover this is set
+	// false so the message collection emits (and templates) only the encrypted
+	// index; validateIndexWrites above guarantees enc is on when it's off.
+	msgColl.plaintextEnabled = cfg.PlaintextIndexEnabled
+
 	collections := []Collection{
-		newMessageCollectionEnc(cfg.MsgIndexPrefix, syncMessagesFrom, encOpts),
+		msgColl,
 		newSpotlightCollection(cfg.SpotlightIndex),
 		newUserRoomCollection(cfg.UserRoomIndex),
 	}

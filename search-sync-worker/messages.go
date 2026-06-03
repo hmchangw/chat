@@ -49,11 +49,18 @@ type encOptions struct {
 type messageCollection struct {
 	indexPrefix string
 	syncFrom    time.Time
-	enc         encOptions
+	// plaintextEnabled gates the plaintext-index write (PLAINTEXT_INDEX_ENABLED).
+	// Defaults true so production keeps the plaintext index live until an
+	// explicit ops cutover. Post-cutover it's set false, leaving only the
+	// encrypted index. At least one of plaintextEnabled / enc.enabled must be
+	// true — main validates this at startup so a message never produces zero
+	// index actions.
+	plaintextEnabled bool
+	enc              encOptions
 }
 
 func newMessageCollection(indexPrefix string, syncFrom time.Time) *messageCollection {
-	return &messageCollection{indexPrefix: indexPrefix, syncFrom: syncFrom}
+	return &messageCollection{indexPrefix: indexPrefix, syncFrom: syncFrom, plaintextEnabled: true}
 }
 
 // newMessageCollectionEnc is newMessageCollection plus encrypted dual-write
@@ -86,7 +93,16 @@ func (c *messageCollection) TemplateName() string {
 	return fmt.Sprintf("%s_template", searchindex.StripVersionBase(c.indexPrefix))
 }
 
+// TemplateBody returns the plaintext message index template, or nil when the
+// plaintext write is disabled (PLAINTEXT_INDEX_ENABLED=false). Returning nil
+// makes main's template-upsert loop skip the primary template for THIS
+// collection only — spotlight/user_room return their own bodies and are
+// unaffected. We don't create or maintain a template for an index we no longer
+// write to.
 func (c *messageCollection) TemplateBody() json.RawMessage {
+	if !c.plaintextEnabled {
+		return nil
+	}
 	return messageTemplateBody(c.indexPrefix)
 }
 
@@ -122,7 +138,10 @@ func (c *messageCollection) BuildAction(ctx context.Context, data []byte) ([]sea
 		return nil, nil
 	}
 
-	actions := []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}
+	actions := make([]searchengine.BulkAction, 0, 2)
+	if c.plaintextEnabled {
+		actions = append(actions, buildMessageAction(&evt, c.indexPrefix))
+	}
 	if c.enc.enabled {
 		encAction, err := c.buildEncAction(ctx, &evt)
 		if err != nil {

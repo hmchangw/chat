@@ -97,3 +97,30 @@ func TestBuildEncOptions_ValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateIndexWrites(t *testing.T) {
+	tests := []struct {
+		name        string
+		plaintextOn bool
+		encOn       bool
+		wantErr     bool
+	}{
+		{"plaintext only (default)", true, false, false},
+		{"enc only", false, true, false},
+		{"both", true, true, false},
+		{"neither — zero index actions per message", false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIndexWrites(&config{
+				PlaintextIndexEnabled: tt.plaintextOn,
+				EncEnabled:            tt.encOn,
+			})
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
