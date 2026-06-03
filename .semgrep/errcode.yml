@@ -34,6 +34,11 @@ rules:
         # doc.go intentionally includes a "forbidden" example in a comment that
         # the regex-based pattern matches even though it's only documentation.
         - "**/pkg/errcode/**"
+        # pkg/atrest/** does not import errcode; its sentinels (ErrAuthFailed,
+        # ErrPayloadMalformed) are plain errors.New strings. The multi-%w idiom
+        # there joins a sentinel with the underlying crypto/json error so
+        # errors.Is works for both — there is no errcode error in the chain.
+        - "**/pkg/atrest/**"
         - "**/*_test.go"
     patterns:
       - pattern-regex: 'fmt\.Errorf\([^)]*%w[^)]*%w'
