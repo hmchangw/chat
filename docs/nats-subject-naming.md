@@ -128,24 +128,10 @@ All request subjects fall under the user's publish namespace. Responses are deli
 | Subject | Responder (Queue Group) | Purpose |
 |---------|------------------------|---------|
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` | history-service | Fetch message history for a room |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get` | history-service | Fetch a single message by ID |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread` | history-service | Fetch thread replies |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit` | history-service | Edit a message |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete` | history-service | Soft-delete a message |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pin` | history-service | Pin a message |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.unpin` | history-service | Unpin a message |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pinned.list` | history-service | List a room's pinned messages |
-| `chat.user.{account}.request.room.{roomID}.{siteID}.key.get` | room-service | On-demand room key fetch (client falls back here when the cached key is stale/missing) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` | room-service | Invite a member to a room |
 | `chat.user.{account}.request.rooms.create` | room-service | Create a new room |
 | `chat.user.{account}.request.rooms.list` | room-service | List user's rooms |
 | `chat.user.{account}.request.rooms.get.{roomID}` | room-service | Get room details by ID |
-| `chat.user.{account}.request.search.{siteID}.messages` | search-service | Full-text search over messages |
-| `chat.user.{account}.request.search.{siteID}.rooms` | search-service | Search over the user's rooms |
-| `chat.user.{account}.request.search.{siteID}.apps` | search-service | Search over installed apps |
-| `chat.user.{account}.request.search.{siteID}.users` | search-service | Search over directory users |
-
-Search subjects embed `{siteID}` so requests route through the NATS supercluster to the search-service running on that specific site — see `pkg/subject.SearchMessages` and friends.
 
 ### Reconnect Flow
 
@@ -227,22 +213,14 @@ All client publishes — message sends, member invites, room CRUD requests, typi
 | `UserMsgStream(account)` | `chat.user.{account}.stream.msg` |
 | `MemberInvite(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.member.invite` |
 | `MsgHistory(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` |
-| `MsgThread(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread` |
-| `RoomKeyGet(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.key.get` |
 | `SubscriptionUpdate(account)` | `chat.user.{account}.event.subscription.update` |
 | `RoomMetadataChanged(account)` | `chat.user.{account}.event.room.metadata.update` |
 | `Notification(account)` | `chat.user.{account}.notification` |
 | `RoomsCreate(account)` | `chat.user.{account}.request.rooms.create` |
 | `RoomsList(account)` | `chat.user.{account}.request.rooms.list` |
 | `RoomsGet(account, roomID)` | `chat.user.{account}.request.rooms.get.{roomID}` |
-| `SearchMessages(account, siteID)` | `chat.user.{account}.request.search.{siteID}.messages` |
-| `SearchRooms(account, siteID)` | `chat.user.{account}.request.search.{siteID}.rooms` |
-| `SearchApps(account, siteID)` | `chat.user.{account}.request.search.{siteID}.apps` |
-| `SearchUsers(account, siteID)` | `chat.user.{account}.request.search.{siteID}.users` |
 | `Outbox(siteID, destSiteID, eventType)` | `outbox.{siteID}.to.{destSiteID}.{eventType}` |
 | `Fanout(siteID, roomID)` | `fanout.{siteID}.{roomID}` |
-
-The natsrouter pattern variants (`MsgEditPattern`, `MsgDeletePattern`, `MsgPinPattern`, `MsgUnpinPattern`, `MsgPinnedListPattern`, `MsgGetPattern`, `MsgThreadPattern`, `MsgHistoryPattern`, `MsgNextPattern`, `MsgSurroundingPattern`, `SearchMessagesPattern`, `SearchRoomsPattern`, `SearchAppsPattern`, `SearchUsersPattern`) substitute `{account}` / `{roomID}` for natsrouter's named-token extraction.
 
 ### New Builders (to be added)
 
@@ -260,8 +238,6 @@ The natsrouter pattern variants (`MsgEditPattern`, `MsgDeletePattern`, `MsgPinPa
 | `MsgSendWildcard(siteID)` | `chat.user.*.room.*.{siteID}.msg.send` | MESSAGES stream |
 | `MemberInviteWildcard(siteID)` | `chat.user.*.request.room.*.{siteID}.member.>` | ROOMS stream, room-service |
 | `MsgHistoryWildcard(siteID)` | `chat.user.*.request.room.*.{siteID}.msg.history` | history-service |
-| `MsgThreadWildcard(siteID)` | `chat.user.*.request.room.*.{siteID}.msg.thread` | history-service |
-| `RoomKeyGetWildcard(siteID)` | `chat.user.*.request.room.*.{siteID}.key.get` | room-service |
 | `RoomsCreateWildcard()` | `chat.user.*.request.rooms.create` | room-service |
 | `RoomsListWildcard()` | `chat.user.*.request.rooms.list` | room-service |
 | `RoomsGetWildcard()` | `chat.user.*.request.rooms.get.*` | room-service |
