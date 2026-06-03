@@ -37,3 +37,20 @@ func TestBuildHistoryInputs(t *testing.T) {
 	assert.Len(t, in.Latencies[1].Samples, 10)
 	assert.Empty(t, in.Pending) // history has no consumer queue
 }
+
+func TestBuildHistoryInputs_PopulatesEmitUnderrun(t *testing.T) {
+	c := NewHistoryCollector()
+	c.RecordUnderrun(7)
+	c.RecordUnderrun(3)
+	in := buildHistoryInputs(2000, 30*time.Second, c)
+	assert.Equal(t, 10, in.EmitUnderrun)
+}
+
+func TestHistoryCollector_Underrun(t *testing.T) {
+	c := NewHistoryCollector()
+	assert.Equal(t, 0, c.UnderrunCount())
+	c.RecordUnderrun(5)
+	c.RecordUnderrun(0) // zero is a no-op tick, must not change the tally
+	c.RecordUnderrun(4)
+	assert.Equal(t, 9, c.UnderrunCount())
+}

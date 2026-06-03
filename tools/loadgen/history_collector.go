@@ -44,6 +44,7 @@ type HistoryCollector struct {
 	errors          map[HistoryEndpoint]map[errClass]int
 	noThreadParents int
 	saturation      int
+	underrun        int
 }
 
 // NewHistoryCollector returns an empty collector.
@@ -102,6 +103,24 @@ func (c *HistoryCollector) RecordSaturation() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.saturation++
+}
+
+// RecordUnderrun adds n events that the pacer could not release on schedule
+// (the load box fell behind the target cadence). n==0 ticks are no-ops.
+func (c *HistoryCollector) RecordUnderrun(n int) {
+	if n <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.underrun += n
+}
+
+// UnderrunCount returns the total emit-underrun events.
+func (c *HistoryCollector) UnderrunCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.underrun
 }
 
 // HistorySamples returns a defensive copy of the LoadHistory sample tape.

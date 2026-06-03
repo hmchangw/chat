@@ -218,29 +218,48 @@ func NewHistoryGenerator(cfg *HistoryGeneratorConfig, seed int64) *HistoryGenera
 	}
 }
 
-// Run drives the open-loop publisher until ctx cancels. Mirrors Generator.Run's
-// shape so operators experience consistent semantics across workloads.
+// Run drives the open-loop requester until ctx cancels. Mirrors Generator.Run's
+// shape so operators experience consistent semantics across workloads:
+// MaxInFlight > 0 drives the batched pacer (runPaced); MaxInFlight == 0 keeps
+// the legacy serial-on-ticker path for bisection (runSerial).
 func (g *HistoryGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
 		return fmt.Errorf("rate must be > 0")
 	}
+	if g.cfg.MaxInFlight <= 0 {
+		return g.runSerial(ctx)
+	}
+	return g.runPaced(ctx)
+}
+
+// runSerial issues one request per tick on the ticker goroutine. Legacy path
+// (MaxInFlight == 0): does not batch and will not ramp past the single-ticker
+// ceiling — retained for bisection, never for real load runs.
+func (g *HistoryGenerator) runSerial(ctx context.Context) error {
 	interval := time.Second / time.Duration(g.cfg.Rate)
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
-
-	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.requestOne(ctx)
-			}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+			g.requestOne(ctx)
 		}
 	}
+}
+
+// runPaced drives a coarse-tick batched pacer into a bounded worker pool, so
+// achieved RPS is not capped by single-ticker resolution. A full pool is
+// recorded as saturation (raise MaxInFlight); events the pacer could not release
+// on schedule are recorded as underrun (the load box could not keep up).
+func (g *HistoryGenerator) runPaced(ctx context.Context) error {
+	p := newPacer(g.cfg.Rate, time.Now())
+	tick := time.NewTicker(p.interval)
+	defer tick.Stop()
 
 	sem := make(chan struct{}, g.cfg.MaxInFlight)
 	var wg sync.WaitGroup
@@ -255,18 +274,22 @@ func (g *HistoryGenerator) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
+			emit, underrun := p.tick(time.Now())
+			g.cfg.Collector.RecordUnderrun(underrun)
+			for i := 0; i < emit; i++ {
+				select {
+				case sem <- struct{}{}:
+					wg.Add(1)
+					go func() {
+						defer func() {
+							<-sem
+							wg.Done()
+						}()
+						g.requestOne(ctx)
 					}()
-					g.requestOne(ctx)
-				}()
-			default:
-				g.cfg.Collector.RecordSaturation()
+				default:
+					g.cfg.Collector.RecordSaturation()
+				}
 			}
 		}
 	}

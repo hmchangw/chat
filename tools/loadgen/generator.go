@@ -82,31 +82,49 @@ func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
 const drainGracePeriod = 5 * time.Second
 
 // Run publishes at the configured rate until ctx is cancelled. When
-// MaxInFlight > 0, each tick dispatches the publish to a bounded
-// goroutine pool so the ticker stays punctual under load; saturation
-// (pool full when a tick fires) is recorded as a publish error with
-// reason="saturated" rather than silently dropping the tick.
+// MaxInFlight > 0 it drives a batched pacer (see runPaced); MaxInFlight == 0
+// keeps the legacy serial-on-ticker path for bisection (see runSerial).
 func (g *Generator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
 		return fmt.Errorf("rate must be > 0")
 	}
+	if g.cfg.MaxInFlight <= 0 {
+		return g.runSerial(ctx)
+	}
+	return g.runPaced(ctx)
+}
+
+// runSerial publishes one message per tick on the ticker goroutine. This is the
+// legacy path (MaxInFlight == 0): it does not batch and will not ramp past the
+// single-ticker resolution ceiling — a deliberate trade-off retained for
+// bisection, never for real load runs.
+func (g *Generator) runSerial(ctx context.Context) error {
 	interval := time.Second / time.Duration(g.cfg.Rate)
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
-
-	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.publishOne(ctx)
-			}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+			g.publishOne(ctx)
 		}
 	}
+}
+
+// runPaced drives a coarse-tick batched pacer into a bounded worker pool. The
+// pacer releases rate*interval events per tick (clamping the tick to a reliably
+// schedulable floor), so achieved RPS is not capped by single-ticker resolution.
+// Each released event is dispatched non-blocking: a full pool is recorded as
+// "saturated" (raise MaxInFlight); events the pacer could not release on
+// schedule are recorded as "underrun" (the load box could not keep up).
+func (g *Generator) runPaced(ctx context.Context) error {
+	p := newPacer(g.cfg.Rate, time.Now())
+	tick := time.NewTicker(p.interval)
+	defer tick.Stop()
 
 	sem := make(chan struct{}, g.cfg.MaxInFlight)
 	var wg sync.WaitGroup
@@ -121,18 +139,24 @@ func (g *Generator) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
+			emit, underrun := p.tick(time.Now())
+			if underrun > 0 {
+				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "underrun").Add(float64(underrun))
+			}
+			for i := 0; i < emit; i++ {
+				select {
+				case sem <- struct{}{}:
+					wg.Add(1)
+					go func() {
+						defer func() {
+							<-sem
+							wg.Done()
+						}()
+						g.publishOne(ctx)
 					}()
-					g.publishOne(ctx)
-				}()
-			default:
-				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
+				default:
+					g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
+				}
 			}
 		}
 	}
