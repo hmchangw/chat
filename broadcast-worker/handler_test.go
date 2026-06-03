@@ -1481,37 +1481,6 @@ func TestHandler_HandleThreadCreated_DMRoom(t *testing.T) {
 	}
 }
 
-func TestHandler_HandleMessage_EventThreadReplyDeleted_IsUnknownEvent(t *testing.T) {
-	// EventThreadReplyDeleted is never published by any service.
-	// It must be treated as an unknown event (default warning) and return nil
-	// without calling GetRoom.
-	ctrl := gomock.NewController(t)
-	store := NewMockStore(ctrl)
-	us := NewMockUserStore(ctrl)
-	pub := &mockPublisher{}
-	keyStore := NewMockRoomKeyProvider(ctrl)
-
-	newTCount := 3
-	evt := model.MessageEvent{
-		Event:  model.EventThreadReplyDeleted,
-		SiteID: "site-a",
-		Message: model.Message{
-			ID:                    "reply-1",
-			RoomID:                "room-1",
-			ThreadParentMessageID: "parent-1",
-		},
-		NewTCount: &newTCount,
-	}
-	data, _ := json.Marshal(evt)
-
-	// No store expectations: GetRoom must NOT be called for this dead event type.
-
-	h := NewHandler(store, us, pub, keyStore, false)
-	err := h.HandleMessage(context.Background(), data)
-
-	require.NoError(t, err)
-	assert.Empty(t, pub.records)
-}
 
 func TestHandler_ThreadCreated_TShow_FallsThroughToRoomBroadcast(t *testing.T) {
 	msgTime := time.Date(2026, 5, 28, 9, 0, 0, 0, time.UTC)

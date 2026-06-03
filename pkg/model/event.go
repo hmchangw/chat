@@ -8,11 +8,10 @@ import (
 type EventType string
 
 const (
-	EventCreated            EventType = "created"
-	EventUpdated            EventType = "updated"
-	EventDeleted            EventType = "deleted"
-	EventThreadReplyAdded   EventType = "thread_reply_added"
-	EventThreadReplyDeleted EventType = "thread_reply_deleted"
+	EventCreated          EventType = "created"
+	EventUpdated          EventType = "updated"
+	EventDeleted          EventType = "deleted"
+	EventThreadReplyAdded EventType = "thread_reply_added"
 )
 
 type MessageEvent struct {
@@ -21,7 +20,7 @@ type MessageEvent struct {
 	SiteID    string    `json:"siteId"`
 	Timestamp int64     `json:"timestamp" bson:"timestamp"`
 	// NewTCount is the authoritative post-CAS tcount of the parent message after a
-	// thread reply is added (EventThreadReplyAdded) or deleted (EventThreadReplyDeleted).
+	// thread reply is added (EventThreadReplyAdded) or deleted (EventDeleted with ThreadParentMessageID set).
 	// Nil for all other event types.
 	NewTCount *int `json:"newTcount,omitempty" bson:"newTcount,omitempty"`
 }

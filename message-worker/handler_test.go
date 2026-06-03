@@ -495,8 +495,8 @@ func TestHandler_ProcessMessage_ThreadReply_PublishesBadgeEvent(t *testing.T) {
 	)
 	require.NoError(t, h.processMessage(context.Background(), data))
 
-	assert.Equal(t, subject.MsgCanonicalThreadReply("site-a"), capturedSubj,
-		"badge event must be published to the thread reply subject")
+	assert.Equal(t, subject.MsgCanonicalCreated("site-a"), capturedSubj,
+		"badge event must be published to the canonical created subject")
 	var badgeEvt model.MessageEvent
 	require.NoError(t, json.Unmarshal(capturedData, &badgeEvt))
 	assert.Equal(t, model.EventThreadReplyAdded, badgeEvt.Event)
@@ -1866,7 +1866,7 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 		require.NoError(t, h.processMessage(context.Background(), threadData))
 
 		require.Equal(t, 1, publishCount, "exactly one publish call for thread reply event")
-		assert.Equal(t, "chat.msg.canonical.site-a.thread.reply", capturedSubj)
+		assert.Equal(t, "chat.msg.canonical.site-a.created", capturedSubj)
 		assert.Equal(t, "thread-reply-added:site-a:msg-reply", capturedMsgID)
 
 		var evt model.MessageEvent
@@ -1946,7 +1946,7 @@ func TestHandler_PublishThreadReplyEvent(t *testing.T) {
 	err := h.publishThreadReplyEvent(context.Background(), msg, 5)
 	require.NoError(t, err)
 
-	assert.Equal(t, "chat.msg.canonical.site-a.thread.reply", captured.subj)
+	assert.Equal(t, "chat.msg.canonical.site-a.created", captured.subj)
 	assert.Equal(t, "thread-reply-added:site-a:msg-2", captured.msgID)
 
 	var evt model.MessageEvent

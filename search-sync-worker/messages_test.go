@@ -167,7 +167,6 @@ func TestMessageCollection_BuildAction_SkipsBadgeEvents(t *testing.T) {
 		event model.EventType
 	}{
 		{name: "thread reply added", event: model.EventThreadReplyAdded},
-		{name: "thread reply deleted", event: model.EventThreadReplyDeleted},
 	}
 
 	coll := newMessageCollection("msgs-v1", time.Time{})

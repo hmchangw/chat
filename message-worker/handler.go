@@ -60,6 +60,13 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 
+	// Badge events published by this worker back onto .created are handled
+	// by broadcast-worker, not here. Skip them to avoid re-processing our
+	// own publishes as new messages.
+	if evt.Event == model.EventThreadReplyAdded {
+		return nil
+	}
+
 	resolved, err := mention.Resolve(ctx, evt.Message.Content, h.userStore.FindUsersByAccounts)
 	if err != nil {
 		return fmt.Errorf("resolve mentions: %w", err)
@@ -412,11 +419,11 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	return nil
 }
 
-// publishThreadReplyEvent publishes a MessageEvent to the MESSAGES_CANONICAL
-// JetStream stream via the thread reply subject so broadcast-worker can do
-// DM-aware routing of the reply-count badge update. The dedup ID is stable
-// across MESSAGES_CANONICAL redeliveries so JetStream stream-level dedup
-// absorbs duplicates within the dedup window.
+// publishThreadReplyEvent publishes an EventThreadReplyAdded badge event to
+// the MESSAGES_CANONICAL stream on the .created subject so broadcast-worker
+// can do DM-aware routing of the reply-count badge update. The dedup ID is
+// stable across redeliveries so JetStream stream-level dedup absorbs
+// duplicates within the dedup window.
 func (h *Handler) publishThreadReplyEvent(ctx context.Context, msg *model.Message, newTcount int) error {
 	evt := model.MessageEvent{
 		Event: model.EventThreadReplyAdded,
@@ -434,5 +441,5 @@ func (h *Handler) publishThreadReplyEvent(ctx context.Context, msg *model.Messag
 		return fmt.Errorf("marshal thread reply event: %w", err)
 	}
 	dedupID := fmt.Sprintf("thread-reply-added:%s:%s", h.siteID, msg.ID)
-	return h.publish(ctx, subject.MsgCanonicalThreadReply(h.siteID), data, dedupID)
+	return h.publish(ctx, subject.MsgCanonicalCreated(h.siteID), data, dedupID)
 }
