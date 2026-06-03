@@ -14,7 +14,8 @@ The PR delivered everything in this spec plus several additions discovered durin
 - **TShow=true thread-reply badge on delete**: when a `TShow=true` thread reply is deleted it flows through `handleDeleted` (normal room broadcast), bypassing `handleThreadDeleted`. `handleDeleted` detects `ThreadParentMessageID != ""` and publishes the tcount badge there, so the reply-count decrement reaches clients regardless of TShow.
 - **@-mention fan-out on delete**: `handleThreadDeleted` channel path parses @-mentions from the deleted message content so non-subscriber recipients who received the `EventCreated` (via mention fan-out) also receive the `EventDeleted`.
 - **`SetSubscriptionMentions` — DM/BotDM branch only**: `handleThreadCreated` sets the room-subscription mention flag for @-mentioned members *only on the DM/BotDM path*. The channel path deliberately does **not** call `SetSubscriptionMentions`: a `TShow=false` reply is invisible in the main channel feed, so a room-level mention badge would appear with no visible message to explain it. (Thread-level mention state for channel replies is handled upstream by message-worker via `MarkThreadSubscriptionMention`.)
-- **`channelThreadFanOut` helper**: extracted to avoid repeating the subscriber-query + dedup logic across all three channel-path handlers.
+- **`channelThreadFanOut` helper**: extracted to avoid repeating the follower-query + dedup logic across all three channel-path handlers. Uses `GetThreadFollowers` (a `FindOne` projection on `thread_rooms.replyAccounts`) instead of a `thread_subscriptions` cursor scan — same pattern as PR #237's `notification-worker`. The `siteID` parameter was dropped because broadcast-worker is a single-site service.
+- **Dead code removed**: `EventThreadReplyDeleted` (never published by any service) and `MsgCanonicalThreadReply` (non-standard subject replaced by routing badge events over `.created`) were both removed. Badge events (`EventThreadReplyAdded`) are routed over `chat.msg.canonical.{siteID}.created` with the event discriminator in the payload — consumers use `evt.Event == model.EventThreadReplyAdded` to distinguish them from real new messages.
 - **`evt.Timestamp` propagation**: `EditRoomEvent` and `DeleteRoomEvent` set `Timestamp` from `evt.Timestamp` (the canonical event's publish time), not from `time.Now()` at broadcast time. Using wall-clock time at broadcast would make the timestamp differ across redeliveries and lag behind the canonical timeline.
 - **`shouldUseThreadFanOut` rename** (was `isThreadReply`): the predicate encodes a routing decision (fan-out to thread subscribers vs. room broadcast), not a structural "is a thread reply" test — the new name makes that intent explicit.
 - **`buildEditRoomEvent` / `buildDeleteRoomEvent` helpers**: extracted to eliminate the duplicated 9-field struct literals that appeared independently in the non-thread and thread variants of each handler.
@@ -91,10 +92,12 @@ The routing check is placed at the top of each event handler method (`handleCrea
 One new method added to the `Store` interface in `store.go`:
 
 ```go
-ListThreadSubscriptions(ctx context.Context, parentMessageID, siteID string) ([]model.ThreadSubscription, error)
+GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error)
 ```
 
-Implemented in `store_mongo.go` against the existing `thread_subscriptions` collection, filtered by `parentMessageId` and `siteId`. The existing index on `(parentMessageId, userAccount)` covers this query — no new indexes required.
+Implemented in `store_mongo.go` against the `thread_rooms` collection. Uses a `FindOne` projection on `replyAccounts` — the field that message-worker populates with the parent author, replier, and @mentioned accounts on every reply. Returns an empty set (not an error) when no thread room exists yet. A single-field index on `parentMessageId` covers this query.
+
+This follows the same pattern introduced in PR #237 for notification-worker (`mongoThreadFollowers.Followers`). The `siteID` filter used by the old `ListThreadSubscriptions` is no longer needed — broadcast-worker is a single-site service and the `thread_rooms` collection is scoped to its own site's MongoDB.
 
 The `//go:generate mockgen` directive in `store.go` regenerates `mock_store_test.go` via `make generate`.
 
@@ -107,8 +110,8 @@ Three new unexported methods on the handler struct, mirroring the structure of t
 ### `handleThreadCreated` (channel path)
 
 1. Look up users — sender + mentioned accounts from the message payload (same user lookup as existing `handleCreated`).
-2. `channelThreadFanOut(parentMessageID, siteID, sender, mentions)` → query `ListThreadSubscriptions`, then build the fan-out set via `threadFanOutAccounts`:
-   - Union of thread subscriber accounts + mentioned accounts from the message payload.
+2. `channelThreadFanOut(parentMessageID, sender, mentions)` → query `GetThreadFollowers`, then build the fan-out set via `threadFanOutAccounts`:
+   - Union of `thread_rooms.replyAccounts` + mentioned accounts from the message payload.
    - Deduplicate using a `seen` map seeded with the sender's account (sender excluded).
    - **Bot accounts are excluded** (`isBot`), consistent with every other fan-out path (`publishMutation`, `publishDMEvents`).
 3. Build `ClientMessage` — same enrichment flow as existing created handler (sender display name, user IDs, etc.).
@@ -120,7 +123,7 @@ Message-worker and broadcast-worker consume `MESSAGES_CANONICAL` independently w
 ### `handleThreadUpdated` (channel path)
 
 1. Defensive `EditedAt`/`UpdatedAt` nil guard (mirrors `handleUpdated`).
-2. `channelThreadFanOut` → subscriber accounts (sender + bots excluded). Edits do not introduce new mentioned users, but the deleted/edited content is still parsed for @-mentions so the recipient set matches the original create fan-out.
+2. `channelThreadFanOut` → follower accounts from `replyAccounts` (sender + bots excluded). Edits do not introduce new mentioned users, but the deleted/edited content is still parsed for @-mentions so the recipient set matches the original create fan-out.
 3. Build the edit event via `buildEditRoomEvent` (timestamp from `evt.Timestamp`, not `time.Now()`).
 4. `publishToThreadAccounts` → publish to each subscriber; returns error on failure for redelivery.
 
@@ -139,11 +142,12 @@ All thread events are published to `subject.UserRoomEvent(account)` — the same
 
 | Error | Behavior |
 |-------|----------|
-| `ListThreadSubscriptions` fails | Log error, return error → JetStream redelivers the message |
+| `GetThreadFollowers` fails | Log error, return error → JetStream redelivers the message |
+| Thread room not found in `thread_rooms` | Returns empty set (not an error) — no recipients to fan out |
 | User lookup fails | Log warning, continue — sender display name falls back to the account string |
 | NATS publish fails (channel thread path, `publishToThreadAccounts`) | Log error and **return the error** on the first failure → JetStream redelivers. Thread per-user events must have the same delivery guarantee as channel room events; redelivery is safe because the upstream CAS increment is idempotent. |
 | NATS publish fails (DM/BotDM path, `publishDMEvents`/`publishMutation`) | Log error, continue to remaining members — partial delivery accepted (consistent with existing DM mutation handling). |
-| No thread subscribers found | Log at debug level, return nil — nothing to fan-out |
+| No thread followers found | Log at debug level, return nil — nothing to fan-out |
 
 ## Encryption
 
@@ -158,39 +162,39 @@ All tests follow TDD: tests written and confirmed failing before implementation 
 Table-driven tests for each new handler method:
 
 **`handleThreadCreated`:**
-- Thread reply with @mentioned user not yet a subscriber → mentioned user included in fan-out
-- Thread reply to existing thread with multiple subscribers → all receive the event
-- Mentioned user already a thread subscriber → deduped, not double-published
+- Thread reply with @mentioned user not yet a follower → mentioned user included in fan-out
+- Thread reply to existing thread with multiple followers → all receive the event
+- Mentioned user already a thread follower → deduped, not double-published
 - Sender is excluded from fan-out
 - `TShow=true` → falls through to room broadcast, thread handler not called
 - `GetRoomMeta` error → error returned, no publish
-- `ListThreadSubscriptions` error → error returned, no publish
+- `GetThreadFollowers` error → error returned, no publish
 - User lookup error → log warning, continue (sender display name falls back to account string)
-- No subscribers and no mentions → no publish, no error
+- No followers and no mentions → no publish, no error
 
 **`handleThreadUpdated`:**
-- All thread subscribers receive the edit event, sender excluded
-- Empty subscriber list → no publish, no error
+- All thread followers receive the edit event, sender excluded
+- Empty follower set → no publish, no error
 - `GetRoom` error → error returned, no publish
-- `ListThreadSubscriptions` error → error returned, no publish
+- `GetThreadFollowers` error → error returned, no publish
 - `TShow=true` → falls through to room broadcast, thread handler not called
 
 **`handleThreadDeleted`:**
-- All thread subscribers receive the delete event, sender excluded
-- Empty subscriber list → no publish, no error
+- All thread followers receive the delete event, sender excluded
+- Empty follower set → no publish, no error
 - `GetRoom` error → error returned, no publish
-- `ListThreadSubscriptions` error → error returned, no publish
+- `GetThreadFollowers` error → error returned, no publish
 - `TShow=true` → falls through to room broadcast, thread handler not called
 
 ### Mock Regeneration
 
-`make generate` must be run after the store interface change to regenerate `mock_store_test.go` with the `ListThreadSubscriptions` mock method.
+`make generate` must be run after the store interface change to regenerate `mock_store_test.go` with the `GetThreadFollowers` mock method.
 
 ## Commit Strategy
 
 Small, reviewable commits in this order:
 
-1. **Store** — add `ListThreadSubscriptions` to `Store`, implement in `store_mongo.go`, regenerate mocks, update all `NewMongoStore` call sites, add integration test.
+1. **Store** — add `GetThreadFollowers` to `Store`, implement in `store_mongo.go` against `thread_rooms.replyAccounts`, regenerate mocks, update all `NewMongoStore` call sites.
 2. **`handleThreadCreated`** — write failing tests, add routing gate to `handleCreated`, implement method, commit once green.
 3. **`handleThreadUpdated`** — write failing tests, add routing gate to `handleUpdated`, implement method, commit once green.
 4. **`handleThreadDeleted`** — write failing tests, add routing gate to `handleDeleted`, implement method, commit once green.
@@ -202,10 +206,10 @@ Each commit is independently compilable and does not break existing tests.
 
 | File | Change |
 |------|--------|
-| `broadcast-worker/store.go` | Add `ListThreadSubscriptions` to `Store` interface |
-| `broadcast-worker/store_mongo.go` | Implement `ListThreadSubscriptions` |
-| `broadcast-worker/main.go` | Pass `db.Collection("thread_subscriptions")` to `NewMongoStore` |
+| `broadcast-worker/store.go` | Add `GetThreadFollowers` to `Store` interface (reads `thread_rooms.replyAccounts`) |
+| `broadcast-worker/store_mongo.go` | Implement `GetThreadFollowers` via `FindOne` projection on `thread_rooms`; add `parentMessageId` index |
+| `broadcast-worker/main.go` | Pass `db.Collection("thread_rooms")` to `NewMongoStore` |
 | `broadcast-worker/mock_store_test.go` | Regenerated — do not edit manually |
-| `broadcast-worker/handler.go` | Add routing gate + three new thread handler methods |
+| `broadcast-worker/handler.go` | Add routing gate + three new thread handler methods; `channelThreadFanOut` drops `siteID` param |
 | `broadcast-worker/handler_test.go` | New table-driven tests for thread handler methods |
-| `broadcast-worker/integration_test.go` | Update `NewMongoStore` calls + integration test for `ListThreadSubscriptions` |
+| `broadcast-worker/integration_test.go` | Update `NewMongoStore` calls + integration test for thread fan-out |
