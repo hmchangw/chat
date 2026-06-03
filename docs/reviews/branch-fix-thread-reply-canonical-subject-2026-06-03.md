@@ -281,3 +281,22 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 ### Low
 
 - `low` — `room-service/handler.go` — `handleThreadRead` lacks an OTel span. Room-service is an HTTP+NATS hybrid; the NATS handlers already have spans in the existing code but the new thread-read handler was added without one.
+
+---
+
+## Prioritized Action List
+
+Items ordered by severity then impact ÷ effort.
+
+| # | Severity | Action | Location | Why |
+|---|----------|--------|----------|-----|
+| 1 | **critical** | Add `if evt.Event != model.EventCreated { return nil }` guard at top of `HandleMessage` | `notification-worker/handler.go:46` | Regression: every thread reply spams all room members with an empty push notification |
+| 2 | **critical** | Add `bson` tags to all fields of `ThreadMetadataUpdatedEvent` | `pkg/model/event.go` (ThreadMetadataUpdatedEvent struct) | Missing tags silently drop all fields on MongoDB round-trips (outbox replay) |
+| 3 | **critical** | Fix wrong-field log: `event.RoomID` → `event.Account` for `account` key | `inbox-worker/handler.go:245–246` | Error logs are unusable for debugging; account field always shows room ID |
+| 4 | **critical** | Do not publish canonical event when `incrementParentTcount` fails; return error instead | `message-worker/handler.go` | Publishes badge events with nil `NewTCount`; clients display stale badge |
+| 5 | **critical** | Add OTel spans + request-ID propagation to all new handler log lines across all 7 services | All new handlers (broadcast-worker, message-worker, history-service, notification-worker, inbox-worker, search-sync-worker, room-service) | Without request-ID all thread errors are invisible in filtered log queries |
+| 6 | **critical** | Investigate and fix N+1 NATS publish in `publishToThreadAccounts` (batch or use room-scoped subject) | `broadcast-worker/handler.go` (publishToThreadAccounts) | 200 followers = 200 sequential NATS publishes per event; latency and throughput issue |
+| 7 | **high** | Wrap all 12 bare `return err` statements with `fmt.Errorf("context: %w", err)` | `broadcast-worker/handler.go:79,111,191,200,245,253,261,430,476` | CLAUDE.md Section 3 hard rule; bare returns lose the call site in error chains |
+| 8 | **high** | Add nil check for `msg.UpdatedAt` before dereference in `handleThreadDeleted` | `broadcast-worker/handler.go:371–375` | Panic on malformed event; `handleThreadCreated` guards this, `handleThreadDeleted` does not |
+| 9 | **high** | Add unit test for `publishThreadMetadata` (happy path + publish failure + zero tcount) | `broadcast-worker/handler_test.go` | TDD violation: new function with no test; CLAUDE.md Section 4 |
+| 10 | **high** | Add unit test for `usersByAccount` helper | `room-service/handler_test.go` | TDD violation: non-trivial data-transformation helper with no test |
