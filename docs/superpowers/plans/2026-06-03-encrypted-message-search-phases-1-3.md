@@ -367,12 +367,9 @@ func buildEncDocument(evt *model.MessageEvent, contentBlind string, contentEnc, 
 	data, _ := json.Marshal(doc)
 	return data
 }
-
-// encIndexName mirrors indexName(): monthly rolling index keyed by message createdAt.
-func encIndexName(prefix string, createdAt time.Time) string {
-	return fmt.Sprintf("%s-%s", prefix, createdAt.UTC().Format("2006-01"))
-}
 ```
+
+(Note: `encIndexName` is defined in Task 1.4 — the first task that calls it — to avoid an `unused` lint failure here.)
 
 - [ ] **Step 4: Green** — `make test SERVICE=search-sync-worker` → PASS; `make lint`.
 - [ ] **Step 5: Commit** — `git add search-sync-worker/encindex*.go && git commit -m "Add encrypted message index template and document"`
@@ -481,6 +478,17 @@ if c.enc.enabled {
 }
 return actions, nil
 ```
+
+First (re)add `encIndexName` to `encindex.go` — it was deferred from Task 1.2 because it had no caller there:
+
+```go
+// encIndexName mirrors indexName(): monthly rolling index keyed by message createdAt.
+func encIndexName(prefix string, createdAt time.Time) string {
+	return fmt.Sprintf("%s-%s", prefix, createdAt.UTC().Format("2006-01"))
+}
+```
+
+Then the action builder:
 
 ```go
 func (c *messageCollection) buildEncAction(ctx context.Context, evt *model.MessageEvent) (searchengine.BulkAction, error) {
