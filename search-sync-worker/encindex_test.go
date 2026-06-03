@@ -19,11 +19,14 @@ func TestEncMessageTemplateProperties_FieldShapes(t *testing.T) {
 	assert.Equal(t, "text", cb["type"])
 	assert.Equal(t, "whitespace", cb["analyzer"])
 
-	// contentEnc / encNonce: binary, not indexed.
+	// contentEnc / encNonce: binary. The binary type is inherently non-indexed
+	// in Elasticsearch and rejects an explicit `index` parameter, so the mapping
+	// carries only the type.
 	for _, f := range []string{"contentEnc", "encNonce"} {
 		m := props[f].(map[string]any)
 		assert.Equal(t, "binary", m["type"], f)
-		assert.Equal(t, false, m["index"], f)
+		_, hasIndex := m["index"]
+		assert.False(t, hasIndex, "binary field %s must not carry an index parameter", f)
 	}
 
 	assert.Equal(t, "keyword", props["blindKeyVersion"].(map[string]any)["type"])

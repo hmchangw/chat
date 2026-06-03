@@ -13,7 +13,9 @@ import (
 // metadata fields (es-tagged, reflected into the template) but replaces the
 // plaintext `content` with blind tokens + an atrest ciphertext blob. The
 // contentEnc/encNonce mappings are authored in encMessageTemplateProperties
-// because the es-tag reflection helper cannot express binary/index:false.
+// because the es-tag reflection helper cannot express the binary type (which is
+// inherently non-indexed in Elasticsearch — it rejects an explicit `index`
+// parameter).
 type EncMessageDoc struct {
 	MessageID             string     `json:"messageId"                              es:"keyword"`
 	RoomID                string     `json:"roomId"                                 es:"keyword"`
@@ -33,12 +35,13 @@ type EncMessageDoc struct {
 }
 
 // encMessageTemplateProperties reflects the es-tagged metadata fields, then
-// injects the binary/index:false mappings the reflector cannot express.
+// injects the binary mappings the reflector cannot express. The binary type is
+// non-indexed by definition in Elasticsearch and rejects an explicit `index`
+// parameter, so the mapping carries only the type.
 func encMessageTemplateProperties() map[string]any {
 	props := esPropertiesFromStruct[EncMessageDoc]()
-	binNoIndex := map[string]any{"type": "binary", "index": false}
-	props["contentEnc"] = binNoIndex
-	props["encNonce"] = map[string]any{"type": "binary", "index": false}
+	props["contentEnc"] = map[string]any{"type": "binary"}
+	props["encNonce"] = map[string]any{"type": "binary"}
 	return props
 }
 
