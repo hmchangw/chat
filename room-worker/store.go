@@ -117,3 +117,9 @@ type RoomKeyStore interface {
 	// Rotate atomically increments version and writes newPair as current.
 	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
 }
+
+// DEKProvisioner eagerly provisions a room's at-rest data encryption key at
+// creation time. Satisfied by *atrest.Cipher; nil when ATREST_ENABLED=false.
+type DEKProvisioner interface {
+	EnsureDEK(ctx context.Context, roomID string) error
+}

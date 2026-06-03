@@ -4759,3 +4759,71 @@ func TestHandler_ProcessRemoveOrg_DeptFirstTiebreak(t *testing.T) {
 		})
 	}
 }
+
+// fakeDEKProvisioner records EnsureDEK calls and can be made to fail.
+type fakeDEKProvisioner struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeDEKProvisioner) EnsureDEK(_ context.Context, roomID string) error {
+	f.calls = append(f.calls, roomID)
+	return f.err
+}
+
+func TestHandleSyncCreateDM_SelfDM_ProvisionsDEK(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u_alice", Account: "alice", SiteID: "site-a"},
+	}, nil)
+	var createdRoomID string
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, room *model.Room) error { createdRoomID = room.ID; return nil })
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+
+	prov := &fakeDEKProvisioner{}
+	h := &Handler{
+		store:          mockStore,
+		siteID:         "site-a",
+		dekProvisioner: prov,
+		publish:        func(context.Context, string, []byte, string) error { return nil },
+	}
+
+	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "alice", RoomType: model.RoomTypeDM}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
+
+	reply, err := h.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.True(t, reply.Success)
+	require.Len(t, prov.calls, 1)
+	assert.Equal(t, createdRoomID, prov.calls[0], "EnsureDEK must be called with the self-DM room ID")
+}
+
+func TestHandleSyncCreateDM_DEKFailure_AbortsBeforeCreate(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u_alice", Account: "alice", SiteID: "site-a"},
+		{ID: "u_bob", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	// CreateRoom is intentionally NOT expected: a DEK provisioning failure must
+	// abort before the room is persisted. gomock fails the test if it is called.
+
+	prov := &fakeDEKProvisioner{err: errors.New("vault down")}
+	h := &Handler{
+		store:          mockStore,
+		siteID:         "site-a",
+		dekProvisioner: prov,
+		publish:        func(context.Context, string, []byte, string) error { return nil },
+	}
+
+	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "bob", RoomType: model.RoomTypeDM}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
+
+	_, err := h.handleSyncCreateDM(ctx, data)
+	require.Error(t, err)
+	assert.Len(t, prov.calls, 1, "EnsureDEK should have been attempted once")
+}
