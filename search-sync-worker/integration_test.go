@@ -301,7 +301,7 @@ func TestSearchSyncIntegration(t *testing.T) {
 	require.NoError(t, err, "fetch messages")
 
 	for msg := range batch.Messages() {
-		handler.Add(msg)
+		handler.Add(ctx, msg)
 	}
 
 	// Flush to ES
@@ -467,7 +467,7 @@ func TestCustomAnalyzer(t *testing.T) {
 	for _, evt := range []model.MessageEvent{evt1, evt2} {
 		data, marshalErr := json.Marshal(evt)
 		require.NoError(t, marshalErr)
-		handler.Add(&stubMsg{data: data})
+		handler.Add(ctx, &stubMsg{data: data})
 	}
 	handler.Flush(ctx)
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -92,7 +93,7 @@ func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
 	const ts int64 = 1735689600000
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, ts)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 
@@ -150,7 +151,7 @@ func TestUserRoomCollection_BuildAction_MemberAdded_Restricted(t *testing.T) {
 	payload.HistorySharedSince = &hss
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, ts)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1,
 		"restricted add must still produce an action — user-room now stores it")
@@ -185,7 +186,7 @@ func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
 	const ts int64 = 1735689700000
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, ts)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 
@@ -229,7 +230,7 @@ func TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted(t *testing.T) {
 
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 3, "restricted bulk must fan out per account")
 
@@ -254,7 +255,7 @@ func TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth(t *testing.T) {
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 200)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 
@@ -276,7 +277,7 @@ func TestUserRoomCollection_BuildAction_BulkInvite(t *testing.T) {
 	payload.Accounts = []string{"alice", "bob", "carol"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 3, "3 accounts → 3 update actions")
 
@@ -296,13 +297,13 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 
 	t.Run("malformed outbox event", func(t *testing.T) {
-		_, err := coll.BuildAction([]byte("{invalid"))
+		_, err := coll.BuildAction(context.Background(), []byte("{invalid"))
 		assert.Error(t, err)
 	})
 
 	t.Run("malformed payload", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{"type": model.OutboxMemberAdded, "payload": "not-bytes"})
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -310,7 +311,7 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.Accounts = []string{"alice", ""}
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -318,7 +319,7 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.RoomID = ""
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -326,19 +327,19 @@ func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.Accounts = nil
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
 	t.Run("missing timestamp", func(t *testing.T) {
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), 0)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
 	t.Run("unsupported event type", func(t *testing.T) {
 		data := makeInboxMemberEvent(t, "room_deleted", baseInboxMemberEvent(), 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 }

@@ -59,7 +59,7 @@ func TestHandler_Add(t *testing.T) {
 	}
 	msg := makeStubMsg(t, &evt)
 
-	h.Add(msg)
+	h.Add(context.Background(), msg)
 	assert.Equal(t, 1, h.MessageCount())
 }
 
@@ -69,7 +69,7 @@ func TestHandler_Add_MalformedJSON(t *testing.T) {
 	h := NewHandler(store, newMessageCollection("msgs-v1", time.Time{}), 500)
 
 	msg := &stubMsg{data: []byte("{invalid")}
-	h.Add(msg)
+	h.Add(context.Background(), msg)
 	assert.Equal(t, 0, h.MessageCount())
 	assert.True(t, msg.acked)
 }
@@ -94,7 +94,7 @@ func TestHandler_Flush(t *testing.T) {
 
 		h := NewHandler(store, newMessageCollection("msgs-v1", time.Time{}), 500)
 		msg := makeStubMsg(t, &baseEvt)
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.True(t, msg.acked)
@@ -111,7 +111,7 @@ func TestHandler_Flush(t *testing.T) {
 
 		h := NewHandler(store, newMessageCollection("msgs-v1", time.Time{}), 500)
 		msg := makeStubMsg(t, &baseEvt)
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.True(t, msg.acked)
@@ -127,7 +127,7 @@ func TestHandler_Flush(t *testing.T) {
 
 		h := NewHandler(store, newMessageCollection("msgs-v1", time.Time{}), 500)
 		msg := makeStubMsg(t, &baseEvt)
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.False(t, msg.acked)
@@ -147,8 +147,8 @@ func TestHandler_Flush(t *testing.T) {
 		evt2.Message.ID = "m2"
 		msg2 := makeStubMsg(t, &evt2)
 
-		h.Add(msg1)
-		h.Add(msg2)
+		h.Add(context.Background(), msg1)
+		h.Add(context.Background(), msg2)
 		h.Flush(context.Background())
 
 		assert.True(t, msg1.nacked)
@@ -181,7 +181,7 @@ func TestHandler_Flush(t *testing.T) {
 			evt := baseEvt
 			evt.Message.ID = fmt.Sprintf("m%d", i)
 			msgs[i] = makeStubMsg(t, &evt)
-			h.Add(msgs[i])
+			h.Add(context.Background(), msgs[i])
 		}
 		h.Flush(context.Background())
 
@@ -260,7 +260,7 @@ func (c stubCollection) FilterSubjects(string) []string             { return nil
 func (c stubCollection) TemplateName() string                       { return "" }
 func (c stubCollection) TemplateBody() json.RawMessage              { return nil }
 func (c stubCollection) AuxTemplates() []NamedTemplate              { return nil }
-func (c stubCollection) BuildAction([]byte) ([]searchengine.BulkAction, error) {
+func (c stubCollection) BuildAction(context.Context, []byte) ([]searchengine.BulkAction, error) {
 	return []searchengine.BulkAction{{Action: c.action, Index: "stub", DocID: "id-1"}}, nil
 }
 
@@ -294,7 +294,7 @@ func (c fanOutCollection) FilterSubjects(string) []string { return nil }
 func (c fanOutCollection) TemplateName() string           { return "" }
 func (c fanOutCollection) TemplateBody() json.RawMessage  { return nil }
 func (c fanOutCollection) AuxTemplates() []NamedTemplate  { return nil }
-func (c fanOutCollection) BuildAction([]byte) ([]searchengine.BulkAction, error) {
+func (c fanOutCollection) BuildAction(context.Context, []byte) ([]searchengine.BulkAction, error) {
 	actions := make([]searchengine.BulkAction, 0, c.actionsPerMessage)
 	for i := 0; i < c.actionsPerMessage; i++ {
 		actions = append(actions, searchengine.BulkAction{
@@ -320,7 +320,7 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		coll := newStubDeleteCollection()
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.True(t, msg.acked, "404 on delete with no error block should be acked (already deleted)")
@@ -341,7 +341,7 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		coll := newStubDeleteCollection()
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.False(t, msg.acked, "404 on delete with index_not_found is a fatal config error")
@@ -362,7 +362,7 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		coll := newStubUpdateCollection()
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.True(t, msg.acked, "404 on update with document_missing_exception should be acked")
@@ -383,7 +383,7 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		coll := newStubUpdateCollection()
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.False(t, msg.acked, "404 on update with index_not_found is a fatal config error")
@@ -404,7 +404,7 @@ func TestHandler_Flush_404OnDeleteAndUpdate(t *testing.T) {
 		coll := newStubIndexCollection()
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.False(t, msg.acked, "404 on index should be nacked")
@@ -426,7 +426,7 @@ func TestHandler_FanOut(t *testing.T) {
 		// One message produces 3 actions.
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 
 		assert.Equal(t, 1, h.MessageCount(), "one source message buffered")
 		assert.Equal(t, 3, h.ActionCount(), "three actions produced by fan-out")
@@ -445,7 +445,7 @@ func TestHandler_FanOut(t *testing.T) {
 
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.True(t, msg.acked, "all 3 fan-out actions succeeded → source message acked")
@@ -467,7 +467,7 @@ func TestHandler_FanOut(t *testing.T) {
 
 		h := NewHandler(store, coll, 500)
 		msg := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg)
+		h.Add(context.Background(), msg)
 		h.Flush(context.Background())
 
 		assert.False(t, msg.acked)
@@ -490,8 +490,8 @@ func TestHandler_FanOut(t *testing.T) {
 		h := NewHandler(store, coll, 500)
 		msg0 := &stubMsg{data: []byte(`{}`)}
 		msg1 := &stubMsg{data: []byte(`{}`)}
-		h.Add(msg0)
-		h.Add(msg1)
+		h.Add(context.Background(), msg0)
+		h.Add(context.Background(), msg1)
 		require.Equal(t, 2, h.MessageCount())
 		require.Equal(t, 6, h.ActionCount())
 		h.Flush(context.Background())

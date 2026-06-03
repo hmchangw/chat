@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -53,7 +54,7 @@ func (c *spotlightCollection) AuxTemplates() []NamedTemplate { return nil }
 // concern, enforced at query time by search-service's Clauses A/B against
 // the messages index. Room-name discovery has no such boundary: a user
 // who joined a restricted room must still be able to find it by name.
-func (c *spotlightCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
+func (c *spotlightCollection) BuildAction(_ context.Context, data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
 		return nil, err

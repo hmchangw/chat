@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,9 +12,45 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/blindidx"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
+
+// fakeCipher is a deterministic encCipher stub for unit tests. When err is
+// set, Encrypt returns it (simulating a transient Vault/DEK failure).
+type fakeCipher struct {
+	ct    []byte
+	nonce []byte
+	err   error
+}
+
+func (f fakeCipher) Encrypt(_ context.Context, _ string, _ atrest.EncryptedFields) ([]byte, atrest.EncMeta, error) {
+	if f.err != nil {
+		return nil, atrest.EncMeta{}, f.err
+	}
+	return f.ct, atrest.EncMeta{Nonce: f.nonce}, nil
+}
+
+func testHasher(t *testing.T) *blindidx.Hasher {
+	t.Helper()
+	h, err := blindidx.New([]byte(strings.Repeat("k", 32)), "v1")
+	require.NoError(t, err)
+	return h
+}
+
+func testEncOptions(t *testing.T, cipher encCipher) encOptions {
+	t.Helper()
+	return encOptions{
+		enabled:     true,
+		indexPrefix: "enc-msgs-v1",
+		keyVersion:  "v1",
+		hasher:      testHasher(t),
+		cipher:      cipher,
+	}
+}
 
 func TestMessageCollection_TemplateName_StripsVersion(t *testing.T) {
 	coll := newMessageCollection("messages-site1-v1", time.Time{})
@@ -284,7 +322,7 @@ func TestMessageCollection_BuildAction(t *testing.T) {
 	}
 	data, _ := json.Marshal(evt)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 	assert.Equal(t, searchengine.ActionIndex, actions[0].Action)
@@ -292,7 +330,7 @@ func TestMessageCollection_BuildAction(t *testing.T) {
 	assert.Equal(t, "m1", actions[0].DocID)
 
 	t.Run("malformed JSON returns error", func(t *testing.T) {
-		_, err := coll.BuildAction([]byte("{invalid"))
+		_, err := coll.BuildAction(context.Background(), []byte("{invalid"))
 		assert.Error(t, err)
 	})
 }
@@ -315,27 +353,123 @@ func TestMessageCollection_BuildAction_SyncFromFilter(t *testing.T) {
 	}
 
 	t.Run("CreatedAt before cutoff is filtered (no actions, no error)", func(t *testing.T) {
-		actions, err := coll.BuildAction(mkEvent(time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)))
+		actions, err := coll.BuildAction(context.Background(), mkEvent(time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)))
 		require.NoError(t, err)
 		assert.Empty(t, actions)
 	})
 
 	t.Run("CreatedAt exactly at cutoff is kept", func(t *testing.T) {
-		actions, err := coll.BuildAction(mkEvent(cutoff))
+		actions, err := coll.BuildAction(context.Background(), mkEvent(cutoff))
 		require.NoError(t, err)
 		assert.Len(t, actions, 1)
 	})
 
 	t.Run("CreatedAt after cutoff is kept", func(t *testing.T) {
-		actions, err := coll.BuildAction(mkEvent(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)))
+		actions, err := coll.BuildAction(context.Background(), mkEvent(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)))
 		require.NoError(t, err)
 		assert.Len(t, actions, 1)
 	})
 
 	t.Run("zero cutoff disables filter — old data still indexed", func(t *testing.T) {
 		uncapped := newMessageCollection("msgs-v1", time.Time{})
-		actions, err := uncapped.BuildAction(mkEvent(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+		actions, err := uncapped.BuildAction(context.Background(), mkEvent(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
 		require.NoError(t, err)
 		assert.Len(t, actions, 1)
 	})
+}
+
+func mkMsgEvent(evType model.EventType, id, content string, createdAt time.Time) []byte {
+	evt := model.MessageEvent{
+		Event: evType,
+		Message: model.Message{
+			ID: id, RoomID: "r1", UserID: "u1", UserAccount: "alice",
+			Content: content, CreatedAt: createdAt,
+		},
+		SiteID: "site-a", Timestamp: createdAt.UnixMilli(),
+	}
+	data, _ := json.Marshal(evt)
+	return data
+}
+
+func TestMessageCollection_BuildAction_EncDisabled(t *testing.T) {
+	coll := newMessageCollection("msgs-v1", time.Time{})
+	data := mkMsgEvent(model.EventCreated, "m1", "hello world", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC))
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "enc disabled produces a single plaintext action")
+	assert.Equal(t, "msgs-v1-2026-01", actions[0].Index)
+}
+
+func TestMessageCollection_BuildAction_EncCreated(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	createdAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	data := mkMsgEvent(model.EventCreated, "m1", "Hello, World!", createdAt)
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 2, "enc enabled produces plaintext + enc actions")
+
+	enc := actions[1]
+	assert.Equal(t, searchengine.ActionIndex, enc.Action)
+	assert.Equal(t, "enc-msgs-v1-2026-01", enc.Index)
+	assert.Equal(t, "m1", enc.DocID)
+	assert.Equal(t, createdAt.UnixMilli(), enc.Version)
+	require.NotNil(t, enc.Doc)
+
+	var doc EncMessageDoc
+	require.NoError(t, json.Unmarshal(enc.Doc, &doc))
+	assert.NotEmpty(t, doc.ContentBlind, "blinded content must be present")
+	assert.Equal(t, []byte("ct"), doc.ContentEnc)
+	assert.Equal(t, []byte("nonce"), doc.EncNonce)
+	assert.Equal(t, "v1", doc.BlindKeyVersion)
+}
+
+func TestMessageCollection_BuildAction_EncDeleted(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	createdAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	data := mkMsgEvent(model.EventDeleted, "m1", "", createdAt)
+
+	actions, err := coll.BuildAction(context.Background(), data)
+	require.NoError(t, err)
+	require.Len(t, actions, 2, "delete fans out to plaintext + enc delete")
+	assert.Equal(t, searchengine.ActionDelete, actions[0].Action)
+	assert.Equal(t, searchengine.ActionDelete, actions[1].Action)
+	assert.Equal(t, "enc-msgs-v1-2026-01", actions[1].Index)
+	assert.Equal(t, "m1", actions[1].DocID)
+	assert.Nil(t, actions[1].Doc)
+}
+
+func TestMessageCollection_BuildAction_EncCipherError_IsTransient(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{err: fmt.Errorf("vault unavailable")}))
+	data := mkMsgEvent(model.EventCreated, "m1", "hello", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC))
+
+	_, err := coll.BuildAction(context.Background(), data)
+	require.Error(t, err)
+	_, permanent := errcode.IsPermanent(err)
+	assert.False(t, permanent, "cipher/Vault failures must be transient → NAK for redelivery")
+}
+
+func TestMessageCollection_BuildAction_ValidationError_IsPermanent(t *testing.T) {
+	coll := newMessageCollectionEnc("msgs-v1", time.Time{}, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+	// Missing message ID is a poison validation failure.
+	data := mkMsgEvent(model.EventCreated, "", "hello", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC))
+
+	_, err := coll.BuildAction(context.Background(), data)
+	require.Error(t, err)
+	_, permanent := errcode.IsPermanent(err)
+	assert.True(t, permanent, "validation failures are poison → ack-drop")
+}
+
+func TestMessageCollection_AuxTemplates(t *testing.T) {
+	off := newMessageCollection("msgs-v1", time.Time{})
+	assert.Empty(t, off.AuxTemplates())
+
+	on := newMessageCollectionEnc("msgs-v1", time.Time{}, encOptions{
+		enabled: true, indexPrefix: "enc-msgs-v1", keyVersion: "v1",
+	})
+	aux := on.AuxTemplates()
+	require.Len(t, aux, 1)
+	assert.Equal(t, "enc-msgs_template", aux[0].Name)
+	assert.NotNil(t, aux[0].Body)
 }

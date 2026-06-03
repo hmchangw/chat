@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -35,8 +36,9 @@ type Collection interface {
 	TemplateBody() json.RawMessage
 	// BuildAction converts raw JetStream message data into one or more
 	// BulkActions. An empty slice means the event should be acked without
-	// any ES write (e.g., filtered out).
-	BuildAction(data []byte) ([]searchengine.BulkAction, error)
+	// any ES write (e.g., filtered out). The context is threaded through to
+	// any per-action side effects (e.g. the enc dual-write's cipher call).
+	BuildAction(ctx context.Context, data []byte) ([]searchengine.BulkAction, error)
 	// AuxTemplates returns any additional ES index templates the collection
 	// owns beyond its primary TemplateName/TemplateBody (e.g. the encrypted
 	// parallel message index). nil means none.

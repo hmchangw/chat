@@ -1,17 +1,40 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/blindidx"
+	"github.com/hmchangw/chat/pkg/blindsearch"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/stream"
 )
+
+// encCipher is the subset of atrest.Cipher the message collection needs to
+// build the encrypted dual-write doc. Narrowing to one method keeps the
+// collection unit-testable with a tiny fake.
+type encCipher interface {
+	Encrypt(ctx context.Context, roomID string, fields atrest.EncryptedFields) ([]byte, atrest.EncMeta, error)
+}
+
+// encOptions carries the encrypted dual-write configuration for the message
+// collection. When enabled is false every field is ignored and BuildAction
+// emits only the plaintext action.
+type encOptions struct {
+	enabled     bool
+	indexPrefix string
+	keyVersion  string
+	hasher      *blindidx.Hasher
+	cipher      encCipher
+}
 
 // messageCollection implements Collection for message search sync.
 //
@@ -26,10 +49,20 @@ import (
 type messageCollection struct {
 	indexPrefix string
 	syncFrom    time.Time
+	enc         encOptions
 }
 
 func newMessageCollection(indexPrefix string, syncFrom time.Time) *messageCollection {
 	return &messageCollection{indexPrefix: indexPrefix, syncFrom: syncFrom}
+}
+
+// newMessageCollectionEnc is newMessageCollection plus encrypted dual-write
+// options. When enc.enabled is true, BuildAction emits a second BulkAction
+// targeting the parallel encrypted index alongside the plaintext one.
+func newMessageCollectionEnc(indexPrefix string, syncFrom time.Time, enc encOptions) *messageCollection {
+	c := newMessageCollection(indexPrefix, syncFrom)
+	c.enc = enc
+	return c
 }
 
 func (c *messageCollection) StreamConfig(siteID string) jetstream.StreamConfig {
@@ -57,26 +90,78 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
-func (c *messageCollection) AuxTemplates() []NamedTemplate { return nil }
+// AuxTemplates returns the encrypted-index template when enc dual-write is
+// enabled; otherwise nil. The plaintext index template stays on
+// TemplateName/TemplateBody.
+func (c *messageCollection) AuxTemplates() []NamedTemplate {
+	if !c.enc.enabled {
+		return nil
+	}
+	return []NamedTemplate{{
+		Name: fmt.Sprintf("%s_template", searchindex.StripVersionBase(c.enc.indexPrefix)),
+		Body: encMessageTemplateBody(c.enc.indexPrefix),
+	}}
+}
 
-func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
+func (c *messageCollection) BuildAction(ctx context.Context, data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return nil, fmt.Errorf("unmarshal message event: %w", err)
+		// Malformed JSON can never be parsed on redelivery — poison drop.
+		return nil, errcode.Permanent(errcode.BadRequest(fmt.Sprintf("unmarshal message event: %v", err)))
 	}
 	if evt.Message.ID == "" {
-		return nil, fmt.Errorf("build message action: missing message id")
+		return nil, errcode.Permanent(errcode.BadRequest("build message action: missing message id"))
 	}
 	if evt.Message.CreatedAt.IsZero() {
-		return nil, fmt.Errorf("build message action: missing createdAt")
+		return nil, errcode.Permanent(errcode.BadRequest("build message action: missing createdAt"))
 	}
 	if evt.Timestamp <= 0 {
-		return nil, fmt.Errorf("build message action: missing timestamp")
+		return nil, errcode.Permanent(errcode.BadRequest("build message action: missing timestamp"))
 	}
 	if !c.syncFrom.IsZero() && evt.Message.CreatedAt.Before(c.syncFrom) {
 		return nil, nil
 	}
-	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
+
+	actions := []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}
+	if c.enc.enabled {
+		encAction, err := c.buildEncAction(ctx, &evt)
+		if err != nil {
+			// Plain wrapped (non-permanent) error: a cipher/Vault failure is
+			// transient and must NAK for redelivery.
+			return nil, err
+		}
+		actions = append(actions, encAction)
+	}
+	return actions, nil
+}
+
+// buildEncAction builds the encrypted parallel-index BulkAction for one event.
+// Deletes mirror the plaintext delete; index/upsert events blind the content
+// and attach the atrest ciphertext. A cipher error is returned plain-wrapped
+// (non-permanent) so the handler NAKs for redelivery.
+func (c *messageCollection) buildEncAction(ctx context.Context, evt *model.MessageEvent) (searchengine.BulkAction, error) {
+	idx := encIndexName(c.enc.indexPrefix, evt.Message.CreatedAt)
+	if evt.Event == model.EventDeleted {
+		return searchengine.BulkAction{
+			Action:  searchengine.ActionDelete,
+			Index:   idx,
+			DocID:   evt.Message.ID,
+			Version: evt.Timestamp,
+		}, nil
+	}
+	contentBlind := blindsearch.Field(c.enc.hasher, evt.Message.Content)
+	payload, meta, err := c.enc.cipher.Encrypt(ctx, evt.Message.RoomID, atrest.EncryptedFields{Msg: evt.Message.Content})
+	if err != nil {
+		return searchengine.BulkAction{}, fmt.Errorf("encrypt message %s for enc index: %w", evt.Message.ID, err)
+	}
+	doc := buildEncDocument(evt, contentBlind, payload, meta.Nonce, c.enc.keyVersion)
+	return searchengine.BulkAction{
+		Action:  searchengine.ActionIndex,
+		Index:   idx,
+		DocID:   evt.Message.ID,
+		Version: evt.Timestamp,
+		Doc:     doc,
+	}, nil
 }
 
 // --- Message-specific internals ---

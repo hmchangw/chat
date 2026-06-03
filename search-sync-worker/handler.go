@@ -63,8 +63,8 @@ func NewHandler(store Store, collection Collection, bulkSize int) *Handler {
 // Add parses a JetStream message via the collection and adds its actions to
 // the buffer. If the collection produces zero actions (e.g., a filtered
 // event), the message is immediately acked without touching the buffer.
-func (h *Handler) Add(msg jetstream.Msg) {
-	actions, err := h.collection.BuildAction(msg.Data())
+func (h *Handler) Add(ctx context.Context, msg jetstream.Msg) {
+	actions, err := h.collection.BuildAction(ctx, msg.Data())
 	if err != nil {
 		slog.Error("build action", "error", err)
 		natsutil.Ack(msg, "build action failed")

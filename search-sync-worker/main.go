@@ -343,7 +343,7 @@ func runConsumer(
 		}
 
 		for msg := range batch.Messages() {
-			handler.Add(msg.Msg)
+			handler.Add(ctx, msg.Msg)
 			// Mid-batch flush: if a single fan-out message just pushed the
 			// buffer over the bulk cap, flush immediately instead of waiting
 			// for the outer loop — otherwise the next message's actions

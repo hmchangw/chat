@@ -112,7 +112,7 @@ func drainConsumer(
 		batch, err := cons.Fetch(expected-received, jetstream.FetchMaxWait(5*time.Second))
 		require.NoError(t, err)
 		for msg := range batch.Messages() {
-			handler.Add(msg)
+			handler.Add(ctx, msg)
 			received++
 		}
 		// Surface any mid-batch error (consumer deleted, leader change,

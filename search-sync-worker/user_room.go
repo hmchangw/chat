@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -101,7 +102,7 @@ const (
 // Restricted rooms (HistorySharedSince != nil on the event) are routed into
 // `restrictedRooms{}` on the user-room doc — the search service reads both
 // `rooms[]` and `restrictedRooms{}` directly from ES at query time.
-func (c *userRoomCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
+func (c *userRoomCollection) BuildAction(_ context.Context, data []byte) ([]searchengine.BulkAction, error) {
 	evt, payload, err := parseMemberEvent(data)
 	if err != nil {
 		return nil, err

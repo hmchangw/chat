@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -123,7 +124,7 @@ func TestSpotlightCollection_BuildAction_MemberAdded(t *testing.T) {
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 1000)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 
@@ -150,7 +151,7 @@ func TestSpotlightCollection_BuildAction_MemberRemoved(t *testing.T) {
 	payload := baseInboxMemberEvent()
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 2000)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 1)
 
@@ -173,7 +174,7 @@ func TestSpotlightCollection_BuildAction_RestrictedRoomIndexedLikeAnyOther(t *te
 
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 2, "restricted room must still produce one doc per account")
 
@@ -203,7 +204,7 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
 
 	t.Run("malformed outbox event", func(t *testing.T) {
-		_, err := coll.BuildAction([]byte("{invalid"))
+		_, err := coll.BuildAction(context.Background(), []byte("{invalid"))
 		assert.Error(t, err)
 	})
 
@@ -214,7 +215,7 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 			Timestamp: 100,
 		}
 		data, _ := json.Marshal(evt)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -222,7 +223,7 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.Accounts = nil
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -230,7 +231,7 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.Accounts = []string{"alice", ""}
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
@@ -238,19 +239,19 @@ func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 		payload := baseInboxMemberEvent()
 		payload.RoomID = ""
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
 	t.Run("missing timestamp", func(t *testing.T) {
 		data := makeInboxMemberEvent(t, model.OutboxMemberAdded, baseInboxMemberEvent(), 0)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 
 	t.Run("unsupported event type", func(t *testing.T) {
 		data := makeInboxMemberEvent(t, "room_created", baseInboxMemberEvent(), 100)
-		_, err := coll.BuildAction(data)
+		_, err := coll.BuildAction(context.Background(), data)
 		assert.Error(t, err)
 	})
 }
@@ -264,7 +265,7 @@ func TestSpotlightCollection_BuildAction_BulkInvite(t *testing.T) {
 	payload.Accounts = []string{"alice", "bob", "carol"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberAdded, payload, 12345)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 3, "3 accounts should fan out to 3 actions")
 
@@ -291,7 +292,7 @@ func TestSpotlightCollection_BuildAction_BulkRemove(t *testing.T) {
 	payload.Accounts = []string{"alice", "bob"}
 	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 67890)
 
-	actions, err := coll.BuildAction(data)
+	actions, err := coll.BuildAction(context.Background(), data)
 	require.NoError(t, err)
 	require.Len(t, actions, 2)
 
