@@ -73,35 +73,10 @@ func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, key
 	}
 }
 
-// publishMemberMutation fans out both the per-user subscription.update event
-// (consumed by the frontend) and the room-scoped canonical member event
-// (consumed by notification-worker for cache invalidation). Single entry point
-// so a future call site can't ship one without the other.
-//
-// All errors are logged only — the underlying mutation already succeeded. The
-// subscription.update is best-effort fan-out; the canonical event is best-effort
-// invalidation reconciled by L2 TTL on miss.
-//
-// role_updated paths deliberately call the per-user publish directly (without
-// this helper) because Role isn't part of the cached projection — no canonical
-// event is needed.
-func (h *Handler) publishMemberMutation(ctx context.Context, subEvtSubj string, subEvtData []byte, eventType, roomID, account string, now time.Time) {
-	if err := h.publish(ctx, subEvtSubj, subEvtData, ""); err != nil {
+// publishSubscriptionUpdate fans out the per-user subscription.update event for the FE; best-effort.
+func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account string, subEvtData []byte) {
+	if err := h.publish(ctx, subject.SubscriptionUpdate(account), subEvtData, ""); err != nil {
 		slog.Error("subscription update publish failed", "error", err, "account", account)
-	}
-	canon := model.CanonicalMemberEvent{
-		Type:      eventType,
-		RoomID:    roomID,
-		Account:   account,
-		Timestamp: now.UnixMilli(),
-	}
-	data, err := json.Marshal(canon)
-	if err != nil {
-		slog.Error("marshal canonical member event failed", "error", err, "type", eventType, "roomID", roomID, "account", account)
-		return
-	}
-	if err := h.publish(ctx, subject.RoomCanonicalMemberEvent(h.siteID, eventType), data, ""); err != nil {
-		slog.Error("publish canonical member event failed", "error", err, "type", eventType, "roomID", roomID, "account", account)
 	}
 }
 
@@ -470,7 +445,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		Timestamp: now.UnixMilli(),
 	}
 	subEvtData, _ := json.Marshal(subEvt)
-	h.publishMemberMutation(ctx, subject.SubscriptionUpdate(req.Account), subEvtData, model.CanonicalMemberEventRemoved, req.RoomID, req.Account, now)
+	h.publishSubscriptionUpdate(ctx, req.Account, subEvtData)
 
 	// Member change event
 	evtType := model.MessageTypeMemberLeft
@@ -679,7 +654,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			Timestamp: now.UnixMilli(),
 		}
 		subEvtData, _ := json.Marshal(subEvt)
-		h.publishMemberMutation(ctx, subject.SubscriptionUpdate(m.Account), subEvtData, model.CanonicalMemberEventRemoved, req.RoomID, m.Account, now)
+		h.publishSubscriptionUpdate(ctx, m.Account, subEvtData)
 	}
 
 	// Member change event with all removed accounts
@@ -1039,7 +1014,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			Timestamp:    now.UnixMilli(),
 		}
 		subEvtData, _ := json.Marshal(subEvt)
-		h.publishMemberMutation(ctx, subject.SubscriptionUpdate(sub.User.Account), subEvtData, model.CanonicalMemberEventAdded, sub.RoomID, sub.User.Account, now)
+		h.publishSubscriptionUpdate(ctx, sub.User.Account, subEvtData)
 	}
 
 	// Fan out the room key only to newly-subscribed accounts. Accounts in
@@ -1471,7 +1446,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 			slog.ErrorContext(ctx, "marshal subscription.update failed", "error", err, "account", sub.User.Account)
 			continue
 		}
-		h.publishMemberMutation(ctx, subject.SubscriptionUpdate(sub.User.Account), data, model.CanonicalMemberEventAdded, sub.RoomID, sub.User.Account, now)
+		h.publishSubscriptionUpdate(ctx, sub.User.Account, data)
 	}
 
 	// Task 36: channel-only sys-messages
@@ -1841,7 +1816,7 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 				"error", err, "account", sub.User.Account, "request_id", requestID)
 			continue
 		}
-		h.publishMemberMutation(ctx, subject.SubscriptionUpdate(sub.User.Account), data, model.CanonicalMemberEventAdded, sub.RoomID, sub.User.Account, time.Now().UTC())
+		h.publishSubscriptionUpdate(ctx, sub.User.Account, data)
 	}
 }
 

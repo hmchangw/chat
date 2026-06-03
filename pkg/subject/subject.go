@@ -101,24 +101,9 @@ func RoomCanonical(siteID, operation string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
 }
 
-// RoomCanonicalMemberEvent returns the canonical room-stream subject for a
-// post-mutation member event. eventType is one of "added" | "removed" | "muted".
-//
-// Published by room-worker (added/removed) and room-service (muted) AFTER a
-// successful mutation. Consumed by notification-worker for room-member cache
-// invalidation — one event per room mutation, not per affected user.
-//
-// The "event" infix distinguishes these from the command subjects
-// (member.add, member.remove, member.role-update) that room-service publishes
-// for room-worker to execute.
+// RoomCanonicalMemberEvent returns the post-mutation member-event subject (mute-only today).
 func RoomCanonicalMemberEvent(siteID, eventType string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.event.member.%s", siteID, eventType)
-}
-
-// RoomCanonicalMemberEventFilter is the wildcard for consumers that want all
-// member events. Does not overlap with command subjects.
-func RoomCanonicalMemberEventFilter(siteID string) string {
-	return fmt.Sprintf("chat.room.canonical.%s.event.member.>", siteID)
 }
 
 func SubscriptionUpdate(account string) string {

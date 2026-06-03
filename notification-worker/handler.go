@@ -19,9 +19,10 @@ import (
 // defaultRecipientBatchSize mirrors PUSH_RECIPIENT_BATCH_SIZE's envDefault so unit tests don't re-declare it.
 const defaultRecipientBatchSize = 100
 
-// MemberGetter returns the cached/canonical member list for a room.
-type MemberGetter interface {
+// MemberCache reads the cached member list and supports targeted invalidation.
+type MemberCache interface {
 	GetMembers(ctx context.Context, roomID string) ([]roomsubcache.Member, error)
+	Invalidate(ctx context.Context, roomID string)
 }
 
 // RoomMetaGetter returns cached room metadata so push-service doesn't hit Mongo.
@@ -31,7 +32,7 @@ type RoomMetaGetter interface {
 
 // HandlerDeps groups the handler's collaborators.
 type HandlerDeps struct {
-	Members            MemberGetter
+	Members            MemberCache
 	Followers          ThreadFollowerLister
 	Presence           PresenceSnapshotter
 	Hook               Vetoer
@@ -69,6 +70,14 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal message event: %w", err)
 	}
 	msg := evt.Message
+
+	// Member-change sys-messages drive cache invalidation (Option C; safe because room-worker guards add/remove to channels).
+	if msg.Type != "" {
+		switch msg.Type {
+		case model.MessageTypeMembersAdded, model.MessageTypeMemberLeft, model.MessageTypeMemberRemoved:
+			h.deps.Members.Invalidate(ctx, msg.RoomID)
+		}
+	}
 
 	members, err := h.deps.Members.GetMembers(ctx, msg.RoomID)
 	if err != nil {

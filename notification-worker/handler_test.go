@@ -30,11 +30,22 @@ func (s *stubRoomMeta) Get(_ context.Context, roomID string) (roommetacache.Meta
 }
 
 type stubMembers struct {
-	out map[string][]roomsubcache.Member
+	mu    sync.Mutex
+	out   map[string][]roomsubcache.Member
+	calls []string // recorded in order: "get:<roomID>" / "inval:<roomID>"
 }
 
 func (s *stubMembers) GetMembers(_ context.Context, roomID string) ([]roomsubcache.Member, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, "get:"+roomID)
+	s.mu.Unlock()
 	return s.out[roomID], nil
+}
+
+func (s *stubMembers) Invalidate(_ context.Context, roomID string) {
+	s.mu.Lock()
+	s.calls = append(s.calls, "inval:"+roomID)
+	s.mu.Unlock()
 }
 
 type stubFollowers struct {
@@ -86,7 +97,7 @@ func (r *recordingEmitter) accounts() []string {
 	return out
 }
 
-func newTestHandler(members MemberGetter, followers ThreadFollowerLister, presence PresenceSnapshotter, hook Vetoer, emit Emitter) *Handler {
+func newTestHandler(members MemberCache, followers ThreadFollowerLister, presence PresenceSnapshotter, hook Vetoer, emit Emitter) *Handler {
 	return NewHandler(HandlerDeps{
 		Members:            members,
 		Followers:          followers,
@@ -724,4 +735,47 @@ func TestHandle_Sender_EmptyDisplayNameFallsBackToAccount(t *testing.T) {
 	require.NotNil(t, s)
 	assert.Equal(t, "alice", s.Account)
 	assert.Equal(t, "alice", s.DisplayName, "empty UserDisplayName → fall back to account")
+}
+
+// Sys-message drives invalidation under Option C. Coupling note: works because
+// room-worker guards add/remove to channels — relaxing that requires re-keeping the publish.
+func TestHandle_InvalidatesCacheOnMemberChangeSysMessage(t *testing.T) {
+	for _, msgType := range []string{
+		model.MessageTypeMembersAdded,
+		model.MessageTypeMemberLeft,
+		model.MessageTypeMemberRemoved,
+	} {
+		t.Run(msgType, func(t *testing.T) {
+			members := &stubMembers{out: map[string][]roomsubcache.Member{
+				"r1": {{ID: "alice", Account: "alice"}, {ID: "bob", Account: "bob"}},
+			}}
+			emit := &recordingEmitter{}
+			h := newTestHandler(members, &stubFollowers{}, noopPresenceSnapshotter{}, noopVetoer{}, emit)
+
+			require.NoError(t, h.HandleMessage(context.Background(), msgEvent(&model.Message{
+				ID: "m1", RoomID: "r1", UserID: "alice", UserAccount: "alice",
+				Type: msgType, CreatedAt: time.Now(),
+			})))
+
+			require.GreaterOrEqual(t, len(members.calls), 2)
+			assert.Equal(t, []string{"inval:r1", "get:r1"}, members.calls[:2], "Invalidate must happen before GetMembers to avoid stale read")
+		})
+	}
+}
+
+func TestHandle_DoesNotInvalidateOnRegularMessage(t *testing.T) {
+	members := &stubMembers{out: map[string][]roomsubcache.Member{
+		"r1": {{ID: "alice", Account: "alice"}, {ID: "bob", Account: "bob"}},
+	}}
+	emit := &recordingEmitter{}
+	h := newTestHandler(members, &stubFollowers{}, noopPresenceSnapshotter{}, noopVetoer{}, emit)
+
+	require.NoError(t, h.HandleMessage(context.Background(), msgEvent(&model.Message{
+		ID: "m1", RoomID: "r1", UserID: "alice", UserAccount: "alice",
+		Content: "hello", CreatedAt: time.Now(),
+	})))
+
+	for _, c := range members.calls {
+		assert.NotContains(t, c, "inval:", "regular messages must not invalidate cache")
+	}
 }

@@ -216,17 +216,12 @@ func main() {
 		}
 	}()
 
-	// Canonical room member events are room-scoped (one event per mutation, not per affected user).
-	// Durable consumer on the ROOMS stream filtered to event.member.> — added/removed/muted only,
-	// no overlap with the command subjects (member.add, member.remove, member.role-update).
-	//
-	// DeliverNewPolicy: on first start (or replica swap) we ignore historical events. The L2
-	// TTL on roomsubcache reconciles any cache that may have been stale at the boundary. Replaying
-	// "all" on every restart would invalidation-storm the cache for no gain.
+	// Mute is the only canonical member event still on this stream; add/remove invalidation rides on MESSAGES_CANONICAL sys-messages.
+	// DeliverNewPolicy: skip history on restart; roomsubcache TTL reconciles any boundary staleness.
 	roomsCfg := stream.Rooms(cfg.SiteID)
 	invalCons, err := otelJS.CreateOrUpdateConsumer(ctx, roomsCfg.Name, jetstream.ConsumerConfig{
-		Durable:       "notification-worker-invalidate",
-		FilterSubject: subject.RoomCanonicalMemberEventFilter(cfg.SiteID),
+		Durable:       "notification-worker-room-event-invalidate",
+		FilterSubject: subject.RoomCanonicalMemberEvent(cfg.SiteID, model.CanonicalMemberEventMuted),
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverNewPolicy,
 	})

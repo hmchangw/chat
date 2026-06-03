@@ -38,28 +38,15 @@ type SubscriptionUpdateEvent struct {
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
-// Canonical room-member event types — see CanonicalMemberEvent.
-const (
-	CanonicalMemberEventAdded   = "added"
-	CanonicalMemberEventRemoved = "removed"
-	CanonicalMemberEventMuted   = "muted"
-)
+// CanonicalMemberEventMuted is the only event type currently published on this stream.
+const CanonicalMemberEventMuted = "muted"
 
-// CanonicalMemberEvent is the room-scoped post-mutation event published on the
-// canonical room stream and consumed by notification-worker for cache
-// invalidation. One event per (room, affected account) — bulk operations emit
-// one event per member, but the consumer dedups identical roomID invalidations
-// via its buffered channel.
-//
-// Muted carries the post-toggle state; populated only for Type == "muted" and
-// omitted via omitempty for added/removed. The string "muted" is the canonical
-// vocabulary for this stream; SubscriptionUpdateEvent.Action uses "mute_toggled"
-// for the per-user fan-out — different vocabulary, same underlying state change.
+// CanonicalMemberEvent is the room-scoped post-mutation event for roomsubcache invalidation (mute-only today).
 type CanonicalMemberEvent struct {
-	Type      string `json:"type"` // CanonicalMemberEvent{Added|Removed|Muted}
+	Type      string `json:"type"`
 	RoomID    string `json:"roomId"`
-	Account   string `json:"account"`         // affected member
-	Muted     bool   `json:"muted,omitempty"` // post-toggle state, only set for Type=="muted"
+	Account   string `json:"account"`
+	Muted     bool   `json:"muted"` // post-toggle state; false is a valid (unmuted) value, so no omitempty.
 	Timestamp int64  `json:"timestamp"`
 }
 
