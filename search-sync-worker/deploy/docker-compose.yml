@@ -20,6 +20,29 @@ services:
       # skipped — used during legacy-data migration. Leave unset/empty
       # in local dev so all messages get indexed.
       # - SYNC_MESSAGES_FROM=2026-01-01
+      #
+      # Encrypted dual-write path (Phase 3 dev cutover). Code envDefaults keep
+      # this OFF so production stays opt-in; only this DEV compose flips it on
+      # so the encrypted index/path is exercised locally. PLAINTEXT_INDEX_ENABLED
+      # stays true here → dual-write (plaintext + encrypted) in dev.
+      - ENC_ENABLED=true
+      - PLAINTEXT_INDEX_ENABLED=true
+      - ENC_MSG_INDEX_PREFIX=enc-messages-v1
+      # DEV-ONLY test blind-index key (64 hex chars = 32 bytes). The real key
+      # comes from secret management — NEVER ship this value. Must MATCH the
+      # BLINDIDX_KEY set on search-service or index-time and query-time tokens
+      # diverge and encrypted search returns nothing.
+      - BLINDIDX_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      - BLINDIDX_KEY_VERSION=v1
+      # at-rest encryption (Vault transit + Mongo DEK store) — mirrors
+      # message-worker. The `vault`/`vault-bootstrap` services are defined by
+      # message-worker's compose and shared on the chat-local network.
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - ATREST_ENABLED=true
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-only-token
+      - ATREST_VAULT_TRANSIT_KEY=chat-kek
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

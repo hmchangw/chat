@@ -26,6 +26,30 @@ services:
       # Local dev pins to site-suffixed indices; prod uses aliases owned by ops/IaC.
       - SEARCH_USER_ROOM_INDEX=user-room-mv-site-local
       - SEARCH_SPOTLIGHT_INDEX=spotlight-site-local-v1
+      # Encrypted search path (Phase 3 dev cutover). Code envDefaults keep this
+      # OFF so production stays opt-in; only this DEV compose flips it on so the
+      # encrypted query path is exercised locally. SEARCH_BENCH_MODE_ENABLED=true
+      # lets loadgen drive every arm (A/B/C) via the per-request Variant.
+      - SEARCH_ENC_ENABLED=true
+      # Default arm A per design decision D6 (latency front-runner). The FINAL
+      # choice follows the user's real-stack A-vs-B benchmark — revisit if those
+      # numbers say otherwise.
+      - SEARCH_ENC_DEFAULT_ARM=A
+      - SEARCH_ENC_MSG_INDEX_PREFIX=enc-messages-v1
+      - SEARCH_BENCH_MODE_ENABLED=true
+      # DEV-ONLY test blind-index key (64 hex chars = 32 bytes). The real key
+      # comes from secret management — NEVER ship this value. MUST MATCH the
+      # BLINDIDX_KEY set on search-sync-worker or index-time and query-time
+      # tokens diverge and encrypted search returns nothing.
+      - BLINDIDX_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      - BLINDIDX_KEY_VERSION=v1
+      # at-rest decryption for arm A (Vault transit + Mongo DEK store). The
+      # `vault`/`vault-bootstrap` services are defined by message-worker's
+      # compose and shared on the chat-local network. Mongo is set above.
+      - ATREST_ENABLED=true
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-only-token
+      - ATREST_VAULT_TRANSIT_KEY=chat-kek
     ports:
       # Expose /metrics so Prometheus / curl can scrape from the host
       # during local dev. The listener is bound on 0.0.0.0:9090 inside
