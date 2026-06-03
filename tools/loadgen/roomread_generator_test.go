@@ -9,21 +9,27 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// fakeRoomReadRequester records every subject it is asked to request and
-// returns a configurable reply/error.
+// fakeRoomReadRequester records every subject it is asked to request (and the
+// X-Request-ID carried on the call's context) and returns a configurable
+// reply/error.
 type fakeRoomReadRequester struct {
 	mu       sync.Mutex
 	subjects []string
+	reqIDs   []string
 	reply    []byte
 	err      error
 }
 
-func (f *fakeRoomReadRequester) Request(_ context.Context, subj string, _ []byte, _ time.Duration) ([]byte, error) {
+func (f *fakeRoomReadRequester) Request(ctx context.Context, subj string, _ []byte, _ time.Duration) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.subjects = append(f.subjects, subj)
+	f.reqIDs = append(f.reqIDs, natsutil.RequestIDFromContext(ctx))
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -35,6 +41,14 @@ func (f *fakeRoomReadRequester) recorded() []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(f.subjects))
 	copy(out, f.subjects)
+	return out
+}
+
+func (f *fakeRoomReadRequester) recordedReqIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.reqIDs))
+	copy(out, f.reqIDs)
 	return out
 }
 
@@ -126,4 +140,24 @@ func TestRoomReadGenerator_EmptyFixturesNoPanic(t *testing.T) {
 
 	assert.Empty(t, req.recorded(), "no rooms means no requests should be issued")
 	assert.Empty(t, c.Samples())
+}
+
+func TestRoomReadGenerator_CarriesRequestID(t *testing.T) {
+	req := &fakeRoomReadRequester{reply: []byte(`{"status":"accepted"}`)}
+	c := NewRoomReadCollector()
+	gen := newRoomReadTestGen(t, req, c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	require.NoError(t, gen.Run(ctx))
+
+	ids := req.recordedReqIDs()
+	require.NotEmpty(t, ids, "generator issued no requests")
+	seen := map[string]bool{}
+	for _, id := range ids {
+		assert.NotEmpty(t, id, "every request must carry an X-Request-ID")
+		assert.True(t, idgen.IsValidUUID(id), "request ID %q must be a valid UUID", id)
+		assert.False(t, seen[id], "each request must mint a fresh X-Request-ID, got duplicate %q", id)
+		seen[id] = true
+	}
 }

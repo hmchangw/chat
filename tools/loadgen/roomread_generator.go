@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -140,6 +142,10 @@ func (g *roomReadGenerator) requestOne(ctx context.Context) {
 
 func (g *roomReadGenerator) doRead(ctx context.Context, roomID, account string) {
 	subj := subject.MessageRead(account, roomID, g.cfg.SiteID)
+	// Mint a fresh X-Request-ID per request, like a real client. The requester
+	// carries it on the NATS header, so server-side logs/traces for benchmark
+	// traffic are correlatable.
+	ctx = natsutil.WithRequestID(ctx, idgen.GenerateRequestID())
 	start := time.Now()
 	reply, err := g.cfg.Requester.Request(ctx, subj, nil, g.cfg.RequestTimeout)
 	latency := time.Since(start)
