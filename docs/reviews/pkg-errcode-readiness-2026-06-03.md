@@ -315,3 +315,50 @@ Two client-facing reasons fall through to raw English on the client today.
 
 ---
 
+## Chapter 7 — Performance
+
+**Score: 3.5 / 5**
+
+Code is sensibly written and avoids obvious traps, but the package sits on every reply hot path and ships **zero benchmarks**, which is a real gap for a library with this footprint (246 non-test call sites, 46 reply/write sites).
+
+### Allocations per reply (estimated, BadRequest no-cause path)
+
+- `errcode.Classify`: `attrs := []any{...}` slice header + backing array (1 alloc, ~64B for 6 elements; no boxing — `Code`/`Reason` are `string`-kinded so they fit in the iface header).
+- `json.Marshal(e)`: encoder state + output byte slice (~2-3 allocs, ~80-120B for a typical 4-field envelope).
+- `loggerFrom`: 0 allocs (typed assertion on a pointer).
+- `slog.Logger.Log`: depends on handler; the variadic `attrs ...any` is already a `[]any`.
+- `errors.As` walk: 0 allocs when chain is shallow.
+- **Total: ~3-4 allocs / ~150-250B per BadRequest reply**, plus whatever the slog handler does. Internal-with-cause adds 1 alloc for `err.Error()` and 1 for the `"underlying"` append.
+
+### Bench presence
+
+**FAIL.** `grep -l "func Benchmark" pkg/errcode/ -r` returns nothing. For a library on every request reply path repo-wide, this is a `medium` finding on its own.
+
+### Findings
+
+- **`medium` — No benchmarks for a hot-path library.** Whole `pkg/errcode/` tree has no `Benchmark*` functions. No perf regression signal for `slog.Attr` rework, accidental `fmt.Sprintf`, or `attrs` shape changes. `classify.go`, `errnats/reply.go`, `errhttp/write.go` each deserve at least a 10-line bench.
+- **`medium` — No "perf invariants" section in `doc.go`.** A short list would codify what's currently implicit: (a) Classify ≤4 allocs on the BadRequest path, (b) no `fmt.Sprintf` in Classify or the adapters, (c) no mutex anywhere (the package is currently lock-free — `logctx.go` only does `ctx.Value`, `classify.go` has no shared state, `error.go` is immutable post-construction).
+- **`low` — `attrs []any` literal escapes to heap on every Classify call** (`classify.go:32-39`). The escape analyzer cannot prove the slog handler doesn't retain it, so this is a guaranteed heap alloc per reply. Migration to `slog.LogAttrs` with typed `slog.Attr` would let escape analysis stack-allocate in many cases AND avoid the `any`-boxing of `string(e.Code)`.
+- **`low` — `err.Error()` allocation on the non-errcode path** (`classify.go:29-31`). For the Internal-wrap-of-raw-infra-error path (very common — every DB failure), `cause = err.Error()` produces a fresh string. Unavoidable unless slog formats lazily; the guard at L28 already dodges it for the "bare errcode" case.
+- **`low` — `WithCause` runs `errors.As` on every construction** (`options.go:64-65`). Defensive, prevents nested errcode chains, panics if violated. Amortized away on the happy path; semgrep already catches static cases. For high-frequency `Unavailable(... WithCause(err))` paths (e.g., `message-gatekeeper/handler.go:294`) it's an extra chain-walk per error. Consider gating behind a build-tag debug-mode check if benches ever flag it.
+- **`low` — No `sync.Pool` for `[]any` attrs or marshal buffer.** Two candidates: (a) the `attrs` slice in `classify.go:32` (fixed cap 6 or 8), (b) a `bytes.Buffer` for `json.Marshal` via `Encoder.Encode`. Both would shave allocs at sustained 10k+ QPS. Premature without benches.
+- **`nitpick` — Redundant `string(...)` conversions in `classify.go:33-34`.** `Code` and `Reason` are already `type X string`. The conversions are no-ops at runtime; `any`-boxing happens either way.
+- **`nitpick` — `loggerFrom(ctx)` cost** (`logctx.go:23-28`). Single `ctx.Value` lookup, walks ctx ancestry linearly. ctx depth in this codebase is ~4-6 frames. Not a problem.
+- **`nitpick` — `PermanentError` allocation per poison message** (`permanent.go:16-21`). Workers only, low volume by definition.
+- **`nitpick` — `json.Marshal(e)` per reply, no pre-marshal of common envelopes.** A `(Code, Reason, Message, len(Metadata)==0)` LRU could intern the ~10-20 most common envelopes (`BadRequest("internal error")`, `Unauthenticated("token expired")`, etc.). Probably not worth the complexity.
+- **`nitpick` — `errors.As` chain depth concern.** Worst-case chain in this codebase: typed errcode + 1-2 `fmt.Errorf("...: %w", err)` wraps = depth 2-3. Not a concern.
+- **`nitpick` — `MarshalQuiet` duplicates `errors.As` work** (`errnats/reply.go:30-31`). Cosmetic.
+
+### Recommendations
+
+1. **`medium`** — Add `classify_bench_test.go`, `errnats/reply_bench_test.go`, `errhttp/write_bench_test.go` with `Benchmark_BadRequest`, `Benchmark_InternalWithCause`, `Benchmark_PermanentWrap`. Wire into a `make bench` target as informational (not gating) CI so regressions show in PR diffs.
+2. **`medium`** — Add a brief "perf invariants" section to `doc.go` codifying the alloc budget, the no-`fmt.Sprintf` rule, and the lock-free guarantee.
+3. **`low`** — Migrate `classify.go:32-39` from `[]any` variadic to typed `slog.Attr` (`slog.String`, `slog.Group`) and call `LogAttrs`. Cleaner, faster slog dispatch, better escape analysis.
+4. **`low`** — Pre-size the `attrs` slice with `make([]any, 0, 8)` instead of literal — saves a slot for `"underlying"` without a reslice.
+5. **`low`** — Replace `json.Marshal(e)` in `errnats/reply.go:19` and `errhttp/write.go:15` with an `Encoder` over a pooled `bytes.Buffer`. Defer until benches justify it.
+6. **`nitpick`** — Drop redundant `string(...)` conversions in `classify.go:33-34`.
+
+**Bottom line:** nothing here is on fire. The package is allocation-aware in spirit but unmeasured in fact. Add benches, take the easy `LogAttrs` win, and the package is solid at 10k QPS per service.
+
+---
+
