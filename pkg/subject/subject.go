@@ -161,6 +161,14 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
+func MsgCanonicalPinned(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.pinned", siteID)
+}
+
+func MsgCanonicalUnpinned(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.unpinned", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
@@ -185,6 +193,19 @@ func RoomsInfoBatch(siteID string) string {
 // confirming the room has a key pair in Valkey at the returned version.
 func RoomKeyEnsure(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
+}
+
+// RoomKeyGet is the user-facing request subject for the on-demand room
+// key fetch RPC. Pair with RoomKeyGetWildcard for room-service's
+// QueueSubscribe. The reply mirrors RoomKeyEvent minus Timestamp.
+func RoomKeyGet(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.key.get", account, roomID, siteID)
+}
+
+// RoomKeyGetWildcard is the subscription pattern room-service uses to
+// receive RoomKeyGet requests from any account / roomID at its siteID.
+func RoomKeyGetWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.key.get", siteID)
 }
 
 // RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
@@ -304,6 +325,23 @@ func MsgEditPattern(siteID string) string {
 // The {account} and {roomID} placeholders are extracted by natsrouter.
 func MsgDeletePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.delete", siteID)
+}
+
+// MsgPinPattern is the natsrouter pattern for pinning a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgPinPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.pin", siteID)
+}
+
+// MsgUnpinPattern is the natsrouter pattern for unpinning a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgUnpinPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.unpin", siteID)
+}
+
+// MsgPinnedListPattern is the natsrouter pattern for listing a room's pinned messages.
+func MsgPinnedListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.pinned.list", siteID)
 }
 
 func MsgThreadPattern(siteID string) string {

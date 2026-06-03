@@ -12,6 +12,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	"github.com/hmchangw/chat/history-service/internal/publisher"
+	"github.com/hmchangw/chat/history-service/internal/readcache"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
@@ -23,6 +24,28 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
+// checkConfig validates positive-integer config knobs and exits the process on
+// the first violation. Kept centralized so future int-bounded settings have one
+// place to land.
+func checkConfig(cfg *config.Config) {
+	checks := []struct {
+		name  string
+		value int
+	}{
+		{"MESSAGE_BUCKET_HOURS", cfg.MessageBucketHours},
+		{"MESSAGE_READ_MAX_BUCKETS", cfg.MessageReadMaxBuckets},
+		{"MESSAGE_HISTORY_FLOOR_DAYS", cfg.MessageHistoryFloorDays},
+		{"LARGE_ROOM_THRESHOLD", cfg.LargeRoomThreshold},
+		{"MAX_PINNED_PER_ROOM", cfg.MaxPinnedPerRoom},
+	}
+	for _, c := range checks {
+		if c.value < 1 {
+			slog.Error("invalid config", c.name, c.value)
+			os.Exit(1)
+		}
+	}
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -32,26 +55,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.MessageBucketHours < 1 {
-		slog.Error("invalid config", "MESSAGE_BUCKET_HOURS", cfg.MessageBucketHours)
-		os.Exit(1)
-	}
-	if cfg.MessageReadMaxBuckets < 1 {
-		slog.Error("invalid config", "MESSAGE_READ_MAX_BUCKETS", cfg.MessageReadMaxBuckets)
-		os.Exit(1)
-	}
-	if cfg.MessageHistoryFloorDays < 1 {
-		slog.Error("invalid config", "MESSAGE_HISTORY_FLOOR_DAYS", cfg.MessageHistoryFloorDays)
-		os.Exit(1)
-	}
+	checkConfig(&cfg)
 	slog.Info("message bucket configured",
 		"hours", cfg.MessageBucketHours,
 		"maxBuckets", cfg.MessageReadMaxBuckets,
 		"historyFloorDays", cfg.MessageHistoryFloorDays,
+		"largeRoomThreshold", cfg.LargeRoomThreshold,
+		"maxPinnedPerRoom", cfg.MaxPinnedPerRoom,
+		"pinEnabled", cfg.PinEnabled,
 	)
 
 	bucketSizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
-	historyFloor := time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour
 
 	ctx := context.Background()
 
@@ -117,8 +131,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Front the per-request Mongo reads with process-local LRU+TTL caches.
+	var subSource service.SubscriptionRepository = subRepo
+	if cfg.SubCacheSize > 0 && cfg.SubCacheTTL > 0 {
+		sc, err := readcache.NewSubscriptionCache(subRepo, cfg.SubCacheSize, cfg.SubCacheTTL)
+		if err != nil {
+			slog.Error("init subscription cache failed", "error", err)
+			os.Exit(1)
+		}
+		subSource = sc
+		slog.Info("subscription cache enabled", "size", cfg.SubCacheSize, "ttl", cfg.SubCacheTTL)
+	}
+
+	var roomSource service.RoomRepository = roomRepo
+	if cfg.RoomCacheSize > 0 && cfg.RoomCacheTTL > 0 {
+		rc, err := readcache.NewRoomCache(roomRepo, cfg.RoomCacheSize, cfg.RoomCacheTTL)
+		if err != nil {
+			slog.Error("init room cache failed", "error", err)
+			os.Exit(1)
+		}
+		roomSource = rc
+		slog.Info("room cache enabled", "size", cfg.RoomCacheSize, "ttl", cfg.RoomCacheTTL)
+	}
+
 	pub := publisher.New(js)
-	svc := service.New(cassRepo, subRepo, roomRepo, pub, threadRoomRepo, historyFloor)
+	svc := service.New(cassRepo, subSource, roomSource, pub, threadRoomRepo, &cfg)
 	router := natsrouter.New(nc, "history-service")
 	router.Use(natsrouter.Recovery())
 	router.Use(natsrouter.Logging())

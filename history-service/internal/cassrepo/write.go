@@ -33,7 +33,7 @@ const (
 	editMsgByID   = `UPDATE messages_by_id SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
 	editMsgByRoom = `UPDATE messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	editThreadMsg = `UPDATE thread_messages_by_thread SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
-	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 
 	// Encrypted-path edits null the encrypted legacy body columns (msg,
 	// attachments, card, card_action, file, quoted_parent_message).
@@ -43,12 +43,12 @@ const (
 	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
 	editMsgByRoomEncrypted = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	editThreadMsgEncrypted = `UPDATE thread_messages_by_thread SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
-	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 
 	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
 	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	deleteThreadMsg  = `UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
-	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?`
+	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 )
 
 // ErrMessageNotFound is returned by edit operations when the target
@@ -69,7 +69,7 @@ const (
 	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true"
 	deleteThreadParentMsgByRoom  = "UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?"
 	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?"
-	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND created_at = ? AND message_id = ?"
+	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?"
 )
 
 // casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.

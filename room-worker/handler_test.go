@@ -395,7 +395,7 @@ func TestHandler_ProcessRemoveMember_SelfLeave_IndividualOnly(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+		GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, siteID, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -582,7 +582,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesIndividual(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+		GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 	store.EXPECT().
 		GetUser(gomock.Any(), requester).
 		Return(&model.User{ID: "u_alice", Account: requester, SiteID: siteID, EngName: "Alice", ChineseName: "愛"}, nil)
@@ -1168,7 +1168,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil) // recount after removal
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+		GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 	store.EXPECT().
 		GetUser(gomock.Any(), requester).
 		Return(&model.User{ID: "u_alice", Account: requester, SiteID: siteID, EngName: "Alice", ChineseName: "愛"}, nil)
@@ -1242,7 +1242,7 @@ func TestHandler_ProcessRemoveMember_CrossSiteOutbox(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+		GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 
 	var published []publishedMsg
 	h := NewHandler(store, localSite, func(_ context.Context, subj string, data []byte, _ string) error {
@@ -1534,7 +1534,7 @@ func TestHandler_ProcessRemoveIndividual_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().
 		ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
 	store.EXPECT().
-		ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+		GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 
 	outboxSubj := subject.Outbox(localSite, userSite, "member_removed")
 	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
@@ -1573,7 +1573,7 @@ func TestHandler_ProcessRemoveOrg_OutboxFailurePropagates(t *testing.T) {
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), roomID, []string{"carol"}).Return(int64(1), nil)
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, orgID).Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return(nil, nil)
 	store.EXPECT().GetUser(gomock.Any(), requester).
 		Return(&model.User{ID: "u_alice", Account: requester, SiteID: localSite, EngName: "Alice", ChineseName: "愛"}, nil)
 
@@ -2769,15 +2769,110 @@ func TestHandleSyncCreateDM_EmptyAccounts(t *testing.T) {
 }
 
 func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	alice := model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛麗絲"}
+	// Self-DM looks up a single account.
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{alice}, nil)
+
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error {
+			insertedRoom = r
+			return nil
+		})
+
+	var captured []*model.Subscription
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			captured = subs
+			return nil
+		})
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"}
+	data := marshalReq(t, req)
+	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	require.NoError(t, err)
+	require.NotNil(t, reply)
+	assert.True(t, reply.Success)
+	assert.True(t, reply.Subscription.Favorite)
+
+	// Single-member room, channel-style id, type dm. No read-back:
+	// GetSubscription / FindDMSubscriptionPair are never called.
+	require.NotNil(t, insertedRoom)
+	assert.Len(t, insertedRoom.ID, 17, "channel-style room id")
+	assert.Equal(t, model.RoomTypeDM, insertedRoom.Type)
+	assert.Equal(t, "site-a", insertedRoom.SiteID)
+	assert.Equal(t, 1, insertedRoom.UserCount)
+	assert.Equal(t, 0, insertedRoom.AppCount)
+	assert.Equal(t, []string{"u-alice"}, insertedRoom.UIDs)
+	assert.Equal(t, []string{"alice"}, insertedRoom.Accounts)
+
+	// Exactly one sub: favorited, subscribed, self-named, type dm.
+	require.Len(t, captured, 1)
+	assert.Equal(t, "u-alice", captured[0].User.ID)
+	assert.Equal(t, insertedRoom.ID, captured[0].RoomID)
+	assert.Equal(t, "alice", captured[0].Name)
+	assert.Equal(t, model.RoomTypeDM, captured[0].RoomType)
+	assert.True(t, captured[0].IsSubscribed)
+	assert.True(t, captured[0].Favorite)
+
+	// Reply returns the in-memory sub directly (no read-back round-trip).
+	assert.Equal(t, *captured[0], reply.Subscription)
+
+	// One subscription.update; no outbox (same-site by definition).
+	require.Len(t, capture.captured, 1)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), capture.captured[0].subject)
+}
+
+func TestHandleSyncCreateDM_SelfBotDMRejected(t *testing.T) {
 	h := &Handler{siteID: "site-a"}
 	req := model.SyncCreateDMRequest{
-		RoomType:         model.RoomTypeDM,
+		RoomType:         model.RoomTypeBotDM,
 		RequesterAccount: "alice",
 		OtherAccount:     "alice",
 	}
 	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
+}
+
+func TestHandleSyncCreateDM_SelfDM_StoreErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		setup     func(store *MockSubscriptionStore)
+		wantErrIn string
+	}{
+		{
+			name: "CreateRoom fails",
+			setup: func(store *MockSubscriptionStore) {
+				store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(errors.New("mongo down"))
+			},
+			wantErrIn: "create self-DM room",
+		},
+		{
+			name: "BulkCreateSubscriptions fails",
+			setup: func(store *MockSubscriptionStore) {
+				store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(errors.New("write failed"))
+			},
+			wantErrIn: "create self-DM subscription",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, capture := newSyncDMTestHandler(t)
+			alice := model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+			store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{alice}, nil)
+			tc.setup(store)
+
+			data := marshalReq(t, model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"})
+			_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrIn)
+			assert.Empty(t, capture.captured, "no publish on store error")
+		})
+	}
 }
 
 func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
@@ -3635,14 +3730,12 @@ func TestFanOutRoomKeyToSurvivors_SendsToAllSurvivorsIncludingRemoteSite(t *test
 	pair := &roomkeystore.VersionedKeyPair{Version: 5, KeyPair: roomkeystore.RoomKeyPair{
 		PrivateKey: bytes.Repeat([]byte{0x03}, 32),
 	}}
-	survivors := []model.Subscription{
-		{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1", SiteID: "site-a"},
-		{User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1", SiteID: "site-a"},
-		{User: model.SubscriptionUser{Account: "remote-carol"}, RoomID: "r1", SiteID: "site-b"},
-	}
+	// Survivor accounts span the local site (alice, bob) and a remote site
+	// (remote-carol); the caller projects these out of the subscriptions.
+	survivorAccounts := []string{"alice", "bob", "remote-carol"}
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, nil, keySender)
-	h.fanOutRoomKeyToSurvivors(context.Background(), "r1", pair, survivors)
+	h.fanOutRoomKeyToSurvivors(context.Background(), "r1", pair, survivorAccounts)
 	// alice, bob (site-a) and remote-carol (site-b) all receive the new key.
 	assert.ElementsMatch(t, []string{
 		"chat.user.alice.event.room.key",
@@ -4115,7 +4208,7 @@ func TestHandler_ProcessRemoveIndividual_SelfLeave_Content(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u_b").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return([]model.Subscription{}, nil)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return([]string{}, nil)
 
 	var published []publishedMsg
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
@@ -4145,7 +4238,7 @@ func TestHandler_ProcessRemoveIndividual_RemovedByOther_Content(t *testing.T) {
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberIndividual, "u_b").Return(nil)
 	store.EXPECT().DeleteSubscription(gomock.Any(), roomID, "bob").Return(int64(1), nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)
-	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return([]model.Subscription{}, nil)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), roomID).Return([]string{}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").
 		Return(&model.User{ID: "u_a", Account: "alice", SiteID: "site-a", EngName: "Alice", ChineseName: "愛"}, nil)
 
@@ -4257,7 +4350,7 @@ func TestHandler_ProcessRemoveOrg_OtherOrgCovers_PreservesSub(t *testing.T) {
 	// MUST NOT be called — alice is still covered by the sibling org.
 	store.EXPECT().DeleteSubscriptionsByAccounts(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 	// MUST NOT rotate — no survivors were displaced.
-	store.EXPECT().ListByRoom(gomock.Any(), gomock.Any()).Times(0)
+	store.EXPECT().GetSubscriptionAccounts(gomock.Any(), gomock.Any()).Times(0)
 	// The X org row still gets deleted; the count gets reconciled.
 	store.EXPECT().DeleteRoomMember(gomock.Any(), roomID, model.RoomMemberOrg, "X").Return(nil)
 	store.EXPECT().ReconcileMemberCounts(gomock.Any(), roomID).Return(nil)

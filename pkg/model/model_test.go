@@ -478,6 +478,7 @@ func TestSubscriptionJSON(t *testing.T) {
 			ThreadUnread:       []string{"parent-1", "parent-2"},
 			Alert:              true,
 			Muted:              true,
+			Favorite:           true,
 		}
 		roundTrip(t, &s, &model.Subscription{})
 	})
@@ -500,6 +501,33 @@ func TestSubscriptionJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &raw))
 		_, present := raw["lastSeenAt"]
 		assert.False(t, present, "lastSeenAt should be omitted when nil")
+
+		roundTrip(t, &s, &model.Subscription{})
+	})
+
+	t.Run("favorite omitted when false", func(t *testing.T) {
+		s := model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			RoomType: model.RoomTypeDM,
+			SiteID:   "site-a",
+			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+		data, err := json.Marshal(&s)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["favorite"]
+		assert.False(t, present, "favorite should be omitted when false")
+
+		bdata, err := bson.Marshal(&s)
+		require.NoError(t, err)
+		var braw bson.M
+		require.NoError(t, bson.Unmarshal(bdata, &braw))
+		_, bpresent := braw["favorite"]
+		assert.False(t, bpresent, "favorite should be omitted from BSON when false")
 
 		roundTrip(t, &s, &model.Subscription{})
 	})
@@ -906,6 +934,34 @@ func TestRoomKeyEnsureResponseJSON(t *testing.T) {
 	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
 }
 
+func TestRoomKeyGetRequestJSON(t *testing.T) {
+	t.Run("RoomKeyGetRequest_explicitVersion", func(t *testing.T) {
+		v := 3
+		src := model.RoomKeyGetRequest{Version: &v}
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
+		require.NotNil(t, dst.Version)
+		require.Equal(t, 3, *dst.Version)
+	})
+
+	t.Run("RoomKeyGetRequest_nilVersion", func(t *testing.T) {
+		src := model.RoomKeyGetRequest{Version: nil}
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
+		require.Nil(t, dst.Version)
+	})
+}
+
+func TestRoomKeyGetResponseJSON(t *testing.T) {
+	src := model.RoomKeyGetResponse{
+		RoomID:     "r1",
+		Version:    2,
+		PrivateKey: []byte{0x01, 0x02, 0x03},
+	}
+	dst := model.RoomKeyGetResponse{}
+	roundTrip(t, &src, &dst)
+}
+
 func TestNotificationEventJSON(t *testing.T) {
 	src := model.NotificationEvent{
 		Type:   "new_message",
@@ -1114,6 +1170,23 @@ func TestMemberRemoveEventJSON(t *testing.T) {
 
 func TestRoomTypeChannel(t *testing.T) {
 	assert.Equal(t, model.RoomType("channel"), model.RoomTypeChannel)
+}
+
+func TestEventPinnedConstants(t *testing.T) {
+	assert.Equal(t, model.EventType("pinned"), model.EventPinned)
+	assert.Equal(t, model.EventType("unpinned"), model.EventUnpinned)
+}
+
+func TestMessagePinnedFieldsRoundTrip(t *testing.T) {
+	at := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	src := model.Message{
+		ID:       "m1",
+		RoomID:   "r1",
+		PinnedAt: &at,
+		PinnedBy: &model.Participant{UserID: "u-123", Account: "alice"},
+	}
+	dst := model.Message{}
+	roundTrip(t, &src, &dst)
 }
 
 func TestRoom_RestrictedJSON(t *testing.T) {
@@ -2497,4 +2570,32 @@ func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
 		_, present := subRaw[leaked]
 		assert.False(t, present, "removed event subscription must not carry %q", leaked)
 	}
+}
+
+func TestPinRoomEventJSON(t *testing.T) {
+	pinnedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.PinRoomEvent{
+		Type:      model.RoomEventMessagePinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: pinnedAt.UnixMilli(),
+		MessageID: "msg-uuid",
+		PinnedBy:  &model.Participant{UserID: "u1", Account: "alice"},
+		PinnedAt:  pinnedAt,
+	}
+	roundTrip(t, &evt, &model.PinRoomEvent{})
+}
+
+func TestUnpinRoomEventJSON(t *testing.T) {
+	unpinnedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
+	evt := model.UnpinRoomEvent{
+		Type:       model.RoomEventMessageUnpinned,
+		RoomID:     "r1",
+		SiteID:     "site-a",
+		Timestamp:  unpinnedAt.UnixMilli(),
+		MessageID:  "msg-uuid",
+		UnpinnedBy: &model.Participant{UserID: "u1", Account: "alice"},
+		UnpinnedAt: unpinnedAt,
+	}
+	roundTrip(t, &evt, &model.UnpinRoomEvent{})
 }

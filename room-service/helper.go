@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -59,9 +60,29 @@ var (
 	// Sentinels for list-members pagination validation.
 	errListLimitInvalid  = errors.New("limit must be > 0")
 	errListOffsetInvalid = errors.New("offset must be >= 0")
+
+	// errRoomKeyAbsent is returned when the requested key version is not held
+	// by the key store (either the current key is missing or the historical
+	// version has aged out of the grace window).
+	errRoomKeyAbsent = errors.New("room key not available")
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
+
+// sameFloor reports whether two read-floor pointers represent the same instant.
+// Two nil pointers are equal (both "no floor"); a nil and a non-nil differ; two
+// non-nil pointers compare by time value (millisecond instants from Mongo), not
+// pointer identity.
+func sameFloor(a, b *time.Time) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return a.Equal(*b)
+	}
+}
 
 // hasRole checks if a given role is present in a slice of roles.
 func hasRole(roles []model.Role, target model.Role) bool {
@@ -219,6 +240,7 @@ func sanitizeError(err error) string {
 		errors.Is(err, errRemoveChannelOnly),
 		errors.Is(err, errListLimitInvalid),
 		errors.Is(err, errListOffsetInvalid),
+		errors.Is(err, errRoomKeyAbsent),
 		errors.Is(err, &dmExistsError{}),
 		errors.Is(err, &channelExpandTimeoutError{}):
 		return err.Error()

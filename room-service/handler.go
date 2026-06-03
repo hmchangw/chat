@@ -103,6 +103,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
 		return fmt.Errorf("subscribe room key ensure: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.RoomKeyGetWildcard(h.siteID), queue, h.natsGetRoomKey); err != nil {
+		return fmt.Errorf("subscribe room key get: %w", err)
+	}
 	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, h.natsMuteToggle); err != nil {
 		return fmt.Errorf("subscribe mute toggle: %w", err)
 	}
@@ -296,13 +299,10 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 		return nil, errEmptyCreateRequest
 	}
 
-	// Reject phantom orgs before sizing/publishing, same reason as
-	// handleAddMembers: the worker writes room_members + sys-msg without
-	// rechecking org validity.
-	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
-		return nil, err
-	}
-	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+	// Reject phantom orgs and users before sizing/publishing (run concurrently),
+	// same reason as handleAddMembers: the worker writes room_members + sys-msg
+	// without rechecking validity.
+	if err := h.validateMembershipRefs(ctx, allOrgs, allUsers); err != nil {
 		return nil, err
 	}
 
@@ -464,6 +464,74 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 		return model.ListRoomMembersResponse{}, fmt.Errorf("get room members: %w", err)
 	}
 	return model.ListRoomMembersResponse{Members: members}, nil
+}
+
+func (h *Handler) natsGetRoomKey(m otelnats.Msg) {
+	ctx := wrappedCtx(m)
+	resp, err := h.handleGetRoomKey(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		slog.Error("get room key failed", "error", err)
+		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to get room key", "error", err)
+	}
+}
+
+func (h *Handler) handleGetRoomKey(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	if h.keyStore == nil {
+		return nil, fmt.Errorf("get room key: key store not configured")
+	}
+	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid get-room-key subject")
+	}
+
+	_, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+	switch {
+	case errors.Is(err, model.ErrSubscriptionNotFound):
+		return nil, errNotRoomMember
+	case err != nil:
+		return nil, fmt.Errorf("check room membership: %w", err)
+	}
+
+	var req model.RoomKeyGetRequest
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &req); err != nil {
+			return nil, fmt.Errorf("invalid request: %w", err)
+		}
+	}
+
+	if req.Version == nil {
+		existing, err := h.keyStore.Get(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("get room key: %w", err)
+		}
+		if existing == nil {
+			return nil, errRoomKeyAbsent
+		}
+		// #nosec G117 -- RoomKeyGetResponse.PrivateKey is the intended payload: on-demand key delivery to the authorized room member over an auth-callout-gated per-user NATS subject, not a leak
+		return json.Marshal(model.RoomKeyGetResponse{
+			RoomID:     roomID,
+			Version:    existing.Version,
+			PrivateKey: existing.KeyPair.PrivateKey,
+		})
+	}
+
+	pair, err := h.keyStore.GetByVersion(ctx, roomID, *req.Version)
+	if err != nil {
+		return nil, fmt.Errorf("get room key: %w", err)
+	}
+	if pair == nil {
+		return nil, errRoomKeyAbsent
+	}
+	// #nosec G117 -- RoomKeyGetResponse.PrivateKey is the intended payload: on-demand key delivery to the authorized room member over an auth-callout-gated per-user NATS subject, not a leak
+	return json.Marshal(model.RoomKeyGetResponse{
+		RoomID:     roomID,
+		Version:    *req.Version,
+		PrivateKey: pair.PrivateKey,
+	})
 }
 
 func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []byte) ([]byte, error) {
@@ -706,16 +774,10 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	allOrgs := dedup(append(req.Orgs, channelOrgIDs...))
 	allUsers := dedup(append(req.Users, channelAccounts...))
 
-	// 6a. Reject phantom orgs up front. Without this, room-worker writes a
-	// room_members row for the bogus orgId and fans out a "members added"
-	// sys-msg even though no user matches the org.
-	if err := h.validateOrgIDs(ctx, allOrgs); err != nil {
-		return nil, err
-	}
-	// 6b. Reject phantom users symmetrically — a typo'd account would be
-	// silently dropped by the candidates pipeline and the async job would
-	// still report success.
-	if err := h.validateAccountsExist(ctx, allUsers); err != nil {
+	// 6a/6b. Reject phantom orgs and users up front (run concurrently). Without
+	// this, room-worker writes a room_members row for the bogus orgId/account
+	// and fans out a "members added" sys-msg even though no user matches.
+	if err := h.validateMembershipRefs(ctx, allOrgs, allUsers); err != nil {
 		return nil, err
 	}
 
@@ -804,6 +866,23 @@ func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
 		}
 	}
 	return nil
+}
+
+// validateMembershipRefs runs the org and account existence checks
+// concurrently — they hit the users collection independently, so there is no
+// reason to serialize them. Uses a plain errgroup (no shared context
+// cancellation) so both checks always complete, and applies the org error in
+// preference to the account error to preserve the prior sequential priority.
+func (h *Handler) validateMembershipRefs(ctx context.Context, orgIDs, accounts []string) error {
+	var orgErr, acctErr error
+	var g errgroup.Group
+	g.Go(func() error { orgErr = h.validateOrgIDs(ctx, orgIDs); return orgErr })
+	g.Go(func() error { acctErr = h.validateAccountsExist(ctx, accounts); return acctErr })
+	_ = g.Wait()
+	if orgErr != nil {
+		return orgErr
+	}
+	return acctErr
 }
 
 func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs []model.ChannelRef) (orgIDs, accounts []string, err error) {
@@ -1123,8 +1202,15 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 	if err != nil {
 		return nil, fmt.Errorf("min subscription lastSeenAt: %w", err)
 	}
-	if err := h.store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime); err != nil {
-		return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
+	// Skip the write when the recomputed floor matches what the room already
+	// carries. For a busy room the floor is unchanged on almost every read (the
+	// reader is rarely the most-behind member, and large rooms usually have an
+	// unread member that pins the floor to nil), so this avoids a no-op Mongo
+	// round trip and the write-intent lock on the hot rooms document.
+	if !sameFloor(minTime, room.MinUserLastSeenAt) {
+		if err := h.store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime); err != nil {
+			return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
+		}
 	}
 
 	return json.Marshal(map[string]string{"status": "accepted"})

@@ -325,7 +325,8 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) error {
 
 // rotateAndFanOut generates v+1, fans it out to survivors, then commits via Valkey Rotate.
 // Fan-out before Rotate is intentional so survivors hold v+1 before broadcast-worker switches.
-func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) error {
+// survivorAccounts is a pre-computed post-deletion snapshot of the room's member accounts.
+func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPair *roomkeystore.VersionedKeyPair, survivorAccounts []string) error {
 	newPair, err := roomkeystore.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generate room key: %w", err)
@@ -335,7 +336,7 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 		predictedVersion = currentPair.Version + 1
 	}
 	versioned := &roomkeystore.VersionedKeyPair{Version: predictedVersion, KeyPair: *newPair}
-	h.fanOutRoomKeyToSurvivors(ctx, roomID, versioned, survivors)
+	h.fanOutRoomKeyToSurvivors(ctx, roomID, versioned, survivorAccounts)
 
 	if currentPair == nil {
 		if _, err := h.keyStore.Set(ctx, roomID, *newPair); err != nil {
@@ -400,12 +401,14 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Rotate after delete + reconcile; ListByRoom returns post-deletion survivors.
-	survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
+	// Rotate after delete + reconcile; GetSubscriptionAccounts returns the
+	// post-deletion survivor accounts (projected — fan-out only needs accounts,
+	// not full subscription docs).
+	survivorAccounts, listErr := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
 	if listErr != nil {
 		return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 	}
-	if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
+	if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivorAccounts); err != nil {
 		return fmt.Errorf("rotate and fan-out room key after remove-individual: %w", err)
 	}
 
@@ -608,13 +611,15 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
 
-	// Rotate only when something was actually deleted; ListByRoom returns post-deletion survivors.
+	// Rotate only when something was actually deleted; GetSubscriptionAccounts
+	// returns the post-deletion survivor accounts (projected — fan-out only
+	// needs accounts, not full subscription docs).
 	if len(accounts) > 0 {
-		survivors, listErr := h.store.ListByRoom(ctx, req.RoomID)
+		survivorAccounts, listErr := h.store.GetSubscriptionAccounts(ctx, req.RoomID)
 		if listErr != nil {
 			return fmt.Errorf("list survivors for key fan-out (room %s): %w", req.RoomID, listErr)
 		}
-		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivors); err != nil {
+		if err := h.rotateAndFanOut(ctx, req.RoomID, currentPair, survivorAccounts); err != nil {
 			return fmt.Errorf("rotate and fan-out room key after remove-org: %w", err)
 		}
 	}
@@ -1176,6 +1181,13 @@ func buildBotDMSubs(requester, bot *model.User, room *model.Room, acceptedAt tim
 	}
 }
 
+// buildSelfDMSub builds the sole self-DM subscription: subscribed, self-named, favorited.
+func buildSelfDMSub(user *model.User, room *model.Room, joinedAt time.Time) *model.Subscription {
+	sub := newSub(idgen.GenerateUUIDv7(), user, room, nil, user.Account, true, joinedAt)
+	sub.Favorite = true
+	return sub
+}
+
 // newSub constructs a Subscription from its constituent parts.
 func newSub(id string, user *model.User, room *model.Room, roles []model.Role,
 	name string, isSubscribed bool, joinedAt time.Time) *model.Subscription {
@@ -1602,7 +1614,7 @@ func sanitizeSyncDMError(err error) string {
 	}
 }
 
-// handleSyncCreateDM creates a DM/botDM room + 2 subs and returns the requester's sub.
+// handleSyncCreateDM creates a DM, self-DM, or botDM room and returns the requester's subscription.
 func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.SyncCreateDMReply, error) {
 	requestID := natsutil.RequestIDFromContext(ctx)
 	if requestID == "" {
@@ -1620,7 +1632,12 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		return nil, err
 	}
 
-	users, err := h.store.FindUsersByAccounts(ctx, []string{req.RequesterAccount, req.OtherAccount})
+	// Self-DM sends the same account twice; dedup so the lookup queries one account.
+	accounts := []string{req.RequesterAccount}
+	if req.OtherAccount != req.RequesterAccount {
+		accounts = append(accounts, req.OtherAccount)
+	}
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
 	if err != nil {
 		return nil, fmt.Errorf("find dm users: %w", err)
 	}
@@ -1635,6 +1652,12 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	if requester.SiteID != h.siteID {
 		return nil, errCrossSiteRequester
 	}
+
+	// Self-DM (requester == counterpart): a single-member room.
+	if req.RequesterAccount == req.OtherAccount {
+		return h.createSelfDM(ctx, requester, requestID)
+	}
+
 	other, ok := byAccount[req.OtherAccount]
 	if !ok {
 		return nil, errUserLookupFailed
@@ -1720,6 +1743,34 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 	return &model.SyncCreateDMReply{Success: true, Subscription: *requesterSub}, nil
 }
 
+// createSelfDM creates a single-member self-DM: one favorited subscription in a
+// channel-id dm room, no outbox. "One per user" is enforced by the caller.
+func (h *Handler) createSelfDM(ctx context.Context, requester *model.User, requestID string) (*model.SyncCreateDMReply, error) {
+	now := time.Now().UTC() // one stamp for room + sub; random id means no retry-idempotency concern.
+	room := &model.Room{
+		ID:        idgen.GenerateID(),
+		Type:      model.RoomTypeDM,
+		SiteID:    h.siteID,
+		UserCount: 1,
+		UIDs:      []string{requester.ID},
+		Accounts:  []string{requester.Account},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := h.store.CreateRoom(ctx, room); err != nil {
+		return nil, fmt.Errorf("create self-DM room %s for %s: %w", room.ID, requester.Account, err)
+	}
+
+	sub := buildSelfDMSub(requester, room, now)
+	if err := h.store.BulkCreateSubscriptions(ctx, []*model.Subscription{sub}); err != nil {
+		return nil, fmt.Errorf("create self-DM subscription: %w", err)
+	}
+
+	// No read-back: a fresh room id means a pure insert, so sub is what persisted.
+	h.publishSubscriptionUpdates(ctx, []*model.Subscription{sub}, requestID)
+	return &model.SyncCreateDMReply{Success: true, Subscription: *sub}, nil
+}
+
 func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
 	switch req.RoomType {
 	case model.RoomTypeDM, model.RoomTypeBotDM:
@@ -1729,7 +1780,8 @@ func validateSyncCreateDMShape(req *model.SyncCreateDMRequest) error {
 	if req.RequesterAccount == "" || req.OtherAccount == "" {
 		return errInvalidSyncDMRequest
 	}
-	if req.RequesterAccount == req.OtherAccount {
+	// A bot can't DM itself: reject a self-botDM.
+	if req.RequesterAccount == req.OtherAccount && req.RoomType == model.RoomTypeBotDM {
 		return errInvalidSyncDMRequest
 	}
 	return nil
@@ -1813,21 +1865,18 @@ func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
 	natsutil.ReplyJSON(m.Msg, reply)
 }
 
-// fanOutRoomKeyToSurvivors sends the already-fetched room key to every room member in survivors
-// (local + remote). NATS supercluster routes user-subjects to home sites.
-// survivors is a pre-computed post-deletion snapshot supplied by the caller; pair must be non-nil.
-func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivors []model.Subscription) {
+// fanOutRoomKeyToSurvivors sends the already-fetched room key to every survivor
+// account (local + remote). NATS supercluster routes user-subjects to home
+// sites. survivorAccounts is a pre-computed post-deletion snapshot supplied by
+// the caller; pair must be non-nil.
+func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivorAccounts []string) {
 	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,
 		PrivateKey: pair.KeyPair.PrivateKey,
 	}
-	accounts := make([]string, len(survivors))
-	for i := range survivors {
-		accounts[i] = survivors[i].User.Account
-	}
-	h.fanOutKey(ctx, roomID, accounts, &evt)
+	h.fanOutKey(ctx, roomID, survivorAccounts, &evt)
 }
 
 // buildAndFanOutRoomKey publishes pair as a RoomKeyEvent to every account in users.
@@ -1851,15 +1900,26 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, pair
 	return nil
 }
 
-// fanOutKey distributes evt to every account via h.keySender.Send using up to
-// h.keyFanoutWorkers concurrent goroutines. Per-account errors are logged and
-// counted via roomkeymetrics; partial fan-out is acceptable because JetStream
-// redelivers on permanent failure and recipients are idempotent on key version.
+// fanOutKey distributes evt to every account using up to h.keyFanoutWorkers
+// concurrent goroutines. The event is marshaled exactly once and the resulting
+// bytes are published to each account — on a giant room this avoids one
+// json.Marshal per recipient. Per-account errors are logged and counted via
+// roomkeymetrics; partial fan-out is acceptable because JetStream redelivers on
+// permanent failure and recipients are idempotent on key version.
 //
 // evt is taken by pointer so the 80-byte struct isn't copied per fan-out call;
 // callers must not mutate it after passing it in.
 func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []string, evt *model.RoomKeyEvent) {
 	if len(accounts) == 0 {
+		return
+	}
+	data, err := h.keySender.Marshal(*evt)
+	if err != nil {
+		// Marshaling a RoomKeyEvent effectively never fails; if it somehow does,
+		// no recipient can be served, so count the whole batch and bail. The
+		// caller treats fan-out as best-effort and JetStream redelivers.
+		slog.Error("marshal room key for fan-out", "error", err, "roomId", roomID, "accounts", len(accounts))
+		roomkeymetrics.FanoutErrors.Add(ctx, int64(len(accounts)), metric.WithAttributes(attribute.String("roomId", roomID)))
 		return
 	}
 	workers := h.keyFanoutWorkers
@@ -1882,7 +1942,7 @@ func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []strin
 				<-sem
 				wg.Done()
 			}()
-			if err := h.keySender.Send(acct, *evt); err != nil {
+			if err := h.keySender.SendData(acct, data); err != nil {
 				slog.Error("send room key", "error", err, "account", acct, "roomId", roomID)
 				roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
 			}

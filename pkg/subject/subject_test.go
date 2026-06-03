@@ -102,8 +102,20 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
 		{"MsgDeletePattern", subject.MsgDeletePattern("site-a"),
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.delete"},
+		{"MsgPinPattern", subject.MsgPinPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.pin"},
+		{"MsgUnpinPattern", subject.MsgUnpinPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.unpin"},
+		{"MsgPinnedListPattern", subject.MsgPinnedListPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.pinned.list"},
+		{"MsgCanonicalPinned", subject.MsgCanonicalPinned("site-a"),
+			"chat.msg.canonical.site-a.pinned"},
+		{"MsgCanonicalUnpinned", subject.MsgCanonicalUnpinned("site-a"),
+			"chat.msg.canonical.site-a.unpinned"},
 		{"MsgGet", subject.MsgGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
+		{"RoomKeyGet", subject.RoomKeyGet("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.key.get"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -229,6 +241,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.room.*.site-a.msg.thread"},
 		{"MsgThreadParentWild", subject.MsgThreadParentWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.thread.parent"},
+		{"RoomKeyGetWildcard", subject.RoomKeyGetWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.key.get"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

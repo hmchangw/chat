@@ -1173,6 +1173,18 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 			},
 			wantErr: true, wantErrSentinel: errStoreFailure, wantPublish: false,
 		},
+		{
+			// Org and account existence checks run concurrently, so BOTH the
+			// users-collection reads fire even when the org is already known
+			// phantom; the org error still takes priority over the account error.
+			name: "both phantom — both validators run, org error wins",
+			req:  model.AddMembersRequest{Orgs: []string{"org-nope"}, Users: []string{"ghost"}},
+			setupMocks: func(store *MockRoomStore) {
+				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
+				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
+			},
+			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1249,6 +1261,15 @@ func TestHandler_CreateRoomChannel_PhantomValidation(t *testing.T) {
 				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"bob"}).Return(nil, errStoreFailure)
 			},
 			wantErr: true, wantErrSentinel: errStoreFailure, wantPublish: false,
+		},
+		{
+			name: "both phantom — both validators run, org error wins",
+			req:  model.CreateRoomRequest{Name: "general", Orgs: []string{"org-nope"}, Users: []string{"ghost"}},
+			setupMocks: func(store *MockRoomStore) {
+				store.EXPECT().FindExistingOrgIDs(gomock.Any(), []string{"org-nope"}).Return(nil, nil)
+				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"ghost"}).Return(nil, nil)
+			},
+			wantErr: true, wantErrSentinel: errInvalidOrg, wantPublish: false,
 		},
 	}
 
@@ -2811,10 +2832,11 @@ func TestHandler_MessageRead_LastSeenNil_RecomputesAnyway(t *testing.T) {
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
 	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
-	// Recompute MUST run (no JoinedAt fallback for the early-return).
+	// Recompute MUST run (no JoinedAt fallback for the early-return). The stored
+	// floor is already nil, so the recomputed nil matches it and the redundant
+	// write is skipped.
 	var nilTime *time.Time
 	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(nilTime, nil)
-	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", nilTime).Return(nil)
 
 	subj := subject.MessageRead("alice", "r1", "site-a")
 	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
@@ -2941,7 +2963,10 @@ func TestHandler_MessageRead_MinNil_ClearsRoomField(t *testing.T) {
 	}, nil)
 	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
-	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+	// Room currently carries a non-nil floor; recompute returns nil, so the field
+	// is genuinely cleared via UpdateRoomMinUserLastSeenAt(nil).
+	storedFloor := lastSeen
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg, MinUserLastSeenAt: &storedFloor}, nil)
 	var nilTime *time.Time
 	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(nilTime, nil)
 	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", nilTime).Return(nil)
@@ -3017,6 +3042,87 @@ func TestHandler_MessageRead_UpdateRoomMinError(t *testing.T) {
 	subj := subject.MessageRead("alice", "r1", "site-a")
 	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
 	require.Error(t, err)
+}
+
+// Solution 2: when the recomputed floor equals the value already stored on the
+// room, the write is redundant and must be skipped — this avoids a no-op Mongo
+// round trip and the write-intent lock on the hot rooms document on every read.
+func TestHandler_MessageRead_FloorUnchanged_SkipsWrite(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-2 * time.Hour)
+	lastSeen := joined.Add(time.Hour)
+	lastMsg := lastSeen.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	// stored and computed floors carry the same instant via distinct pointers,
+	// so a correct implementation must compare by value, not pointer identity.
+	storedFloor := lastSeen
+	computedFloor := lastSeen
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", LastMsgAt: &lastMsg, MinUserLastSeenAt: &storedFloor,
+	}, nil)
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(&computedFloor, nil)
+	// UpdateRoomMinUserLastSeenAt must NOT run — the floor is unchanged.
+
+	subj := subject.MessageRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
+	require.NoError(t, err)
+}
+
+// When both the stored floor and the recomputed floor are nil (the common case
+// for an active room where at least one member has never read), the write is a
+// no-op $unset on an already-absent field and must be skipped.
+func TestHandler_MessageRead_FloorNilStoredNil_SkipsWrite(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-2 * time.Hour)
+	lastSeen := joined.Add(time.Hour)
+	lastMsg := lastSeen.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+	var nilTime *time.Time
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(nilTime, nil)
+	// UpdateRoomMinUserLastSeenAt must NOT run — stored nil matches computed nil.
+
+	subj := subject.MessageRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
+	require.NoError(t, err)
+}
+
+// When the floor genuinely changes (stored value differs from the recomputed
+// minimum), the write must still run.
+func TestHandler_MessageRead_FloorChanged_Writes(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-3 * time.Hour)
+	oldFloor := joined.Add(time.Hour)
+	newFloor := oldFloor.Add(30 * time.Minute)
+	lastMsg := newFloor.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		JoinedAt: joined, LastSeenAt: &oldFloor,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", LastMsgAt: &lastMsg, MinUserLastSeenAt: &oldFloor,
+	}, nil)
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(&newFloor, nil)
+	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", &newFloor).Return(nil)
+
+	subj := subject.MessageRead("alice", "r1", "site-a")
+	_, err := f.handler.handleMessageRead(context.Background(), subj, nil)
+	require.NoError(t, err)
 }
 
 func TestHandler_handleMessageReadReceipt(t *testing.T) {
@@ -3935,6 +4041,128 @@ func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 	_, err := h.handleMuteToggle(context.Background(), subj, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "publish mute-toggled outbox")
+}
+
+func TestHandler_natsGetRoomKey(t *testing.T) {
+	const (
+		siteID  = "site-a"
+		account = "alice"
+		roomID  = "room-1"
+	)
+	subj := subject.RoomKeyGet(account, roomID, siteID)
+
+	sampleKey := roomkeystore.RoomKeyPair{PrivateKey: bytes.Repeat([]byte{0x42}, 32)}
+	sampleVersioned := &roomkeystore.VersionedKeyPair{Version: 7, KeyPair: sampleKey}
+
+	type want struct {
+		replyJSON string // expected JSON of the success reply (empty when err)
+		errSubstr string // expected substring in sanitizeError(err) (empty when ok)
+	}
+
+	cases := []struct {
+		name  string
+		body  []byte
+		setup func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore)
+		want  want
+	}{
+		{
+			name: "current version, happy path",
+			body: []byte(`{}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().Get(gomock.Any(), roomID).Return(sampleVersioned, nil)
+			},
+			want: want{replyJSON: `{"roomId":"room-1","version":7,"privateKey":"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}`},
+		},
+		{
+			name: "explicit version, happy path",
+			body: []byte(`{"version":3}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().GetByVersion(gomock.Any(), roomID, 3).Return(&sampleKey, nil)
+			},
+			want: want{replyJSON: `{"roomId":"room-1","version":3,"privateKey":"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}`},
+		},
+		{
+			name: "not a member",
+			body: []byte(`{}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(nil, model.ErrSubscriptionNotFound)
+			},
+			want: want{errSubstr: "only room members"},
+		},
+		{
+			name: "current key absent",
+			body: []byte(`{}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().Get(gomock.Any(), roomID).Return(nil, nil)
+			},
+			want: want{errSubstr: "room key not available"},
+		},
+		{
+			name: "historical version absent",
+			body: []byte(`{"version":1}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().GetByVersion(gomock.Any(), roomID, 1).Return(nil, nil)
+			},
+			want: want{errSubstr: "room key not available"},
+		},
+		{
+			name: "store error",
+			body: []byte(`{}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().Get(gomock.Any(), roomID).Return(nil, errors.New("valkey down"))
+			},
+			want: want{errSubstr: "internal error"},
+		},
+		{
+			name: "store error on explicit version",
+			body: []byte(`{"version":5}`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+				ks.EXPECT().GetByVersion(gomock.Any(), roomID, 5).Return(nil, errors.New("valkey down"))
+			},
+			want: want{errSubstr: "internal error"},
+		},
+		{
+			name: "malformed body",
+			body: []byte(`not-json`),
+			setup: func(t *testing.T, store *MockRoomStore, ks *MockRoomKeyStore) {
+				store.EXPECT().GetSubscription(gomock.Any(), account, roomID).
+					Return(&model.Subscription{}, nil)
+			},
+			want: want{errSubstr: "invalid request"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			ks := NewMockRoomKeyStore(ctrl)
+			tc.setup(t, store, ks)
+
+			h := NewHandler(store, ks, nil, nil, siteID, 1000, 500, 5*time.Second, nil, nil)
+			resp, err := h.handleGetRoomKey(t.Context(), subj, tc.body)
+			if tc.want.errSubstr != "" {
+				require.Error(t, err)
+				require.Contains(t, sanitizeError(err), tc.want.errSubstr)
+				return
+			}
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want.replyJSON, string(resp))
+		})
+	}
 }
 
 // publishCore failure is intentionally non-fatal: the DB write is the source
