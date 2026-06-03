@@ -36,3 +36,8 @@ func TestRoomReadWorkload_Label(t *testing.T) {
 	w := &roomReadWorkload{}
 	assert.Equal(t, "room-read", w.Label())
 }
+
+func TestDefaultSteps_RoomRead(t *testing.T) {
+	assert.Equal(t, "200,500,1000,2000,5000", defaultSteps("room-read"))
+	assert.Equal(t, "500,1000,2000,5000,10000", defaultSteps("messages"))
+}

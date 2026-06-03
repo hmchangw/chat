@@ -10,7 +10,7 @@ import (
 )
 
 func defaultSteps(workload string) string {
-	if workload == "history" {
+	if workload == "history" || workload == "room-read" {
 		return "200,500,1000,2000,5000"
 	}
 	return "500,1000,2000,5000,10000"
@@ -24,7 +24,7 @@ func buildThresholds(p95, p99 time.Duration, errRate float64, pendingGrowth uint
 // the report. Returns the process exit code.
 func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("max-rps", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|history")
+	workload := fs.String("workload", "messages", "messages|history|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	stepsFlag := fs.String("steps", "", "ascending RPS list, e.g. 500,1k,2k,5k,10k (default depends on workload)")
@@ -43,7 +43,7 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	beforeModeFlag := fs.String("before-mode", "open:70,scrollback:30", "history only: before-cursor mix")
 	scrollbackPages := fs.Int("scrollback-pages", 5, "history only: pages per scrollback chain")
 	pageLimit := fs.Int("page-limit", 20, "history only: page limit")
-	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history only: per-request timeout")
+	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history/room-read only: per-request timeout")
 	csvPath := fs.String("csv", "", "optional CSV output path")
 	_ = fs.Parse(args)
 
@@ -122,6 +122,22 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			return 1
 		}
 		w, cleanup, presetID = hw, clean, p.Name
+	case "room-read":
+		p, ok := BuiltinPreset(*preset)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+			return 2
+		}
+		if *requestTimeout <= 0 {
+			fmt.Fprintln(os.Stderr, "--request-timeout must be > 0")
+			return 2
+		}
+		rw, clean, err := newRoomReadWorkload(ctx, cfg, &p, *seed, *requestTimeout)
+		if err != nil {
+			slog.Error("init room-read workload", "error", err)
+			return 1
+		}
+		w, cleanup, presetID = rw, clean, p.Name
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
