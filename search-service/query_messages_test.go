@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/blindidx"
+	"github.com/hmchangw/chat/pkg/blindsearch"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -199,6 +202,89 @@ func TestBuildMessageQuery_RecentWindowDefault(t *testing.T) {
 	rng := filters[0].(map[string]any)["range"].(map[string]any)["createdAt"].(map[string]any)
 	// Zero / negative window defaults to 1 year (365 * 24h = 8760h).
 	assert.Equal(t, "now-8760h", rng["gte"])
+}
+
+// mustClauses returns query.bool.must for a built query body.
+func mustClauses(t *testing.T, q map[string]any) []any {
+	t.Helper()
+	query := q["query"].(map[string]any)
+	b := query["bool"].(map[string]any)
+	return b["must"].([]any)
+}
+
+// encHasher builds a real blind hasher for query-clause tests.
+func encHasher(t *testing.T) *blindidx.Hasher {
+	t.Helper()
+	h, err := blindsearch.LoadHasher(strings.Repeat("ab", 32), "v1")
+	require.NoError(t, err)
+	return h
+}
+
+func TestBuildEncMessageQuery_MatchOnContentBlind(t *testing.T) {
+	h := encHasher(t)
+	req := model.SearchMessagesRequest{Query: "Hello World", Size: 25}
+	raw, err := buildEncMessageQuery(req, "alice", nil, 365*24*time.Hour, "user-room", h)
+	require.NoError(t, err)
+
+	q := parseQuery(t, raw)
+	assert.Equal(t, float64(25), q["size"])
+
+	must := mustClauses(t, q)
+	require.Len(t, must, 1)
+	match := must[0].(map[string]any)["match"].(map[string]any)["contentBlind"].(map[string]any)
+	assert.Equal(t, "AND", match["operator"])
+	assert.Equal(t, blindsearch.Field(h, "Hello World"), match["query"],
+		"blind query string must equal index-time Field for the same text")
+	// The match clause must NOT carry the raw plaintext query.
+	assert.NotContains(t, match["query"], "Hello")
+}
+
+func TestBuildEncMessageQuery_QuotedUsesMatchPhrase(t *testing.T) {
+	h := encHasher(t)
+	req := model.SearchMessagesRequest{Query: `"foo bar"`}
+	raw, err := buildEncMessageQuery(req, "alice", nil, time.Hour, "user-room", h)
+	require.NoError(t, err)
+
+	must := mustClauses(t, parseQuery(t, raw))
+	require.Len(t, must, 1)
+	phrase, isPhrase := must[0].(map[string]any)["match_phrase"]
+	require.True(t, isPhrase, "quoted query must use match_phrase")
+	assert.Equal(t, blindsearch.Field(h, "foo bar"), phrase.(map[string]any)["contentBlind"])
+}
+
+func TestBuildEncMessageQuery_EmptyTokensMatchNone(t *testing.T) {
+	h := encHasher(t)
+	// Punctuation-only analyzes to zero tokens -> never match-all.
+	req := model.SearchMessagesRequest{Query: "!!! ???"}
+	raw, err := buildEncMessageQuery(req, "alice", nil, time.Hour, "user-room", h)
+	require.NoError(t, err)
+
+	must := mustClauses(t, parseQuery(t, raw))
+	require.Len(t, must, 1)
+	_, isMatchNone := must[0].(map[string]any)["match_none"]
+	assert.True(t, isMatchNone, "zero-token query must emit match_none, never match-all")
+}
+
+func TestBuildEncMessageQuery_FilterBlockIdenticalToPlaintext(t *testing.T) {
+	h := encHasher(t)
+	restricted := map[string]int64{
+		"room-b": 1_700_000_000_000,
+		"room-a": 1_600_000_000_000,
+	}
+	req := model.SearchMessagesRequest{Query: "hi", RoomIDs: []string{"room-a", "room-c"}, Size: 10, Offset: 5}
+
+	plain, err := buildMessageQuery(req, "alice", restricted, 48*time.Hour, "user-room")
+	require.NoError(t, err)
+	enc, err := buildEncMessageQuery(req, "alice", restricted, 48*time.Hour, "user-room", h)
+	require.NoError(t, err)
+
+	// The access-control + range filter block must be byte-for-byte identical.
+	plainFilter, encFilter := filterClauses(t, parseQuery(t, plain)), filterClauses(t, parseQuery(t, enc))
+	pf, perr := json.Marshal(plainFilter)
+	require.NoError(t, perr)
+	ef, eerr := json.Marshal(encFilter)
+	require.NoError(t, eerr)
+	assert.JSONEq(t, string(pf), string(ef), "enc filter block must match plaintext filter block exactly")
 }
 
 func TestRecentWindowToGte_Units(t *testing.T) {

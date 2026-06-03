@@ -4,10 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/blindidx"
+	"github.com/hmchangw/chat/pkg/blindsearch"
 	"github.com/hmchangw/chat/pkg/model"
 )
+
+// EncMessageIndexPattern is the comma-joined list of encrypted-message
+// indices searched on the enc query path. It mirrors MessageIndexPattern
+// but targets the parallel `enc-messages-*` index written by
+// search-sync-worker.
+var EncMessageIndexPattern = []string{"enc-messages-*", "*:enc-messages-*"}
 
 // MessageIndexPattern is the comma-joined list of indices searched for
 // messages. The local prefix (`messages-*`) is required because `*:` only
@@ -29,39 +38,46 @@ var MessageIndexPattern = []string{"messages-*", "*:messages-*"}
 // terms-lookup so a caller can't reach rooms they don't belong to by
 // passing arbitrary roomIds.
 func buildMessageQuery(req model.SearchMessagesRequest, account string, restricted map[string]int64, recentWindow time.Duration, userRoomIndex string) (json.RawMessage, error) {
-	clauses := roomAccessClauses(req.RoomIDs, account, restricted, userRoomIndex)
+	body := messageQueryBody(req, []any{plaintextContentClause(req.Query)},
+		messageFilterClauses(req.RoomIDs, account, restricted, recentWindow, userRoomIndex))
 
-	body := map[string]any{
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal message query: %w", err)
+	}
+	return data, nil
+}
+
+// buildEncMessageQuery is buildMessageQuery for the encrypted query path:
+// the `bool.must` content clause matches the HMAC-blinded `contentBlind`
+// field instead of plaintext `content`. The `bool.filter` access-control +
+// range block is produced by the SAME messageFilterClauses helper as the
+// plaintext builder, so the security-critical clauses are byte-for-byte
+// identical across both paths.
+func buildEncMessageQuery(req model.SearchMessagesRequest, account string, restricted map[string]int64, recentWindow time.Duration, userRoomIndex string, h *blindidx.Hasher) (json.RawMessage, error) {
+	body := messageQueryBody(req, []any{encContentClause(req.Query, h)},
+		messageFilterClauses(req.RoomIDs, account, restricted, recentWindow, userRoomIndex))
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal enc message query: %w", err)
+	}
+	return data, nil
+}
+
+// messageQueryBody assembles the shared `_search` envelope (pagination,
+// sort, bool wrapper) around a content `must` clause and the access/range
+// `filter` block. Both the plaintext and enc builders funnel through here
+// so the only thing that varies between paths is the content clause.
+func messageQueryBody(req model.SearchMessagesRequest, must, filter []any) map[string]any {
+	return map[string]any{
 		"from":             req.Offset,
 		"size":             req.Size,
 		"track_total_hits": true,
 		"query": map[string]any{
 			"bool": map[string]any{
-				"must": []any{
-					map[string]any{
-						"multi_match": map[string]any{
-							"query":    req.Query,
-							"type":     "bool_prefix",
-							"operator": "AND",
-							"fields":   []string{"content"},
-						},
-					},
-				},
-				"filter": []any{
-					map[string]any{
-						"range": map[string]any{
-							"createdAt": map[string]any{
-								"gte": fmt.Sprintf("now-%s", recentWindowToGte(recentWindow)),
-							},
-						},
-					},
-					map[string]any{
-						"bool": map[string]any{
-							"should":               clauses,
-							"minimum_should_match": 1,
-						},
-					},
-				},
+				"must":   must,
+				"filter": filter,
 			},
 		},
 		"sort": []any{
@@ -69,12 +85,70 @@ func buildMessageQuery(req model.SearchMessagesRequest, account string, restrict
 			map[string]any{"createdAt": map[string]any{"order": "desc"}},
 		},
 	}
+}
 
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal message query: %w", err)
+// messageFilterClauses builds the access-control + recency filter block
+// shared by the plaintext and encrypted query paths. This is the
+// security-critical boundary — both builders MUST share it verbatim so the
+// enc path can never widen access beyond the plaintext path.
+func messageFilterClauses(roomIDs []string, account string, restricted map[string]int64, recentWindow time.Duration, userRoomIndex string) []any {
+	clauses := roomAccessClauses(roomIDs, account, restricted, userRoomIndex)
+	return []any{
+		map[string]any{
+			"range": map[string]any{
+				"createdAt": map[string]any{
+					"gte": fmt.Sprintf("now-%s", recentWindowToGte(recentWindow)),
+				},
+			},
+		},
+		map[string]any{
+			"bool": map[string]any{
+				"should":               clauses,
+				"minimum_should_match": 1,
+			},
+		},
 	}
-	return data, nil
+}
+
+// plaintextContentClause is the arm-C content match: a bool_prefix
+// multi_match over the plaintext `content` field.
+func plaintextContentClause(query string) map[string]any {
+	return map[string]any{
+		"multi_match": map[string]any{
+			"query":    query,
+			"type":     "bool_prefix",
+			"operator": "AND",
+			"fields":   []string{"content"},
+		},
+	}
+}
+
+// encContentClause blinds the query the same way the index was blinded and
+// matches the `contentBlind` field. A quoted query becomes a match_phrase;
+// a query that analyzes to zero tokens becomes match_none so an
+// empty/punctuation-only query never degrades into a match-all.
+func encContentClause(query string, h *blindidx.Hasher) map[string]any {
+	field := blindsearch.Field(h, strings.Trim(query, `"`))
+	if field == "" {
+		return map[string]any{"match_none": map[string]any{}}
+	}
+	if isQuotedQuery(query) {
+		return map[string]any{"match_phrase": map[string]any{"contentBlind": field}}
+	}
+	return map[string]any{
+		"match": map[string]any{
+			"contentBlind": map[string]any{
+				"query":    field,
+				"operator": "AND",
+			},
+		},
+	}
+}
+
+// isQuotedQuery reports whether the (already-trimmed by the handler) query
+// is wrapped in double quotes, signalling a phrase search.
+func isQuotedQuery(query string) bool {
+	return len(query) >= 2 && strings.HasPrefix(query, `"`) && strings.HasSuffix(query, `"`)
 }
 
 func roomAccessClauses(roomIDs []string, account string, restricted map[string]int64, userRoomIndex string) []any {
