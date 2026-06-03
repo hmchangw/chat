@@ -221,11 +221,14 @@ func TestEncMessageTemplateProperties_FieldShapes(t *testing.T) {
 	assert.Equal(t, "text", cb["type"])
 	assert.Equal(t, "whitespace", cb["analyzer"])
 
-	// contentEnc / encNonce: binary, not indexed.
+	// contentEnc / encNonce: binary. ES binary fields are inherently
+	// non-indexed/non-searchable — do NOT set "index":false, real ES rejects
+	// "unknown parameter [index] on mapper of type [binary]".
 	for _, f := range []string{"contentEnc", "encNonce"} {
 		m := props[f].(map[string]any)
 		assert.Equal(t, "binary", m["type"], f)
-		assert.Equal(t, false, m["index"], f)
+		_, hasIndex := m["index"]
+		assert.False(t, hasIndex, "binary mapper must not carry an index param")
 	}
 
 	assert.Equal(t, "keyword", props["blindKeyVersion"].(map[string]any)["type"])
@@ -319,9 +322,10 @@ type EncMessageDoc struct {
 // injects the binary/index:false mappings the reflector cannot express.
 func encMessageTemplateProperties() map[string]any {
 	props := esPropertiesFromStruct[EncMessageDoc]()
-	binNoIndex := map[string]any{"type": "binary", "index": false}
-	props["contentEnc"] = binNoIndex
-	props["encNonce"] = map[string]any{"type": "binary", "index": false}
+	// ES binary fields are non-indexed/non-searchable by definition; the "index"
+	// parameter is NOT valid on a binary mapper (real ES rejects it). Just "binary".
+	props["contentEnc"] = map[string]any{"type": "binary"}
+	props["encNonce"] = map[string]any{"type": "binary"}
 	return props
 }
 
