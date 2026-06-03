@@ -34,13 +34,19 @@ func newCachedMemberLookup(cache roomsubcache.Cache, load memberLoader, ttl time
 // GetMembers returns the member list, populating Valkey on a Mongo round-trip.
 // Callers must not mutate the slice.
 func (c *cachedMemberLookup) GetMembers(ctx context.Context, roomID string) ([]roomsubcache.Member, error) {
+	// Fast path: cache hits skip singleflight to avoid serializing concurrent
+	// readers behind one in-flight caller.
+	if got, err := c.cache.Get(ctx, roomID); err == nil {
+		return got, nil
+	} else if !errors.Is(err, valkeyutil.ErrCacheMiss) {
+		slog.Warn("roomsubcache get failed, falling back to mongo", "error", err, "roomId", roomID)
+	}
+
+	// Miss path: singleflight collapses concurrent Mongo loads on the same room.
 	members, err, _ := c.sf.Do(roomID, func() (any, error) {
-		got, err := c.cache.Get(ctx, roomID)
-		if err == nil {
+		// Re-check inside the flight in case a sibling caller already populated.
+		if got, err := c.cache.Get(ctx, roomID); err == nil {
 			return got, nil
-		}
-		if !errors.Is(err, valkeyutil.ErrCacheMiss) {
-			slog.Warn("roomsubcache get failed, falling back to mongo", "error", err, "roomId", roomID)
 		}
 		loaded, lerr := c.load(ctx, roomID)
 		if lerr != nil {
