@@ -393,10 +393,10 @@ Error example (e.g. requester not in room):
 |----------------|--------|-------|
 | `userId`       | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
 | `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
-| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, or `"mute_toggled"`. |
+| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
 | `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
 
-On `added` / `role_updated` / `mute_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
+On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
@@ -813,6 +813,56 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 ##### Behaviour notes
 
 - **Notification delivery:** `notification-worker` does **not** yet consult `muted` before sending. End-to-end mute behaviour is wired only as far as the persisted flag; honouring it in fan-out is a follow-up.
+
+---
+
+#### Toggle Favorite
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.favorite.toggle`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+Synchronous RPC. `room-service` flips `Subscription.favorite` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, and fans out a `subscription.update` event to the user's other client sessions. Used by the client to render the per-user "favorited" sidebar section; backend treats the flag as a render hint only — no downstream behaviour (notifications, routing, retention) is gated on it.
+
+Idempotency: this is a toggle, not a set — every successful call flips the bit. Clients must debounce the user-visible action; redelivery of the same RPC will flip back.
+
+##### Request body
+
+The subject already carries `account` and `roomID`, so no body fields are required. Clients may send `{}` or omit the body entirely; any body content is ignored.
+
+##### Success response
+
+| Field      | Type    | Notes |
+|------------|---------|-------|
+| `status`   | string  | Always `"ok"`. |
+| `favorite` | boolean | The resulting value of `Subscription.favorite` after the flip. |
+
+```json
+{ "status": "ok", "favorite": true }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"invalid favorite-toggle subject: …"` — the subject is malformed.
+
+##### Triggered events — success path
+
+**`chat.user.{account}.event.subscription.update`** — emitted once for the requester so other client sessions reconcile.
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The requester's internal user ID. |
+| `subscription` | object | The `Subscription` record with the updated `favorite`. |
+| `action`       | string | `"favorite_toggled"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+##### Cross-site behaviour
+
+When the requester's home site differs from the room's site, `room-service` additionally publishes a `subscription_favorite_toggled` OutboxEvent to `outbox.{roomSite}.to.{userSite}.subscription_favorite_toggled`. `inbox-worker` on the user's home site mirrors the flip onto the local `Subscription` document. Missing-subscription on the home site (e.g., a federation race) is a silent no-op — no NACK, no redelivery loop.
 
 ---
 

@@ -377,6 +377,30 @@ func TestMuteToggle_ParseUserRoomSubject(t *testing.T) {
 	}
 }
 
+func TestFavoriteToggle(t *testing.T) {
+	got := subject.FavoriteToggle("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.favorite.toggle"
+	if got != want {
+		t.Errorf("FavoriteToggle: got %q, want %q", got, want)
+	}
+}
+
+func TestFavoriteToggleWildcard(t *testing.T) {
+	got := subject.FavoriteToggleWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.favorite.toggle"
+	if got != want {
+		t.Errorf("FavoriteToggleWildcard: got %q, want %q", got, want)
+	}
+}
+
+func TestFavoriteToggle_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok || account != "alice" || roomID != "r1" {
+		t.Errorf("ParseUserRoomSubject(%q) = (%q,%q,%v), want (alice,r1,true)", subj, account, roomID, ok)
+	}
+}
+
 func TestParseRoomCreateSubject(t *testing.T) {
 	tests := []struct {
 		name        string

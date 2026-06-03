@@ -87,6 +87,9 @@ type RoomStore interface {
 	// ToggleSubscriptionMute atomically flips muted via a single FindOneAndUpdate.
 	// Returns the post-flip subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
 	ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error)
+	// ToggleSubscriptionFavorite atomically flips favorite via a single FindOneAndUpdate.
+	// Returns the post-flip subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
+	ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error)
 	// GetUserSiteID returns the home site of a user looked up by account.
 	// Returns ("", nil) when the user is not found locally; callers treat
 	// that as "skip cross-site outbox".

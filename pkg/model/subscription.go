@@ -41,7 +41,7 @@ type Subscription struct {
 	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
-	Favorite           bool             `json:"favorite,omitempty" bson:"favorite,omitempty"`
+	Favorite           bool             `json:"favorite" bson:"favorite"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a

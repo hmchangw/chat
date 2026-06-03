@@ -2039,6 +2039,48 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
 }
 
+func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
+	db := testutil.MongoDB(t, "room-svc-fav")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Insert a sub via raw BSON without a "favorite" field at all — proves the
+	// $ifNull branch handles legacy docs and toggles missing→true on first call.
+	rawSub := bson.M{
+		"_id":      idgen.GenerateUUIDv7(),
+		"u":        bson.M{"_id": "u1", "account": "alice", "isBot": false},
+		"roomId":   "r1",
+		"roomType": model.RoomTypeChannel,
+		"siteId":   "site-a",
+		"roles":    []model.Role{model.RoleMember},
+		"joinedAt": time.Now().UTC(),
+		"muted":    false,
+		// no "favorite" key on purpose
+	}
+	_, err := db.Collection("subscriptions").InsertOne(ctx, rawSub)
+	require.NoError(t, err)
+
+	got, err := store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Favorite, "first toggle on legacy doc must flip missing→true")
+	assert.Equal(t, "alice", got.User.Account)
+	assert.Equal(t, "r1", got.RoomID)
+
+	persisted, err := store.GetSubscription(ctx, "alice", "r1")
+	require.NoError(t, err)
+	assert.True(t, persisted.Favorite)
+
+	got, err = store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.False(t, got.Favorite, "second toggle must flip true→false")
+
+	gotNil, err := store.ToggleSubscriptionFavorite(ctx, "missing", "alice")
+	assert.Nil(t, gotNil)
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
 // TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration verifies that
 // when an org member's id matches both a user's deptId and another user's
 // sectId, the dept branch wins and the combined "name tcName" string is

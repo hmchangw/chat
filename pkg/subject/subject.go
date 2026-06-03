@@ -413,6 +413,16 @@ func MuteToggleWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.mute.toggle", siteID)
 }
 
+// FavoriteToggle returns the concrete subject for the per-user favorite.toggle RPC.
+func FavoriteToggle(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.favorite.toggle", account, roomID, siteID)
+}
+
+// FavoriteToggleWildcard is the per-site subscription pattern for the favorite.toggle RPC.
+func FavoriteToggleWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.favorite.toggle", siteID)
+}
+
 // RoomCreate: client→room-service create subject; siteID is the requester's site.
 func RoomCreate(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.create", account, siteID)

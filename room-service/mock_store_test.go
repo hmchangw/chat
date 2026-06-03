@@ -313,6 +313,21 @@ func (mr *MockRoomStoreMockRecorder) MinSubscriptionLastSeenByRoomID(ctx, roomID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MinSubscriptionLastSeenByRoomID", reflect.TypeOf((*MockRoomStore)(nil).MinSubscriptionLastSeenByRoomID), ctx, roomID)
 }
 
+// ToggleSubscriptionFavorite mocks base method.
+func (m *MockRoomStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ToggleSubscriptionFavorite", ctx, roomID, account)
+	ret0, _ := ret[0].(*model.Subscription)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ToggleSubscriptionFavorite indicates an expected call of ToggleSubscriptionFavorite.
+func (mr *MockRoomStoreMockRecorder) ToggleSubscriptionFavorite(ctx, roomID, account any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ToggleSubscriptionFavorite", reflect.TypeOf((*MockRoomStore)(nil).ToggleSubscriptionFavorite), ctx, roomID, account)
+}
+
 // ToggleSubscriptionMute mocks base method.
 func (m *MockRoomStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
 	m.ctrl.T.Helper()

@@ -838,6 +838,28 @@ func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account
 	return &result, nil
 }
 
+// ToggleSubscriptionFavorite: $ifNull treats absent field as false so legacy docs toggle to true on first call.
+func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	update := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: bson.M{
+			"favorite": bson.M{"$not": bson.A{
+				bson.M{"$ifNull": bson.A{"$favorite", false}},
+			}},
+		}}},
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var result model.Subscription
+	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("toggle favorite for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("toggle favorite for %q in room %q: %w", account, roomID, err)
+	}
+	return &result, nil
+}
+
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
 // user document exists.
 func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string, error) {
