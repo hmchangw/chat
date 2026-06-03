@@ -8,6 +8,13 @@ import (
 	"github.com/hmchangw/chat/pkg/searchengine"
 )
 
+// NamedTemplate is an additional ES index template a collection owns beyond
+// its primary one (e.g. the encrypted parallel message index).
+type NamedTemplate struct {
+	Name string
+	Body json.RawMessage
+}
+
 // Collection defines a search-indexable data source. Each collection
 // encapsulates its own stream config, ES template, and document mapping.
 // To add a new collection (e.g., room search), implement this interface.
@@ -30,4 +37,8 @@ type Collection interface {
 	// BulkActions. An empty slice means the event should be acked without
 	// any ES write (e.g., filtered out).
 	BuildAction(data []byte) ([]searchengine.BulkAction, error)
+	// AuxTemplates returns any additional ES index templates the collection
+	// owns beyond its primary TemplateName/TemplateBody (e.g. the encrypted
+	// parallel message index). nil means none.
+	AuxTemplates() []NamedTemplate
 }

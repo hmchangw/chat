@@ -51,6 +51,19 @@ func TestEncMessageTemplateBody_PatternAndNoCustomAnalyzer(t *testing.T) {
 	assert.NotContains(t, string(settings), "custom_analyzer")
 }
 
+func TestAuxTemplates_NilByDefault(t *testing.T) {
+	// Plain message collection (enc disabled) and the spotlight/user-room
+	// collections expose no auxiliary templates.
+	msg := newMessageCollection("msgs-v1", time.Time{})
+	assert.Nil(t, msg.AuxTemplates())
+
+	spot := newSpotlightCollection("spotlight-v1")
+	assert.Nil(t, spot.AuxTemplates())
+
+	ur := newUserRoomCollection("user-room")
+	assert.Nil(t, ur.AuxTemplates())
+}
+
 func TestBuildEncDocument_Roundtrips(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	evt := &model.MessageEvent{

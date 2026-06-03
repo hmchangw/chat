@@ -36,6 +36,8 @@ func (c *spotlightCollection) TemplateBody() json.RawMessage {
 	return spotlightTemplateBody(c.indexName)
 }
 
+func (c *spotlightCollection) AuxTemplates() []NamedTemplate { return nil }
+
 // BuildAction fans a member_added / member_removed event out into one ES
 // action per account in the payload. Bulk invites produce N spotlight docs
 // from a single event; single-user invites produce one.

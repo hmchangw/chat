@@ -57,6 +57,8 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
+func (c *messageCollection) AuxTemplates() []NamedTemplate { return nil }
+
 func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {

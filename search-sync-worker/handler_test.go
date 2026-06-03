@@ -259,6 +259,7 @@ func (c stubCollection) ConsumerName() string                       { return "st
 func (c stubCollection) FilterSubjects(string) []string             { return nil }
 func (c stubCollection) TemplateName() string                       { return "" }
 func (c stubCollection) TemplateBody() json.RawMessage              { return nil }
+func (c stubCollection) AuxTemplates() []NamedTemplate              { return nil }
 func (c stubCollection) BuildAction([]byte) ([]searchengine.BulkAction, error) {
 	return []searchengine.BulkAction{{Action: c.action, Index: "stub", DocID: "id-1"}}, nil
 }
@@ -292,6 +293,7 @@ func (c fanOutCollection) ConsumerName() string           { return "fanout" }
 func (c fanOutCollection) FilterSubjects(string) []string { return nil }
 func (c fanOutCollection) TemplateName() string           { return "" }
 func (c fanOutCollection) TemplateBody() json.RawMessage  { return nil }
+func (c fanOutCollection) AuxTemplates() []NamedTemplate  { return nil }
 func (c fanOutCollection) BuildAction([]byte) ([]searchengine.BulkAction, error) {
 	actions := make([]searchengine.BulkAction, 0, c.actionsPerMessage)
 	for i := 0; i < c.actionsPerMessage; i++ {

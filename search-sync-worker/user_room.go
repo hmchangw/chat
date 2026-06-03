@@ -44,6 +44,8 @@ func (c *userRoomCollection) TemplateBody() json.RawMessage {
 	return userRoomTemplateBody(c.indexName)
 }
 
+func (c *userRoomCollection) AuxTemplates() []NamedTemplate { return nil }
+
 // addRoomScript / removeRoomScript implement application-level last-write-wins
 // on (user, room) using `params.ts` (OutboxEvent.Timestamp in millis). Stale
 // events short-circuit via `ctx.op = 'none'` which tells ES to skip the write
