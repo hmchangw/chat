@@ -273,7 +273,133 @@ each arm and compare p50/p95/p99 across C/A/B; the Phase-2 recommendation
 
 ---
 
-## 3. Kibana / ES demo — "encrypted yet searchable"
+## 3. Backfill / cutover migration — populate the encrypted index for historical messages
+
+This is the operational procedure for Phase 3 cutover (spec §9, §12): seed the
+parallel encrypted index from historical `MESSAGES_CANONICAL` traffic, verify it
+against the plaintext index, then flip the read path and (optionally) stop
+plaintext writes.
+
+The mechanism is the **existing `SYNC_MESSAGES_FROM` cutover filter** reused for
+the enc path. In `search-sync-worker/messages.go`, `BuildAction` applies the
+`syncFrom` cutoff (a message whose `Message.CreatedAt` predates the cutoff emits
+**zero** actions) *before* it builds either the plaintext or the encrypted
+action. So replaying `MESSAGES_CANONICAL` with `ENC_ENABLED=true` and
+`SYNC_MESSAGES_FROM=<cutover ts>` populates the encrypted index for exactly
+`createdAt >= SYNC_MESSAGES_FROM` and never writes pre-cutoff docs into it.
+(Gating proven by `TestMessageCollection_BuildAction_SyncFromFilter_GatesEnc`.)
+
+### 3.1 Known limitation — JetStream retention bounds the replay (spec §12)
+
+**Only messages still resident on the `MESSAGES_CANONICAL` stream can be
+replayed.** The durable consumer reads from the JetStream stream; once a message
+has aged out of `MESSAGES_CANONICAL` (stream retention / max-age / max-bytes), it
+is gone from the replay source. Backfill via `SYNC_MESSAGES_FROM` therefore
+covers history back to **whichever is later**: the stream's retention horizon or
+your chosen cutover timestamp. Older history (predating the stream retention
+window) needs a **separate reindex source** that re-publishes canonical events
+from durable storage (Cassandra `messages_by_room`) into `MESSAGES_CANONICAL`, or
+a direct bulk-index job. That reindex source is **not** built — it is the known
+gap flagged in spec §12 ("Reindex on cutover"). Pick the cutover timestamp with
+this in mind: if it is older than the stream retention horizon, the window
+between them will be silently absent from the enc index until a reindex source
+exists.
+
+### 3.2 Procedure (ordered)
+
+1. **Choose the cutover timestamp.** `SYNC_MESSAGES_FROM=<RFC3339 / parseable ts>`
+   — the oldest `createdAt` you want in the encrypted index. Confirm it is **at
+   or after** the `MESSAGES_CANONICAL` retention horizon (see §3.1); anything
+   older won't replay.
+
+2. **Enable the enc dual-write on `search-sync-worker`** with the cutoff set (env
+   per §2.2):
+
+   ```
+   ENC_ENABLED=true
+   SYNC_MESSAGES_FROM=<cutover ts>
+   BLINDIDX_KEY=<hex>
+   BLINDIDX_KEY_VERSION=v1
+   ENC_MSG_INDEX_PREFIX=enc-messages-site-local-v1
+   MSG_INDEX_PREFIX=messages-site-local-v1
+   PLAINTEXT_INDEX_ENABLED=true     # keep plaintext live during backfill+verify
+   ```
+
+   Leave `PLAINTEXT_INDEX_ENABLED=true` for now — the plaintext index is your
+   verification baseline and the live read path until the flip in step 6.
+
+3. **Replay the durable consumer from the cutover point.** Reset the
+   `message-sync` durable consumer so it re-delivers `MESSAGES_CANONICAL` from the
+   start of the retained stream (or from a sequence/time ≥ the cutover). The
+   `syncFrom` filter drops anything older than the cutoff, so the consumer can
+   start at the stream's first retained message safely. For example, recreate the
+   durable with `DeliverPolicy=All` (or `ByStartTime` at the cutover ts), then let
+   it drain. New live traffic continues to flow through the same consumer, so the
+   enc index stays current after the backfill completes — backfill and steady
+   state use one path.
+
+4. **Let the backfill drain.** Monitor consumer lag (NATS `nats consumer info`
+   for `MESSAGES_CANONICAL` / `message-sync`: `Unprocessed`/`Pending` → 0) and the
+   worker's index error metrics. Cipher/Vault failures NAK and redeliver (they are
+   transient by design), so a transient Vault blip does not lose docs — it retries.
+
+5. **Verify enc-index doc counts vs plaintext.** Compare the two indices for the
+   backfilled window. Force a refresh first, then count both, scoped to the same
+   `createdAt >= SYNC_MESSAGES_FROM` range:
+
+   ```
+   POST messages-site-local-v1-*/_refresh
+   POST enc-messages-site-local-v1-*/_refresh
+
+   # Plaintext count for the backfilled window:
+   GET messages-site-local-v1-*/_count
+   { "query": { "range": { "createdAt": { "gte": "<cutover ts>" } } } }
+
+   # Encrypted-index count for the same window:
+   GET enc-messages-site-local-v1-*/_count
+   { "query": { "range": { "createdAt": { "gte": "<cutover ts>" } } } }
+   ```
+
+   The two counts should match for `createdAt >= SYNC_MESSAGES_FROM`. A shortfall
+   on the enc side means undelivered/NAK'd docs — re-check consumer lag (step 4)
+   and Vault availability before proceeding. Spot-check a few known messages via
+   the §4 "encrypted-yet-searchable" blind-token query to confirm content
+   is actually searchable, not just present.
+
+6. **Flip the read path (post-verification only).** Once counts match and
+   spot-checks pass, point `search-service` at the encrypted index by default:
+
+   ```
+   SEARCH_ENC_DEFAULT_ARM=A      # or B — the arm chosen by the Phase-2 benchmark
+   ```
+
+   (`SEARCH_ENC_DEFAULT_ARM=C` is the plaintext baseline; A/B read the encrypted
+   index.) This is the actual cutover — search queries now resolve against
+   `contentBlind` and decrypt from `contentEnc` (A) or history-service (B).
+
+7. **(Optional) Stop plaintext writes.** After the read path is on the enc index
+   and stable, set on `search-sync-worker`:
+
+   ```
+   PLAINTEXT_INDEX_ENABLED=false
+   ```
+
+   `BuildAction` then emits only the enc action; the plaintext template is no
+   longer upserted (its `TemplateBody` returns nil). At least one of
+   `PLAINTEXT_INDEX_ENABLED` / `ENC_ENABLED` must stay true — `main` validates
+   this at startup so a message never produces zero index actions. The now-stale
+   plaintext indices can be deleted on your own schedule once you are confident in
+   the rollback window.
+
+**Rollback:** before step 7, rollback is trivial — set `SEARCH_ENC_DEFAULT_ARM=C`
+to return to the plaintext read path (the plaintext index is still being written
+while `PLAINTEXT_INDEX_ENABLED=true`). After step 7, rollback requires
+re-enabling plaintext writes and re-backfilling the gap, so only disable plaintext
+once the enc path is proven.
+
+---
+
+## 4. Kibana / ES demo — "encrypted yet searchable"
 
 The proof that the encrypted index stores no readable message text yet still
 returns the right document for a content query. Against the stack from §2 (enc
@@ -321,7 +447,7 @@ rest, searchable in motion.
 
 ---
 
-## 4. What was actually run in the sandbox vs deferred to your stack
+## 5. What was actually run in the sandbox vs deferred to your stack
 
 | Item | Status |
 |---|---|

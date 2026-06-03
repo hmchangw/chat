@@ -378,6 +378,49 @@ func TestMessageCollection_BuildAction_SyncFromFilter(t *testing.T) {
 	})
 }
 
+func TestMessageCollection_BuildAction_SyncFromFilter_GatesEnc(t *testing.T) {
+	// Backfill safety: the SYNC_MESSAGES_FROM cutoff must gate the encrypted
+	// action exactly as it gates the plaintext one. A message created before
+	// the cutoff must produce ZERO actions (neither plaintext nor enc), so a
+	// replay with ENC_ENABLED=true + SYNC_MESSAGES_FROM never writes pre-cutoff
+	// docs into the encrypted index. A message at/after the cutoff produces both.
+	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	coll := newMessageCollectionEnc("msgs-v1", cutoff, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+
+	t.Run("before cutoff: no plaintext AND no enc action", func(t *testing.T) {
+		data := mkMsgEvent(model.EventCreated, "m1", "secret", time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC))
+		actions, err := coll.BuildAction(context.Background(), data)
+		require.NoError(t, err)
+		assert.Empty(t, actions, "pre-cutoff event must emit zero actions even with enc enabled")
+	})
+
+	t.Run("exactly at cutoff: plaintext + enc actions", func(t *testing.T) {
+		data := mkMsgEvent(model.EventCreated, "m1", "secret", cutoff)
+		actions, err := coll.BuildAction(context.Background(), data)
+		require.NoError(t, err)
+		require.Len(t, actions, 2, "at-cutoff event must emit plaintext + enc actions")
+		assert.Equal(t, "msgs-v1-2026-01", actions[0].Index)
+		assert.Equal(t, "enc-msgs-v1-2026-01", actions[1].Index)
+	})
+
+	t.Run("after cutoff: plaintext + enc actions", func(t *testing.T) {
+		data := mkMsgEvent(model.EventCreated, "m1", "secret", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+		actions, err := coll.BuildAction(context.Background(), data)
+		require.NoError(t, err)
+		require.Len(t, actions, 2, "post-cutoff event must emit plaintext + enc actions")
+		assert.Equal(t, "enc-msgs-v1-2026-06", actions[1].Index)
+	})
+
+	t.Run("enc-only post-cutover: before cutoff still emits nothing", func(t *testing.T) {
+		encOnly := newMessageCollectionEnc("msgs-v1", cutoff, testEncOptions(t, fakeCipher{ct: []byte("ct"), nonce: []byte("nonce")}))
+		encOnly.plaintextEnabled = false
+		data := mkMsgEvent(model.EventCreated, "m1", "secret", time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC))
+		actions, err := encOnly.BuildAction(context.Background(), data)
+		require.NoError(t, err)
+		assert.Empty(t, actions, "enc-only pre-cutoff event must emit zero actions")
+	})
+}
+
 func mkMsgEvent(evType model.EventType, id, content string, createdAt time.Time) []byte {
 	evt := model.MessageEvent{
 		Event: evType,
