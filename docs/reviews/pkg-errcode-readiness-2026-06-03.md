@@ -362,3 +362,24 @@ Code is sensibly written and avoids obvious traps, but the package sits on every
 
 ---
 
+## Chapter 8 — Prioritized action list
+
+Top items across all dimensions, ordered by severity then impact ÷ effort.
+
+| # | Severity | Action | Dimension | Where | Why |
+|---|---|---|---|---|---|
+| 1 | **high** | Wire a TS↔Go reason-catalog parity test that diffs `chat-frontend/src/api/_transport/asyncJob.ts` `REASON_COPY` against `allReasons`, and add `non_channel_operation` to `REASON_COPY` now. | Consumer ergonomics | `pkg/errcode/codes_test.go`, `chat-frontend/src/api/_transport/asyncJob.ts:94` | Two emitted backend reasons currently fall through to raw English on the client. CI gives no signal today. |
+| 2 | **high** | Rename the package func `errcode.WithLogValues` to break the visual collision with `Option`-returning `With*` constructors (suggested `WithLogContext`). Update doc + call sites. | API design | `pkg/errcode/logctx.go:18`; callers in `room-service`, `auth-service`, `message-gatekeeper`, `room-worker` | Looks like an `Option` but is a ctx mutator. Documented footgun in `doc.go:56`; rename eliminates the trap. |
+| 3 | **high** | Fix the "one of 7 generic categories" → "8" in client docs and confirm the catalog table is complete. | Consumer ergonomics | `docs/client-api.md:2186` | First paragraph a client integrator reads, currently stale. |
+| 4 | **medium** | Add benchmarks: `Benchmark_BadRequest`, `Benchmark_InternalWithCause`, `Benchmark_PermanentWrap` in `classify_bench_test.go`, `errnats/reply_bench_test.go`, `errhttp/write_bench_test.go`. Wire a `make bench` informational job. | Performance | new files under `pkg/errcode/` | Library on every reply path with zero perf regression signal. |
+| 5 | **medium** | Auto-derive `allReasons` (go:generate or reflection-based init test) so the dual-list maintenance disappears. | Maintainability | `pkg/errcode/codes_test.go:8-18` | Won't scale past ~10 services without becoming a merge-conflict hotspot. |
+| 6 | **medium** | Migrate `room-service` to `pkg/natsrouter` so `wrappedCtx` + double `errnats.Reply` collapse to the one-liner shape `history-service` uses. | Consumer ergonomics | `room-service/handler.go:126-1533` | Deletes ~75 lines of pure plumbing and removes one of two log-attach styles new contributors must learn. |
+| 7 | **medium** | Move `MarshalQuiet` / `ReplyQuiet` behind an internal package OR rename to `…AfterLog` so the log-once invariant is encoded in the name. | API design | `pkg/errcode/errnats/reply.go:28-52` | One mis-use away from breaking the log-once contract repo-wide. |
+| 8 | **medium** | Add a "Catalogs" section to `doc.go` + the four-step add-a-reason checklist; link to `docs/error-handling.md` and `docs/client-api.md §6` from doc.go so `go doc` surfaces them. | Maintainability / Consumer ergonomics | `pkg/errcode/doc.go` | Contributors landing via `go doc` currently can't find the longer guides. |
+| 9 | **medium** | Add a "perf invariants" section to `doc.go` codifying ≤4 allocs / no `fmt.Sprintf` / lock-free. | Performance | `pkg/errcode/doc.go` | Codifies what's implicit so future PRs don't accidentally regress it. |
+| 10 | **low** | Migrate `classify.go:32-39` to `slog.LogAttrs` with typed `slog.Attr` — cleaner, faster slog dispatch, better escape analysis. | Code quality / Performance | `pkg/errcode/classify.go:32-39` | Easy alloc win on every reply; pairs with item #4 for measurable evidence. |
+
+### Out-of-scope items surfaced
+
+- `make generate` is broken repo-wide (toolchain mismatch — `mockgen` built against go1.24, services on go1.25). Not a `pkg/errcode` finding, but blocks the mock-staleness check.
+- `govulncheck` reports `GO-2026-5039` (`net/textproto`) and `GO-2026-5037` (`crypto/x509`). Cleared by bumping `GOTOOLCHAIN` to `go1.25.11`. No trace touches `pkg/errcode/`.
