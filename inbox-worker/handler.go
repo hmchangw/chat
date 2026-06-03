@@ -34,6 +34,8 @@ type InboxStore interface {
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
 	// UpdateSubscriptionMute sets muted by (roomID, account); missing-sub is a silent no-op for federation races.
 	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
+	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
+	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -66,6 +68,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleSubscriptionRead(ctx, &evt)
 	case "subscription_mute_toggled":
 		return h.handleSubscriptionMuteToggled(ctx, &evt)
+	case "subscription_favorite_toggled":
+		return h.handleSubscriptionFavoriteToggled(ctx, &evt)
 	case "thread_subscription_upserted":
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
 	case "thread_read":
@@ -220,6 +224,18 @@ func (h *Handler) handleSubscriptionMuteToggled(ctx context.Context, evt *model.
 	}
 	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted); err != nil {
 		return fmt.Errorf("update subscription mute for %q in room %q: %w", e.Account, e.RoomID, err)
+	}
+	return nil
+}
+
+// handleSubscriptionFavoriteToggled mirrors a room-side favorite toggle onto the user's home-site subscription.
+func (h *Handler) handleSubscriptionFavoriteToggled(ctx context.Context, evt *model.OutboxEvent) error {
+	var e model.SubscriptionFavoriteToggledEvent
+	if err := json.Unmarshal(evt.Payload, &e); err != nil {
+		return fmt.Errorf("unmarshal subscription_favorite_toggled payload: %w", err)
+	}
+	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite); err != nil {
+		return fmt.Errorf("update subscription favorite for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil
 }

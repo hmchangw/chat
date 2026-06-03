@@ -34,7 +34,7 @@ type RoomMetadataUpdateEvent struct {
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
-	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled"
+	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled" | "favorite_toggled"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
@@ -81,12 +81,13 @@ type NotificationEvent struct {
 type OutboxEventType = string
 
 const (
-	OutboxMemberAdded                OutboxEventType = "member_added"
-	OutboxMemberRemoved              OutboxEventType = "member_removed"
-	OutboxSubscriptionRead           OutboxEventType = "subscription_read"
-	OutboxSubscriptionMuteToggled    OutboxEventType = "subscription_mute_toggled"
-	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
-	OutboxThreadRead                 OutboxEventType = "thread_read"
+	OutboxMemberAdded                 OutboxEventType = "member_added"
+	OutboxMemberRemoved               OutboxEventType = "member_removed"
+	OutboxSubscriptionRead            OutboxEventType = "subscription_read"
+	OutboxSubscriptionMuteToggled     OutboxEventType = "subscription_mute_toggled"
+	OutboxSubscriptionFavoriteToggled OutboxEventType = "subscription_favorite_toggled"
+	OutboxThreadSubscriptionUpserted  OutboxEventType = "thread_subscription_upserted"
+	OutboxThreadRead                  OutboxEventType = "thread_read"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -310,6 +311,20 @@ type SubscriptionMuteToggledEvent struct {
 	Account   string `json:"account"              bson:"account"`
 	RoomID    string `json:"roomId"               bson:"roomId"`
 	Muted     bool   `json:"muted" bson:"muted"`
+	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
+}
+
+// FavoriteToggleResponse is the sync reply for the favorite.toggle RPC.
+type FavoriteToggleResponse struct {
+	Status   string `json:"status"`
+	Favorite bool   `json:"favorite"`
+}
+
+// SubscriptionFavoriteToggledEvent is the OutboxEvent.Payload for type "subscription_favorite_toggled".
+type SubscriptionFavoriteToggledEvent struct {
+	Account   string `json:"account"              bson:"account"`
+	RoomID    string `json:"roomId"               bson:"roomId"`
+	Favorite  bool   `json:"favorite"             bson:"favorite"`
 	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
 }
 

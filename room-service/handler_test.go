@@ -4268,3 +4268,247 @@ func TestPublishCreateRoom_NoProvisioner_Skips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, published)
 }
+
+func TestHandler_FavoriteToggle_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-a",
+			Favorite: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil)
+
+	var coreSubjects []string
+	var coreBodies [][]byte
+	h := &Handler{
+		store:  store,
+		siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site favorite toggle")
+			return nil
+		},
+		publishCore: func(_ context.Context, subj string, data []byte) error {
+			coreSubjects = append(coreSubjects, subj)
+			coreBodies = append(coreBodies, data)
+			return nil
+		},
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	resp, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	var got model.FavoriteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.Favorite)
+
+	require.Len(t, coreSubjects, 1)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), coreSubjects[0])
+
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
+	assert.Equal(t, "favorite_toggled", evt.Action)
+	assert.True(t, evt.Subscription.Favorite)
+	assert.Equal(t, "alice", evt.Subscription.User.Account)
+}
+
+func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-a",
+			Favorite: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	var streamSubj string
+	var streamData []byte
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, s string, d []byte) error {
+			streamSubj = s
+			streamData = d
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	_, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, subject.Outbox("site-a", "site-b", model.OutboxSubscriptionFavoriteToggled), streamSubj)
+
+	var outbox model.OutboxEvent
+	require.NoError(t, json.Unmarshal(streamData, &outbox))
+	assert.Equal(t, model.OutboxSubscriptionFavoriteToggled, outbox.Type)
+	assert.Equal(t, "site-a", outbox.SiteID)
+	assert.Equal(t, "site-b", outbox.DestSiteID)
+
+	var payload model.SubscriptionFavoriteToggledEvent
+	require.NoError(t, json.Unmarshal(outbox.Payload, &payload))
+	assert.Equal(t, "alice", payload.Account)
+	assert.Equal(t, "r1", payload.RoomID)
+	assert.True(t, payload.Favorite)
+	assert.NotZero(t, payload.Timestamp)
+}
+
+func TestHandler_FavoriteToggle_NotRoomMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(nil, model.ErrSubscriptionNotFound)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	_, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	assert.ErrorIs(t, err, errNotRoomMember)
+}
+
+func TestHandler_FavoriteToggle_InvalidSubject(t *testing.T) {
+	h := &Handler{
+		siteID:          "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	_, err := h.handleFavoriteToggle(context.Background(), "garbage.subject", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid favorite-toggle subject")
+}
+
+func TestHandler_FavoriteToggle_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(nil, fmt.Errorf("db down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	_, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "toggle subscription favorite")
+}
+
+func TestHandler_FavoriteToggle_GetUserSiteIDError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("", fmt.Errorf("mongo down"))
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called when GetUserSiteID fails")
+			return nil
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	_, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get user siteId")
+}
+
+func TestHandler_FavoriteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-a",
+			Favorite: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-b", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("nats unavailable")
+		},
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	_, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish favorite-toggled outbox")
+}
+
+func TestHandler_FavoriteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		Return(&model.Subscription{
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-a",
+			Favorite: true,
+		}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "alice").
+		Return("site-a", nil)
+
+	h := &Handler{
+		store: store, siteID: "site-a",
+		publishCore: func(_ context.Context, _ string, _ []byte) error {
+			return fmt.Errorf("core nats down")
+		},
+		publishToStream: func(_ context.Context, _ string, _ []byte) error {
+			t.Fatal("publishToStream must not be called for same-site favorite toggle")
+			return nil
+		},
+	}
+
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
+	resp, err := h.handleFavoriteToggle(context.Background(), subj, nil)
+	require.NoError(t, err, "publishCore failure must be non-fatal — DB write is the source of truth")
+
+	var got model.FavoriteToggleResponse
+	require.NoError(t, json.Unmarshal(resp, &got))
+	assert.Equal(t, "ok", got.Status)
+	assert.True(t, got.Favorite)
+}

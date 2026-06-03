@@ -504,33 +504,6 @@ func TestSubscriptionJSON(t *testing.T) {
 
 		roundTrip(t, &s, &model.Subscription{})
 	})
-
-	t.Run("favorite omitted when false", func(t *testing.T) {
-		s := model.Subscription{
-			ID:       "s1",
-			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:   "r1",
-			RoomType: model.RoomTypeDM,
-			SiteID:   "site-a",
-			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		}
-		data, err := json.Marshal(&s)
-		require.NoError(t, err)
-
-		var raw map[string]any
-		require.NoError(t, json.Unmarshal(data, &raw))
-		_, present := raw["favorite"]
-		assert.False(t, present, "favorite should be omitted when false")
-
-		bdata, err := bson.Marshal(&s)
-		require.NoError(t, err)
-		var braw bson.M
-		require.NoError(t, bson.Unmarshal(bdata, &braw))
-		_, bpresent := braw["favorite"]
-		assert.False(t, bpresent, "favorite should be omitted from BSON when false")
-
-		roundTrip(t, &s, &model.Subscription{})
-	})
 }
 
 func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
@@ -561,10 +534,15 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	assert.True(t, hasMuted, "muted must be present in JSON even when false")
 	assert.Equal(t, false, mutedVal)
 
+	favoriteVal, hasFavorite := raw["favorite"]
+	assert.True(t, hasFavorite, "favorite must be present in JSON even when false")
+	assert.Equal(t, false, favoriteVal)
+
 	var dst model.Subscription
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Nil(t, dst.ThreadUnread, "absent threadUnread must unmarshal to nil")
 	assert.False(t, dst.Alert)
+	assert.False(t, dst.Favorite)
 }
 
 func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
@@ -2328,6 +2306,43 @@ func TestSubscriptionMuteToggledEventJSON(t *testing.T) {
 
 func TestOutboxSubscriptionMuteToggledConst(t *testing.T) {
 	assert.Equal(t, model.OutboxEventType("subscription_mute_toggled"), model.OutboxSubscriptionMuteToggled)
+}
+
+func TestFavoriteToggleResponseJSON(t *testing.T) {
+	src := model.FavoriteToggleResponse{
+		Status:   "ok",
+		Favorite: true,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.FavoriteToggleResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "ok", raw["status"])
+	assert.Equal(t, true, raw["favorite"])
+}
+
+func TestSubscriptionFavoriteToggledEventJSON(t *testing.T) {
+	src := model.SubscriptionFavoriteToggledEvent{
+		Account:   "alice",
+		RoomID:    "r1",
+		Favorite:  true,
+		Timestamp: 1234567890,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.SubscriptionFavoriteToggledEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestOutboxSubscriptionFavoriteToggledConst(t *testing.T) {
+	assert.Equal(t, model.OutboxEventType("subscription_favorite_toggled"), model.OutboxSubscriptionFavoriteToggled)
 }
 
 func TestSyncCreateDMRequestJSON(t *testing.T) {

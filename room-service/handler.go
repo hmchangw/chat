@@ -125,6 +125,9 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, h.natsMuteToggle); err != nil {
 		return fmt.Errorf("subscribe mute toggle: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.FavoriteToggleWildcard(h.siteID), queue, h.natsFavoriteToggle); err != nil {
+		return fmt.Errorf("subscribe favorite toggle: %w", err)
+	}
 	return nil
 }
 
@@ -1630,4 +1633,92 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 	}
 
 	return json.Marshal(model.MuteToggleResponse{Status: "ok", Muted: sub.Muted})
+}
+
+func (h *Handler) natsFavoriteToggle(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleFavoriteToggle(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to favorite toggle", "error", err)
+	}
+}
+
+func (h *Handler) handleFavoriteToggle(ctx context.Context, subj string, _ []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid favorite-toggle subject: %s", subj)
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+		)
+	}
+
+	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account)
+	if err != nil {
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errNotRoomMember
+		}
+		return nil, fmt.Errorf("toggle subscription favorite: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: *sub,
+		Action:       "favorite_toggled",
+		Timestamp:    now.UnixMilli(),
+	}
+	subEvtData, err := json.Marshal(subEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", account)
+		// Non-fatal — the DB write is the source of truth; clients will reconcile on next refetch.
+	}
+
+	userSiteID, err := h.store.GetUserSiteID(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get user siteId: %w", err)
+	}
+	if userSiteID != "" && userSiteID != h.siteID {
+		payload := model.SubscriptionFavoriteToggledEvent{
+			Account:   account,
+			RoomID:    roomID,
+			Favorite:  sub.Favorite,
+			Timestamp: now.UnixMilli(),
+		}
+		payloadData, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal favorite-toggled payload: %w", err)
+		}
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxSubscriptionFavoriteToggled,
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    payloadData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionFavoriteToggled), outboxData); err != nil {
+			return nil, fmt.Errorf("publish favorite-toggled outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(model.FavoriteToggleResponse{Status: "ok", Favorite: sub.Favorite})
 }
