@@ -12,6 +12,11 @@ type SearchMessagesRequest struct {
 	RoomIDs []string `json:"roomIds,omitempty"`
 	Size    int      `json:"size,omitempty"`
 	Offset  int      `json:"offset,omitempty"`
+
+	// Variant selects the benchmark arm ("", "C", "A", "B"). Honored ONLY when the
+	// server runs with SEARCH_BENCH_MODE_ENABLED=true; otherwise the server's
+	// configured default arm is used. Empty = server default.
+	Variant string `json:"variant,omitempty"`
 }
 
 // SearchMessagesResponse is the NATS reply for `search.messages`.

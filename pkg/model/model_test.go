@@ -1738,6 +1738,30 @@ func TestSearchMessagesRequestJSON(t *testing.T) {
 		_, present := raw["roomIds"]
 		assert.False(t, present, "roomIds must be omitted when nil")
 	})
+
+	t.Run("variant round-trips and is omitted when empty", func(t *testing.T) {
+		req := model.SearchMessagesRequest{Query: "hello", Variant: "A"}
+		roundTrip(t, &req, &model.SearchMessagesRequest{})
+
+		data, err := json.Marshal(&req)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, "A", raw["variant"])
+
+		// Absent variant decodes to "" and is omitted on the wire.
+		reqNoVariant := model.SearchMessagesRequest{Query: "hello"}
+		data, err = json.Marshal(&reqNoVariant)
+		require.NoError(t, err)
+		var rawNoVariant map[string]any
+		require.NoError(t, json.Unmarshal(data, &rawNoVariant))
+		_, present := rawNoVariant["variant"]
+		assert.False(t, present, "variant must be omitted when empty")
+
+		var dst model.SearchMessagesRequest
+		require.NoError(t, json.Unmarshal([]byte(`{"query":"hello"}`), &dst))
+		assert.Equal(t, "", dst.Variant, "absent variant must decode to empty string")
+	})
 }
 
 func TestSearchMessagesResponseJSON(t *testing.T) {
