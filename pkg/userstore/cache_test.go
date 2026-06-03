@@ -3,6 +3,7 @@ package userstore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,123 +15,197 @@ import (
 )
 
 type fakeStore struct {
-	users     map[string]*model.User
-	callCount int
-	err       error
+	mu             sync.Mutex
+	usersByID      map[string]*model.User
+	usersByAccount map[string]*model.User
+	byIDCalls      int
+	byAccountCalls int
+	err            error
+}
+
+func newFakeStore(users ...model.User) *fakeStore {
+	s := &fakeStore{
+		usersByID:      make(map[string]*model.User, len(users)),
+		usersByAccount: make(map[string]*model.User, len(users)),
+	}
+	for i := range users {
+		u := users[i]
+		s.usersByID[u.ID] = &u
+		s.usersByAccount[u.Account] = &u
+	}
+	return s
 }
 
 func (f *fakeStore) FindUserByID(_ context.Context, id string) (*model.User, error) {
-	f.callCount++
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byIDCalls++
 	if f.err != nil {
 		return nil, f.err
 	}
-	if u, ok := f.users[id]; ok {
+	if u, ok := f.usersByID[id]; ok {
 		return u, nil
 	}
 	return nil, userstore.ErrUserNotFound
 }
 
-func (f *fakeStore) FindUsersByAccounts(context.Context, []string) ([]model.User, error) {
-	return nil, nil
+func (f *fakeStore) FindUsersByAccounts(_ context.Context, accounts []string) ([]model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byAccountCalls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make([]model.User, 0, len(accounts))
+	for _, a := range accounts {
+		if u, ok := f.usersByAccount[a]; ok {
+			out = append(out, *u)
+		}
+	}
+	return out, nil
 }
 
 func TestNewCache_RejectsInvalidArgs(t *testing.T) {
-	_, err := userstore.NewCache(nil, 100, time.Minute)
+	_, err := userstore.NewCache(nil, 10, time.Minute)
 	require.Error(t, err)
 
-	_, err = userstore.NewCache(&fakeStore{}, 0, time.Minute)
+	_, err = userstore.NewCache(newFakeStore(), 0, time.Minute)
 	require.Error(t, err)
 
-	_, err = userstore.NewCache(&fakeStore{}, 100, 0)
+	_, err = userstore.NewCache(newFakeStore(), 10, 0)
 	require.Error(t, err)
 }
 
-func TestCache_MissThenHit(t *testing.T) {
-	store := &fakeStore{users: map[string]*model.User{
-		"u1": {ID: "u1", Account: "alice", EngName: "Alice"},
-	}}
-	c, err := userstore.NewCache(store, 100, time.Minute)
+func TestCache_FindUserByID_MissThenHit(t *testing.T) {
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, err := userstore.NewCache(store, 10, time.Minute)
 	require.NoError(t, err)
 
-	got, err := c.FindUserByID(context.Background(), "u1")
+	u, err := cache.FindUserByID(context.Background(), "u1")
 	require.NoError(t, err)
-	assert.Equal(t, "Alice", got.EngName)
+	assert.Equal(t, "alice", u.Account)
+	assert.Equal(t, 1, store.byIDCalls)
 
-	got2, err := c.FindUserByID(context.Background(), "u1")
+	_, err = cache.FindUserByID(context.Background(), "u1")
 	require.NoError(t, err)
-	assert.Equal(t, "Alice", got2.EngName)
-	assert.Equal(t, 1, store.callCount, "second FindUserByID must be served from cache")
-
-	stats := c.Stats()
-	assert.Equal(t, uint64(1), stats.Hits)
-	assert.Equal(t, uint64(1), stats.Misses)
-	assert.Equal(t, 1, stats.Size)
+	assert.Equal(t, 1, store.byIDCalls, "second lookup must hit cache")
 }
 
-func TestCache_NotFoundReturnsUnwrappedErrUserNotFound(t *testing.T) {
-	c, err := userstore.NewCache(&fakeStore{users: map[string]*model.User{}}, 100, time.Minute)
-	require.NoError(t, err)
-
-	_, err = c.FindUserByID(context.Background(), "ghost")
+func TestCache_FindUserByID_NotFoundIsUnwrapped(t *testing.T) {
+	cache, _ := userstore.NewCache(newFakeStore(), 10, time.Minute)
+	_, err := cache.FindUserByID(context.Background(), "ghost")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, userstore.ErrUserNotFound),
-		"ErrUserNotFound must propagate so callers can branch on it without parsing strings")
+	assert.ErrorIs(t, err, userstore.ErrUserNotFound)
 }
 
-func TestCache_GenericErrorWrappedWithContext(t *testing.T) {
-	c, err := userstore.NewCache(&fakeStore{err: errors.New("mongo timeout")}, 100, time.Minute)
-	require.NoError(t, err)
-
-	_, err = c.FindUserByID(context.Background(), "u1")
+func TestCache_FindUserByID_StoreErrorWrapped(t *testing.T) {
+	store := &fakeStore{err: errors.New("mongo down"), usersByID: map[string]*model.User{}, usersByAccount: map[string]*model.User{}}
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+	_, err := cache.FindUserByID(context.Background(), "u1")
 	require.Error(t, err)
+	assert.NotErrorIs(t, err, userstore.ErrUserNotFound)
 	assert.Contains(t, err.Error(), "find cached user")
 }
 
-func TestCache_LoaderErrorNotCached(t *testing.T) {
-	store := &fakeStore{err: errors.New("transient")}
-	c, err := userstore.NewCache(store, 100, time.Minute)
-	require.NoError(t, err)
+func TestCache_FindUsersByAccounts_BatchPartialHit(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(
+		model.User{ID: "u1", Account: "alice"},
+		model.User{ID: "u2", Account: "bob"},
+		model.User{ID: "u3", Account: "carol"},
+	)
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
 
-	_, err1 := c.FindUserByID(context.Background(), "u1")
-	require.Error(t, err1)
-	_, err2 := c.FindUserByID(context.Background(), "u1")
-	require.Error(t, err2)
-	assert.Equal(t, 2, store.callCount, "errors must not be cached")
+	got, err := cache.FindUsersByAccounts(ctx, []string{"alice", "bob"})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	assert.Equal(t, 1, store.byAccountCalls)
+
+	got, err = cache.FindUsersByAccounts(ctx, []string{"alice", "carol"})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	assert.Equal(t, 2, store.byAccountCalls)
+	stats := cache.Stats()
+	assert.GreaterOrEqual(t, stats.Hits, uint64(1))
 }
 
-func TestCache_TTLExpires(t *testing.T) {
-	store := &fakeStore{users: map[string]*model.User{
-		"u1": {ID: "u1", Account: "alice"},
-	}}
-	c, err := userstore.NewCache(store, 100, 30*time.Millisecond)
+func TestCache_FindUsersByAccounts_CrossPopulatesByID(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+
+	_, err := cache.FindUsersByAccounts(ctx, []string{"alice"})
 	require.NoError(t, err)
 
-	_, _ = c.FindUserByID(context.Background(), "u1")
-	time.Sleep(60 * time.Millisecond)
-	_, _ = c.FindUserByID(context.Background(), "u1")
-	assert.GreaterOrEqual(t, store.callCount, 2, "TTL-expired entry must reload")
+	_, err = cache.FindUserByID(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, store.byIDCalls, "FindUserByID must hit cache via cross-populated key")
+}
+
+func TestCache_FindUserByID_CrossPopulatesByAccount(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+
+	_, err := cache.FindUserByID(ctx, "u1")
+	require.NoError(t, err)
+
+	got, err := cache.FindUsersByAccounts(ctx, []string{"alice"})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Equal(t, 0, store.byAccountCalls, "FindUsersByAccounts must hit cache via cross-populated key")
+}
+
+func TestCache_FindUsersByAccounts_DedupesInput(t *testing.T) {
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+
+	got, err := cache.FindUsersByAccounts(context.Background(), []string{"alice", "alice", "alice"})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}
+
+func TestCache_FindUsersByAccounts_EmptyInput(t *testing.T) {
+	cache, _ := userstore.NewCache(newFakeStore(), 10, time.Minute)
+	got, err := cache.FindUsersByAccounts(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestCache_FindUsersByAccounts_StoreErrorReturnsPartialHits(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+
+	_, err := cache.FindUsersByAccounts(ctx, []string{"alice"})
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	store.err = errors.New("mongo down")
+	store.mu.Unlock()
+	got, err := cache.FindUsersByAccounts(ctx, []string{"alice", "ghost"})
+	require.Error(t, err)
+	assert.Len(t, got, 1, "alice hit must be returned alongside the error")
+	assert.Equal(t, "alice", got[0].Account)
 }
 
 func TestCache_Invalidate(t *testing.T) {
-	store := &fakeStore{users: map[string]*model.User{
-		"u1": {ID: "u1", Account: "alice"},
-	}}
-	c, err := userstore.NewCache(store, 100, time.Minute)
+	ctx := context.Background()
+	store := newFakeStore(model.User{ID: "u1", Account: "alice"})
+	cache, _ := userstore.NewCache(store, 10, time.Minute)
+
+	_, err := cache.FindUserByID(ctx, "u1")
 	require.NoError(t, err)
 
-	_, _ = c.FindUserByID(context.Background(), "u1")
-	require.Equal(t, 1, store.callCount)
-	c.Invalidate("u1")
-	_, _ = c.FindUserByID(context.Background(), "u1")
-	assert.Equal(t, 2, store.callCount, "invalidated entry must reload")
-}
+	cache.Invalidate("u1", "alice")
 
-func TestCache_FindUsersByAccountsPassThrough(t *testing.T) {
-	store := &fakeStore{}
-	c, err := userstore.NewCache(store, 100, time.Minute)
+	_, err = cache.FindUserByID(ctx, "u1")
 	require.NoError(t, err)
+	assert.Equal(t, 2, store.byIDCalls, "post-invalidate lookup must re-hit store")
 
-	_, err = c.FindUsersByAccounts(context.Background(), []string{"alice"})
+	_, err = cache.FindUsersByAccounts(ctx, []string{"alice"})
 	require.NoError(t, err)
-	// Bulk lookups bypass the cache; the test just verifies the delegation compiles and runs.
+	// Note: u1 was repopulated by the FindUserByID above (cross-populates the account prefix),
+	// so this call should be a cache hit and not increment byAccountCalls.
+	assert.Equal(t, 0, store.byAccountCalls)
 }

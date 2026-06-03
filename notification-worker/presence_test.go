@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errnats"
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestNoopPresence_EmptySnapshot(t *testing.T) {

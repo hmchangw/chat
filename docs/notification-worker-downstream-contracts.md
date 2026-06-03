@@ -269,7 +269,7 @@ Required before a production rollout:
 4. **New env vars** (see `notification-worker/deploy/docker-compose.yml` for
    dev values):
    - `VALKEY_ADDRS` (**required**, comma-separated cluster seeds), `VALKEY_PASSWORD`
-   - `ROOMSUBCACHE_TTL` (default `5m`), `L1_MEMBER_CACHE_SIZE` (1000), `L1_MEMBER_CACHE_TTL` (`5s`)
+   - `ROOMSUBCACHE_TTL` (default `5m`) — TTL for the Valkey room-member cache; no in-process L1 (per-pod memory bounded against very large rooms)
    - `LARGE_ROOM_THRESHOLD` (default `500` — same knob as message-gatekeeper)
    - `PUSH_RECIPIENT_BATCH_SIZE` (default `100` — recipients per push event; tune toward provider multicast caps)
    - `NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB — must match broker `max_payload`; see §1 Payload size cap)
@@ -277,7 +277,7 @@ Required before a production rollout:
    - `PUSH_ASYNC_MAX_PENDING` (default `1024`)
 
    `message-gatekeeper` owns the sender display-name resolution; configure its
-   `USER_META_CACHE_SIZE` / `USER_META_CACHE_TTL` (defaults 10000 / 5m) there.
+   `USER_CACHE_SIZE` / `USER_CACHE_TTL` (defaults 10000 / 5m) there.
    `notification-worker` does **no** users-collection lookups under this design.
    - `INDEX_ENSURE_TIMEOUT` (default `2m`)
    - `PRESENCE_RPC_ENABLED` (default `false`), `PRESENCE_BATCH_SIZE` (`512`), `PRESENCE_RPC_TIMEOUT` (`2s`)

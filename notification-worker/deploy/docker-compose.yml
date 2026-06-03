@@ -13,8 +13,6 @@ services:
       - MONGO_DB=chat
       - VALKEY_ADDRS=valkey:6379
       - ROOMSUBCACHE_TTL=5m
-      - L1_MEMBER_CACHE_SIZE=1000
-      - L1_MEMBER_CACHE_TTL=5s
       - LARGE_ROOM_THRESHOLD=500
       # Recipients per PUSH_NOTIFICATIONS event. Default 100; well under FCM's 500-token
       # multicast cap and APNs HTTP/2 connection-frame ceiling.

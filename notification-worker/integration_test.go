@@ -36,7 +36,7 @@ func TestNotificationWorker_CacheBackedFanOut(t *testing.T) {
 
 	cache := roomsubcache.NewValkeyCache(valkeyutil.WrapClusterClient(valkeyClient))
 	loader := &mongoMemberLoader{col: subCol}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 100, 5*time.Second)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)

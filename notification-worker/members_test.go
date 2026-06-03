@@ -66,7 +66,7 @@ func TestCachedMemberLookup_HitFromValkey(t *testing.T) {
 	loader := &fakeLoader{out: []roomsubcache.Member{{ID: "u1", Account: "alice"}}}
 	require.NoError(t, cache.Set(context.Background(), "r1", loader.out, time.Minute))
 
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 0, 0)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 	got, err := lookup.GetMembers(context.Background(), "r1")
 	require.NoError(t, err)
 	assert.Equal(t, loader.out, got)
@@ -76,7 +76,7 @@ func TestCachedMemberLookup_HitFromValkey(t *testing.T) {
 func TestCachedMemberLookup_MissThenPopulate(t *testing.T) {
 	cache := newFakeCache()
 	loader := &fakeLoader{out: []roomsubcache.Member{{ID: "u1", Account: "alice"}}}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 0, 0)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 
 	got, err := lookup.GetMembers(context.Background(), "r1")
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestCachedMemberLookup_MissThenPopulate(t *testing.T) {
 func TestCachedMemberLookup_CacheErrorFallsThrough(t *testing.T) {
 	cache := &erroringCache{err: errors.New("valkey down")}
 	loader := &fakeLoader{out: []roomsubcache.Member{{ID: "u1", Account: "alice"}}}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 0, 0)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 
 	got, err := lookup.GetMembers(context.Background(), "r1")
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestCachedMemberLookup_SingleFlightCollapsesMisses(t *testing.T) {
 		out:   []roomsubcache.Member{{ID: "u1", Account: "alice"}},
 		delay: 50 * time.Millisecond,
 	}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 0, 0)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -119,22 +119,10 @@ func TestCachedMemberLookup_SingleFlightCollapsesMisses(t *testing.T) {
 	assert.Equal(t, int32(1), loader.calls.Load(), "single-flight collapses concurrent misses")
 }
 
-func TestCachedMemberLookup_L1ServesRepeats(t *testing.T) {
+func TestCachedMemberLookup_InvalidateClearsValkey(t *testing.T) {
 	cache := newFakeCache()
 	loader := &fakeLoader{out: []roomsubcache.Member{{ID: "u1", Account: "alice"}}}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 10, 5*time.Second)
-
-	for i := 0; i < 50; i++ {
-		_, err := lookup.GetMembers(context.Background(), "r1")
-		require.NoError(t, err)
-	}
-	assert.LessOrEqual(t, loader.calls.Load(), int32(1))
-}
-
-func TestCachedMemberLookup_InvalidateDropsL1(t *testing.T) {
-	cache := newFakeCache()
-	loader := &fakeLoader{out: []roomsubcache.Member{{ID: "u1", Account: "alice"}}}
-	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute, 10, time.Minute)
+	lookup := newCachedMemberLookup(cache, loader.Load, time.Minute)
 
 	_, err := lookup.GetMembers(context.Background(), "r1")
 	require.NoError(t, err)

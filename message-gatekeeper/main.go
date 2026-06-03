@@ -37,8 +37,8 @@ type config struct {
 	SubCacheTTL        time.Duration           `env:"GATEKEEPER_SUB_CACHE_TTL"   envDefault:"2m"`
 	RoomMetaCacheSize  int                     `env:"ROOM_META_CACHE_SIZE"       envDefault:"10000"`
 	RoomMetaCacheTTL   time.Duration           `env:"ROOM_META_CACHE_TTL"        envDefault:"2m"`
-	UserMetaCacheSize  int                     `env:"USER_META_CACHE_SIZE"       envDefault:"10000"`
-	UserMetaCacheTTL   time.Duration           `env:"USER_META_CACHE_TTL"        envDefault:"5m"`
+	UserCacheSize      int                     `env:"USER_CACHE_SIZE"            envDefault:"10000"`
+	UserCacheTTL       time.Duration           `env:"USER_CACHE_TTL"             envDefault:"5m"`
 	Consumer           stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap          bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
@@ -90,7 +90,7 @@ func main() {
 		os.Exit(1)
 	}
 	users, err := userstore.NewCache(userstore.NewMongoStore(db.Collection("users")),
-		cfg.UserMetaCacheSize, cfg.UserMetaCacheTTL)
+		cfg.UserCacheSize, cfg.UserCacheTTL)
 	if err != nil {
 		slog.Error("init user meta cache failed", "error", err)
 		os.Exit(1)
@@ -98,7 +98,7 @@ func main() {
 	slog.Info("gatekeeper caches enabled",
 		"sub_cache_size", cfg.SubCacheSize, "sub_cache_ttl", cfg.SubCacheTTL,
 		"room_meta_cache_size", cfg.RoomMetaCacheSize, "room_meta_cache_ttl", cfg.RoomMetaCacheTTL,
-		"user_meta_cache_size", cfg.UserMetaCacheSize, "user_meta_cache_ttl", cfg.UserMetaCacheTTL,
+		"user_cache_size", cfg.UserCacheSize, "user_cache_ttl", cfg.UserCacheTTL,
 	)
 	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 		ack, err := js.PublishMsg(ctx, msg, opts...)

@@ -45,8 +45,6 @@ type config struct {
 	ValkeyAddrs            []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword         string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	RoomSubCacheTTL        time.Duration           `env:"ROOMSUBCACHE_TTL"          envDefault:"5m"`
-	L1MemberCacheSize      int                     `env:"L1_MEMBER_CACHE_SIZE"      envDefault:"1000"`
-	L1MemberCacheTTL       time.Duration           `env:"L1_MEMBER_CACHE_TTL"       envDefault:"5s"`
 	PresenceBatchSize      int                     `env:"PRESENCE_BATCH_SIZE"       envDefault:"512"`
 	PresenceRPCTimeout     time.Duration           `env:"PRESENCE_RPC_TIMEOUT"      envDefault:"2s"`
 	PresenceEnabled        bool                    `env:"PRESENCE_RPC_ENABLED"      envDefault:"false"`  // false → noopPresenceSnapshotter; set true once presence service is available
@@ -156,8 +154,7 @@ func main() {
 	}
 	cache := roomsubcache.NewValkeyCache(valkeyClient)
 	loader := &mongoMemberLoader{col: subCol}
-	memberLookup := newCachedMemberLookup(cache, loader.Load, cfg.RoomSubCacheTTL,
-		cfg.L1MemberCacheSize, cfg.L1MemberCacheTTL)
+	memberLookup := newCachedMemberLookup(cache, loader.Load, cfg.RoomSubCacheTTL)
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
