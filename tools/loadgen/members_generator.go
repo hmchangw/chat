@@ -49,6 +49,64 @@ type SustainedMembersGenerator struct {
 // fewer than UsersPerAdd accounts remaining.
 var ErrPoolsExhausted = errors.New("candidate pool exhausted on every room: rate * duration * usersPerAdd exceeded preset CandidatePool")
 
+// ErrInsufficientPool is returned by ValidateSustainedCapacity (and wrapped
+// with the specifics) when the requested rate/duration would consume more
+// candidates than the preset's pools can supply. It exists so callers can
+// match the preflight failure with errors.Is.
+var ErrInsufficientPool = errors.New("insufficient candidate pool for requested rate and duration")
+
+// SustainableOps returns the maximum number of add-member publishes the given
+// candidate pools can supply at usersPerAdd accounts each. A candidate is
+// single-use (once added, the account is a room member and cannot be re-added),
+// so this is a hard ceiling on the publishes a sustained run can ever make.
+func SustainableOps(pools CandidatePools, usersPerAdd int) int {
+	if usersPerAdd <= 0 {
+		return 0
+	}
+	total := 0
+	for _, pool := range pools {
+		total += len(pool) / usersPerAdd
+	}
+	return total
+}
+
+// ValidateSustainedCapacity is the preflight guard for members-sustained. It
+// fails fast (before any NATS/store work) when rate*duration would exhaust the
+// preset's candidate pools, returning an actionable error wrapping
+// ErrInsufficientPool that names the achievable max --rate and --duration.
+func ValidateSustainedCapacity(presetName string, pools CandidatePools, rate int, duration time.Duration, usersPerAdd int) error {
+	capacity := SustainableOps(pools, usersPerAdd)
+	durSecs := duration.Seconds()
+	demand := int(float64(rate) * durSecs)
+	if demand <= capacity {
+		return nil
+	}
+	maxRate := 0
+	if durSecs > 0 {
+		maxRate = int(float64(capacity) / durSecs)
+	}
+	maxDuration := time.Duration(0)
+	if rate > 0 {
+		maxDuration = (time.Duration(capacity) * time.Second) / time.Duration(rate)
+	}
+	// When the achievable bounds round to zero the preset simply cannot sustain
+	// this workload (a smoke preset asked to run a real load). Steer to a bigger
+	// preset / smaller --users-per-add instead of suggesting "--rate 0".
+	var advice string
+	if maxRate >= 1 && maxDuration >= time.Second {
+		advice = fmt.Sprintf("lower to --rate %d (at this duration) or --duration %s (at this rate), or pick a larger preset",
+			maxRate, maxDuration.Round(time.Second))
+	} else {
+		advice = fmt.Sprintf("too small for this workload: at --rate %d it sustains only ~%s — pick a larger preset or lower --users-per-add (and --duration)",
+			rate, maxDuration.Round(time.Millisecond))
+	}
+	return fmt.Errorf(
+		"preset %q candidate pools supply at most %d add-member ops at users-per-add=%d, "+
+			"but rate=%d/s × duration=%s needs ~%d ops; %s: %w",
+		presetName, capacity, usersPerAdd, rate, duration, demand, advice, ErrInsufficientPool,
+	)
+}
+
 // NewSustainedMembersGenerator clones the candidate pools so the input is
 // not mutated.
 func NewSustainedMembersGenerator(cfg *SustainedMembersConfig, seed int64) *SustainedMembersGenerator {

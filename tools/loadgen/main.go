@@ -318,6 +318,16 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 
+	// Preflight: a candidate is single-use, so rate*duration cannot exceed
+	// the preset's pool budget. Build the deterministic fixtures up front and
+	// fail fast with an actionable message before any NATS/store work rather
+	// than aborting mid-run on exhaustion.
+	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
+	if err := ValidateSustainedCapacity(p.Name, pools, *rate, *duration, *usersPerAdd); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect", "error", err)
@@ -341,7 +351,6 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		}
 	}()
 
-	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 

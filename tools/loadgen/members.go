@@ -47,7 +47,7 @@ var builtinMembersPresets = map[string]MembersPreset{
 	},
 	"members-medium": {
 		Name: "members-medium", Users: 5000, Rooms: 100,
-		BaselineSize: 100, CandidatePool: 500,
+		BaselineSize: 100, CandidatePool: 900, // baseline+pool = 1000 = MAX_ROOM_SIZE
 	},
 	"members-capacity": {
 		Name: "members-capacity", Users: 12000, Rooms: 5,
