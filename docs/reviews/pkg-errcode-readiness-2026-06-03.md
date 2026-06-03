@@ -46,3 +46,46 @@ The remaining items are quality polish: rename `WithLogValues` (the package func
 
 ---
 
+## Chapter 2 — Code quality
+
+**Score: 5 / 5**
+
+### SAST result
+
+- **gosec**: PASS.
+- **semgrep**: PASS — 59 rules including the project-local `.semgrep/errcode.yml`, zero findings.
+- **govulncheck**: FAIL **at repo level, not against this package**. Two stdlib advisories:
+  - `GO-2026-5039` in `net/textproto` (trace: `pkg/searchengine/adapter.go:245`).
+  - `GO-2026-5037` in `crypto/x509` (trace: `search-service/main.go:198`, `pkg/idgen/idgen.go:155`).
+  Both are cleared by bumping `GOTOOLCHAIN` to `go1.25.11`. No vuln trace touches `pkg/errcode/`.
+
+### Invariants verified end-to-end
+
+- **`cause` never reaches the wire.** `error.go:10` declares `cause error` unexported; no custom `MarshalJSON`; `encoding/json` uses default field reflection. Tests at `error_test.go:25-44` (`MarshalJSON_NeverLeaksCause`), `classify_test.go:62-83`, and `errnats/reply_test.go:128-142` pin the invariant at three independent layers.
+- **`WithCause` rejects nested `*Error`.** `options.go:62-71` uses `errors.As`, catching both direct and `%w`-wrapped cases. Tests at `options_test.go:75-94`.
+- **`New` panics on non-canonical `Code` or empty message.** `options.go:11-18`, tests `options_test.go:96-121`.
+- **`Permanent(nil)` panics.** `permanent.go:17-20`.
+- **`WithMetadata` panics on odd-length args.** `options.go:48-50`, tests `options_test.go:59-66`.
+
+### Findings
+
+- **`low` — `Classify` allocates a per-call `[]any` attr slice.** `classify.go:32-39` builds `attrs := []any{"code", ..., "reason", ..., "cause", ...}` and passes via variadic. Hot path for every 4xx reply. Migration to `slog.LogAttrs` with typed `slog.Attr` would dodge `any`-boxing and let escape analysis stack-allocate in handler call frames.
+- **`low` — `errnats.Reply` / `ReplyQuiet` log the *reply-failed* fallback via global `slog.ErrorContext`** (`errnats/reply.go:43, 50`) instead of the `loggerFrom(ctx)` chain. Cosmetic asymmetry; would require exporting `loggerFrom` or duplicating it in `errnats`.
+- **`nitpick` — `Code.HTTPStatus()` uses bare integer literals** (`category.go:30-49`). `http.StatusBadRequest`-style constants are more grep-able and add no real cost.
+- **`nitpick` — `Parse` swallows `json.Unmarshal` errors silently** (`parse.go:13-15`). Already mitigated with `//nolint:nilerr` + reason comment per CLAUDE.md "comment if intentionally discarded" rule. Acceptable as-is.
+- **`nitpick` — `MarshalQuiet` doesn't panic on `nil err`** (`errnats/reply.go:30-32`). It silently produces an "internal error" envelope. For parity with `Permanent(nil)` it could panic, but the value is marginal.
+
+### Idiom fit at call sites
+
+Spot-checked `room-service/handler.go:161, 318-321, 423-424, 856, 883`, `auth-service/handler.go:79-167`, `room-worker/handler.go:118-1854`, `message-gatekeeper/handler.go:66-103`. Every site follows the Tier-1 pattern documented in `docs/error-handling.md`: named constructor + optional `WithReason` + occasional `WithMetadata`. No call site reaches past the documented API.
+
+### Recommendations
+
+1. **`nitpick`** — Replace HTTP int literals in `category.go:30-49` with `net/http` constants.
+2. **`low`** — Migrate `Classify`'s log call to `slog.LogAttrs` with typed `slog.Attr` for fewer allocations and cleaner intent.
+3. **`low`** — Route the "reply failed" log in `errnats.Reply`/`ReplyQuiet` through the ctx logger so it honors `errcode.WithLogger` in tests.
+4. **`low`** — Add an explicit `Code.Valid()` example to `Parse`'s godoc for cross-site consumers.
+5. **`low`** *(out of scope but flagged)* — Bump `GOTOOLCHAIN` to `go1.25.11` to clear the two open `govulncheck` advisories.
+
+---
+
