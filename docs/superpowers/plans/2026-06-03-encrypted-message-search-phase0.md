@@ -479,7 +479,7 @@ func TestAnalyze_Deterministic(t *testing.T) {
 }
 ```
 
-Note on the `用户_name` case: `用户` are Han characters, so `wordDelimiter` keeps `用户_Name` as one token then splits on `_` into original `用户_Name` + parts `用户`, `Name`; `cjkBigram` turns the 2-char run `用户` into the single bigram `用户` and leaves `Name`; lowercase yields the listed output.
+Note on the `用户_name` case: `wordDelimiter` keeps `用户_Name` as one token then splits on `_` into the preserved original `用户_Name` plus parts `用户`, `Name`. The preserved original contains a delimiter (`_`), so the pipeline emits it **whole** (lowercased → `用户_name`) rather than CJK-bigramming it — bigramming a delimited token would split it at the CJK/ASCII boundary and produce a malformed `_name` fragment. The delimiter-free parts are bigrammed (`用户` stays a single bigram, `Name` → `name`) and the trailing `中文` becomes one bigram, yielding the listed output.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -500,11 +500,25 @@ package msganalyzer
 import "strings"
 
 // Analyze runs the full pipeline and returns the ordered token stream.
+//
+// CJK bigramming applies only to delimiter-free tokens. The preserved-original
+// token emitted by wordDelimiter still contains its delimiters (e.g.
+// "用户_Name"); it is emitted whole (lowercased) rather than bigrammed, because
+// bigramming a delimited token would split it at the CJK/ASCII boundary and
+// leak a delimiter-attached fragment like "_name". Delimiter-free tokens —
+// the split parts, and any token that never had a delimiter (e.g. "中文字") —
+// are bigrammed normally.
 func Analyze(text string) []string {
 	stripped := stripHTML(text)
 	var out []string
 	for _, tok := range tokenizePattern(stripped) {
 		for _, wd := range wordDelimiter(tok) {
+			if hasDelimiter(wd) {
+				if low := strings.ToLower(wd); low != "" {
+					out = append(out, low)
+				}
+				continue
+			}
 			for _, cj := range cjkBigram(wd) {
 				if low := strings.ToLower(cj); low != "" {
 					out = append(out, low)
@@ -513,6 +527,18 @@ func Analyze(text string) []string {
 		}
 	}
 	return out
+}
+
+// hasDelimiter reports whether s contains any non-word rune — i.e. a character
+// wordDelimiter would split on. Such a token is a preserved original and is
+// emitted whole rather than CJK-bigrammed.
+func hasDelimiter(s string) bool {
+	for _, r := range s {
+		if !isWordRune(r) {
+			return true
+		}
+	}
+	return false
 }
 ```
 
