@@ -1891,12 +1891,20 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 	if err != nil {
 		return fmt.Errorf("marshal sys data: %w", err)
 	}
+	requester, err := h.store.GetUser(ctx, req.Account)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return fmt.Errorf("get requester for sys message: %w", err)
+	}
+	requesterLabel := req.Account
+	if requester != nil {
+		requesterLabel = displayName(requester)
+	}
 	msg := model.Message{
 		ID:          idgen.MessageIDFromRequestID(requestID, "room_renamed"),
 		RoomID:      req.RoomID,
 		UserAccount: req.Account,
 		Type:        model.MessageTypeRoomRenamed,
-		Content:     fmt.Sprintf("%s renamed the channel to %q", req.Account, req.NewName),
+		Content:     fmt.Sprintf("%q renamed the channel to %q", requesterLabel, req.NewName),
 		SysMsgData:  sysData,
 		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
 	}
