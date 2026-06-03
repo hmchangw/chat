@@ -45,6 +45,14 @@ func MsgGet(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
 }
 
+// MsgBatchGet returns the concrete subject for issuing a batch GetMessagesByIDs
+// request to history-service on behalf of a given user. Unlike MsgGet this is
+// flat (not room-scoped) — the requested message IDs span arbitrary rooms and
+// per-message access is enforced server-side. Pair with MsgBatchGetPattern.
+func MsgBatchGet(account, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.%s.msg.batchget", account, siteID)
+}
+
 func UserResponse(account, requestID string) string {
 	return fmt.Sprintf("chat.user.%s.response.%s", account, requestID)
 }
@@ -313,6 +321,13 @@ func MsgSurroundingPattern(siteID string) string {
 // callers publish on.
 func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
+}
+
+// MsgBatchGetPattern is the natsrouter pattern history-service uses to register
+// its batch GetMessagesByIDs handler. The {account} placeholder is extracted by
+// natsrouter; the pattern is flat (not room-scoped). Pair with MsgBatchGet.
+func MsgBatchGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.%s.msg.batchget", siteID)
 }
 
 // MsgEditPattern is the natsrouter pattern for editing a message.

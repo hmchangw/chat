@@ -114,6 +114,7 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
 	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
 	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgBatchGetPattern(siteID), s.GetMessagesByIDs)
 	natsrouter.Register(r, subject.MsgEditPattern(siteID), func(c *natsrouter.Context, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
 		return s.EditMessage(c, siteID, req)
 	})

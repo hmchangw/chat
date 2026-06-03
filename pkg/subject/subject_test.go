@@ -114,6 +114,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.msg.canonical.site-a.unpinned"},
 		{"MsgGet", subject.MsgGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
+		{"MsgBatchGet", subject.MsgBatchGet("alice", "site-a"),
+			"chat.user.alice.request.site-a.msg.batchget"},
+		{"MsgBatchGetPattern", subject.MsgBatchGetPattern("site-a"),
+			"chat.user.{account}.request.site-a.msg.batchget"},
 		{"RoomKeyGet", subject.RoomKeyGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.key.get"},
 	}

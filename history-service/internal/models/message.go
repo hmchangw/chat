@@ -60,6 +60,17 @@ type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
 }
 
+// GetMessagesByIDsRequest is the batch counterpart to GetMessageByIDRequest:
+// the message IDs may span arbitrary rooms; per-message access is enforced
+// server-side and inaccessible/missing IDs are omitted from the response.
+type GetMessagesByIDsRequest struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+type GetMessagesByIDsResponse struct {
+	Messages []Message `json:"messages"`
+}
+
 type EditMessageRequest struct {
 	MessageID string `json:"messageId"`
 	NewMsg    string `json:"newMsg"`
