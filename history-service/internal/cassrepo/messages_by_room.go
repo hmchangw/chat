@@ -14,10 +14,19 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, " 
 	"msg, mentions, attachments, file, card, card_action, tshow, tcount, " +
 	"thread_parent_id, thread_parent_created_at, quoted_parent_message, " +
 	"visible_to, reactions, deleted, " +
-	"type, sys_msg_data, site_id, edited_at, updated_at"
+	"type, sys_msg_data, site_id, edited_at, updated_at, " +
+	"enc_payload, enc_meta"
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
+// scanMsgsFromIter collects all rows from iter into a slice.
+// structScan ignores columns absent from the struct's cql tags, so this
+// helper is safe to use with any column subset (e.g. messageByIDQuery
+// includes pinned_at/pinned_by which are absent from the base column list).
+//
+// Decryption of enc_payload rows is the caller's responsibility — single-row
+// readers call r.decryptIfNeeded directly; paginated walkers use
+// r.scanMessagesUpTo, which decrypts and propagates errors through fillPage.
 func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
 	messages := make([]models.Message, 0)
 	for {
@@ -64,20 +73,29 @@ func startBucketFromCursor(pageReq PageRequest, direction walkDirection, default
 	return bucket, pageState, nil
 }
 
-func scanMessagesUpTo(iter *gocql.Iter, remaining int) ([]models.Message, error) {
-	out := make([]models.Message, 0, remaining)
-	for len(out) < remaining {
-		var m models.Message
-		ok, err := structScan(iter, &m)
-		if err != nil {
-			return nil, err
+// scanMessagesUpTo returns a fillPage scan callback that consumes up to
+// remaining rows from iter via structScan and decrypts any enc_payload rows in
+// place via r.decryptIfNeeded. A decrypt (or scan) error aborts the walk:
+// fillPage discards the accumulated rows and propagates the error to the caller.
+func (r *Repository) scanMessagesUpTo(ctx context.Context) func(iter *gocql.Iter, remaining int) ([]models.Message, error) {
+	return func(iter *gocql.Iter, remaining int) ([]models.Message, error) {
+		out := make([]models.Message, 0, remaining)
+		for len(out) < remaining {
+			var m models.Message
+			ok, err := structScan(iter, &m)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				break
+			}
+			if err := r.decryptIfNeeded(ctx, &m); err != nil {
+				return nil, err
+			}
+			out = append(out, m)
 		}
-		if !ok {
-			break
-		}
-		out = append(out, m)
+		return out, nil
 	}
-	return out, nil
 }
 
 func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq PageRequest) (Page[models.Message], error) {
@@ -102,7 +120,7 @@ func (r *Repository) GetMessagesBefore(ctx context.Context, roomID string, befor
 
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages before: %w", err)
@@ -149,7 +167,7 @@ func (r *Repository) GetMessagesBetweenDesc(ctx context.Context, roomID string, 
 
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkDesc, startBucket, floorBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages between desc: %w", err)
@@ -179,7 +197,7 @@ func (r *Repository) GetMessagesAfter(ctx context.Context, roomID string, after 
 
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get messages after: %w", err)
@@ -203,7 +221,7 @@ func (r *Repository) GetAllMessagesAsc(ctx context.Context, roomID string, floor
 
 	res, err := fillPage[models.Message](
 		ctx, r.bucket, walkAsc, startBucket, ceilingBucket, r.maxBuckets,
-		pageReq.PageSize, initialPageState, queryFn, scanMessagesUpTo,
+		pageReq.PageSize, initialPageState, queryFn, r.scanMessagesUpTo(ctx),
 	)
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get all messages asc: %w", err)

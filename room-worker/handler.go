@@ -43,10 +43,15 @@ type PublishFunc func(ctx context.Context, subj string, data []byte, msgID strin
 const defaultKeyFanoutWorkers = 32
 
 type Handler struct {
-	store            SubscriptionStore
-	siteID           string
-	publish          PublishFunc
-	keyStore         RoomKeyStore
+	store    SubscriptionStore
+	siteID   string
+	publish  PublishFunc
+	keyStore RoomKeyStore
+	// dekProvisioner is set in main when ATREST_ENABLED; nil disables eager
+	// at-rest DEK creation for synchronously-created DM rooms (message-worker's
+	// lazy create still covers them). Injected as a field rather than a
+	// constructor arg to avoid churning every NewHandler caller.
+	dekProvisioner   DEKProvisioner
 	keySender        *roomkeysender.Sender
 	keyFanoutWorkers int
 }
@@ -1692,6 +1697,16 @@ func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.S
 		CreatedAt: roomCreatedAt,
 		UpdatedAt: roomCreatedAt,
 	}
+	// Provision the room's at-rest DEK before persisting the room so the first
+	// message write doesn't pay the create cost. Blocking and provisioned first
+	// so a Vault outage fails DM creation rather than persisting a room whose
+	// DEK is absent; idempotent on NATS retries. message-worker's lazy creation
+	// still covers pre-rollout rooms.
+	if h.dekProvisioner != nil {
+		if err := h.dekProvisioner.EnsureDEK(ctx, room.ID); err != nil {
+			return nil, fmt.Errorf("provision at-rest DEK for DM room %s: %w", room.ID, err)
+		}
+	}
 	if err := h.store.CreateRoom(ctx, room); err != nil {
 		if !mongo.IsDuplicateKeyError(err) {
 			return nil, fmt.Errorf("create room: %w", err)
@@ -1756,6 +1771,12 @@ func (h *Handler) createSelfDM(ctx context.Context, requester *model.User, reque
 		Accounts:  []string{requester.Account},
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	// Provision the at-rest DEK before persisting the room (see handleSyncCreateDM).
+	if h.dekProvisioner != nil {
+		if err := h.dekProvisioner.EnsureDEK(ctx, room.ID); err != nil {
+			return nil, fmt.Errorf("provision at-rest DEK for self-DM room %s: %w", room.ID, err)
+		}
 	}
 	if err := h.store.CreateRoom(ctx, room); err != nil {
 		return nil, fmt.Errorf("create self-DM room %s for %s: %w", room.ID, requester.Account, err)

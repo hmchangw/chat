@@ -29,7 +29,7 @@ func seedMessageFull(t *testing.T, repo *Repository, m *models.Message) {
 
 func TestRepository_PinAndUnpinMessage(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	created := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
@@ -74,7 +74,7 @@ func TestRepository_PinAndUnpinMessage(t *testing.T) {
 
 func TestRepository_GetPinnedMessages_OrderAndEmpty(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	empty, err := repo.GetAllPinnedMessages(ctx, "empty-room")
@@ -102,7 +102,7 @@ func TestRepository_GetPinnedMessages_OrderAndEmpty(t *testing.T) {
 
 func TestRepository_GetPinnedMessages_BindsBothTimestamps(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	created := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
@@ -122,7 +122,7 @@ func TestRepository_GetPinnedMessages_BindsBothTimestamps(t *testing.T) {
 
 func TestRepository_GetPinnedMessages_Paginates(t *testing.T) {
 	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	// Seed 5 pins; ask for page size 2 → expect three pages: 2, 2, 1.

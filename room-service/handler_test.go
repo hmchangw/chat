@@ -4204,3 +4204,62 @@ func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 	assert.Equal(t, "ok", got.Status)
 	assert.True(t, got.Muted)
 }
+
+// fakeDEKProvisioner records EnsureDEK calls and can be made to fail.
+type fakeDEKProvisioner struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeDEKProvisioner) EnsureDEK(_ context.Context, roomID string) error {
+	f.calls = append(f.calls, roomID)
+	return f.err
+}
+
+func TestPublishCreateRoom_ProvisionsDEKBeforePublish(t *testing.T) {
+	prov := &fakeDEKProvisioner{}
+	published := 0
+	h := &Handler{
+		siteID:          "site-a",
+		dekProvisioner:  prov,
+		publishToStream: func(context.Context, string, []byte) error { published++; return nil },
+	}
+
+	_, err := h.publishCreateRoom(context.Background(),
+		&model.CreateRoomRequest{RoomID: "r-1"},
+		&model.User{ID: "u-1", Account: "alice"}, model.RoomTypeChannel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"r-1"}, prov.calls, "EnsureDEK must be called with the room ID")
+	assert.Equal(t, 1, published)
+}
+
+func TestPublishCreateRoom_DEKFailure_BlocksAndSkipsPublish(t *testing.T) {
+	prov := &fakeDEKProvisioner{err: errors.New("vault unavailable")}
+	published := 0
+	h := &Handler{
+		siteID:          "site-a",
+		dekProvisioner:  prov,
+		publishToStream: func(context.Context, string, []byte) error { published++; return nil },
+	}
+
+	_, err := h.publishCreateRoom(context.Background(),
+		&model.CreateRoomRequest{RoomID: "r-1"},
+		&model.User{ID: "u-1", Account: "alice"}, model.RoomTypeChannel)
+	require.Error(t, err)
+	assert.Equal(t, 0, published, "canonical create event must NOT be published when DEK provisioning fails")
+}
+
+func TestPublishCreateRoom_NoProvisioner_Skips(t *testing.T) {
+	published := 0
+	h := &Handler{
+		siteID:          "site-a",
+		dekProvisioner:  nil, // ATREST disabled
+		publishToStream: func(context.Context, string, []byte) error { published++; return nil },
+	}
+
+	_, err := h.publishCreateRoom(context.Background(),
+		&model.CreateRoomRequest{RoomID: "r-1"},
+		&model.User{ID: "u-1", Account: "alice"}, model.RoomTypeChannel)
+	require.NoError(t, err)
+	assert.Equal(t, 1, published)
+}

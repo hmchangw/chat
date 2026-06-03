@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -311,6 +312,13 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 
 	editedAt := time.Now().UTC()
 	if err := s.msgWriter.UpdateMessageContent(c, msg, req.NewMsg, editedAt); err != nil {
+		// A TOCTOU between findMessage and the CAS edit (or a concurrent
+		// hard-delete / soft-delete) surfaces as ErrMessageNotFound from
+		// the repo. Map it to 4xx so it doesn't pollute 5xx telemetry —
+		// it's a benign race, not a server fault.
+		if errors.Is(err, cassrepo.ErrMessageNotFound) {
+			return nil, natsrouter.ErrNotFound("message not found")
+		}
 		slog.Error("edit: update content", "error", err, "messageID", req.MessageID)
 		return nil, natsrouter.ErrInternal("failed to edit message")
 	}

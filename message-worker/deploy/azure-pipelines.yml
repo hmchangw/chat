@@ -18,7 +18,7 @@ pr:
       - pkg/
 
 variables:
-  GO_VERSION: '1.25.10'
+  GO_VERSION: '1.25.11'
   SERVICE_NAME: message-worker
   REGISTRY: '$(containerRegistry)'
 

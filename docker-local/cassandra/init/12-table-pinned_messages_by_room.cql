@@ -31,3 +31,6 @@ CREATE TABLE IF NOT EXISTS chat.pinned_messages_by_room (
   thread_parent_created_at TIMESTAMP,
   PRIMARY KEY ((room_id), pinned_at, message_id)
 ) WITH CLUSTERING ORDER BY (pinned_at DESC, message_id DESC);
+
+ALTER TABLE chat.pinned_messages_by_room ADD enc_payload BLOB;
+ALTER TABLE chat.pinned_messages_by_room ADD enc_meta FROZEN<"EncMeta">;

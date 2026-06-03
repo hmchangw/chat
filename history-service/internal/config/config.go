@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/hmchangw/chat/pkg/atrest"
 )
 
 // CassandraConfig holds Cassandra connection settings (env prefix: CASSANDRA_).
@@ -55,6 +57,9 @@ type Config struct {
 	// the freshness-sensitive path. Set size or ttl to 0 to disable.
 	RoomCacheSize int           `env:"HISTORY_ROOM_CACHE_SIZE" envDefault:"50000"`
 	RoomCacheTTL  time.Duration `env:"HISTORY_ROOM_CACHE_TTL"  envDefault:"10s"`
+
+	Atrest atrest.Config      // env vars are already prefixed ATREST_*
+	Vault  atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 // Load parses environment variables into Config; returns an error when required vars are absent.

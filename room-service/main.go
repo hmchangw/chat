@@ -11,6 +11,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -39,6 +40,10 @@ type config struct {
 	CassandraPassword string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
 	CassandraNumConns int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
 	Bootstrap         bootstrapConfig `envPrefix:"BOOTSTRAP_"`
+	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
+	// When Atrest.Enabled is false the DEK is created lazily by message-worker.
+	Atrest atrest.Config      // env vars already prefixed ATREST_*
+	Vault  atrest.VaultConfig // env vars already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 func main() {
@@ -118,6 +123,23 @@ func main() {
 	}
 	cassReader := NewCassMessageReader(cassSession)
 
+	// Eager at-rest DEK provisioning: when enabled, room creation provisions
+	// the room's wrapped DEK so the first message write doesn't pay the create
+	// cost. message-worker's lazy creation remains the fallback for remote
+	// sites (the DEK is per-site) and pre-rollout rooms.
+	var vaultWrapper atrest.KeyWrapperCloser
+	var dekProvisioner DEKProvisioner
+	if cfg.Atrest.Enabled {
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if err != nil {
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
+			os.Exit(1)
+		}
+		vaultWrapper = w
+		dekColl := mongoClient.Database(cfg.MongoDB).Collection(atrest.CollectionName)
+		dekProvisioner = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
 	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout,
 		func(ctx context.Context, subj string, data []byte) error {
@@ -133,6 +155,7 @@ func main() {
 			return nil
 		},
 	)
+	handler.dekProvisioner = dekProvisioner
 
 	if err := handler.RegisterCRUD(nc); err != nil {
 		slog.Error("register CRUD handlers failed", "error", err)
@@ -152,5 +175,11 @@ func main() {
 		},
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+		func(context.Context) error {
+			if vaultWrapper != nil {
+				return vaultWrapper.Close()
+			}
+			return nil
+		},
 	)
 }

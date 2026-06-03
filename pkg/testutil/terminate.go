@@ -10,5 +10,6 @@ func TerminateAll() {
 	TerminateMinIO()
 	TerminateElasticsearch()
 	TerminateNATS()
+	TerminateVault()
 	TerminateValkey()
 }

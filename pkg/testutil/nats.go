@@ -20,16 +20,25 @@ import (
 var (
 	natsOnce      sync.Once
 	natsContainer testcontainers.Container
+	natsStopProc  func()
 	natsURL       string
 	natsInitErr   error
 )
 
 // JetStream is enabled unconditionally so consumers that publish/consume
 // through streams (search-sync-worker, inbox-worker, etc.) Just Work
-// against the shared container. Consumers that only use core NATS
+// against the shared NATS instance. Consumers that only use core NATS
 // request/reply pay nothing extra — JS is dormant until used.
+//
+// Backing instance is either a `nats-server -js` subprocess (when the
+// binary is on PATH) or a testcontainers NATS container.
 func ensureNATS() (string, error) {
 	natsOnce.Do(func() {
+		if u, stop, err := startNATSBinary(); err == nil {
+			natsURL = u
+			natsStopProc = stop
+			return
+		}
 		ctx := context.Background()
 		c, err := natsmod.Run(ctx, testimages.NATS,
 			testcontainers.WithCmdArgs("--jetstream"),
@@ -66,8 +75,14 @@ func NATS(t *testing.T) string {
 // No-t variant intended for TestMain pre-warming.
 func EnsureNATS() error { _, err := ensureNATS(); return err }
 
-// TerminateNATS stops the shared NATS container. Best-effort, idempotent.
+// TerminateNATS stops the shared NATS instance (subprocess or
+// container). Best-effort, idempotent.
 func TerminateNATS() {
+	if natsStopProc != nil {
+		natsStopProc()
+		natsStopProc = nil
+		return
+	}
 	if natsContainer == nil {
 		return
 	}

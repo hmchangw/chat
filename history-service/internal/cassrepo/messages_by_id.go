@@ -26,6 +26,9 @@ func (r *Repository) GetMessageByID(ctx context.Context, messageID string) (*mod
 	if !found {
 		return nil, nil
 	}
+	if err := r.decryptIfNeeded(ctx, &m); err != nil {
+		return nil, fmt.Errorf("querying message by id %s: %w", messageID, err)
+	}
 	return &m, nil
 }
 
@@ -44,6 +47,11 @@ func (r *Repository) GetMessagesByIDs(ctx context.Context, messageIDs []string) 
 	}
 	if scanErr != nil {
 		return nil, fmt.Errorf("querying messages by IDs: %w", scanErr)
+	}
+	for i := range messages {
+		if err := r.decryptIfNeeded(ctx, &messages[i]); err != nil {
+			return nil, fmt.Errorf("querying messages by IDs: %w", err)
+		}
 	}
 	return messages, nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/publisher"
 	"github.com/hmchangw/chat/history-service/internal/readcache"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/msgbucket"
@@ -104,7 +105,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	cassRepo := cassrepo.NewRepository(cassSession, bucketSizer, cfg.MessageReadMaxBuckets)
+	var (
+		cipher       atrest.Cipher
+		vaultWrapper atrest.KeyWrapperCloser
+	)
+	if cfg.Atrest.Enabled {
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if err != nil {
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
+			os.Exit(1)
+		}
+		vaultWrapper = w
+		dekColl := mongoClient.Database(cfg.Mongo.DB).Collection(atrest.CollectionName)
+		cipher = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
+	cassRepo := cassrepo.NewRepository(cassSession, bucketSizer, cfg.MessageReadMaxBuckets, cipher)
 	db := mongoClient.Database(cfg.Mongo.DB)
 	subRepo := mongorepo.NewSubscriptionRepo(db)
 	roomRepo := mongorepo.NewRoomRepo(db)
@@ -154,5 +170,11 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
+		func(ctx context.Context) error {
+			if vaultWrapper != nil {
+				return vaultWrapper.Close()
+			}
+			return nil
+		},
 	)
 }

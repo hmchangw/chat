@@ -40,3 +40,6 @@ CREATE TABLE IF NOT EXISTS chat.messages_by_room (
     'compaction_window_unit': 'HOURS',
     'compaction_window_size': '72'
   };
+
+ALTER TABLE chat.messages_by_room ADD enc_payload BLOB;
+ALTER TABLE chat.messages_by_room ADD enc_meta FROZEN<"EncMeta">;
