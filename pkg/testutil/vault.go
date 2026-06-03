@@ -121,6 +121,17 @@ func TerminateVault() {
 // The key is deleted on t.Cleanup so the dev Vault doesn't accumulate
 // keys across a large test suite. Deletion requires the key to be
 // configured with deletion_allowed=true, which we set at creation time.
+// testNameHash returns a short, filesystem- and Vault-safe hex digest of
+// t.Name(). FNV-64a keeps the result well under Vault's 255-char limit and
+// turns any "/", " ", etc. in the test name into hex digits, giving each
+// test an isolated, deterministic suffix for its keys/policies/roles.
+func testNameHash(t *testing.T) string {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name())) // hash.Hash.Write never errors
+	return fmt.Sprintf("%x", h.Sum64())
+}
+
 func Vault(t *testing.T, ctx context.Context) *VaultHandle {
 	t.Helper()
 	base, err := ensureVaultBase(ctx)
@@ -128,12 +139,8 @@ func Vault(t *testing.T, ctx context.Context) *VaultHandle {
 		t.Fatalf("testutil.Vault: %v", err)
 	}
 
-	// Per-test transit key name derived from t.Name(). FNV-64a hash
-	// keeps the name well under Vault's 255-char limit and turns any
-	// "/", " ", etc. in t.Name() into a safe hex digit string.
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(t.Name())) // hash.Hash.Write never errors
-	keyName := fmt.Sprintf("test-key-%x", h.Sum64())
+	// Per-test transit key name derived from t.Name() so tests stay isolated.
+	keyName := "test-key-" + testNameHash(t)
 
 	if _, err := base.client.Logical().WriteWithContext(ctx,
 		fmt.Sprintf("%s/keys/%s", vaultTransitMount, keyName),
@@ -186,9 +193,7 @@ func (v *VaultHandle) EnableAppRole(t *testing.T, ctx context.Context) (roleID, 
 		t.Fatalf("testutil.EnableAppRole: enable approle: %v", err)
 	}
 
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(t.Name())) // hash.Hash.Write never errors
-	suffix := fmt.Sprintf("%x", h.Sum64())
+	suffix := testNameHash(t)
 	policyName := "test-policy-" + suffix
 	roleName := "test-role-" + suffix
 

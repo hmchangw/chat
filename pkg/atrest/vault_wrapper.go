@@ -158,7 +158,7 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		// would build a broken "auth//login" path. Leaving the option off
 		// lets the helper apply its own "approle" default, matching our
 		// envDefault.
-		opts := []authapprole.LoginOption{}
+		var opts []authapprole.LoginOption
 		if cfg.AppRoleAuthPath != "" {
 			opts = append(opts, authapprole.WithMountPath(cfg.AppRoleAuthPath))
 		}
