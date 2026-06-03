@@ -1,0 +1,45 @@
+{
+  "docs": [
+    {"id": "en-1", "lang": "english", "content": "The quick brown fox jumps over the lazy dog"},
+    {"id": "en-2", "lang": "english", "content": "A brown fox and a brown bear walked into the forest"},
+    {"id": "en-3", "lang": "english", "content": "Database migration scripts use foo_bar and bazQux naming"},
+    {"id": "en-4", "lang": "english", "content": "The camelCase identifier userName maps to the user_name column"},
+    {"id": "en-5", "lang": "english", "content": "Punctuation, semicolons; and parentheses (like this) are stripped!"},
+    {"id": "en-6", "lang": "english", "content": "Lazy summer afternoons make the dog sleepy and slow"},
+
+    {"id": "cjk-1", "lang": "cjk", "content": "今天天气很好我们去公园散步"},
+    {"id": "cjk-2", "lang": "cjk", "content": "公园里有很多人在散步和跑步"},
+    {"id": "cjk-3", "lang": "cjk", "content": "用户Name登录系统后查看消息"},
+    {"id": "cjk-4", "lang": "cjk", "content": "系统消息推送到所有在线用户"},
+    {"id": "cjk-5", "lang": "cjk", "content": "数据库迁移脚本在公园里运行"},
+
+    {"id": "html-1", "lang": "html", "content": "<p>Hello <b>world</b> from an HTML paragraph</p>"},
+    {"id": "html-2", "lang": "html", "content": "<div class=\"note\">world &amp; peace &lt;tagged&gt; content</div>"},
+    {"id": "html-3", "lang": "html", "content": "<a href=\"https://example.com\">click here</a> for the report"},
+    {"id": "html-4", "lang": "html", "content": "<span>encrypted &amp; searchable message body</span>"},
+
+    {"id": "mixed-1", "lang": "mixed", "content": "Meeting 会议 at 3pm in room 会议室 A"},
+    {"id": "mixed-2", "lang": "mixed", "content": "请 review 这个 pull request 谢谢"},
+    {"id": "mixed-3", "lang": "mixed", "content": "The 服务器 server restarted at midnight"},
+    {"id": "mixed-4", "lang": "mixed", "content": "搜索 search engine 索引 index updated"}
+  ],
+  "queries": [
+    {"id": "q-en-fox", "lang": "english", "text": "brown fox", "relevant": ["en-1", "en-2"]},
+    {"id": "q-en-lazy", "lang": "english", "text": "lazy dog", "relevant": ["en-1", "en-6"]},
+    {"id": "q-en-foobar", "lang": "english", "text": "foo_bar", "relevant": ["en-3"]},
+    {"id": "q-en-username", "lang": "english", "text": "userName", "relevant": ["en-4"]},
+
+    {"id": "q-cjk-park", "lang": "cjk", "text": "公园", "relevant": ["cjk-1", "cjk-2", "cjk-5"]},
+    {"id": "q-cjk-walk", "lang": "cjk", "text": "散步", "relevant": ["cjk-1", "cjk-2"]},
+    {"id": "q-cjk-user", "lang": "cjk", "text": "用户", "relevant": ["cjk-3", "cjk-4"]},
+    {"id": "q-cjk-msg", "lang": "cjk", "text": "消息", "relevant": ["cjk-3", "cjk-4"]},
+
+    {"id": "q-html-world", "lang": "html", "text": "world", "relevant": ["html-1", "html-2"]},
+    {"id": "q-html-report", "lang": "html", "text": "report", "relevant": ["html-3"]},
+    {"id": "q-html-searchable", "lang": "html", "text": "searchable", "relevant": ["html-4"]},
+
+    {"id": "q-mixed-meeting", "lang": "mixed", "text": "会议", "relevant": ["mixed-1"]},
+    {"id": "q-mixed-server", "lang": "mixed", "text": "server", "relevant": ["mixed-3"]},
+    {"id": "q-mixed-search", "lang": "mixed", "text": "search", "relevant": ["mixed-4"]}
+  ]
+}
