@@ -171,3 +171,27 @@ The rest of the implementation is solid: idempotent Cassandra LWT writes, correc
 - `low` — `broadcast-worker/handler.go` — `threadFanOutAccounts` iterates a `map[string]struct{}` and appends to a `[]string`. The helper is correct but a comment noting why duplicate subscribers are already excluded (the map key uniqueness guarantee) would aid future readers.
 
 - `nitpick` — `pkg/model/event.go` — `ThreadAction` type defined adjacent to `RoomEventType` constants is fine idiomatically, but the `ThreadActionReplyAdded` / `ThreadActionReplyDeleted` constants are separated from the `ThreadMetadataUpdatedEvent` struct they exclusively serve. Co-locating them (or grouping with a blank-line separator + comment) would improve discoverability.
+
+---
+
+## Test-Automation
+
+**TDD compliance:** New code follows the Red-Green-Refactor cycle. Table-driven tests are used throughout. The `-race` flag is covered by the Makefile. Mocks are regenerated (mock_store_test.go updated with `GetThreadFollowers`).
+
+### High
+
+- `high` — `broadcast-worker/handler.go` — **No unit test added for `publishThreadMetadata`.** `publishThreadMetadata` is a new exported-equivalent function (called from all three thread handlers) that constructs and publishes a `ThreadMetadataUpdatedEvent`. There is no `Test…_publishThreadMetadata` test case exercising: happy path, publish failure, and zero tcount edge case. CLAUDE.md Section 4 requires every new function to have a corresponding test. **TDD violation.**
+
+- `high` — `room-service/handler.go` — **No unit test added for `usersByAccount`** (new helper introduced to build the `Participant` slice for `Mentions`). The helper is called from `buildRoomEvent`; its logic (account→participant mapping, deduplication) is untested in isolation. Omitting a test for a non-trivial data-transformation helper is a TDD violation per CLAUDE.md Section 4.
+
+### Medium
+
+- `medium` — `broadcast-worker/handler_test.go` — The error-path test cases for `GetThreadFollowers` returning an error cover the `channelThreadFanOut` wrapper but do not test what happens when `GetThreadFollowers` returns an **empty map** (no followers). The fan-out should be a no-op; verifying the downstream publish call is NOT made in that case would complete the boundary coverage.
+
+- `medium` — `notification-worker/handler_test.go` — Once the `EventCreated`-only guard is added (critical fix), a test case for `evt.Event = model.EventThreadReplyAdded` must be added to verify it is silently dropped (no publish). Without this test the guard can be accidentally removed without a failing test.
+
+### Low
+
+- `low` — `message-worker/handler_test.go` — The `incrementParentTcount` failure path (where the tcount call fails) is not tested. The test should verify that the canonical publish is skipped and the error is returned (not swallowed).
+
+- `low` — `mock_store_test.go` (broadcast-worker) — Mocks are up-to-date. No staleness issues detected (`make generate` matches committed mock).
