@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/blindidx"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -221,6 +223,179 @@ func TestHandler_SearchMessages_UserWithNoSubsReturnsEmpty(t *testing.T) {
 	v, hit := cache.store["alice"]
 	assert.True(t, hit)
 	assert.Empty(t, v)
+}
+
+// encQueryField walks an ES query body and reports the single content
+// must-clause: ("multi_match", fieldOrQuery) for the plaintext arm, or
+// ("match"/"match_phrase"/"match_none", contentBlind query) for the enc arm.
+func encQueryMustKey(t *testing.T, body json.RawMessage) string {
+	t.Helper()
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	must := parsed["query"].(map[string]any)["bool"].(map[string]any)["must"].([]any)
+	require.Len(t, must, 1)
+	clause := must[0].(map[string]any)
+	for k := range clause {
+		return k
+	}
+	return ""
+}
+
+// newEncTestHandler builds a handler wired for the enc path with the given
+// default arm + bench-mode flag and injected enc deps.
+func newEncTestHandler(
+	store SearchStore, cache RestrictedRoomCache,
+	defaultArm string, benchMode bool,
+	hasher *blindidx.Hasher, cipher decrypter, history historyBatchClient,
+) *handler {
+	h := newHandler(store, nil, nil, cache, &handlerConfig{
+		SiteID:                  "site-a",
+		DocCounts:               25,
+		MaxDocCounts:            100,
+		RestrictedRoomsCacheTTL: 5 * time.Minute,
+		RecentWindow:            365 * 24 * time.Hour,
+		SpotlightReadPattern:    testSpotlightIndex,
+		EncDefaultArm:           defaultArm,
+		BenchModeEnabled:        benchMode,
+	})
+	h.hasher = hasher
+	h.cipher = cipher
+	h.historyClient = history
+	return h
+}
+
+func testHasher(t *testing.T) *blindidx.Hasher {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	hsr, err := blindidx.New(key, "v1")
+	require.NoError(t, err)
+	return hsr
+}
+
+// encHitSource builds an ES `_source` map carrying enc-index fields.
+func encHitBody(t *testing.T, msgID, roomID string, contentEnc, nonce []byte) json.RawMessage {
+	t.Helper()
+	body := map[string]any{
+		"hits": map[string]any{
+			"total": map[string]any{"value": 1},
+			"hits": []any{map[string]any{"_source": map[string]any{
+				"messageId":  msgID,
+				"roomId":     roomID,
+				"siteId":     "site-a",
+				"contentEnc": contentEnc,
+				"encNonce":   nonce,
+				"createdAt":  "2026-04-01T12:00:00Z",
+			}}},
+		},
+	}
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	return data
+}
+
+func TestHandler_SearchMessages_DefaultArmC_UsesPlaintextPath(t *testing.T) {
+	store := &fakeStore{}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	h := newEncTestHandler(store, cache, "C", false, testHasher(t), &fakeDecrypter{}, &fakeHistoryBatchClient{})
+
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, MessageIndexPattern, store.searchCalls[0].indices)
+	assert.Equal(t, "multi_match", encQueryMustKey(t, store.searchCalls[0].body))
+}
+
+func TestHandler_SearchMessages_VariantA_BenchOn_UsesEncPathAndDecrypter(t *testing.T) {
+	store := &fakeStore{searchBody: encHitBody(t, "m1", "r1", []byte("CT"), []byte("N"))}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	d := &fakeDecrypter{byRoom: map[string]string{"r1": "decrypted-hi"}}
+	h := newEncTestHandler(store, cache, "C", true, testHasher(t), d, &fakeHistoryBatchClient{})
+
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi", Variant: "A"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, EncMessageIndexPattern, store.searchCalls[0].indices)
+	assert.Equal(t, "match", encQueryMustKey(t, store.searchCalls[0].body))
+	require.Len(t, resp.Messages, 1)
+	assert.Equal(t, "decrypted-hi", resp.Messages[0].Content)
+	require.Len(t, d.calls, 1, "decrypter must be invoked for arm A")
+}
+
+func TestHandler_SearchMessages_VariantA_BenchOff_IgnoresVariant(t *testing.T) {
+	store := &fakeStore{}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	// Default arm is C and bench mode is OFF → the A variant must be ignored.
+	h := newEncTestHandler(store, cache, "C", false, testHasher(t), &fakeDecrypter{}, &fakeHistoryBatchClient{})
+
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi", Variant: "A"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, MessageIndexPattern, store.searchCalls[0].indices, "bench off → variant ignored, configured default C used")
+	assert.Equal(t, "multi_match", encQueryMustKey(t, store.searchCalls[0].body))
+}
+
+func TestHandler_SearchMessages_VariantB_UsesHistoryClient(t *testing.T) {
+	store := &fakeStore{searchBody: encHitBody(t, "m1", "r1", nil, nil)}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	hist := &fakeHistoryBatchClient{msgs: []cassandra.Message{{MessageID: "m1", RoomID: "r1", Msg: "from-history"}}}
+	h := newEncTestHandler(store, cache, "C", true, testHasher(t), &fakeDecrypter{}, hist)
+
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi", Variant: "B"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, EncMessageIndexPattern, store.searchCalls[0].indices)
+	assert.Equal(t, "match", encQueryMustKey(t, store.searchCalls[0].body))
+	require.Len(t, resp.Messages, 1)
+	assert.Equal(t, "from-history", resp.Messages[0].Content)
+	require.Len(t, hist.callIDs, 1, "history client must be invoked once for arm B")
+	assert.Equal(t, []string{"m1"}, hist.callIDs[0])
+}
+
+func TestHandler_SearchMessages_InvalidVariantRejected(t *testing.T) {
+	store := &fakeStore{}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	h := newEncTestHandler(store, cache, "C", true, testHasher(t), &fakeDecrypter{}, &fakeHistoryBatchClient{})
+
+	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi", Variant: "Z"})
+	require.Error(t, err)
+	var rerr *errcode.Error
+	require.True(t, errors.As(err, &rerr))
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
+}
+
+func TestHandler_SearchMessages_DefaultArmA_NoVariant(t *testing.T) {
+	store := &fakeStore{searchBody: encHitBody(t, "m1", "r1", []byte("CT"), []byte("N"))}
+	cache := newFakeCache()
+	cache.store["alice"] = map[string]int64{}
+
+	d := &fakeDecrypter{byRoom: map[string]string{"r1": "hi-decrypted"}}
+	// Configured default A, bench off, no variant supplied → enc path.
+	h := newEncTestHandler(store, cache, "A", false, testHasher(t), d, &fakeHistoryBatchClient{})
+
+	resp, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
+	require.NoError(t, err)
+
+	require.Len(t, store.searchCalls, 1)
+	assert.Equal(t, EncMessageIndexPattern, store.searchCalls[0].indices)
+	require.Len(t, resp.Messages, 1)
+	assert.Equal(t, "hi-decrypted", resp.Messages[0].Content)
 }
 
 type fakeMongo struct {

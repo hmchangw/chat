@@ -7,10 +7,18 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
+
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
+	"github.com/hmchangw/chat/pkg/subject"
 )
+
+// historyBatchRequestTimeout matches the nats.go default request timeout used
+// by the other history-service requesters in the codebase.
+const historyBatchRequestTimeout = 2 * time.Second
 
 // encMessageSearchHit is the `_source` shape of an encrypted-message ES hit.
 // It mirrors messageSearchHit's metadata but carries the per-room atrest
@@ -125,6 +133,58 @@ func retrieveContentB(ctx context.Context, client historyBatchClient, account st
 		out = append(out, toEncSearchMessage(hit, byID[hit.MessageID]))
 	}
 	return out
+}
+
+// natsHistoryBatchClient is the production historyBatchClient: a thin NATS
+// requester over history-service's batch GetMessagesByIDs RPC. It mirrors the
+// other history requesters in the codebase (message-gatekeeper's
+// historyParentFetcher) — marshal the request, issue a request/reply at
+// subject.MsgBatchGet, decode the typed errcode envelope first, then the
+// payload.
+type natsHistoryBatchClient struct {
+	nc     *otelnats.Conn
+	siteID string
+}
+
+func newNATSHistoryBatchClient(nc *otelnats.Conn, siteID string) *natsHistoryBatchClient {
+	return &natsHistoryBatchClient{nc: nc, siteID: siteID}
+}
+
+// historyBatchRequest mirrors history-service's GetMessagesByIDsRequest wire
+// shape (the source struct lives under internal/ and isn't importable).
+type historyBatchRequest struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+// historyBatchResponse mirrors history-service's GetMessagesByIDsResponse.
+type historyBatchResponse struct {
+	Messages []cassandra.Message `json:"messages"`
+}
+
+func (c *natsHistoryBatchClient) GetByIDs(ctx context.Context, account string, ids []string) ([]cassandra.Message, error) {
+	reqBytes, err := json.Marshal(historyBatchRequest{MessageIDs: ids})
+	if err != nil {
+		return nil, fmt.Errorf("marshal batch GetMessagesByIDs request: %w", err)
+	}
+
+	subj := subject.MsgBatchGet(account, c.siteID)
+	msg, err := c.nc.Request(ctx, subj, reqBytes, historyBatchRequestTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("history batch request: %w", err)
+	}
+
+	// Detect the errcode error envelope first; a real response has no top-level
+	// "error" field so this cannot false-positive. Propagate the typed remote
+	// errcode so the upstream classification is preserved.
+	if ee, ok := errcode.Parse(msg.Data); ok && ee.Code.Valid() {
+		return nil, ee
+	}
+
+	var resp historyBatchResponse
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal batch GetMessagesByIDs response: %w", err)
+	}
+	return resp.Messages, nil
 }
 
 // toEncSearchMessage projects an encMessageSearchHit plus its decrypted

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/blindidx"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -30,7 +31,25 @@ type handlerConfig struct {
 	RequestTimeout          time.Duration
 	UserRoomIndex           string
 	SpotlightReadPattern    string
+	// EncDefaultArm is the effective message-search arm when no per-request
+	// Variant override applies: "C" (plaintext, the default) or "A"/"B" (the
+	// two encrypted-content-retrieval paths). Set from SEARCH_ENC_DEFAULT_ARM
+	// in main.go; "C" whenever SEARCH_ENC_ENABLED is false.
+	EncDefaultArm string
+	// BenchModeEnabled honors a per-request Variant override. OFF in prod —
+	// every request runs the configured EncDefaultArm regardless of Variant.
+	BenchModeEnabled bool
+	// EncIndexPattern is the ES index pattern for the encrypted parallel
+	// index (arms A/B). Empty falls back to the package default
+	// EncMessageIndexPattern.
+	EncIndexPattern []string
 }
+
+const (
+	armC = "C"
+	armA = "A"
+	armB = "B"
+)
 
 type handler struct {
 	store SearchStore
@@ -38,6 +57,13 @@ type handler struct {
 	users SearchUsersClient
 	cache RestrictedRoomCache
 	cfg   handlerConfig
+
+	// Encrypted-path dependencies. nil on a pure plaintext (arm-C-only)
+	// deployment; main.go wires them only when SEARCH_ENC_ENABLED is true
+	// (and validates each honored arm has the deps it needs).
+	hasher        *blindidx.Hasher
+	cipher        decrypter
+	historyClient historyBatchClient
 }
 
 func newHandler(store SearchStore, mongo MongoStore, users SearchUsersClient, cache RestrictedRoomCache, cfg *handlerConfig) *handler {
@@ -52,6 +78,12 @@ func newHandler(store SearchStore, mongo MongoStore, users SearchUsersClient, ca
 	}
 	if cfg.RecentWindow <= 0 {
 		cfg.RecentWindow = 365 * 24 * time.Hour
+	}
+	if cfg.EncDefaultArm == "" {
+		cfg.EncDefaultArm = armC
+	}
+	if len(cfg.EncIndexPattern) == 0 {
+		cfg.EncIndexPattern = EncMessageIndexPattern
 	}
 	return &handler{store: store, mongo: mongo, users: users, cache: cache, cfg: *cfg}
 }
@@ -90,6 +122,11 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	ctx, cancel := h.withRequestTimeout(c)
 	defer cancel()
 
+	arm, err := h.resolveArm(req.Variant)
+	if err != nil {
+		return nil, err
+	}
+
 	restricted, err := h.loadRestricted(ctx, account)
 	if err != nil {
 		return nil, err
@@ -98,9 +135,35 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	// `restricted` is the caller's full restrictedRooms map sourced from the
 	// ES user-room-mv index (cached in Valkey by loadRestricted). It is the
 	// single source of truth for restricted vs unrestricted classification.
-	// When req.RoomIDs is set, buildMessageQuery -> scopedAccessClauses
-	// iterates req.RoomIDs and classifies each ID against this map directly,
-	// so no handler-level pre-classification is needed.
+	// When req.RoomIDs is set, the access-clause builders iterate req.RoomIDs
+	// and classify each ID against this map directly, so no handler-level
+	// pre-classification is needed. The enc path reuses the SAME
+	// messageFilterClauses helper, so arms A/B never widen access beyond C.
+	if arm == armC {
+		return h.searchMessagesC(ctx, req, account, restricted)
+	}
+	return h.searchMessagesEnc(ctx, arm, req, account, restricted)
+}
+
+// resolveArm picks the effective arm for this request. A per-request Variant
+// override is honored ONLY in bench mode and must be one of C/A/B; otherwise
+// the server's configured default arm wins (which is C whenever encryption is
+// disabled).
+func (h *handler) resolveArm(variant string) (string, error) {
+	if h.cfg.BenchModeEnabled && variant != "" {
+		switch variant {
+		case armC, armA, armB:
+			return variant, nil
+		default:
+			return "", errcode.BadRequest("invalid variant: must be one of C, A, B")
+		}
+	}
+	return h.cfg.EncDefaultArm, nil
+}
+
+// searchMessagesC is the plaintext (arm C) path: multi_match over `content` in
+// the plaintext `messages-*` indices, projected straight off the ES hit.
+func (h *handler) searchMessagesC(ctx context.Context, req model.SearchMessagesRequest, account string, restricted map[string]int64) (*model.SearchMessagesResponse, error) {
 	body, err := buildMessageQuery(req, account, restricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
 	if err != nil {
 		return nil, fmt.Errorf("building search query: %w", err)
@@ -121,6 +184,38 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	messages := make([]model.SearchMessage, 0, len(hits))
 	for i := range hits {
 		messages = append(messages, toSearchMessage(&hits[i]))
+	}
+	return &model.SearchMessagesResponse{Messages: messages, Total: total}, nil
+}
+
+// searchMessagesEnc is the encrypted-content path (arms A and B): blind the
+// query against `contentBlind` in the parallel `enc-messages-*` index, then
+// recover plaintext content either in-process (A, decrypt) or via the
+// history-service batch RPC (B). The access-control filter block is identical
+// to arm C — buildEncMessageQuery reuses messageFilterClauses verbatim.
+func (h *handler) searchMessagesEnc(ctx context.Context, arm string, req model.SearchMessagesRequest, account string, restricted map[string]int64) (*model.SearchMessagesResponse, error) {
+	body, err := buildEncMessageQuery(req, account, restricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex, h.hasher)
+	if err != nil {
+		return nil, fmt.Errorf("building enc search query: %w", err)
+	}
+
+	observeESDone := observeES()
+	raw, err := h.store.Search(ctx, h.cfg.EncIndexPattern, body)
+	observeESDone()
+	if err != nil {
+		return nil, fmt.Errorf("message search backend: %w", err)
+	}
+
+	hits, total, err := parseEncMessagesResponse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing search response: %w", err)
+	}
+
+	var messages []model.SearchMessage
+	if arm == armA {
+		messages = retrieveContentA(ctx, h.cipher, hits)
+	} else {
+		messages = retrieveContentB(ctx, h.historyClient, account, hits)
 	}
 	return &model.SearchMessagesResponse{Messages: messages, Total: total}, nil
 }

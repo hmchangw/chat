@@ -8,10 +8,16 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/caarlos0/env/v11"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/blindidx"
+	"github.com/hmchangw/chat/pkg/blindsearch"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -73,20 +79,105 @@ type SearchConfig struct {
 	MetricsAddr             string        `env:"METRICS_ADDR"               envDefault:":9090"`
 }
 
-// Config is the root service config. Note that ES and Search share the
-// `SEARCH_` env prefix — the fields on the two structs (URL/BACKEND vs
-// DOC_COUNTS/MAX_DOC_COUNTS/RECENT_WINDOW/REQUEST_TIMEOUT/…) don't
-// collide today, but any new field added to either must be checked
-// against the other or moved to a distinct prefix to avoid silent env
-// shadowing.
+// EncConfig groups the flag-gated encrypted-search knobs. It shares the
+// `SEARCH_` env prefix with ESConfig/SearchConfig — its fields (ENC_*,
+// BENCH_MODE_ENABLED) don't collide with theirs today; any new field added to
+// any of the three SEARCH_-prefixed structs must be checked against the others
+// to avoid silent env shadowing (see the Config foot-gun note).
+type EncConfig struct {
+	Enabled          bool   `env:"ENC_ENABLED"          envDefault:"false"`
+	DefaultArm       string `env:"ENC_DEFAULT_ARM"      envDefault:"C"`
+	MsgIndexPrefix   string `env:"ENC_MSG_INDEX_PREFIX" envDefault:""`
+	BenchModeEnabled bool   `env:"BENCH_MODE_ENABLED"   envDefault:"false"`
+}
+
+// BlindConfig holds the blind-index HMAC key + version used to tokenize the
+// query the same way the enc index was written. Required only when encryption
+// is enabled. Env names are absolute (BLINDIDX_*) so they match the
+// search-sync-worker that produces the index.
+type BlindConfig struct {
+	Key     string `env:"BLINDIDX_KEY"         envDefault:""`
+	Version string `env:"BLINDIDX_KEY_VERSION" envDefault:""`
+}
+
+// Config is the root service config. Note that ES, Search and Enc share the
+// `SEARCH_` env prefix — the fields on those structs don't collide today, but
+// any new field added to any of them must be checked against the others or
+// moved to a distinct prefix to avoid silent env shadowing.
 type Config struct {
-	SiteID   string         `env:"SITE_ID,required"`
-	ES       ESConfig       `envPrefix:"SEARCH_"`
-	Valkey   ValkeyConfig   `envPrefix:"VALKEY_"`
-	NATS     NATSConfig     `envPrefix:"NATS_"`
-	Search   SearchConfig   `envPrefix:"SEARCH_"`
-	Mongo    MongoConfig    `envPrefix:"MONGO_"`
-	UsersAPI UsersAPIConfig `envPrefix:"USERS_API_"`
+	SiteID   string             `env:"SITE_ID,required"`
+	ES       ESConfig           `envPrefix:"SEARCH_"`
+	Valkey   ValkeyConfig       `envPrefix:"VALKEY_"`
+	NATS     NATSConfig         `envPrefix:"NATS_"`
+	Search   SearchConfig       `envPrefix:"SEARCH_"`
+	Enc      EncConfig          `envPrefix:"SEARCH_"`
+	Blind    BlindConfig        ``
+	Atrest   atrest.Config      ``
+	Vault    atrest.VaultConfig ``
+	Mongo    MongoConfig        `envPrefix:"MONGO_"`
+	UsersAPI UsersAPIConfig     `envPrefix:"USERS_API_"`
+}
+
+// encDeps bundles the constructed encrypted-search dependencies handed to the
+// handler. All fields are zero/nil on a plaintext-only (arm-C) deployment.
+type encDeps struct {
+	hasher        *blindidx.Hasher
+	cipher        decrypter
+	historyClient historyBatchClient
+	indexPattern  []string
+}
+
+// buildEncDeps validates the enc config and constructs the dependencies each
+// honored arm needs, failing fast on a misconfiguration. The hasher is always
+// required when encryption is on; the cipher is required if any honored arm is
+// A; the history client if any honored arm is B. "Honored" = the default arm
+// plus (in bench mode) every variant a request may select, so a bench-mode
+// deployment must wire BOTH A and B.
+func buildEncDeps(ctx context.Context, cfg *Config, mongoDB *mongo.Database, nc *otelnats.Conn, defaultArm string) (encDeps, error) {
+	if !cfg.Enc.Enabled {
+		if defaultArm != armC {
+			return encDeps{}, fmt.Errorf("SEARCH_ENC_DEFAULT_ARM=%q requires SEARCH_ENC_ENABLED=true", defaultArm)
+		}
+		return encDeps{}, nil
+	}
+
+	switch defaultArm {
+	case armC, armA, armB:
+	default:
+		return encDeps{}, fmt.Errorf("invalid SEARCH_ENC_DEFAULT_ARM %q: must be one of C, A, B", defaultArm)
+	}
+
+	// In bench mode any of A/B may be selected per request, so both content
+	// retrievers must be available regardless of the default arm.
+	needA := defaultArm == armA || cfg.Enc.BenchModeEnabled
+	needB := defaultArm == armB || cfg.Enc.BenchModeEnabled
+
+	base, _, ok := searchindex.StripVersion(cfg.Enc.MsgIndexPrefix)
+	if !ok {
+		return encDeps{}, fmt.Errorf("invalid SEARCH_ENC_MSG_INDEX_PREFIX %q: must end with -v<N>, e.g. enc-messages-v1", cfg.Enc.MsgIndexPrefix)
+	}
+	indexPattern := []string{fmt.Sprintf("%s-*", base), fmt.Sprintf("*:%s-*", base)}
+
+	hasher, err := blindsearch.LoadHasher(cfg.Blind.Key, cfg.Blind.Version)
+	if err != nil {
+		return encDeps{}, fmt.Errorf("load blind hasher: %w", err)
+	}
+
+	deps := encDeps{hasher: hasher, indexPattern: indexPattern}
+
+	if needA {
+		wrapper, werr := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if werr != nil {
+			return encDeps{}, fmt.Errorf("construct Vault key wrapper for arm A: %w", werr)
+		}
+		dekColl := mongoDB.Collection(atrest.CollectionName)
+		deps.cipher = atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+	if needB {
+		deps.historyClient = newNATSHistoryBatchClient(nc, cfg.SiteID)
+	}
+
+	return deps, nil
 }
 
 func main() {
@@ -150,6 +241,19 @@ func main() {
 	)
 	usersClient := newHTTPUsersClient(usersRC, cfg.UsersAPI.Token)
 
+	// Resolve the effective default arm: C whenever encryption is disabled,
+	// otherwise the configured SEARCH_ENC_DEFAULT_ARM.
+	defaultArm := armC
+	if cfg.Enc.Enabled {
+		defaultArm = strings.ToUpper(cfg.Enc.DefaultArm)
+	}
+
+	enc, err := buildEncDeps(ctx, &cfg, mongoDB, nc, defaultArm)
+	if err != nil {
+		slog.Error("enc search wiring failed", "error", err)
+		os.Exit(1)
+	}
+
 	store := newESStore(engine, cfg.Search.UserRoomIndex)
 	cache := newValkeyCache(valkey)
 	mongoStore := newMongoStore(mongoDB)
@@ -162,7 +266,13 @@ func main() {
 		RequestTimeout:          cfg.Search.RequestTimeout,
 		UserRoomIndex:           cfg.Search.UserRoomIndex,
 		SpotlightReadPattern:    spotlightReadPattern,
+		EncDefaultArm:           defaultArm,
+		BenchModeEnabled:        cfg.Enc.BenchModeEnabled,
+		EncIndexPattern:         enc.indexPattern,
 	})
+	handler.hasher = enc.hasher
+	handler.cipher = enc.cipher
+	handler.historyClient = enc.historyClient
 
 	router := natsrouter.New(nc, "search-service")
 	router.Use(natsrouter.RequestID())
