@@ -140,7 +140,7 @@ func (c *messageCollection) BuildAction(ctx context.Context, data []byte) ([]sea
 // and attach the atrest ciphertext. A cipher error is returned plain-wrapped
 // (non-permanent) so the handler NAKs for redelivery.
 func (c *messageCollection) buildEncAction(ctx context.Context, evt *model.MessageEvent) (searchengine.BulkAction, error) {
-	idx := encIndexName(c.enc.indexPrefix, evt.Message.CreatedAt)
+	idx := indexName(c.enc.indexPrefix, evt.Message.CreatedAt)
 	if evt.Event == model.EventDeleted {
 		return searchengine.BulkAction{
 			Action:  searchengine.ActionDelete,

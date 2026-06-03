@@ -42,12 +42,6 @@ func encMessageTemplateProperties() map[string]any {
 	return props
 }
 
-// encIndexName mirrors indexName(): a monthly rolling index keyed by the
-// message's createdAt, sharing the enc prefix.
-func encIndexName(prefix string, createdAt time.Time) string {
-	return fmt.Sprintf("%s-%s", prefix, createdAt.UTC().Format("2006-01"))
-}
-
 func encMessageTemplateBody(prefix string) json.RawMessage {
 	tmpl := map[string]any{
 		"index_patterns": []string{fmt.Sprintf("%s-*", searchindex.StripVersionBase(prefix))},

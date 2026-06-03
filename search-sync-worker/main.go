@@ -128,6 +128,9 @@ func buildEncOptions(cfg *config) (encOptions, error) {
 	if _, _, ok := searchindex.StripVersion(cfg.EncMsgIndexPrefix); !ok {
 		return encOptions{}, fmt.Errorf("ENC_MSG_INDEX_PREFIX must end with -v<N>, got %q", cfg.EncMsgIndexPrefix)
 	}
+	if searchindex.StripVersionBase(cfg.EncMsgIndexPrefix) == searchindex.StripVersionBase(cfg.MsgIndexPrefix) {
+		return encOptions{}, fmt.Errorf("ENC_MSG_INDEX_PREFIX base must differ from MSG_INDEX_PREFIX base to avoid template collision")
+	}
 	if cfg.BlindKeyVersion == "" {
 		return encOptions{}, fmt.Errorf("BLINDIDX_KEY_VERSION is required when ENC_ENABLED")
 	}

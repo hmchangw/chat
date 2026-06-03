@@ -79,6 +79,16 @@ func TestBuildEncOptions_ValidationErrors(t *testing.T) {
 				BlindKeyVersion:   "v1",
 			},
 		},
+		{
+			name: "enc and plaintext prefix share a base",
+			cfg: config{
+				EncEnabled:        true,
+				MsgIndexPrefix:    "msgs-v1",
+				EncMsgIndexPrefix: "msgs-v2",
+				BlindKey:          strings.Repeat("ab", 32),
+				BlindKeyVersion:   "v1",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
