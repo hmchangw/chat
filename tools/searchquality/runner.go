@@ -82,8 +82,12 @@ func plaintextTemplateBody(indexC string) json.RawMessage {
 				"analysis": map[string]any{
 					"analyzer": map[string]any{
 						"custom_analyzer": map[string]any{
-							"type":        "custom",
-							"tokenizer":   "underscore_preserving",
+							"type":      "custom",
+							"tokenizer": "underscore_preserving",
+							// cjk_bigram is INERT here: it only fires on CJK-typed tokens from the
+							// standard/icu tokenizers, but the `pattern` tokenizer emits `word`-typed
+							// tokens, so CJK runs survive whole. See TestCustomAnalyzerDoesNotBigramCJK
+							// and spec §15.
 							"filter":      []string{"underscore_subword", "cjk_bigram", "lowercase"},
 							"char_filter": []string{"html_strip"},
 						},

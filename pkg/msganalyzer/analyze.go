@@ -4,6 +4,16 @@
 // outside Elasticsearch, allowing the resulting tokens to be blind-hashed
 // (see pkg/blindidx) before indexing. The SAME Analyze function must be used
 // at index time and query time so hashed terms line up.
+//
+// Two intentional divergences from the legacy ES custom_analyzer were measured
+// in Phase 2 (see spec §15):
+//
+//  1. CJK: Analyze bigrams CJK runs (e.g. "公园散步" → "公园","园散","散步"),
+//     whereas the ES analyzer keeps whole CJK runs — its cjk_bigram filter is
+//     inert because the pattern tokenizer emits word-typed (not CJK-typed)
+//     tokens. Our bigramming is intentionally better for CJK substring search.
+//  2. Ampersand: ES html_strip decodes/keeps a bare "&" as a token, whereas
+//     Analyze drops it. Benign.
 package msganalyzer
 
 import "strings"
