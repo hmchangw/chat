@@ -765,7 +765,7 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Common errors: `"not a room member"` (requester has no subscription in the room), `"limit must be > 0"`, `"offset must be >= 0"`.
+See [Error envelope](#6-error-envelope-reference). Common errors: `"only room members can perform this action"` (requester has no subscription in the room), `"limit must be > 0"`, `"offset must be >= 0"`.
 
 ##### Triggered events — success path
 
@@ -828,7 +828,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"not a room m
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — caller has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"only room members can perform this action"` — caller has no subscription in the room (sentinel reused across membership-gated RPCs).
 - `"limit must be > 0 and <= room user count"` — limit was `0`, negative, or larger than the room's current `userCount`.
 
 ##### Triggered events — success path
@@ -903,7 +903,7 @@ Used by the message composer's `@…` mention autocomplete. Returns subscription
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — caller has no subscription in the room.
+- `"only room members can perform this action"` — caller has no subscription in the room.
 - `"limit must be > 0 and <= room user count + app count"` — limit was `0`, negative, or larger than the room's combined user + app population.
 
 ##### Triggered events — success path
@@ -943,7 +943,7 @@ The subject already carries `account` and `roomID`, so no body fields are requir
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"only room members can perform this action"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
 - A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 
 ```json
@@ -999,7 +999,7 @@ A **synchronous RPC** that clears a single thread's unread state for the caller.
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — the caller has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"only room members can perform this action"` — the caller has no subscription in the room (sentinel reused across membership-gated RPCs).
 - `"thread subscription not found"` — the caller has no `ThreadSubscription` for the supplied `threadId` in the supplied room. Also returned when the thread exists but belongs to a different room than the one in the subject.
 - `"threadId is required"` — body is missing `threadId` or sends an empty string.
 - `"invalid message-thread-read subject: …"` — the subject is malformed.
@@ -1052,7 +1052,7 @@ The subject already carries `account` and `roomID`, so no body fields are requir
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"only room members can perform this action"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
 - `"invalid mute-toggle subject: …"` — the subject is malformed.
 
 ##### Triggered events — success path
@@ -1173,7 +1173,7 @@ A **synchronous, sender-only** RPC. Returns the list of users on the local site 
 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
-- `"not a room member"` — the requester has no subscription in the room.
+- `"only room members can perform this action"` — the requester has no subscription in the room.
 - `"message not found"` — no message matches `messageId`.
 - `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
 - `"only the message sender can view read receipts"` — requester is not the author of `messageId`.

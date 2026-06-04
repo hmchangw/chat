@@ -1,5 +1,23 @@
 # Room Member Statuses and Mentionable Subscriptions — Design
 
+> **Drift from shipped implementation.** This spec was written before the
+> final design decisions landed. The following items diverge from what
+> shipped — treat the code, tests, and `docs/client-api.md` as the source
+> of truth and use the snippets/tables below only as starting points:
+>
+> - **Bot/admin classification was split.** The spec describes a single
+>   `botPattern` regex `(\.bot$|^p_)` used Go-side and Mongo-side. The
+>   shipped code splits this into `botAccountRegex = `\.bot$`` (assistant
+>   bots) and `platformAdminRegex = `^p_`` (platform-admin / webhook
+>   accounts). Only `.bot` accounts classify as `optionType="app"`;
+>   `p_` accounts are filtered out at the `$match` stage and never
+>   surface in `subscription.mentionable` results.
+> - **Membership probe runs in parallel with `GetRoom`.** The pseudocode
+>   does both reads sequentially; the shipped code uses a
+>   `requireMembershipAndGetRoom` helper (sync.WaitGroup) with
+>   membership-error precedence.
+> - **Default `subscription.mentionable` limit is 3, not 1.**
+
 ## 1. Goal
 
 Add two new NATS request/reply RPCs to `room-service`:
@@ -199,7 +217,7 @@ func (h *Handler) handleListMemberStatuses(ctx context.Context, subj string, dat
         return model.ListMemberStatusesResponse{}, fmt.Errorf("invalid member-statuses subject")
     }
 
-    // Membership check — sentinel maps to "only room members can list members" via sanitizeError.
+    // Membership check — sentinel maps to "only room members can perform this action" via sanitizeError.
     if _, err := h.store.GetSubscription(ctx, requesterAccount, roomID); err != nil {
         if errors.Is(err, model.ErrSubscriptionNotFound) {
             return model.ListMemberStatusesResponse{}, errNotRoomMember
@@ -499,7 +517,7 @@ Mocked store; table-driven where the inputs vary along a single axis.
 - Subject failing `ParseUserRoomSubject` → `invalid member-statuses subject`
 
 **`TestHandler_ListMentionableSubscriptions_*`**
-- Happy path with default limit (1) and empty filter
+- Happy path with default limit (3) and empty filter
 - Explicit limit and filter honoured
 - Filter containing regex metacharacters (`.`, `(`, `[`) is escaped before reaching the store
 - Caller not a member → `errNotRoomMember`

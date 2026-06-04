@@ -17,14 +17,16 @@
 > - **`subscription.mentionable` default limit is 3, not 1.** When `Limit`
 >   is nil the server returns `min(3, room.UserCount + room.AppCount)` rows;
 >   empty rooms return an empty list.
-> - **Shared membership-error text is `"not a room member"`, not
->   `"not a room member"`.** The single sentinel
->   (`errNotRoomMember`) is reused across the four membership-gated RPCs and
->   the wording is intentionally RPC-agnostic.
-> - **The membership probe runs in parallel with `GetRoom`.** The plan does
->   each sequentially; the shipped code uses a `requireMembershipAndGetRoom`
->   helper that runs both via plain `errgroup.Group` and applies membership
->   precedence post-Wait.
+> - **Shared membership-error text is `"only room members can perform this action"`.**
+>   The single sentinel (`errNotRoomMember`) is reused across the four
+>   membership-gated RPCs (the wording is intentionally RPC-agnostic) and
+>   was inherited from existing room-service code rather than introduced
+>   by this PR.
+> - **The membership probe runs in parallel with `GetRoom`** via a
+>   `requireMembershipAndGetRoom` helper (sync.WaitGroup, not
+>   errgroup.WithContext) that applies membership-error precedence
+>   post-Wait — a fast GetRoom failure cannot cancel the membership probe
+>   and mask the not-member sentinel as `context.Canceled`.
 
 **Goal:** Add two new NATS request/reply RPCs to `room-service` — `member.statuses` (list members + display names + presence status) and `subscription.mentionable` (mention autocomplete with user/app discriminated union).
 
@@ -956,33 +958,38 @@ func (h *Handler) natsListMemberStatuses(m otelnats.Msg) {
 func (h *Handler) handleListMemberStatuses(ctx context.Context, subj string, data []byte) (model.ListMemberStatusesResponse, error) {
 	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
-		return model.ListMemberStatusesResponse{}, fmt.Errorf("invalid member-statuses subject")
-	}
-
-	if _, err := h.store.GetSubscription(ctx, requesterAccount, roomID); err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
-			return model.ListMemberStatusesResponse{}, errNotRoomMember
-		}
-		return model.ListMemberStatusesResponse{}, fmt.Errorf("check room membership: %w", err)
+		return model.ListMemberStatusesResponse{}, errcode.BadRequest("invalid member-statuses subject")
 	}
 
 	var req model.ListMemberStatusesRequest
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &req); err != nil {
-			return model.ListMemberStatusesResponse{}, fmt.Errorf("invalid request: %w", err)
+			return model.ListMemberStatusesResponse{}, errcode.BadRequest("invalid request")
 		}
 	}
-	limit := 3
-	if req.Limit != nil {
-		limit = *req.Limit
+
+	// Parallel membership probe + room load with membership-error precedence.
+	// See requireMembershipAndGetRoom; sync.WaitGroup (not errgroup.WithContext)
+	// so a fast GetRoom failure cannot cancel GetSubscription and mask the
+	// not-member sentinel as context.Canceled.
+	room, err := h.requireMembershipAndGetRoom(ctx, requesterAccount, roomID)
+	if err != nil {
+		return model.ListMemberStatusesResponse{}, err
 	}
 
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		return model.ListMemberStatusesResponse{}, fmt.Errorf("get room: %w", err)
-	}
-	if limit <= 0 || limit > room.UserCount {
-		return model.ListMemberStatusesResponse{}, errMemberStatusesLimitInvalid
+	// Default = min(3, room.UserCount); empty room short-circuits with []
+	// (not zero-value, so the wire shape stays an empty array).
+	var limit int
+	if req.Limit == nil {
+		if room.UserCount == 0 {
+			return model.ListMemberStatusesResponse{Members: []model.MemberStatus{}}, nil
+		}
+		limit = min(defaultMemberStatusesLimit, room.UserCount)
+	} else {
+		limit = *req.Limit
+		if limit <= 0 || limit > room.UserCount {
+			return model.ListMemberStatusesResponse{}, errMemberStatusesLimitInvalid
+		}
 	}
 
 	members, err := h.store.ListMemberStatuses(ctx, roomID, limit)
@@ -1373,7 +1380,7 @@ func TestHandler_ListMentionableSubscriptions(t *testing.T) {
 		want      want
 	}{
 		{
-			name:    "default limit 1, empty filter, happy path",
+			name:    "default limit 3, empty filter, happy path",
 			subject: subj,
 			body:    nil,
 			setupMock: func(s *MockRoomStore) {
@@ -1382,7 +1389,7 @@ func TestHandler_ListMentionableSubscriptions(t *testing.T) {
 				s.EXPECT().GetRoom(gomock.Any(), roomID).
 					Return(&model.Room{ID: roomID, UserCount: 5, AppCount: 2}, nil)
 				s.EXPECT().
-					ListMentionableSubscriptions(gomock.Any(), roomID, requester, "", 1).
+					ListMentionableSubscriptions(gomock.Any(), roomID, requester, "", 3).
 					Return(stub, nil)
 			},
 			want: want{subs: stub},
@@ -1499,7 +1506,7 @@ func TestHandler_ListMentionableSubscriptions(t *testing.T) {
 				s.EXPECT().GetRoom(gomock.Any(), roomID).
 					Return(&model.Room{ID: roomID, UserCount: 5, AppCount: 2}, nil)
 				s.EXPECT().
-					ListMentionableSubscriptions(gomock.Any(), roomID, requester, "", 1).
+					ListMentionableSubscriptions(gomock.Any(), roomID, requester, "", 3).
 					Return(nil, fmt.Errorf("mongo exploded"))
 			},
 			want: want{errContains: "list mentionable subscriptions"},
@@ -1585,37 +1592,41 @@ func (h *Handler) natsListMentionableSubscriptions(m otelnats.Msg) {
 func (h *Handler) handleListMentionableSubscriptions(ctx context.Context, subj string, data []byte) (model.MentionableSubscriptionsResponse, error) {
 	requesterAccount, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok {
-		return model.MentionableSubscriptionsResponse{}, fmt.Errorf("invalid mentionable-subscriptions subject")
-	}
-
-	if _, err := h.store.GetSubscription(ctx, requesterAccount, roomID); err != nil {
-		if errors.Is(err, model.ErrSubscriptionNotFound) {
-			return model.MentionableSubscriptionsResponse{}, errNotRoomMember
-		}
-		return model.MentionableSubscriptionsResponse{}, fmt.Errorf("check room membership: %w", err)
+		return model.MentionableSubscriptionsResponse{}, errcode.BadRequest("invalid mentionable-subscriptions subject")
 	}
 
 	var req model.MentionableSubscriptionsRequest
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &req); err != nil {
-			return model.MentionableSubscriptionsResponse{}, fmt.Errorf("invalid request: %w", err)
+			return model.MentionableSubscriptionsResponse{}, errcode.BadRequest("invalid request")
 		}
 	}
-	limit := 3
-	if req.Limit != nil {
-		limit = *req.Limit
+
+	// Parallel membership probe + room load with membership-error precedence —
+	// see requireMembershipAndGetRoom (sync.WaitGroup; membership wins over
+	// a racing GetRoom error).
+	room, err := h.requireMembershipAndGetRoom(ctx, requesterAccount, roomID)
+	if err != nil {
+		return model.MentionableSubscriptionsResponse{}, err
 	}
 
-	room, err := h.store.GetRoom(ctx, roomID)
-	if err != nil {
-		return model.MentionableSubscriptionsResponse{}, fmt.Errorf("get room: %w", err)
-	}
-	if limit <= 0 || limit > room.UserCount+room.AppCount {
-		return model.MentionableSubscriptionsResponse{}, errMentionableLimitInvalid
+	// Default = min(3, UserCount+AppCount); empty room short-circuits with [].
+	mentionableCap := room.UserCount + room.AppCount
+	var limit int
+	if req.Limit == nil {
+		if mentionableCap == 0 {
+			return model.MentionableSubscriptionsResponse{Subscriptions: []model.MentionableSubscription{}}, nil
+		}
+		limit = min(defaultMentionableLimit, mentionableCap)
+	} else {
+		limit = *req.Limit
+		if limit <= 0 || limit > mentionableCap {
+			return model.MentionableSubscriptionsResponse{}, errMentionableLimitInvalid
+		}
 	}
 
 	// Filter is a literal substring. QuoteMeta escapes regex metacharacters
-	// so a user typing "a.b" doesn't match every "a*b" account. Empty stays empty.
+	// so a user typing "a.b" doesn't match every "a<any>b" account.
 	escapedFilter := regexp.QuoteMeta(req.Filter)
 
 	subs, err := h.store.ListMentionableSubscriptions(ctx, roomID, requesterAccount, escapedFilter, limit)
@@ -1830,7 +1841,7 @@ Used by the message composer's `@…` mention autocomplete. Returns subscription
 
 | Field    | Type   | Required | Notes |
 |----------|--------|----------|-------|
-| `limit`  | number | no       | Defaults to `1`. Must be `> 0` and `<= room.userCount + room.appCount`. |
+| `limit`  | number | no       | Defaults to `3` (effectively `min(3, room.userCount + room.appCount)`). Must be `> 0` and `<= room.userCount + room.appCount`. |
 | `filter` | string | no       | Defaults to `""` (matches everything). Treated as a literal substring; regex metacharacters are escaped server-side. Matched case-insensitively against a dash-joined keyword built from `account`, `engName`, `chineseName`, `app.name`, and `app.assistant.name`. |
 
 ```json
@@ -1938,7 +1949,7 @@ git commit -m "docs(client-api): document member.statuses + subscription.mention
 - `ListMentionableSubscriptions(ctx, roomID, excludeAccount, escapedFilter string, limit int)` — same signature in store.go, store_mongo.go, and handler (all within Tasks 8–9).
 - `MemberStatus` / `MentionableSubscription` struct field names match the Mongo projection in store_mongo.go and the docs-table column names.
 - `errMemberStatusesLimitInvalid` / `errMentionableLimitInvalid` strings match the docs error-envelope examples in Task 11.
-- Default-limit numbers (3 / 1) match between handler code, tests, docs, and the spec.
+- Default-limit numbers (3 / 3) match between handler code, tests, docs, and the spec.
 
 **Placeholder scan:** No "TBD", "TODO", or "similar to" placeholders found.
 
