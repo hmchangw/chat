@@ -289,7 +289,9 @@ func countThreadParents(m map[string][]ThreadParentRef) int {
 }
 
 // natsHistoryRequester is the production HistoryRequester. Each call performs
-// nats.Conn.RequestWithContext under a per-call timeout context.
+// nats.Conn.RequestMsgWithContext under a per-call timeout context, carrying the
+// X-Request-ID from ctx on the message header (nil header when ctx has none, so
+// callers that don't set a request ID are unaffected).
 type natsHistoryRequester struct {
 	nc *nats.Conn
 }
@@ -301,7 +303,7 @@ func newNATSHistoryRequester(nc *nats.Conn) *natsHistoryRequester {
 func (r *natsHistoryRequester) Request(ctx context.Context, subj string, data []byte, timeout time.Duration) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg, err := r.nc.RequestWithContext(reqCtx, subj, data)
+	msg, err := r.nc.RequestMsgWithContext(reqCtx, natsutil.NewMsg(ctx, subj, data))
 	if err != nil {
 		return nil, fmt.Errorf("nats request: %w", err)
 	}

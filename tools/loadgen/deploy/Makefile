@@ -11,7 +11,7 @@ STEPS            ?=
 # `ENCRYPTION_ENABLED=false make up` for a plaintext comparison run.
 export ENCRYPTION_ENABLED ?= true
 
-.PHONY: up stack-up overlay-up seed teardown run run-dashboards run-max-rps run-daily down logs seed-members teardown-members reset-members run-sustained run-capacity
+.PHONY: up stack-up overlay-up seed teardown run run-dashboards run-max-rps run-daily down logs seed-members teardown-members reset-members run-sustained run-capacity seed-roomread teardown-roomread
 
 up: stack-up overlay-up
 
@@ -38,6 +38,14 @@ seed-members:
 teardown-members:
 	@test -n "$(PRESET)" || (echo "PRESET=<members-*> required" && exit 1)
 	$(COMPOSE) exec -T loadgen /loadgen teardown --workload=members --preset=$(PRESET)
+
+seed-roomread:
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen seed --workload=room-read --preset=$(PRESET)
+
+teardown-roomread:
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen teardown --workload=room-read --preset=$(PRESET)
 
 reset-members:
 	@test -n "$(PRESET)" || (echo "PRESET=<members-*> required" && exit 1)
@@ -75,7 +83,7 @@ run-dashboards:
 	$(COMPOSE) --profile dashboards up -d
 	$(MAKE) run PRESET=$(PRESET) RATE=$(RATE) DURATION=$(DURATION)
 
-run-max-rps: ## Ramp RPS to find the max under SLO (WORKLOAD=messages|history PRESET=.. STEPS=..)
+run-max-rps: ## Ramp RPS to find the max under SLO (WORKLOAD=messages|history|room-read PRESET=.. STEPS=..)
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
 	$(COMPOSE) --profile dashboards up -d cadvisor prometheus
 	$(COMPOSE) exec -T loadgen /loadgen max-rps \

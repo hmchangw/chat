@@ -123,7 +123,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history")
+	workload := fs.String("workload", "messages", "messages|members|history|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	// --users overrides preset.Users for the messages workload (daily presets
@@ -144,6 +144,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return runSeedMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runSeedHistory(ctx, cfg, *preset, *seed)
+	case "room-read":
+		return runSeedRoomRead(ctx, cfg, *preset, *seed)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
@@ -218,7 +220,7 @@ func runSeedMembers(ctx context.Context, cfg *config, preset string, seed int64)
 
 func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history")
+	workload := fs.String("workload", "messages", "messages|members|history|room-read")
 	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
 	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
 	_ = fs.Parse(args)
@@ -233,6 +235,8 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		return runTeardownMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runTeardownHistory(ctx, cfg, *preset, *seed)
+	case "room-read":
+		return runTeardownRoomRead(ctx, cfg, *preset, *seed)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
@@ -261,6 +265,50 @@ func runTeardownMessages(ctx context.Context, cfg *config, preset string, seed i
 		return 1
 	}
 	slog.Info("teardown complete (messages)")
+	return 0
+}
+
+func runSeedRoomRead(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
+		return 2
+	}
+	db, _, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	fixtures := BuildRoomReadFixtures(&p, seed, cfg.SiteID, time.Now().UTC())
+	// No SeedRoomKeys: the read path never decrypts, so no room keys are written.
+	if err := Seed(ctx, db, &fixtures); err != nil {
+		slog.Error("seed", "error", err)
+		return 1
+	}
+	slog.Info("seed complete (room-read)",
+		"preset", p.Name,
+		"users", len(fixtures.Users),
+		"rooms", len(fixtures.Rooms),
+		"subs", len(fixtures.Subscriptions))
+	return 0
+}
+
+func runTeardownRoomRead(ctx context.Context, cfg *config, preset string, seed int64) int {
+	if _, ok := BuiltinPreset(preset); !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
+		return 2
+	}
+	db, _, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	// No TeardownRoomKeys: runSeedRoomRead writes no room keys, so there are none to remove.
+	if err := Teardown(ctx, db); err != nil {
+		slog.Error("teardown", "error", err)
+		return 1
+	}
+	slog.Info("teardown complete (room-read)", "preset", preset)
 	return 0
 }
 
