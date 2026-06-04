@@ -7,19 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/hmchangw/chat/pkg/displayfmt"
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -31,35 +35,60 @@ import (
 type Handler struct {
 	store RoomStore
 	// keyStore is set when VALKEY_ADDRS is configured (always in production; tests may pass nil).
-	keyStore          RoomKeyStore
-	memberListClient  MemberListClient
-	msgReader         MessageReader
-	siteID            string
-	maxRoomSize       int
-	maxBatchSize      int
-	memberListTimeout time.Duration
-	publishToStream   func(ctx context.Context, subj string, data []byte) error
-	publishCore       func(ctx context.Context, subj string, data []byte) error
+	keyStore RoomKeyStore
+	// dekProvisioner is set in main when ATREST_ENABLED; nil disables eager
+	// at-rest DEK creation at room-create time (message-worker's lazy create
+	// still covers remote sites and pre-rollout rooms). Injected as a field
+	// rather than a constructor arg to avoid churning every NewHandler caller.
+	dekProvisioner           DEKProvisioner
+	memberListClient         MemberListClient
+	msgReader                MessageReader
+	siteID                   string
+	maxRoomSize              int
+	maxBatchSize             int
+	memberListTimeout        time.Duration
+	publishToStream          func(ctx context.Context, subj string, data []byte, msgID string) error
+	publishCore              func(ctx context.Context, subj string, data []byte) error
+	restrictedRoomMinMembers int
+	siteURL                  *url.URL
+	maxResponseBytes         int64
 }
 
-func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, publishToStream func(context.Context, string, []byte) error, publishCore func(context.Context, string, []byte) error) *Handler {
+func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberListClient, msgReader MessageReader, siteID string, maxRoomSize, maxBatchSize int, memberListTimeout time.Duration, restrictedRoomMinMembers int, publishToStream func(context.Context, string, []byte, string) error, publishCore func(context.Context, string, []byte) error, siteURL *url.URL, maxResponseBytes int64) *Handler {
 	return &Handler{
-		store:             store,
-		keyStore:          keyStore,
-		memberListClient:  memberListClient,
-		msgReader:         msgReader,
-		siteID:            siteID,
-		maxRoomSize:       maxRoomSize,
-		maxBatchSize:      maxBatchSize,
-		memberListTimeout: memberListTimeout,
-		publishToStream:   publishToStream,
-		publishCore:       publishCore,
+		store:                    store,
+		keyStore:                 keyStore,
+		memberListClient:         memberListClient,
+		msgReader:                msgReader,
+		siteID:                   siteID,
+		maxRoomSize:              maxRoomSize,
+		maxBatchSize:             maxBatchSize,
+		memberListTimeout:        memberListTimeout,
+		restrictedRoomMinMembers: restrictedRoomMinMembers,
+		publishToStream:          publishToStream,
+		publishCore:              publishCore,
+		siteURL:                  siteURL,
+		maxResponseBytes:         maxResponseBytes,
 	}
 }
 
-// wrappedCtx returns m.Context() augmented with X-Request-ID from the inbound msg header; entry ctx for every nats* handler.
-func wrappedCtx(m otelnats.Msg) context.Context {
-	return natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Msg.Header)
+// wrappedCtx validates the inbound X-Request-ID via natsutil.RequireRequestID
+// (strict mode) and returns m.Context() seeded with the id for the centralized
+// errcode.Classify log line. Missing/malformed headers return an
+// errcode.BadRequest that the caller must reply to via errnats.Reply.
+//
+// Strict mode is required here — not the mint-on-missing default — because
+// room-service handlers fan out to room-worker, whose JetStream publishes
+// derive Nats-Msg-Id / message IDs from this request ID (OutboxDedupID,
+// messageDedupSeed, idgen.MessageIDFromRequestID). A silently-minted server-
+// side ID would break dedup across client retries. See docs/error-handling.md
+// §3a.
+func wrappedCtx(m otelnats.Msg) (context.Context, error) {
+	ctx, id, err := natsutil.RequireRequestID(m.Context(), m.Msg.Header, m.Msg.Subject)
+	if err != nil {
+		return m.Context(), err
+	}
+	return errcode.WithLogValues(ctx, "request_id", id), nil
 }
 
 // RegisterCRUD registers NATS request/reply handlers for room CRUD with queue group.
@@ -92,7 +121,7 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MemberListWildcard(h.siteID), queue, h.natsListMembers); err != nil {
 		return fmt.Errorf("subscribe member list: %w", err)
 	}
-	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(), queue, h.natsListOrgMembers); err != nil {
+	if _, err := nc.QueueSubscribe(subject.OrgMembersWildcard(h.siteID), queue, h.natsListOrgMembers); err != nil {
 		return fmt.Errorf("subscribe org members: %w", err)
 	}
 	if _, err := nc.QueueSubscribe(subject.RoomKeyEnsure(h.siteID), queue, h.NatsHandleEnsureRoomKey); err != nil {
@@ -104,38 +133,37 @@ func (h *Handler) RegisterCRUD(nc *otelnats.Conn) error {
 	if _, err := nc.QueueSubscribe(subject.MuteToggleWildcard(h.siteID), queue, h.natsMuteToggle); err != nil {
 		return fmt.Errorf("subscribe mute toggle: %w", err)
 	}
+	if _, err := nc.QueueSubscribe(subject.FavoriteToggleWildcard(h.siteID), queue, h.natsFavoriteToggle); err != nil {
+		return fmt.Errorf("subscribe favorite toggle: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomRenameWildcard(h.siteID), queue, h.natsRoomRename); err != nil {
+		return fmt.Errorf("subscribe room rename: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomRestricted(h.siteID), queue, h.natsRoomRestricted); err != nil {
+		return fmt.Errorf("subscribe room restricted: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomAppTabsWildcard(h.siteID), queue, h.natsGetRoomAppTabs); err != nil {
+		return fmt.Errorf("subscribe app tabs: %w", err)
+	}
+	if _, err := nc.QueueSubscribe(subject.RoomAppCmdMenuWildcard(h.siteID), queue, h.natsGetRoomAppCommandMenu); err != nil {
+		return fmt.Errorf("subscribe app cmd-menu: %w", err)
+	}
 	return nil
 }
 
 func (h *Handler) natsCreateRoom(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleCreateRoom(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		var dmExists *dmExistsError
-		if errors.As(err, &dmExists) {
-			h.replyDMExists(m.Msg, dmExists.RoomID())
-			return
-		}
-		slog.Error("create-room failed", "error", err, "subject", m.Msg.Subject)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
 		slog.Error("failed to respond to create-room", "error", err)
-	}
-}
-
-func (h *Handler) replyDMExists(msg *nats.Msg, existingRoomID string) {
-	body, err := json.Marshal(model.ErrorResponse{
-		Error:  "dm already exists",
-		RoomID: existingRoomID,
-	})
-	if err != nil {
-		natsutil.ReplyError(msg, "internal error")
-		return
-	}
-	if err := msg.Respond(body); err != nil {
-		slog.Error("failed to respond DM exists", "error", err)
 	}
 }
 
@@ -145,17 +173,9 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("invalid create-room subject: %s", subj)
 	}
 
-	requestID := natsutil.RequestIDFromContext(ctx)
-	if requestID == "" {
-		return nil, errMissingRequestID
-	}
-	if !idgen.IsValidUUID(requestID) {
-		return nil, errInvalidRequestID
-	}
-
 	var req model.CreateRoomRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 
 	roomType, err := classifyAndValidate(&req, requesterAccount)
@@ -166,7 +186,7 @@ func (h *Handler) handleCreateRoom(ctx context.Context, subj string, data []byte
 	requester, err := h.store.GetUser(ctx, requesterAccount)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return nil, errUserNotFound
+			return nil, errcode.NotFound("user not found", errcode.WithReason(errcode.RoomUserNotFound))
 		}
 		return nil, fmt.Errorf("get requester: %w", err)
 	}
@@ -238,7 +258,7 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 	other, err := h.store.GetUser(ctx, otherAccount)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return nil, errUserNotFound
+			return nil, errcode.NotFound("user not found", errcode.WithReason(errcode.RoomUserNotFound))
 		}
 		return nil, fmt.Errorf("get counterpart: %w", err)
 	}
@@ -258,7 +278,13 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 	// the deterministic "open-or-create" contract for DMs.
 	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err == nil && existing != nil {
-		return nil, newDMExistsError(existing.RoomID)
+		// DM already exists: this is a success ("open-or-create"), not an error.
+		// Return the existing room ID so the client opens it. RoomType is left
+		// empty on this branch, matching the prior error-reply behaviour.
+		return json.Marshal(model.CreateRoomReply{
+			Status: model.CreateRoomStatusExists,
+			RoomID: existing.RoomID,
+		})
 	}
 	if err != nil && !errors.Is(err, model.ErrSubscriptionNotFound) {
 		return nil, fmt.Errorf("dm dedup check: %w", err)
@@ -317,7 +343,11 @@ func (h *Handler) handleCreateRoomChannel(ctx context.Context, req *model.Create
 	// N members, not N+1.
 	totalMembers := 1 + newCount
 	if totalMembers > h.maxRoomSize {
-		return nil, fmt.Errorf("exceeds maximum capacity (%d): would create %d members", h.maxRoomSize, totalMembers)
+		return nil, errcode.Conflict(
+			fmt.Sprintf("exceeds maximum capacity (%d): would create %d members", h.maxRoomSize, totalMembers),
+			errcode.WithReason(errcode.RoomMaxSizeReached),
+			errcode.WithMetadata("maxRoomSize", strconv.Itoa(h.maxRoomSize), "attempted", strconv.Itoa(totalMembers)),
+		)
 	}
 
 	// Preserve req.Users / req.Orgs as the literal client request for sys-message payloads.
@@ -352,11 +382,21 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		}
 	}
 
+	// Provision the at-rest DEK BEFORE the canonical event so the first message
+	// write doesn't pay the create cost. Blocking, like the room key above;
+	// message-worker's lazy creation still covers remote sites (the DEK is
+	// per-site) and rooms created before this rollout.
+	if h.dekProvisioner != nil {
+		if err := h.dekProvisioner.EnsureDEK(ctx, req.RoomID); err != nil {
+			return nil, fmt.Errorf("provision at-rest DEK: %w", err)
+		}
+	}
+
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal canonical event: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload, ""); err != nil {
 		return nil, fmt.Errorf("publish canonical: %w", err)
 	}
 	return json.Marshal(model.CreateRoomReply{
@@ -368,11 +408,14 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 
 // NatsHandleRemoveMember handles remove-member authorization requests.
 func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleRemoveMember(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("remove member failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -381,36 +424,42 @@ func (h *Handler) NatsHandleRemoveMember(m otelnats.Msg) {
 }
 
 func (h *Handler) natsListMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleListMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("list members failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, resp)
 }
 
 func (h *Handler) natsListOrgMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleListOrgMembers(ctx, m.Msg.Subject)
 	if err != nil {
-		slog.Error("list org members failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	natsutil.ReplyJSON(m.Msg, resp)
 }
 
 func (h *Handler) handleListOrgMembers(ctx context.Context, subj string) (model.ListOrgMembersResponse, error) {
-	orgID, ok := subject.ParseOrgMembersSubject(subj)
+	orgID, _, ok := subject.ParseOrgMembersSubject(subj)
 	if !ok {
 		return model.ListOrgMembersResponse{}, fmt.Errorf("invalid org-members subject")
 	}
 	members, err := h.store.ListOrgMembers(ctx, orgID)
 	if err != nil {
-		if errors.Is(err, errInvalidOrg) {
-			return model.ListOrgMembersResponse{}, errInvalidOrg
+		if errcode.HasReason(err, errcode.RoomInvalidOrg) {
+			return model.ListOrgMembersResponse{}, errcode.BadRequest("invalid org", errcode.WithReason(errcode.RoomInvalidOrg))
 		}
 		return model.ListOrgMembersResponse{}, fmt.Errorf("get org members: %w", err)
 	}
@@ -434,7 +483,7 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 	var req model.ListRoomMembersRequest
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &req); err != nil {
-			return model.ListRoomMembersResponse{}, fmt.Errorf("invalid request: %w", err)
+			return model.ListRoomMembersResponse{}, errcode.BadRequest("invalid request")
 		}
 	}
 	if req.Limit != nil && *req.Limit <= 0 {
@@ -452,11 +501,14 @@ func (h *Handler) handleListMembers(ctx context.Context, subj string, data []byt
 }
 
 func (h *Handler) natsGetRoomKey(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleGetRoomKey(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("get room key failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -484,7 +536,7 @@ func (h *Handler) handleGetRoomKey(ctx context.Context, subj string, data []byte
 	var req model.RoomKeyGetRequest
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &req); err != nil {
-			return nil, fmt.Errorf("invalid request: %w", err)
+			return nil, errcode.BadRequest("invalid request")
 		}
 	}
 
@@ -527,7 +579,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 
 	var req model.RemoveMemberRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 
 	if req.RoomID != "" && req.RoomID != roomID {
@@ -542,7 +594,9 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, fmt.Errorf("%w, got %s", errRemoveChannelOnly, room.Type)
+		// Preserve sentinel identity (errors.Is matches via %w unwrap) while
+		// carrying the actual room type for client-side context.
+		return nil, fmt.Errorf("%w (got %s)", errRemoveChannelOnly, room.Type)
 	}
 	// Carry room type to room-worker to avoid a redundant GetRoom round-trip there.
 	req.RoomType = room.Type
@@ -567,7 +621,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 				return nil, fmt.Errorf("get requester subscription: %w", err)
 			}
 			if !hasRole(requesterSub.Roles, model.RoleOwner) {
-				return nil, fmt.Errorf("only owners can remove members")
+				return nil, errOnlyOwnersCanRemove
 			}
 		}
 		counts, err := h.store.CountMembersAndOwners(ctx, roomID)
@@ -587,7 +641,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 			return nil, fmt.Errorf("get requester subscription: %w", err)
 		}
 		if !hasRole(sub.Roles, model.RoleOwner) {
-			return nil, fmt.Errorf("only owners can remove members")
+			return nil, errOnlyOwnersCanRemove
 		}
 	}
 
@@ -599,7 +653,7 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 	if err != nil {
 		return nil, fmt.Errorf("marshal remove member request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.remove"), data, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -607,11 +661,14 @@ func (h *Handler) handleRemoveMember(ctx context.Context, subj string, data []by
 }
 
 func (h *Handler) natsUpdateRole(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleUpdateRole(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("update role failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -626,10 +683,10 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	}
 	var req model.UpdateRoleRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("invalid request: room ID mismatch")
+		return nil, errRoomIDMismatch
 	}
 	req.RoomID = roomID
 	if req.NewRole != model.RoleOwner && req.NewRole != model.RoleMember {
@@ -678,24 +735,75 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 			return nil, errCannotDemoteLast
 		}
 	}
-	// Stable acceptance time → stable Nats-Msg-Id across redeliveries.
-	req.Timestamp = time.Now().UTC().UnixMilli()
-	data, err = json.Marshal(req)
+	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner)
 	if err != nil {
-		return nil, fmt.Errorf("marshal role update request: %w", err)
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errTargetNotMember // defensive: target removed between validation and mutate
+		}
+		return nil, fmt.Errorf("set owner role: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
+
+	now := time.Now().UTC()
+	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, now)
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(map[string]string{"status": "accepted"})
+
+	userSiteID, err := h.store.GetUserSiteID(ctx, req.Account)
+	if err != nil {
+		return nil, fmt.Errorf("get user siteId: %w", err)
+	}
+	if userSiteID != "" && userSiteID != h.siteID {
+		outbox := model.OutboxEvent{
+			Type:       "role_updated",
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    subEvtData, // inbox-worker.handleRoleUpdated decodes a SubscriptionUpdateEvent
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, "role_updated"), outboxData, ""); err != nil {
+			return nil, fmt.Errorf("publish role-updated outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+// publishSubscriptionUpdate marshals a SubscriptionUpdateEvent for sub with the
+// given action and best-effort publishes it to the account's subscription.update
+// subject over core NATS. A publish failure is logged, not returned — the DB
+// write is the source of truth; clients reconcile on next refetch. Returns the
+// marshaled event so callers can reuse it (e.g. as a cross-site outbox payload).
+func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action string, sub *model.Subscription, ts time.Time) ([]byte, error) {
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: *sub,
+		Action:       action,
+		Timestamp:    ts.UnixMilli(),
+	}
+	data, err := json.Marshal(subEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), data); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", account)
+	}
+	return data, nil
 }
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleAddMembers(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("add-members failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -710,10 +818,15 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("invalid add-members subject: %s", subj)
 	}
 
-	// 2. Verify requester is in room
+	// 2. Verify requester is in room. Distinguish "not a member" (typed
+	// forbidden — the user genuinely can't add members) from an infra failure
+	// (Mongo timeout etc. — must NOT collapse to a 403 user-error).
 	sub, err := h.store.GetSubscription(ctx, requester, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("requester not in room: %w", err)
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errNotRoomMember
+		}
+		return nil, fmt.Errorf("check requester room membership: %w", err)
 	}
 
 	// 3. Get room and guard on type
@@ -722,19 +835,19 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 		return nil, fmt.Errorf("get room: %w", err)
 	}
 	if room.Type != model.RoomTypeChannel {
-		return nil, fmt.Errorf("cannot add members to a non-channel room")
+		return nil, errAddMembersChannelOnly
 	}
 	if room.Restricted && !hasRole(sub.Roles, model.RoleOwner) {
-		return nil, fmt.Errorf("only owners can add members to a restricted room")
+		return nil, errOnlyOwnersCanAddToRes
 	}
 
 	// 4. Unmarshal request
 	var req model.AddMembersRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 	if req.RoomID != "" && req.RoomID != roomID {
-		return nil, fmt.Errorf("invalid request: room ID mismatch")
+		return nil, errRoomIDMismatch
 	}
 
 	// Reject direct bots up front — mirrors classifyAndValidate in
@@ -776,7 +889,13 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	// ReconcileUserCount after each membership change) instead of issuing a
 	// separate CountSubscriptions query.
 	if room.UserCount+newCount > h.maxRoomSize {
-		return nil, fmt.Errorf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount)
+		return nil, errcode.Conflict(
+			fmt.Sprintf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount),
+			errcode.WithReason(errcode.RoomMaxSizeReached),
+			errcode.WithMetadata("maxRoomSize", strconv.Itoa(h.maxRoomSize),
+				"currentUserCount", strconv.Itoa(room.UserCount),
+				"attempted", strconv.Itoa(room.UserCount+newCount)),
+		)
 	}
 
 	// 9. Normalize and publish — Users and Orgs ship as merged-but-unresolved.
@@ -791,7 +910,7 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	if err != nil {
 		return nil, fmt.Errorf("marshal add-members request: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized); err != nil {
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
 
@@ -799,10 +918,10 @@ func (h *Handler) handleAddMembers(ctx context.Context, subj string, data []byte
 	return json.Marshal(map[string]string{"status": "accepted"})
 }
 
-// validateAccountsExist wraps errUserNotFound with the first phantom account
-// (via fmt.Errorf("user %q: %w", …)) when any account has no matching user
-// document; errors.Is(err, errUserNotFound) holds. Without this gate a typo'd
-// account is silently dropped and the async job reports success.
+// validateAccountsExist returns a RoomUserNotFound-reason errcode naming the
+// first phantom account when any account has no matching user document.
+// errcode.HasReason(err, errcode.RoomUserNotFound) holds. Without this gate a
+// typo'd account is silently dropped and the async job reports success.
 func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) error {
 	if len(accounts) == 0 {
 		return nil
@@ -820,15 +939,15 @@ func (h *Handler) validateAccountsExist(ctx context.Context, accounts []string) 
 	}
 	for _, a := range accounts {
 		if _, ok := have[a]; !ok {
-			return fmt.Errorf("user %q: %w", a, errUserNotFound)
+			return errcode.NotFound(fmt.Sprintf("user %q not found", a), errcode.WithReason(errcode.RoomUserNotFound))
 		}
 	}
 	return nil
 }
 
-// validateOrgIDs wraps errInvalidOrg with the first phantom orgID (via
-// fmt.Errorf("org %q: %w", …)) when any orgID has zero backing users
-// (no user with sectId==orgID or deptId==orgID); errors.Is(err, errInvalidOrg)
+// validateOrgIDs returns a RoomInvalidOrg-reason errcode naming the first
+// phantom orgID when any orgID has zero backing users (no user with
+// sectId==orgID or deptId==orgID). errcode.HasReason(err, errcode.RoomInvalidOrg)
 // holds. No-op when orgIDs is empty.
 func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
 	if len(orgIDs) == 0 {
@@ -847,7 +966,7 @@ func (h *Handler) validateOrgIDs(ctx context.Context, orgIDs []string) error {
 	}
 	for _, id := range orgIDs {
 		if _, ok := have[id]; !ok {
-			return fmt.Errorf("org %q: %w", id, errInvalidOrg)
+			return errcode.BadRequest(fmt.Sprintf("invalid org %q", id), errcode.WithReason(errcode.RoomInvalidOrg))
 		}
 	}
 	return nil
@@ -879,15 +998,15 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 
 		// Per-ref deadline so a slow same-site Mongo query or unresponsive
 		// remote site cannot stall the create/add request indefinitely; a
-		// timeout here surfaces to the caller as channelExpandTimeoutError
-		// with site+roomId so the requester can see which channel stalled.
+		// timeout here surfaces to the caller as an Unavailable errcode with
+		// site+roomId so the requester can see which channel stalled.
 		refCtx, cancel := h.contextWithMemberListTimeout(ctx)
 
 		if ref.SiteID == h.siteID {
 			if _, subErr := h.store.GetSubscription(refCtx, requester, ref.RoomID); subErr != nil {
 				cancel()
 				if errors.Is(subErr, context.DeadlineExceeded) {
-					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+					return nil, nil, errcode.Unavailable(fmt.Sprintf("timeout listing members of channel %s@%s", ref.RoomID, ref.SiteID))
 				}
 				if errors.Is(subErr, model.ErrSubscriptionNotFound) {
 					return nil, nil, errNotRoomMember
@@ -898,7 +1017,7 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 			cancel()
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+					return nil, nil, errcode.Unavailable(fmt.Sprintf("timeout listing members of channel %s@%s", ref.RoomID, ref.SiteID))
 				}
 				return nil, nil, fmt.Errorf("local list-members %s: %w", ref.RoomID, err)
 			}
@@ -907,7 +1026,7 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 			cancel()
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
-					return nil, nil, newChannelExpandTimeoutError(ref.SiteID, ref.RoomID)
+					return nil, nil, errcode.Unavailable(fmt.Sprintf("timeout listing members of channel %s@%s", ref.RoomID, ref.SiteID))
 				}
 				// Pass the sentinel through unwrapped so same-site and cross-site "not a member"
 				// produce identical behavior — errors.Is(err, errNotRoomMember) matches both.
@@ -949,11 +1068,14 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 }
 
 func (h *Handler) natsRoomsInfoBatch(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleRoomsInfoBatch(ctx, m.Msg.Data)
 	if err != nil {
-		slog.Error("rooms info batch failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -965,13 +1087,13 @@ func (h *Handler) handleRoomsInfoBatch(ctx context.Context, data []byte) ([]byte
 	start := time.Now()
 	var req model.RoomsInfoBatchRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 	if len(req.RoomIDs) == 0 {
-		return nil, fmt.Errorf("roomIds must not be empty")
+		return nil, errcode.BadRequest("roomIds must not be empty")
 	}
 	if len(req.RoomIDs) > h.maxBatchSize {
-		return nil, fmt.Errorf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize)
+		return nil, errcode.BadRequest(fmt.Sprintf("batch size %d exceeds limit %d", len(req.RoomIDs), h.maxBatchSize))
 	}
 
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {
@@ -1084,11 +1206,14 @@ func chunkedGetKeys(ctx context.Context, ks RoomKeyStore, ids []string) (map[str
 }
 
 func (h *Handler) natsMessageRead(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageRead(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("message read failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1169,7 +1294,7 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish subscription_read outbox: %w", err)
 		}
 	}
@@ -1202,11 +1327,14 @@ func (h *Handler) handleMessageRead(ctx context.Context, subj string, _ []byte) 
 }
 
 func (h *Handler) natsMessageReadReceipt(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageReadReceipt(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("message read-receipt failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1222,10 +1350,10 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 
 	var req model.ReadReceiptRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 	if req.MessageID == "" {
-		return nil, fmt.Errorf("invalid request: messageId is required")
+		return nil, errcode.BadRequest("invalid request: messageId is required")
 	}
 
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {
@@ -1295,11 +1423,14 @@ func (h *Handler) handleMessageReadReceipt(ctx context.Context, subj string, dat
 }
 
 func (h *Handler) natsMessageThreadRead(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMessageThreadRead(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("message thread-read failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1315,7 +1446,7 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 
 	var req model.MessageThreadReadRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("unmarshal thread-read request: %w", err)
+		return nil, errcode.BadRequest("invalid request")
 	}
 	if strings.TrimSpace(req.ThreadID) == "" {
 		return nil, errInvalidThreadID
@@ -1412,7 +1543,7 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish thread_read outbox: %w", err)
 		}
 	}
@@ -1426,11 +1557,14 @@ func (h *Handler) handleMessageThreadRead(ctx context.Context, subj string, data
 // bytes — encryption/decryption is performed by broadcast-worker and clients,
 // which read keys from Valkey directly.
 func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleEnsureRoomKey(ctx, m.Msg.Data)
 	if err != nil {
-		slog.Error("ensure room key failed", "error", err)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1440,14 +1574,20 @@ func (h *Handler) NatsHandleEnsureRoomKey(m otelnats.Msg) {
 
 func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte, error) {
 	if h.keyStore == nil {
-		return nil, fmt.Errorf("ensure room key: key store not configured")
+		// Local Valkey disabled — surfaces to peer sites as a transient outage
+		// (symmetric with the timeout-class failures in :808/:819/:828).
+		return nil, errcode.Unavailable("room key store not configured")
 	}
 	var req model.RoomKeyEnsureRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("ensure room key: decode request: %w", err)
+		// Per doc.go and pkg/errcode logging contract: json.SyntaxError /
+		// UnmarshalTypeError strings embed the offending substring and field
+		// shape from an unauthenticated payload — never WithCause(err) here.
+		// Same shape as message-gatekeeper:173.
+		return nil, errcode.BadRequest("invalid ensure-room-key request")
 	}
 	if req.RoomID == "" {
-		return nil, fmt.Errorf("ensure room key: roomId is required")
+		return nil, errcode.BadRequest("roomId is required")
 	}
 
 	existing, err := h.keyStore.Get(ctx, req.RoomID)
@@ -1475,12 +1615,279 @@ func (h *Handler) handleEnsureRoomKey(ctx context.Context, data []byte) ([]byte,
 	})
 }
 
+func (h *Handler) natsRoomRename(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleRoomRename(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to rename", "error", err)
+	}
+}
+
+func (h *Handler) handleRoomRename(ctx context.Context, subj string, data []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", errInvalidRenameSubject, subj)
+	}
+	requestID := natsutil.RequestIDFromContext(ctx)
+
+	// Client body carries only newName — roomID and account are taken from the
+	// subject (the authoritative identity), never from the wire body.
+	var body struct {
+		NewName string `json:"newName"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	slog.Debug("processing room.rename",
+		"op", model.AsyncJobOpRoomRename,
+		"requester", account,
+		"roomID", roomID,
+		"requestID", requestID)
+
+	name := strings.TrimSpace(body.NewName)
+	if name == "" || utf8.RuneCountInString(name) > 100 {
+		return nil, errInvalidName
+	}
+
+	requesterUser, getUserErr := h.store.GetUser(ctx, account)
+	if getUserErr != nil && !errors.Is(getUserErr, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", getUserErr)
+	}
+
+	room, err := h.store.GetRoom(ctx, roomID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, errRenameChannelOnly
+	}
+
+	if !isPlatformAdmin(requesterUser) {
+		sub, subErr := h.store.GetSubscription(ctx, account, roomID)
+		if subErr != nil {
+			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
+				return nil, errOnlyOwnersOrAdmins
+			}
+			return nil, fmt.Errorf("get requester subscription: %w", subErr)
+		}
+		if !hasRole(sub.Roles, model.RoleOwner) {
+			return nil, errOnlyOwnersOrAdmins
+		}
+	}
+
+	canonical := model.RenameRoomRequest{
+		RoomID:    roomID,
+		Account:   account,
+		NewName:   name,
+		Timestamp: time.Now().UTC().UnixMilli(),
+	}
+	out, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("marshal rename request: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "room.rename"), out, ""); err != nil {
+		return nil, fmt.Errorf("publish to stream: %w", err)
+	}
+	return json.Marshal(map[string]string{"status": "accepted", "requestId": requestID})
+}
+
+func (h *Handler) natsRoomRestricted(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleRoomRestricted(ctx, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to restricted", "error", err)
+	}
+}
+
+// handleRoomRestricted is the sync chat.server.> RPC. Account in the body is
+// the audit identity (no subject prefix authenticates the caller — this RPC
+// is server-side admin tooling). Mongo writes + sys-message publish + outbox
+// fan-out happen inline; caller retries safely via dedup IDs.
+func (h *Handler) handleRoomRestricted(ctx context.Context, data []byte) ([]byte, error) {
+	requestID := natsutil.RequestIDFromContext(ctx)
+
+	var req model.RoomRestrictedRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.RoomID == "" || req.Account == "" {
+		return nil, fmt.Errorf("%w: roomId and account are required", errInvalidRestrictedSubject)
+	}
+
+	// Admin-only RPC is rare; info-level audit trail is justified.
+	slog.Info("processing room.restricted",
+		"requester", req.Account,
+		"roomID", req.RoomID,
+		"requestID", requestID)
+
+	requesterUser, getUserErr := h.store.GetUser(ctx, req.Account)
+	if getUserErr != nil && !errors.Is(getUserErr, ErrUserNotFound) {
+		return nil, fmt.Errorf("get user: %w", getUserErr)
+	}
+	if !isPlatformAdmin(requesterUser) {
+		return nil, errOnlyAdmins
+	}
+
+	room, err := h.store.GetRoom(ctx, req.RoomID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("get room: %w", err)
+	}
+	if room.Type != model.RoomTypeChannel {
+		return nil, errRestrictedChannelOnly
+	}
+
+	isTransition := req.Restricted && !room.Restricted
+
+	if req.Restricted && req.OwnerAccount != "" {
+		if _, subErr := h.store.GetSubscription(ctx, req.OwnerAccount, req.RoomID); subErr != nil {
+			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
+				return nil, errOwnerNotMember
+			}
+			return nil, fmt.Errorf("get owner subscription: %w", subErr)
+		}
+	}
+	if isTransition {
+		if req.OwnerAccount == "" {
+			return nil, errOwnerAccountRequired
+		}
+		if room.UserCount < h.restrictedRoomMinMembers {
+			return nil, fmt.Errorf("%w (need at least %d)", errNotEnoughMembers, h.restrictedRoomMinMembers)
+		}
+	}
+
+	req.Timestamp = time.Now().UTC().UnixMilli()
+
+	if err := h.store.UpdateRoomVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess); err != nil {
+		if errors.Is(err, ErrRoomNotFound) {
+			return nil, errRoomNotFound
+		}
+		return nil, fmt.Errorf("update room restricted: %w", err)
+	}
+	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+		if errors.Is(err, ErrOwnerNotSubscribed) {
+			return nil, errOwnerNotMember
+		}
+		return nil, fmt.Errorf("apply subscription restricted: %w", err)
+	}
+
+	sysData, err := json.Marshal(model.RoomRestrictedSysData{
+		Restricted:     req.Restricted,
+		ExternalAccess: req.ExternalAccess,
+		ByAccount:      req.Account,
+		OwnerAccount:   req.OwnerAccount,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal restricted sys data: %w", err)
+	}
+	requesterDisplay := displayfmt.CombineWithFallback(requesterUser.EngName, requesterUser.ChineseName, requesterUser.Account)
+	sysMsg := model.Message{
+		ID:          idgen.MessageIDFromRequestID(requestID, "room_restricted"),
+		RoomID:      req.RoomID,
+		UserAccount: req.Account,
+		Type:        model.MessageTypeRoomRestricted,
+		Content:     fmt.Sprintf("%q changed the channel restricted state", requesterDisplay),
+		SysMsgData:  sysData,
+		CreatedAt:   time.UnixMilli(req.Timestamp).UTC(),
+	}
+	msgEvt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   sysMsg,
+		SiteID:    h.siteID,
+		Timestamp: req.Timestamp,
+	}
+	msgEvtData, err := json.Marshal(msgEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sys message event: %w", err)
+	}
+	if err := h.publishToStream(ctx, subject.MsgCanonicalCreated(h.siteID), msgEvtData, natsutil.CanonicalDedupID(&msgEvt)); err != nil {
+		return nil, fmt.Errorf("publish room_restricted sys message: %w", err)
+	}
+
+	subs, err := h.store.ListSubscriptionsByRoom(ctx, req.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions: %w", err)
+	}
+	accounts := make([]string, 0, len(subs))
+	for i := range subs {
+		accounts = append(accounts, subs[i].User.Account)
+	}
+	users, err := h.store.FindUsersByAccounts(ctx, accounts)
+	if err != nil {
+		return nil, fmt.Errorf("find users for outbox fan-out: %w", err)
+	}
+	seenSites := make(map[string]struct{})
+	var remoteSites []string
+	for i := range users {
+		if users[i].SiteID == "" || users[i].SiteID == h.siteID {
+			continue
+		}
+		if _, dup := seenSites[users[i].SiteID]; dup {
+			continue
+		}
+		seenSites[users[i].SiteID] = struct{}{}
+		remoteSites = append(remoteSites, users[i].SiteID)
+	}
+	if len(remoteSites) > 0 {
+		payload, err := json.Marshal(model.RoomRestrictedOutboxPayload{
+			RoomID:         req.RoomID,
+			Restricted:     req.Restricted,
+			ExternalAccess: req.ExternalAccess,
+			OwnerAccount:   req.OwnerAccount,
+			Timestamp:      req.Timestamp,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal restricted outbox payload: %w", err)
+		}
+		for _, remoteSiteID := range remoteSites {
+			evt := model.OutboxEvent{
+				Type: model.OutboxRoomRestricted, SiteID: h.siteID, DestSiteID: remoteSiteID,
+				Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
+			}
+			evtData, mErr := json.Marshal(evt)
+			if mErr != nil {
+				return nil, fmt.Errorf("marshal restricted outbox event: %w", mErr)
+			}
+			if err := h.publishToStream(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted), evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
+				return nil, fmt.Errorf("publish restricted outbox to %s: %w", remoteSiteID, err)
+			}
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "ok", "requestId": requestID})
+}
+
 func (h *Handler) natsMuteToggle(m otelnats.Msg) {
-	ctx := wrappedCtx(m)
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
 	resp, err := h.handleMuteToggle(ctx, m.Msg.Subject, m.Msg.Data)
 	if err != nil {
-		slog.Error("mute toggle failed", "error", err, "subject", m.Msg.Subject)
-		natsutil.ReplyError(m.Msg, sanitizeError(err))
+		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
 	if err := m.Msg.Respond(resp); err != nil {
@@ -1511,19 +1918,23 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 
 	now := time.Now().UTC()
 
-	subEvt := model.SubscriptionUpdateEvent{
-		UserID:       sub.User.ID,
-		Subscription: *sub,
-		Action:       "mute_toggled",
-		Timestamp:    now.UnixMilli(),
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, now); err != nil {
+		return nil, err
 	}
-	subEvtData, err := json.Marshal(subEvt)
-	if err != nil {
-		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+
+	// Canonical room-stream event consumed by notification-worker for cache invalidation.
+	// One event per mutation, room-scoped (not per-user). Non-fatal: TTL reconciles on miss.
+	canonEvt := model.CanonicalMemberEvent{
+		Type:      model.CanonicalMemberEventMuted,
+		RoomID:    sub.RoomID,
+		Account:   account,
+		Muted:     sub.Muted,
+		Timestamp: now.UnixMilli(),
 	}
-	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err, "account", account)
-		// Non-fatal — the DB write is the source of truth; clients will reconcile on next refetch.
+	if canonData, err := json.Marshal(canonEvt); err == nil {
+		if err := h.publishToStream(ctx, subject.RoomCanonicalMemberEvent(h.siteID, model.CanonicalMemberEventMuted), canonData, ""); err != nil {
+			slog.Error("canonical member event publish failed", "error", err, "type", "muted", "roomID", sub.RoomID, "account", account)
+		}
 	}
 
 	userSiteID, err := h.store.GetUserSiteID(ctx, account)
@@ -1552,10 +1963,293 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData); err != nil {
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish mute-toggled outbox: %w", err)
 		}
 	}
 
 	return json.Marshal(model.MuteToggleResponse{Status: "ok", Muted: sub.Muted})
+}
+
+func (h *Handler) natsFavoriteToggle(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleFavoriteToggle(ctx, m.Msg.Subject, m.Msg.Data)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	if err := m.Msg.Respond(resp); err != nil {
+		slog.Error("failed to respond to favorite toggle", "error", err)
+	}
+}
+
+func (h *Handler) handleFavoriteToggle(ctx context.Context, subj string, _ []byte) ([]byte, error) {
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return nil, fmt.Errorf("invalid favorite-toggle subject: %s", subj)
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+		)
+	}
+
+	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account)
+	if err != nil {
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errNotRoomMember
+		}
+		return nil, fmt.Errorf("toggle subscription favorite: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, now); err != nil {
+		return nil, err
+	}
+
+	userSiteID, err := h.store.GetUserSiteID(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get user siteId: %w", err)
+	}
+	if userSiteID != "" && userSiteID != h.siteID {
+		payload := model.SubscriptionFavoriteToggledEvent{
+			Account:   account,
+			RoomID:    roomID,
+			Favorite:  sub.Favorite,
+			Timestamp: now.UnixMilli(),
+		}
+		payloadData, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal favorite-toggled payload: %w", err)
+		}
+		outbox := model.OutboxEvent{
+			Type:       model.OutboxSubscriptionFavoriteToggled,
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    payloadData,
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionFavoriteToggled), outboxData, ""); err != nil {
+			return nil, fmt.Errorf("publish favorite-toggled outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(model.FavoriteToggleResponse{Status: "ok", Favorite: sub.Favorite})
+}
+
+// authorizeRoomAppRead allows the request iff the caller has a
+// subscription in roomID OR is a platform admin in the local users
+// collection AND the room actually exists. The room-existence check
+// gates only the admin bypass — without it, an admin could query app
+// metadata for a fabricated room ID and receive a plausible-looking
+// response (e.g. a non-empty default-tabs list, or an empty cmd-menu
+// list that looks like success). Cross-site admin authority is out of
+// scope: an admin whose users document lives on a different site is
+// denied.
+func (h *Handler) authorizeRoomAppRead(ctx context.Context, account, roomID string) error {
+	sub, err := h.store.GetSubscription(ctx, account, roomID)
+	if err != nil && !errors.Is(err, model.ErrSubscriptionNotFound) {
+		return fmt.Errorf("check room membership: %w", err)
+	}
+	if model.IsRoomMember(sub) {
+		return nil
+	}
+	user, err := h.store.GetUser(ctx, account)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return fmt.Errorf("check platform admin: %w", err)
+	}
+	if !model.IsPlatformAdmin(user) {
+		return errAppAccessDenied
+	}
+	// Admin bypass: verify the room exists before allowing the read.
+	// Without this, admins could query app metadata for fabricated room
+	// IDs and get plausible-looking responses.
+	if _, err := h.store.GetRoom(ctx, roomID); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return errAppAccessDenied
+		}
+		return fmt.Errorf("check room existence: %w", err)
+	}
+	return nil
+}
+
+// buildTabURL applies the SITE_URL-based scheme/host/path-prefix
+// rewrite and the ${roomId}/${siteId} substitution to a channelTab URL
+// template. Returns (url, true) on success; (_, false) when the
+// template is empty, unparseable, or when siteURL is nil or the IDs
+// fail the URL-safety check.
+func (h *Handler) buildTabURL(tmpl, roomID string) (string, bool) {
+	if tmpl == "" {
+		return "", false
+	}
+	if h.siteURL == nil {
+		return "", false
+	}
+	if !isURLSafeIDToken(roomID) || !isURLSafeIDToken(h.siteID) {
+		return "", false
+	}
+	// Substitute BEFORE parsing so url.URL.String() doesn't percent-encode
+	// the substituted values (roomID/siteID are URL-safe by construction).
+	tmpl = strings.ReplaceAll(tmpl, "${roomId}", roomID)
+	tmpl = strings.ReplaceAll(tmpl, "${siteId}", h.siteID)
+	u, err := url.Parse(tmpl)
+	if err != nil {
+		return "", false
+	}
+	joined := h.siteURL.JoinPath(u.Path)
+	joined.User = nil
+	joined.RawQuery = u.RawQuery
+	joined.Fragment = u.Fragment
+	return joined.String(), true
+}
+
+func (h *Handler) handleGetRoomAppTabs(ctx context.Context, subj string) (model.GetRoomAppTabsResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return model.GetRoomAppTabsResponse{}, errcode.BadRequest("invalid request")
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+			attribute.String("account", account),
+		)
+	}
+
+	if err := h.authorizeRoomAppRead(ctx, account, roomID); err != nil {
+		return model.GetRoomAppTabsResponse{}, err
+	}
+
+	apps, err := h.store.ListDefaultChannelTabApps(ctx)
+	if err != nil {
+		return model.GetRoomAppTabsResponse{}, fmt.Errorf("list default channel-tab apps: %w", err)
+	}
+
+	out := make([]model.RoomApp, 0, len(apps))
+	for i := range apps {
+		app := &apps[i]
+		if app.ChannelTab == nil {
+			slog.Warn("skipping app with nil ChannelTab",
+				"appId", app.ID, "roomId", roomID,
+				"requestId", natsutil.RequestIDFromContext(ctx))
+			continue
+		}
+		tabURL, ok := h.buildTabURL(app.ChannelTab.URL.Default, roomID)
+		if !ok {
+			slog.Warn("skipping app with empty or unparseable channelTab url",
+				"appId", app.ID, "roomId", roomID,
+				"requestId", natsutil.RequestIDFromContext(ctx))
+			continue
+		}
+		out = append(out, model.RoomApp{
+			ID:        app.ID,
+			Name:      app.ChannelTab.Name,
+			TabURL:    tabURL,
+			Assistant: app.Assistant,
+			AvatarURL: app.AvatarURL,
+		})
+	}
+	return model.GetRoomAppTabsResponse{Apps: out}, nil
+}
+
+func (h *Handler) handleGetRoomAppCommandMenu(ctx context.Context, subj string) (model.GetRoomAppCommandMenuResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok {
+		return model.GetRoomAppCommandMenuResponse{}, errcode.BadRequest("invalid request")
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("site.id", h.siteID),
+			attribute.String("account", account),
+		)
+	}
+
+	if err := h.authorizeRoomAppRead(ctx, account, roomID); err != nil {
+		return model.GetRoomAppCommandMenuResponse{}, err
+	}
+
+	bots, err := h.store.ListRoomBotApps(ctx, roomID)
+	if err != nil {
+		return model.GetRoomAppCommandMenuResponse{}, fmt.Errorf("list room bot apps: %w", err)
+	}
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(attribute.Int("bot.count", len(bots)))
+	}
+
+	if len(bots) == 0 {
+		return model.GetRoomAppCommandMenuResponse{
+			AppAssistants: make([]model.RoomAppAssistant, 0),
+		}, nil
+	}
+
+	names := make([]string, 0, len(bots))
+	for _, b := range bots {
+		names = append(names, b.AssistantName)
+	}
+	menus, err := h.store.ListActiveCmdMenus(ctx, names)
+	if err != nil {
+		return model.GetRoomAppCommandMenuResponse{}, fmt.Errorf("list active cmd menus: %w", err)
+	}
+	byName := make(map[string][]model.CmdBlock, len(menus))
+	for _, m := range menus {
+		byName[m.Name] = m.CmdBlocks
+	}
+
+	out := make([]model.RoomAppAssistant, 0, len(bots))
+	for _, b := range bots {
+		out = append(out, model.RoomAppAssistant{
+			AppName:   b.AppName,
+			Name:      b.AssistantName,
+			CmdBlocks: byName[b.AssistantName],
+		})
+	}
+	return model.GetRoomAppCommandMenuResponse{AppAssistants: out}, nil
+}
+
+func (h *Handler) natsGetRoomAppCommandMenu(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleGetRoomAppCommandMenu(ctx, m.Msg.Subject)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	h.replyBoundedJSON(ctx, m.Msg, resp)
+}
+
+func (h *Handler) natsGetRoomAppTabs(m otelnats.Msg) {
+	ctx, err := wrappedCtx(m)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	resp, err := h.handleGetRoomAppTabs(ctx, m.Msg.Subject)
+	if err != nil {
+		errnats.Reply(ctx, m.Msg, err)
+		return
+	}
+	h.replyBoundedJSON(ctx, m.Msg, resp)
 }

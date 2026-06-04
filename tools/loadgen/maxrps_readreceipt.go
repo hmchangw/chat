@@ -63,8 +63,9 @@ func newReadReceiptWorkload(ctx context.Context, cfg *config, preset *HistoryPre
 	}()
 
 	res := BuildHistoryFixtures(preset, seed, cfg.SiteID, time.Now().UTC())
+	plan := res.FullPlan()
 	w := &readReceiptWorkload{
-		cfg: cfg, siteID: cfg.SiteID, targets: deriveReadReceiptTargets(&res.Plan),
+		cfg: cfg, siteID: cfg.SiteID, targets: deriveReadReceiptTargets(&plan),
 		seed: seed, requestTimeout: requestTimeout, metrics: metrics,
 		requester: newNATSReadReceiptRequester(nc.NatsConn()),
 	}

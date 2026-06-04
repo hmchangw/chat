@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
@@ -151,9 +152,8 @@ func TestHandler_SearchMessages_CacheAndESFailReturnInternal(t *testing.T) {
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.Error(t, err)
 
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
+	classified := errcode.Classify(context.Background(), err)
+	assert.Equal(t, errcode.CodeInternal, classified.Code)
 }
 
 func TestHandler_SearchMessages_ESSearchError(t *testing.T) {
@@ -164,27 +164,26 @@ func TestHandler_SearchMessages_ESSearchError(t *testing.T) {
 	h := newTestHandler(store, nil, nil, cache)
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "hi"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
+	classified := errcode.Classify(context.Background(), err)
+	assert.Equal(t, errcode.CodeInternal, classified.Code)
 }
 
 func TestHandler_SearchMessages_EmptyQuery(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, nil, nil, newFakeCache())
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchMessages_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, nil, nil, newFakeCache())
 	_, err := h.searchMessages(ctxWithAccount("alice"), model.SearchMessagesRequest{Query: "x", Size: -1})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchMessages_SizeClamped(t *testing.T) {
@@ -277,27 +276,27 @@ func TestHandler_SearchRooms_EmptyQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchRooms_WhitespaceQueryRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "   "})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchRooms_RoomTypeAppRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "app"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 	assert.Contains(t, rerr.Message, "invalid roomType")
 }
 
@@ -305,9 +304,9 @@ func TestHandler_SearchRooms_UnknownRoomTypeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", RoomType: "zzz"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchRooms_ESErrorSanitized(t *testing.T) {
@@ -315,10 +314,9 @@ func TestHandler_SearchRooms_ESErrorSanitized(t *testing.T) {
 	h := newTestHandler(store, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "general"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code)
-	assert.NotContains(t, rerr.Message, "es failed")
+	classified := errcode.Classify(context.Background(), err)
+	assert.Equal(t, errcode.CodeInternal, classified.Code)
+	assert.NotContains(t, classified.Message, "es failed")
 }
 
 func TestHandler_SearchRooms_EmptyESResult(t *testing.T) {
@@ -354,9 +352,9 @@ func TestHandler_SearchRooms_NegativeSizeRejected(t *testing.T) {
 	h := newTestHandler(&fakeStore{}, &fakeMongo{}, nil, newFakeCache())
 	_, err := h.searchRooms(ctxWithAccount("alice"), model.SearchRoomsRequest{Query: "x", Size: -1})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchRooms_UsesSpotlightIndex(t *testing.T) {
@@ -430,9 +428,9 @@ func TestHandler_SearchApps_EmptyQueryRejected(t *testing.T) {
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: ""})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 
 	assert.Len(t, mongo.searchAppsCalls, 0, "validation must short-circuit before backend call")
 }
@@ -443,9 +441,9 @@ func TestHandler_SearchApps_WhitespaceQueryRejected(t *testing.T) {
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "   \t  "})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchApps_BackendErrorSanitized(t *testing.T) {
@@ -454,10 +452,9 @@ func TestHandler_SearchApps_BackendErrorSanitized(t *testing.T) {
 
 	_, err := h.searchApps(ctxWithAccount("alice"), model.SearchAppsRequest{Query: "weather"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code, "raw store error must not leak; sanitize to ErrInternal")
-	assert.NotContains(t, rerr.Message, "mongo down", "internal error text must not surface to client")
+	classified := errcode.Classify(context.Background(), err)
+	assert.Equal(t, errcode.CodeInternal, classified.Code, "raw store error must not leak; sanitize to internal")
+	assert.NotContains(t, classified.Message, "mongo down", "internal error text must not surface to client")
 }
 
 func TestHandler_SearchApps_EmptyResultsReturnsEmptySlice(t *testing.T) {
@@ -494,9 +491,9 @@ func TestHandler_SearchApps_NegativeSizeRejected(t *testing.T) {
 		Size:  -1,
 	})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 }
 
 func TestHandler_SearchMessages_ScopedPartitioning(t *testing.T) {
@@ -582,9 +579,9 @@ func TestHandler_SearchUsers_NegativePaginationRejected(t *testing.T) {
 
 			_, err := h.searchUsers(ctxWithAccount("alice"), tt.req)
 			require.Error(t, err)
-			var rerr *natsrouter.RouteError
+			var rerr *errcode.Error
 			require.True(t, errors.As(err, &rerr))
-			assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+			assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 			assert.Empty(t, fu.calls, "backend must not be called on invalid pagination")
 		})
 	}
@@ -596,9 +593,9 @@ func TestHandler_SearchUsers_EmptyQueryRejected(t *testing.T) {
 
 	_, err := h.searchUsers(ctxWithAccount("alice"), model.SearchUsersRequest{Query: ""})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 
 	assert.Len(t, fu.calls, 0, "validation must short-circuit before backend call")
 }
@@ -609,9 +606,9 @@ func TestHandler_SearchUsers_WhitespaceQueryRejected(t *testing.T) {
 
 	_, err := h.searchUsers(ctxWithAccount("alice"), model.SearchUsersRequest{Query: "   \t  "})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 
 	assert.Len(t, fu.calls, 0)
 }
@@ -622,10 +619,9 @@ func TestHandler_SearchUsers_BackendErrorSanitized(t *testing.T) {
 
 	_, err := h.searchUsers(ctxWithAccount("alice"), model.SearchUsersRequest{Query: "alice"})
 	require.Error(t, err)
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeInternal, rerr.Code, "raw backend error must not leak")
-	assert.NotContains(t, rerr.Message, "third-party down", "internal text must not surface to client")
+	classified := errcode.Classify(context.Background(), err)
+	assert.Equal(t, errcode.CodeInternal, classified.Code, "raw backend error must not leak")
+	assert.NotContains(t, classified.Message, "third-party down", "internal text must not surface to client")
 }
 
 func TestHandler_SearchUsers_EmptyResultsReturnsEmptySlice(t *testing.T) {

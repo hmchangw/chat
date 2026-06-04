@@ -23,7 +23,7 @@ OBS_COMPOSE      := tools/observability/docker-compose.yml
 # Go 1.25. Tracks the repo-wide Go (go.mod / ci.yml); Go fetches the
 # pinned toolchain on demand.
 GOBIN_DIR             := $(shell go env GOPATH)/bin
-TOOLS_GO_TOOLCHAIN    := go1.25.10
+TOOLS_GO_TOOLCHAIN    := go1.25.11
 GOLANGCI_LINT_VERSION := v2.11.4
 GOSEC_VERSION         := v2.26.1
 GOVULNCHECK_VERSION   := v1.3.0
@@ -42,7 +42,8 @@ GOSEC_FLAGS := -quiet -severity medium -confidence medium -tests=false \
 # semgrep: fail on medium+ (WARNING/ERROR; INFO is informational/low).
 SEMGREP_FLAGS := --error --severity=WARNING --severity=ERROR --metrics=off \
                  --exclude=tools --exclude=chat-frontend --exclude=testdata \
-                 --exclude=docs --config=p/golang --config=p/security-audit
+                 --exclude=docs --config=p/golang --config=p/security-audit \
+                 --config=.semgrep/errcode.yml
 
 # Makefile for the distributed multi-site chat system.
 

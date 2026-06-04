@@ -68,6 +68,11 @@ func TestMessageCollection_ConsumerName(t *testing.T) {
 	assert.Equal(t, "message-sync", coll.ConsumerName())
 }
 
+func TestMessageCollection_StoredScripts(t *testing.T) {
+	coll := newMessageCollection("msgs-v1", time.Time{})
+	assert.Empty(t, coll.StoredScripts(), "messages collection uses no stored scripts")
+}
+
 func TestIndexName(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -8,9 +8,11 @@ import (
 type EventType string
 
 const (
-	EventCreated EventType = "created"
-	EventUpdated EventType = "updated"
-	EventDeleted EventType = "deleted"
+	EventCreated  EventType = "created"
+	EventUpdated  EventType = "updated"
+	EventDeleted  EventType = "deleted"
+	EventPinned   EventType = "pinned"
+	EventUnpinned EventType = "unpinned"
 )
 
 type MessageEvent struct {
@@ -32,8 +34,20 @@ type RoomMetadataUpdateEvent struct {
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
-	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled"
+	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled" | "favorite_toggled"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
+}
+
+// CanonicalMemberEventMuted is the only event type currently published on this stream.
+const CanonicalMemberEventMuted = "muted"
+
+// CanonicalMemberEvent is the room-scoped post-mutation event for roomsubcache invalidation (mute-only today).
+type CanonicalMemberEvent struct {
+	Type      string `json:"type"`
+	RoomID    string `json:"roomId"`
+	Account   string `json:"account"`
+	Muted     bool   `json:"muted"` // post-toggle state; false is a valid (unmuted) value, so no omitempty.
+	Timestamp int64  `json:"timestamp"`
 }
 
 type UpdateRoleRequest struct {
@@ -67,24 +81,20 @@ type InboxMemberEvent struct {
 	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
 }
 
-type NotificationEvent struct {
-	Type      string  `json:"type"` // "new_message"
-	RoomID    string  `json:"roomId"`
-	Message   Message `json:"message"`
-	Timestamp int64   `json:"timestamp" bson:"timestamp"`
-}
-
 // OutboxEventType is the type tag on an OutboxEvent used to route it to the
 // correct handler on the destination site.
 type OutboxEventType = string
 
 const (
-	OutboxMemberAdded                OutboxEventType = "member_added"
-	OutboxMemberRemoved              OutboxEventType = "member_removed"
-	OutboxSubscriptionRead           OutboxEventType = "subscription_read"
-	OutboxSubscriptionMuteToggled    OutboxEventType = "subscription_mute_toggled"
-	OutboxThreadSubscriptionUpserted OutboxEventType = "thread_subscription_upserted"
-	OutboxThreadRead                 OutboxEventType = "thread_read"
+	OutboxMemberAdded                 OutboxEventType = "member_added"
+	OutboxMemberRemoved               OutboxEventType = "member_removed"
+	OutboxSubscriptionRead            OutboxEventType = "subscription_read"
+	OutboxSubscriptionMuteToggled     OutboxEventType = "subscription_mute_toggled"
+	OutboxSubscriptionFavoriteToggled OutboxEventType = "subscription_favorite_toggled"
+	OutboxThreadSubscriptionUpserted  OutboxEventType = "thread_subscription_upserted"
+	OutboxThreadRead                  OutboxEventType = "thread_read"
+	OutboxRoomRenamed                 OutboxEventType = "room_renamed"
+	OutboxRoomRestricted              OutboxEventType = "room_restricted"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -135,12 +145,17 @@ type MemberAddEvent struct {
 }
 
 // Participant represents a user with display name info for client rendering.
+// DisplayName is the render-ready composed name (see pkg/displayfmt.CombineWithFallback)
+// and is the field push-service uses to render notifications; it is populated only
+// where pre-composition is meaningful (push event senders), left empty in
+// fan-out shapes that carry raw EngName/ChineseName (mentions, ClientMessage).
 type Participant struct {
-	UserID      string `json:"userId,omitempty" bson:"userId,omitempty"`
-	Account     string `json:"account" bson:"account"`
-	SiteID      string `json:"siteId,omitempty" bson:"siteId,omitempty"`
-	ChineseName string `json:"chineseName" bson:"chineseName"`
-	EngName     string `json:"engName" bson:"engName"`
+	UserID      string `json:"userId,omitempty"      bson:"userId,omitempty"`
+	Account     string `json:"account"               bson:"account"`
+	SiteID      string `json:"siteId,omitempty"      bson:"siteId,omitempty"`
+	ChineseName string `json:"chineseName"           bson:"chineseName"`
+	EngName     string `json:"engName"               bson:"engName"`
+	DisplayName string `json:"displayName,omitempty" bson:"displayName,omitempty"`
 }
 
 // ClientMessage wraps Message with enriched sender info for client consumption.
@@ -152,14 +167,19 @@ type ClientMessage struct {
 type RoomEventType string
 
 const (
-	RoomEventNewMessage     RoomEventType = "new_message"
-	RoomEventMessageEdited  RoomEventType = "message_edited"
-	RoomEventMessageDeleted RoomEventType = "message_deleted"
+	RoomEventNewMessage      RoomEventType = "new_message"
+	RoomEventMessageEdited   RoomEventType = "message_edited"
+	RoomEventMessageDeleted  RoomEventType = "message_deleted"
+	RoomEventMessagePinned   RoomEventType = "message_pinned"
+	RoomEventMessageUnpinned RoomEventType = "message_unpinned"
+	RoomEventRoomRenamed     RoomEventType = "room_renamed"
+	RoomEventRoomRestricted  RoomEventType = "room_restricted"
 )
 
 // RoomEvent is the live fan-out event for a newly created message
-// (RoomEventNewMessage). Edits and deletes use the flattened EditRoomEvent /
-// DeleteRoomEvent so clients are not handed zero-valued base fields.
+// (RoomEventNewMessage). Edits, deletes, pins, and unpins use the flattened
+// EditRoomEvent / DeleteRoomEvent / PinRoomEvent / UnpinRoomEvent so clients
+// are not handed zero-valued base fields.
 type RoomEvent struct {
 	Type      RoomEventType `json:"type"`
 	RoomID    string        `json:"roomId"`
@@ -209,6 +229,62 @@ type DeleteRoomEvent struct {
 	DeletedBy string        `json:"deletedBy" bson:"deletedBy"`
 	DeletedAt time.Time     `json:"deletedAt" bson:"deletedAt"`
 	UpdatedAt time.Time     `json:"updatedAt" bson:"updatedAt"`
+}
+
+// PinRoomEvent is the live event published when a message is pinned. Fields
+// are flat (no zero-valued RoomEvent base fields). Mirrors the
+// EditRoomEvent / DeleteRoomEvent pattern.
+type PinRoomEvent struct {
+	Type      RoomEventType `json:"type" bson:"type"`
+	RoomID    string        `json:"roomId" bson:"roomId"`
+	SiteID    string        `json:"siteId" bson:"siteId"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	MessageID string        `json:"messageId" bson:"messageId"`
+	PinnedBy  *Participant  `json:"pinnedBy,omitempty" bson:"pinnedBy,omitempty"`
+	PinnedAt  time.Time     `json:"pinnedAt" bson:"pinnedAt"`
+}
+
+// UnpinRoomEvent is the live event published when a message is unpinned.
+type UnpinRoomEvent struct {
+	Type       RoomEventType `json:"type" bson:"type"`
+	RoomID     string        `json:"roomId" bson:"roomId"`
+	SiteID     string        `json:"siteId" bson:"siteId"`
+	Timestamp  int64         `json:"timestamp" bson:"timestamp"`
+	MessageID  string        `json:"messageId" bson:"messageId"`
+	UnpinnedBy *Participant  `json:"unpinnedBy,omitempty" bson:"unpinnedBy,omitempty"`
+	UnpinnedAt time.Time     `json:"unpinnedAt" bson:"unpinnedAt"`
+}
+
+// RoomRenamedRoomEvent is the live event published when a channel is renamed.
+// Flat shape (same convention as EditRoomEvent / DeleteRoomEvent) — no
+// zero-valued RoomEvent base fields shipped to clients. Drives the client's
+// local subscription `name` update; no separate `subscription.update` fan-out
+// fires for renames.
+type RoomRenamedRoomEvent struct {
+	Type      RoomEventType `json:"type" bson:"type"`
+	RoomID    string        `json:"roomId" bson:"roomId"`
+	SiteID    string        `json:"siteId" bson:"siteId"`
+	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	NewName   string        `json:"newName" bson:"newName"`
+	ByAccount string        `json:"byAccount" bson:"byAccount"`
+	RenamedAt time.Time     `json:"renamedAt" bson:"renamedAt"`
+}
+
+// RoomRestrictedRoomEvent is the live event published when a channel's
+// restricted / externalAccess flags change. Flat shape. `OwnerAccount` is
+// non-empty only on the unrestricted→restricted transition (when an owner is
+// designated). Drives the client's local subscription `restricted` /
+// `externalAccess` / `roles` update.
+type RoomRestrictedRoomEvent struct {
+	Type           RoomEventType `json:"type" bson:"type"`
+	RoomID         string        `json:"roomId" bson:"roomId"`
+	SiteID         string        `json:"siteId" bson:"siteId"`
+	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
+	Restricted     bool          `json:"restricted" bson:"restricted"`
+	ExternalAccess bool          `json:"externalAccess" bson:"externalAccess"`
+	OwnerAccount   string        `json:"ownerAccount,omitempty" bson:"ownerAccount,omitempty"`
+	ByAccount      string        `json:"byAccount" bson:"byAccount"`
+	ChangedAt      time.Time     `json:"changedAt" bson:"changedAt"`
 }
 
 // RemovedSubscriptionRef is the minimal subscription identity carried on a
@@ -284,6 +360,20 @@ type SubscriptionMuteToggledEvent struct {
 	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
 }
 
+// FavoriteToggleResponse is the sync reply for the favorite.toggle RPC.
+type FavoriteToggleResponse struct {
+	Status   string `json:"status"`
+	Favorite bool   `json:"favorite"`
+}
+
+// SubscriptionFavoriteToggledEvent is the OutboxEvent.Payload for type "subscription_favorite_toggled".
+type SubscriptionFavoriteToggledEvent struct {
+	Account   string `json:"account"              bson:"account"`
+	RoomID    string `json:"roomId"               bson:"roomId"`
+	Favorite  bool   `json:"favorite"             bson:"favorite"`
+	Timestamp int64  `json:"timestamp"            bson:"timestamp"`
+}
+
 type MemberRemoveEvent struct {
 	Type      string   `json:"type"            bson:"type"`
 	RoomID    string   `json:"roomId"          bson:"roomId"`
@@ -300,6 +390,10 @@ type AsyncJobResult struct {
 	Status    string `json:"status"`
 	RoomID    string `json:"roomId,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Code and Reason mirror the errcode envelope; typed as string so pkg/model
+	// does not import pkg/errcode.
+	Code      string `json:"code,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -309,6 +403,7 @@ const (
 	AsyncJobOpRoomMemberRemove     = "room.member.remove"
 	AsyncJobOpRoomMemberRemoveOrg  = "room.member.remove_org"
 	AsyncJobOpRoomMemberRoleUpdate = "room.member.role_update"
+	AsyncJobOpRoomRename           = "room.rename"
 )
 
 const (
@@ -320,6 +415,11 @@ const (
 	MessageTypeMemberRemoved = "member_removed"
 	// MessageTypeMemberLeft is the system-message type emitted when a member self-leaves.
 	MessageTypeMemberLeft = "member_left"
+	// MessageTypeRoomRenamed is the system-message type emitted when a channel is renamed.
+	MessageTypeRoomRenamed = "room_renamed"
+	// MessageTypeRoomRestricted is the system-message type emitted when a
+	// channel's Restricted/ExternalAccess flags change.
+	MessageTypeRoomRestricted = "room_restricted"
 )
 
 const (
@@ -338,3 +438,25 @@ type CreateRoomReply struct {
 
 // CreateRoomReplyAccepted means validated + queued; persistence happens later in room-worker.
 const CreateRoomReplyAccepted = "accepted"
+
+// CreateRoomStatusExists indicates the requested DM already existed; RoomID is
+// the existing room. Clients treat it as success and open that room.
+const CreateRoomStatusExists = "exists"
+
+// RoomRenamedOutboxPayload is wrapped in OutboxEvent.Payload for OutboxRoomRenamed.
+type RoomRenamedOutboxPayload struct {
+	RoomID    string `json:"roomId"    bson:"roomId"`
+	NewName   string `json:"newName"   bson:"newName"`
+	Timestamp int64  `json:"timestamp" bson:"timestamp"`
+}
+
+// RoomRestrictedOutboxPayload is wrapped in OutboxEvent.Payload for
+// OutboxRoomRestricted. When OwnerAccount is non-empty AND Restricted is
+// true, the destination $cond promotes that account to sole owner.
+type RoomRestrictedOutboxPayload struct {
+	RoomID         string `json:"roomId"                 bson:"roomId"`
+	Restricted     bool   `json:"restricted"             bson:"restricted"`
+	ExternalAccess bool   `json:"externalAccess"         bson:"externalAccess"`
+	OwnerAccount   string `json:"ownerAccount,omitempty" bson:"ownerAccount,omitempty"`
+	Timestamp      int64  `json:"timestamp"              bson:"timestamp"`
+}

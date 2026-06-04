@@ -41,7 +41,13 @@ type Subscription struct {
 	ThreadUnread       []string         `json:"threadUnread,omitempty" bson:"threadUnread,omitempty"`
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
-	Favorite           bool             `json:"favorite,omitempty" bson:"favorite,omitempty"`
+	Favorite           bool             `json:"favorite" bson:"favorite"`
+	// Denormalized from Room.{Restricted,ExternalAccess} on the home site —
+	// and the only place remote sites carry the room's restricted state since
+	// the cross-site outbox event mirrors only subscription rows, not the
+	// Room doc. Treat missing as false.
+	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
+	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a
@@ -66,6 +72,14 @@ type SubscriptionHRInfo struct {
 type DMSubscription struct {
 	*Subscription
 	HRInfo *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
+}
+
+// IsRoomMember reports whether sub represents an active membership.
+// Returns false for nil so callers can pass the result of a store lookup
+// that returned (nil, ErrSubscriptionNotFound) — the caller is expected
+// to have already classified the error and set sub to nil on not-found.
+func IsRoomMember(sub *Subscription) bool {
+	return sub != nil
 }
 
 // MessageThreadReadRequest is the body of the message.thread.read RPC.

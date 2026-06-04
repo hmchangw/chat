@@ -130,6 +130,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Warn (don't fail) if the bulk batch size can't be reached under the
+	// consumer's ack-pending ceiling — see checkBatchAckCoupling.
+	if warning := checkBatchAckCoupling(cfg.BulkBatchSize, cfg.Consumer.MaxAckPending); warning != "" {
+		slog.Warn("batch/ack-pending config coupling",
+			"bulkBatchSize", cfg.BulkBatchSize,
+			"maxAckPending", cfg.Consumer.MaxAckPending,
+			"detail", warning,
+		)
+	}
+
 	ctx := context.Background()
 
 	tracerShutdown, err := otelutil.InitTracer(ctx, "search-sync-worker")
@@ -167,6 +177,19 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("index template upserted", "name", name)
+	}
+
+	// Register stored scripts before any consumer starts so the first
+	// scripted update already resolves the script id. Idempotent across
+	// pods (PUT _scripts is last-write-wins on identical bodies).
+	for _, coll := range collections {
+		for id, body := range coll.StoredScripts() {
+			if err := engine.PutScript(ctx, id, body); err != nil {
+				slog.Error("put stored script failed", "script", id, "error", err)
+				os.Exit(1)
+			}
+			slog.Info("stored script registered", "script", id)
+		}
 	}
 
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
@@ -362,6 +385,27 @@ func runConsumer(
 			lastFlush = time.Now()
 		}
 	}
+}
+
+// checkBatchAckCoupling returns a non-empty warning when bulkBatchSize exceeds
+// maxAckPending. In that regime a 1:1 collection (e.g. messages) stalls at
+// maxAckPending un-acked messages — JetStream stops delivering — before
+// ActionCount() can ever reach bulkBatchSize, so the size-based flush trigger
+// (main loop) never fires and every flush falls back to the BulkFlushInterval
+// timer. The result is undersized batches plus a fixed per-flush latency floor.
+// Fan-out collections are unaffected (one message yields many actions), so this
+// is a warning rather than a hard failure. Empty string = no coupling issue.
+func checkBatchAckCoupling(bulkBatchSize, maxAckPending int) string {
+	if bulkBatchSize > maxAckPending {
+		return fmt.Sprintf(
+			"BULK_BATCH_SIZE (%d) exceeds CONSUMER_MAX_ACK_PENDING (%d): "+
+				"the size-based flush can never fire for 1:1 collections, so flushes "+
+				"will wait the full BULK_FLUSH_INTERVAL and batches stay undersized. "+
+				"Lower BULK_BATCH_SIZE to <= MAX_ACK_PENDING or raise MAX_ACK_PENDING.",
+			bulkBatchSize, maxAckPending,
+		)
+	}
+	return ""
 }
 
 // engineAdapter adapts searchengine.SearchEngine to the Handler's Store interface.

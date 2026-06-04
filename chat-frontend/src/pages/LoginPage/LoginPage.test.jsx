@@ -12,6 +12,8 @@ vi.mock('@/lib/runtimeConfig', () => ({
 
 vi.mock('@/api/auth/oidcClient', () => ({
   getOidcManager: vi.fn(),
+  isSSOTokenInvalidError: vi.fn(() => false),
+  redirectToReloginOnTokenInvalid: vi.fn(() => Promise.resolve()),
 }))
 
 import LoginPage from './LoginPage'

@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/hmchangw/chat/pkg/displayfmt"
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
@@ -21,29 +25,23 @@ import (
 
 const maxContentBytes = 20 * 1024 // 20 KB
 
-// infraError represents a transient failure that should be nack'd for retry.
-type infraError struct {
-	cause error
-}
-
-func (e *infraError) Error() string {
-	return e.cause.Error()
-}
-
-func (e *infraError) Unwrap() error {
-	return e.cause
-}
-
 // replyFunc is the function signature for publishing a reply to a NATS subject.
 type replyFunc func(ctx context.Context, msg *nats.Msg) error
 
 // publishFunc is the function signature for publishing to JetStream.
 type publishFunc func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 
+// UserGetter is the narrow user-record surface gatekeeper needs for sender
+// display-name resolution. *userstore.Cache satisfies this; tests stub it.
+type UserGetter interface {
+	FindUserByID(ctx context.Context, id string) (*model.User, error)
+}
+
 // Handler processes messages from the MESSAGES stream and validates them
 // before publishing to MESSAGES_CANONICAL.
 type Handler struct {
 	store              Store
+	users              UserGetter
 	publish            publishFunc
 	reply              replyFunc
 	siteID             string
@@ -52,9 +50,12 @@ type Handler struct {
 }
 
 // NewHandler constructs a new Handler with the given dependencies.
-func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string, parentFetcher ParentMessageFetcher, largeRoomThreshold int) *Handler {
+// users may be nil; when nil, sender display-name resolution is skipped and
+// downstream consumers fall back to UserAccount.
+func NewHandler(store Store, users UserGetter, publish publishFunc, reply replyFunc, siteID string, parentFetcher ParentMessageFetcher, largeRoomThreshold int) *Handler {
 	return &Handler{
 		store:              store,
+		users:              users,
 		publish:            publish,
 		reply:              reply,
 		siteID:             siteID,
@@ -65,55 +66,75 @@ func NewHandler(store Store, publish publishFunc, reply replyFunc, siteID string
 
 // HandleJetStreamMsg processes a JetStream message from the MESSAGES stream.
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
+	// Parse the body once; reused for log enrichment, reply routing, and
+	// processMessage validation (was triple-decoded on the hot path).
+	rawData := msg.Data()
+	var req model.SendMessageRequest
+	parseErr := json.Unmarshal(rawData, &req)
+
+	// Enrich the logger before the subject parse so even the malformed-subject
+	// path carries request_id + a best-effort account. roomID is added later.
+	ctx = errcode.WithLogValues(ctx,
+		"request_id", req.RequestID,
+		"account", accountFromSubject(msg.Subject()))
+
 	account, roomID, siteID, ok := subject.ParseUserRoomSiteSubject(msg.Subject())
 	if !ok {
 		slog.Warn("invalid subject", "subject", msg.Subject())
-		// Best-effort error reply so the client doesn't hang waiting for a
-		// response it will never get. Recover the account segment if the
-		// subject is at least chat.user.{account}.…; sendReply no-ops when the
-		// account or requestId is unusable. Ack regardless — a malformed
-		// subject is not retryable, so JetStream must not redeliver it.
-		h.sendReply(ctx, accountFromSubject(msg.Subject()), msg.Data(), natsutil.MarshalError("invalid message subject"))
+		// Best-effort error reply so the client doesn't hang; sendReply no-ops
+		// when account or requestId is unusable. Ack — malformed is not retryable.
+		h.sendReply(ctx, accountFromSubject(msg.Subject()), &req, errnats.Marshal(ctx, errcode.BadRequest("invalid message subject")))
 		if err := msg.Ack(); err != nil {
 			slog.Error("failed to ack message", "error", err)
 		}
 		return
 	}
 
-	replyData, err := h.processMessage(ctx, account, roomID, siteID, msg.Data())
+	ctx = errcode.WithLogValues(ctx, "room_id", roomID)
+
+	if parseErr != nil {
+		// Do not WithCause(parseErr) — json.SyntaxError strings embed the
+		// offending substring from an unauthenticated entry-point (see doc.go).
+		bad := errcode.BadRequest("unmarshal send message request")
+		h.sendReply(ctx, account, &req, errnats.Marshal(ctx, bad))
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", "error", err)
+		}
+		return
+	}
+
+	replyData, err := h.processMessage(ctx, account, roomID, siteID, &req)
 	if err != nil {
-		slog.Error("process message failed", "error", err, "account", account, "roomID", roomID)
-		var ie *infraError
-		if errors.As(err, &ie) {
-			if err := msg.Nak(); err != nil {
-				slog.Error("failed to nack message", "error", err)
-			}
-		} else {
-			// Validation error: reply with error and ack.
-			h.sendReply(ctx, account, msg.Data(), h.marshalErrorReply(err))
+		// Typed *errcode.Error → client-facing validation/permanence: reply + Ack.
+		// Bare error (raw fmt.Errorf) → transient infra failure: Nak for redelivery.
+		// errnats.Marshal runs Classify which logs once at category-aware level —
+		// validation branch must NOT also log here. Infra branch owns its log.
+		var ee *errcode.Error
+		if errors.As(err, &ee) {
+			h.sendReply(ctx, account, &req, errnats.Marshal(ctx, err))
 			if err := msg.Ack(); err != nil {
 				slog.Error("failed to ack message", "error", err)
+			}
+		} else {
+			slog.ErrorContext(ctx, "process message failed (infra)", "error", err, "account", account, "room_id", roomID)
+			if err := msg.Nak(); err != nil {
+				slog.Error("failed to nack message", "error", err)
 			}
 		}
 		return
 	}
 
-	h.sendReply(ctx, account, msg.Data(), replyData)
+	h.sendReply(ctx, account, &req, replyData)
 
 	if err := msg.Ack(); err != nil {
 		slog.Error("failed to ack message", "err", err)
 	}
 }
 
-// sendReply extracts the requestID from the raw message data and publishes the
-// reply payload to the user's response subject.
-func (h *Handler) sendReply(ctx context.Context, account string, rawData []byte, replyData []byte) {
+// sendReply publishes the reply payload to the user's response subject. Pass
+// a zero-value *req when parsing failed — the empty RequestID gate no-ops.
+func (h *Handler) sendReply(ctx context.Context, account string, req *model.SendMessageRequest, replyData []byte) {
 	if account == "" {
-		return
-	}
-	var req model.SendMessageRequest
-	if err := json.Unmarshal(rawData, &req); err != nil {
-		slog.Error("unmarshal request for reply", "error", err)
 		return
 	}
 	// Skip when requestId is missing or not a valid hyphenated UUID — the reply
@@ -140,19 +161,13 @@ func accountFromSubject(subj string) string {
 	return ""
 }
 
-// processMessage validates a SendMessageRequest and publishes a MessageEvent to MESSAGES_CANONICAL.
-// Returns the serialized Message on success, or an error.
-// Validation errors (bad input) are plain errors; transient failures are *infraError.
-func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID string, data []byte) ([]byte, error) {
+// processMessage validates a SendMessageRequest and publishes a MessageEvent
+// to MESSAGES_CANONICAL. Validation errors are typed *errcode.Error (reply +
+// Ack); transient infra failures are bare fmt.Errorf (Nak for redelivery).
+func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID string, req *model.SendMessageRequest) ([]byte, error) {
 	// Validate siteID matches this service's siteID
 	if siteID != h.siteID {
-		return nil, fmt.Errorf("siteID mismatch: got %s, want %s", siteID, h.siteID)
-	}
-
-	// Unmarshal request
-	var req model.SendMessageRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("unmarshal send message request: %w", err)
+		return nil, errcode.BadRequest(fmt.Sprintf("siteID mismatch: got %s, want %s", siteID, h.siteID))
 	}
 
 	// Validate requestId is a hyphenated UUID. It is required: the async reply
@@ -161,40 +176,49 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// the reply. Rejecting here fails fast instead of publishing an
 	// unacknowledgeable message to MESSAGES_CANONICAL.
 	if !idgen.IsValidUUID(req.RequestID) {
-		return nil, fmt.Errorf("invalid requestId %q: must be a hyphenated UUID", req.RequestID)
+		return nil, errcode.BadRequest(fmt.Sprintf("invalid requestId %q: must be a hyphenated UUID", req.RequestID))
 	}
+
+	// Payload requestId is the canonical source for X-Request-ID — upstream publishers may
+	// or may not set the NATS header, so overwrite ctx unconditionally before any downstream publish.
+	ctx = natsutil.WithRequestID(ctx, req.RequestID)
 
 	// Validate ID is a valid 20-char base62 message ID
 	if !idgen.IsValidMessageID(req.ID) {
-		return nil, fmt.Errorf("invalid message ID %q: must be a 20-char base62 string", req.ID)
+		return nil, errcode.BadRequest(fmt.Sprintf("invalid message ID %q: must be a 20-char base62 string", req.ID))
 	}
 
 	if req.ThreadParentMessageID != "" && !idgen.IsValidMessageID(req.ThreadParentMessageID) {
-		return nil, fmt.Errorf("invalid thread parent message ID %q: must be a 20-char base62 string", req.ThreadParentMessageID)
+		return nil, errcode.BadRequest(fmt.Sprintf("invalid thread parent message ID %q: must be a 20-char base62 string", req.ThreadParentMessageID))
 	}
 
 	// Validate content is non-empty
 	if req.Content == "" {
-		return nil, fmt.Errorf("content must not be empty")
+		return nil, errcode.BadRequest("content must not be empty")
 	}
 
 	// Validate content does not exceed 20KB
 	if len(req.Content) > maxContentBytes {
-		return nil, fmt.Errorf("content exceeds maximum size of %d bytes", maxContentBytes)
+		return nil, errcode.BadRequest(
+			fmt.Sprintf("content exceeds maximum size of %d bytes", maxContentBytes),
+			errcode.WithMetadata("maxContentBytes", strconv.Itoa(maxContentBytes), "attempted", strconv.Itoa(len(req.Content))),
+		)
 	}
 
 	// Validate thread parent fields are paired
 	if req.ThreadParentMessageID != "" && req.ThreadParentMessageCreatedAt == nil {
-		return nil, fmt.Errorf("validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set")
+		return nil, errcode.BadRequest("validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set")
 	}
 
 	// Verify subscription
 	sub, err := h.store.GetSubscription(ctx, account, roomID)
 	if err != nil {
 		if errors.Is(err, errNotSubscribed) {
-			return nil, fmt.Errorf("user %s is not subscribed to room %s", account, roomID)
+			// Return the wrapped err so server-side logs keep the full chain
+			// (store wrapped it with %w; errors.Is upstream still matches).
+			return nil, err
 		}
-		return nil, &infraError{cause: fmt.Errorf("get subscription for user %s in room %s: %w", account, roomID, err)}
+		return nil, fmt.Errorf("get subscription for user %s in room %s: %w", account, roomID, err)
 	}
 
 	// Large-room post restriction: in rooms with more than the configured
@@ -207,13 +231,13 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	if !isThreadReply && !canBypassLargeRoomCap(sub) {
 		meta, err := h.store.GetRoomMeta(ctx, roomID)
 		if err != nil {
-			return nil, &infraError{cause: fmt.Errorf("get room meta for %s: %w", roomID, err)}
+			return nil, fmt.Errorf("get room meta for %s: %w", roomID, err)
 		}
 		if meta.UserCount > h.largeRoomThreshold {
 			slog.Info("send blocked",
-				"reason", codeLargeRoomPostRestricted,
+				"reason", string(errcode.MessageLargeRoomPostRestricted),
 				"account", account,
-				"roomID", roomID,
+				"room_id", roomID,
 				"userCount", meta.UserCount,
 				"threshold", h.largeRoomThreshold,
 			)
@@ -235,11 +259,29 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		return nil, err
 	}
 
+	// Compose the sender's render-ready display name once at write time so every
+	// downstream consumer (notification-worker, future search-sync-worker) reads
+	// from the canonical message instead of doing its own user lookup. The lookup
+	// is best-effort — on miss/error we fall back to UserAccount via
+	// model.DisplayName's empty-fields branch; message validation already passed
+	// the sender check so missing display data does not warrant blocking the post.
+	displayName := sub.User.Account
+	if h.users != nil {
+		u, uerr := h.users.FindUserByID(ctx, sub.User.ID)
+		if uerr == nil && u != nil {
+			displayName = displayfmt.CombineWithFallback(u.EngName, u.ChineseName, sub.User.Account)
+		} else if uerr != nil {
+			slog.Warn("sender user-meta lookup failed, display name falls back to account",
+				"error", uerr, "userId", sub.User.ID, "account", sub.User.Account, "messageId", req.ID)
+		}
+	}
+
 	msg := model.Message{
 		ID:                           req.ID,
 		RoomID:                       roomID,
 		UserID:                       sub.User.ID,
 		UserAccount:                  sub.User.Account,
+		UserDisplayName:              displayName,
 		Content:                      req.Content,
 		CreatedAt:                    now,
 		ThreadParentMessageID:        req.ThreadParentMessageID,
@@ -251,13 +293,13 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	evt := model.MessageEvent{Event: model.EventCreated, Message: msg, SiteID: siteID, Timestamp: now.UnixMilli()}
 	evtData, err := json.Marshal(evt)
 	if err != nil {
-		return nil, &infraError{cause: fmt.Errorf("marshal message event: %w", err)}
+		return nil, fmt.Errorf("marshal message event: %w", err)
 	}
 
 	canonicalSubj := subject.MsgCanonicalCreated(siteID)
 	canonicalMsg := natsutil.NewMsg(ctx, canonicalSubj, evtData)
 	if _, err := h.publish(ctx, canonicalMsg, jetstream.WithMsgID(natsutil.CanonicalDedupID(&evt))); err != nil {
-		return nil, &infraError{cause: fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)}
+		return nil, fmt.Errorf("publish to MESSAGES_CANONICAL: %w", err)
 	}
 
 	return json.Marshal(msg)
@@ -274,14 +316,24 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 	snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, quotedParentMessageID)
 	switch {
 	case err != nil:
-		return nil, fmt.Errorf("fetch quoted parent %s: %w", quotedParentMessageID, err)
+		// Preserve upstream errcode classification (transient → Unavailable,
+		// real 404 → NotFound). For non-errcode infra failures (NATS timeout,
+		// no-responders, unmarshal), classify as Unavailable — a transient
+		// quoted-parent fetch failure shouldn't surface to the client as 404.
+		var ee *errcode.Error
+		if errors.As(err, &ee) {
+			return nil, ee
+		}
+		return nil, errcode.Unavailable(fmt.Sprintf("fetch quoted parent %s", quotedParentMessageID), errcode.WithCause(err))
 	case snap == nil:
-		// Treat the fetcher's contract violation as a hard failure rather than
-		// silently dereferencing snap.ThreadParentID below.
+		// A nil snapshot with no error is a fetcher contract violation, not a
+		// genuine missing parent. Return a bare error so the caller's branch
+		// classifies this as infra (Nak for redelivery + log) rather than
+		// permanently dropping the message via a 404 reply+Ack.
 		return nil, fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
 	case snap.ThreadParentID != newMessageThreadID:
-		return nil, fmt.Errorf("quoted parent %s thread context mismatch: parent thread %q, new message thread %q",
-			quotedParentMessageID, snap.ThreadParentID, newMessageThreadID)
+		return nil, errcode.BadRequest(fmt.Sprintf("quoted parent %s thread context mismatch: parent thread %q, new message thread %q",
+			quotedParentMessageID, snap.ThreadParentID, newMessageThreadID))
 	default:
 		return snap, nil
 	}
@@ -300,15 +352,4 @@ func canBypassLargeRoomCap(sub *model.Subscription) bool {
 		}
 	}
 	return isBot(sub.User.Account)
-}
-
-// marshalErrorReply produces the JSON reply payload for a validation error.
-// If the error is (or wraps) a *codedError, the reply carries the code;
-// otherwise the reply is the legacy uncoded shape.
-func (h *Handler) marshalErrorReply(err error) []byte {
-	var ce *codedError
-	if errors.As(err, &ce) {
-		return natsutil.MarshalErrorWithCode(ce.Message, ce.Code)
-	}
-	return natsutil.MarshalError(err.Error())
 }

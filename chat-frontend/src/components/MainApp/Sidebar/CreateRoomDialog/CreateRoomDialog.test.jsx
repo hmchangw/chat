@@ -16,6 +16,7 @@ vi.mock('@/context/RoomEventsContext', () => ({
 
 import { useNats } from '@/context/NatsContext'
 import { useRoomSummaries } from '@/context/RoomEventsContext'
+import { AsyncJobError, ASYNC_JOB_ERROR_KINDS } from '@/api/_transport/asyncJob'
 
 // Pre-populate summaries with the roomIds the success fixtures return so
 // the dialog's "wait for subscription.update" useEffect resolves on the
@@ -250,8 +251,11 @@ describe('CreateRoomDialog', () => {
     })
   })
 
-  it('shows the server error on a failed create and does not close', async () => {
-    const requestWithAsyncResult = vi.fn().mockRejectedValue(new Error('exceeds maximum capacity (50)'))
+  it('shows the humanized REASON_COPY copy on a failed create (max_room_size_reached) and does not close', async () => {
+    const err = new AsyncJobError('exceeds maximum capacity (50)', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'max_room_size_reached',
+    })
+    const requestWithAsyncResult = vi.fn().mockRejectedValue(err)
     useNats.mockReturnValue({
       user: { account: 'alice', siteId: 'site-A' },
       request: vi.fn(),
@@ -262,7 +266,7 @@ describe('CreateRoomDialog', () => {
     render(<CreateRoomDialog onClose={onClose} onCreated={vi.fn()} />)
     fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'huge' } })
     fireEvent.click(screen.getByRole('button', { name: /Create/i }))
-    expect(await screen.findByText(/exceeds maximum capacity/i)).toBeInTheDocument()
+    expect(await screen.findByText(/at capacity/i)).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
 })

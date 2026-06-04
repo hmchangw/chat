@@ -16,6 +16,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
@@ -709,16 +712,21 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				largeRoomThreshold: threshold,
 			}
 
-			data, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, tc.buildData())
+			var req model.SendMessageRequest
+			_ = json.Unmarshal(tc.buildData(), &req) // tests build valid payloads; ignore parse errors here
+			data, err := h.processMessage(context.Background(), tc.account, tc.roomID, tc.siteID, &req)
 
 			if tc.wantErr {
 				require.Error(t, err)
+				// Post-infraError-retirement: infra = bare error (no *errcode.Error
+				// in chain), validation = typed *errcode.Error. Handler routes Nak
+				// vs Ack on this distinction.
+				var ee *errcode.Error
+				hasErrcode := errors.As(err, &ee)
 				if tc.wantInfra {
-					var ie *infraError
-					assert.True(t, errors.As(err, &ie), "expected infraError, got %T: %v", err, err)
+					assert.False(t, hasErrcode, "expected infra error (no *errcode.Error), got %T: %v", err, err)
 				} else {
-					var ie *infraError
-					assert.False(t, errors.As(err, &ie), "expected non-infra error, got infraError: %v", err)
+					assert.True(t, hasErrcode, "expected validation *errcode.Error, got %T: %v", err, err)
 				}
 				if tc.checkErr != nil {
 					tc.checkErr(t, err)
@@ -749,7 +757,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
 
 	parentTs := int64(1000)
 	req := model.SendMessageRequest{
@@ -759,8 +767,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 		ThreadParentMessageID:        "not-a-valid-msg-id",
 		ThreadParentMessageCreatedAt: &parentTs,
 	}
-	data, _ := json.Marshal(req)
-	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", data)
+	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid thread parent message ID")
 }
@@ -780,16 +787,122 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
 
-	ctx := natsutil.WithRequestID(context.Background(), "req-mg-test-id")
-	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
-	data, _ := json.Marshal(req)
+	// The JSON-payload requestId is the canonical source — it wins over any
+	// header-derived value already in ctx. Seed ctx with a stale "header" value
+	// to prove the bridge overwrites it with the payload value.
+	ctx := natsutil.WithRequestID(context.Background(), "stale-header-id")
+	const payloadReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: payloadReqID}
 
-	_, err := h.processMessage(ctx, "alice", "room-1", "site1", data)
+	_, err := h.processMessage(ctx, "alice", "room-1", "site1", &req)
 	require.NoError(t, err)
-	require.NotNil(t, capturedHeader, "publish must propagate header from ctx")
-	assert.Equal(t, "req-mg-test-id", capturedHeader.Get(natsutil.RequestIDHeader))
+	require.NotNil(t, capturedHeader, "publish must carry X-Request-ID header")
+	assert.Equal(t, payloadReqID, capturedHeader.Get(natsutil.RequestIDHeader),
+		"payload requestId must win over the value already in ctx")
+}
+
+// Inbound MESSAGES stream messages from non-Go clients (and from loadgen) may
+// not set X-Request-ID in the NATS header. The bridge inside processMessage
+// pulls the requestId from the JSON payload into ctx unconditionally, so the
+// canonical publish carries it downstream regardless of inbound header state.
+func TestHandler_processMessage_BridgesPayloadRequestIDWhenCtxHasNone(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").
+		Return(roommetacache.Meta{ID: "room-1", UserCount: 1}, nil)
+
+	var capturedHeader nats.Header
+	pub := func(ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		capturedHeader = msg.Header
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
+
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+
+	const payloadReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: payloadReqID}
+
+	// ctx has no request ID — simulates an inbound MESSAGES message with no X-Request-ID header.
+	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
+	require.NoError(t, err)
+	require.NotNil(t, capturedHeader, "publish must carry X-Request-ID header")
+	assert.Equal(t, payloadReqID, capturedHeader.Get(natsutil.RequestIDHeader))
+}
+
+// stubUserGetter is a minimal UserGetter for sender-display-name tests.
+type stubUserGetter struct {
+	users map[string]*model.User
+	err   error
+}
+
+func (s *stubUserGetter) FindUserByID(_ context.Context, id string) (*model.User, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.users[id], nil
+}
+
+func TestHandler_processMessage_PopulatesUserDisplayName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").
+		Return(roommetacache.Meta{ID: "room-1", UserCount: 1}, nil)
+
+	users := &stubUserGetter{users: map[string]*model.User{
+		"u-alice": {ID: "u-alice", Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲"},
+	}}
+
+	var captured publishedMsg
+	pub := func(_ context.Context, msg *nats.Msg, _ ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		captured = publishedMsg{subject: msg.Subject, data: msg.Data}
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
+	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
+	require.NoError(t, err)
+
+	var evt model.MessageEvent
+	require.NoError(t, json.Unmarshal(captured.data, &evt))
+	assert.Equal(t, "Alice Wang 愛麗絲", evt.Message.UserDisplayName,
+		"gatekeeper must populate UserDisplayName via model.DisplayName(engName, chineseName, account)")
+}
+
+func TestHandler_processMessage_FallsBackToAccountWhenUserLookupFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").
+		Return(roommetacache.Meta{ID: "room-1", UserCount: 1}, nil)
+
+	users := &stubUserGetter{err: errors.New("mongo timeout")}
+
+	var captured publishedMsg
+	pub := func(_ context.Context, msg *nats.Msg, _ ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		captured = publishedMsg{subject: msg.Subject, data: msg.Data}
+		return &jetstream.PubAck{}, nil
+	}
+	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+
+	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
+	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
+	require.NoError(t, err, "user-meta lookup failure must not block message publish")
+
+	var evt model.MessageEvent
+	require.NoError(t, json.Unmarshal(captured.data, &evt))
+	assert.Equal(t, "alice", evt.Message.UserDisplayName,
+		"on lookup error, fall back to account so downstream still gets a usable display name")
 }
 
 func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
@@ -1077,7 +1190,9 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				largeRoomThreshold: 500,
 			}
 
-			data, err := h.processMessage(context.Background(), validAccount, validRoomID, validSiteID, tc.buildData())
+			var req model.SendMessageRequest
+			_ = json.Unmarshal(tc.buildData(), &req)
+			data, err := h.processMessage(context.Background(), validAccount, validRoomID, validSiteID, &req)
 
 			if tc.wantErr {
 				require.Error(t, err)
@@ -1156,34 +1271,35 @@ func TestCanBypassLargeRoomCap(t *testing.T) {
 	}
 }
 
-func TestHandler_marshalErrorReply(t *testing.T) {
-	h := &Handler{}
+func TestHandler_errorReplyEnvelope(t *testing.T) {
+	ctx := context.Background()
 
-	t.Run("plain error produces uncoded reply", func(t *testing.T) {
-		data := h.marshalErrorReply(errors.New("user alice is not subscribed to room R"))
-		var got model.ErrorResponse
-		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "user alice is not subscribed to room R", got.Error)
-		assert.Empty(t, got.Code)
-		// omitempty: the wire bytes must not contain a "code" key.
-		assert.NotContains(t, string(data), `"code"`)
+	t.Run("validation error produces bad_request envelope", func(t *testing.T) {
+		data := errnats.Marshal(ctx, errcode.BadRequest("content must not be empty"))
+		e := errtest.Decode(t, data)
+		assert.Equal(t, errcode.CodeBadRequest, e.Code)
+		assert.Equal(t, "content must not be empty", e.Message)
+		assert.Empty(t, e.Reason)
 	})
 
-	t.Run("codedError produces coded reply", func(t *testing.T) {
-		data := h.marshalErrorReply(errLargeRoomPostRestricted)
-		var got model.ErrorResponse
-		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "posting is restricted to owners and admins in this room", got.Error)
-		assert.Equal(t, "large_room_post_restricted", got.Code)
+	t.Run("large-room sentinel produces forbidden envelope with reason", func(t *testing.T) {
+		data := errnats.Marshal(ctx, errLargeRoomPostRestricted)
+		errtest.AssertCode(t, data, errcode.CodeForbidden)
+		errtest.AssertReason(t, data, errcode.MessageLargeRoomPostRestricted)
+		assert.Equal(t, "posting is restricted to owners and admins in this room", errtest.Decode(t, data).Message)
 	})
 
-	t.Run("wrapped codedError still dispatches", func(t *testing.T) {
+	t.Run("wrapped large-room sentinel still carries forbidden + reason", func(t *testing.T) {
 		wrapped := fmt.Errorf("context: %w", errLargeRoomPostRestricted)
-		data := h.marshalErrorReply(wrapped)
-		var got model.ErrorResponse
-		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "posting is restricted to owners and admins in this room", got.Error)
-		assert.Equal(t, "large_room_post_restricted", got.Code)
+		data := errnats.Marshal(ctx, wrapped)
+		errtest.AssertCode(t, data, errcode.CodeForbidden)
+		errtest.AssertReason(t, data, errcode.MessageLargeRoomPostRestricted)
+	})
+
+	t.Run("not-subscribed sentinel produces forbidden envelope with reason", func(t *testing.T) {
+		data := errnats.Marshal(ctx, errNotSubscribed)
+		errtest.AssertCode(t, data, errcode.CodeForbidden)
+		errtest.AssertReason(t, data, errcode.MessageNotSubscribed)
 	})
 }
 
@@ -1212,12 +1328,11 @@ func TestHandler_sendReply(t *testing.T) {
 			*captured = append(*captured, msg)
 			return nil
 		}
-		return NewHandler(nil, nil, reply, "site-a", nil, 500)
+		return NewHandler(nil, nil, nil, reply, "site-a", nil, 500)
 	}
 
-	mk := func(requestID string) []byte {
-		b, _ := json.Marshal(model.SendMessageRequest{ID: "id", Content: "c", RequestID: requestID})
-		return b
+	mk := func(requestID string) *model.SendMessageRequest {
+		return &model.SendMessageRequest{ID: "id", Content: "c", RequestID: requestID}
 	}
 
 	t.Run("valid UUID requestId publishes a reply", func(t *testing.T) {
@@ -1248,4 +1363,60 @@ func TestHandler_sendReply(t *testing.T) {
 		h.sendReply(context.Background(), "", mk("01970a4f-8c2d-7c9a-abcd-e0123456789f"), []byte(`{}`))
 		assert.Empty(t, captured)
 	})
+}
+
+// ---- HandleJetStreamMsg coverage ----
+
+type fakeJSMsg struct {
+	subject string
+	data    []byte
+	headers nats.Header
+	acked   bool
+	naked   bool
+}
+
+func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *fakeJSMsg) Data() []byte                              { return m.data }
+func (m *fakeJSMsg) Headers() nats.Header                      { return m.headers }
+func (m *fakeJSMsg) Subject() string                           { return m.subject }
+func (m *fakeJSMsg) Reply() string                             { return "" }
+func (m *fakeJSMsg) Ack() error                                { m.acked = true; return nil }
+func (m *fakeJSMsg) DoubleAck(context.Context) error           { m.acked = true; return nil }
+func (m *fakeJSMsg) Nak() error                                { m.naked = true; return nil }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error          { m.naked = true; return nil }
+func (m *fakeJSMsg) InProgress() error                         { return nil }
+func (m *fakeJSMsg) Term() error                               { return nil }
+func (m *fakeJSMsg) TermWithReason(string) error               { return nil }
+
+// Malformed body Acks (not retryable) and sends a bad_request reply if the
+// subject parsed cleanly.
+func TestHandleJetStreamMsg_MalformedBody_Acks(t *testing.T) {
+	var captured []*nats.Msg
+	reply := func(_ context.Context, m *nats.Msg) error {
+		captured = append(captured, m)
+		return nil
+	}
+	h := NewHandler(nil, nil, nil, reply, "site-A", nil, 500)
+
+	msg := &fakeJSMsg{
+		subject: "chat.user.alice.room.r1.site-A.msg.send",
+		data:    []byte(`{not json`),
+	}
+	h.HandleJetStreamMsg(context.Background(), msg)
+	assert.True(t, msg.acked, "malformed body must Ack — never retryable")
+	assert.False(t, msg.naked)
+	// Reply is skipped (no valid requestId in a body that didn't parse).
+	assert.Empty(t, captured, "no reply when requestId can't be recovered")
+}
+
+// Invalid subject Acks (not retryable) and sends a best-effort reply.
+func TestHandleJetStreamMsg_InvalidSubject_Acks(t *testing.T) {
+	h := NewHandler(nil, nil, nil, func(context.Context, *nats.Msg) error { return nil }, "site-A", nil, 500)
+	msg := &fakeJSMsg{
+		subject: "chat.garbage",
+		data:    []byte(`{}`),
+	}
+	h.HandleJetStreamMsg(context.Background(), msg)
+	assert.True(t, msg.acked, "invalid subject must Ack — not retryable")
+	assert.False(t, msg.naked)
 }

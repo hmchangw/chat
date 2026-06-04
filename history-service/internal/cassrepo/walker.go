@@ -85,8 +85,20 @@ func (r pageResult[T]) toPage() Page[T] {
 // letting callers apply a per-call predicate (e.g. created_at < before) only where needed.
 type bucketQueryFn func(bucket int64, firstBucket bool) *gocql.Query
 
-// fillPage walks buckets from startBucket, accumulating rows until pageSize or maxBuckets is reached.
-// floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops when bucket > floorBucket.
+// fillPage walks buckets in the given direction starting at startBucket,
+// issuing one query per bucket and accumulating rows into out until pageSize
+// is reached or maxBuckets is exhausted. The first bucket may resume from a
+// caller-supplied gocql page state; later buckets always start fresh.
+//
+// scan must consume up to `remaining` rows from iter and return them; it is
+// responsible for stopping when full. A non-nil error return aborts the walk
+// immediately — the bucket advance and any further queries are skipped, and
+// the accumulated rows are discarded. This is how scan signals a fatal per-row
+// error (e.g. a decrypt failure) up to the caller.
+//
+// floorBucket bounds the walk: DESC stops when bucket < floorBucket; ASC stops
+// when bucket > floorBucket. To disable floor-based termination, callers pass
+// math.MinInt64 (DESC) or math.MaxInt64 (ASC).
 func fillPage[T any](
 	ctx context.Context,
 	sizer msgbucket.Sizer,
@@ -137,6 +149,9 @@ func fillPage[T any](
 		if err := iter.Close(); err != nil {
 			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, err)
 		}
+		// A scan error (e.g. a per-row decrypt failure) is fatal: discard the
+		// accumulated rows and abort the walk so a later bucket can't overwrite
+		// the error or serve a partial page.
 		if scanErr != nil {
 			return pageResult[T]{}, fmt.Errorf("scan bucket %d: %w", bucket, scanErr)
 		}

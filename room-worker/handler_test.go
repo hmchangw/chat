@@ -6,18 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -29,311 +32,6 @@ import (
 type publishedMsg struct {
 	subj string
 	data []byte
-}
-
-func TestHandler_ProcessRoleUpdate_Promote(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").
-		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	if err := h.processRoleUpdate(context.Background(), data); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(published) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(published))
-	}
-	if published[0].subj != "chat.user.bob.event.subscription.update" {
-		t.Errorf("subject = %q, want subscription update for bob", published[0].subj)
-	}
-
-	var evt model.SubscriptionUpdateEvent
-	if err := json.Unmarshal(published[0].data, &evt); err != nil {
-		t.Fatalf("unmarshal event: %v", err)
-	}
-	if evt.Action != "role_updated" {
-		t.Errorf("action = %q, want role_updated", evt.Action)
-	}
-	if evt.UserID != "u2" {
-		t.Errorf("userID = %q, want u2", evt.UserID)
-	}
-	if !slices.Contains(evt.Subscription.Roles, model.RoleOwner) {
-		t.Errorf("subscription roles = %v, want to contain owner", evt.Subscription.Roles)
-	}
-	if !slices.Contains(evt.Subscription.Roles, model.RoleMember) {
-		t.Errorf("subscription roles = %v, want to contain member", evt.Subscription.Roles)
-	}
-	if evt.Timestamp <= 0 {
-		t.Error("expected Timestamp > 0")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_Demote(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleMember).Return(nil)
-	store.EXPECT().RemoveRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember}}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").
-		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	if err := h.processRoleUpdate(context.Background(), data); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(published) != 1 {
-		t.Fatalf("expected 1 publish, got %d", len(published))
-	}
-
-	var evt model.SubscriptionUpdateEvent
-	if err := json.Unmarshal(published[0].data, &evt); err != nil {
-		t.Fatalf("unmarshal event: %v", err)
-	}
-	if evt.Action != "role_updated" {
-		t.Errorf("action = %q, want role_updated", evt.Action)
-	}
-	if slices.Contains(evt.Subscription.Roles, model.RoleOwner) {
-		t.Errorf("subscription roles = %v, should not contain owner after demote", evt.Subscription.Roles)
-	}
-	if !slices.Contains(evt.Subscription.Roles, model.RoleMember) {
-		t.Errorf("subscription roles = %v, want to contain member", evt.Subscription.Roles)
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_CrossSite(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
-	// User is on site-b (different from handler's site-a) → cross-site
-	store.EXPECT().GetUser(gomock.Any(), "bob").
-		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-b"}, nil)
-
-	var published []publishedMsg
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, data []byte, _ string) error {
-		published = append(published, publishedMsg{subj: subj, data: data})
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	if err := h.processRoleUpdate(context.Background(), data); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(published) != 2 {
-		t.Fatalf("expected 2 publishes, got %d", len(published))
-	}
-	if published[0].subj != "chat.user.bob.event.subscription.update" {
-		t.Errorf("first subject = %q, want subscription update", published[0].subj)
-	}
-
-	wantOutboxSubj := "outbox.site-a.to.site-b.role_updated"
-	if published[1].subj != wantOutboxSubj {
-		t.Errorf("second subject = %q, want %q", published[1].subj, wantOutboxSubj)
-	}
-
-	var outbox model.OutboxEvent
-	if err := json.Unmarshal(published[1].data, &outbox); err != nil {
-		t.Fatalf("unmarshal outbox event: %v", err)
-	}
-	if outbox.Type != "role_updated" {
-		t.Errorf("outbox type = %q, want role_updated", outbox.Type)
-	}
-
-	var innerEvt model.SubscriptionUpdateEvent
-	if err := json.Unmarshal(outbox.Payload, &innerEvt); err != nil {
-		t.Fatalf("unmarshal inner event: %v", err)
-	}
-	if !slices.Contains(innerEvt.Subscription.Roles, model.RoleOwner) {
-		t.Errorf("inner subscription roles = %v, want to contain owner", innerEvt.Subscription.Roles)
-	}
-	if !slices.Contains(innerEvt.Subscription.Roles, model.RoleMember) {
-		t.Errorf("inner subscription roles = %v, want to contain member", innerEvt.Subscription.Roles)
-	}
-}
-
-// --- Error-path tests for processRoleUpdate ---
-
-func TestHandler_ProcessRoleUpdate_FallsBackToNowOnInvalidTimestamp(t *testing.T) {
-	// A missing timestamp should not short-circuit the handler. We confirm
-	// processing reached the store layer by stubbing the first store call to
-	// return a downstream error and asserting the error is NOT the timestamp
-	// rejection.
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
-	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
-		return nil
-	}, testKeyStore, testKeySender)
-	req := model.UpdateRoleRequest{
-		RoomID:    "r1",
-		Account:   "bob",
-		NewRole:   model.RoleOwner,
-		Timestamp: 0,
-	}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "timestamp must be > 0")
-	assert.Contains(t, err.Error(), "add owner role")
-}
-
-func TestHandler_ProcessRoleUpdate_InvalidJSON(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		t.Fatal("publish should not be called")
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	err := h.processRoleUpdate(context.Background(), []byte("not json"))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_AddRoleError(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
-
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		t.Fatal("publish should not be called")
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	if err == nil {
-		t.Fatal("expected error for AddRole failure")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_RemoveRoleError(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleMember).Return(nil)
-	store.EXPECT().RemoveRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(fmt.Errorf("db error"))
-
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		t.Fatal("publish should not be called")
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleMember, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	if err == nil {
-		t.Fatal("expected error for RemoveRole failure")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_GetSubscriptionError(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").Return(nil, fmt.Errorf("db error"))
-
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		t.Fatal("publish should not be called")
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	if err == nil {
-		t.Fatal("expected error for GetSubscription failure")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_PublishError(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
-
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		return fmt.Errorf("nats down")
-	}}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	if err == nil {
-		t.Fatal("expected error for publish failure")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_UnsupportedRole(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
-		t.Fatal("publish should not be called")
-		return nil
-	}, keyStore: testKeyStore, keySender: testKeySender}
-
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: "admin", Timestamp: 1}
-	data, _ := json.Marshal(req)
-	err := h.processRoleUpdate(context.Background(), data)
-	if err == nil {
-		t.Fatal("expected error for unsupported role")
-	}
-}
-
-func TestHandler_ProcessRoleUpdate_PropagatesRequestID(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-
-	store.EXPECT().AddRole(gomock.Any(), "bob", "r1", model.RoleOwner).Return(nil)
-	store.EXPECT().GetSubscription(gomock.Any(), "bob", "r1").
-		Return(&model.Subscription{ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", SiteID: "site-a", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
-	store.EXPECT().GetUser(gomock.Any(), "bob").
-		Return(&model.User{ID: "u2", Account: "bob", SiteID: "site-a"}, nil)
-
-	var capturedCtx context.Context
-	publish := func(ctx context.Context, subj string, data []byte, msgID string) error {
-		capturedCtx = ctx
-		return nil
-	}
-	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
-
-	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
-	req := model.UpdateRoleRequest{RoomID: "r1", Account: "bob", NewRole: model.RoleOwner, Timestamp: 1}
-	reqData, _ := json.Marshal(req)
-	err := h.processRoleUpdate(ctx, reqData)
-	require.NoError(t, err)
-	require.NotNil(t, capturedCtx, "publish wrapper must receive a non-nil ctx")
-	assert.Equal(t, testRequestID, natsutil.RequestIDFromContext(capturedCtx),
-		"publish wrapper must receive ctx that still carries the request ID")
 }
 
 // --- processRemoveMember tests ---
@@ -693,7 +391,9 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	// 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 batched outbox (site-b)
 	assert.GreaterOrEqual(t, len(published), 4)
 
-	// Verify exactly 1 outbox event for site-b (batched, not per-member)
+	// Exactly one outbox event to site-b, carrying only site-b-homed accounts
+	// (charlie). bob is on site-a (home), so does not appear in the cross-site
+	// payload.
 	var outboxCount int
 	for _, p := range published {
 		if strings.Contains(p.subj, "outbox") {
@@ -703,10 +403,10 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 			var change model.MemberAddEvent
 			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-			assert.Equal(t, []string{"charlie"}, change.Accounts)
+			assert.ElementsMatch(t, []string{"charlie"}, change.Accounts)
 		}
 	}
-	assert.Equal(t, 1, outboxCount, "should publish exactly 1 batched outbox event per destination site")
+	assert.Equal(t, 1, outboxCount, "should publish exactly 1 outbox event per remote site")
 }
 
 // TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey locks in
@@ -1091,11 +791,12 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 		Return([]AddMemberCandidate{
 			{Account: "alice"}, {Account: "bob"}, {Account: "charlie"},
 		}, nil)
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return([]model.User{
+	allUsers := []model.User{
 		{ID: "u1", Account: "alice", SiteID: "site-b", EngName: "Alice", ChineseName: "愛"},
 		{ID: "u2", Account: "bob", SiteID: "site-b", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-c", EngName: "Charlie", ChineseName: "查"},
-	}, nil)
+	}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return(allUsers, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-b", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -1122,19 +823,23 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 			outboxEvents = append(outboxEvents, p)
 		}
 	}
-	assert.Len(t, outboxEvents, 2, "should batch outbox by site: 1 for site-b, 1 for site-c")
+	assert.Len(t, outboxEvents, 2, "one outbox event per remote site: site-b and site-c")
 
+	// Each remote site receives only its own homed accounts: site-b gets
+	// alice+bob, site-c gets charlie.
+	want := map[string][]string{
+		"site-b": {"alice", "bob"},
+		"site-c": {"charlie"},
+	}
 	for _, p := range outboxEvents {
 		var outboxEvt model.OutboxEvent
 		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 		var change model.MemberAddEvent
 		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-
-		if strings.Contains(p.subj, "site-b") {
-			assert.Len(t, change.Accounts, 2, "site-b should have alice and bob")
-		} else if strings.Contains(p.subj, "site-c") {
-			assert.Equal(t, []string{"charlie"}, change.Accounts)
-		}
+		expected, ok := want[outboxEvt.DestSiteID]
+		require.True(t, ok, "unexpected destSiteID %s", outboxEvt.DestSiteID)
+		assert.ElementsMatch(t, expected, change.Accounts,
+			"outbox to %s should carry only its homed accounts", outboxEvt.DestSiteID)
 	}
 }
 
@@ -1185,7 +890,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
+	// Expect: 2 sub updates + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
 	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
@@ -1684,7 +1389,9 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status, "failure event must have Status=error")
-	assert.Equal(t, "operation failed", result.Error, "failure event must carry sanitized error message")
+	// Raw infra error collapses to internal — the cause never leaks to the client.
+	assert.Equal(t, "internal error", result.Error, "failure event must carry sanitized error message")
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
 	assert.Greater(t, result.Timestamp, int64(0))
 }
 
@@ -1710,7 +1417,8 @@ func TestHandler_publishAsyncJobResult_PopulatesErrorOnFailure(t *testing.T) {
 	assert.Equal(t, testRequestID, result.RequestID)
 	assert.Equal(t, model.AsyncJobOpRoomMemberAdd, result.Operation)
 	assert.Equal(t, "error", result.Status)
-	assert.Equal(t, "operation failed", result.Error)
+	assert.Equal(t, "internal error", result.Error)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
 	assert.Equal(t, "r1", result.RoomID)
 }
 
@@ -1791,21 +1499,32 @@ func setupAddMembersHappyPath(t *testing.T, mockStore *MockSubscriptionStore, ac
 	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "r1").Return(nil)
 }
 
-// Task 12: missing X-Request-ID must return a permanent error immediately.
-func TestProcessAddMembers_RequiresRequestID(t *testing.T) {
-	h, _, _ := newAddMembersTestHandler(t)
-	body, err := json.Marshal(model.AddMembersRequest{
-		RoomID: "r1", Users: []string{"bob"},
-		RequesterID: "u_alice", RequesterAccount: "alice",
-		Timestamp: time.Now().UnixMilli(),
-	})
-	require.NoError(t, err)
+// The legacy TestProcessAddMembers_RequiresRequestID test pinned the old
+// reject-on-missing behavior. Under the repo-wide "mint everywhere" policy
+// (docs/error-handling.md), missing/malformed X-Request-ID is no longer a
+// rejectable condition — the boundary (main.go JetStream consume loop /
+// natsrouter.RequestID middleware) mints a fresh UUIDv7 via
+// natsutil.StampRequestID before the handler sees the ctx.
 
-	// ctx has no request ID
-	err = h.processAddMembers(context.Background(), body)
+func TestProcessAddMembers_MalformedJSON_IsPermanent(t *testing.T) {
+	// Regression for the Nak-forever bug: a malformed payload must be Acked
+	// (Permanent), not Naked. Pre-fix the bare fmt.Errorf made JetStream
+	// redeliver the same corrupt JSON until MaxDeliver.
+	h, _, _ := newAddMembersTestHandler(t)
+	err := h.processAddMembers(context.Background(), []byte(`{not json`))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing X-Request-ID")
-	assert.ErrorIs(t, err, errPermanent)
+	assert.ErrorIs(t, err, errPermanent, "unmarshal failure must be Permanent so JetStream Acks")
+	assert.NotContains(t, err.Error(), "not json", "must not echo raw payload bytes into the user-facing message")
+}
+
+func TestProcessRemoveMember_MalformedJSON_IsPermanent(t *testing.T) {
+	// Unmarshal failure short-circuits before any store call — a bare Handler
+	// is enough.
+	h := &Handler{publish: func(context.Context, string, []byte, string) error { return nil }}
+	err := h.processRemoveMember(context.Background(), []byte(`{not json`))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPermanent, "unmarshal failure must be Permanent so JetStream Acks")
+	assert.NotContains(t, err.Error(), "not json")
 }
 
 // Task 14: subscription must carry Name == room.Name and RoomType == channel.
@@ -2120,18 +1839,9 @@ func makeCreateRoomBody(t *testing.T, req *model.CreateRoomRequest) []byte {
 
 // ---- Task 32: skeleton tests ----
 
-func TestProcessCreateRoom_RequiresRequestID(t *testing.T) {
-	h, _, _ := newCreateRoomTestHandler(t)
-	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
-		RoomID: "room1", RequesterAccount: "alice", Timestamp: time.Now().UnixMilli(),
-		Users: []string{"bob"},
-	})
-
-	err := h.processCreateRoom(context.Background(), body)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing X-Request-ID")
-	assert.ErrorIs(t, err, errPermanent)
-}
+// TestProcessCreateRoom_RequiresRequestID retired: see comment above the
+// add-members equivalent. Missing X-Request-ID is now minted at the boundary
+// rather than rejected at the handler.
 
 // ---- Task 33: DM branch tests ----
 
@@ -2596,7 +2306,7 @@ func TestProcessCreateRoom_Channel_EmitsAsyncJobOk(t *testing.T) {
 	assert.Equal(t, model.AsyncJobOpRoomCreate, result.Operation)
 }
 
-// ---- Permanent-error coverage for HandleJetStreamMsg Ack path + new permanentError type ----
+// ---- Permanent-error coverage for HandleJetStreamMsg Ack path + errcode.Permanent marker ----
 
 func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testing.T) {
 	h, mockStore, getPublished := newCreateRoomTestHandler(t)
@@ -2627,35 +2337,52 @@ func TestProcessCreateRoom_RoomIDCollisionMismatchType_ReturnsPermanent(t *testi
 	err := h.processCreateRoom(ctx, body)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPermanent)
+	var pe *errcode.PermanentError
+	assert.True(t, errors.As(err, &pe), "collision must be an explicit permanent error")
 	assert.Contains(t, err.Error(), "room ID collision")
 
 	// Async-job error event must be published (defer fires before return).
+	// Collision classifies to conflict (mirrors the sync-DM errRoomIDCollision
+	// path); permanence is explicit, not category-inferred.
 	responses := userResponseFor(getPublished(), "alice")
 	require.NotEmpty(t, responses, "permanent error must publish async-job error event")
 	var result model.AsyncJobResult
 	require.NoError(t, json.Unmarshal(responses[0].data, &result))
 	assert.Equal(t, model.AsyncJobStatusError, result.Status)
-	assert.Contains(t, result.Error, "room ID collision")
-	// Sanitized error must NOT contain the trailing ": permanent" suffix.
-	assert.NotContains(t, result.Error, ": permanent")
+	assert.Equal(t, string(errcode.CodeConflict), result.Code)
 }
 
-func TestSanitizeAsyncJobError_PermanentErrorTypeReturnsCleanMessage(t *testing.T) {
-	err := newPermanent("counterpart not found")
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "counterpart not found", got)
+func TestFillAsyncError_PermanentForbiddenWithReason(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := permanent(errcode.Forbidden("only room members can act", errcode.WithReason(errcode.RoomNotMember)))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Equal(t, "only room members can act", result.Error)
+	assert.Equal(t, string(errcode.CodeForbidden), result.Code)
+	assert.Equal(t, string(errcode.RoomNotMember), result.Reason)
 }
 
-func TestSanitizeAsyncJobError_LegacyWrappedSentinelStillTrimmed(t *testing.T) {
-	err := fmt.Errorf("legacy reason: %w", errPermanent)
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "legacy reason", got)
+func TestFillAsyncError_RawInfraCollapsesToInternal(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, model.AsyncJobStatusError, result.Status)
+	assert.Equal(t, "internal error", result.Error)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
+	assert.Empty(t, result.Reason)
 }
 
-func TestSanitizeAsyncJobError_NonPermanentCollapsed(t *testing.T) {
-	err := fmt.Errorf("transient store error: %w", errors.New("connection reset"))
-	got := sanitizeAsyncJobError(err)
-	assert.Equal(t, "operation failed", got)
+func TestFillAsyncError_PermanentInternalCollision(t *testing.T) {
+	h := &Handler{}
+	var result model.AsyncJobResult
+	jobErr := permanent(errcode.Internal("room ID collision (existing type=channel)"))
+	h.fillAsyncError(context.Background(), &result, jobErr)
+	assert.Equal(t, string(errcode.CodeInternal), result.Code)
+	// Permanence is explicit; an internal-category permanent error still Acks.
+	var pe *errcode.PermanentError
+	assert.True(t, errors.As(jobErr, &pe))
 }
 
 // newRequestCtx returns a context carrying a syntactically-valid X-Request-ID.
@@ -2703,39 +2430,49 @@ func marshalReq(t *testing.T, v any) []byte {
 	return data
 }
 
-func TestSanitizeSyncDMError(t *testing.T) {
+// assertSyncDMInternal asserts err marshals (via errnats) to an internal-code
+// envelope with the generic "internal error" message and no leaked cause.
+func assertSyncDMInternal(t *testing.T, err error) {
+	t.Helper()
+	data := errnats.Marshal(context.Background(), err)
+	e, ok := errcode.Parse(data)
+	require.True(t, ok, "must marshal to an error envelope: %s", data)
+	assert.Equal(t, errcode.CodeInternal, e.Code)
+	assert.Equal(t, "internal error", e.Message)
+}
+
+// TestSyncDMErrorEnvelope asserts the wire envelope errnats produces for each
+// sync-DM failure mode (replacing the deleted sanitizeSyncDMError). Validation
+// sentinels surface as bad_request with their message; lookup/infra/collision
+// detail never leaks — user-lookup and unknown errors collapse to internal,
+// the collision becomes a conflict with a generic message.
+func TestSyncDMErrorEnvelope(t *testing.T) {
 	cases := []struct {
-		name string
-		in   error
-		want string
+		name     string
+		in       error
+		wantCode errcode.Code
+		wantMsg  string
 	}{
-		{"nil returns empty", nil, ""},
-		{"missing request ID surfaced", errMissingRequestID, "missing X-Request-ID header"},
-		{"invalid request ID surfaced", errInvalidRequestID, "invalid X-Request-ID header"},
-		{"invalid sync DM request surfaced", errInvalidSyncDMRequest, "invalid sync DM request"},
-		{"user lookup failed surfaced", errUserLookupFailed, "user lookup failed"},
-		{"cross-site requester surfaced", errCrossSiteRequester, "requester is not on this site"},
-		{"room ID collision masked as internal", errRoomIDCollision, "internal error"},
-		{"unknown error masked as internal", errors.New("mongo: connection refused"), "internal error"},
+		{"invalid sync DM request", errInvalidSyncDMRequest, errcode.CodeBadRequest, "invalid sync DM request"},
+		{"cross-site requester", errCrossSiteRequester, errcode.CodeBadRequest, "requester is not on this site"},
+		{"user lookup failed collapses to internal", errUserLookupFailed, errcode.CodeInternal, "internal error"},
+		{"room ID collision is a conflict", errRoomIDCollision, errcode.CodeConflict, "room id collision (existing room metadata mismatch)"},
+		{"unknown error collapses to internal", errors.New("mongo: connection refused"), errcode.CodeInternal, "internal error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, sanitizeSyncDMError(tc.in))
+			data := errnats.Marshal(context.Background(), tc.in)
+			e, ok := errcode.Parse(data)
+			require.True(t, ok, "must marshal to an error envelope: %s", data)
+			assert.Equal(t, tc.wantCode, e.Code)
+			assert.Equal(t, tc.wantMsg, e.Message)
+			assert.NotContains(t, string(data), "mongo", "infra cause must never leak")
 		})
 	}
 }
 
-func TestHandleSyncCreateDM_MissingRequestID(t *testing.T) {
-	h := &Handler{siteID: "site-a"}
-	req := model.SyncCreateDMRequest{
-		RoomType:         model.RoomTypeDM,
-		RequesterAccount: "alice",
-		OtherAccount:     "bob",
-	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(context.Background(), data)
-	assert.ErrorIs(t, err, errMissingRequestID)
-}
+// TestHandleSyncCreateDM_MissingRequestID retired — see the comment above
+// TestProcessAddMembers_RequiresRequestID.
 
 func TestHandleSyncCreateDM_InvalidJSON(t *testing.T) {
 	h := &Handler{siteID: "site-a"}
@@ -2820,7 +2557,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 	// Reply returns the in-memory sub directly (no read-back round-trip).
 	assert.Equal(t, *captured[0], reply.Subscription)
 
-	// One subscription.update; no outbox (same-site by definition).
+	// subscription.update only — same-site self-DM; no outbox and no canonical event (Option C).
 	require.Len(t, capture.captured, 1)
 	assert.Equal(t, subject.SubscriptionUpdate("alice"), capture.captured[0].subject)
 }
@@ -3088,9 +2825,9 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
 }
 
-// Transient store errors on GetUser must NOT be sanitized as errUserLookupFailed (which
-// signals "user does not exist"); they should propagate as wrapped errors and surface
-// as "internal error" via sanitizeSyncDMError.
+// Transient store errors on GetUser must NOT be tagged as errUserLookupFailed (which
+// signals "user does not exist"); they propagate as wrapped errors and surface
+// as "internal error" in the errnats envelope.
 func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	h, store, _ := newSyncDMTestHandler(t)
 
@@ -3102,7 +2839,7 @@ func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errUserLookupFailed,
 		"transient error must not be tagged as user-not-found")
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T) {
@@ -3225,7 +2962,7 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 // BulkCreateSubscriptions returning a transient error must surface as "internal error".
@@ -3243,7 +2980,7 @@ func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
 	data := marshalReq(t, req)
 	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
 	require.Error(t, err)
-	assert.Equal(t, "internal error", sanitizeSyncDMError(err))
+	assertSyncDMInternal(t, err)
 }
 
 // On a CreateRoom dup-key with matching existing room (idempotent re-delivery),
@@ -3571,6 +3308,11 @@ func TestProcessCreateRoom_PermanentErrorWhenKeyMissing(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errPermanent), "missing key must be permanent")
 	assert.True(t, errors.Is(err, errRoomKeyAbsent), "missing key must satisfy errRoomKeyAbsent sentinel")
+	// The SAME error value must yield the *errcode.Error (internal) for the reply
+	// envelope AND still satisfy errors.Is(errRoomKeyAbsent) for the alert path.
+	var ee *errcode.Error
+	require.True(t, errors.As(err, &ee), "absent-key error must carry an *errcode.Error")
+	assert.Equal(t, errcode.CodeInternal, ee.Code)
 }
 
 // ---- Task 11: fan-out current key to newly-added channel members ----
@@ -4595,42 +4337,39 @@ func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing
 	assert.Contains(t, err.Error(), "check existing org room members")
 }
 
-// X-Request-ID must be a hyphenated UUID; non-UUIDs leak into reply subjects.
-func TestHandler_ProcessAddMembers_InvalidRequestID_ReturnsPermanent(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	store := NewMockSubscriptionStore(ctrl)
-	// No store mocks — validation must short-circuit before any store call.
+// natsServerCreateDM and the JetStream consume loop call this helper to
+// validate the inbound X-Request-ID before any downstream dedup-key derivation
+// runs. Missing/malformed → BadRequest (no server-side mint). The asymmetric
+// policy vs the consume loop (which still mints defensively) lives in
+// docs/error-handling.md §3a.
+func TestRequireDedupRequestID(t *testing.T) {
+	const validUUID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 
-	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore: testKeyStore, keySender: testKeySender}
-	req := model.AddMembersRequest{
-		RoomID: "r1", RequesterID: "u_a", RequesterAccount: "alice",
-		Users: []string{"u1"}, Timestamp: 1,
-	}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
-
-	err := h.processAddMembers(ctx, data)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-	assert.Contains(t, err.Error(), "invalid X-Request-ID")
-}
-
-func TestProcessCreateRoom_InvalidRequestID_ReturnsPermanent(t *testing.T) {
-	h, mockStore, _ := newCreateRoomTestHandler(t)
-	_ = mockStore // store mocks intentionally unset — must short-circuit before any call
-	ctx := natsutil.WithRequestID(context.Background(), "not-a-uuid")
-
-	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
-		RoomID:           "room-1",
-		RequesterAccount: "alice",
-		Users:            []string{"bob"},
-		Timestamp:        time.Now().UnixMilli(),
+	t.Run("valid_passes", func(t *testing.T) {
+		h := nats.Header{natsutil.RequestIDHeader: []string{validUUID}}
+		ctx, id, err := requireDedupRequestID(context.Background(), h, "chat.test.subject")
+		require.NoError(t, err)
+		assert.Equal(t, validUUID, id)
+		assert.Equal(t, validUUID, natsutil.RequestIDFromContext(ctx))
 	})
 
-	err := h.processCreateRoom(ctx, body)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errPermanent)
-	assert.Contains(t, err.Error(), "invalid X-Request-ID")
+	cases := []struct {
+		name    string
+		headers nats.Header
+	}{
+		{name: "nil_rejects", headers: nil},
+		{name: "empty_rejects", headers: nats.Header{}},
+		{name: "malformed_rejects", headers: nats.Header{natsutil.RequestIDHeader: []string{"not-a-uuid"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := requireDedupRequestID(context.Background(), tc.headers, "chat.test.subject")
+			require.Error(t, err)
+			var ec *errcode.Error
+			require.True(t, errors.As(err, &ec))
+			assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+		})
+	}
 }
 
 // TestHandler_RotateAndFanOut_ErrNoCurrentKey_UsesPredictedVersion pins the
@@ -4758,4 +4497,441 @@ func TestHandler_ProcessRemoveOrg_DeptFirstTiebreak(t *testing.T) {
 			assert.Equal(t, tc.wantSect, payload.SectName)
 		})
 	}
+}
+
+// fakeDEKProvisioner records EnsureDEK calls and can be made to fail.
+type fakeDEKProvisioner struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeDEKProvisioner) EnsureDEK(_ context.Context, roomID string) error {
+	f.calls = append(f.calls, roomID)
+	return f.err
+}
+
+func TestHandleSyncCreateDM_SelfDM_ProvisionsDEK(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u_alice", Account: "alice", SiteID: "site-a"},
+	}, nil)
+	var createdRoomID string
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, room *model.Room) error { createdRoomID = room.ID; return nil })
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+
+	prov := &fakeDEKProvisioner{}
+	h := &Handler{
+		store:          mockStore,
+		siteID:         "site-a",
+		dekProvisioner: prov,
+		publish:        func(context.Context, string, []byte, string) error { return nil },
+	}
+
+	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "alice", RoomType: model.RoomTypeDM}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
+
+	reply, err := h.handleSyncCreateDM(ctx, data)
+	require.NoError(t, err)
+	require.True(t, reply.Success)
+	require.Len(t, prov.calls, 1)
+	assert.Equal(t, createdRoomID, prov.calls[0], "EnsureDEK must be called with the self-DM room ID")
+}
+
+func TestHandleSyncCreateDM_DEKFailure_AbortsBeforeCreate(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{ID: "u_alice", Account: "alice", SiteID: "site-a"},
+		{ID: "u_bob", Account: "bob", SiteID: "site-a"},
+	}, nil)
+	// CreateRoom is intentionally NOT expected: a DEK provisioning failure must
+	// abort before the room is persisted. gomock fails the test if it is called.
+
+	prov := &fakeDEKProvisioner{err: errors.New("vault down")}
+	h := &Handler{
+		store:          mockStore,
+		siteID:         "site-a",
+		dekProvisioner: prov,
+		publish:        func(context.Context, string, []byte, string) error { return nil },
+	}
+
+	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "bob", RoomType: model.RoomTypeDM}
+	data, _ := json.Marshal(req)
+	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
+
+	_, err := h.handleSyncCreateDM(ctx, data)
+	require.Error(t, err)
+	assert.Len(t, prov.calls, 1, "EnsureDEK should have been attempted once")
+}
+
+// ---- HandleJetStreamMsg Ack/Nak + async-consumer panic recovery ----
+
+// fakeJSMsg is a minimal jetstream.Msg stub recording Ack/Nak calls so tests
+// can assert the consumer's permanence-driven decision without a NATS server.
+type fakeJSMsg struct {
+	subject string
+	data    []byte
+	headers nats.Header
+	acked   bool
+	naked   bool
+	ackErr  error
+	nakErr  error
+}
+
+func (m *fakeJSMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *fakeJSMsg) Data() []byte                              { return m.data }
+func (m *fakeJSMsg) Headers() nats.Header                      { return m.headers }
+func (m *fakeJSMsg) Subject() string                           { return m.subject }
+func (m *fakeJSMsg) Reply() string                             { return "" }
+func (m *fakeJSMsg) Ack() error                                { m.acked = true; return m.ackErr }
+func (m *fakeJSMsg) DoubleAck(context.Context) error           { m.acked = true; return m.ackErr }
+func (m *fakeJSMsg) Nak() error                                { m.naked = true; return m.nakErr }
+func (m *fakeJSMsg) NakWithDelay(time.Duration) error          { m.naked = true; return m.nakErr }
+func (m *fakeJSMsg) InProgress() error                         { return nil }
+func (m *fakeJSMsg) Term() error                               { return nil }
+func (m *fakeJSMsg) TermWithReason(string) error               { return nil }
+
+// panicProcessor panics on every message — stands in for a WithCause/WithMetadata
+// misuse that would otherwise crash the async consumer goroutine.
+type panicProcessor struct{}
+
+func (panicProcessor) HandleJetStreamMsg(context.Context, jetstream.Msg) {
+	panic("boom: errcode option misuse")
+}
+
+func TestRunJobWithRecovery_PanicAcksAndDoesNotCrash(t *testing.T) {
+	msg := &fakeJSMsg{subject: "chat.room.room-1.create"}
+	assert.NotPanics(t, func() {
+		runJobWithRecovery(context.Background(), panicProcessor{}, msg)
+	}, "a panicking handler must be recovered, not crash the worker")
+	assert.True(t, msg.acked, "panic must Ack (poison-pill drop), not Nak — a deterministic panic would otherwise loop on redelivery")
+	assert.False(t, msg.naked)
+}
+
+func TestFindRemoteSitesForAccounts(t *testing.T) {
+	t.Run("dedupes remote, drops local, preserves siteIDs", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockSubscriptionStore(ctrl)
+		store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "carol", "dave"}).Return([]model.User{
+			{Account: "alice", SiteID: "site-a"}, // local
+			{Account: "bob", SiteID: "site-b"},   // remote
+			{Account: "carol", SiteID: "site-c"}, // remote
+			{Account: "dave", SiteID: "site-b"},  // dup of bob's site
+		}, nil)
+		h := &Handler{store: store, siteID: "site-a"}
+		got, err := h.findRemoteSitesForAccounts(context.Background(), []string{"alice", "bob", "carol", "dave"})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"site-b", "site-c"}, got)
+	})
+
+	t.Run("empty input returns empty slice", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store := NewMockSubscriptionStore(ctrl)
+		h := &Handler{store: store, siteID: "site-a"}
+		got, err := h.findRemoteSitesForAccounts(context.Background(), nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
+func TestFindRemoteSitesForAccounts_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockSubscriptionStore(ctrl)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo timeout"))
+
+	h := &Handler{store: store, siteID: "site-a"}
+	got, err := h.findRemoteSitesForAccounts(context.Background(), []string{"alice"})
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Contains(t, err.Error(), "find users by accounts")
+}
+
+// --- processRoomRename tests ---
+
+// Test 1: Missing X-Request-ID → permanent error, no store calls.
+func TestProcessRoomRename_MissingRequestID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	// No EXPECT calls — store must not be called.
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	}}
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "renamed", Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRename(context.Background(), body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+}
+
+// Test 2: Invalid UUID → permanent error.
+func TestProcessRoomRename_InvalidUUID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	}}
+	ctx := natsutil.WithRequestID(context.Background(), "not-a-valid-uuid")
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "renamed", Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRename(ctx, body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+}
+
+// Test 3: Unmarshal failure → permanent + AsyncJobResult does NOT publish (empty requesterAccount short-circuits).
+func TestProcessRoomRename_UnmarshalFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	var publishedSubjects []string
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, _ []byte, _ string) error {
+		publishedSubjects = append(publishedSubjects, subj)
+		return nil
+	}}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	err := h.processRoomRename(ctx, []byte("not-valid-json"))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+	// requesterAccount is empty after unmarshal failure, so publishAsyncJobResult must not publish.
+	for _, s := range publishedSubjects {
+		assert.False(t,
+			strings.HasPrefix(s, "chat.user.") && strings.Contains(s, ".response."+requestID),
+			"should not publish AsyncJobResult on unmarshal failure: got %s", s)
+	}
+}
+
+// Test 4: UpdateRoomName returns ErrRoomNotFound → permanent + AsyncJobResult error.
+func TestProcessRoomRename_RoomNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(ErrRoomNotFound)
+
+	var asyncResults []model.AsyncJobResult
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		if subj == subject.UserResponse("alice", requestID) {
+			var r model.AsyncJobResult
+			require.NoError(t, json.Unmarshal(data, &r))
+			asyncResults = append(asyncResults, r)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "renamed", Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRename(ctx, body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+	require.Len(t, asyncResults, 1)
+	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
+}
+
+// Test 5: UpdateRoomName returns ErrNotChannelRoom → permanent + AsyncJobResult error.
+func TestProcessRoomRename_NotChannelRoom(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(ErrNotChannelRoom)
+
+	var asyncResults []model.AsyncJobResult
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		if subj == subject.UserResponse("alice", requestID) {
+			var r model.AsyncJobResult
+			require.NoError(t, json.Unmarshal(data, &r))
+			asyncResults = append(asyncResults, r)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "renamed", Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRename(ctx, body)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errPermanent), "expected permanent error, got %v", err)
+	require.Len(t, asyncResults, 1)
+	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
+}
+
+// Test 6: Transient error on UpdateSubscriptionNamesForRoom → non-permanent error returned.
+func TestProcessRoomRename_TransientSubscriptionUpdateError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(nil)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "renamed").Return(errors.New("mongo timeout"))
+
+	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, _ string, _ []byte, _ string) error {
+		return nil
+	}}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "renamed", Account: "alice", Timestamp: 1700000000000})
+	err := h.processRoomRename(ctx, body)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errPermanent), "expected transient (non-permanent) error, got %v", err)
+}
+
+// Test 7: Happy path no remote sites.
+func TestProcessRoomRename_HappyPathNoRemoteSites(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	const roomID, newName = "r1", "renamed"
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+	subs := []model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: roomID},
+		{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: roomID},
+	}
+
+	store.EXPECT().UpdateRoomName(gomock.Any(), roomID, newName).Return(nil)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), roomID, newName).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(subs, nil)
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{Account: "alice", SiteID: "site-a"}, {Account: "bob", SiteID: "site-a"},
+	}, nil)
+
+	var publishedSubjects []string
+	publish := func(_ context.Context, subj string, _ []byte, _ string) error {
+		publishedSubjects = append(publishedSubjects, subj)
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{
+		RoomID: roomID, NewName: newName, Account: "alice", Timestamp: time.Now().UTC().UnixMilli(),
+	})
+
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	assert.Contains(t, publishedSubjects, subject.MsgCanonicalCreated("site-a"))
+	assert.Contains(t, publishedSubjects, subject.UserResponse("alice", requestID))
+	for _, subj := range publishedSubjects {
+		assert.NotContains(t, subj, "outbox.", "should not publish to outbox when all members are local")
+		assert.NotContains(t, subj, ".event.subscription.update", "rename publishes a single room-scoped sys message; no per-subscription fan-out")
+	}
+}
+
+// Test 8: Happy path with one remote site.
+func TestProcessRoomRename_HappyPathWithRemoteSite(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	const roomID, newName = "r1", "renamed"
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	ts := int64(1700000000000)
+
+	subs := []model.Subscription{
+		{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: roomID},
+		{ID: "s2", User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: roomID},
+	}
+
+	store.EXPECT().UpdateRoomName(gomock.Any(), roomID, newName).Return(nil)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), roomID, newName).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(subs, nil)
+	// Bob is on a remote site.
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{
+		{Account: "alice", SiteID: "site-a"},
+		{Account: "bob", SiteID: "site-b"},
+	}, nil)
+
+	var publishedSubjects []string
+	var outboxPayloads []model.RoomRenamedOutboxPayload
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		publishedSubjects = append(publishedSubjects, subj)
+		if strings.Contains(subj, "outbox.") {
+			var env model.OutboxEvent
+			require.NoError(t, json.Unmarshal(data, &env))
+			var payload model.RoomRenamedOutboxPayload
+			require.NoError(t, json.Unmarshal(env.Payload, &payload))
+			outboxPayloads = append(outboxPayloads, payload)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{
+		RoomID: roomID, NewName: newName, Account: "alice", Timestamp: ts,
+	})
+
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	assert.Contains(t, publishedSubjects, subject.MsgCanonicalCreated("site-a"))
+	assert.Contains(t, publishedSubjects, subject.UserResponse("alice", requestID))
+	for _, subj := range publishedSubjects {
+		assert.NotContains(t, subj, ".event.subscription.update", "rename publishes a single room-scoped sys message; no per-subscription fan-out")
+	}
+
+	// Exactly one outbox publish to site-b.
+	outboxSubjects := make([]string, 0)
+	for _, s := range publishedSubjects {
+		if strings.Contains(s, "outbox.") {
+			outboxSubjects = append(outboxSubjects, s)
+		}
+	}
+	require.Len(t, outboxSubjects, 1)
+	assert.Contains(t, outboxSubjects[0], "site-b")
+	require.Len(t, outboxPayloads, 1)
+	assert.Equal(t, roomID, outboxPayloads[0].RoomID)
+	assert.Equal(t, newName, outboxPayloads[0].NewName)
+	assert.Equal(t, ts, outboxPayloads[0].Timestamp)
+}
+
+// Test 9: Error-then-ok retry sequence.
+func TestProcessRoomRename_ErrorThenOkRetrySequence(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+
+	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "x").Return(errors.New("mongo timeout"))
+	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "x").Return(nil)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "x").Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+	// Empty subs → accounts is empty → findRemoteSitesForAccounts short-circuits (no FindUsersByAccounts call).
+	store.EXPECT().ListByRoom(gomock.Any(), "r1").Return([]model.Subscription{}, nil)
+
+	var asyncResults []model.AsyncJobResult
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		if subj == subject.UserResponse("alice", requestID) {
+			var r model.AsyncJobResult
+			require.NoError(t, json.Unmarshal(data, &r))
+			asyncResults = append(asyncResults, r)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{RoomID: "r1", NewName: "x", Account: "alice", Timestamp: 1700000000000})
+
+	err := h.processRoomRename(ctx, body)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errPermanent))
+
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	require.Len(t, asyncResults, 2)
+	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
+	assert.Equal(t, model.AsyncJobStatusOK, asyncResults[1].Status)
 }

@@ -70,10 +70,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.member.list"},
 		{"MemberListWildcard", subject.MemberListWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.member.list"},
-		{"OrgMembers", subject.OrgMembers("alice", "sect-eng"),
-			"chat.user.alice.request.orgs.sect-eng.members"},
-		{"OrgMembersWildcard", subject.OrgMembersWildcard(),
-			"chat.user.*.request.orgs.*.members"},
+		{"OrgMembers", subject.OrgMembers("alice", "sect-eng", "site-a"),
+			"chat.user.alice.request.orgs.sect-eng.site-a.members"},
+		{"OrgMembersWildcard", subject.OrgMembersWildcard("site-a"),
+			"chat.user.*.request.orgs.*.site-a.members"},
 		{"MsgThreadPattern", subject.MsgThreadPattern("site-a"),
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.thread"},
 		{"MsgThreadParentPattern", subject.MsgThreadParentPattern("site-a"),
@@ -102,10 +102,34 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.edit"},
 		{"MsgDeletePattern", subject.MsgDeletePattern("site-a"),
 			"chat.user.{account}.request.room.{roomID}.site-a.msg.delete"},
+		{"MsgPinPattern", subject.MsgPinPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.pin"},
+		{"MsgUnpinPattern", subject.MsgUnpinPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.unpin"},
+		{"MsgPinnedListPattern", subject.MsgPinnedListPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.pinned.list"},
+		{"MsgCanonicalPinned", subject.MsgCanonicalPinned("site-a"),
+			"chat.msg.canonical.site-a.pinned"},
+		{"MsgCanonicalUnpinned", subject.MsgCanonicalUnpinned("site-a"),
+			"chat.msg.canonical.site-a.unpinned"},
 		{"MsgGet", subject.MsgGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
 		{"RoomKeyGet", subject.RoomKeyGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.key.get"},
+		{"RoomRename", subject.RoomRename("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.room.rename"},
+		{"RoomRenameWildcard", subject.RoomRenameWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.room.rename"},
+		{"RoomRestricted", subject.RoomRestricted("site-a"),
+			"chat.server.request.room.site-a.restricted"},
+		{"RoomAppTabs", subject.RoomAppTabs("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.app.tabs"},
+		{"RoomAppTabsWildcard", subject.RoomAppTabsWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.app.tabs"},
+		{"RoomAppCmdMenu", subject.RoomAppCmdMenu("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.app.cmd-menu"},
+		{"RoomAppCmdMenuWildcard", subject.RoomAppCmdMenuWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.app.cmd-menu"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,6 +153,12 @@ func TestSubjectBuilders(t *testing.T) {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
+	})
+
+	t.Run("PushNotificationFilter", func(t *testing.T) {
+		assert.Equal(t,
+			"chat.server.notification.push.site-a.>",
+			subject.PushNotificationFilter("site-a"))
 	})
 
 	t.Run("InboxMemberEventSubjects", func(t *testing.T) {
@@ -165,6 +195,10 @@ func TestParseUserRoomSubject(t *testing.T) {
 		{"too_short", "chat.user.alice", "", "", false},
 		{"no_room", "chat.user.alice.request.foo.bar", "", "", false},
 		{"bad_prefix", "foo.user.alice.room.r1", "", "", false},
+		{"wildcard_account", "chat.user.*.room.r1.site-a.msg.send", "", "", false},
+		{"wildcard_roomid", "chat.user.alice.room.*.site-a.msg.send", "", "", false},
+		{"gt_wildcard_account", "chat.user.>.room.r1.site-a.msg.send", "", "", false},
+		{"empty_account", "chat.user..room.r1.site-a.msg.send", "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,26 +279,35 @@ func TestWildcardPatterns(t *testing.T) {
 
 func TestParseOrgMembersSubject(t *testing.T) {
 	tests := []struct {
-		name    string
-		subj    string
-		wantOrg string
-		wantOK  bool
+		name     string
+		subj     string
+		wantOrg  string
+		wantSite string
+		wantOK   bool
 	}{
-		{"valid", "chat.user.alice.request.orgs.sect-eng.members", "sect-eng", true},
-		{"wrong prefix", "chat.user.alice.request.rooms.get.r1", "", false},
-		{"wrong suffix", "chat.user.alice.request.orgs.sect-eng.other", "", false},
-		{"too short", "chat.user.alice.request.orgs", "", false},
-		{"too long", "chat.user.alice.request.orgs.sect-eng.members.x", "", false},
-		{"empty", "", "", false},
+		{"valid", "chat.user.alice.request.orgs.sect-eng.site-a.members", "sect-eng", "site-a", true},
+		{"different site", "chat.user.bob.request.orgs.dept-hr.site-b.members", "dept-hr", "site-b", true},
+		{"wrong prefix", "chat.user.alice.request.rooms.get.r1", "", "", false},
+		{"wrong suffix", "chat.user.alice.request.orgs.sect-eng.site-a.other", "", "", false},
+		{"too short (7-token old form)", "chat.user.alice.request.orgs.sect-eng.members", "", "", false},
+		{"too long", "chat.user.alice.request.orgs.sect-eng.site-a.members.x", "", "", false},
+		{"empty", "", "", "", false},
+		{"wildcard account", "chat.user.*.request.orgs.sect-eng.site-a.members", "", "", false},
+		{"wildcard orgID", "chat.user.alice.request.orgs.*.site-a.members", "", "", false},
+		{"wildcard siteID", "chat.user.alice.request.orgs.sect-eng.*.members", "", "", false},
+		{"multi-token wildcard account", "chat.user.>.request.orgs.sect-eng.site-a.members", "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := subject.ParseOrgMembersSubject(tt.subj)
+			gotOrg, gotSite, ok := subject.ParseOrgMembersSubject(tt.subj)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
-			if got != tt.wantOrg {
-				t.Errorf("orgID = %q, want %q", got, tt.wantOrg)
+			if gotOrg != tt.wantOrg {
+				t.Errorf("orgID = %q, want %q", gotOrg, tt.wantOrg)
+			}
+			if gotSite != tt.wantSite {
+				t.Errorf("siteID = %q, want %q", gotSite, tt.wantSite)
 			}
 		})
 	}
@@ -361,6 +404,30 @@ func TestMuteToggleWildcard(t *testing.T) {
 
 func TestMuteToggle_ParseUserRoomSubject(t *testing.T) {
 	subj := subject.MuteToggle("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	if !ok || account != "alice" || roomID != "r1" {
+		t.Errorf("ParseUserRoomSubject(%q) = (%q,%q,%v), want (alice,r1,true)", subj, account, roomID, ok)
+	}
+}
+
+func TestFavoriteToggle(t *testing.T) {
+	got := subject.FavoriteToggle("alice", "r1", "site-a")
+	want := "chat.user.alice.request.room.r1.site-a.favorite.toggle"
+	if got != want {
+		t.Errorf("FavoriteToggle: got %q, want %q", got, want)
+	}
+}
+
+func TestFavoriteToggleWildcard(t *testing.T) {
+	got := subject.FavoriteToggleWildcard("site-a")
+	want := "chat.user.*.request.room.*.site-a.favorite.toggle"
+	if got != want {
+		t.Errorf("FavoriteToggleWildcard: got %q, want %q", got, want)
+	}
+}
+
+func TestFavoriteToggle_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.FavoriteToggle("alice", "r1", "site-a")
 	account, roomID, ok := subject.ParseUserRoomSubject(subj)
 	if !ok || account != "alice" || roomID != "r1" {
 		t.Errorf("ParseUserRoomSubject(%q) = (%q,%q,%v), want (alice,r1,true)", subj, account, roomID, ok)
@@ -608,6 +675,26 @@ func TestUserServiceBuildersRejectWildcardAccounts(t *testing.T) {
 	}
 }
 
+func TestRoomAppAndOrgMembersBuildersRejectWildcards(t *testing.T) {
+	builders := []struct {
+		name string
+		fn   func()
+	}{
+		{"RoomAppTabs star account", func() { subject.RoomAppTabs("*", "r1", "s1") }},
+		{"RoomAppTabs gt account", func() { subject.RoomAppTabs(">", "r1", "s1") }},
+		{"RoomAppCmdMenu star account", func() { subject.RoomAppCmdMenu("*", "r1", "s1") }},
+		{"RoomAppCmdMenu gt account", func() { subject.RoomAppCmdMenu(">", "r1", "s1") }},
+		{"OrgMembers star account", func() { subject.OrgMembers("*", "o1", "s1") }},
+		{"OrgMembers star orgID", func() { subject.OrgMembers("a1", "*", "s1") }},
+		{"OrgMembers gt siteID", func() { subject.OrgMembers("a1", "o1", ">") }},
+	}
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			assert.Panics(t, b.fn)
+		})
+	}
+}
+
 func TestParseUserSubject_RejectsWildcardAccount(t *testing.T) {
 	bad := []string{
 		"chat.user.*.request.user.s1.status.getByName",
@@ -630,6 +717,22 @@ func TestParseRoomSubject_RejectsWildcardAccount(t *testing.T) {
 		_, _, _, ok := subject.ParseRoomSubject(s)
 		assert.False(t, ok, "expected ok=false for %q", s)
 	}
+}
+
+func TestRoomAppTabs_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.RoomAppTabs("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	assert.True(t, ok)
+	assert.Equal(t, "alice", account)
+	assert.Equal(t, "r1", roomID)
+}
+
+func TestRoomAppCmdMenu_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	assert.True(t, ok)
+	assert.Equal(t, "alice", account)
+	assert.Equal(t, "r1", roomID)
 }
 
 func TestUserServicePatternBuilders(t *testing.T) {
@@ -657,4 +760,34 @@ func TestUserServicePatternBuilders(t *testing.T) {
 			assert.Equal(t, tt.want, tt.got)
 		})
 	}
+}
+
+func TestPushNotification(t *testing.T) {
+	assert.Equal(t,
+		"chat.server.notification.push.site-a.send",
+		subject.PushNotification("site-a"))
+}
+
+func TestPresenceSnapshot(t *testing.T) {
+	assert.Equal(t,
+		"chat.presence.site-a.request.snapshot",
+		subject.PresenceSnapshot("site-a"))
+}
+
+func TestSubscriptionUpdateWildcard(t *testing.T) {
+	assert.Equal(t,
+		"chat.user.*.event.subscription.update",
+		subject.SubscriptionUpdateWildcard())
+}
+
+func TestParseSubscriptionUpdateAccount(t *testing.T) {
+	acct, ok := subject.ParseSubscriptionUpdateAccount("chat.user.alice.event.subscription.update")
+	assert.True(t, ok)
+	assert.Equal(t, "alice", acct)
+
+	_, ok = subject.ParseSubscriptionUpdateAccount("chat.user.alice.event.room.update")
+	assert.False(t, ok)
+
+	_, ok = subject.ParseSubscriptionUpdateAccount("chat.user.*.event.subscription.update")
+	assert.False(t, ok) // wildcard token rejected
 }

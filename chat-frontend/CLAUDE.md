@@ -95,6 +95,39 @@ When the op accepts `opts`, **always pass it through** — even when undefined. 
 - `request<T>` is generic — every op passes its response type through. **Don't accept `Promise<any>`** at the call site.
 - Discriminated subscription kinds: `Subscription` is the base (channels / botDMs / discussions); `DMSubscription extends Subscription` adds `hrInfo?: SubscriptionHRInfo` for DM rooms. State maps that hold either use `Record<string, DMSubscription>` so consumers read `.hrInfo` without narrowing.
 
+### Error envelope (server contract)
+
+Every backend error — NATS sync replies, JetStream async results (`AsyncJobResult`), and HTTP — comes back in one shape, owned by the backend's `pkg/errcode` package:
+
+```ts
+type ErrorEnvelope = {
+  error: string                        // human-readable, user-safe message
+  code: ErrorCode                      // always present — drives UX category + HTTP status
+  reason?: string                      // optional domain code (when frontend must distinguish)
+  metadata?: Record<string, string>    // optional structured detail
+}
+type ErrorCode =
+  | 'bad_request' | 'unauthenticated' | 'forbidden' | 'not_found'
+  | 'conflict' | 'too_many_requests' | 'unavailable' | 'internal'
+```
+
+- **Branch on `reason ?? code`** — `reason` when present (e.g. `max_room_size_reached`, `not_subscribed`, `sso_token_expired`), `code` otherwise.
+- **Never branch on `error` text** — wording can change without notice; only display it.
+- `code: 'internal'` always carries the message `"internal error"`. The real cause is logged server-side and never reaches the client.
+- `formatAsyncJobError` and the shared transport throwers (`NatsContext.request`, `asyncJob.ts`) already throw an `AsyncJobError` with `.code` / `.reason` populated — consumers just read those fields. Don't re-parse the message.
+
+Reasons emitted today (full catalog in [`docs/client-api.md`](../docs/client-api.md) §6):
+- `max_room_size_reached`, `not_room_member`, `not_room_owner`, `last_owner_cannot_leave`, `bot_in_channel`, `bot_not_available`, `user_not_found`, `invalid_org`, `self_dm`, `last_member_cannot_remove`, `target_not_member`, `already_owner`, `cannot_demote_last_owner`, `promote_requires_individual` — room-service / room-worker
+- `large_room_post_restricted`, `not_subscribed`, `outside_access_window` — message-gatekeeper / history-service
+- `sso_token_expired`, `invalid_sso_token` — auth-service (drive a redirect-to-relogin)
+- `invalid_request`, `invalid_nkey`, `missing_fields` — auth-service (form-validation surface; rarely actionable by the UI today)
+
+When adding a new client-facing branch in the UI, prefer matching a reason over a message substring. If the case you need isn't in the catalog, ask backend to add a `Reason` constant in `pkg/errcode/codes_<service>.go` rather than substring-matching the english text.
+
+`formatAsyncJobError` is now reason-keyed: it looks up the thrown `AsyncJobError`'s `.reason` against an internal `REASON_COPY` map and returns the humanized english copy when present, falling back to `err.message` otherwise. Components calling `setError(formatAsyncJobError(err))` get the right UX automatically without their own per-call switch on reason. To add a new humanized line, edit `REASON_COPY` in `chat-frontend/src/api/_transport/asyncJob.ts` and add the reason to the catalog above.
+
+**DM-exists is a SUCCESS reply, not an error.** When a client requests a DM that already exists, the reply is `{ status: 'exists', roomId: <existing> }` — open that room. The legacy error-shaped reply (`{ error: 'dm already exists', roomId: … }`) is still accepted by `isDMExistsReply` during the backend rollout window, then removed in a follow-up release. The cutover (extending the sync error decoder + `AsyncJobResult` decoder + `isDMExistsReply` to handle both shapes, plus the typecheck/test/smoke gates) is plan Chapter 19 in `docs/superpowers/plans/2026-05-28-centralized-error-codes.md`; it ships in the same release as the backend.
+
 ### What components do
 
 ```jsx

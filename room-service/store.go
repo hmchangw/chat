@@ -10,8 +10,10 @@ import (
 )
 
 var (
-	ErrUserNotFound = errors.New("user not found") // GetUser: no matching account
-	ErrAppNotFound  = errors.New("app not found")  // GetApp: no matching bot account
+	ErrUserNotFound       = errors.New("user not found")                        // GetUser: no matching account
+	ErrAppNotFound        = errors.New("app not found")                         // GetApp: no matching bot account
+	ErrRoomNotFound       = errors.New("room not found")                        // UpdateRoomVisibility: no matching room
+	ErrOwnerNotSubscribed = errors.New("owner account is no longer subscribed") // ApplySubscriptionVisibility: owner left
 )
 
 //go:generate mockgen -source=store.go -destination=mock_store_test.go -package=main
@@ -40,6 +42,13 @@ type ReadReceiptRow struct {
 	EngName     string `bson:"engName"`
 }
 
+// RoomBotAppEntry pairs an assistant's bot account with its owning
+// app name — the joined output of ListRoomBotApps.
+type RoomBotAppEntry struct {
+	AssistantName string `bson:"assistantName"`
+	AppName       string `bson:"appName"`
+}
+
 type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
@@ -62,8 +71,9 @@ type RoomStore interface {
 	// display fields are left zero.
 	ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error)
 	// ListOrgMembers returns all users whose sectId OR deptId equals orgID,
-	// projected as OrgMember rows sorted by account ascending. Returns
-	// errInvalidOrg when no users match (treated as "orgId is not valid").
+	// projected as OrgMember rows sorted by account ascending. Returns a
+	// RoomInvalidOrg-reason errcode when no users match (treated as "orgId is
+	// not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 	// FindExistingOrgIDs returns the subset of orgIDs that match at least
 	// one user via sectId or deptId. Used by handleAddMembers and
@@ -86,6 +96,14 @@ type RoomStore interface {
 	// ToggleSubscriptionMute atomically flips muted via a single FindOneAndUpdate.
 	// Returns the post-flip subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
 	ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error)
+	// ToggleSubscriptionFavorite atomically flips favorite via a single FindOneAndUpdate.
+	// Returns the post-flip subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
+	ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error)
+	// SetOwnerRole atomically grants (makeOwner=true) or revokes (makeOwner=false)
+	// the owner role on the subscription keyed by (roomID, account) via a single
+	// FindOneAndUpdate. Other roles (e.g. member) are retained. Returns the
+	// updated subscription, or model.ErrSubscriptionNotFound (wrapped) when no match.
+	SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error)
 	// GetUserSiteID returns the home site of a user looked up by account.
 	// Returns ("", nil) when the user is not found locally; callers treat
 	// that as "skip cross-site outbox".
@@ -107,6 +125,20 @@ type RoomStore interface {
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.
 	GetApp(ctx context.Context, botAccount string) (*model.App, error)
+	// ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
+	// channelTab.default are both true, sorted by channelTab.name asc.
+	// Projection: _id, avatarUrl, assistant, channelTab. Empty result is
+	// ([], nil).
+	ListDefaultChannelTabApps(ctx context.Context) ([]model.App, error)
+	// ListRoomBotApps returns one entry per bot subscribed to roomID,
+	// joined with the owning app via assistant.name == u.account. Only
+	// apps with assistant.enabled=true are emitted. Empty result is
+	// ([], nil); result order is assistantName asc.
+	ListRoomBotApps(ctx context.Context, roomID string) ([]RoomBotAppEntry, error)
+	// ListActiveCmdMenus returns bot_cmd_menu documents where
+	// activeStatus is true AND name IN assistantNames, sorted by name asc.
+	// Returns ([], nil) when assistantNames is empty (skips the query).
+	ListActiveCmdMenus(ctx context.Context, assistantNames []string) ([]model.BotCmdMenu, error)
 	// FindDMSubscription returns the requester's existing dm/botDM sub with Name == targetName, filtered by RoomType.
 	FindDMSubscription(ctx context.Context, account, targetName string) (*model.Subscription, error)
 
@@ -118,6 +150,23 @@ type RoomStore interface {
 	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error
 
 	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
+
+	// UpdateRoomVisibility sets rooms.{restricted, externalAccess, updatedAt}.
+	// Returns ErrRoomNotFound when no room matches.
+	UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error
+	// ApplySubscriptionVisibility writes the {restricted, externalAccess} denorm
+	// flags to every subscription of the room. When restricted=true and
+	// ownerAccount is non-empty, an aggregation-pipeline $cond also rewrites
+	// roles so only ownerAccount holds RoleOwner. Returns ErrOwnerNotSubscribed
+	// when ownerAccount has no active subscription in the room (the rewrite
+	// would leave zero owners).
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
+	// ListSubscriptionsByRoom returns every subscription in the room. Used to
+	// drive cross-site outbox fan-out (one event per remote site).
+	ListSubscriptionsByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
+	// FindUsersByAccounts returns the User docs for the supplied accounts. Used
+	// to bucket subscriptions by home site for cross-site fan-out.
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 }
 
 // RoomKeyStore is the consumer-side interface for room encryption key lookups.
@@ -132,6 +181,12 @@ type RoomKeyStore interface {
 	GetByVersion(ctx context.Context, roomID string, version int) (*roomkeystore.RoomKeyPair, error)
 	// Set writes a fresh keypair as the room's current key (version 0).
 	Set(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair) (int, error)
+}
+
+// DEKProvisioner eagerly provisions a room's at-rest data encryption key at
+// room-creation time. Satisfied by *atrest.Cipher; nil when ATREST_ENABLED=false.
+type DEKProvisioner interface {
+	EnsureDEK(ctx context.Context, roomID string) error
 }
 
 // MessageReader looks up a message by ID. found=false with err=nil means no row matched.

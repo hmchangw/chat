@@ -11,7 +11,7 @@ import (
 
 func defaultSteps(workload string) string {
 	switch workload {
-	case "history", "read-receipt":
+	case "history", "read-receipt", "room-read":
 		return "200,500,1000,2000,5000"
 	default:
 		return "500,1000,2000,5000,10000"
@@ -26,7 +26,7 @@ func buildThresholds(p95, p99 time.Duration, errRate float64, pendingGrowth uint
 // the report. Returns the process exit code.
 func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("max-rps", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|history|read-receipt")
+	workload := fs.String("workload", "messages", "messages|history|read-receipt|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	stepsFlag := fs.String("steps", "", "ascending RPS list, e.g. 500,1k,2k,5k,10k (default depends on workload)")
@@ -45,7 +45,7 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	beforeModeFlag := fs.String("before-mode", "open:70,scrollback:30", "history only: before-cursor mix")
 	scrollbackPages := fs.Int("scrollback-pages", 5, "history only: pages per scrollback chain")
 	pageLimit := fs.Int("page-limit", 20, "history only: page limit")
-	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history/read-receipt: per-request timeout")
+	requestTimeout := fs.Duration("request-timeout", 5*time.Second, "history/read-receipt/room-read: per-request timeout")
 	csvPath := fs.String("csv", "", "optional CSV output path")
 	_ = fs.Parse(args)
 
@@ -140,6 +140,22 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			return 1
 		}
 		w, cleanup, presetID = rw, clean, p.Name
+	case "room-read":
+		p, ok := BuiltinPreset(*preset)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+			return 2
+		}
+		if *requestTimeout <= 0 {
+			fmt.Fprintln(os.Stderr, "--request-timeout must be > 0")
+			return 2
+		}
+		rw, clean, err := newRoomReadWorkload(ctx, cfg, &p, *seed, *requestTimeout)
+		if err != nil {
+			slog.Error("init room-read workload", "error", err)
+			return 1
+		}
+		w, cleanup, presetID = rw, clean, p.Name
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
@@ -151,7 +167,8 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 		Thresholds: thresholds, StopOnTrip: *stopOnTrip,
 	})
 
-	if err := renderRPSReport(os.Stdout, results, w.Label(), presetID); err != nil {
+	bn := diagnoseBottleneck(ctx, cfg, *workload, results, thresholds)
+	if err := renderRPSReportWithBottleneck(os.Stdout, results, w.Label(), presetID, bn); err != nil {
 		slog.Warn("render report", "error", err)
 	}
 	if *csvPath != "" {
@@ -159,11 +176,40 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 		if err != nil {
 			slog.Error("create csv", "error", err)
 		} else {
-			if err := writeRPSCSV(f, results); err != nil {
+			if err := writeRPSCSV(f, results, bn); err != nil {
 				slog.Error("write csv", "error", err)
 			}
 			_ = f.Close()
 		}
 	}
 	return maxRPSExitCode(results)
+}
+
+// diagnoseBottleneck runs the attribution engine for a messages ramp that
+// tripped. Returns nil when disabled, unconfigured, or no step tripped — the
+// report then prints normally with no BOTTLENECK line.
+func diagnoseBottleneck(ctx context.Context, cfg *config, workload string, results []rpsStepResult, th rpsThresholds) *bottleneckVerdict {
+	bc := cfg.Bottleneck
+	// Attribution is messages-only for v1; other workloads have no stage graph.
+	if workload != "messages" || !bc.Enabled || bc.PromURL == "" {
+		return nil
+	}
+	trip := firstTrip(results)
+	if trip == nil {
+		return nil
+	}
+	var pass *rpsStepResult
+	for i := range results {
+		if results[i].Kind == verdictPass {
+			pass = &results[i]
+		}
+	}
+	fallback, err := parseContainerMap(bc.ContainerMap)
+	if err != nil {
+		slog.Warn("bad BOTTLENECK_CONTAINER_MAP; ignoring", "value", bc.ContainerMap, "error", err)
+		fallback = map[string]string{}
+	}
+	eng := newBottleneckEngine(newPromClient(bc.PromURL), identityResolver{fallback: fallback}, bc.KneeTolerance, bc.QueryStep)
+	v := eng.Diagnose(ctx, trip, pass, messagesStageGraph(), th)
+	return &v
 }

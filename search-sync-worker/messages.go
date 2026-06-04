@@ -57,6 +57,12 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
+// StoredScripts returns nil — message indexing uses plain index/delete bulk
+// actions with no painless scripts.
+func (c *messageCollection) StoredScripts() map[string]json.RawMessage {
+	return nil
+}
+
 func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {

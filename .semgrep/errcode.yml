@@ -1,0 +1,61 @@
+rules:
+  - id: errcode-no-reason-literal-outside-catalog
+    languages: [go]
+    severity: ERROR
+    message: >
+      Declare Reason codes as typed constants in pkg/errcode/codes_<service>.go,
+      not inline. Use an existing errcode.Reason constant.
+    paths:
+      exclude:
+        - "**/pkg/errcode/codes_*.go"
+        - "**/*_test.go"
+    patterns:
+      - pattern: errcode.Reason("...")
+
+  - id: errcode-withcause-must-not-wrap-errcode
+    languages: [go]
+    severity: ERROR
+    message: >
+      WithCause must wrap a raw error, never another errcode error. Propagate a
+      typed error with `return err` or `fmt.Errorf("...: %w", err)`.
+    patterns:
+      - pattern: errcode.WithCause(errcode.$F(...))
+
+  - id: errcode-no-multi-wrap-errcode
+    languages: [go]
+    severity: ERROR
+    message: >
+      Multiple %w verbs can place two errcode errors in one chain, defeating
+      the "one *Error per chain" invariant (Classify picks the first). Use a
+      single %w only.
+    paths:
+      exclude:
+        # pkg/errcode/** is the implementation + docs of this very contract;
+        # doc.go intentionally includes a "forbidden" example in a comment that
+        # the regex-based pattern matches even though it's only documentation.
+        - "**/pkg/errcode/**"
+        # pkg/atrest/** does not import errcode; its sentinels (ErrAuthFailed,
+        # ErrPayloadMalformed) are plain errors.New strings. The multi-%w idiom
+        # there joins a sentinel with the underlying crypto/json error so
+        # errors.Is works for both — there is no errcode error in the chain.
+        - "**/pkg/atrest/**"
+        - "**/*_test.go"
+    patterns:
+      - pattern-regex: 'fmt\.Errorf\([^)]*%w[^)]*%w'
+
+  - id: errcode-prefer-named-constructor
+    languages: [go]
+    severity: WARNING
+    message: >
+      Prefer the named constructor (errcode.NotFound(msg)) over
+      errcode.New(errcode.CodeX, msg) for a literal category. Reserve New for
+      a category chosen at runtime.
+    paths:
+      exclude:
+        - "**/pkg/errcode/**"
+        - "**/*_test.go"
+    patterns:
+      - pattern: errcode.New(errcode.$CODE, ...)
+      - metavariable-regex:
+          metavariable: $CODE
+          regex: '^Code[A-Z].*'

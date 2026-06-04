@@ -30,6 +30,17 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// bottleneckConfig tunes the max-rps(messages) bottleneck attribution. It is
+// additive: when Enabled is false (or PromURL is empty) the run behaves exactly
+// as before.
+type bottleneckConfig struct {
+	Enabled       bool          `env:"ENABLED"        envDefault:"true"`
+	PromURL       string        `env:"PROM_URL"       envDefault:""`
+	KneeTolerance float64       `env:"KNEE_TOLERANCE" envDefault:"0.10"`
+	QueryStep     time.Duration `env:"QUERY_STEP"     envDefault:"5s"`
+	ContainerMap  string        `env:"CONTAINER_MAP"  envDefault:""`
+}
+
 type config struct {
 	NatsURL        string   `env:"NATS_URL,required"`
 	NatsCredsFile  string   `env:"NATS_CREDS_FILE" envDefault:""`
@@ -51,12 +62,19 @@ type config struct {
 	CassandraUsername  string `env:"CASSANDRA_USERNAME"     envDefault:""`
 	CassandraPassword  string `env:"CASSANDRA_PASSWORD"     envDefault:""`
 	MessageBucketHours int    `env:"MESSAGE_BUCKET_HOURS"   envDefault:"72"`
+
+	// NATS monitoring endpoint used by the `daily` subcommand to poll
+	// JetStream consumer pending counts. Defaults to the docker-compose
+	// service name. Override (e.g. `http://127.0.0.1:8222/jsz` on the host,
+	// or a custom monitoring port) when running against non-default infra.
+	NatsMonitoringURL string           `env:"NATS_MONITORING_URL"    envDefault:"http://nats:8222/jsz"`
+	Bottleneck        bottleneckConfig `envPrefix:"BOTTLENECK_"`
 }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|members-sustained|members-capacity|history-sustained|max-rps> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|members-sustained|members-capacity|history-sustained|max-rps|daily> [flags]")
 		os.Exit(2)
 	}
 	cfg, err := env.ParseAs[config]()
@@ -95,6 +113,8 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runHistorySustained(ctx, cfg, os.Args[2:])
 	case "max-rps":
 		return runMaxRPS(ctx, cfg, os.Args[2:])
+	case "daily":
+		return runDaily(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
@@ -103,10 +123,16 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history|read-receipt")
+	workload := fs.String("workload", "messages", "messages|members|history|read-receipt|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	readRatio := fs.Float64("read-ratio", 0.7, "read-receipt only: fraction of each room's subscribers to mark as readers")
+	// --users overrides preset.Users for the messages workload (daily presets
+	// hard-code 10000; pass --users=50000 to seed and run at a larger scale).
+	// Must match between `loadgen seed` and `loadgen daily` invocations, or
+	// the generated room/subscription IDs differ and the gatekeeper rejects
+	// every send. Zero (default) means use the preset's built-in count.
+	users := fs.Int("users", 0, "override preset.Users for the messages workload (0 = use preset default; must match `loadgen daily --users` if you use both)")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -114,24 +140,29 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	}
 	switch *workload {
 	case "messages":
-		return runSeedMessages(ctx, cfg, *preset, *seed)
+		return runSeedMessages(ctx, cfg, *preset, *seed, *users)
 	case "members":
 		return runSeedMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runSeedHistory(ctx, cfg, *preset, *seed)
 	case "read-receipt":
 		return runSeedReadReceipt(ctx, cfg, *preset, *seed, *readRatio)
+	case "room-read":
+		return runSeedRoomRead(ctx, cfg, *preset, *seed)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
 	}
 }
 
-func runSeedMessages(ctx context.Context, cfg *config, preset string, seed int64) int {
+func runSeedMessages(ctx context.Context, cfg *config, preset string, seed int64, usersOverride int) int {
 	p, ok := BuiltinPreset(preset)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
 		return 2
+	}
+	if usersOverride > 0 {
+		p.Users = usersOverride
 	}
 	db, keyStore, cleanup, err := connectStores(ctx, cfg)
 	if err != nil {
@@ -192,7 +223,7 @@ func runSeedMembers(ctx context.Context, cfg *config, preset string, seed int64)
 
 func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history")
+	workload := fs.String("workload", "messages", "messages|members|history|room-read")
 	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
 	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
 	_ = fs.Parse(args)
@@ -207,6 +238,8 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 		return runTeardownMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runTeardownHistory(ctx, cfg, *preset, *seed)
+	case "room-read":
+		return runTeardownRoomRead(ctx, cfg, *preset, *seed)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown workload: %s\n", *workload)
 		return 2
@@ -235,6 +268,50 @@ func runTeardownMessages(ctx context.Context, cfg *config, preset string, seed i
 		return 1
 	}
 	slog.Info("teardown complete (messages)")
+	return 0
+}
+
+func runSeedRoomRead(ctx context.Context, cfg *config, preset string, seed int64) int {
+	p, ok := BuiltinPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
+		return 2
+	}
+	db, _, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	fixtures := BuildRoomReadFixtures(&p, seed, cfg.SiteID, time.Now().UTC())
+	// No SeedRoomKeys: the read path never decrypts, so no room keys are written.
+	if err := Seed(ctx, db, &fixtures); err != nil {
+		slog.Error("seed", "error", err)
+		return 1
+	}
+	slog.Info("seed complete (room-read)",
+		"preset", p.Name,
+		"users", len(fixtures.Users),
+		"rooms", len(fixtures.Rooms),
+		"subs", len(fixtures.Subscriptions))
+	return 0
+}
+
+func runTeardownRoomRead(ctx context.Context, cfg *config, preset string, seed int64) int {
+	if _, ok := BuiltinPreset(preset); !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset: %s\n", preset)
+		return 2
+	}
+	db, _, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+	// No TeardownRoomKeys: runSeedRoomRead writes no room keys, so there are none to remove.
+	if err := Teardown(ctx, db); err != nil {
+		slog.Error("teardown", "error", err)
+		return 1
+	}
+	slog.Info("teardown complete (room-read)", "preset", preset)
 	return 0
 }
 
@@ -304,6 +381,16 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 
+	// Preflight: a candidate is single-use, so rate*duration cannot exceed
+	// the preset's pool budget. Build the deterministic fixtures up front and
+	// fail fast with an actionable message before any NATS/store work rather
+	// than aborting mid-run on exhaustion.
+	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
+	if err := ValidateSustainedCapacity(p.Name, pools, *rate, *duration, *usersPerAdd); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect", "error", err)
@@ -327,7 +414,6 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		}
 	}()
 
-	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
@@ -507,6 +593,15 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 
+	// Preflight: capacity mode grows each room to target-size from its single-use
+	// pool. Build the deterministic fixtures up front and reject an unreachable
+	// target before any NATS/store work instead of silently under-filling rooms.
+	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
+	if err := ValidateCapacityTarget(p.Name, pools, p.BaselineSize, *targetSize, *usersPerAdd); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect", "error", err)
@@ -530,7 +625,6 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		}
 	}()
 
-	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/hmchangw/chat/pkg/atrest"
 )
 
 // CassandraConfig holds Cassandra connection settings (env prefix: CASSANDRA_).
@@ -40,6 +42,9 @@ type Config struct {
 	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
 	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
 	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
+	LargeRoomThreshold      int             `env:"LARGE_ROOM_THRESHOLD"        envDefault:"500"`
+	MaxPinnedPerRoom        int             `env:"MAX_PINNED_PER_ROOM"         envDefault:"10"`
+	PinEnabled              bool            `env:"PIN_ENABLED"                 envDefault:"true"`
 
 	// Subscription access-check cache. Only positive subscriptions are cached,
 	// so the TTL bounds how long revoked access can stay readable. Set size or
@@ -52,6 +57,9 @@ type Config struct {
 	// the freshness-sensitive path. Set size or ttl to 0 to disable.
 	RoomCacheSize int           `env:"HISTORY_ROOM_CACHE_SIZE" envDefault:"50000"`
 	RoomCacheTTL  time.Duration `env:"HISTORY_ROOM_CACHE_TTL"  envDefault:"10s"`
+
+	Atrest atrest.Config      // env vars are already prefixed ATREST_*
+	Vault  atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 // Load parses environment variables into Config; returns an error when required vars are absent.

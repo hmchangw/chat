@@ -31,12 +31,13 @@ func TestReadReceiptWorkload_EndToEnd(t *testing.T) {
 	const readRatio = 0.7
 
 	res := BuildHistoryFixtures(&preset, seed, siteID, time.Now().UTC())
+	plan := res.FullPlan()
 	require.NoError(t, Seed(ctx, db, &res.Fixtures))
-	require.NoError(t, SeedReadReceiptState(ctx, db, res.Fixtures.Subscriptions, &res.Plan, readRatio, seed))
+	require.NoError(t, SeedReadReceiptState(ctx, db, res.Fixtures.Subscriptions, &plan, readRatio, seed))
 
 	// Expected stamped count: ceil(readRatio*roomSize) per room that has a
 	// top-level message.
-	latest := latestTopLevelByRoom(&res.Plan)
+	latest := latestTopLevelByRoom(&plan)
 	subsByRoom := map[string]int{}
 	for i := range res.Fixtures.Subscriptions {
 		subsByRoom[res.Fixtures.Subscriptions[i].RoomID]++
@@ -66,7 +67,7 @@ func TestReadReceiptWorkload_EndToEnd(t *testing.T) {
 	// Drive the generator briefly.
 	collector := NewReadReceiptCollector()
 	gen := NewReadReceiptGenerator(&ReadReceiptGeneratorConfig{
-		Targets:        deriveReadReceiptTargets(&res.Plan),
+		Targets:        deriveReadReceiptTargets(&plan),
 		SiteID:         siteID,
 		Rate:           50,
 		RequestTimeout: 2 * time.Second,

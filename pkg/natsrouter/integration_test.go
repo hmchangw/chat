@@ -16,6 +16,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
@@ -242,9 +243,9 @@ func TestIntegration_BusyReplyOnSaturation(t *testing.T) {
 	data, _ := json.Marshal(echoReq{Seq: 2})
 	resp, err := nc.Request(context.Background(), "busy.2", data, 2*time.Second)
 	require.NoError(t, err)
-	var re RouteError
-	require.NoError(t, json.Unmarshal(resp.Data, &re))
-	assert.Equal(t, CodeUnavailable, re.Code, "expected busy reply once slot is held")
+	ee, gotEnvelope := errcode.Parse(resp.Data)
+	require.True(t, gotEnvelope, "expected error envelope once slot is held")
+	assert.Equal(t, errcode.CodeUnavailable, ee.Code, "expected busy reply once slot is held")
 
 	// Release the gate; first request must complete normally.
 	close(gate)

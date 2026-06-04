@@ -1,5 +1,22 @@
 # Chat Backend — Client API Reference
 
+> **Changelog — centralized error codes (current release).** All client-facing
+> errors — over NATS sync replies, JetStream async results (`model.AsyncJobResult`),
+> and HTTP — now use the same envelope: `{ "error": <message>, "code": <category>,
+> "reason"?: <domain-code>, "metadata"?: {…} }`. `code` is **always present** and
+> drives HTTP status (see §6); `reason` is the optional domain code the client
+> branches on (`reason ?? code`). Three notable behavior changes:
+>
+> 1. **`POST /auth` 500** now returns `{ "code": "internal", "error": "internal error" }` —
+>    the real signing-failure cause is logged server-side and never sent to the client.
+> 2. **room-service DM-exists** flipped from the legacy error-shaped envelope
+>    `{ "error": "dm already exists", "roomId": … }` to a SUCCESS reply
+>    `{ "status": "exists", "roomId": … }`. Clients must route on `status === "exists"`.
+>    A frontend predicate `isDMExistsReply` accepts BOTH shapes during the rollout
+>    window; the legacy fallback is removed in a follow-up.
+> 3. **message-gatekeeper `not_subscribed`** now carries `code: forbidden` + `reason: not_subscribed`
+>    (and `large_room_post_restricted` is `forbidden` + that reason) instead of bare error strings.
+
 This document is the integrator-facing reference for the chat backend.
 It covers every API a client (web, mobile, third-party) can call:
 
@@ -160,13 +177,13 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 
 See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
-| Status | Meaning | Example body |
-|--------|---------|--------------|
-| 400    | Missing required fields. | `{ "error": "ssoToken and natsPublicKey are required" }` |
-| 400    | `natsPublicKey` is not a valid NATS user public NKey. | `{ "error": "invalid natsPublicKey format" }` |
-| 401    | SSO token expired. | `{ "error": "SSO token has expired, please re-login" }` |
-| 401    | SSO token invalid (bad signature, audience, etc.). | `{ "error": "invalid SSO token" }` |
-| 500    | Server-side JWT signing failure. | `{ "error": "failed to generate NATS token" }` |
+| Status | `code`            | `reason`            | Example body |
+|--------|-------------------|---------------------|--------------|
+| 400    | `bad_request`     | —                   | `{ "code": "bad_request", "error": "ssoToken and natsPublicKey are required" }` |
+| 400    | `bad_request`     | —                   | `{ "code": "bad_request", "error": "invalid natsPublicKey format" }` |
+| 401    | `unauthenticated` | `sso_token_expired` | `{ "code": "unauthenticated", "reason": "sso_token_expired", "error": "SSO token has expired, please re-login" }` |
+| 401    | `unauthenticated` | `invalid_sso_token` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid SSO token" }` |
+| 500    | `internal`        | —                   | `{ "code": "internal", "error": "internal error" }` — the real cause is logged server-side and never sent to the client. |
 
 The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /auth` to refresh before it expires.
 
@@ -232,11 +249,13 @@ The creator's account and the site come from the subject (`chat.user.{account}.r
 { "status": "accepted", "roomId": "01970a4f8c2d7c9aQ", "roomType": "channel" }
 ```
 
-**DM already exists.** When the client asks to create a DM/botDM that already exists, the reply is a non-standard envelope carrying the existing room ID (this is the open-or-create contract — the client should treat it as success and open the existing room):
+**DM already exists.** When the client asks to create a DM/botDM that already exists, the reply is a SUCCESS reply carrying the existing room ID (open-or-create contract — the client opens the existing room):
 
 ```json
-{ "error": "dm already exists", "roomId": "<existing room id>" }
+{ "status": "exists", "roomId": "<existing room id>" }
 ```
+
+> **Contract change (breaking):** prior to the centralized error-codes migration this case returned the *error*-shaped envelope `{ "error": "dm already exists", "roomId": "<existing room id>" }`. Clients on the new release must route on `status === "exists"`. During the rollout window, the frontend predicate `isDMExistsReply` accepts BOTH shapes; see the migration changelog at the top of this file.
 
 ##### Error response
 
@@ -252,7 +271,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously on val
 - `"exceeds maximum capacity (N): would create M members"`
 
 ```json
-{ "error": "channel name is required" }
+{ "code": "bad_request", "error": "channel name is required" }
 ```
 
 ##### Triggered events — success path
@@ -320,7 +339,7 @@ The fields `requesterId`, `requesterAccount`, and `timestamp` on the Go `AddMemb
 See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. requester not in room, room is full, room is restricted and requester is not owner, or a `users` entry is a bot — rejected with `"bots cannot be added to a channel"`). Any `orgs` entry that matches zero users (no user with `sectId == orgId` or `deptId == orgId`) is rejected with `org "<orgId>": invalid org`, and any `users` entry that has no matching user document is rejected with `user "<account>": user not found` (each wrapped with the offending account/org ID) — in both cases the request is not queued and no members are added.
 
 ```json
-{ "error": "room is at maximum capacity (200): cannot add 5 members to room with 198 existing" }
+{ "code": "conflict", "reason": "max_room_size_reached", "error": "room is at maximum capacity" }
 ```
 
 ##### Triggered events — success path
@@ -335,8 +354,12 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`. |
 | `status`    | string | `"ok"` or `"error"`. |
 | `roomId`    | string | Optional. The affected room. |
-| `error`     | string | Optional. Sanitized message; present only when `status="error"`. |
+| `error`     | string | Optional. User-safe message; present only when `status="error"`. |
+| `code`      | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
+| `reason`    | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
 | `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+
+Success example:
 
 ```json
 {
@@ -348,6 +371,20 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 }
 ```
 
+Error example (e.g. requester not in room):
+
+```json
+{
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+  "operation": "room.member.add",
+  "status": "error",
+  "error": "only room members can list members",
+  "code": "forbidden",
+  "reason": "not_room_member",
+  "timestamp": 1746518400456
+}
+```
+
 **2. `chat.user.{newMember}.event.subscription.update`** — one event per **newly subscribed** member (not the requester, not existing members, not org→individual upgrades).
 
 <a id="subscriptionupdate-event"></a>**`subscription.update` schema** (shared by Add Members, Remove Member, Update Member Role):
@@ -356,10 +393,10 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 |----------------|--------|-------|
 | `userId`       | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
 | `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
-| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, or `"mute_toggled"`. |
+| `action`       | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
 | `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
 
-On `added` / `role_updated` / `mute_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
+On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
@@ -430,7 +467,7 @@ Exactly one of `account` or `orgId` must be set. The fields `requester`, `roomTy
 See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails (e.g. neither or both of `account`/`orgId` set, requester is not an owner, target is the last member, or org member cannot leave individually).
 
 ```json
-{ "error": "exactly one of account or orgId must be set" }
+{ "code": "bad_request", "error": "exactly one of account or orgId must be set" }
 ```
 
 ##### Triggered events — success path
@@ -473,7 +510,7 @@ A `member_left` / `member_removed` system message also flows through the message
 
 - `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
 
-This is an **async-job RPC**. The synchronous reply confirms acceptance; the actual role change runs in `room-worker` and emits the event below. Unlike Add Members and Remove Member, `room-worker` does **not** publish an `AsyncJobResult` event for role updates — there is no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
+This is a **synchronous RPC**. `room-service` validates the request, applies the role change atomically, emits the event below, and only then returns the reply. There is no async job, no `AsyncJobResult`, and no `chat.user.{requesterAccount}.response.{requestID}` event for this RPC.
 
 ##### Request body
 
@@ -493,15 +530,15 @@ The `timestamp` field on the Go `UpdateRoleRequest` is server-set — the client
 
 | Field    | Type   | Notes |
 |----------|--------|-------|
-| `status` | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+| `status` | string | Always `"ok"`. Confirms the role change was applied. |
 
 ```json
-{ "status": "accepted" }
+{ "status": "ok" }
 ```
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors include:
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation, authorization, or the role mutation fails. Common errors include:
 
 - Requester is not an owner of the room.
 - Target account is not a member of the room.
@@ -512,7 +549,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - Promote attempt on an org-only member (individual subscription required).
 
 ```json
-{ "error": "only owners can update roles" }
+{ "code": "forbidden", "error": "only owners can update roles" }
 ```
 
 ##### Triggered events — success path
@@ -538,7 +575,123 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — error path
 
-When the synchronous reply is an error envelope, no events follow. The async job has no separate failure event for role updates — failures inside the worker are logged but no client-visible signal is emitted.
+When the reply is an error envelope, no events follow. All validation and the role mutation happen synchronously in `room-service`, so any failure is surfaced directly in the error reply — there is no deferred worker step and no separate failure event.
+
+---
+
+#### Rename Room
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.room.rename`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+This is an **async-job RPC**: the synchronous reply only confirms acceptance. The actual rename runs asynchronously in `room-worker`, which publishes an `AsyncJobResult` on `chat.user.{requesterAccount}.response.{requestID}` when the job finishes. To receive this event the client **must** set an `X-Request-ID` NATS header on the original request (see [Request-ID propagation](#request-id-propagation)).
+
+Only channel rooms may be renamed. This RPC may be called by a **platform admin** (`model.UserRoleAdmin`) or by a room member who holds the **room owner** (`model.RoleOwner`) role. Platform admins bypass the room-membership check entirely.
+
+##### Request body
+
+| Field     | Type   | Required | Notes |
+|-----------|--------|----------|-------|
+| `newName` | string | yes      | New room name. 1–100 characters after trimming whitespace. |
+
+The room ID and requesting account are taken from the subject — clients do not include them in the body.
+
+```json
+{ "newName": "engineering-general" }
+```
+
+##### Success response
+
+| Field      | Type   | Notes |
+|------------|--------|-------|
+| `status`   | string | Always `"accepted"`. Confirms the request passed authorization and was queued for processing. |
+| `requestId`| string | The 36-char hyphenated UUID from the required `X-Request-ID` header. Clients MUST supply a valid hyphenated UUID; missing or invalid header is rejected with the listed validation error. |
+
+```json
+{ "status": "accepted", "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f" }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Returned synchronously when validation or authorization fails. Common errors:
+
+- `"invalid name"` — `newName` is empty after trimming, or exceeds 100 characters.
+- `"room not found"` — no room matches the subject `{roomID}`.
+- `"rename is only allowed in channel rooms"` — the room is a DM, botDM, or discussion.
+- `"only owners or platform admins can rename a channel"` — the requester is not a platform admin and does not hold the `owner` role in the room.
+- `"invalid request"` — body is malformed.
+- `"missing X-Request-ID header"` — the NATS header is absent.
+- `"invalid X-Request-ID format"` — the header value is not a valid hyphenated UUID.
+
+```json
+{ "error": "rename is only allowed in channel rooms" }
+```
+
+##### Triggered events — success path
+
+**1. `chat.room.{roomID}.event`** — a `RoomRenamedRoomEvent` fanned out by `broadcast-worker` to every client subscribed to the room.
+
+Recipients: all room members on all sites.
+
+The event uses a **dedicated flat struct** (`type: "room_renamed"`) — mirroring the convention of `EditRoomEvent` / `DeleteRoomEvent` — so the wire payload carries no zero-valued `RoomEvent` base fields (no `userCount`, `lastMsgAt`, `message`, `mentions`, etc. on a rename).
+
+| Field        | Type   | Notes |
+|--------------|--------|-------|
+| `type`       | string | Always `"room_renamed"`. |
+| `roomId`     | string | The renamed room. |
+| `siteId`     | string | Home site of the room. |
+| `timestamp`  | number | Publish time, milliseconds since Unix epoch (UTC). |
+| `newName`    | string | The new room name. |
+| `byAccount`  | string | The account that performed the rename (room owner or platform admin). |
+| `renamedAt`  | string | ISO-8601 timestamp of when the rename was applied (the source sys message's `createdAt`). |
+
+```json
+{
+  "type": "room_renamed",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "timestamp": 1746518483000,
+  "newName": "engineering-general",
+  "byAccount": "alice",
+  "renamedAt": "2026-05-06T08:01:23Z"
+}
+```
+
+> **No per-subscription `subscription.update` event is published for the rename.** Clients drive their local subscription `name` update off this single room-scoped event.
+
+**2. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
+
+**3. Outbox events** — one event per remote site that has federated members. Delivered via the `OUTBOX_{siteID}` → `INBOX_{remoteSiteID}` pipeline; remote `inbox-worker` mirrors the rename.
+
+##### Triggered events — error path
+
+When the synchronous reply is an error envelope, the request was rejected before publishing to the worker — no events follow.
+
+---
+
+> **Note (server-internal — not a client RPC):** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying:
+>
+> - `roomId` — channel room to mutate
+> - `account` — the admin caller (used for the sys-message authorship + audit log)
+> - `restricted` — whether the room is members-only; on the `false → true` transition `ownerAccount` is required and that account is promoted to sole owner
+> - `externalAccess` — whether the room is reachable from outside the company network (e.g. internet-side / off-VPN clients). This is a network-access gate, NOT a cross-site federation flag
+> - `ownerAccount` — required on the unrestricted-to-restricted transition
+>
+> room-service does the Mongo writes, fans out an `OutboxRoomRestricted` event per remote federated site, and replies `{"status":"ok","requestId":"…"}` once the work is committed. No `AsyncJobResult` is emitted — the reply *is* the result.
+>
+> Clients learn about the change via a **`RoomRestrictedRoomEvent`** (`type: "room_restricted"`) on the same `chat.room.{roomID}.event` stream they already subscribe to for chat messages. Like `RoomRenamedRoomEvent`, it's a flat struct with no zero-valued envelope fields:
+>
+> | Field            | Type   | Notes |
+> |------------------|--------|-------|
+> | `type`           | string | Always `"room_restricted"`. |
+> | `roomId`         | string | The room whose flags changed. |
+> | `siteId`         | string | Home site of the room. |
+> | `timestamp`      | number | Publish time (UTC ms). |
+> | `restricted`     | bool   | The new restricted state. |
+> | `externalAccess` | bool   | The new external-access state. |
+> | `ownerAccount`   | string | Omitted unless this was an unrestricted→restricted transition with a designated owner. |
+> | `byAccount`      | string | The admin who made the change. |
+> | `changedAt`      | string | ISO-8601 timestamp of when the change was applied. |
 
 ---
 
@@ -555,7 +708,7 @@ When the synchronous reply is an error envelope, no events follow. The async job
 |----------|---------|----------|-------|
 | `limit`  | number  | no       | If set, must be `> 0`. Caps the number of members returned. |
 | `offset` | number  | no       | If set, must be `>= 0`. For pagination. |
-| `enrich` | boolean | no       | When `true`, populates the display fields (`engName`, `chineseName`, `isOwner`, `sectName`, `memberCount`) on each entry. Omitted-or-`false` returns the lean record only. |
+| `enrich` | boolean | no       | When `true`, populates the display fields (`engName`, `chineseName`, `name`, `isOwner`, `orgName`, `memberCount`) on each entry. Omitted-or-`false` returns the lean record only. |
 
 ```json
 { "limit": 50, "enrich": true }
@@ -585,8 +738,9 @@ When the synchronous reply is an error envelope, no events follow. The async job
 | `account`     | string  | Optional. Account name (set for individuals). |
 | `engName`     | string  | Optional. Populated only when request had `enrich: true`. |
 | `chineseName` | string  | Optional. Populated only when `enrich: true`. |
+| `name`        | string  | Optional. Bot/app display name from `apps.name` when the member's account ends with `.bot`. Mutually exclusive with `engName`/`chineseName`. |
 | `isOwner`     | boolean | Optional. Populated only when `enrich: true`. |
-| `sectName`    | string  | Optional. Populated only when `enrich: true` and entry is an org. |
+| `orgName`     | string  | Optional. Org's display name (dept name preferred, sect name fallback). Populated only when `enrich: true` and entry is an org. |
 | `memberCount` | number  | Optional. Populated only when `enrich: true` and entry is an org. |
 
 ```json
@@ -654,7 +808,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 
 ```json
-{ "error": "only room members can list members" }
+{ "code": "forbidden", "reason": "not_room_member", "error": "only room members can list members" }
 ```
 
 ##### Behaviour notes
@@ -775,7 +929,57 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Behaviour notes
 
-- **Notification delivery:** `notification-worker` does **not** yet consult `muted` before sending. End-to-end mute behaviour is wired only as far as the persisted flag; honouring it in fan-out is a follow-up.
+- **Notification delivery:** `notification-worker` respects `muted` flags when deciding whether to send mobile push notifications (see [Notification fan-out](#notification-fan-out-mobile-push-only) below).
+
+---
+
+#### Toggle Favorite
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.favorite.toggle`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+Synchronous RPC. `room-service` flips `Subscription.favorite` for the requester in a single atomic Mongo `FindOneAndUpdate`, replies with the resulting value, and fans out a `subscription.update` event to the user's other client sessions. Used by the client to render the per-user "favorited" sidebar section; backend treats the flag as a render hint only — no downstream behaviour (notifications, routing, retention) is gated on it.
+
+Idempotency: this is a toggle, not a set — every successful call flips the bit. Clients must debounce the user-visible action; redelivery of the same RPC will flip back.
+
+##### Request body
+
+The subject already carries `account` and `roomID`, so no body fields are required. Clients may send `{}` or omit the body entirely; any body content is ignored.
+
+##### Success response
+
+| Field      | Type    | Notes |
+|------------|---------|-------|
+| `status`   | string  | Always `"ok"`. |
+| `favorite` | boolean | The resulting value of `Subscription.favorite` after the flip. |
+
+```json
+{ "status": "ok", "favorite": true }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+- `"only room members can list members"` — the user has no subscription in the room (sentinel reused across membership-gated RPCs).
+- `"invalid favorite-toggle subject: …"` — the subject is malformed.
+
+##### Triggered events — success path
+
+**`chat.user.{account}.event.subscription.update`** — emitted once for the requester so other client sessions reconcile.
+
+| Field          | Type   | Notes |
+|----------------|--------|-------|
+| `userId`       | string | The requester's internal user ID. |
+| `subscription` | object | The `Subscription` record with the updated `favorite`. |
+| `action`       | string | `"favorite_toggled"`. |
+| `timestamp`    | number | Milliseconds since Unix epoch (UTC). |
+
+##### Cross-site behaviour
+
+When the requester's home site differs from the room's site, `room-service` additionally publishes a `subscription_favorite_toggled` OutboxEvent to `outbox.{roomSite}.to.{userSite}.subscription_favorite_toggled`. `inbox-worker` on the user's home site mirrors the flip onto the local `Subscription` document. Missing-subscription on the home site (e.g., a federation race) is a silent no-op — no NACK, no redelivery loop.
 
 ---
 
@@ -838,7 +1042,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - `"invalid request: messageId is required"` — empty `messageId`.
 
 ```json
-{ "error": "only the message sender can view read receipts" }
+{ "code": "forbidden", "error": "only the message sender can view read receipts" }
 ```
 
 ##### Behaviour notes
@@ -860,10 +1064,12 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 #### List Org Members
 
-**Subject:** `chat.user.{account}.request.orgs.{orgID}.members`
+**Subject:** `chat.user.{account}.request.orgs.{orgID}.{siteID}.members`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-The org ID is the second-to-last subject segment — there is no request body. `orgID` matches a user's `sectId` OR `deptId`; the response includes every user whose either field equals `orgID`. This mirrors the dept-aware org membership pipelines on the server side (a room may be added by sect-level or dept-level org and either form resolves through this endpoint).
+- `{siteID}` selects which site's user directory to query for org membership. Each site has its own `users` collection, so the returned membership set is per-site. (When the caller is composing for a specific room, this is typically the room's origin `siteID` — the same value used for `member.list` — but the endpoint itself is org-scoped, not room-scoped.)
+
+The org ID is the third-from-last subject segment — there is no request body. `orgID` matches a user's `sectId` OR `deptId`; the response includes every user whose either field equals `orgID`. This mirrors the dept-aware org membership pipelines on the server side (a room may be added by sect-level or dept-level org and either form resolves through this endpoint).
 
 ##### Request body
 
@@ -908,8 +1114,88 @@ Empty. Send `{}` or no payload.
 See [Error envelope](#6-error-envelope-reference).
 
 ```json
-{ "error": "invalid org" }
+{ "code": "bad_request", "error": "invalid org" }
 ```
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Get Room App Tabs
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.app.tabs`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+
+##### Request body
+
+Empty body (`{}` is tolerated). All inputs come from the subject.
+
+##### Success response
+
+| Field    | Type           | Notes |
+|----------|----------------|-------|
+| `apps`   | array<RoomApp> | Apps whose `channelTab.enabled` AND `channelTab.default` are both true, sorted by `channelTab.name asc`. Empty by default in DM/botDM rooms. |
+
+`RoomApp` fields:
+
+| Field       | Type                | Notes |
+|-------------|---------------------|-------|
+| `id`        | string              | `apps._id`. |
+| `name`      | string              | `apps.channelTab.name`. |
+| `tabUrl`    | string              | Computed: `SITE_URL`'s scheme/host/path-prefix + `apps.channelTab.url.default`'s path; `${roomId}` and `${siteId}` are substituted. Apps whose template URL is empty or unparseable are silently skipped. |
+| `assistant` | object (optional)   | `apps.assistant` subdocument if set. |
+| `avatarUrl` | string (optional)   | `apps.avatarUrl` if set. |
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors: `"not authorized to access this room's apps"` (caller is neither a room member nor a platform admin on the room's site), `"response payload exceeds maximum size"` (rare: response would exceed the NATS server's `max_payload`).
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Get Room App Command Menu
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.app.cmd-menu`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's origin `siteID`.
+
+##### Request body
+
+Empty body (`{}` is tolerated).
+
+##### Success response
+
+| Field           | Type                    | Notes |
+|-----------------|-------------------------|-------|
+| `appAssistants` | array<RoomAppAssistant> | One entry per bot currently subscribed in the room whose owning app has `assistant.enabled=true`. Sorted by `name asc`. |
+
+`RoomAppAssistant` fields:
+
+| Field       | Type             | Notes |
+|-------------|------------------|-------|
+| `appName`   | string           | `apps.name`. |
+| `name`      | string           | `apps.assistant.name` (the bot account). |
+| `cmdBlocks` | array<CmdBlock> (optional) | Active command-menu blocks from `bot_cmd_menu` joined by name. Omitted/nil if no active menu exists for the bot. `CmdBlock` is recursive (`blocks` may contain further `CmdBlock`s) and may carry a `modal` object with `command` and `param`. |
+
+##### Error response
+
+Same envelope and sentinels as Get Room App Tabs.
 
 ##### Triggered events — success path
 
@@ -939,7 +1225,16 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 
 Both are **hints, not authority**: the server sanitizes them (ignores values that are negative, in the future, or mutually inconsistent) and falls back to a MongoDB fetch when a value is missing or fails sanitization. A client that does not have these values should omit `meta` entirely — correctness is unaffected, only an extra lookup is incurred.
 
-Common error strings across these RPCs: `"not subscribed to room"`, `"unable to verify room access"`, `"room not found"`, `"invalid pagination cursor"`, `"message not found"`, and (for access-restricted readers) `"message is outside access window"` / `"thread is outside access window"`.
+Common error envelopes across these RPCs (see §6 for the full shape):
+
+| `code`        | When |
+|---------------|------|
+| `forbidden`   | `"not subscribed to room"`, or (for access-restricted readers) `"message is outside access window"` / `"thread is outside access window"`. |
+| `not_found`   | `"room not found"`, `"message not found"`. |
+| `bad_request` | `"invalid pagination cursor"` (malformed `cursor` value), other request-validation failures. |
+| `internal`    | `"internal error"` — bubbled from store/publisher failures; real cause logged server-side, not sent. |
+
+history-service does not currently emit a domain `reason` — clients branch on `code` (and the human-readable `error` only for display, never logic).
 
 #### Message schema
 
@@ -965,7 +1260,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `visibleTo` | string | Optional. Visibility scope. |
 | `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
-| `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`. For all four, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other and room-creates, the leaving user for self-leave). |
+| `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`, `"room_renamed"`, `"room_restricted"`. For all six, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other / room-creates / renames / restricted changes, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
 | `siteId` | string | Optional. The site that owns the message. |
 | `editedAt` | string | Optional. RFC 3339. Set after an edit. |
@@ -1075,7 +1370,7 @@ Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{sho
 See [Error envelope](#6-error-envelope-reference).
 
 ```json
-{ "error": "not subscribed to room" }
+{ "code": "forbidden", "error": "not subscribed to room" }
 ```
 
 ##### Triggered events — success path
@@ -1248,7 +1543,7 @@ A single `Message` object. See [Message schema](#message-schema).
 See [Error envelope](#6-error-envelope-reference).
 
 ```json
-{ "error": "message not found" }
+{ "code": "not_found", "error": "message not found" }
 ```
 
 ##### Triggered events — success path
@@ -1300,7 +1595,15 @@ Only the original sender may edit a message.
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sender can edit"`, `"message not found"`, `"newMsg must not be empty"`, `"newMsg exceeds maximum size"`, `"failed to edit message"`.
+See [Error envelope](#6-error-envelope-reference). Errors:
+
+| `code` | `error` | When |
+|--------|---------|------|
+| `forbidden` | `only the sender can edit` | Caller is not the message author. |
+| `not_found` | `message not found` | `messageId` does not exist (or is outside the access window). |
+| `bad_request` | `newMsg must not be empty` | Empty `newMsg`. |
+| `bad_request` | `newMsg exceeds maximum size` | `newMsg` exceeds the configured cap. |
+| `internal` | `internal error` | Store/publish failure; real cause logged server-side. |
 
 ##### Triggered events — success path
 
@@ -1379,7 +1682,13 @@ Soft-deletes a message (sets `deleted=true` on the row; row is preserved for aud
 
 ##### Error response
 
-See [Error envelope](#6-error-envelope-reference). Common errors: `"only the sender can delete"`, `"message not found"`, `"failed to delete message"`.
+See [Error envelope](#6-error-envelope-reference). Errors:
+
+| `code` | `error` | When |
+|--------|---------|------|
+| `forbidden` | `only the sender can delete` | Caller is not the message author. |
+| `not_found` | `message not found` | `messageId` does not exist (or is outside the access window). |
+| `internal` | `internal error` | Store/publish failure; real cause logged server-side. |
 
 ##### Triggered events — success path
 
@@ -1413,6 +1722,293 @@ The payload is flat:
   "updatedAt": "2026-05-06T08:06:40Z"
 }
 ```
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Pin Message
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pin`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Pins a message in the room. Idempotent — pinning an already-pinned message succeeds and echoes the existing `pinnedAt` without re-publishing the canonical event.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The message to pin. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | Echoes the input. |
+| `pinnedAt`  | number | Milliseconds since Unix epoch (UTC). For an already-pinned message, this is the original pin time. |
+
+```json
+{
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "pinnedAt": 1746518900000
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `pin_disabled` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `forbidden` | `pin_room_too_large` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
+| `forbidden` | `pin_limit_reached` | `"room pin limit reached"` | Room already has `MAX_PINNED_PER_ROOM` pinned messages (default 10). Hard cap — no role-based bypass. Unpin an existing message to free a slot. |
+| `not_found` | — | `"message not found"` | Message does not exist, belongs to a different room, or has been deleted. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read or write failed (subscription lookup, room user count, pinned-messages count, message lookup, or pin write). Specific cause appears in the server log. |
+
+##### Triggered events — success path
+
+**Channel rooms:** `chat.room.{roomID}.event` — `MessagePinnedEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessagePinnedEvent`. Recipients: each non-bot DM participant.
+
+Not published when the request hits an already-pinned message (idempotent short-circuit).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"message_pinned"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomId` | string |       |
+| `siteId` | string | Originating site. |
+| `messagePinned.messageId` | string | The pinned message's ID. |
+| `messagePinned.pinnedBy` | object | `Participant` (`userId`, `account`) of the actor who pinned. |
+| `messagePinned.pinnedAt` | string | RFC 3339. Domain time of the pin. |
+
+```json
+{
+  "type": "message_pinned",
+  "timestamp": 1746518900123,
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "site1",
+  "messagePinned": {
+    "messageId": "01970a4f8c2d7c9aQRST",
+    "pinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "pinnedAt": "2026-05-06T08:01:40Z"
+  }
+}
+```
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+##### Backend side effects (internal — not client-subscribable)
+
+On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{siteID}.pinned`** (JetStream, `MESSAGES_CANONICAL_{siteID}` stream). This is an internal canonical subject consumed by backend workers (broadcast-worker, search-sync-worker, etc.) and is **not** part of any client subscription pattern. Documented here only so backend service authors know the payload shape. Not published when the request hits an already-pinned message (idempotent short-circuit) or a soft-deleted message (the handler returns `not_found` before publishing).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `event` | string | Always `"pinned"`. |
+| `siteId` | string | The originating site. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. See [Message schema](#message-schema). |
+
+```json
+{
+  "event": "pinned",
+  "siteId": "site1",
+  "timestamp": 1746518900123,
+  "message": {
+    "id": "01970a4f8c2d7c9aQRST",
+    "roomId": "01970a4f8c2d7c9aQ",
+    "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+    "userAccount": "alice",
+    "createdAt": "2026-05-01T10:00:00Z",
+    "pinnedAt": "2026-05-06T08:01:40Z",
+    "pinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" }
+  }
+}
+```
+
+---
+
+#### Unpin Message
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.unpin`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Unpins a message in the room. Idempotent — unpinning a message that is not pinned succeeds as a no-op without publishing the canonical event.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `messageId` | string | yes | The message to unpin. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messageId` | string | Echoes the input. |
+
+```json
+{ "messageId": "01970a4f8c2d7c9aQRST" }
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `pin_disabled` | `"pinning is disabled"` | Global kill-switch (`PIN_ENABLED=false`) is off. |
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `forbidden` | `pin_room_too_large` | `"room is too large to pin"` | Room member count exceeds the configured `LARGE_ROOM_THRESHOLD`. Owners, admins, and bot accounts are exempt. |
+| `not_found` | — | `"message not found"` | Message does not exist or belongs to a different room. Unlike pin, **soft-deleted messages are still unpinnable** — a pinned message that was later deleted retains its slot in `pinned_messages_by_room`, and unpin is the only way to free it. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read or write failed (subscription lookup, room user count, message lookup, or unpin write). Specific cause appears in the server log. |
+
+##### Triggered events — success path
+
+**Channel rooms:** `chat.room.{roomID}.event` — `MessageUnpinnedEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessageUnpinnedEvent`. Recipients: each non-bot DM participant.
+
+Not published when the request hits an already-unpinned message (idempotent short-circuit).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"message_unpinned"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `roomId` | string |       |
+| `siteId` | string | Originating site. |
+| `messageUnpinned.messageId` | string | The unpinned message's ID. |
+| `messageUnpinned.unpinnedBy` | object | `Participant` (`userId`, `account`) of the actor who unpinned. |
+| `messageUnpinned.unpinnedAt` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
+
+```json
+{
+  "type": "message_unpinned",
+  "timestamp": 1746518950123,
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "site1",
+  "messageUnpinned": {
+    "messageId": "01970a4f8c2d7c9aQRST",
+    "unpinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "unpinnedAt": "2026-05-06T08:02:30Z"
+  }
+}
+```
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+##### Backend side effects (internal — not client-subscribable)
+
+On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{siteID}.unpinned`** (JetStream, `MESSAGES_CANONICAL_{siteID}` stream). This is an internal canonical subject consumed by backend workers and is **not** part of any client subscription pattern. Documented here only so backend service authors know the payload shape. Not published when the request hits an already-unpinned message.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `event` | string | Always `"unpinned"`. |
+| `siteId` | string | The originating site. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). See [Message schema](#message-schema). |
+
+```json
+{
+  "event": "unpinned",
+  "siteId": "site1",
+  "timestamp": 1746518950123,
+  "message": {
+    "id": "01970a4f8c2d7c9aQRST",
+    "roomId": "01970a4f8c2d7c9aQ",
+    "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
+    "userAccount": "alice",
+    "createdAt": "2026-05-01T10:00:00Z",
+    "pinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" }
+  }
+}
+```
+
+---
+
+#### List Pinned Messages
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pinned.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns pinned messages in a room, ordered most-recently-pinned first. Only subscription access is required — the global pin kill-switch and the large-room override do **not** apply to listing (existing pins remain listable even when new pinning is disabled).
+
+The response is cursor-paginated (`cursor`/`limit` in the request, `nextCursor`/`hasNext` in the response). Because pins are capped at `MAX_PINNED_PER_ROOM` (default 10), most callers will see `hasNext=false` on the first page.
+
+**Access window — redacted stubs:** If the caller's subscription has a `historySharedSince` lower bound (partial history access), pins whose underlying message was created before that timestamp are returned as **redacted stubs**. The following fields are cleared: `msg` (replaced with `"This message is unavailable"`), `mentions`, `attachments`, `file`, `card`, `cardAction`, `quotedParentMessage`, `reactions`, `type`, `sysMsgData`. **All other Message fields remain populated** — identifiers, `sender`, `createdAt`, `pinnedAt`, `pinnedBy`, plus any thread/edit metadata — so the frontend can render a placeholder in place. **The row count is the same for every caller.** A quoted parent inside a still-visible pin is redacted by the same mechanism as elsewhere (see Load History).
+
+**Timestamps:** Each returned message carries both `createdAt` (the underlying message's true creation time) and `pinnedAt` (when it was pinned). No second round-trip is needed to obtain the original creation timestamp.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `cursor` | string | no | Pagination cursor returned by a previous response. Omit (or empty string) for the first page. |
+| `limit`  | number | yes | Maximum number of pinned messages to return in this page. Server clamps to a sane range. |
+
+##### Success response
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `messages` | array<Message> | Pinned messages in the page, most-recently-pinned first. See [Message schema](#message-schema). Pre-access pins appear as redacted stubs (see "Access window" above). |
+| `nextCursor` | string | Opaque token to fetch the next page. Empty when there are no more pages. |
+| `hasNext` | boolean | `true` while more pages exist; `false` on the final page. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "morning team",
+      "createdAt": "2026-05-06T07:55:12Z",
+      "pinnedAt": "2026-05-06T08:01:40Z",
+      "pinnedBy": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" }
+    },
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "messageId": "01970a4f8c2d7c9aQOLD",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+      "msg": "This message is unavailable",
+      "createdAt": "2025-12-01T10:00:00Z",
+      "pinnedAt": "2025-12-02T09:00:00Z",
+      "pinnedBy": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" }
+    }
+  ],
+  "nextCursor": "",
+  "hasNext": false
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). Common errors:
+
+| Code | Reason | Message | Cause |
+|------|--------|---------|-------|
+| `forbidden` | `not_subscribed` | `"not subscribed to room"` | Caller has no subscription to the room. |
+| `bad_request` | — | `"invalid pagination cursor"` | The `cursor` value is not a valid base64 page-state token. |
+| `internal` | — | `"internal error"` | Mongo/Cassandra read failed (subscription lookup or pinned-messages page). Specific cause appears in the server log. |
+
+##### Triggered events — success path
+
+`None — reply only.`
 
 ##### Triggered events — error path
 
@@ -1763,7 +2359,7 @@ See [Error envelope](#6-error-envelope-reference).
 | `bad_request` | Validation failures (`query` missing/blank, negative `size`/`offset`). |
 | `internal` | Backend failure (transient or permanent). The raw error is never leaked to the client. |
 
-These are documentation categories. The wire error envelope is `{ "error": "<human-readable reason>", "code": "<category>" }` per `pkg/model.ErrorResponse` (see §5).
+These are documentation categories. The wire error envelope shape — `{ "error": "<human-readable message>", "code": "<category>", "reason"?: "<domain code>", "metadata"?: {…} }` — is the same across every endpoint and is defined canonically in §6 (Error envelope reference).
 
 ---
 
@@ -1901,22 +2497,23 @@ The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`
 
 Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6-error-envelope-reference). Errors:
 
-| Wire `error` | `code` | Cause |
-|--------------|--------|-------|
-| `invalid requestId "…": must be a hyphenated UUID` | — | Empty/malformed `requestId`. (Reachable only when `requestId` is non-empty but malformed; an empty `requestId` leaves no reply subject, so the client just times out.) |
-| `invalid message ID "…": must be a 20-char base62 string` | — | `id` is not valid base62. |
-| `invalid thread parent message ID "…": …` | — | `threadParentMessageId` is not a valid message ID. |
-| `content must not be empty` | — | Empty `content`. |
-| `content exceeds maximum size of 20480 bytes` | — | `content` > 20 KiB. |
-| `validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set` | — | Missing thread-parent timestamp. |
-| `user {account} is not subscribed to room {roomID}` | — | Sender is not a member. |
-| `posting is restricted to owners and admins in this room` | `large_room_post_restricted` | Non-owner/admin/bot posting a top-level message in a room above the large-room threshold (thread replies are exempt). |
-| `quoted parent {id} thread context mismatch: …` | — | A quoted message must be in the same thread context (main-room or the same thread) as the new message. |
+| Wire `error` | `code` | `reason` | Cause |
+|--------------|--------|----------|-------|
+| `invalid requestId "…": must be a hyphenated UUID` | `bad_request` | — | Empty/malformed `requestId`. (Reachable only when `requestId` is non-empty but malformed; an empty `requestId` leaves no reply subject, so the client just times out.) |
+| `invalid message ID "…": must be a 20-char base62 string` | `bad_request` | — | `id` is not valid base62. |
+| `invalid thread parent message ID "…": …` | `bad_request` | — | `threadParentMessageId` is not a valid message ID. |
+| `content must not be empty` | `bad_request` | — | Empty `content`. |
+| `content exceeds maximum size of 20480 bytes` | `bad_request` | — | `content` > 20 KiB. |
+| `validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set` | `bad_request` | — | Missing thread-parent timestamp. |
+| `not subscribed` | `forbidden` | `not_subscribed` | Sender is not a member of the room. |
+| `posting is restricted to owners and admins in this room` | `forbidden` | `large_room_post_restricted` | Non-owner/admin/bot posting a top-level message in a room above the large-room threshold (thread replies are exempt). |
+| `quoted parent {id} not found` | `not_found` | — | The quoted message lookup failed (deleted, cross-room, …). |
+| `quoted parent {id} thread context mismatch: …` | `bad_request` | — | A quoted message must be in the same thread context (main-room or the same thread) as the new message. |
 
 **Delivery guarantee:** every validation/authorization failure — including a `siteID` mismatch and a malformed `msg.send` subject — is replied to the client on the response subject and the JetStream message is acked (not retried). The error reply requires a routable response subject, so it can only be sent when the `{account}` segment is recoverable from the subject and the payload carries a valid hyphenated-UUID `requestId`; if neither is recoverable (a truly malformed subject or missing/invalid `requestId`) no reply is possible and the client falls back to a request timeout. **Only infrastructure failures** (store/publish errors) are nak'd and **redelivered by JetStream** — these produce no immediate reply.
 
 ```json
-{ "error": "content must not be empty" }
+{ "code": "bad_request", "error": "content must not be empty" }
 ```
 
 #### Triggered events — success path
@@ -2001,8 +2598,30 @@ A `RoomEvent` (same struct as above) published once per DM participant. Recipien
 When validation fails, the gatekeeper publishes the error envelope to `chat.user.{account}.response.{requestId}` and **no downstream events are emitted**. The client should display the error and offer a retry.
 
 ```json
-{ "error": "content must not be empty" }
+{ "code": "bad_request", "error": "content must not be empty" }
 ```
+
+#### Notification fan-out (mobile push only)
+
+`notification-worker` no longer publishes `chat.user.{account}.notification`
+on core NATS. Mobile pushes are emitted on the server-only JetStream subject
+`chat.server.notification.push.{siteID}.send` and forwarded by the internal
+push-notification service. Desktop banners are computed client-side from the
+broadcast-worker room-event stream — no server-side desktop publish exists.
+
+The worker filters recipients per message:
+
+- Skips the sender.
+- Skips members with `muted: true` on their subscription.
+- Skips members whose `historySharedSince` postdates the message (for a
+  thread-only reply the parent's `createdAt` is used instead).
+- For a thread reply with `tshow: false`, skips non-followers who are not
+  mentioned.
+- In rooms with more than `LARGE_ROOM_THRESHOLD` members (default 500),
+  pushes only to mentioned recipients (`@user`, `@all`, `@here`).
+- Bots never receive a mobile push.
+- Presence-busy / in-call recipients are not pushed; everyone else
+  (online, offline, away, missing) receives one.
 
 ---
 
@@ -2117,19 +2736,73 @@ permanently gone.
 
 ## 6. Error envelope reference
 
-Every error response — over NATS reply subjects and HTTP — uses the same envelope:
+Every error response — NATS reply subjects, JetStream async results, and HTTP — uses the same envelope:
 
 ```json
-{ "error": "<human-readable reason>", "code": "<optional machine-readable code>" }
+{
+  "error": "<human-readable, user-safe message>",
+  "code": "<one of 8 generic categories>",
+  "reason": "<optional, domain-specific machine code>",
+  "metadata": { "<key>": "<value>" }
+}
 ```
 
-| Field   | Type   | Notes |
-|---------|--------|-------|
-| `error` | string | Human-readable, sanitized at the service boundary. Do not parse or pattern-match against the text. |
-| `code`  | string | Optional. Machine-readable category emitted by services using `natsrouter`'s typed `RouteError` (e.g. `bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, `unavailable`). The message-send flow also emits `large_room_post_restricted`. Absent for plain `natsutil.ReplyError` responses. |
+| Field      | Type                  | Notes |
+|------------|-----------------------|-------|
+| `error`    | string                | Human-readable, user-safe (never carries an internal cause). Do not parse or pattern-match against the text. |
+| `code`     | string                | **Always present.** One of the 7 categories below. Drives HTTP status. |
+| `reason`   | string (optional)     | Domain-specific machine code (e.g. `max_room_size_reached`, `not_subscribed`). When present, the client should branch on `reason ?? code`. |
+| `metadata` | object (optional)     | Free-form `string→string` map for structured detail (e.g. `{ "limit": "500" }`). |
 
-**NATS errors** are sent on the standard reply subject (`_INBOX.>` for §3 methods, `chat.user.{account}.response.{requestID}` for §4) via `natsutil.ReplyError` (no `code`) or `natsrouter`'s typed error replies (with `code`).
+### Generic `code` values (always present) → HTTP status
 
-**HTTP errors** (auth-service §2.2) use the same shape with an HTTP status code in the response line.
+| `code`               | HTTP | When |
+|----------------------|------|------|
+| `bad_request`        | 400  | Malformed/invalid input or unsupported parameters. |
+| `unauthenticated`    | 401  | Missing/expired/invalid credentials. |
+| `forbidden`          | 403  | Authenticated but not permitted. |
+| `not_found`          | 404  | Target resource does not exist. |
+| `conflict`           | 409  | State conflict (duplicate, capacity exceeded, last-owner removal, …). |
+| `too_many_requests`  | 429  | Per-caller rate limit / quota exceeded. |
+| `unavailable`        | 503  | Transient server saturation/timeout (admission, expand timeout). |
+| `internal`           | 500  | Unclassified server-side fault. The real cause is logged server-side only and never sent to the client. |
 
-Clients should rely on the presence/absence of the `error` field — and on context (HTTP status, or whether a reply parses as a success-shape) — rather than on the error text. When `code` is present, prefer matching against the documented constant rather than the human-readable message.
+### `reason` catalog (present today)
+
+| `reason`                       | Typical `code` | Emitted by |
+|--------------------------------|---------------|------------|
+| `max_room_size_reached`        | conflict      | room-service create/add (room capacity exceeded) |
+| `not_room_member`              | forbidden     | room-service / room-worker (actor not a member) |
+| `not_room_owner`               | forbidden     | room-service role/admin paths |
+| `last_owner_cannot_leave`      | conflict      | room-service leave |
+| `bot_in_channel`               | bad_request   | room-service member-add (bot in a channel room) |
+| `bot_not_available`            | not_found     | room-service member-add (unknown bot) |
+| `user_not_found`               | not_found     | room-service / room-worker (account does not resolve to a user) |
+| `invalid_org`                  | bad_request   | room-service create/add (orgId does not resolve to any users) |
+| `self_dm`                      | bad_request   | room-service create (DM to yourself) |
+| `last_member_cannot_remove`    | conflict      | room-service remove-member (would empty the room) |
+| `target_not_member`            | bad_request   | room-service role-update (target is not a room member) |
+| `already_owner`                | conflict      | room-service role-update (promote a current owner) |
+| `cannot_demote_last_owner`     | conflict      | room-service role-update (demote the last owner) |
+| `promote_requires_individual`  | bad_request   | room-service role-update (only individual members can be owners) |
+| `large_room_post_restricted`   | forbidden     | message-gatekeeper (non-owner/admin posting in a large room) |
+| `not_subscribed`               | forbidden     | message-gatekeeper / history-service (caller not subscribed) |
+| `outside_access_window`        | forbidden     | history-service (subscribed but message predates HSS) |
+| `pin_disabled`                 | forbidden     | history-service pin/unpin/list (kill-switch `PIN_ENABLED=false`) |
+| `pin_limit_reached`            | forbidden     | history-service pin (room at `MAX_PINNED_PER_ROOM` hard cap) |
+| `pin_room_too_large`           | forbidden     | history-service pin/unpin (non-owner/admin/bot in a room above `LARGE_ROOM_THRESHOLD`) |
+| `sso_token_expired`            | unauthenticated | auth-service `POST /auth` |
+| `invalid_sso_token`            | unauthenticated | auth-service `POST /auth` |
+| `invalid_request`              | bad_request   | auth-service (body parse / required field missing) |
+| `invalid_nkey`                 | bad_request   | auth-service (natsPublicKey format) |
+| `missing_fields`               | bad_request   | auth-service (ssoToken/account/natsPublicKey missing) |
+
+### Where envelopes are sent
+
+- **NATS sync replies** — on the reply subject for §3/§4 RPCs.
+- **JetStream async results** — `model.AsyncJobResult` carries the same `code` + `reason` fields when `status == "error"`, so a failed async job is surfaced the same way as a sync error.
+- **HTTP** — auth-service `POST /auth` writes the envelope as the response body with the matching HTTP status from the table above.
+
+### Client branching guidance
+
+Compute the trigger as `reason ?? code` and branch on that. Use `code` for generic copy ("you don't have permission", "service unavailable, try again"), `reason` for endpoint-specific UX (open the "room is full" dialog on `max_room_size_reached`; redirect to re-login on `sso_token_expired`/`invalid_sso_token`; surface "join the room first" on `not_subscribed`). Never branch on the `error` text — message wording can change without notice.

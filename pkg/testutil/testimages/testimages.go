@@ -53,4 +53,8 @@ const (
 
 	// MinIO is the image for every MinIO-backed integration test.
 	MinIO = "minio/minio:RELEASE.2025-01-20T14-49-07Z"
+
+	// Vault is the HashiCorp Vault image for pkg/atrest's KeyWrapper
+	// integration tests (transit secrets engine).
+	Vault = "hashicorp/vault:1.18"
 )

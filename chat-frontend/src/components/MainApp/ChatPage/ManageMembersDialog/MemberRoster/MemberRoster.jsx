@@ -58,7 +58,7 @@ export default function MemberRoster({ room }) {
       setMembers(resp.members ?? [])
     } catch (err) {
       if (gen !== memberListGenRef.current) return
-      setError(err.message)
+      setError(formatAsyncJobError(err))
     } finally {
       if (gen === memberListGenRef.current) setLoading(false)
     }
