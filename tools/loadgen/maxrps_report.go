@@ -122,7 +122,7 @@ func writeRPSCSV(w io.Writer, results []rpsStepResult, bn *bottleneckVerdict) er
 	}
 	header = append(header,
 		"error_rate", "attempted", "failed",
-		"saturation", "worst_durable", "worst_pending_delta", "verdict", "reasons",
+		"saturation", "emit_underrun", "worst_durable", "worst_pending_delta", "verdict", "reasons",
 		// bottleneck attribution columns (nil when bottleneck detection is disabled)
 		"bottleneck_component", "bottleneck_resource", "bottleneck_confidence",
 	)
@@ -142,6 +142,7 @@ func writeRPSCSV(w io.Writer, results []rpsStepResult, bn *bottleneckVerdict) er
 		row = append(row,
 			strconv.FormatFloat(r.ErrorRate, 'f', 6, 64),
 			strconv.Itoa(r.AttemptedOps), strconv.Itoa(r.FailedOps), strconv.Itoa(r.Saturation),
+			strconv.Itoa(r.EmitUnderrun),
 			r.WorstDurable, strconv.FormatInt(r.WorstDelta, 10),
 			r.Kind.String(), strings.Join(r.Reasons, "; "))
 		if bn != nil && r.Kind == verdictTrip {

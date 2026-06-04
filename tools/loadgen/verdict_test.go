@@ -191,6 +191,40 @@ func TestEvaluateRPSStep_WorstPendingReported(t *testing.T) {
 	assert.Contains(t, tripGot.Reasons[0], "> ")
 }
 
+func TestEvaluateRPSStep_ShortfallBlamesUnderrun(t *testing.T) {
+	th := defaultRPSThresholds()
+	// Healthy latencies, but the achieved rate fell short while emit underrun
+	// dominates: the load box couldn't even produce the load. The reason must
+	// point at the emit-underrun knobs (shards / CPU), not MaxInFlight.
+	in := rpsStepInputs{
+		TargetRPS: 1000, Hold: time.Second, AttemptedOps: 700,
+		EmitUnderrun: 250, Saturation: 5,
+		Latencies: []seriesSamples{{Name: "E1", Samples: nLatencies(70, ms(20))}},
+	}
+	got := evaluateRPSStep(&in, th)
+	assert.Equal(t, verdictInconclusive, got.Kind)
+	require.NotEmpty(t, got.Reasons)
+	assert.Contains(t, got.Reasons[0], "underrun")
+	assert.Contains(t, got.Reasons[0], "shard")
+	assert.Equal(t, 250, got.EmitUnderrun)
+}
+
+func TestEvaluateRPSStep_ShortfallBlamesSaturation(t *testing.T) {
+	th := defaultRPSThresholds()
+	// Shortfall with no emit underrun but heavy pool saturation: the load box
+	// kept schedule but the in-flight pool was too small. Point at MaxInFlight.
+	in := rpsStepInputs{
+		TargetRPS: 1000, Hold: time.Second, AttemptedOps: 700,
+		EmitUnderrun: 0, Saturation: 300,
+		Latencies: []seriesSamples{{Name: "E1", Samples: nLatencies(70, ms(20))}},
+	}
+	got := evaluateRPSStep(&in, th)
+	assert.Equal(t, verdictInconclusive, got.Kind)
+	require.NotEmpty(t, got.Reasons)
+	assert.Contains(t, got.Reasons[0], "MaxInFlight")
+	assert.Equal(t, 300, got.Saturation)
+}
+
 func TestVerdictKind_String(t *testing.T) {
 	assert.Equal(t, "PASS", verdictPass.String())
 	assert.Equal(t, "TRIP", verdictTrip.String())

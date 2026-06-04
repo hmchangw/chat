@@ -35,6 +35,7 @@ func buildHistoryInputs(targetRPS int, hold time.Duration, c *HistoryCollector) 
 		AttemptedOps: attempted,
 		FailedOps:    failed,
 		Saturation:   c.SaturationCount(),
+		EmitUnderrun: c.UnderrunCount(),
 		Latencies: []seriesSamples{
 			{Name: "history", Samples: latenciesOf(hist)},
 			{Name: "thread", Samples: latenciesOf(thread)},
