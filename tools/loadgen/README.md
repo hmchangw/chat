@@ -404,9 +404,9 @@ A step's verdict is one of `PASS`, `TRIP`, or `INCONCLUSIVE`.
 - `p95_latency_ms` > 500 — publish→broadcast latency, measured by correlating `RoomEvent.LastMsgID` with `RecordPublish` timestamps
 - `p99_latency_ms` > 1000 — same source
 - `error_rate` > 0.001 (0.1%) — failed publishes, request timeouts, gatekeeper 4xx/5xx; counted by the action emitter
-- any JetStream consumer's `num_pending` grew by more than 1000 over the hold — polled via `/jsz?consumers=true` at hold start and end
+- any JetStream consumer's `num_pending` grew by more than 1000 over the hold — polled via `/jsz?consumers=true` at hold start and end. The `notification-worker` durable is exempt: push-notification delivery delay is tolerated by design, so its backlog never fails the run (still shown in `worst-pending-delta` for observability)
 - any service's `slog_errors_total` counter increased over the hold — currently a no-op since backend services don't expose `/metrics` HTTP endpoints; see known limitations
-- any durable that existed at hold-start was *missing* at hold-end (consumer crashed or was deleted)
+- any durable that existed at hold-start was *missing* at hold-end (consumer crashed or was deleted) — applies to `notification-worker` too, since a vanished consumer is an availability failure, not a tolerated delay
 
 **INCONCLUSIVE** (overrides PASS/TRIP — means "verdict signals can't be trusted") when:
 

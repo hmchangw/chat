@@ -58,6 +58,7 @@ SLO signals evaluated over the hold window:
   - p99 latency                            threshold 1000ms
   - error rate                             threshold 0.1%
   - any JetStream consumer pending growth  threshold +1000
+    (notification-worker exempt: push-notification delay is tolerated)
   - any service slog_errors_total increase threshold +0
 INCONCLUSIVE (overrides PASS/TRIP) when the loadgen process is itself
 saturated (GC pause p99 > 50ms or CPU proxy > 80%).

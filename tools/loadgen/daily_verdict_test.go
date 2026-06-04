@@ -64,6 +64,59 @@ func TestEvaluateStep_TripsOnP95Latency(t *testing.T) {
 	require.Contains(t, r.TrippedReasons[0], "p95")
 }
 
+func TestEvaluateStep_DoesNotTripOnNotificationWorkerPending(t *testing.T) {
+	// Push-notification delivery delay is tolerated by design, so a growing
+	// notification-worker backlog must NOT fail the run — even far past the
+	// pending-growth threshold that would trip any other durable.
+	s := stepInputs{
+		N: 5000, EffectiveN: 5000, HoldDuration: 180 * time.Second,
+		LatencySamples: []float64{10, 20},
+		AttemptedOps:   1000,
+		ConsumerPending: map[string]ConsumerPendingDelta{
+			"notification-worker": {Start: 100, End: 100000, Delta: 99900},
+		},
+	}
+	r := evaluateStep(s, defaultThresholds())
+	require.False(t, r.Tripped, "reasons: %v", r.TrippedReasons)
+	require.Empty(t, r.TrippedReasons)
+}
+
+func TestEvaluateStep_NotificationWorkerExclusionScopedToItself(t *testing.T) {
+	// Excluding notification-worker must not mask a real backlog on another
+	// durable measured in the same step.
+	s := stepInputs{
+		N: 5000, EffectiveN: 5000, HoldDuration: 180 * time.Second,
+		LatencySamples: []float64{10, 20},
+		AttemptedOps:   1000,
+		ConsumerPending: map[string]ConsumerPendingDelta{
+			"notification-worker": {Start: 100, End: 100000, Delta: 99900},
+			"broadcast-worker":    {Start: 100, End: 2000, Delta: 1900},
+		},
+	}
+	r := evaluateStep(s, defaultThresholds())
+	require.True(t, r.Tripped)
+	joined := strings.Join(r.TrippedReasons, "|")
+	require.Contains(t, joined, "broadcast-worker")
+	require.NotContains(t, joined, "notification-worker")
+}
+
+func TestEvaluateStep_NotificationWorkerDisappearanceStillTrips(t *testing.T) {
+	// The exclusion is performance-only: a notification-worker that vanished
+	// mid-hold (consumer crashed or was deleted) is an availability failure,
+	// not a tolerated delay, so it still trips.
+	s := stepInputs{
+		N: 5000, EffectiveN: 5000, HoldDuration: 180 * time.Second,
+		LatencySamples: []float64{10, 20},
+		AttemptedOps:   1000,
+		ConsumerPending: map[string]ConsumerPendingDelta{
+			"notification-worker": {Start: 500, End: 0, Delta: -500},
+		},
+	}
+	r := evaluateStep(s, defaultThresholds())
+	require.True(t, r.Tripped)
+	require.Contains(t, strings.Join(r.TrippedReasons, "|"), "notification-worker disappeared")
+}
+
 func TestEvaluateStep_InconclusiveOnHighGC(t *testing.T) {
 	s := stepInputs{
 		N: 20000, HoldDuration: 180 * time.Second,
