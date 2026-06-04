@@ -84,6 +84,17 @@ func defaultThresholds() Thresholds {
 	}
 }
 
+// pendingGrowthExempt lists durables whose pending-growth is NOT a daily
+// pass/trip signal. notification-worker drives push-notification delivery,
+// where delivery delay is tolerated by design — a notification backlog must
+// not fail an otherwise-healthy run. Its pending is still surfaced in the
+// report (worst-pending-delta column) for observability, and a mid-hold
+// disappearance still trips, since that's an availability failure rather than
+// a tolerated delay.
+var pendingGrowthExempt = map[string]bool{
+	"notification-worker": true,
+}
+
 // stepInputs is everything evaluateStep needs to produce a verdict.
 type stepInputs struct {
 	N               int
@@ -235,7 +246,7 @@ func evaluateStep(in stepInputs, th Thresholds) StepResult {
 	}
 	for durable, d := range in.ConsumerPending {
 		switch {
-		case d.Delta > th.PendingGrowth:
+		case d.Delta > th.PendingGrowth && !pendingGrowthExempt[durable]:
 			r.Tripped = true
 			r.TrippedReasons = append(r.TrippedReasons,
 				fmt.Sprintf("%s pending +%d > +%d", durable, d.Delta, th.PendingGrowth))
