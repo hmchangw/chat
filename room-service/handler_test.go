@@ -52,10 +52,21 @@ func TestHandler_UpdateRole_Success(t *testing.T) {
 			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 			HasIndividualMembership: true,
 		}, nil)
+	store.EXPECT().
+		SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().
+		GetUserSiteID(gomock.Any(), "bob").
+		Return("site-a", nil)
 
-	var publishedData []byte
+	var coreSubj string
+	var coreData []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(_ context.Context, _ string, data []byte, _ string) error { publishedData = data; return nil },
+		publishCore: func(_ context.Context, subj string, data []byte) error { coreSubj = subj; coreData = data; return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
+			t.Error("same-site role update must not publish to a stream")
+			return nil
+		},
 	}
 
 	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
@@ -63,18 +74,18 @@ func TestHandler_UpdateRole_Success(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 
 	resp, err := h.handleUpdateRole(context.Background(), subj, data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	var result map[string]string
-	json.Unmarshal(resp, &result)
-	if result["status"] != "accepted" {
-		t.Errorf("expected status=accepted, got %v", result)
-	}
-	if publishedData == nil {
-		t.Error("expected event published to JetStream")
-	}
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "ok", result["status"])
+
+	require.NotNil(t, coreData, "expected subscription.update published via core NATS")
+	assert.Equal(t, subject.SubscriptionUpdate("bob"), coreSubj)
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreData, &evt))
+	assert.Equal(t, "role_updated", evt.Action)
+	assert.Equal(t, []model.Role{model.RoleMember, model.RoleOwner}, evt.Subscription.Roles)
 }
 
 func TestHandler_UpdateRole_NonOwnerRejected(t *testing.T) {
@@ -232,11 +243,92 @@ func TestHandler_UpdateRole_PromoteSubscriptionOnly_NoRoomMembers_Allowed(t *tes
 			HasIndividualMembership: false,
 			HasOrgMembership:        false,
 		}, nil)
+	store.EXPECT().
+		SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
 
-	var published []byte
+	var coreData []byte
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(_ context.Context, _ string, data []byte, _ string) error {
-			published = data
+		publishCore:     func(_ context.Context, _ string, data []byte) error { coreData = data; return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.NoError(t, err)
+	assert.NotNil(t, coreData, "promote must publish subscription.update when target is a bare subscriber in a room with no orgs")
+}
+
+func TestHandler_UpdateRole_Demote_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
+			HasIndividualMembership: true,
+		}, nil)
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", false).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
+
+	var coreData []byte
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishCore: func(_ context.Context, _ string, data []byte) error { coreData = data; return nil },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
+			t.Error("same-site demote must not publish to a stream")
+			return nil
+		},
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleMember}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	resp, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.NoError(t, err)
+	var result map[string]string
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "ok", result["status"])
+	require.NotNil(t, coreData)
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreData, &evt))
+	assert.Equal(t, "role_updated", evt.Action)
+	assert.Equal(t, []model.Role{model.RoleMember}, evt.Subscription.Roles)
+}
+
+func TestHandler_UpdateRole_CrossSiteOutbox(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+	updated := &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).Return(updated, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-b", nil)
+
+	var outboxSubj string
+	var outboxData []byte
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishCore: func(_ context.Context, _ string, _ []byte) error { return nil },
+		publishToStream: func(_ context.Context, subj string, data []byte, _ string) error {
+			outboxSubj = subj
+			outboxData = data
 			return nil
 		},
 	}
@@ -247,7 +339,86 @@ func TestHandler_UpdateRole_PromoteSubscriptionOnly_NoRoomMembers_Allowed(t *tes
 
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
 	require.NoError(t, err)
-	assert.NotNil(t, published, "promote must publish to ROOMS stream when target is a bare subscriber in a room with no orgs")
+
+	require.NotNil(t, outboxData, "cross-site target must publish a role_updated outbox event")
+	assert.Equal(t, subject.Outbox("site-a", "site-b", "role_updated"), outboxSubj)
+	var outbox model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxData, &outbox))
+	assert.Equal(t, "role_updated", outbox.Type)
+	assert.Equal(t, "site-a", outbox.SiteID)
+	assert.Equal(t, "site-b", outbox.DestSiteID)
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(outbox.Payload, &evt))
+	assert.Equal(t, []model.Role{model.RoleMember, model.RoleOwner}, evt.Subscription.Roles)
+}
+
+func TestHandler_UpdateRole_SetOwnerRoleNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(nil, fmt.Errorf("set owner role: %w", model.ErrSubscriptionNotFound))
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishCore: func(_ context.Context, _ string, _ []byte) error {
+			t.Error("must not publish on store error")
+			return nil
+		},
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
+			t.Error("must not publish on store error")
+			return nil
+		},
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	_, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errTargetNotMember)
+}
+
+func TestHandler_UpdateRole_PublishCoreError_NonFatal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetRoom(gomock.Any(), "r1").
+		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", Roles: []model.Role{model.RoleOwner}}, nil)
+	store.EXPECT().GetSubscriptionWithMembership(gomock.Any(), "r1", "bob").
+		Return(&SubscriptionWithMembership{
+			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
+			HasIndividualMembership: true,
+		}, nil)
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
+
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return fmt.Errorf("nats down") },
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+	}
+
+	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
+	data, _ := json.Marshal(req)
+	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
+
+	resp, err := h.handleUpdateRole(context.Background(), subj, data)
+	require.NoError(t, err, "publishCore failure must be non-fatal")
+	var result map[string]string
+	require.NoError(t, json.Unmarshal(resp, &result))
+	assert.Equal(t, "ok", result["status"])
 }
 
 func TestHandler_UpdateRole_DemoteNonOwner(t *testing.T) {
@@ -437,7 +608,11 @@ func TestHandler_UpdateRole_PublishError(t *testing.T) {
 		Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 		HasIndividualMembership: true,
 	}, nil)
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-b", nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishCore:     func(_ context.Context, _ string, _ []byte) error { return nil },
 		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return fmt.Errorf("nats down") },
 	}
 	req := model.UpdateRoleRequest{Account: "bob", NewRole: model.RoleOwner}
@@ -445,7 +620,7 @@ func TestHandler_UpdateRole_PublishError(t *testing.T) {
 	subj := subject.MemberRoleUpdate("alice", "r1", "site-a")
 	_, err := h.handleUpdateRole(context.Background(), subj, data)
 	if err == nil {
-		t.Fatal("expected error for publish failure")
+		t.Fatal("expected error for outbox publish failure")
 	}
 }
 
@@ -2149,12 +2324,17 @@ func TestHandler_handleUpdateRole_PropagatesRequestID(t *testing.T) {
 			HasIndividualMembership: true,
 		}, nil)
 
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
+
 	var capturedHeader nats.Header
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
-		publishToStream: func(ctx context.Context, _ string, _ []byte, _ string) error {
+		publishCore: func(ctx context.Context, _ string, _ []byte) error {
 			capturedHeader = natsutil.HeaderForContext(ctx)
 			return nil
 		},
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
 	}
 
 	ctx := natsutil.WithRequestID(context.Background(), "req-room-svc-test")

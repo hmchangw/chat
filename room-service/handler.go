@@ -735,16 +735,52 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 			return nil, errCannotDemoteLast
 		}
 	}
-	// Stable acceptance time → stable Nats-Msg-Id across redeliveries.
-	req.Timestamp = time.Now().UTC().UnixMilli()
-	data, err = json.Marshal(req)
+	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner)
 	if err != nil {
-		return nil, fmt.Errorf("marshal role update request: %w", err)
+		if errors.Is(err, model.ErrSubscriptionNotFound) {
+			return nil, errTargetNotMember // defensive: target removed between validation and mutate
+		}
+		return nil, fmt.Errorf("set owner role: %w", err)
 	}
-	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.role-update"), data, ""); err != nil {
-		return nil, fmt.Errorf("publish to stream: %w", err)
+
+	now := time.Now().UTC()
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: *sub,
+		Action:       "role_updated",
+		Timestamp:    now.UnixMilli(),
 	}
-	return json.Marshal(map[string]string{"status": "accepted"})
+	subEvtData, err := json.Marshal(subEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publishCore(ctx, subject.SubscriptionUpdate(req.Account), subEvtData); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", req.Account)
+		// Non-fatal — the DB write is the source of truth; clients reconcile on next refetch.
+	}
+
+	userSiteID, err := h.store.GetUserSiteID(ctx, req.Account)
+	if err != nil {
+		return nil, fmt.Errorf("get user siteId: %w", err)
+	}
+	if userSiteID != "" && userSiteID != h.siteID {
+		outbox := model.OutboxEvent{
+			Type:       "role_updated",
+			SiteID:     h.siteID,
+			DestSiteID: userSiteID,
+			Payload:    subEvtData, // inbox-worker.handleRoleUpdated decodes a SubscriptionUpdateEvent
+			Timestamp:  now.UnixMilli(),
+		}
+		outboxData, err := json.Marshal(outbox)
+		if err != nil {
+			return nil, fmt.Errorf("marshal outbox event: %w", err)
+		}
+		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, "role_updated"), outboxData, ""); err != nil {
+			return nil, fmt.Errorf("publish role-updated outbox: %w", err)
+		}
+	}
+
+	return json.Marshal(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {

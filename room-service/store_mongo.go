@@ -955,6 +955,41 @@ func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, acc
 	return &result, nil
 }
 
+// SetOwnerRole atomically grants or revokes the owner role via a single
+// aggregation-pipeline FindOneAndUpdate, returning the updated subscription.
+// Promote appends "owner" only when absent; demote filters "owner" out. Any
+// other roles (e.g. "member") are preserved and array order stays stable.
+func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error) {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	currentRoles := bson.M{"$ifNull": bson.A{"$roles", bson.A{}}}
+	var rolesExpr bson.M
+	if makeOwner {
+		rolesExpr = bson.M{"$cond": bson.M{
+			"if":   bson.M{"$in": bson.A{model.RoleOwner, currentRoles}},
+			"then": currentRoles,
+			"else": bson.M{"$concatArrays": bson.A{currentRoles, bson.A{model.RoleOwner}}},
+		}}
+	} else {
+		rolesExpr = bson.M{"$filter": bson.M{
+			"input": currentRoles,
+			"cond":  bson.M{"$ne": bson.A{"$$this", model.RoleOwner}},
+		}}
+	}
+	update := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: bson.M{"roles": rolesExpr}}},
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var result model.Subscription
+	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("set owner role for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("set owner role for %q in room %q: %w", account, roomID, err)
+	}
+	return &result, nil
+}
+
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
 // user document exists.
 func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string, error) {
