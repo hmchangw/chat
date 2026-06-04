@@ -49,6 +49,24 @@ func TestBuildMessagesInputs(t *testing.T) {
 	assert.False(t, in.Inconclusive)
 }
 
+func TestBuildMessagesInputs_PopulatesEmitUnderrun(t *testing.T) {
+	delta := msgCounters{
+		published: 900,
+		err: map[string]float64{
+			"publish": 0, "marshal": 0, "gatekeeper": 0, "bad_reply": 0,
+			"saturated": 3, "underrun": 50,
+		},
+	}
+	in := buildMessagesInputs(1000, 10*time.Second, delta, nil, nil,
+		map[string]uint64{}, map[string]uint64{}, nil, true)
+
+	assert.Equal(t, 50, in.EmitUnderrun)
+	assert.Equal(t, 3, in.Saturation)
+	// Emit underrun is a load-box signal, not a request failure: it must not
+	// inflate FailedOps (which would manufacture spurious TRIPs).
+	assert.Equal(t, 0, in.FailedOps)
+}
+
 func TestBuildMessagesInputs_PendingUnavailableIsInconclusive(t *testing.T) {
 	delta := msgCounters{published: 1000, err: map[string]float64{}}
 	in := buildMessagesInputs(1000, time.Second, delta, nil, nil, nil, nil, []string{"message-worker"}, false)

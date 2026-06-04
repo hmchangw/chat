@@ -24,7 +24,7 @@ type msgCounters struct {
 	err       map[string]float64 // keyed by reason
 }
 
-var msgErrorReasons = []string{"publish", "marshal", "gatekeeper", "bad_reply", "saturated"}
+var msgErrorReasons = []string{"publish", "marshal", "gatekeeper", "bad_reply", "saturated", "underrun"}
 
 // diffCounters returns end-start for published and each tracked reason.
 func diffCounters(start, end msgCounters) msgCounters {
@@ -55,6 +55,7 @@ func buildMessagesInputs(
 		AttemptedOps: attempted,
 		FailedOps:    failed,
 		Saturation:   int(delta.err["saturated"]),
+		EmitUnderrun: int(delta.err["underrun"]),
 		Latencies: []seriesSamples{
 			{Name: "E1", Samples: e1},
 			{Name: "E2", Samples: e2},

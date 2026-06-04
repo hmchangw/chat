@@ -218,58 +218,35 @@ func NewHistoryGenerator(cfg *HistoryGeneratorConfig, seed int64) *HistoryGenera
 	}
 }
 
-// Run drives the open-loop publisher until ctx cancels. Mirrors Generator.Run's
-// shape so operators experience consistent semantics across workloads.
+// Run drives the open-loop requester until ctx cancels. Mirrors Generator.Run's
+// shape so operators experience consistent semantics across workloads:
+// MaxInFlight > 0 drives the batched pacer (runPaced); MaxInFlight == 0 keeps
+// the legacy serial-on-ticker path for bisection (runSerial).
 func (g *HistoryGenerator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
 		return fmt.Errorf("rate must be > 0")
 	}
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-
 	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.requestOne(ctx)
-			}
-		}
+		return g.runSerial(ctx)
 	}
+	return g.runPaced(ctx)
+}
 
-	sem := make(chan struct{}, g.cfg.MaxInFlight)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(drainGracePeriod):
-			}
-			return nil
-		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
-					}()
-					g.requestOne(ctx)
-				}()
-			default:
-				g.cfg.Collector.RecordSaturation()
-			}
-		}
-	}
+// runSerial is the legacy one-request-per-tick path (MaxInFlight == 0), retained
+// for bisection; it will not ramp past the single-ticker ceiling.
+func (g *HistoryGenerator) runSerial(ctx context.Context) error {
+	serialDispatch(ctx, g.cfg.Rate, g.requestOne)
+	return nil
+}
+
+// runPaced drives the batched pacer into a bounded worker pool so achieved RPS
+// is not capped by single-ticker resolution. A full pool is recorded as
+// saturation (raise MaxInFlight); events the pacer could not release on schedule
+// as underrun (the load box could not keep up).
+func (g *HistoryGenerator) runPaced(ctx context.Context) error {
+	pacedDispatch(ctx, g.cfg.Rate, g.cfg.MaxInFlight,
+		g.cfg.Collector.RecordUnderrun, g.cfg.Collector.RecordSaturation, g.requestOne)
+	return nil
 }
 
 func (g *HistoryGenerator) requestOne(ctx context.Context) {

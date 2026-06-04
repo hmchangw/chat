@@ -352,6 +352,27 @@ the limiting factor, so the step's result can't be trusted. An
 INCONCLUSIVE step does **not** count as a pass and does **not** stop the
 ramp, even with `--stop-on-trip`; only a hard TRIP stops the ramp.
 
+The `reasons:` line names which load-box limit dominated so you know which
+knob to turn — the two are distinct columns (`saturation`, `emit_underrun`)
+in the CSV:
+
+- **emit underrun** — the generator could not even *release* the load on
+  schedule (its dispatch loop fell behind the target cadence). The load box
+  is CPU/scheduler starved: give it more CPU, lower the per-box rate, or
+  shard the load across more generator processes.
+- **saturation** — the load *was* released on schedule but the in-flight
+  pool was full when an event came due. The pool is too small for the
+  rate×latency product: raise `MAX_IN_FLIGHT` (and/or reduce backend
+  latency).
+
+> **Rate pacing.** The generator paces an open-loop arrival rate with a
+> batched emitter: it ticks on a coarse, reliably-schedulable interval and
+> releases `rate × interval` events per tick. This replaces the old
+> one-event-per-tick ticker, whose sub-millisecond intervals the Go runtime
+> can't honor (it silently coalesces ticks), which capped achievable RPS at
+> a few thousand regardless of `--steps`. Setting `MAX_IN_FLIGHT=0` selects
+> the legacy serial-on-ticker path for bisection only — it will not ramp.
+
 ### Read-receipt workload (`--workload=read-receipt`)
 
 Drives the room-service read-receipt RPC
@@ -422,6 +443,7 @@ first). Tunables (env, `BOTTLENECK_` prefix):
 The verdict is best-effort: if Prometheus is unreachable or the data is too
 thin (e.g. the breach was on the first step), the line reads
 `BOTTLENECK: undetermined (<reason>)` and the run still reports normally.
+
 ## Daily-IM scenario (find N) — Operator Guide
 
 Simulates N users using the chat system as their primary IM throughout

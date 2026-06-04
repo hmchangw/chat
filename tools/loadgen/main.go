@@ -968,7 +968,6 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		slog.Warn("metrics gather", "error", gerr)
 		mfs = nil
 	}
-	publishErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "", "")
 	gkErrs := gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", "gatekeeper")
 	sentWarmup := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "warmup"))
 	sentMeasured := int(gatheredCounterValue(mfs, "loadgen_published_total", "phase", "measured"))
@@ -998,7 +997,7 @@ func runRun(ctx context.Context, cfg *config, args []string) int {
 		Inject:            *inject,
 		Sent:              sent,
 		SentMeasured:      sentMeasured,
-		PublishErrors:     int(publishErrs - gkErrs),
+		PublishErrors:     hardPublishErrorCount(mfs),
 		GatekeeperErrors:  int(gkErrs),
 		MissingReplies:    missingReplies,
 		MissingBroadcasts: missingBroadcasts,
@@ -1087,6 +1086,20 @@ func writeCSVFile(path string, c *Collector) error {
 		rows = append(rows, CSVSample{TimestampNs: int64(i), Metric: "E2", LatencyNs: d.Nanoseconds()})
 	}
 	return WriteCSV(f, rows)
+}
+
+// hardPublishErrorCount sums the publish-side error reasons that represent real
+// failures (publish, marshal, bad_reply). It deliberately excludes "gatekeeper"
+// (surfaced separately in the summary) and the load-box self-limit signals
+// "saturated" and "underrun", which are pacing diagnostics — not publish errors.
+// Enumerating the error reasons avoids the fragile "sum all minus gatekeeper"
+// pattern, which silently miscounts every newly added non-error reason.
+func hardPublishErrorCount(mfs []*dto.MetricFamily) int {
+	var total float64
+	for _, reason := range []string{"publish", "marshal", "bad_reply"} {
+		total += gatheredCounterValue(mfs, "loadgen_publish_errors_total", "reason", reason)
+	}
+	return int(total)
 }
 
 func gatheredCounterValue(mfs []*dto.MetricFamily, name string, labelName, labelValue string) float64 {
