@@ -57,6 +57,16 @@ CREATE TYPE IF NOT EXISTS "QuotedParentMessage"(
                                       // to enforce access-window checks without a Cassandra round-trip
 );
 ```
+#### EncMeta
+```cql
+CREATE TYPE IF NOT EXISTS "EncMeta"(
+  nonce BLOB  // 12 bytes, AES-256-GCM nonce for enc_payload
+);
+```
+Per-row metadata for at-rest encryption. The KEK version that wrapped the
+room's DEK is intentionally **not** stored here — it lives on the
+`room_data_keys` MongoDB document and is authoritative there. See
+`docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.
 #### reaction_key
 ```cql
 CREATE TYPE IF NOT EXISTS chat.reaction_key (
@@ -140,6 +150,9 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((room_id, bucket),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)
   // compaction_window_size MUST match MESSAGE_BUCKET_HOURS.
@@ -173,6 +186,9 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY((thread_room_id),created_at,message_id)
 )WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
 ```
@@ -180,7 +196,7 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
 ```cql
 CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   room_id TEXT,
-  created_at TIMESTAMP, // =pinnedAt
+  pinned_at TIMESTAMP,
   message_id TEXT,
   sender FROZEN<"Participant">,
   msg TEXT,
@@ -199,8 +215,15 @@ CREATE TABLE IF NOT EXISTS pinned_messages_by_room(
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
-  PRIMARY KEY((room_id),created_at,message_id)
-)WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC);
+  created_at TIMESTAMP, // message's true creation time
+  tshow BOOLEAN,
+  thread_parent_id TEXT,
+  thread_parent_created_at TIMESTAMP,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
+  PRIMARY KEY((room_id),pinned_at,message_id)
+)WITH CLUSTERING ORDER BY (pinned_at DESC, message_id DESC);
 ```
 #### messages_by_id
 ```cql
@@ -231,6 +254,21 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   updated_at TIMESTAMP,
   pinned_at TIMESTAMP,
   pinned_by FROZEN<"Participant">,
+  enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
+                                    //   written after the at-rest encryption rollout
+  enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
   PRIMARY KEY(message_id,created_at)
 )WITH CLUSTERING ORDER BY (created_at DESC);
 ```
+
+## Encryption (at rest)
+
+Rows written after the at-rest encryption rollout encrypt user-authored
+content into a single `enc_payload` blob and leave the encrypted legacy
+plaintext columns (`msg`, `attachments`, `card`, `card_action`, `file`, and the
+body fields of `quoted_parent_message`) null. `sys_msg_data` is **not** encrypted —
+it carries system-generated metadata (e.g. the room members being added), not
+user-authored secrets, so it stays in its plaintext column. Rows written before
+the rollout retain their plaintext columns and have `enc_payload IS NULL`. The
+read path branches on `enc_payload IS NOT NULL`. See the design spec for
+details: `docs/superpowers/specs/2026-05-05-message-at-rest-encryption-design.md`.

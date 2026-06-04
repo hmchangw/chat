@@ -12,9 +12,9 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
 func makeThreadRooms() []pkgmodel.ThreadRoom {
@@ -114,7 +114,7 @@ func TestHistoryService_GetThreadMessages_ParentLookupError(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to retrieve message")
+	assertInternalErr(t, err, "retrieving message")
 }
 
 func TestHistoryService_GetThreadMessages_NotSubscribed(t *testing.T) {
@@ -136,7 +136,7 @@ func TestHistoryService_GetThreadMessages_SubscriptionStoreError(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_GetThreadMessages_ParentBeforeAccessSince(t *testing.T) {
@@ -244,7 +244,7 @@ func TestHistoryService_GetThreadMessages_RepoError(t *testing.T) {
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load thread messages")
+	assertInternalErr(t, err, "loading thread messages")
 }
 
 func TestHistoryService_GetThreadMessages_Limits(t *testing.T) {
@@ -400,7 +400,7 @@ func TestHistoryService_GetThreadParentMessages_SubscriptionError(t *testing.T) 
 
 	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Limit: 20})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_GetThreadParentMessages_ThreadRoomError(t *testing.T) {
@@ -414,7 +414,7 @@ func TestHistoryService_GetThreadParentMessages_ThreadRoomError(t *testing.T) {
 
 	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Limit: 20})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load thread parent messages")
+	assertInternalErr(t, err, "loading thread rooms")
 }
 
 func TestHistoryService_GetThreadParentMessages_CassandraError(t *testing.T) {
@@ -427,7 +427,7 @@ func TestHistoryService_GetThreadParentMessages_CassandraError(t *testing.T) {
 
 	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Limit: 20})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load thread parent messages")
+	assertInternalErr(t, err, "hydrating thread parent messages")
 }
 
 func TestHistoryService_GetThreadParentMessages_MissingParentIgnored(t *testing.T) {
@@ -483,9 +483,9 @@ func TestHistoryService_GetThreadParentMessages_InvalidFilter(t *testing.T) {
 
 	_, err := svc.GetThreadParentMessages(c, models.GetThreadParentMessagesRequest{Filter: "bogus", Limit: 20})
 	require.Error(t, err)
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 }
 
 // ============================================================

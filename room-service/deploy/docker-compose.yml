@@ -1,14 +1,52 @@
 name: room-service
 
 services:
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add:
+      - IPC_LOCK
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=dev-only-token
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    networks:
+      - chat-local
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8200/v1/sys/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault-bootstrap:
+    image: hashicorp/vault:1.18
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-only-token
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        vault secrets enable -path=transit transit || true
+        vault write -f transit/keys/chat-kek
+    networks:
+      - chat-local
+
   room-service:
     build:
       context: ../..
       dockerfile: room-service/deploy/Dockerfile
+    pull_policy: build
+    depends_on:
+      vault-bootstrap:
+        condition: service_completed_successfully
     environment:
       - NATS_URL=nats://nats:4222
       - NATS_CREDS_FILE=/etc/nats/backend.creds
       - SITE_ID=site-local
+      - SITE_URL=http://localhost:3000
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - MAX_ROOM_SIZE=1000
@@ -18,6 +56,10 @@ services:
       - CASSANDRA_HOSTS=cassandra
       - CASSANDRA_KEYSPACE=chat
       - BOOTSTRAP_STREAMS=true
+      - ATREST_ENABLED=true
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-only-token
+      - ATREST_VAULT_TRANSIT_KEY=chat-kek
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

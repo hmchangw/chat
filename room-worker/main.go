@@ -13,6 +13,8 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -41,6 +43,11 @@ type config struct {
 	ValkeyPassword string   `env:"VALKEY_PASSWORD"           envDefault:""`
 	// TTL on the :prev key slot after a rotation.
 	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
+
+	// Atrest/Vault drive eager at-rest DEK provisioning for synchronously-created
+	// DM rooms. When Atrest.Enabled is false the DEK is created lazily by message-worker.
+	Atrest atrest.Config      // env vars already prefixed ATREST_*
+	Vault  atrest.VaultConfig // env vars already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 func main() {
@@ -105,6 +112,22 @@ func main() {
 	}
 	keySender := roomkeysender.NewSender(nc.NatsConn())
 
+	// Eager at-rest DEK provisioning for synchronously-created DM rooms (the
+	// handleSyncCreateDM path bypasses room-service's create-room flow). nil when
+	// disabled; message-worker's lazy creation remains the fallback.
+	var vaultWrapper atrest.KeyWrapperCloser
+	var dekProvisioner DEKProvisioner
+	if cfg.Atrest.Enabled {
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if err != nil {
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
+			os.Exit(1)
+		}
+		vaultWrapper = w
+		dekColl := mongoClient.Database(cfg.MongoDB).Collection(atrest.CollectionName)
+		dekProvisioner = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
 	streamCfg := stream.Rooms(cfg.SiteID)
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
@@ -124,6 +147,7 @@ func main() {
 		return nil
 	}, keyStore, keySender)
 	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
+	handler.dekProvisioner = dekProvisioner
 
 	if _, err := nc.QueueSubscribe(subject.RoomCreateDMSync(cfg.SiteID), "room-worker", handler.natsServerCreateDM); err != nil {
 		slog.Error("subscribe sync DM endpoint failed", "error", err)
@@ -154,12 +178,15 @@ func main() {
 			sem <- struct{}{}
 			wg.Add(1)
 			go func() {
+				// recover() must run BEFORE the slot release so a panicking handler
+				// (e.g. a WithCause/WithMetadata misuse) Naks and is redelivered
+				// instead of crashing the worker — the async path runs outside
+				// natsrouter's recovery middleware.
 				defer func() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
-				handler.HandleJetStreamMsg(handlerCtx, msg)
+				runJobWithRecovery(msgCtx, handler, msg)
 			}()
 		}
 	}()
@@ -187,11 +214,59 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(context.Context) error {
+			if vaultWrapper != nil {
+				return vaultWrapper.Close()
+			}
+			return nil
+		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
+}
+
+// jobProcessor is the slice of the handler that the consumer goroutine drives;
+// narrowing it to an interface lets runJobWithRecovery be unit-tested with a
+// panicking stub (no NATS connection required).
+type jobProcessor interface {
+	HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg)
+}
+
+// runJobWithRecovery processes one async job and contains any panic so the
+// worker survives. A panic ACKS the message (poison-pill drop) rather than
+// Naking — a deterministic panic (e.g. odd-arg WithMetadata, WithCause on an
+// *errcode.Error) would otherwise loop on redelivery until MaxDeliver and
+// hammer the worker through every backoff. This mirrors natsrouter.Recovery,
+// which Acks-on-panic with an Internal reply.
+func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstream.Msg) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in async job handler — dropping (Ack)", "panic", r, "subject", msg.Subject())
+			if ackErr := msg.Ack(); ackErr != nil {
+				slog.Error("failed to ack after panic", "error", ackErr)
+			}
+		}
+	}()
+	// Defensive mint: room-service rejects missing/malformed X-Request-ID at
+	// publish time (RequireRequestID), so by the time a message lands on the
+	// ROOMS stream the header should always be a valid UUID. If we end up
+	// minting here, that's an upstream contract violation worth an Error log —
+	// downstream OutboxDedupID / message-ID generation will derive dedup keys
+	// from the fresh mint, breaking client-retry dedup. See
+	// docs/error-handling.md §3a.
+	inbound := ""
+	if h := msg.Headers(); h != nil {
+		inbound = h.Get(natsutil.RequestIDHeader)
+	}
+	id, replaced := idgen.ResolveRequestID(inbound)
+	if replaced || inbound == "" {
+		slog.Error("ROOMS stream message missing or invalid X-Request-ID — minting defensively; upstream contract broken",
+			"inbound", inbound, "subject", msg.Subject())
+	}
+	handlerCtx := natsutil.WithRequestID(msgCtx, id)
+	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 
 // buildConsumerConfig returns the durable consumer config for

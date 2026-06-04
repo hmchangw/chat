@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.uber.org/mock/gomock"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -166,6 +169,18 @@ func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, accou
 	return nil // missing-subscription → no-op
 }
 
+func (s *stubInboxStore) UpdateSubscriptionFavorite(_ context.Context, roomID, account string, favorite bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.subscriptions {
+		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
+			s.subscriptions[i].Favorite = favorite
+			return nil
+		}
+	}
+	return nil // missing-subscription → no-op
+}
+
 func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,6 +244,14 @@ func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
 	cp := make([]model.ThreadSubscription, len(s.threadSubs))
 	copy(cp, s.threadSubs)
 	return cp
+}
+
+func (s *stubInboxStore) UpdateSubscriptionNamesForRoom(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s *stubInboxStore) ApplySubscriptionVisibility(_ context.Context, _ string, _, _ bool, _ string) error {
+	return nil
 }
 
 // --- Tests ---
@@ -764,6 +787,38 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	}
 	if len(store.getRoleUpdates()) != 0 {
 		t.Error("no role update should have been applied")
+	}
+}
+
+// Empty-roles payload is a poison message. Handler returns errcode.Permanent
+// so main.go's consume loop Acks (not Nak) — preventing infinite redelivery.
+// Store is not called.
+func TestHandleEvent_RoleUpdated_EmptyRoles(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	subEvt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			Roles:  nil,
+		},
+	}
+	payload, _ := json.Marshal(subEvt)
+	evt := model.OutboxEvent{Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b", Payload: payload}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Fatal("expected errcode.Permanent for empty-roles payload")
+	}
+	if _, ok := errcode.IsPermanent(err); !ok {
+		t.Fatalf("expected errcode.Permanent, got %T: %v", err, err)
+	}
+	if !errors.Is(err, errcode.ErrPermanent) {
+		t.Fatalf("expected errors.Is(err, ErrPermanent), got %v", err)
+	}
+	if len(store.getRoleUpdates()) != 0 {
+		t.Error("store should NOT be called on empty-roles event")
 	}
 }
 
@@ -1341,4 +1396,217 @@ func TestHandler_SubscriptionMuteToggled_MalformedPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Error(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandler_SubscriptionFavoriteToggled(t *testing.T) {
+	store := &stubInboxStore{
+		subscriptions: []model.Subscription{
+			{
+				ID:     "s1",
+				User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1",
+			},
+		},
+	}
+	h := NewHandler(store)
+
+	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
+		Account: "alice", RoomID: "r1", Favorite: true, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type: model.OutboxSubscriptionFavoriteToggled, SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evt))
+
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.True(t, subs[0].Favorite)
+}
+
+func TestHandleRoomRenamed_HappyPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "new").Return(nil)
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 1700000000000})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload, Timestamp: 1700000000000})
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+}
+
+func TestHandleRoomRenamed_ErrorOnUnmarshal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	h := NewHandler(store)
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: []byte("not json")})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+}
+
+func TestHandleRoomRestricted_HappyPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", true, false, "bob").Return(nil)
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRestrictedOutboxPayload{
+		RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+	})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRestricted, Payload: payload, Timestamp: 1700000000000})
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+}
+
+func TestHandleRoomRestricted_ErrorOnUnmarshal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	h := NewHandler(store)
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRestricted, Payload: []byte("not json")})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+}
+
+func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
+		Account: "ghost", RoomID: "r1", Favorite: true, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type: model.OutboxSubscriptionFavoriteToggled, SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandler_SubscriptionFavoriteToggled_MalformedPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type:    model.OutboxSubscriptionFavoriteToggled,
+		Payload: []byte("not-json"),
+	})
+	require.NoError(t, err)
+
+	require.Error(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandleRoomRenamed_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "new").Return(errors.New("mongo timeout"))
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 1700000000000})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update subscription names")
+}
+
+func TestHandleRoomRestricted_StoreError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockInboxStore(ctrl)
+	store.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", true, false, "bob").Return(errors.New("mongo timeout"))
+
+	h := NewHandler(store)
+	payload, _ := json.Marshal(model.RoomRestrictedOutboxPayload{
+		RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+	})
+	data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRestricted, Payload: payload})
+	err := h.HandleEvent(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "apply restricted")
+}
+
+func TestHandleRoomRenamed_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload model.RoomRenamedOutboxPayload
+	}{
+		{
+			name:    "empty room ID propagates to store call",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "", NewName: "new", Timestamp: 1700000000000},
+		},
+		{
+			name:    "empty new name propagates to store call",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "", Timestamp: 1700000000000},
+		},
+		{
+			name:    "zero timestamp accepted (inbox handler does not validate)",
+			payload: model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "new", Timestamp: 0},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockInboxStore(ctrl)
+			store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), tt.payload.RoomID, tt.payload.NewName).Return(nil)
+
+			h := NewHandler(store)
+			payload, _ := json.Marshal(tt.payload)
+			data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRenamed, Payload: payload})
+			require.NoError(t, h.HandleEvent(context.Background(), data))
+		})
+	}
+}
+
+func TestHandleRoomRestricted_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload model.RoomRestrictedOutboxPayload
+	}{
+		{
+			name: "empty room ID propagates to store call",
+			payload: model.RoomRestrictedOutboxPayload{
+				RoomID: "", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "missing owner account on restrict propagates to store (branch (b) flags-only)",
+			payload: model.RoomRestrictedOutboxPayload{
+				RoomID: "r1", Restricted: true, ExternalAccess: true, OwnerAccount: "", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "missing owner account on unrestrict propagates to store (branch (c) flags-only)",
+			payload: model.RoomRestrictedOutboxPayload{
+				RoomID: "r1", Restricted: false, ExternalAccess: false, OwnerAccount: "", Timestamp: 1700000000000,
+			},
+		},
+		{
+			name: "zero timestamp accepted (inbox handler does not validate)",
+			payload: model.RoomRestrictedOutboxPayload{
+				RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 0,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockInboxStore(ctrl)
+			store.EXPECT().ApplySubscriptionVisibility(
+				gomock.Any(), tt.payload.RoomID, tt.payload.Restricted, tt.payload.ExternalAccess, tt.payload.OwnerAccount,
+			).Return(nil)
+
+			h := NewHandler(store)
+			payload, _ := json.Marshal(tt.payload)
+			data, _ := json.Marshal(model.OutboxEvent{Type: model.OutboxRoomRestricted, Payload: payload})
+			require.NoError(t, h.HandleEvent(context.Background(), data))
+		})
+	}
 }

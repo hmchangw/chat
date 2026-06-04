@@ -70,9 +70,9 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always wrap with context: `fmt.Errorf("short description: %w", err)` — describe what the current function was doing, not what failed underneath
 - Never return bare `err` or `fmt.Errorf("error: %w", err)`
 - Never ignore errors silently — comment if intentionally discarded
-- Use `model.ErrorResponse` via `natsutil.ReplyError` for all NATS reply errors
+- Use `pkg/errcode` for ALL client-facing errors; reply via `errnats.Reply` (NATS) / `errhttp.Write` (Gin). Construct with the named constructors (`errcode.NotFound`, `errcode.Forbidden`, …), attach a domain `reason` from `codes_<service>.go` where the frontend must distinguish cases, and return raw `fmt.Errorf("…: %w", err)` for infra failures (they collapse to `internal` at the boundary). Full guide: `docs/error-handling.md`. Wire-side reference for clients: `docs/client-api.md` §6.
 - Never compare errors by string — use `errors.Is` and `errors.As`
-- Never expose raw internal errors to clients — sanitize errors at service boundaries, return user-safe messages
+- Never expose raw internal errors to clients — the unexported `errcode.Error.cause` is never serialized; `Classify` logs it once server-side. Never wrap raw message bodies/tokens into a cause.
 
 ### Interfaces & Dependency Injection
 - Define interfaces in the consumer, not the implementer
@@ -222,10 +222,30 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Use `iter.Stop()` + `wg.Wait()` + `nc.Drain()` for graceful shutdown — see "JetStream Consumer Pattern" and "Graceful Shutdown" sections
 - All NATS payloads are JSON — use `encoding/json` with typed structs from `pkg/model`, never `map[string]interface{}`
 - Use NATS request/reply for synchronous operations; `nc.QueueSubscribe` with service name as queue group
-- Use `natsutil.ReplyJSON` for success responses, `natsutil.ReplyError` for errors
+- Use `natsutil.ReplyJSON` for success responses; for errors return a typed `*errcode.Error` from the handler and let `errnats.Reply` / `errhttp.Write` marshal the envelope (see `docs/error-handling.md`).
 - Define all stream configs in `pkg/stream/stream.go` with name pattern `<STREAM>_<siteID>`
 - Use durable consumers named after the service
 - Stream creation is gated by `BOOTSTRAP_STREAMS` (see below); when enabled, use `js.CreateOrUpdateStream` (it's idempotent) via the service's `bootstrapStreams` helper, never inline
+
+### Error Handling at the NATS/HTTP Boundary
+`pkg/errcode` has a broad surface, but **day-to-day handler code touches almost none of it.** Use this tiering — if you reach past Tier 1, you should know why.
+
+- **Tier 1 — every handler (this is 90% of usage).** Return a typed error built from a named constructor, optionally tagged with a `reason`. You do NOT call the adapter, classify, or log — the plumbing does:
+  - `return errcode.NotFound("room not found")` — pick the constructor whose name matches the HTTP/wire category (`BadRequest`, `NotFound`, `Forbidden`, `Conflict`, `Internal`, …).
+  - `return errcode.Forbidden("only owners can do this", errcode.WithReason(errcode.RoomNotOwner))` — add `WithReason` **only** when the frontend must branch on the case. Prefer a package-level sentinel (e.g. room-service `helper.go`) over reconstructing the same error at multiple sites, so `errors.Is` matches.
+  - For an infra failure, `return fmt.Errorf("get subscription: %w", err)` — a raw wrapped error collapses to `internal` at the boundary; do NOT dress it up as an errcode.
+- **Tier 2 — one line per handler, written once and copied.** The adapter that turns the returned error into the wire envelope. You pick exactly one, determined by your transport, never both:
+  - NATS raw handler: `errnats.Reply(ctx, m.Msg, err)`.
+  - `pkg/natsrouter` handler: returned automatically by the router — you write nothing.
+  - Gin handler: `errhttp.Write(ctx, c, err)`.
+- **Tier 3 — specialist, you'll know when.** Don't use these in ordinary request/reply handlers:
+  - `errcode.Permanent` / `IsPermanent` — JetStream **workers only**, to Ack-poison vs Nak-retry.
+  - `errcode.Parse` — **cross-site consumers** decoding a remote envelope (e.g. `memberlist_client.go`).
+  - `errnats.Marshal` / `MarshalQuiet` / `ReplyQuiet` — outbox/already-logged paths; the plain `Reply` already classifies-and-logs once, so `Quiet` exists only to avoid a double-log.
+  - `errcode.Classify`, `WithLogger`, `WithLogValues` — boundary/observability plumbing; handlers get request-id logging for free from the router middleware.
+- **Never log AND return.** `Reply`/`Write` run `Classify`, which logs once at a category-aware level. A `slog.Error(...)` before returning the same error double-logs.
+- **`WithCause` wraps an infra error, never another `*errcode.Error`** (one-errcode-per-chain; it panics otherwise, and semgrep guards it). Never put a raw token/body/subject in a cause or message — it reaches the server log.
+- Full guide: `docs/error-handling.md`. Wire reference for clients: `docs/client-api.md` §6.
 
 ### Event Timestamps
 - Every NATS event struct in `pkg/model` must include a `Timestamp int64 \`json:"timestamp" bson:"timestamp"\`` field
@@ -289,7 +309,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Always provide `envDefault` for non-critical config (port, database name, log level); never default secrets or connection strings — mark them `required`
 
 ### Docker
-- Multi-stage Dockerfiles: `golang:1.25.10-alpine` builder, `alpine:3.21` runtime
+- Multi-stage Dockerfiles: `golang:1.25.11-alpine` builder, `alpine:3.21` runtime
 - Location: `<service>/deploy/Dockerfile`
 - Build context: repo root so `pkg/` and `go.mod` are accessible
 - Docker Compose for local dev only — include only the dependencies the service needs

@@ -26,6 +26,7 @@ export { listOrgMembers } from './listOrgMembers'
 export { listRoomMembers } from './listRoomMembers'
 export { markRoomRead } from './markRoomRead'
 export { removeMember } from './removeMember'
+export { requestRoomKey } from './requestRoomKey'
 export { searchMessages } from './searchMessages'
 export { searchRooms } from './searchRooms'
 export { sendMessage } from './sendMessage'
@@ -43,7 +44,7 @@ export {
   ASYNC_JOB_ERROR_KINDS,
   formatAsyncJobError,
 } from './_transport/asyncJob'
-export type { AsyncJobErrorKind } from './_transport/asyncJob'
+export type { AsyncJobErrorKind, ErrorCode } from './_transport/asyncJob'
 
 // Shared wire types — mirror pkg/model. Components/contexts import
 // these from `@/api` instead of deep-importing `@/api/types`.
@@ -55,6 +56,7 @@ export type {
   SubscriptionUpdateAction,
   AsyncJobOptions,
   AsyncJobResult,
+  AsyncJobResultEnvelope,
   // Domain types
   User,
   Room,

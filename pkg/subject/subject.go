@@ -14,10 +14,17 @@ func ParseUserRoomSubject(subj string) (account, roomID string, ok bool) {
 		return "", "", false
 	}
 	account = parts[2]
+	if !isValidAccountToken(account) {
+		return "", "", false
+	}
 	// Find "room" token after user position
 	for i := 3; i < len(parts)-1; i++ {
 		if parts[i] == "room" {
-			return account, parts[i+1], true
+			roomID = parts[i+1]
+			if !isValidAccountToken(roomID) {
+				return "", "", false
+			}
+			return account, roomID, true
 		}
 	}
 	return "", "", false
@@ -69,6 +76,22 @@ func MemberRoleUpdate(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.role-update", account, roomID, siteID)
 }
 
+// RoomRename is the request/reply subject for the rename RPC (owner or admin).
+// Callers are responsible for ensuring `account` is a server-derived auth
+// identity; the builder does not validate, since panicking on a server-side
+// invariant would crash the process.
+func RoomRename(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.room.rename", account, roomID, siteID)
+}
+
+// RoomRestricted is the synchronous server-to-server request/reply subject for
+// the restricted (formerly visibility) RPC. Admin-only and not exposed to
+// clients — admin tooling targets this directly; room-service does all the
+// work in the request handler and replies with the result.
+func RoomRestricted(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.restricted", siteID)
+}
+
 func MemberRemove(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.remove", account, roomID, siteID)
 }
@@ -83,6 +106,11 @@ func MemberEvent(roomID string) string {
 
 func RoomCanonical(siteID, operation string) string {
 	return fmt.Sprintf("chat.room.canonical.%s.%s", siteID, operation)
+}
+
+// RoomCanonicalMemberEvent returns the post-mutation member-event subject (mute-only today).
+func RoomCanonicalMemberEvent(siteID, eventType string) string {
+	return fmt.Sprintf("chat.room.canonical.%s.event.member.%s", siteID, eventType)
 }
 
 func SubscriptionUpdate(account string) string {
@@ -161,6 +189,14 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
+func MsgCanonicalPinned(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.pinned", siteID)
+}
+
+func MsgCanonicalUnpinned(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.unpinned", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
@@ -187,6 +223,19 @@ func RoomKeyEnsure(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.key.ensure", siteID)
 }
 
+// RoomKeyGet is the user-facing request subject for the on-demand room
+// key fetch RPC. Pair with RoomKeyGetWildcard for room-service's
+// QueueSubscribe. The reply mirrors RoomKeyEvent minus Timestamp.
+func RoomKeyGet(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.key.get", account, roomID, siteID)
+}
+
+// RoomKeyGetWildcard is the subscription pattern room-service uses to
+// receive RoomKeyGet requests from any account / roomID at its siteID.
+func RoomKeyGetWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.key.get", siteID)
+}
+
 // RoomCreateDMSync is the server-to-server request subject for synchronous DM/botDM creation.
 func RoomCreateDMSync(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.create.dm", siteID)
@@ -202,6 +251,11 @@ func MemberRoleUpdateWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.role-update", siteID)
 }
 
+// RoomRenameWildcard is the queue-subscribe pattern on a site.
+func RoomRenameWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.room.rename", siteID)
+}
+
 func MemberRemoveWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.remove", siteID)
 }
@@ -210,30 +264,42 @@ func MemberListWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.list", siteID)
 }
 
-// OrgMembers builds the subject for listing members of an org.
-func OrgMembers(account, orgID string) string {
-	return fmt.Sprintf("chat.user.%s.request.orgs.%s.members", account, orgID)
+// OrgMembers builds the subject for listing members of an org. siteID
+// selects which site's user directory to query — each site has its own
+// users collection, so org membership is per-site. Token order matches
+// the room-scoped builders ("identifier → site → action"). Panics on
+// any token containing NATS wildcard characters.
+func OrgMembers(account, orgID, siteID string) string {
+	if !isValidAccountToken(account) || !isValidAccountToken(orgID) || !isValidAccountToken(siteID) {
+		panic("invalid subject token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.orgs.%s.%s.members", account, orgID, siteID)
 }
 
-// OrgMembersWildcard is the subscription pattern for the list-org-members endpoint.
-func OrgMembersWildcard() string {
-	return "chat.user.*.request.orgs.*.members"
+// OrgMembersWildcard is the per-site subscription pattern for the
+// list-org-members endpoint.
+func OrgMembersWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.orgs.*.%s.members", siteID)
 }
 
-// ParseOrgMembersSubject returns the orgID from a subject matching the
-// pattern "chat.user.{account}.request.orgs.{orgId}.members".
-// Tokens (by strings.Split on "."): [0]chat [1]user [2]{account} [3]request
-// [4]orgs [5]{orgId} [6]members. orgID is at positional index 5.
-func ParseOrgMembersSubject(subj string) (orgID string, ok bool) {
+// ParseOrgMembersSubject returns (orgID, siteID) from a subject
+// matching "chat.user.{account}.request.orgs.{orgId}.{siteId}.members".
+// Tokens: [0]chat [1]user [2]{account} [3]request [4]orgs [5]{orgId}
+// [6]{siteId} [7]members. Returns ok=false when any token contains
+// NATS wildcard characters.
+func ParseOrgMembersSubject(subj string) (orgID, siteID string, ok bool) {
 	parts := strings.Split(subj, ".")
-	if len(parts) != 7 {
-		return "", false
+	if len(parts) != 8 {
+		return "", "", false
 	}
 	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "request" ||
-		parts[4] != "orgs" || parts[6] != "members" {
-		return "", false
+		parts[4] != "orgs" || parts[7] != "members" {
+		return "", "", false
 	}
-	return parts[5], true
+	if !isValidAccountToken(parts[2]) || !isValidAccountToken(parts[5]) || !isValidAccountToken(parts[6]) {
+		return "", "", false
+	}
+	return parts[5], parts[6], true
 }
 
 func RoomCanonicalWildcard(siteID string) string {
@@ -306,6 +372,23 @@ func MsgDeletePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.delete", siteID)
 }
 
+// MsgPinPattern is the natsrouter pattern for pinning a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgPinPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.pin", siteID)
+}
+
+// MsgUnpinPattern is the natsrouter pattern for unpinning a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgUnpinPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.unpin", siteID)
+}
+
+// MsgPinnedListPattern is the natsrouter pattern for listing a room's pinned messages.
+func MsgPinnedListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.pinned.list", siteID)
+}
+
 func MsgThreadPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread", siteID)
 }
@@ -373,6 +456,46 @@ func MuteToggle(account, roomID, siteID string) string {
 // MuteToggleWildcard is the per-site subscription pattern for the mute.toggle RPC.
 func MuteToggleWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.mute.toggle", siteID)
+}
+
+// FavoriteToggle returns the concrete subject for the per-user favorite.toggle RPC.
+func FavoriteToggle(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.favorite.toggle", account, roomID, siteID)
+}
+
+// FavoriteToggleWildcard is the per-site subscription pattern for the favorite.toggle RPC.
+func FavoriteToggleWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.favorite.toggle", siteID)
+}
+
+// RoomAppTabs returns the concrete subject for the GetRoomAppTabs RPC.
+// Pair with RoomAppTabsWildcard for room-service's QueueSubscribe.
+func RoomAppTabs(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.app.tabs", account, roomID, siteID)
+}
+
+// RoomAppTabsWildcard is the per-site subscription pattern for the
+// GetRoomAppTabs RPC.
+func RoomAppTabsWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.app.tabs", siteID)
+}
+
+// RoomAppCmdMenu returns the concrete subject for the
+// GetRoomAppCommandMenu RPC.
+func RoomAppCmdMenu(account, roomID, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.app.cmd-menu", account, roomID, siteID)
+}
+
+// RoomAppCmdMenuWildcard is the per-site subscription pattern for the
+// GetRoomAppCommandMenu RPC.
+func RoomAppCmdMenuWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.app.cmd-menu", siteID)
 }
 
 // RoomCreate: client→room-service create subject; siteID is the requester's site.
@@ -732,4 +855,41 @@ func UserRoomWildCard(siteID string) string {
 
 func UserAppsWildCard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.user.%s.apps.>", siteID)
+}
+
+// PushNotification is the per-recipient mobile-push subject. Lives under chat.server.* so
+// client JWTs cannot subscribe. The stream filter covers the .send leaf and future siblings.
+func PushNotification(siteID string) string {
+	return fmt.Sprintf("chat.server.notification.push.%s.send", siteID)
+}
+
+// PushNotificationFilter is the stream-binding wildcard covering .send and any future siblings.
+func PushNotificationFilter(siteID string) string {
+	return fmt.Sprintf("chat.server.notification.push.%s.>", siteID)
+}
+
+// PresenceSnapshot is the bulk presence RPC subject (request/reply).
+func PresenceSnapshot(siteID string) string {
+	return fmt.Sprintf("chat.presence.%s.request.snapshot", siteID)
+}
+
+// SubscriptionUpdateWildcard matches every subscription.update fanout event.
+func SubscriptionUpdateWildcard() string {
+	return "chat.user.*.event.subscription.update"
+}
+
+// ParseSubscriptionUpdateAccount extracts the account from a subscription.update subject; ok=false on malformed input.
+func ParseSubscriptionUpdateAccount(s string) (account string, ok bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 6 {
+		return "", false
+	}
+	if parts[0] != "chat" || parts[1] != "user" || parts[3] != "event" ||
+		parts[4] != "subscription" || parts[5] != "update" {
+		return "", false
+	}
+	if !isValidAccountToken(parts[2]) {
+		return "", false
+	}
+	return parts[2], true
 }

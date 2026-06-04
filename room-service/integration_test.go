@@ -9,21 +9,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
@@ -577,7 +581,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, "Alice Wang", m.EngName)
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.True(t, m.IsOwner)
-		assert.Empty(t, m.SectName)
+		assert.Empty(t, m.OrgName)
 		assert.Zero(t, m.MemberCount)
 	})
 
@@ -624,7 +628,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		require.Len(t, got, 1)
 		m := got[0].Member
 		assert.Equal(t, model.RoomMemberOrg, m.Type)
-		assert.Equal(t, "Engineering", m.SectName)
+		assert.Equal(t, "Engineering", m.OrgName)
 		assert.Equal(t, 3, m.MemberCount)
 		assert.Empty(t, m.EngName)
 		assert.False(t, m.IsOwner)
@@ -682,7 +686,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Empty(t, m.EngName)
 		assert.Empty(t, m.ChineseName)
 		assert.False(t, m.IsOwner)
-		assert.Empty(t, m.SectName)
+		assert.Empty(t, m.OrgName)
 		assert.Zero(t, m.MemberCount)
 	})
 
@@ -749,8 +753,164 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
-		assert.Equal(t, "Engineering", got[0].Member.SectName,
+		assert.Equal(t, "Engineering", got[0].Member.OrgName,
 			"empty dept names must fall through to sect names; spec requires room-service output to match room-worker's two-pass tiebreak")
+	})
+}
+
+// TestMongoStore_ListRoomMembers_BotEnrichment_Integration verifies that the
+// subscriptions-fallback path (Path 2 / attachUserDisplayNames) correctly
+// partitions bot vs human accounts: bot accounts are looked up in apps for
+// Name, human accounts are looked up in users for EngName/ChineseName.
+func TestMongoStore_ListRoomMembers_BotEnrichment_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	insertSub := func(t *testing.T, db *mongo.Database, s model.Subscription) {
+		t.Helper()
+		_, err := db.Collection("subscriptions").InsertOne(ctx, s)
+		require.NoError(t, err)
+	}
+	insertUser := func(t *testing.T, db *mongo.Database, u model.User) {
+		t.Helper()
+		_, err := db.Collection("users").InsertOne(ctx, u)
+		require.NoError(t, err)
+	}
+	insertApp := func(t *testing.T, db *mongo.Database, doc bson.M) {
+		t.Helper()
+		_, err := db.Collection("apps").InsertOne(ctx, doc)
+		require.NoError(t, err)
+	}
+
+	t.Run("botDM room: bot member gets Name from apps; human gets EngName/ChineseName from users", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+		// Seed human user.
+		insertUser(t, db, model.User{
+			ID:          "u-alice",
+			Account:     "alice",
+			EngName:     "Alice Wang",
+			ChineseName: "愛麗絲",
+		})
+		// Seed apps document with assistant.name = bot account.
+		insertApp(t, db, bson.M{
+			"_id":  "app-weather",
+			"name": "Weather App",
+			"assistant": bson.M{
+				"enabled": true,
+				"name":    "weather.bot",
+			},
+		})
+		// Seed subscriptions only (no room_members) — botDM uses the fallback path.
+		insertSub(t, db, model.Subscription{
+			ID:       "sub-alice",
+			User:     model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+			RoomID:   "botdm-1",
+			RoomType: model.RoomTypeBotDM,
+			Roles:    []model.Role{model.RoleOwner},
+			JoinedAt: base,
+		})
+		insertSub(t, db, model.Subscription{
+			ID:       "sub-bot",
+			User:     model.SubscriptionUser{ID: "u-bot", Account: "weather.bot"},
+			RoomID:   "botdm-1",
+			RoomType: model.RoomTypeBotDM,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: base.Add(time.Second),
+		})
+
+		got, err := store.ListRoomMembers(ctx, "botdm-1", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+
+		// Map by account for deterministic assertions.
+		byAccount := make(map[string]model.RoomMemberEntry)
+		for _, m := range got {
+			byAccount[m.Member.Account] = m.Member
+		}
+
+		human := byAccount["alice"]
+		assert.Equal(t, "Alice Wang", human.EngName, "human member must have EngName from users")
+		assert.Equal(t, "愛麗絲", human.ChineseName, "human member must have ChineseName from users")
+		assert.Empty(t, human.Name, "human member must NOT have Name set")
+
+		bot := byAccount["weather.bot"]
+		assert.Equal(t, "Weather App", bot.Name, "bot member must have Name from apps")
+		assert.Empty(t, bot.EngName, "bot member must NOT have EngName")
+		assert.Empty(t, bot.ChineseName, "bot member must NOT have ChineseName")
+	})
+
+	t.Run("pure-human DM: only users query fires, no apps side-effects", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+
+		insertUser(t, db, model.User{
+			ID:          "u-carol",
+			Account:     "carol",
+			EngName:     "Carol",
+			ChineseName: "卡羅爾",
+		})
+		insertUser(t, db, model.User{
+			ID:          "u-dave",
+			Account:     "dave",
+			EngName:     "Dave",
+			ChineseName: "大衛",
+		})
+		insertSub(t, db, model.Subscription{
+			ID:       "sub-carol",
+			User:     model.SubscriptionUser{ID: "u-carol", Account: "carol"},
+			RoomID:   "dm-2",
+			RoomType: model.RoomTypeDM,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: base,
+		})
+		insertSub(t, db, model.Subscription{
+			ID:       "sub-dave",
+			User:     model.SubscriptionUser{ID: "u-dave", Account: "dave"},
+			RoomID:   "dm-2",
+			RoomType: model.RoomTypeDM,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: base.Add(time.Second),
+		})
+
+		got, err := store.ListRoomMembers(ctx, "dm-2", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+
+		for _, m := range got {
+			assert.NotEmpty(t, m.Member.EngName, "all human members must have EngName")
+			assert.Empty(t, m.Member.Name, "no Name on a human member")
+		}
+	})
+
+	t.Run("humans-only fallback path regression: no bot accounts means apps.Find not called", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+
+		insertUser(t, db, model.User{
+			ID:          "u-eve",
+			Account:     "eve",
+			EngName:     "Eve",
+			ChineseName: "夏娃",
+		})
+		insertSub(t, db, model.Subscription{
+			ID:       "sub-eve",
+			User:     model.SubscriptionUser{ID: "u-eve", Account: "eve"},
+			RoomID:   "dm-3",
+			RoomType: model.RoomTypeDM,
+			Roles:    []model.Role{model.RoleMember},
+			JoinedAt: base,
+		})
+
+		// No apps collection data at all — verifies no panic/error on empty botAccounts.
+		got, err := store.ListRoomMembers(ctx, "dm-3", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Eve", got[0].Member.EngName)
+		assert.Empty(t, got[0].Member.Name)
 	})
 }
 
@@ -794,17 +954,17 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 		assert.ElementsMatch(t, []string{"alice", "bob"}, accounts)
 	})
 
-	t.Run("empty org returns errInvalidOrg", func(t *testing.T) {
+	t.Run("empty org returns RoomInvalidOrg reason", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SectID: "sect-eng"})
 
 		_, err := store.ListOrgMembers(ctx, "sect-nope")
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+		assert.True(t, errcode.HasReason(err, errcode.RoomInvalidOrg), "want RoomInvalidOrg in chain, got %v", err)
 	})
 
-	t.Run("returns errInvalidOrg when neither sectId nor deptId matches", func(t *testing.T) {
+	t.Run("returns RoomInvalidOrg reason when neither sectId nor deptId matches", func(t *testing.T) {
 		// Users carry both sectId and deptId, but neither field equals the
 		// queried orgID — guards against an accidental match on the wrong
 		// branch of the $or (e.g. a future query rewrite that collapses to
@@ -816,7 +976,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 
 		_, err := store.ListOrgMembers(ctx, "sect-nope")
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, errInvalidOrg), "want errInvalidOrg in chain, got %v", err)
+		assert.True(t, errcode.HasReason(err, errcode.RoomInvalidOrg), "want RoomInvalidOrg in chain, got %v", err)
 	})
 
 	t.Run("returns expected OrgMember shape", func(t *testing.T) {
@@ -1076,12 +1236,12 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	// expandChannelRefs uses store.ListRoomMembers and never invokes the client.
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, publish, func(context.Context, string, []byte) error { return nil }, nil, 0)
 
 	req := model.AddMembersRequest{
 		Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}},
@@ -1140,12 +1300,12 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	// Same-site only: nil memberListClient is safe (the same-site branch never invokes it).
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
 	}
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, publish, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, publish, func(context.Context, string, []byte) error { return nil }, nil, 0)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1187,7 +1347,7 @@ func TestAddMembers_RequesterNotSubscribed_Rejected(t *testing.T) {
 
 	// Same-site only: nil memberListClient is safe — request fails on the same-site
 	// GetSubscription check before reaching the cross-site branch.
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil }, nil, 0)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-a"}}}
 	data, err := json.Marshal(req)
@@ -1217,7 +1377,10 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNCb.Drain() })
 
-	ctx := context.Background()
+	// Test bypasses wrappedCtx by calling handleAddMembers directly, so we stamp
+	// a request_id here — the cross-site memberlist client forwards it to site-B,
+	// whose handler now enforces RequireRequestID (strict).
+	ctx := natsutil.WithRequestID(context.Background(), idgen.GenerateRequestID())
 
 	// Site-A: target room; requester subscribed; user document needed for ResolveAccounts.
 	mustInsertRoom(t, dbA, &model.Room{ID: "target", Type: model.RoomTypeChannel, SiteID: "site-a"})
@@ -1242,7 +1405,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	mustInsertSub(t, dbB, &model.Subscription{ID: "sb3", RoomID: "source", User: model.SubscriptionUser{ID: "req", Account: "alice"}})
 
 	// Site-B handler registers member.list endpoint (RegisterCRUD subscribes to MemberListWildcard).
-	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handlerB := NewHandler(storeB, keyStore, nil, nil, "site-b", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil }, nil, 0)
 	require.NoError(t, handlerB.RegisterCRUD(otelNCb))
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
@@ -1257,12 +1420,12 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	// Capture what site-A publishes to its canonical stream
 	var publishedSubj string
 	var publishedData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		publishedSubj = subj
 		publishedData = data
 		return nil
 	}
-	handlerA := NewHandler(storeA, keyStore, memberListClient, nil, "site-a", 1000, 500, 5*time.Second, publish, func(context.Context, string, []byte) error { return nil })
+	handlerA := NewHandler(storeA, keyStore, memberListClient, nil, "site-a", 1000, 500, 5*time.Second, 5, publish, func(context.Context, string, []byte) error { return nil }, nil, 0)
 
 	// Call add-members on site-A with a site-B source channel
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
@@ -1322,7 +1485,7 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	memberListClient := NewNATSMemberListClient(nc, 200*time.Millisecond)
-	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, memberListClient, nil, "site-a", 1000, 500, 200*time.Millisecond, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil }, nil, 0)
 
 	req := model.AddMembersRequest{Channels: []model.ChannelRef{{RoomID: "source", SiteID: "site-b"}}}
 	data, err := json.Marshal(req)
@@ -1330,13 +1493,12 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 
 	_, err = handler.handleAddMembers(ctx, subject.MemberAdd("alice", "target", "site-a"), data)
 	require.Error(t, err)
-	// Cross-site member.list deadline → typed channelExpandTimeoutError naming
-	// the offending site+roomId. sanitizeError surfaces the message verbatim.
-	var te *channelExpandTimeoutError
-	require.ErrorAs(t, err, &te, "expected channelExpandTimeoutError, got %v", err)
-	assert.Equal(t, "site-b", te.SiteID)
-	assert.Equal(t, "source", te.RoomID)
-	assert.Equal(t, "timeout listing members of channel source@site-b", sanitizeError(err))
+	// Cross-site member.list deadline → Unavailable errcode naming the offending
+	// site+roomId so the requester can see which channel source stalled.
+	var ee *errcode.Error
+	require.ErrorAs(t, err, &ee, "expected *errcode.Error, got %v", err)
+	assert.Equal(t, errcode.CodeUnavailable, ee.Code)
+	assert.Equal(t, "timeout listing members of channel source@site-b", ee.Message)
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
@@ -1369,7 +1531,7 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otelNC.Drain() })
 
-	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, func(context.Context, string, []byte) error { return nil }, func(context.Context, string, []byte) error { return nil })
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil }, nil, 0)
 	require.NoError(t, handler.RegisterCRUD(otelNC))
 	require.NoError(t, otelNC.NatsConn().Flush())
 
@@ -1381,7 +1543,11 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 
-	msg, err := nc.Request(subject.RoomsInfoBatch("site-a"), data, 3*time.Second)
+	ctxReq, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	reqMsg := natsutil.NewMsg(natsutil.WithRequestID(ctxReq, idgen.GenerateRequestID()),
+		subject.RoomsInfoBatch("site-a"), data)
+	msg, err := nc.RequestMsgWithContext(ctxReq, reqMsg)
 	require.NoError(t, err)
 
 	var resp model.RoomsInfoBatchResponse
@@ -1467,6 +1633,71 @@ func TestIntegration_CreateRoom_PersistsKeyInValkey(t *testing.T) {
 	assert.Equal(t, 0, pair.Version, "freshly created room key must have version 0")
 }
 
+// TestIntegration_HandleGetRoomKey verifies the client-callable room key get
+// RPC end-to-end against real Mongo + Valkey: a member fetches both the current
+// and an explicit version of the key; a non-member is rejected via the
+// errNotRoomMember sentinel.
+func TestIntegration_HandleGetRoomKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	keyStore := setupValkey(t)
+	h, _ := newRoomServiceHandler(t, store, keyStore, "site-A")
+
+	const roomID = "room-int"
+	// alice is a member; bob is not.
+	mustInsertSub(t, db, &model.Subscription{
+		ID:     idgen.GenerateUUIDv7(),
+		RoomID: roomID,
+		SiteID: "site-A",
+		User:   model.SubscriptionUser{ID: "u_alice", Account: "alice"},
+		Name:   "alice",
+	})
+
+	pair := roomkeystore.RoomKeyPair{PrivateKey: bytes.Repeat([]byte{0xAA}, 32)}
+	ver, err := keyStore.Set(ctx, roomID, pair)
+	require.NoError(t, err)
+
+	// 1. Member fetches current key.
+	{
+		body, _ := json.Marshal(model.RoomKeyGetRequest{})
+		resp, err := h.handleGetRoomKey(ctx, subject.RoomKeyGet("alice", roomID, "site-A"), body)
+		require.NoError(t, err)
+		var got model.RoomKeyGetResponse
+		require.NoError(t, json.Unmarshal(resp, &got))
+		assert.Equal(t, roomID, got.RoomID)
+		assert.Equal(t, ver, got.Version)
+		assert.Equal(t, pair.PrivateKey, got.PrivateKey)
+	}
+
+	// 2. Member fetches by explicit version.
+	{
+		v := ver
+		body, _ := json.Marshal(model.RoomKeyGetRequest{Version: &v})
+		resp, err := h.handleGetRoomKey(ctx, subject.RoomKeyGet("alice", roomID, "site-A"), body)
+		require.NoError(t, err)
+		var got model.RoomKeyGetResponse
+		require.NoError(t, json.Unmarshal(resp, &got))
+		assert.Equal(t, ver, got.Version)
+		assert.Equal(t, pair.PrivateKey, got.PrivateKey)
+	}
+
+	// 3. Non-member rejected.
+	{
+		body, _ := json.Marshal(model.RoomKeyGetRequest{})
+		_, err := h.handleGetRoomKey(ctx, subject.RoomKeyGet("bob", roomID, "site-A"), body)
+		// errNotRoomMember (a typed *errcode.Error) is returned and surfaced for
+		// clients via errnats.Reply; assert on identity, not the message text.
+		require.ErrorIs(t, err, errNotRoomMember)
+	}
+}
+
 // mustInsertUser inserts a user document directly into the users collection.
 func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 	t.Helper()
@@ -1494,12 +1725,12 @@ func newRoomServiceHandler(t *testing.T, store *MongoStore, keyStore RoomKeyStor
 	t.Helper()
 	var lastSubj string
 	var lastData []byte
-	publish := func(_ context.Context, subj string, data []byte) error {
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
 		lastSubj = subj
 		lastData = data
 		return nil
 	}
-	h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, publish, func(context.Context, string, []byte) error { return nil })
+	h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5, publish, func(context.Context, string, []byte) error { return nil }, nil, 0)
 	return h, func() (string, []byte) { return lastSubj, lastData }
 }
 
@@ -1585,13 +1816,13 @@ func TestCreateRoomDMAlreadyExists(t *testing.T) {
 	body, err := json.Marshal(model.CreateRoomRequest{Users: []string{"bob"}})
 	require.NoError(t, err)
 
-	_, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
-	require.Error(t, herr)
+	resp, herr := h.handleCreateRoom(ctx, subject.RoomCreate("alice", "site-A"), body)
+	require.NoError(t, herr)
 
-	var dmErr *dmExistsError
-	require.True(t, errors.As(herr, &dmErr), "expected dmExistsError, got %T: %v", herr, herr)
-	assert.Equal(t, "dm already exists", dmErr.Error())
-	assert.Equal(t, roomID, dmErr.RoomID())
+	var reply model.CreateRoomReply
+	require.NoError(t, json.Unmarshal(resp, &reply))
+	assert.Equal(t, model.CreateRoomStatusExists, reply.Status)
+	assert.Equal(t, roomID, reply.RoomID)
 }
 
 func TestMongoStore_UpdateSubscriptionRead_Integration(t *testing.T) {
@@ -1967,10 +2198,52 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
 }
 
+func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
+	db := testutil.MongoDB(t, "room-svc-fav")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Insert a sub via raw BSON without a "favorite" field at all — proves the
+	// $ifNull branch handles legacy docs and toggles missing→true on first call.
+	rawSub := bson.M{
+		"_id":      idgen.GenerateUUIDv7(),
+		"u":        bson.M{"_id": "u1", "account": "alice", "isBot": false},
+		"roomId":   "r1",
+		"roomType": model.RoomTypeChannel,
+		"siteId":   "site-a",
+		"roles":    []model.Role{model.RoleMember},
+		"joinedAt": time.Now().UTC(),
+		"muted":    false,
+		// no "favorite" key on purpose
+	}
+	_, err := db.Collection("subscriptions").InsertOne(ctx, rawSub)
+	require.NoError(t, err)
+
+	got, err := store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Favorite, "first toggle on legacy doc must flip missing→true")
+	assert.Equal(t, "alice", got.User.Account)
+	assert.Equal(t, "r1", got.RoomID)
+
+	persisted, err := store.GetSubscription(ctx, "alice", "r1")
+	require.NoError(t, err)
+	assert.True(t, persisted.Favorite)
+
+	got, err = store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.False(t, got.Favorite, "second toggle must flip true→false")
+
+	gotNil, err := store.ToggleSubscriptionFavorite(ctx, "missing", "alice")
+	assert.Nil(t, gotNil)
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
 // TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration verifies that
 // when an org member's id matches both a user's deptId and another user's
 // sectId, the dept branch wins and the combined "name tcName" string is
-// surfaced via Member.SectName (the existing wire field for org display).
+// surfaced via Member.OrgName.
 func TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -2001,7 +2274,7 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration(t *testing.
 	got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "Engineering 工程部", got[0].Member.SectName, "dept wins on overlap; name+tcName combined")
+	assert.Equal(t, "Engineering 工程部", got[0].Member.OrgName, "dept wins on overlap; name+tcName combined")
 }
 
 // TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration verifies
@@ -2028,5 +2301,555 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *te
 	got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "Y", got[0].Member.SectName, "no matching users → falls back to member.id")
+	assert.Equal(t, "Y", got[0].Member.OrgName, "no matching users → falls back to member.id")
+}
+
+func TestMongoStore_ListDefaultChannelTabApps(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	apps := []any{
+		bson.M{
+			"_id": "app-z", "name": "Zeta",
+			"channelTab": bson.M{
+				"enabled": true, "default": true, "name": "Zeta",
+				"url": bson.M{"default": "https://upstream/z"},
+			},
+		},
+		bson.M{
+			"_id": "app-a", "name": "Alpha",
+			"channelTab": bson.M{
+				"enabled": true, "default": true, "name": "Alpha",
+				"url": bson.M{"default": "https://upstream/a"},
+			},
+		},
+		bson.M{
+			"_id": "app-disabled", "name": "Disabled",
+			"channelTab": bson.M{
+				"enabled": false, "default": true, "name": "Disabled",
+				"url": bson.M{"default": "https://upstream/d"},
+			},
+		},
+		bson.M{"_id": "app-notabs", "name": "NoTabs"},
+	}
+	_, err := db.Collection("apps").InsertMany(ctx, apps)
+	require.NoError(t, err)
+
+	got, err := store.ListDefaultChannelTabApps(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "app-a", got[0].ID, "expected Alpha first by channelTab.name asc")
+	assert.Equal(t, "app-z", got[1].ID)
+	assert.Equal(t, "Alpha", got[0].ChannelTab.Name)
+	// Projection excludes app.name (response uses channelTab.name).
+	assert.Empty(t, got[0].Name)
+}
+
+func TestMongoStore_ListDefaultChannelTabApps_Empty(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	got, err := store.ListDefaultChannelTabApps(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestMongoStore_ListRoomBotApps(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	// Apps: one enabled bot, one disabled, one without assistant.
+	_, err := db.Collection("apps").InsertMany(ctx, []any{
+		bson.M{"_id": "appA", "name": "Weather",
+			"assistant": bson.M{"enabled": true, "name": "weather.bot"}},
+		bson.M{"_id": "appB", "name": "Stocks",
+			"assistant": bson.M{"enabled": false, "name": "stocks.bot"}},
+		bson.M{"_id": "appC", "name": "NoBot"},
+	})
+	require.NoError(t, err)
+
+	// Subscriptions: roomA has 1 bot (weather, enabled) + 1 disabled bot
+	// (stocks, but assistant.enabled=false should drop it) + 1 human;
+	// roomB has 1 different bot.
+	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
+		bson.M{"_id": "s1", "roomId": "roomA",
+			"u": bson.M{"_id": "ub1", "account": "weather.bot", "isBot": true}},
+		bson.M{"_id": "s2", "roomId": "roomA",
+			"u": bson.M{"_id": "ub2", "account": "stocks.bot", "isBot": true}},
+		bson.M{"_id": "s3", "roomId": "roomA",
+			"u": bson.M{"_id": "uh1", "account": "alice", "isBot": false}},
+		bson.M{"_id": "s4", "roomId": "roomB",
+			"u": bson.M{"_id": "ub3", "account": "other.bot", "isBot": true}},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListRoomBotApps(ctx, "roomA")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "only enabled assistant should join in")
+	assert.Equal(t, "weather.bot", got[0].AssistantName)
+	assert.Equal(t, "Weather", got[0].AppName)
+}
+
+func TestMongoStore_ListRoomBotApps_Empty(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	got, err := store.ListRoomBotApps(context.Background(), "ghost-room")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestMongoStore_ListRoomBotApps_UniqueIndexProtectsAgainstDupes(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(context.Background()))
+	ctx := context.Background()
+
+	_, err := db.Collection("apps").InsertOne(ctx, bson.M{
+		"_id": "appA", "name": "Weather",
+		"assistant": bson.M{"enabled": true, "name": "weather.bot"},
+	})
+	require.NoError(t, err)
+	_, err = db.Collection("subscriptions").InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "roomA",
+		"u": bson.M{"_id": "ub1", "account": "weather.bot", "isBot": true},
+	})
+	require.NoError(t, err)
+	// Duplicate (roomId, u.account) must be rejected by the unique index.
+	_, err = db.Collection("subscriptions").InsertOne(ctx, bson.M{
+		"_id": "s2", "roomId": "roomA",
+		"u": bson.M{"_id": "ub1b", "account": "weather.bot", "isBot": true},
+	})
+	require.Error(t, err)
+	assert.True(t, mongo.IsDuplicateKeyError(err), "expected duplicate-key error from (roomId, u.account) unique index")
+}
+
+func TestMongoStore_ListActiveCmdMenus(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("bot_cmd_menu").InsertMany(ctx, []any{
+		bson.M{"_id": "m1", "name": "weather.bot", "activeStatus": true,
+			"cmdBlocks": []bson.M{{"text": "/forecast"}}},
+		bson.M{"_id": "m2", "name": "weather.bot", "activeStatus": false,
+			"cmdBlocks": []bson.M{{"text": "/old"}}},
+		bson.M{"_id": "m3", "name": "stocks.bot", "activeStatus": true,
+			"cmdBlocks": []bson.M{{"text": "/quote"}}},
+		bson.M{"_id": "m4", "name": "other.bot", "activeStatus": true,
+			"cmdBlocks": []bson.M{{"text": "/x"}}},
+	})
+	require.NoError(t, err)
+
+	got, err := store.ListActiveCmdMenus(ctx, []string{"weather.bot", "stocks.bot"})
+	require.NoError(t, err)
+	require.Len(t, got, 2, "expect only the two active matching rows")
+	assert.Equal(t, "stocks.bot", got[0].Name, "sorted by name asc")
+	assert.Equal(t, "weather.bot", got[1].Name)
+	require.Len(t, got[1].CmdBlocks, 1)
+	assert.Equal(t, "/forecast", got[1].CmdBlocks[0].Text)
+	// Projection drops _id and activeStatus.
+	assert.Empty(t, got[1].ID)
+	assert.False(t, got[1].ActiveStatus)
+}
+
+func TestMongoStore_ListActiveCmdMenus_EmptyInput(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	got, err := store.ListActiveCmdMenus(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestMongoStore_ListActiveCmdMenus_NoMatches(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	got, err := store.ListActiveCmdMenus(context.Background(), []string{"unknown.bot"})
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestMongoStore_EnsureIndexes_NewCompoundIndexes(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(context.Background()))
+
+	type idxCheck struct {
+		coll     string
+		wantKeys bson.D
+	}
+	checks := []idxCheck{
+		{"apps", bson.D{
+			{Key: "channelTab.default", Value: int32(1)},
+			{Key: "channelTab.enabled", Value: int32(1)},
+			{Key: "channelTab.name", Value: int32(1)},
+		}},
+		{"subscriptions", bson.D{
+			{Key: "roomId", Value: int32(1)},
+			{Key: "u.isBot", Value: int32(1)},
+		}},
+		{"bot_cmd_menu", bson.D{
+			{Key: "activeStatus", Value: int32(1)},
+			{Key: "name", Value: int32(1)},
+		}},
+	}
+	ctx := context.Background()
+	for _, c := range checks {
+		cursor, err := db.Collection(c.coll).Indexes().List(ctx)
+		require.NoError(t, err)
+		var idxes []bson.D
+		require.NoError(t, cursor.All(ctx, &idxes))
+		found := false
+		for _, idx := range idxes {
+			var gotKeys bson.D
+			for _, elem := range idx {
+				if elem.Key == "key" {
+					if kd, ok := elem.Value.(bson.D); ok {
+						gotKeys = kd
+					}
+				}
+			}
+			if len(gotKeys) != len(c.wantKeys) {
+				continue
+			}
+			match := true
+			for i, kv := range c.wantKeys {
+				if gotKeys[i].Key != kv.Key || gotKeys[i].Value != kv.Value {
+					match = false
+					break
+				}
+			}
+			if match {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "expected index on %s with keys (in order) %v", c.coll, c.wantKeys)
+	}
+}
+
+// setupRoomsStream creates the ROOMS_{siteID} JetStream stream and returns a JetStream
+// client. The stream captures all chat.room.canonical.{siteID}.* events published by
+// the handler's publishToStream closure.
+func setupRoomsStream(t *testing.T, nc *nats.Conn, siteID string) jetstream.JetStream {
+	t.Helper()
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	cfg := stream.Rooms(siteID)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     cfg.Name,
+		Subjects: cfg.Subjects,
+	})
+	require.NoError(t, err)
+	return js
+}
+
+// drainJetStreamMsg fetches the first available message from a JetStream consumer
+// with a deadline, then acks it and returns the raw data.
+func drainJetStreamMsg(t *testing.T, cons jetstream.Consumer, timeout time.Duration) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(timeout))
+	require.NoError(t, err)
+	select {
+	case msg := <-msgs.Messages():
+		require.NotNil(t, msg)
+		require.NoError(t, msg.Ack())
+		return msg.Data()
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for JetStream message")
+		return nil
+	}
+}
+
+// TestIntegration_RoomRename exercises the room.rename RPC end-to-end through NATS.
+func TestIntegration_RoomRename(t *testing.T) {
+	const siteID = "site-rename"
+
+	t.Run("owner can rename a channel — canonical event published", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-rename")
+		store := NewMongoStore(db)
+		ctx := context.Background()
+
+		natsURL := setupNATS(t)
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = clientNC.Drain() })
+
+		// Set up the ROOMS stream so publishToStream can land events.
+		js := setupRoomsStream(t, clientNC, siteID)
+
+		// Wire a JetStream-backed publishToStream on the handler.
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		handlerJS, err := jetstream.New(handlerNC.NatsConn())
+		require.NoError(t, err)
+
+		publishToStream := func(pCtx context.Context, subj string, data []byte, _ string) error {
+			msg := natsutil.NewMsg(pCtx, subj, data)
+			_, err := handlerJS.PublishMsg(pCtx, msg)
+			return err
+		}
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			publishToStream, func(context.Context, string, []byte) error { return nil }, nil, 0)
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		// Seed: channel room + alice as owner.
+		const roomID = "room-rename-1"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "old-name", Type: model.RoomTypeChannel, SiteID: siteID})
+		mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-alice", Account: "alice"},
+			Roles: []model.Role{model.RoleOwner},
+		})
+
+		// Set up a JetStream consumer to catch the canonical event.
+		cons, err := js.CreateOrUpdateConsumer(ctx, stream.Rooms(siteID).Name, jetstream.ConsumerConfig{
+			Durable:       "test-rename-consumer",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			FilterSubject: subject.RoomCanonical(siteID, "room.rename"),
+		})
+		require.NoError(t, err)
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RenameRoomRequest{NewName: "new-name"})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRename("alice", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		// Assert accepted response.
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(reply.Data, &resp))
+		assert.Equal(t, "accepted", resp["status"])
+		assert.Equal(t, reqID, resp["requestId"])
+
+		// Assert canonical event landed on the stream.
+		raw := drainJetStreamMsg(t, cons, 5*time.Second)
+		var event model.RenameRoomRequest
+		require.NoError(t, json.Unmarshal(raw, &event))
+		assert.Equal(t, roomID, event.RoomID)
+		assert.Equal(t, "new-name", event.NewName)
+		assert.Equal(t, "alice", event.Account)
+		assert.NotZero(t, event.Timestamp)
+	})
+
+	t.Run("non-admin non-owner is rejected", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-rename-reject")
+		store := NewMongoStore(db)
+
+		natsURL := setupNATS(t)
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = clientNC.Drain() })
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			func(context.Context, string, []byte, string) error { return nil },
+			func(context.Context, string, []byte) error { return nil }, nil, 0)
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		const roomID = "room-rename-2"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "my-channel", Type: model.RoomTypeChannel, SiteID: siteID})
+		// bob is a plain member, not an owner or platform admin.
+		mustInsertUser(t, db, &model.User{ID: "u-bob", Account: "bob", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-bob", Account: "bob"},
+			Roles: []model.Role{model.RoleMember},
+		})
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RenameRoomRequest{NewName: "hacked-name"})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRename("bob", roomID, siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		var errResp errcode.Error
+		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+		assert.Contains(t, errResp.Message, "only owners or platform admins can rename a channel")
+	})
+}
+
+// TestIntegration_RoomRestricted exercises the room.restricted server-to-server
+// RPC end-to-end through NATS. The handler does all the work synchronously and
+// the reply carries the actual result.
+func TestIntegration_RoomRestricted(t *testing.T) {
+	const siteID = "site-restricted"
+
+	t.Run("admin syncs restricted state — sys message published + Mongo updated", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-restricted")
+		store := NewMongoStore(db)
+		ctx := context.Background()
+
+		natsURL := setupNATS(t)
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = clientNC.Drain() })
+
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		// Capture publishes via the handler's stream-publish callback so we can
+		// assert the sys message lands without standing up the MESSAGES_CANONICAL
+		// stream just for this test.
+		type captured struct {
+			subj string
+			data []byte
+		}
+		var (
+			mu   sync.Mutex
+			pubs []captured
+		)
+		publishToStream := func(_ context.Context, subj string, data []byte, _ string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			pubs = append(pubs, captured{subj: subj, data: cp})
+			return nil
+		}
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			publishToStream, func(context.Context, string, []byte) error { return nil }, nil, 0)
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		// Seed: channel room + admin + 5 members (the restricted-transition
+		// guard requires UserCount >= 5).
+		const roomID = "room-restricted-1"
+		mustInsertRoom(t, db, &model.Room{
+			ID: roomID, Name: "big-channel", Type: model.RoomTypeChannel,
+			SiteID: siteID, UserCount: 5,
+		})
+		mustInsertUser(t, db, &model.User{
+			ID: "u-admin1", Account: "admin1", SiteID: siteID,
+			Roles: []model.UserRole{model.UserRoleAdmin},
+		})
+		for i := 0; i < 5; i++ {
+			mustInsertSub(t, db, &model.Subscription{
+				ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+				User: model.SubscriptionUser{
+					ID:      fmt.Sprintf("u-member-%d", i),
+					Account: fmt.Sprintf("member%d", i),
+				},
+				Roles: []model.Role{model.RoleMember},
+			})
+		}
+		mustInsertSub(t, db, &model.Subscription{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID, SiteID: siteID,
+			User:  model.SubscriptionUser{ID: "u-admin1", Account: "admin1"},
+			Roles: []model.Role{model.RoleMember},
+		})
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RoomRestrictedRequest{
+			RoomID: roomID, Account: "admin1",
+			Restricted:   true,
+			OwnerAccount: "admin1",
+		})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRestricted(siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		// Sync reply confirms the actual result.
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(reply.Data, &resp))
+		assert.Equal(t, "ok", resp["status"])
+		assert.Equal(t, reqID, resp["requestId"])
+
+		// Mongo: room flags updated.
+		updatedRoom, err := store.GetRoom(ctx, roomID)
+		require.NoError(t, err)
+		assert.True(t, updatedRoom.Restricted)
+
+		// Sys message published to canonical messages stream.
+		mu.Lock()
+		var sawSysMsg bool
+		for _, p := range pubs {
+			if p.subj == subject.MsgCanonicalCreated(siteID) {
+				sawSysMsg = true
+				var msgEvt model.MessageEvent
+				require.NoError(t, json.Unmarshal(p.data, &msgEvt))
+				assert.Equal(t, model.MessageTypeRoomRestricted, msgEvt.Message.Type)
+			}
+		}
+		mu.Unlock()
+		assert.True(t, sawSysMsg, "expected room_restricted sys message to be published")
+	})
+
+	t.Run("non-admin requester is rejected", func(t *testing.T) {
+		db := testutil.MongoDB(t, "room-service-restricted-reject")
+		store := NewMongoStore(db)
+
+		natsURL := setupNATS(t)
+		handlerNC, err := otelnats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handlerNC.Drain() })
+
+		clientNC, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = clientNC.Drain() })
+
+		keyStore := setupValkey(t)
+		h := NewHandler(store, keyStore, nil, nil, siteID, 1000, 500, 5*time.Second, 5,
+			func(context.Context, string, []byte, string) error { return nil },
+			func(context.Context, string, []byte) error { return nil }, nil, 0)
+		require.NoError(t, h.RegisterCRUD(handlerNC))
+		require.NoError(t, handlerNC.NatsConn().Flush())
+
+		const roomID = "room-restricted-2"
+		mustInsertRoom(t, db, &model.Room{ID: roomID, Name: "my-channel", Type: model.RoomTypeChannel, SiteID: siteID, UserCount: 5})
+		mustInsertUser(t, db, &model.User{ID: "u-carol", Account: "carol", SiteID: siteID, Roles: []model.UserRole{model.UserRoleUser}})
+
+		reqID := idgen.GenerateRequestID()
+		body, err := json.Marshal(model.RoomRestrictedRequest{
+			RoomID: roomID, Account: "carol", Restricted: true,
+		})
+		require.NoError(t, err)
+
+		msg := &nats.Msg{
+			Subject: subject.RoomRestricted(siteID),
+			Data:    body,
+			Header:  nats.Header{natsutil.RequestIDHeader: []string{reqID}},
+		}
+		reply, err := clientNC.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+
+		var errResp errcode.Error
+		require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+		assert.Contains(t, errResp.Message, "only admins can change room restricted state")
+	})
 }

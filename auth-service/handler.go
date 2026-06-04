@@ -13,6 +13,8 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errhttp"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
@@ -74,26 +76,33 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
+	ctx := errcode.WithLogValues(c.Request.Context(), "request_id", c.GetString("request_id"))
+
 	var req authRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ssoToken and natsPublicKey are required"})
+		errhttp.Write(ctx, c, errcode.BadRequest("ssoToken and natsPublicKey are required",
+			errcode.WithReason(errcode.AuthMissingFields)))
 		return
 	}
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		errhttp.Write(ctx, c, errcode.BadRequest("invalid natsPublicKey format",
+			errcode.WithReason(errcode.AuthInvalidNKey)))
 		return
 	}
 
-	claims, err := h.validator.Validate(c.Request.Context(), req.SSOToken)
+	claims, err := h.validator.Validate(ctx, req.SSOToken)
 	if err != nil {
 		if errors.Is(err, pkgoidc.ErrTokenExpired) {
-			slog.Warn("sso token expired", "error", err)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "SSO token has expired, please re-login"})
+			errhttp.Write(ctx, c, errcode.Unauthenticated("SSO token has expired, please re-login",
+				errcode.WithReason(errcode.AuthTokenExpired)))
 			return
 		}
-		slog.Error("oidc validation failed", "error", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid SSO token"})
+		// Non-expiry failures surface as "invalid SSO token"; attach the raw
+		// cause so the server log carries the actual reason.
+		errhttp.Write(ctx, c, errcode.Unauthenticated("invalid SSO token",
+			errcode.WithReason(errcode.AuthInvalidToken),
+			errcode.WithCause(err)))
 		return
 	}
 
@@ -101,11 +110,17 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 	if account == "" {
 		account = claims.Name
 	}
+	if account == "" {
+		// Blank account would mint a JWT with chat.user..> permissions — refuse.
+		errhttp.Write(ctx, c, errcode.Unauthenticated("token missing account claim",
+			errcode.WithReason(errcode.AuthInvalidToken)))
+		return
+	}
+	ctx = errcode.WithLogValues(ctx, "account", account)
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {
-		slog.Error("nats jwt signing failed", "error", err, "account", account)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
+		errhttp.Write(ctx, c, fmt.Errorf("generating NATS token: %w", err))
 		return
 	}
 
@@ -131,21 +146,26 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 // handleDevAuth handles auth in dev mode: accepts account name directly
 // without OIDC validation, for use during local development only.
 func (h *AuthHandler) handleDevAuth(c *gin.Context) {
+	ctx := errcode.WithLogValues(c.Request.Context(), "request_id", c.GetString("request_id"))
+
 	var req devAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account and natsPublicKey are required"})
+		errhttp.Write(ctx, c, errcode.BadRequest("account and natsPublicKey are required",
+			errcode.WithReason(errcode.AuthMissingFields)))
 		return
 	}
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		errhttp.Write(ctx, c, errcode.BadRequest("invalid natsPublicKey format",
+			errcode.WithReason(errcode.AuthInvalidNKey)))
 		return
 	}
 
+	ctx = errcode.WithLogValues(ctx, "account", req.Account)
+
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, req.Account)
 	if err != nil {
-		slog.Error("nats jwt signing failed", "error", err, "account", req.Account)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
+		errhttp.Write(ctx, c, fmt.Errorf("generating NATS token: %w", err))
 		return
 	}
 

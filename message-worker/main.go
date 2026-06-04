@@ -13,6 +13,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/msgbucket"
@@ -39,8 +40,12 @@ type config struct {
 	MongoDB            string                  `env:"MONGO_DB"             envDefault:"chat"`
 	MongoUsername      string                  `env:"MONGO_USERNAME"       envDefault:""`
 	MongoPassword      string                  `env:"MONGO_PASSWORD"       envDefault:""`
+	UserCacheSize      int                     `env:"USER_CACHE_SIZE"      envDefault:"10000"`
+	UserCacheTTL       time.Duration           `env:"USER_CACHE_TTL"       envDefault:"5m"`
 	Consumer           stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap          bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	Atrest             atrest.Config
+	Vault              atrest.VaultConfig
 }
 
 func main() {
@@ -97,9 +102,30 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	us := userstore.NewMongoStore(db.Collection("users"))
+	us, err := userstore.NewCache(userstore.NewMongoStore(db.Collection("users")),
+		cfg.UserCacheSize, cfg.UserCacheTTL)
+	if err != nil {
+		slog.Error("init user cache failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
 
-	store := NewCassandraStore(cassSession, bucketSizer)
+	var (
+		cipher       atrest.Cipher
+		vaultWrapper atrest.KeyWrapperCloser
+	)
+	if cfg.Atrest.Enabled {
+		w, err := atrest.NewVaultKeyWrapper(ctx, cfg.Vault)
+		if err != nil {
+			slog.Error("failed to construct Vault key wrapper", "addr", cfg.Vault.Address, "error", err)
+			os.Exit(1)
+		}
+		vaultWrapper = w
+		dekColl := db.Collection(atrest.CollectionName)
+		cipher = atrest.NewCipher(w, atrest.NewMongoDEKStore(dekColl), cfg.Atrest)
+	}
+
+	store := NewCassandraStore(cassSession, bucketSizer, cipher)
 	threadStore := newThreadStoreMongo(db)
 	if err := threadStore.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure thread store indexes failed", "error", err)
@@ -153,7 +179,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}
@@ -180,6 +206,12 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error {
+			if vaultWrapper != nil {
+				return vaultWrapper.Close()
+			}
+			return nil
+		},
 	)
 }
 

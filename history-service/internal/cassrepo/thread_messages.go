@@ -14,7 +14,8 @@ import (
 const threadMessageColumns = "room_id, thread_room_id, created_at, message_id, thread_parent_id, " +
 	"sender, msg, mentions, attachments, file, card, card_action, " +
 	"quoted_parent_message, visible_to, reactions, deleted, " +
-	"type, sys_msg_data, site_id, edited_at, updated_at"
+	"type, sys_msg_data, site_id, edited_at, updated_at, " +
+	"enc_payload, enc_meta"
 
 // Cross-room safety lives in the service layer (findMessage's msg.RoomID check) —
 // the table partitions by thread_room_id alone so room_id never enters the query.
@@ -29,13 +30,14 @@ func (r *Repository) GetThreadMessages(
 		threadRoomID, before, floor,
 	).WithContext(ctx)
 
+	scan := r.scanMessagesUpTo(ctx)
 	var rows []models.Message
 	var scanErr error
 	nextCursor, err := NewQueryBuilder(q).
 		WithCursor(pageReq.Cursor).
 		WithPageSize(pageReq.PageSize).
 		Fetch(func(iter *gocql.Iter) {
-			rows, scanErr = scanMessagesUpTo(iter, pageReq.PageSize)
+			rows, scanErr = scan(iter, pageReq.PageSize)
 		})
 	if err != nil {
 		return Page[models.Message]{}, fmt.Errorf("get thread messages: %w", err)
