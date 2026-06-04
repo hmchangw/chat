@@ -744,19 +744,9 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	}
 
 	now := time.Now().UTC()
-	subEvt := model.SubscriptionUpdateEvent{
-		UserID:       sub.User.ID,
-		Subscription: *sub,
-		Action:       "role_updated",
-		Timestamp:    now.UnixMilli(),
-	}
-	subEvtData, err := json.Marshal(subEvt)
+	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, now)
 	if err != nil {
-		return nil, fmt.Errorf("marshal subscription update event: %w", err)
-	}
-	if err := h.publishCore(ctx, subject.SubscriptionUpdate(req.Account), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err, "account", req.Account)
-		// Non-fatal — the DB write is the source of truth; clients reconcile on next refetch.
+		return nil, err
 	}
 
 	userSiteID, err := h.store.GetUserSiteID(ctx, req.Account)
@@ -781,6 +771,28 @@ func (h *Handler) handleUpdateRole(ctx context.Context, subj string, data []byte
 	}
 
 	return json.Marshal(map[string]string{"status": "ok"})
+}
+
+// publishSubscriptionUpdate marshals a SubscriptionUpdateEvent for sub with the
+// given action and best-effort publishes it to the account's subscription.update
+// subject over core NATS. A publish failure is logged, not returned — the DB
+// write is the source of truth; clients reconcile on next refetch. Returns the
+// marshaled event so callers can reuse it (e.g. as a cross-site outbox payload).
+func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action string, sub *model.Subscription, ts time.Time) ([]byte, error) {
+	subEvt := model.SubscriptionUpdateEvent{
+		UserID:       sub.User.ID,
+		Subscription: *sub,
+		Action:       action,
+		Timestamp:    ts.UnixMilli(),
+	}
+	data, err := json.Marshal(subEvt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal subscription update event: %w", err)
+	}
+	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), data); err != nil {
+		slog.Error("subscription update publish failed", "error", err, "account", account)
+	}
+	return data, nil
 }
 
 func (h *Handler) natsAddMembers(m otelnats.Msg) {
@@ -1906,19 +1918,8 @@ func (h *Handler) handleMuteToggle(ctx context.Context, subj string, _ []byte) (
 
 	now := time.Now().UTC()
 
-	subEvt := model.SubscriptionUpdateEvent{
-		UserID:       sub.User.ID,
-		Subscription: *sub,
-		Action:       "mute_toggled",
-		Timestamp:    now.UnixMilli(),
-	}
-	subEvtData, err := json.Marshal(subEvt)
-	if err != nil {
-		return nil, fmt.Errorf("marshal subscription update event: %w", err)
-	}
-	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err, "account", account)
-		// Non-fatal — the DB write is the source of truth; clients will reconcile on next refetch.
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, now); err != nil {
+		return nil, err
 	}
 
 	// Canonical room-stream event consumed by notification-worker for cache invalidation.
@@ -2009,19 +2010,8 @@ func (h *Handler) handleFavoriteToggle(ctx context.Context, subj string, _ []byt
 
 	now := time.Now().UTC()
 
-	subEvt := model.SubscriptionUpdateEvent{
-		UserID:       sub.User.ID,
-		Subscription: *sub,
-		Action:       "favorite_toggled",
-		Timestamp:    now.UnixMilli(),
-	}
-	subEvtData, err := json.Marshal(subEvt)
-	if err != nil {
-		return nil, fmt.Errorf("marshal subscription update event: %w", err)
-	}
-	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), subEvtData); err != nil {
-		slog.Error("subscription update publish failed", "error", err, "account", account)
-		// Non-fatal — the DB write is the source of truth; clients will reconcile on next refetch.
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, now); err != nil {
+		return nil, err
 	}
 
 	userSiteID, err := h.store.GetUserSiteID(ctx, account)

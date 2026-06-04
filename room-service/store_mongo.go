@@ -911,56 +911,45 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 }
 
 // ToggleSubscriptionMute atomically flips muted via FindOneAndUpdate.
-// $ifNull treats absent field as false so legacy docs toggle to true on first call.
+// findOneAndUpdateSub applies an aggregation-pipeline $set to the subscription
+// keyed by (roomID, account) and returns the post-update document. op names the
+// operation for error wrapping; mongo.ErrNoDocuments maps to
+// model.ErrSubscriptionNotFound.
+func (s *MongoStore) findOneAndUpdateSub(ctx context.Context, roomID, account, op string, set bson.M) (*model.Subscription, error) {
+	filter := bson.M{"roomId": roomID, "u.account": account}
+	update := mongo.Pipeline{bson.D{{Key: "$set", Value: set}}}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var result model.Subscription
+	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("%s for %q in room %q: %w", op, account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return nil, fmt.Errorf("%s for %q in room %q: %w", op, account, roomID, err)
+	}
+	return &result, nil
+}
+
+// ToggleSubscriptionMute flips muted. $ifNull treats an absent field as false so
+// legacy docs toggle to true on first call.
 func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
-	filter := bson.M{"roomId": roomID, "u.account": account}
-	update := mongo.Pipeline{
-		bson.D{{Key: "$set", Value: bson.M{
-			"muted": bson.M{"$not": bson.A{
-				bson.M{"$ifNull": bson.A{"$muted", false}},
-			}},
-		}}},
-	}
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-
-	var result model.Subscription
-	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
-		}
-		return nil, fmt.Errorf("toggle mute for %q in room %q: %w", account, roomID, err)
-	}
-	return &result, nil
+	return s.findOneAndUpdateSub(ctx, roomID, account, "toggle mute", bson.M{
+		"muted": bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$muted", false}}}},
+	})
 }
 
-// ToggleSubscriptionFavorite: $ifNull treats absent field as false so legacy docs toggle to true on first call.
+// ToggleSubscriptionFavorite flips favorite. $ifNull treats an absent field as
+// false so legacy docs toggle to true on first call.
 func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error) {
-	filter := bson.M{"roomId": roomID, "u.account": account}
-	update := mongo.Pipeline{
-		bson.D{{Key: "$set", Value: bson.M{
-			"favorite": bson.M{"$not": bson.A{
-				bson.M{"$ifNull": bson.A{"$favorite", false}},
-			}},
-		}}},
-	}
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-
-	var result model.Subscription
-	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("toggle favorite for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
-		}
-		return nil, fmt.Errorf("toggle favorite for %q in room %q: %w", account, roomID, err)
-	}
-	return &result, nil
+	return s.findOneAndUpdateSub(ctx, roomID, account, "toggle favorite", bson.M{
+		"favorite": bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$favorite", false}}}},
+	})
 }
 
-// SetOwnerRole atomically grants or revokes the owner role via a single
-// aggregation-pipeline FindOneAndUpdate, returning the updated subscription.
-// Promote appends "owner" only when absent; demote filters "owner" out. Any
-// other roles (e.g. "member") are preserved and array order stays stable.
+// SetOwnerRole atomically grants or revokes the owner role, returning the updated
+// subscription. Promote appends "owner" only when absent; demote filters "owner"
+// out. Any other roles (e.g. "member") are preserved and array order stays stable.
 func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error) {
-	filter := bson.M{"roomId": roomID, "u.account": account}
 	currentRoles := bson.M{"$ifNull": bson.A{"$roles", bson.A{}}}
 	var rolesExpr bson.M
 	if makeOwner {
@@ -983,19 +972,7 @@ func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, m
 			"else": bson.M{"$concatArrays": bson.A{withoutOwner, bson.A{model.RoleMember}}},
 		}}
 	}
-	update := mongo.Pipeline{
-		bson.D{{Key: "$set", Value: bson.M{"roles": rolesExpr}}},
-	}
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-
-	var result model.Subscription
-	if err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("set owner role for %q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
-		}
-		return nil, fmt.Errorf("set owner role for %q in room %q: %w", account, roomID, err)
-	}
-	return &result, nil
+	return s.findOneAndUpdateSub(ctx, roomID, account, "set owner role", bson.M{"roles": rolesExpr})
 }
 
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
