@@ -5252,7 +5252,7 @@ func TestHandler_handleGetRoomAppTabs_MemberAllowed(t *testing.T) {
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	require.Len(t, resp.Apps, 1)
 	assert.Equal(t, "app1", resp.Apps[0].ID)
@@ -5274,7 +5274,7 @@ func TestHandler_handleGetRoomAppTabs_AdminAllowed(t *testing.T) {
 	store.EXPECT().ListDefaultChannelTabApps(gomock.Any()).Return([]model.App{}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	assert.Empty(t, resp.Apps)
 }
@@ -5287,7 +5287,7 @@ func TestHandler_handleGetRoomAppTabs_Denied(t *testing.T) {
 		Return(&model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	assert.ErrorIs(t, err, errAppAccessDenied)
 }
 
@@ -5299,7 +5299,7 @@ func TestHandler_handleGetRoomAppTabs_DeniedNoUser(t *testing.T) {
 		Return(nil, ErrUserNotFound)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	assert.ErrorIs(t, err, errAppAccessDenied)
 }
 
@@ -5310,7 +5310,7 @@ func TestHandler_handleGetRoomAppTabs_EmptyResultIsEmptyArray(t *testing.T) {
 	store.EXPECT().ListDefaultChannelTabApps(gomock.Any()).Return(nil, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	assert.NotNil(t, resp.Apps, "must initialize empty slice, not nil, so JSON marshals to []")
 	assert.Len(t, resp.Apps, 0)
@@ -5328,7 +5328,7 @@ func TestHandler_handleGetRoomAppTabs_URLRewritePathPrefix(t *testing.T) {
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	assert.Equal(t, "https://chat.example.com/chat/tab/r1", resp.Apps[0].TabURL)
 }
@@ -5342,7 +5342,7 @@ func TestHandler_handleGetRoomAppTabs_URLRewriteStripsUserinfo(t *testing.T) {
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	assert.NotContains(t, resp.Apps[0].TabURL, "user")
 	assert.NotContains(t, resp.Apps[0].TabURL, "pass")
@@ -5358,7 +5358,7 @@ func TestHandler_handleGetRoomAppTabs_URLRewritePreservesQueryAndFragment(t *tes
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	assert.Equal(t, "https://chat.example.com/path?room=r1#tab=site-a", resp.Apps[0].TabURL)
 }
@@ -5375,7 +5375,7 @@ func TestHandler_handleGetRoomAppTabs_URLRewriteSkipsEmptyAndMalformed(t *testin
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	require.Len(t, resp.Apps, 2, "empty and malformed must be skipped")
 	assert.Equal(t, "ok1", resp.Apps[0].ID)
@@ -5394,7 +5394,7 @@ func TestHandler_handleGetRoomAppTabs_SkipsAppWithNilChannelTab(t *testing.T) {
 	}, nil)
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.NoError(t, err)
 	require.Len(t, resp.Apps, 1, "app with nil ChannelTab must be skipped")
 	assert.Equal(t, "ok1", resp.Apps[0].ID)
@@ -5402,7 +5402,7 @@ func TestHandler_handleGetRoomAppTabs_SkipsAppWithNilChannelTab(t *testing.T) {
 
 func TestHandler_handleGetRoomAppTabs_InvalidSubject(t *testing.T) {
 	h, _, _ := newTabsTestHandler(t, "https://chat.example.com")
-	_, err := h.handleGetRoomAppTabs(context.Background(), "not.a.valid.subject", nil)
+	_, err := h.handleGetRoomAppTabs(context.Background(), "not.a.valid.subject")
 	assert.Error(t, err)
 }
 
@@ -5414,7 +5414,7 @@ func TestHandler_handleGetRoomAppTabs_StoreListError(t *testing.T) {
 		Return(nil, errors.New("mongo down"))
 
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppTabs(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppTabs(context.Background(), subj)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mongo down")
 }
@@ -5430,7 +5430,7 @@ func TestHandler_handleGetRoomAppTabs_ContextTimeout(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	subj := subject.RoomAppTabs("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppTabs(parent, subj, nil)
+	_, err := h.handleGetRoomAppTabs(parent, subj)
 	require.Error(t, err)
 	assert.True(t,
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),

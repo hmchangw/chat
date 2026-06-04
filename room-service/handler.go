@@ -2114,7 +2114,7 @@ func (h *Handler) buildTabURL(tmpl, roomID string) (string, bool) {
 	return joined.String(), true
 }
 
-func (h *Handler) handleGetRoomAppTabs(ctx context.Context, subj string, _ []byte) (model.GetRoomAppTabsResponse, error) {
+func (h *Handler) handleGetRoomAppTabs(ctx context.Context, subj string) (model.GetRoomAppTabsResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -2246,7 +2246,7 @@ func (h *Handler) natsGetRoomAppTabs(m otelnats.Msg) {
 		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
-	resp, err := h.handleGetRoomAppTabs(ctx, m.Msg.Subject, m.Msg.Data)
+	resp, err := h.handleGetRoomAppTabs(ctx, m.Msg.Subject)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
 		return
