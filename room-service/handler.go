@@ -2167,7 +2167,7 @@ func (h *Handler) handleGetRoomAppTabs(ctx context.Context, subj string, _ []byt
 	return model.GetRoomAppTabsResponse{Apps: out}, nil
 }
 
-func (h *Handler) handleGetRoomAppCommandMenu(ctx context.Context, subj string, _ []byte) (model.GetRoomAppCommandMenuResponse, error) {
+func (h *Handler) handleGetRoomAppCommandMenu(ctx context.Context, subj string) (model.GetRoomAppCommandMenuResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -2232,7 +2232,7 @@ func (h *Handler) natsGetRoomAppCommandMenu(m otelnats.Msg) {
 		errnats.Reply(ctx, m.Msg, err)
 		return
 	}
-	resp, err := h.handleGetRoomAppCommandMenu(ctx, m.Msg.Subject, m.Msg.Data)
+	resp, err := h.handleGetRoomAppCommandMenu(ctx, m.Msg.Subject)
 	if err != nil {
 		errnats.Reply(ctx, m.Msg, err)
 		return

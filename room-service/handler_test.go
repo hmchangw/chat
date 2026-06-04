@@ -5452,7 +5452,7 @@ func TestHandler_handleGetRoomAppCommandMenu_MemberAllowed_NoBots(t *testing.T) 
 	// ListActiveCmdMenus must NOT be called.
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.NoError(t, err)
 	assert.NotNil(t, resp.AppAssistants)
 	assert.Len(t, resp.AppAssistants, 0)
@@ -5476,7 +5476,7 @@ func TestHandler_handleGetRoomAppCommandMenu_MemberAllowed_WithMenus(t *testing.
 		}, nil)
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.NoError(t, err)
 	require.Len(t, resp.AppAssistants, 2)
 	assert.Equal(t, "Stocks", resp.AppAssistants[0].AppName)
@@ -5498,7 +5498,7 @@ func TestHandler_handleGetRoomAppCommandMenu_MemberAllowed_BotWithoutMenu(t *tes
 		Return([]model.BotCmdMenu{}, nil)
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.NoError(t, err)
 	require.Len(t, resp.AppAssistants, 1)
 	assert.Equal(t, "Silent", resp.AppAssistants[0].AppName)
@@ -5517,7 +5517,7 @@ func TestHandler_handleGetRoomAppCommandMenu_AdminAllowed(t *testing.T) {
 	store.EXPECT().ListRoomBotApps(gomock.Any(), "r1").Return([]RoomBotAppEntry{}, nil)
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	resp, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.NoError(t, err)
 	assert.Len(t, resp.AppAssistants, 0)
 }
@@ -5530,13 +5530,13 @@ func TestHandler_handleGetRoomAppCommandMenu_Denied(t *testing.T) {
 		Return(&model.User{Account: "alice"}, nil)
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	assert.ErrorIs(t, err, errAppAccessDenied)
 }
 
 func TestHandler_handleGetRoomAppCommandMenu_InvalidSubject(t *testing.T) {
 	h, _ := newCmdMenuTestHandler(t)
-	_, err := h.handleGetRoomAppCommandMenu(context.Background(), "not.a.valid.subject", nil)
+	_, err := h.handleGetRoomAppCommandMenu(context.Background(), "not.a.valid.subject")
 	assert.Error(t, err)
 }
 
@@ -5547,7 +5547,7 @@ func TestHandler_handleGetRoomAppCommandMenu_StoreListRoomBotAppsError(t *testin
 	store.EXPECT().ListRoomBotApps(gomock.Any(), "r1").Return(nil, errors.New("mongo down"))
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mongo down")
 }
@@ -5563,7 +5563,7 @@ func TestHandler_handleGetRoomAppCommandMenu_StoreListActiveCmdMenusError(t *tes
 		Return(nil, errors.New("mongo down"))
 
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj, nil)
+	_, err := h.handleGetRoomAppCommandMenu(context.Background(), subj)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mongo down")
 }
@@ -5579,7 +5579,7 @@ func TestHandler_handleGetRoomAppCommandMenu_ContextTimeout(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	subj := subject.RoomAppCmdMenu("alice", "r1", "site-a")
-	_, err := h.handleGetRoomAppCommandMenu(parent, subj, nil)
+	_, err := h.handleGetRoomAppCommandMenu(parent, subj)
 	require.Error(t, err)
 	assert.True(t,
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
