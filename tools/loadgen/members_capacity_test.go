@@ -128,3 +128,79 @@ func TestMembersHeavy_SustainsThousandRPS(t *testing.T) {
 			"room %s baseline+pool must fit under MAX_ROOM_SIZE", roomID)
 	}
 }
+
+func TestValidateCapacityTarget(t *testing.T) {
+	// Each room grows by full users-per-add batches, so a room of pool P reaches
+	// baseline + ⌊P/usersPerAdd⌋*usersPerAdd at most.
+	tests := []struct {
+		name         string
+		pools        CandidatePools
+		baseline     int
+		targetSize   int
+		usersPerAdd  int
+		wantErr      bool
+		wantContains []string
+	}{
+		{
+			name:     "target below baseline is a no-op",
+			pools:    CandidatePools{"r1": make([]string, 0)},
+			baseline: 10, targetSize: 5, usersPerAdd: 10,
+			wantErr: false,
+		},
+		{
+			name:     "zero usersPerAdd guarded by caller",
+			pools:    CandidatePools{"r1": make([]string, 50)},
+			baseline: 10, targetSize: 100, usersPerAdd: 0,
+			wantErr: false,
+		},
+		{
+			name:     "every room reaches target",
+			pools:    CandidatePools{"r1": make([]string, 100), "r2": make([]string, 100)},
+			baseline: 10, targetSize: 100, usersPerAdd: 10, // need 9 batches, have 10
+			wantErr: false,
+		},
+		{
+			name:     "a room falls short",
+			pools:    CandidatePools{"r1": make([]string, 100), "r2": make([]string, 50)},
+			baseline: 10, targetSize: 100, usersPerAdd: 10, // r2 has 5 batches < 9 needed
+			wantErr:      true,
+			wantContains: []string{"members-x", "target-size=100", "--target-size to 60"}, // 10 + 5*10
+		},
+		{
+			name:     "pool below one batch reaches only baseline",
+			pools:    CandidatePools{"r1": make([]string, 9)},
+			baseline: 10, targetSize: 11, usersPerAdd: 10, // need 1 batch, have 0
+			wantErr:      true,
+			wantContains: []string{"--target-size to 10"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateCapacityTarget("members-x", tc.pools, tc.baseline, tc.targetSize, tc.usersPerAdd)
+			if !tc.wantErr {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInsufficientPool))
+			for _, sub := range tc.wantContains {
+				assert.Contains(t, err.Error(), sub)
+			}
+		})
+	}
+}
+
+// members-capacity must clear its preflight at the documented growth target.
+func TestMembersCapacity_ReachesDocumentedTarget(t *testing.T) {
+	p, ok := BuiltinMembersPreset("members-capacity")
+	require.True(t, ok)
+	_, pools := BuildMembersFixtures(&p, 42, "site-A")
+
+	require.NoError(t,
+		ValidateCapacityTarget(p.Name, pools, p.BaselineSize, 500, 10),
+		"members-capacity must reach target-size=500")
+	// Asking past baseline+pool must be rejected with the reachable ceiling.
+	err := ValidateCapacityTarget(p.Name, pools, p.BaselineSize, p.BaselineSize+p.CandidatePool+1, 10)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInsufficientPool))
+}

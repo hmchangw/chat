@@ -171,7 +171,11 @@ for the rationale and the v2 plan.
 - **Capacity mode**: the size-bucket table shows latency at four
   size ranges; the `final sizes` block confirms each room hit
   `--target-size`. A row with `count > 0` whose `e2_p99` is much larger
-  than smaller-size buckets indicates a per-room-size degradation.
+  than smaller-size buckets indicates a per-room-size degradation. Like
+  sustained mode, capacity mode **refuses to start** if `--target-size`
+  is unreachable from the preset's per-room pool (`baseline +
+  ⌊pool ÷ users-per-add⌋ × users-per-add`); it prints the reachable
+  ceiling — lower `--target-size` or pick a larger preset.
 
 ## History workload (LoadHistory / GetThreadMessages benchmark)
 

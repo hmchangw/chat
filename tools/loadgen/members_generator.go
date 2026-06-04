@@ -53,7 +53,7 @@ var ErrPoolsExhausted = errors.New("candidate pool exhausted on every room: rate
 // with the specifics) when the requested rate/duration would consume more
 // candidates than the preset's pools can supply. It exists so callers can
 // match the preflight failure with errors.Is.
-var ErrInsufficientPool = errors.New("insufficient candidate pool for requested rate and duration")
+var ErrInsufficientPool = errors.New("insufficient candidate pool for requested workload")
 
 // SustainableOps returns the maximum number of add-member publishes the given
 // candidate pools can supply at usersPerAdd accounts each. A candidate is
@@ -104,6 +104,41 @@ func ValidateSustainedCapacity(presetName string, pools CandidatePools, rate int
 		"preset %q candidate pools supply at most %d add-member ops at users-per-add=%d, "+
 			"but rate=%d/s × duration=%s needs ~%d ops; %s: %w",
 		presetName, capacity, usersPerAdd, rate, duration, demand, advice, ErrInsufficientPool,
+	)
+}
+
+// ValidateCapacityTarget is the preflight guard for members-capacity. Capacity
+// mode grows each room to targetSize by adding usersPerAdd members per batch and
+// never sends a final partial batch, so a room with pool P reaches at most
+// baseline + ⌊P/usersPerAdd⌋·usersPerAdd. The binding constraint is per-room
+// pool depth (not aggregate throughput), so this fails fast when any room can't
+// reach targetSize, naming how many rooms fall short and the reachable ceiling.
+func ValidateCapacityTarget(presetName string, pools CandidatePools, baselineSize, targetSize, usersPerAdd int) error {
+	if usersPerAdd <= 0 || targetSize <= baselineSize {
+		return nil // nothing to grow, or usersPerAdd validated by the caller
+	}
+	batchesNeeded := (targetSize - baselineSize + usersPerAdd - 1) / usersPerAdd
+	short := 0
+	minBatches := -1
+	for _, pool := range pools {
+		batches := len(pool) / usersPerAdd
+		if batches < batchesNeeded {
+			short++
+			if minBatches < 0 || batches < minBatches {
+				minBatches = batches
+			}
+		}
+	}
+	if short == 0 {
+		return nil
+	}
+	maxTarget := baselineSize + minBatches*usersPerAdd
+	return fmt.Errorf(
+		"preset %q cannot grow %d/%d rooms to target-size=%d at users-per-add=%d: "+
+			"reaching it needs %d add batches/room but the thinnest pool supplies %d; "+
+			"lower --target-size to %d or pick a larger preset: %w",
+		presetName, short, len(pools), targetSize, usersPerAdd,
+		batchesNeeded, minBatches, maxTarget, ErrInsufficientPool,
 	)
 }
 

@@ -530,6 +530,15 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 
+	// Preflight: capacity mode grows each room to target-size from its single-use
+	// pool. Build the deterministic fixtures up front and reject an unreachable
+	// target before any NATS/store work instead of silently under-filling rooms.
+	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
+	if err := ValidateCapacityTarget(p.Name, pools, p.BaselineSize, *targetSize, *usersPerAdd); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
 	nc, err := natsutil.Connect(cfg.NatsURL, cfg.NatsCredsFile)
 	if err != nil {
 		slog.Error("nats connect", "error", err)
@@ -553,7 +562,6 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 		}
 	}()
 
-	fixtures, pools := BuildMembersFixtures(&p, *seed, cfg.SiteID)
 	owners := OwnersByRoom(&fixtures)
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
