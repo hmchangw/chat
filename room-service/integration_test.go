@@ -2281,6 +2281,23 @@ func TestMongoStore_SetOwnerRole_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []model.Role{model.RoleMember}, got.Roles)
 
+	// Channel-creator parity: an owner seeded WITHOUT member (roles ["owner"], as
+	// processCreateRoom assigns the creator) must demote to ["member"], never [].
+	creator := &model.Subscription{
+		ID:       idgen.GenerateUUIDv7(),
+		User:     model.SubscriptionUser{ID: "u2", Account: "carol"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleOwner},
+		JoinedAt: time.Now().UTC(),
+	}
+	mustInsertSub(t, db, creator)
+
+	got, err = store.SetOwnerRole(ctx, "r1", "carol", false)
+	require.NoError(t, err)
+	assert.Equal(t, []model.Role{model.RoleMember}, got.Roles, "demoting an owner-only creator must yield [member], never []")
+
 	// Missing subscription → ErrSubscriptionNotFound (wrapped).
 	gotNil, err := store.SetOwnerRole(ctx, "missing", "alice", true)
 	assert.Nil(t, gotNil)

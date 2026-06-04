@@ -970,9 +970,17 @@ func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, m
 			"else": bson.M{"$concatArrays": bson.A{currentRoles, bson.A{model.RoleOwner}}},
 		}}
 	} else {
-		rolesExpr = bson.M{"$filter": bson.M{
+		// Remove owner, then ensure member is still present. Mirrors the worker's
+		// old "AddRole(member) before RemoveRole(owner)" guard so a channel creator
+		// (seeded roles ["owner"] only) demotes to ["member"], never an empty array.
+		withoutOwner := bson.M{"$filter": bson.M{
 			"input": currentRoles,
 			"cond":  bson.M{"$ne": bson.A{"$$this", model.RoleOwner}},
+		}}
+		rolesExpr = bson.M{"$cond": bson.M{
+			"if":   bson.M{"$in": bson.A{model.RoleMember, withoutOwner}},
+			"then": withoutOwner,
+			"else": bson.M{"$concatArrays": bson.A{withoutOwner, bson.A{model.RoleMember}}},
 		}}
 	}
 	update := mongo.Pipeline{

@@ -62,11 +62,12 @@ Mirror `ToggleSubscriptionMute`: aggregation-pipeline `FindOneAndUpdate`, `Retur
 ```go
 // promote (makeOwner=true): append "owner" only if absent
 {$cond: {if: {$in: ["owner", roles]}, then: roles, else: {$concatArrays: [roles, ["owner"]]}}}
-// demote (makeOwner=false): drop "owner", keep the rest
-{$filter: {input: roles, cond: {$ne: ["$$this", "owner"]}}}
+// demote (makeOwner=false): drop "owner", then re-add "member" if absent
+withoutOwner = {$filter: {input: roles, cond: {$ne: ["$$this", "owner"]}}}
+{$cond: {if: {$in: ["member", withoutOwner]}, then: withoutOwner, else: {$concatArrays: [withoutOwner, ["member"]]}}}
 ```
 
-Validation in the handler already guarantees the target is a current member, so `"member"` is always present and never needs re-adding. `mongo.ErrNoDocuments` is wrapped as `model.ErrSubscriptionNotFound`.
+The demote branch re-adds `"member"` exactly like the worker's old `AddRole(member)` before `RemoveRole(owner)`: a **channel creator is seeded `roles: ["owner"]` with no `"member"`** (`room-worker` `processCreateRoom`), so a plain `$filter` would demote it to `[]`. The `$cond` guard guarantees `["member"]` instead. `mongo.ErrNoDocuments` is wrapped as `model.ErrSubscriptionNotFound`.
 
 ## 4. `room-service` — `handler.go` (`handleUpdateRole`)
 
