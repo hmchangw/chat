@@ -109,13 +109,10 @@ func TestUserRoomCollection_BuildAction_MemberAdded(t *testing.T) {
 
 	script, ok := body["script"].(map[string]any)
 	require.True(t, ok)
-	src := script["source"].(string)
-	assert.Contains(t, src, "ctx._source.rooms.add")
-	assert.Contains(t, src, "ctx.op = 'none'")
-	assert.Contains(t, src, "roomTimestamps")
-	assert.Contains(t, src, "restrictedRooms")
-	assert.Contains(t, src, "params.ts")
-	assert.Contains(t, src, "params.hss")
+	// Stored-script reference: the action carries only the script id, never
+	// the inlined source — that's the whole point of moving to stored scripts.
+	assert.Equal(t, addRoomScriptID, script["id"])
+	assert.NotContains(t, script, "source")
 
 	params := script["params"].(map[string]any)
 	assert.Equal(t, "r-eng", params["rid"])
@@ -199,11 +196,8 @@ func TestUserRoomCollection_BuildAction_MemberRemoved(t *testing.T) {
 
 	script, ok := body["script"].(map[string]any)
 	require.True(t, ok)
-	src := script["source"].(string)
-	assert.Contains(t, src, "ctx._source.rooms.remove")
-	assert.Contains(t, src, "ctx.op = 'none'")
-	assert.Contains(t, src, "roomTimestamps")
-	assert.NotContains(t, src, "updatedAt")
+	assert.Equal(t, removeRoomScriptID, script["id"])
+	assert.NotContains(t, script, "source")
 
 	params := script["params"].(map[string]any)
 	assert.Equal(t, "r-eng", params["rid"])
@@ -246,25 +240,42 @@ func TestUserRoomCollection_BuildAction_BulkMixed_AllRestricted(t *testing.T) {
 	}
 }
 
-// TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth verifies the
-// remove body touches both rooms[] and restrictedRooms{} so a member_removed
-// event works regardless of which slot currently holds the rid.
-func TestUserRoomCollection_BuildAction_RemoveScriptEvictsBoth(t *testing.T) {
+// TestUserRoomCollection_StoredScripts verifies the collection exposes both
+// painless scripts as ES stored scripts keyed by id, with bodies that carry
+// the full source (lang=painless). The add script routes rooms vs
+// restrictedRooms and guards with the LWW timestamp; the remove script evicts
+// from both slots regardless of which currently holds the rid.
+func TestUserRoomCollection_StoredScripts(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
-	payload := baseInboxMemberEvent()
-	data := makeInboxMemberEvent(t, model.OutboxMemberRemoved, payload, 200)
+	scripts := coll.StoredScripts()
+	require.Len(t, scripts, 2)
 
-	actions, err := coll.BuildAction(data)
-	require.NoError(t, err)
-	require.Len(t, actions, 1)
+	add, ok := scripts[addRoomScriptID]
+	require.True(t, ok, "add script must be registered under addRoomScriptID")
+	var addBody map[string]any
+	require.NoError(t, json.Unmarshal(add, &addBody))
+	addScript := addBody["script"].(map[string]any)
+	assert.Equal(t, "painless", addScript["lang"])
+	addSrc := addScript["source"].(string)
+	assert.Contains(t, addSrc, "ctx._source.rooms.add")
+	assert.Contains(t, addSrc, "ctx.op = 'none'")
+	assert.Contains(t, addSrc, "roomTimestamps")
+	assert.Contains(t, addSrc, "restrictedRooms")
+	assert.Contains(t, addSrc, "params.ts")
+	assert.Contains(t, addSrc, "params.hss")
 
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(actions[0].Doc, &body))
-	src := body["script"].(map[string]any)["source"].(string)
-	assert.Contains(t, src, "ctx._source.rooms.remove",
+	remove, ok := scripts[removeRoomScriptID]
+	require.True(t, ok, "remove script must be registered under removeRoomScriptID")
+	var removeBody map[string]any
+	require.NoError(t, json.Unmarshal(remove, &removeBody))
+	removeScript := removeBody["script"].(map[string]any)
+	assert.Equal(t, "painless", removeScript["lang"])
+	removeSrc := removeScript["source"].(string)
+	assert.Contains(t, removeSrc, "ctx._source.rooms.remove",
 		"remove script must evict from rooms[]")
-	assert.Contains(t, src, "ctx._source.restrictedRooms.remove",
+	assert.Contains(t, removeSrc, "ctx._source.restrictedRooms.remove",
 		"remove script must evict from restrictedRooms{}")
+	assert.Contains(t, removeSrc, "ctx.op = 'none'")
 }
 
 // TestUserRoomCollection_BuildAction_BulkInvite verifies fan-out: one event

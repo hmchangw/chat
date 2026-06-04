@@ -67,6 +67,11 @@ func TestSpotlightCollection_Metadata(t *testing.T) {
 	}, filters)
 }
 
+func TestSpotlightCollection_StoredScripts(t *testing.T) {
+	coll := newSpotlightCollection("spotlight-site-a-v1")
+	assert.Empty(t, coll.StoredScripts(), "spotlight collection uses no stored scripts")
+}
+
 func TestSpotlightCollection_TemplateName_StripsVersion(t *testing.T) {
 	c := newSpotlightCollection("spotlight-site-a-v1")
 	assert.Equal(t, "spotlight-site-a_template", c.TemplateName())

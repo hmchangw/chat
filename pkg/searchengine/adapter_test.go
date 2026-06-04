@@ -206,6 +206,35 @@ func TestAdapter_UpsertTemplate(t *testing.T) {
 	})
 }
 
+func TestAdapter_PutScript(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var capturedBody string
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, http.MethodPut, req.Method)
+			assert.Equal(t, "/_scripts/user_room_add", req.URL.Path)
+			assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+			body, _ := io.ReadAll(req.Body)
+			capturedBody = string(body)
+			return jsonResponse(200, `{"acknowledged": true}`), nil
+		}}
+		a := newAdapter(ft)
+		body := json.RawMessage(`{"script":{"lang":"painless","source":"ctx.op='none'"}}`)
+		err := a.PutScript(context.Background(), "user_room_add", body)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(body), capturedBody)
+	})
+
+	t.Run("error status", func(t *testing.T) {
+		ft := &fakeTransport{handler: func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(400, `{"error":"bad script"}`), nil
+		}}
+		a := newAdapter(ft)
+		err := a.PutScript(context.Background(), "bad", json.RawMessage(`{}`))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "400")
+	})
+}
+
 func TestAdapter_Search(t *testing.T) {
 	t.Run("single index", func(t *testing.T) {
 		var capturedPath, capturedMethod, capturedBody string

@@ -57,6 +57,14 @@ type SearchEngine interface {
 	Ping(ctx context.Context) error
 	Bulk(ctx context.Context, actions []BulkAction) ([]BulkResult, error)
 	UpsertTemplate(ctx context.Context, name string, body json.RawMessage) error
+
+	// PutScript registers (creates or updates) an Elasticsearch stored
+	// script under the given id via `PUT /_scripts/{id}`. Stored scripts let
+	// callers reference a script by id instead of inlining its full source in
+	// every request — critical for fan-out bulk updates that would otherwise
+	// repeat the same script body once per action.
+	PutScript(ctx context.Context, id string, body json.RawMessage) error
+
 	GetIndexMapping(ctx context.Context, index string) (json.RawMessage, error)
 
 	// Search executes a `_search` against the comma-joined list of indices

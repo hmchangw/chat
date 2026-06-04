@@ -82,3 +82,21 @@ func TestBuildConsumerConfig(t *testing.T) {
 		assert.Equal(t, []time.Duration{1 * time.Second, 5 * time.Second, 30 * time.Second}, cc.BackOff)
 	})
 }
+
+func TestCheckBatchAckCoupling(t *testing.T) {
+	t.Run("ok when bulk size below ack pending", func(t *testing.T) {
+		assert.Empty(t, checkBatchAckCoupling(500, 1000))
+	})
+
+	t.Run("ok when bulk size equals ack pending", func(t *testing.T) {
+		// At equality a 1:1 collection can still just reach the threshold
+		// (the size trigger fires at ActionCount >= bulkBatchSize), so this
+		// is not flagged.
+		assert.Empty(t, checkBatchAckCoupling(1000, 1000))
+	})
+
+	t.Run("warns when bulk size exceeds ack pending", func(t *testing.T) {
+		msg := checkBatchAckCoupling(2000, 1000)
+		assert.NotEmpty(t, msg, "bulk size above ack pending must produce a warning")
+	})
+}

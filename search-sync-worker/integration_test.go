@@ -190,6 +190,16 @@ func preCreateIndex(t *testing.T, esURL, index string) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "pre-create index %s: %s", index, body)
 }
 
+// registerStoredScripts PUTs every stored script a collection depends on,
+// mirroring what main.go does at startup. user-room scripted updates reference
+// these by id, so they must exist before any update runs against real ES.
+func registerStoredScripts(t *testing.T, ctx context.Context, engine searchengine.SearchEngine, coll Collection) {
+	t.Helper()
+	for id, body := range coll.StoredScripts() {
+		require.NoError(t, engine.PutScript(ctx, id, body), "register stored script %s", id)
+	}
+}
+
 // overrideIndexSettings replaces `template.settings.index` on a marshaled ES
 // index template with single-node-friendly values (1 shard, 0 replicas, 1s
 // refresh) while leaving analysis + mappings intact. Shared by message,
