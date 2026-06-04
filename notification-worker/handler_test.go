@@ -757,8 +757,69 @@ func TestHandle_InvalidatesCacheOnMemberChangeSysMessage(t *testing.T) {
 				Type: msgType, CreatedAt: time.Now(),
 			})))
 
-			require.GreaterOrEqual(t, len(members.calls), 2)
-			assert.Equal(t, []string{"inval:r1", "get:r1"}, members.calls[:2], "Invalidate must happen before GetMembers to avoid stale read")
+			assert.Equal(t, []string{"inval:r1"}, members.calls,
+				"member-change sys-message invalidates but is gated as non-notifiable before fan-out (no GetMembers)")
+			assert.Empty(t, emit.emitted, "system messages never push")
+		})
+	}
+}
+
+func TestIsNotifiable(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType string
+		want    bool
+	}{
+		{"regular message", "", true},
+		{"room created", model.MessageTypeRoomCreated, false},
+		{"members added", model.MessageTypeMembersAdded, false},
+		{"member removed", model.MessageTypeMemberRemoved, false},
+		{"member left", model.MessageTypeMemberLeft, false},
+		{"room renamed", model.MessageTypeRoomRenamed, false},
+		{"room restricted", model.MessageTypeRoomRestricted, false},
+		{"unknown future system type", "some_future_sys_type", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNotifiable(tt.msgType))
+		})
+	}
+}
+
+// System messages must never push — not in a small channel (where fan-out would
+// otherwise notify every non-sender), nor when content parses as an @mention
+// (the latent leak this gate closes).
+func TestHandle_SystemMessageProducesNoPush(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType string
+		content string
+	}{
+		{"room created", model.MessageTypeRoomCreated, "system text"},
+		{"members added", model.MessageTypeMembersAdded, "system text"},
+		{"member removed", model.MessageTypeMemberRemoved, "system text"},
+		{"member left", model.MessageTypeMemberLeft, "system text"},
+		{"room renamed", model.MessageTypeRoomRenamed, "system text"},
+		{"room restricted", model.MessageTypeRoomRestricted, "system text"},
+		{"members added with @mention content", model.MessageTypeMembersAdded, "added @bob"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			members := &stubMembers{out: map[string][]roomsubcache.Member{
+				"r1": {
+					{ID: "alice", Account: "alice", RoomType: model.RoomTypeChannel},
+					{ID: "bob", Account: "bob", RoomType: model.RoomTypeChannel},
+				},
+			}}
+			emit := &recordingEmitter{}
+			h := newTestHandler(members, &stubFollowers{}, noopPresenceSnapshotter{}, noopVetoer{}, emit)
+
+			require.NoError(t, h.HandleMessage(context.Background(), msgEvent(&model.Message{
+				ID: "m1", RoomID: "r1", UserID: "alice", UserAccount: "alice",
+				Type: tt.msgType, Content: tt.content, CreatedAt: time.Now(),
+			})))
+
+			assert.Empty(t, emit.emitted, "system message must not push")
 		})
 	}
 }
