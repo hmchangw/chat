@@ -34,6 +34,7 @@ Each site runs its own NATS server, so these figures are per-site.
 | `INBOX_{siteID}` | `chat.inbox.{siteID}.*` + `…aggregate.>` | room-worker (local member events), remote OUTBOX (sourced) | inbox-worker, search-sync-worker | ✅ |
 | `PUSH_NOTIFICATIONS_{siteID}` | `chat.server.notification.push.{siteID}.>` | notification-worker *(spec pending)* | push-gateway worker → APNs/FCM *(spec pending)* | ✅ |
 | `HRSYNC_{siteID}` | `hr.sync.>` | HR sync source *(spec pending)* | hr-sync consumer *(spec pending)* | ✅ |
+| `MIGRATION_OPLOG_{siteID}` | `migration.oplog.>` | Migration source *(spec pending)* | migration applier (1) *(spec pending)* | ✅ |
 | `OUTBOX_{siteID}` | `outbox.{siteID}.to.{destSiteID}.{eventType}` | room-worker, room-service, message-worker | Remote site INBOX | ❌ excluded per scope |
 
 ### 2.2 Core NATS delivery subjects (server → client)
@@ -62,6 +63,7 @@ Each site runs its own NATS server, so these figures are per-site.
 | Message JetStream | MESSAGES, MESSAGES_CANONICAL | 500B–1.5KB | ~20KB |
 | Push notification | PUSH_NOTIFICATIONS | ~0.8KB | ~15KB |
 | HR sync | HRSYNC (≈ `model.User`: ~12 fields) | ~0.5KB | ~1KB |
+| Migration oplog | MIGRATION_OPLOG | ~130KB | — |
 | Room JetStream | ROOMS | 200–400B | ~5KB |
 | Federation | INBOX | 200–400B | ~5KB |
 | Message R/R | history, search-messages | 15–50KB | 100KB+ |
@@ -85,6 +87,7 @@ Each site runs its own NATS server, so these figures are per-site.
 | Presence status changes per day per user | C_pres | ~20 |
 | Push notifications per day | M_push | 4,000,000 |
 | HR sync records per daily run (burst @ 100 msg/s) | M_hr | 40,000 |
+| Migration oplog QPS (sustained 24/7, 130KB payload, 1 consumer) | Q_mig | 4,000 |
 | Peak factor (business-hours concentration) | k | ~4× |
 
 > **R_member is an assumption.** The 250 room ops/day "include member add/remove," so
@@ -128,7 +131,9 @@ counts publishes + consumer deliveries (JetStream), deliveries (core), or reques
 | `INBOX` *(member-driven)* | local member events × 2 consumers | 1.04M | 2.08M | 3.12M | 36 | 0.3KB | 0.9 GB |
 | `PUSH_NOTIFICATIONS` | M_push × (1 pub + 1 consumer) | 4M | 4M | 8M | 93 | 0.8KB | 6.4 GB |
 | `HRSYNC` | M_hr × (1 pub + 1 consumer); 100 msg/s burst | 40K | 40K | 80K | ~1 (200/s burst) | 0.5KB | 0.04 GB |
-| **JetStream subtotal** | | | | **~46M** | **~536** | | **~41 GB** |
+| **Subtotal (excl. migration)** | | | | **~46M** | **~536** | | **~41 GB** |
+| `MIGRATION_OPLOG` | Q_mig × 86,400 × (1 pub + 1 consumer); sustained | 345.6M | 345.6M | 691M | 8,000 | 130KB | 89,860 GB |
+| **Subtotal (incl. migration)** | | | | **~737M** | **~8,536** | | **~89.9 TB** |
 
 `MESSAGES_CANONICAL` pub = 4M user messages + ~1.04M member-change system messages.
 `INBOX` carries local member add/remove events (room-worker publishes to the local INBOX
@@ -163,10 +168,17 @@ Presence delivery dropped sharply (was 42M) because P went 100 → 20.
 
 | Layer | Ops or deliveries/day | avg msg/s | Bytes/day |
 |-------|----------------------:|----------:|----------:|
-| JetStream streams | ~46M | ~536 | ~41 GB |
+| JetStream (excl. migration) | ~46M | ~536 | ~41 GB |
 | Core delivery subjects | ~915M | ~10,590 | ~565 GB |
 | R/R (req + resp) | ~58M | ~676 | ~3,268 GB |
-| **TOTAL** | **~1.02B/day** | **~11,800/s avg · ~47,000/s peak** | **~3.87 TB/day** |
+| **Steady-state subtotal (excl. migration)** | **~1.02B/day** | **~11,800 avg · ~47,000 peak** | **~3.87 TB/day** |
+| `MIGRATION_OPLOG` (sustained, flat) | ~691M | ~8,000 | ~89.9 TB |
+| **TOTAL (incl. migration)** | **~1.71B/day** | **~19,800 avg · ~55,000 peak** | **~93.8 TB/day** |
+
+`MIGRATION_OPLOG` alone is **~96% of all bytes** (~1.04 GB/s of the ~1.09 GB/s total).
+It is sustained 24/7 with no business-hours peaking, so it adds a flat term to both avg
+and peak. The steady-state subtotal is broken out so the rest of the system stays
+legible underneath it.
 
 ### 6.5 Connection state
 
@@ -180,7 +192,12 @@ At the single-connection baseline: 20,789 connections × (S=100 + P=20) =
 
 ### 6.6 Bottlenecks
 
-- **Subscription R/R = ~3.12 TB/day (≈ 80% of all bytes)** — now the overwhelming
+- **MIGRATION_OPLOG = ~90 TB/day (≈ 96% of all bytes, ~1.04 GB/s sustained)** — the
+  single dominant load while migration runs. At ~8.3 Gbps each way it is a
+  **network-capacity** problem, not a message-rate one; size NICs/inter-AZ links and
+  JetStream disk (15 TB logical / ~45 TB at R=3) for it explicitly, and consider an
+  isolated stream/account or dedicated nodes so it cannot starve live chat traffic.
+- **Subscription R/R = ~3.12 TB/day** — the dominant *steady-state* (post-migration)
   bandwidth driver after R_sub rose 150 → 1,000/day. 1,000 full 150KB list-fetches per
   user per day is ~1 every ~30s of an 8h workday — verify this is real client behavior,
   not redundant polling.
@@ -207,7 +224,7 @@ subscriber that re-subscribes and fetches its own state.
 |------------------------|-------------------------------|
 | All core deliveries (message, metadata, member-change, presence, notification) | Message ingress (user sends from one client) |
 | Subscription, history, room, search R/R | JetStream pipeline & terminal streams (server-side) |
-| Connections & subscription interests | broadcast-worker publish count (fan-out at NATS layer) |
+| Connections & subscription interests | `MIGRATION_OPLOG`, `PUSH`, `HRSYNC` (server-side, not client-facing) |
 
 Rule of thumb: **ingress and server-side processing are flat; delivery/egress, R/R, and
 connection state scale with D.** Effective fan-out becomes `F × D = 500` per message.
@@ -216,14 +233,17 @@ connection state scale with D.** Effective fan-out becomes `F × D = 500` per me
 
 | Layer | D=1 deliveries/day | D=5 deliveries/day | D=1 bytes/day | D=5 bytes/day |
 |-------|-------------------:|-------------------:|--------------:|--------------:|
-| JetStream streams | ~46M | ~46M *(flat)* | ~41 GB | ~41 GB |
+| JetStream (excl. migration) | ~46M | ~46M *(flat)* | ~41 GB | ~41 GB |
 | Core delivery | ~915M | ~4,575M | ~565 GB | ~2,825 GB |
 | R/R (req+resp) | ~58M | ~292M | ~3,268 GB | ~16,340 GB |
-| **TOTAL** | **~1.02B** | **~4.91B** | **~3.87 TB** | **~19.2 TB** |
-| **avg / peak msg/s** | ~11.8k / ~47k | **~57k / ~227k** | | |
+| **Steady-state subtotal** | **~1.02B** | **~4.91B** | **~3.87 TB** | **~19.2 TB** |
+| `MIGRATION_OPLOG` *(flat across D)* | ~691M | ~691M | ~89.9 TB | ~89.9 TB |
+| **TOTAL (incl. migration)** | **~1.71B** | **~5.60B** | **~93.8 TB** | **~109 TB** |
+| **avg / peak msg/s (incl. migration)** | ~19.8k / ~55k | **~65k / ~235k** | | |
 
 Connection state at D=5: **~104k connections** × (100 + 20) = **~12.5M subscription
-interests**.
+interests**. `MIGRATION_OPLOG` is server-side and does not scale with D — at D=5 it
+shrinks from 96% to ~83% of total bytes simply because client traffic grew around it.
 
 ### 7.3 Takeaways for multi-device
 
@@ -249,13 +269,18 @@ R=3) for on-disk usage. TTLs are per the stream spec.
 | `MESSAGES_CANONICAL` | 7 day | 5M | 1KB | 35M | 35 GB |
 | `INBOX` | 7 day | 1.04M | 0.3KB | 7.3M | 2.2 GB |
 | `ROOMS` | 1 day | 1.04M | 0.4KB | 1.04M | 0.4 GB |
-| **TOTAL (logical)** | | | | | **~40 GB** |
-| **TOTAL (R=3 on disk)** | | | | | **~120 GB** |
+| **Subtotal (excl. migration)** | | | | | **~40 GB** |
+| `MIGRATION_OPLOG` | 8 hr | 345.6M | 130KB | 115.2M | 14,976 GB |
+| **TOTAL (logical, incl. migration)** | | | | | **~15.0 TB** |
+| **TOTAL (R=3 on disk)** | | | | | **~45 TB** |
 
 Notes:
-- `MESSAGES_CANONICAL` dominates storage (7-day retention × full message bodies). It is
-  the canonical source of truth, so retention is intentional — but it's the first place
-  to look if disk pressure appears.
+- `MIGRATION_OPLOG` dominates total storage (~15 TB logical / ~45 TB at R=3) even at
+  only 8 hr retention, purely from 4k QPS × 130KB. Provision dedicated disk for it and
+  keep TTL as short as the migration tolerates.
+- `MESSAGES_CANONICAL` dominates the *steady-state* footprint (7-day retention × full
+  message bodies). It is the canonical source of truth, so retention is intentional —
+  but it's the first place to look for disk pressure once migration is excluded.
 - `HRSYNC` is a once-daily 40K burst; with an 8 hr TTL the whole batch is retained for
   ~8 hr then expires. Peak ingest is 100 msg/s during the ~7-minute burst.
 - For TTL < 1 day, retained ≈ `(pub/day) × (TTL_hours / 24)`.
@@ -268,7 +293,13 @@ Notes:
   status changes/user/day; a heartbeat design would explode this.
 - **OUTBOX and federated INBOX inflow are excluded** from this estimate per scope; INBOX
   here reflects local member events only.
-- **PUSH_NOTIFICATIONS / HRSYNC are pre-merge** — revisit when the real spec lands.
+- **PUSH_NOTIFICATIONS / HRSYNC / MIGRATION_OPLOG are pre-merge** — revisit when the
+  real specs land.
+- **MIGRATION_OPLOG (sustained 4k QPS × 130KB) dwarfs everything** at ~90 TB/day traffic
+  and ~15 TB storage. It is modeled as a permanent stream per the stated spec; if it is
+  actually a one-off migration window, treat it as transient and exclude it from
+  steady-state capacity. Strongly consider isolating it (own stream/account or nodes) so
+  it cannot starve live chat traffic.
 - **Subscription R/R at 1,000/day/user** is the dominant cost and the assumption most
   worth validating against real client behavior.
 - **Peak factor k ≈ 4** assumes 80% of traffic in a 10-hour window with 2× intra-window
