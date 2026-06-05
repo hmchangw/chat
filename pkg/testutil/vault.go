@@ -198,9 +198,9 @@ func (v *VaultHandle) EnableAppRole(t *testing.T, ctx context.Context) (roleID, 
 	roleName := "test-role-" + suffix
 
 	policy := fmt.Sprintf(`
-path "%[1]s/datakey/plaintext/%[2]s" { capabilities = ["update"] }
-path "%[1]s/encrypt/%[2]s"           { capabilities = ["update"] }
-path "%[1]s/decrypt/%[2]s"           { capabilities = ["update"] }
+path "%[1]s/datakey/wrapped/%[2]s" { capabilities = ["update"] }
+path "%[1]s/encrypt/%[2]s"         { capabilities = ["update"] }
+path "%[1]s/decrypt/%[2]s"         { capabilities = ["update"] }
 `, v.TransitMount, v.TransitKey)
 	if err := v.client.Sys().PutPolicyWithContext(ctx, policyName, policy); err != nil {
 		t.Fatalf("testutil.EnableAppRole: put policy %s: %v", policyName, err)

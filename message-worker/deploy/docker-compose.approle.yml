@@ -34,9 +34,9 @@ services:
 
         # Policy scoped to exactly the chat-kek transit ops the wrapper needs.
         printf '%s\n' \
-          'path "transit/datakey/plaintext/chat-kek" { capabilities = ["update"] }' \
-          'path "transit/encrypt/chat-kek"           { capabilities = ["update"] }' \
-          'path "transit/decrypt/chat-kek"           { capabilities = ["update"] }' \
+          'path "transit/datakey/wrapped/chat-kek" { capabilities = ["update"] }' \
+          'path "transit/encrypt/chat-kek"         { capabilities = ["update"] }' \
+          'path "transit/decrypt/chat-kek"         { capabilities = ["update"] }' \
           > /tmp/atrest-transit.hcl
         vault policy write atrest-transit /tmp/atrest-transit.hcl
 

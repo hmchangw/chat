@@ -196,15 +196,19 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 }
 
 // GenerateDataKey asks Vault to mint a fresh 256-bit DEK via the transit
-// engine's datakey endpoint and return both the plaintext DEK and its
-// KEK-wrapped form in one round-trip. In HSM-backed Vault deployments
-// the DEK is generated inside the HSM, so the plaintext material
-// originates there rather than in this process — the property our
-// security review asked for.
+// engine's wrapped datakey endpoint and returns both the plaintext DEK and
+// its KEK-wrapped form. The DEK is generated inside Vault (the HSM, in
+// compliant deployments), so the plaintext material originates there rather
+// than in this process — the property our security review asked for.
+//
+// The wrapped endpoint returns only the KEK-wrapped DEK (no plaintext), so
+// the plaintext is recovered with a follow-up decrypt. This deliberately
+// avoids the datakey/plaintext capability: callers need only
+// datakey/wrapped + decrypt, the same decrypt that Unwrap already requires.
 func (w *vaultKeyWrapper) GenerateDataKey(ctx context.Context) (plaintext, wrapped []byte, err error) {
 	defer func() { kekWrapCounter.WithLabelValues(resultLabel(err)).Inc() }()
 	resp, err := w.client.Logical().WriteWithContext(ctx,
-		fmt.Sprintf("%s/datakey/plaintext/%s", w.transitMount, w.transitKey),
+		fmt.Sprintf("%s/datakey/wrapped/%s", w.transitMount, w.transitKey),
 		map[string]any{"bits": 256},
 	)
 	if err != nil {
@@ -213,19 +217,16 @@ func (w *vaultKeyWrapper) GenerateDataKey(ctx context.Context) (plaintext, wrapp
 	if resp == nil || resp.Data == nil {
 		return nil, nil, errors.New("vault transit datakey: empty response")
 	}
-	b64, ok := resp.Data["plaintext"].(string)
-	if !ok || b64 == "" {
-		return nil, nil, errors.New("vault transit datakey: missing plaintext")
-	}
-	dek, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, nil, fmt.Errorf("vault transit datakey: base64 decode: %w", err)
-	}
 	ct, ok := resp.Data["ciphertext"].(string)
 	if !ok || ct == "" {
 		return nil, nil, errors.New("vault transit datakey: missing ciphertext")
 	}
-	return dek, []byte(ct), nil
+	wrapped = []byte(ct)
+	dek, err := w.decryptDEK(ctx, wrapped)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vault transit datakey decrypt: %w", err)
+	}
+	return dek, wrapped, nil
 }
 
 // Wrap encrypts the DEK via Vault's transit engine and returns the
@@ -255,6 +256,14 @@ func (w *vaultKeyWrapper) Wrap(ctx context.Context, dek []byte) (out []byte, err
 // and returns the plaintext DEK.
 func (w *vaultKeyWrapper) Unwrap(ctx context.Context, ciphertext []byte) (out []byte, err error) {
 	defer func() { kekUnwrapCounter.WithLabelValues(resultLabel(err)).Inc() }()
+	return w.decryptDEK(ctx, ciphertext)
+}
+
+// decryptDEK decrypts a "vault:vN:..." transit ciphertext back to the
+// plaintext DEK. It carries no metric of its own; the public callers
+// (Unwrap, and the wrapped-datakey path in GenerateDataKey) each record
+// exactly one operation around it.
+func (w *vaultKeyWrapper) decryptDEK(ctx context.Context, ciphertext []byte) ([]byte, error) {
 	resp, err := w.client.Logical().WriteWithContext(ctx,
 		fmt.Sprintf("%s/decrypt/%s", w.transitMount, w.transitKey),
 		map[string]any{
