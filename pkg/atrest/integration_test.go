@@ -4,6 +4,8 @@ package atrest
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +103,45 @@ func TestIntegration_ConcurrentFirstWriteRace(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "x", out.Msg)
 	}
+}
+
+// TestIntegration_AppRoleLogin proves the AppRole auth path against a real
+// Vault: the wrapper logs in with a role ID plus a secret ID read from a
+// file, then exercises the transit engine via GenerateDataKey and a
+// Wrap/Unwrap round trip. Scoped to the KeyWrapper (no Mongo DEK store) so
+// it isolates the auth path — the Cipher round trip is covered separately.
+// The secret-ID file carries a trailing newline to confirm the helper
+// tolerates the common file-with-newline shape.
+func TestIntegration_AppRoleLogin(t *testing.T) {
+	ctx := context.Background()
+
+	v := testutil.Vault(t, ctx)
+	roleID, secretID := v.EnableAppRole(t, ctx)
+
+	secretIDFile := filepath.Join(t.TempDir(), "secret-id")
+	require.NoError(t, os.WriteFile(secretIDFile, []byte(secretID+"\n"), 0o600))
+
+	wrapper, err := NewVaultKeyWrapper(ctx, VaultConfig{
+		Address:             v.Address,
+		TransitMount:        v.TransitMount,
+		TransitKey:          v.TransitKey,
+		AppRoleID:           roleID,
+		AppRoleSecretIDFile: secretIDFile,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = wrapper.Close()
+	})
+
+	dek, wrapped, err := wrapper.GenerateDataKey(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, dek)
+	require.NotEmpty(t, wrapped)
+
+	unwrapped, err := wrapper.Unwrap(ctx, wrapped)
+	require.NoError(t, err)
+	assert.Equal(t, dek, unwrapped)
 }
 
 func TestIntegration_VaultKeyRotation(t *testing.T) {

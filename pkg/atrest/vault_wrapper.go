@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	vault "github.com/hashicorp/vault/api"
+	authapprole "github.com/hashicorp/vault/api/auth/approle"
 	authk8s "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
@@ -49,8 +50,25 @@ type VaultConfig struct {
 	// K8sAuthPath is the auth method's mount path (default "kubernetes").
 	K8sAuthPath string `env:"VAULT_K8S_AUTH_PATH" envDefault:"kubernetes"`
 
-	// Token is the static Vault token used when K8sRole is empty. Suitable
-	// for local docker-compose only; production should use Kubernetes auth.
+	// AppRoleID is the RoleID for AppRole auth. When set (and K8sRole is
+	// empty), the service logs in via AppRole using the secret ID read from
+	// AppRoleSecretIDFile. Suited to non-Kubernetes production deployments.
+	AppRoleID string `env:"VAULT_APPROLE_ROLE_ID" envDefault:""`
+
+	// AppRoleSecretIDFile is the path to a file holding the AppRole secret
+	// ID. File-based delivery keeps the secret out of the process
+	// environment (and out of child processes, crash dumps, and `kubectl
+	// describe`), and lets an orchestrator rotate it without a restart — the
+	// helper re-reads the file on each login. Required when AppRoleID is set.
+	AppRoleSecretIDFile string `env:"VAULT_APPROLE_SECRET_ID_FILE" envDefault:""`
+
+	// AppRoleAuthPath is the AppRole auth method's mount path (default
+	// "approle").
+	AppRoleAuthPath string `env:"VAULT_APPROLE_AUTH_PATH" envDefault:"approle"`
+
+	// Token is the static Vault token used when no other auth method is
+	// selected. Suitable for local docker-compose only; production should
+	// use Kubernetes or AppRole auth.
 	Token string `env:"VAULT_TOKEN" envDefault:""`
 }
 
@@ -62,9 +80,9 @@ type vaultKeyWrapper struct {
 	watcher      *vault.LifetimeWatcher // nil when using a static token
 }
 
-// Close stops the background token-renewal goroutine if Kubernetes auth
-// is in use. Safe to call repeatedly; safe to call when the wrapper was
-// constructed with a static token.
+// Close stops the background token-renewal goroutine if Kubernetes or
+// AppRole auth is in use. Safe to call repeatedly; safe to call when the
+// wrapper was constructed with a static token.
 func (w *vaultKeyWrapper) Close() error {
 	if w.watcher != nil {
 		w.watcher.Stop()
@@ -72,10 +90,35 @@ func (w *vaultKeyWrapper) Close() error {
 	return nil
 }
 
+// loginWithRenewal performs an auth-method login and starts a background
+// lifetime watcher so a long-lived process keeps renewing its token instead
+// of dropping auth on TTL expiry. The returned watcher is stored on the
+// wrapper and stopped during graceful shutdown via Close. observeWatcher
+// surfaces a silently-stopped renewal in logs and metrics. Shared by the
+// Kubernetes and AppRole branches, which differ only in how they build the
+// vault.AuthMethod.
+func loginWithRenewal(ctx context.Context, client *vault.Client, method vault.AuthMethod) (*vault.LifetimeWatcher, error) {
+	secret, err := client.Auth().Login(ctx, method)
+	if err != nil {
+		return nil, fmt.Errorf("login: %w", err)
+	}
+	if secret == nil || secret.Auth == nil {
+		return nil, errors.New("login returned empty auth")
+	}
+	watcher, err := client.NewLifetimeWatcher(&vault.LifetimeWatcherInput{Secret: secret})
+	if err != nil {
+		return nil, fmt.Errorf("lifetime watcher: %w", err)
+	}
+	go watcher.Start()
+	go observeWatcher(watcher)
+	return watcher, nil
+}
+
 // NewVaultKeyWrapper constructs a KeyWrapper backed by Vault's transit
-// engine. It logs in via Kubernetes auth when cfg.K8sRole is set, falling
-// back to cfg.Token otherwise. Returns an error if the resulting client
-// cannot reach Vault or has no usable credentials.
+// engine. It selects an auth method by precedence: Kubernetes auth when
+// cfg.K8sRole is set, then AppRole when cfg.AppRoleID is set, then a static
+// cfg.Token. Returns an error if the resulting client cannot reach Vault or
+// has no usable credentials.
 func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper, error) { //nolint:revive,gocritic // unexported return is intentional (callers consume via KeyWrapper); hugeParam: cfg passed by value matches the project's caarlos0/env config-struct convention
 	if cfg.Address == "" {
 		return nil, errors.New("vault: VAULT_ADDR is required")
@@ -91,66 +134,81 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		return nil, fmt.Errorf("vault: new client: %w", err)
 	}
 
+	var watcher *vault.LifetimeWatcher
 	switch {
 	case cfg.K8sRole != "":
 		k8sAuth, err := authk8s.NewKubernetesAuth(cfg.K8sRole, authk8s.WithMountPath(cfg.K8sAuthPath))
 		if err != nil {
 			return nil, fmt.Errorf("vault: configure kubernetes auth: %w", err)
 		}
-		secret, err := client.Auth().Login(ctx, k8sAuth)
+		watcher, err = loginWithRenewal(ctx, client, k8sAuth)
 		if err != nil {
-			return nil, fmt.Errorf("vault: kubernetes login: %w", err)
+			return nil, fmt.Errorf("vault: kubernetes: %w", err)
 		}
-		if secret == nil || secret.Auth == nil {
-			return nil, errors.New("vault: kubernetes login returned empty auth")
+	case cfg.AppRoleID != "":
+		// The secret ID is the sensitive half of the AppRole credential and
+		// is only ever sourced from a file — never an env var — so it stays
+		// out of the process environment. The helper reads the file lazily
+		// at each login, which also makes secret-ID rotation a file rewrite
+		// rather than a restart.
+		if cfg.AppRoleSecretIDFile == "" {
+			return nil, errors.New("vault: VAULT_APPROLE_SECRET_ID_FILE is required when VAULT_APPROLE_ROLE_ID is set")
 		}
-		// Renew the token in the background so long-lived processes don't
-		// drop their auth on TTL expiry. The lifetime watcher emits a
-		// terminal value on DoneCh when renewal stops — observe it so a
-		// silently-expired token surfaces in logs and metrics instead of
-		// only manifesting as 403s on the next Wrap/Unwrap.
-		watcher, err := client.NewLifetimeWatcher(&vault.LifetimeWatcherInput{Secret: secret})
+		// Only override the mount path when explicitly set — an empty value
+		// would build a broken "auth//login" path. Leaving the option off
+		// lets the helper apply its own "approle" default, matching our
+		// envDefault.
+		var opts []authapprole.LoginOption
+		if cfg.AppRoleAuthPath != "" {
+			opts = append(opts, authapprole.WithMountPath(cfg.AppRoleAuthPath))
+		}
+		appRoleAuth, err := authapprole.NewAppRoleAuth(
+			cfg.AppRoleID,
+			&authapprole.SecretID{FromFile: cfg.AppRoleSecretIDFile},
+			opts...,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("vault: lifetime watcher: %w", err)
+			return nil, fmt.Errorf("vault: configure approle auth: %w", err)
 		}
-		go watcher.Start()
-		go observeWatcher(watcher)
-		return &vaultKeyWrapper{
-			client:       client,
-			transitMount: cfg.TransitMount,
-			transitKey:   cfg.TransitKey,
-			watcher:      watcher,
-		}, nil
+		watcher, err = loginWithRenewal(ctx, client, appRoleAuth)
+		if err != nil {
+			return nil, fmt.Errorf("vault: approle: %w", err)
+		}
 	case cfg.Token != "":
 		client.SetToken(cfg.Token)
 		// Validate the token + connectivity at construction time so a
 		// misconfigured deploy fails closed at startup rather than at the
-		// first Wrap/Unwrap call. Matches the Kubernetes-auth branch above
-		// which fails immediately on a bad role/JWT.
+		// first Wrap/Unwrap call. Matches the login branches above which
+		// fail immediately on a bad credential.
 		if _, err := client.Auth().Token().LookupSelfWithContext(ctx); err != nil {
 			return nil, fmt.Errorf("vault: validate static token: %w", err)
 		}
 	default:
-		return nil, errors.New("vault: either VAULT_K8S_ROLE or VAULT_TOKEN must be set")
+		return nil, errors.New("vault: one of VAULT_K8S_ROLE, VAULT_APPROLE_ROLE_ID, or VAULT_TOKEN must be set")
 	}
 
 	return &vaultKeyWrapper{
 		client:       client,
 		transitMount: cfg.TransitMount,
 		transitKey:   cfg.TransitKey,
+		watcher:      watcher,
 	}, nil
 }
 
 // GenerateDataKey asks Vault to mint a fresh 256-bit DEK via the transit
-// engine's datakey endpoint and return both the plaintext DEK and its
-// KEK-wrapped form in one round-trip. In HSM-backed Vault deployments
-// the DEK is generated inside the HSM, so the plaintext material
-// originates there rather than in this process — the property our
-// security review asked for.
+// engine's wrapped datakey endpoint and returns both the plaintext DEK and
+// its KEK-wrapped form. The DEK is generated inside Vault (the HSM, in
+// compliant deployments), so the plaintext material originates there rather
+// than in this process — the property our security review asked for.
+//
+// The wrapped endpoint returns only the KEK-wrapped DEK (no plaintext), so
+// the plaintext is recovered with a follow-up decrypt. This deliberately
+// avoids the datakey/plaintext capability: callers need only
+// datakey/wrapped + decrypt, the same decrypt that Unwrap already requires.
 func (w *vaultKeyWrapper) GenerateDataKey(ctx context.Context) (plaintext, wrapped []byte, err error) {
 	defer func() { kekWrapCounter.WithLabelValues(resultLabel(err)).Inc() }()
 	resp, err := w.client.Logical().WriteWithContext(ctx,
-		fmt.Sprintf("%s/datakey/plaintext/%s", w.transitMount, w.transitKey),
+		fmt.Sprintf("%s/datakey/wrapped/%s", w.transitMount, w.transitKey),
 		map[string]any{"bits": 256},
 	)
 	if err != nil {
@@ -159,19 +217,16 @@ func (w *vaultKeyWrapper) GenerateDataKey(ctx context.Context) (plaintext, wrapp
 	if resp == nil || resp.Data == nil {
 		return nil, nil, errors.New("vault transit datakey: empty response")
 	}
-	b64, ok := resp.Data["plaintext"].(string)
-	if !ok || b64 == "" {
-		return nil, nil, errors.New("vault transit datakey: missing plaintext")
-	}
-	dek, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, nil, fmt.Errorf("vault transit datakey: base64 decode: %w", err)
-	}
 	ct, ok := resp.Data["ciphertext"].(string)
 	if !ok || ct == "" {
 		return nil, nil, errors.New("vault transit datakey: missing ciphertext")
 	}
-	return dek, []byte(ct), nil
+	wrapped = []byte(ct)
+	dek, err := w.decryptDEK(ctx, wrapped)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vault transit datakey decrypt: %w", err)
+	}
+	return dek, wrapped, nil
 }
 
 // Wrap encrypts the DEK via Vault's transit engine and returns the
@@ -201,6 +256,14 @@ func (w *vaultKeyWrapper) Wrap(ctx context.Context, dek []byte) (out []byte, err
 // and returns the plaintext DEK.
 func (w *vaultKeyWrapper) Unwrap(ctx context.Context, ciphertext []byte) (out []byte, err error) {
 	defer func() { kekUnwrapCounter.WithLabelValues(resultLabel(err)).Inc() }()
+	return w.decryptDEK(ctx, ciphertext)
+}
+
+// decryptDEK decrypts a "vault:vN:..." transit ciphertext back to the
+// plaintext DEK. It carries no metric of its own; the public callers
+// (Unwrap, and the wrapped-datakey path in GenerateDataKey) each record
+// exactly one operation around it.
+func (w *vaultKeyWrapper) decryptDEK(ctx context.Context, ciphertext []byte) ([]byte, error) {
 	resp, err := w.client.Logical().WriteWithContext(ctx,
 		fmt.Sprintf("%s/decrypt/%s", w.transitMount, w.transitKey),
 		map[string]any{
