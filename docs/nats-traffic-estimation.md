@@ -308,7 +308,41 @@ Notes:
   ~8 hr then expires. Peak ingest is 100 msg/s during the ~7-minute burst.
 - For TTL < 1 day, retained ≈ `(pub/day) × (TTL_hours / 24)`.
 
-## 10. Caveats
+## 10. Per-Fab Traffic Summary
+
+Each fab is an independent site (its own NATS). The steady-state model (§6) decomposes
+into a **per-user** component (R/R, presence, member events — ~84% of bytes) and a
+**per-message** component (delivery fan-out — ~90% of deliveries), so each fab's total is
+`per_user × Users + per_message × Msg/day`. Fab 1 reproduces §6.4 exactly; the rest scale
+from the same per-unit rates (all other parameters — F, P, R_sub, R_member, etc. — held
+equal across fabs).
+
+Figures are **steady-state, single connection per user (D=1)**, and **exclude
+`MIGRATION_OPLOG`** (separate phase — §8). Per-fab numbers are **not summed** — size each
+site independently. Peak ≈ 4× avg.
+
+| Fab | Users | Msg/day | Deliveries/day | avg msg/s | peak msg/s | Traffic/day | avg MB/s |
+|-----|------:|--------:|---------------:|----------:|-----------:|------------:|---------:|
+| Fab 1 | 20,789 | 4.00M | ~1.02B | 11,800 | 47,200 | 3.87 TB | 44.8 |
+| Fab 2 | 12,150 | 2.33M | ~594M | 6,880 | 27,500 | 2.26 TB | 26.2 |
+| Fab 3 | 2,922 | 0.56M | ~143M | 1,650 | 6,610 | 0.54 TB | 6.3 |
+| Fab 4 | 2,078 | 0.39M | ~100M | 1,160 | 4,620 | 0.39 TB | 4.5 |
+| Fab 5 | 17,061 | 3.38M | ~857M | 9,920 | 39,700 | 3.19 TB | 36.9 |
+| Fab 6 | 4,138 | 0.79M | ~202M | 2,330 | 9,340 | 0.77 TB | 8.9 |
+| Fab 7 | 2,199 | 0.42M | ~107M | 1,240 | 4,960 | 0.41 TB | 4.7 |
+| Fab 8 | 3,244 | 0.62M | ~158M | 1,830 | 7,320 | 0.60 TB | 7.0 |
+| Fab 9 | 4,492 | 0.86M | ~219M | 2,540 | 10,160 | 0.84 TB | 9.7 |
+| Fab 10 | 4,754 | 0.90M | ~230M | 2,660 | 10,650 | 0.88 TB | 10.2 |
+| Fab 11 | 5,537 | 1.00M | ~258M | 2,990 | 11,940 | 1.02 TB | 11.8 |
+| Fab 12 | 4,356 | 0.83M | ~212M | 2,450 | 9,810 | 0.81 TB | 9.4 |
+| Fab 13 | 2,227 | 0.42M | ~107M | 1,240 | 4,970 | 0.41 TB | 4.8 |
+| Fab 14 | 5,215 | 1.00M | ~255M | 2,950 | 11,810 | 0.97 TB | 11.2 |
+
+Per-fab byte split holds at the §6.4 ratio for every site: **R/R ~84%**, core delivery
+~15%, JetStream streams ~1%. For multi-device (D), scale Deliveries/day, Traffic/day, and
+MB/s by the rule in §7 (≈ ×D); `MIGRATION_OPLOG` per fab is per §8 and independent of D.
+
+## 11. Caveats
 
 - **R_member = 50/day/user** is the member-change slice of the 250 room ops (§4); all
   *(member-driven)* lines scale with it.
