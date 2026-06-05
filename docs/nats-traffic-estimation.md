@@ -85,7 +85,7 @@ Each site runs its own NATS server, so these figures are per-site.
 | Subscription R/R ops per day per connection | R_sub | **1,000** |
 | Message-history R/R ops per day per connection | R_hist | **150** |
 | Room R/R ops per day per user | R_room | **250** |
-| Member add/remove ops per day per user *(assumption — subset of R_room)* | R_member | **50** |
+| Member add/remove ops per day per user *(member-change subset of R_room)* | R_member | **50** |
 | Search ops per day per user | R_search | ~5 |
 | Presence status changes per day per user | C_pres | ~20 |
 | Push notifications per day | M_push | 4,000,000 |
@@ -93,11 +93,9 @@ Each site runs its own NATS server, so these figures are per-site.
 | Migration oplog QPS (sustained 24/7, 130KB payload, 1 consumer) | Q_mig | 4,000 |
 | Peak factor (business-hours concentration) | k | ~4× |
 
-> **R_member is an assumption.** The 250 room ops/day "include member add/remove," so
-> `R_member = 50` is the member-change slice that drives the ROOMS stream + sys-message
-> fan-out; the remaining ~200 are read-only Room R/R. Every line tagged *(member-driven)*
-> scales linearly with `R_member` — if member changes are rarer (e.g. ~5/day), those
-> lines shrink ~10×.
+> **R_member** is the member-change slice of the 250 room ops/day: `R_member = 50` drives
+> the ROOMS stream + sys-message fan-out, and the remaining ~200 are read-only Room R/R.
+> Lines tagged *(member-driven)* scale linearly with it.
 
 ## 5. Methodology — ingress vs. fan-out
 
@@ -196,8 +194,8 @@ At the single-connection baseline: 20,789 connections × (S=100 + P=20) =
   not redundant polling.
 - **Message + metadata delivery = ~800M deliveries/day (~9,300/s)** — the message-rate /
   connection bottleneck, driven by F = 100.
-- **Member-change fan-out = ~104M deliveries/day** — sized by the `R_member = 50`
-  assumption; confirm before trusting.
+- **Member-change fan-out = ~104M deliveries/day** — driven by `R_member = 50/day/user`
+  (sys-message + member-event broadcast ×F).
 
 ### 6.7 Optimization levers
 
@@ -269,9 +267,9 @@ is a **network-capacity** problem, not a message-rate one.
 
 ### 8.2 Storage
 
-| TTL | Retained msgs | Logical | R=3 on disk |
-|-----|--------------:|--------:|------------:|
-| 8 hr | 115.2M | ~15 TB | ~45 TB |
+| TTL | Retained msgs | Logical |
+|-----|--------------:|--------:|
+| 8 hr | 115.2M | ~15 TB |
 
 `= 4,000 msg/s × 28,800 s × 130KB`. TTL is the only storage lever — keep it as short as
 the migration tolerates.
@@ -279,17 +277,16 @@ the migration tolerates.
 ### 8.3 Sizing implications
 
 - **Isolate it.** Put MIGRATION_OPLOG on its own stream/account or dedicated NATS nodes
-  and disk so its ~1 GB/s and ~45 TB footprint cannot starve the live chat cutover that
+  and disk so its ~1 GB/s and ~15 TB footprint cannot starve the live chat cutover that
   follows.
 - **Provision for the phase, then reclaim.** After the ~2-month window the stream can be
-  retired and its ~45 TB disk + network headroom returned to steady-state growth.
+  retired and its ~15 TB disk + network headroom returned to steady-state growth.
 - **Does not scale with device count** — it is server-to-server migration plumbing.
 
 ## 9. Storage Estimation (steady-state, per-stream TTL)
 
 JetStream storage at steady state ≈ `publish-rate × retention (TTL) × payload`. Figures
-are **logical** bytes (single replica); multiply by the replication factor (typically
-R=3) for on-disk usage. TTLs are per the stream spec.
+**logical** bytes per the stream's TTL (replication is out of scope here).
 
 | Stream | TTL | Pub/day | Payload | Retained msgs | Logical storage |
 |--------|-----|--------:|---------|--------------:|----------------:|
@@ -300,7 +297,6 @@ R=3) for on-disk usage. TTLs are per the stream spec.
 | `INBOX` | 7 day | 1.04M | 0.3KB | 7.3M | 2.2 GB |
 | `ROOMS` | 1 day | 1.04M | 0.4KB | 1.04M | 0.4 GB |
 | **TOTAL (logical)** | | | | | **~40 GB** |
-| **TOTAL (R=3 on disk)** | | | | | **~120 GB** |
 
 Excludes `MIGRATION_OPLOG` storage (separate phase — §8).
 
@@ -314,8 +310,8 @@ Notes:
 
 ## 10. Caveats
 
-- **R_member = 50/day/user is an assumption** (§4). All *(member-driven)* lines scale
-  with it.
+- **R_member = 50/day/user** is the member-change slice of the 250 room ops (§4); all
+  *(member-driven)* lines scale with it.
 - **Presence is not implemented** ("future"). The estimate assumes ~20 event-driven
   status changes/user/day; a heartbeat design would explode this.
 - **OUTBOX and federated INBOX inflow are excluded** from this estimate per scope; INBOX
