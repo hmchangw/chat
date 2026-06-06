@@ -158,8 +158,9 @@ type RoomStore interface {
 	// filter rejects a threadId that belongs to a different room than the request subject.
 	GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error)
 
-	// UpdateSubscriptionThreadRead overwrites threadUnread + alert; empty threadUnread is $unset.
-	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error
+	// UpdateSubscriptionThreadRead atomically removes threadID from threadUnread and returns
+	// the updated slice (nil when empty) and the updated alert flag.
+	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) (newThreadUnread []string, newAlert bool, err error)
 
 	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
 

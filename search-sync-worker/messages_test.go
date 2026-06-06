@@ -163,6 +163,39 @@ func TestBuildMessageAction(t *testing.T) {
 	})
 }
 
+func TestMessageCollection_BuildAction_SkipsBadgeEvents(t *testing.T) {
+	// Badge-only thread events carry just the parent tcount (no CreatedAt /
+	// Content) and must be skipped rather than reaching the document-shape
+	// guards (which would log an error and ack).
+	tests := []struct {
+		name  string
+		event model.EventType
+	}{
+		{name: "thread reply added", event: model.EventThreadReplyAdded},
+	}
+
+	coll := newMessageCollection("msgs-v1", time.Time{})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := model.MessageEvent{
+				Event:  tc.event,
+				SiteID: "site-a",
+				Message: model.Message{
+					ID:                    "reply-1",
+					RoomID:                "room-1",
+					ThreadParentMessageID: "parent-1",
+				},
+				Timestamp: 1737964678390,
+			}
+			data, _ := json.Marshal(evt)
+
+			actions, err := coll.BuildAction(data)
+			require.NoError(t, err)
+			assert.Nil(t, actions)
+		})
+	}
+}
+
 func TestMessageTemplateProperties_MatchesStruct(t *testing.T) {
 	props := messageTemplateProperties()
 

@@ -1848,7 +1848,7 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u3", Account: "carol"},
-		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		RoomID: roomID, SiteID: remoteSite, Name: oldName, RoomType: model.RoomTypeChannel,
 		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	})
 	mustInsertUser(t, db, &model.User{ID: "u1", Account: "alice", SiteID: siteID})

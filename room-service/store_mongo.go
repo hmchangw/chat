@@ -1119,27 +1119,47 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
-func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
+// UpdateSubscriptionThreadRead atomically removes threadID from threadUnread via
+// an aggregation-pipeline FindOneAndUpdate. When the result is empty, the field
+// is removed ($$REMOVE) and alert is set to false.
+func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) ([]string, bool, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
-	var update bson.M
-	if len(threadUnread) == 0 {
-		update = bson.M{
-			"$set":   bson.M{"alert": alert},
-			"$unset": bson.M{"threadUnread": ""},
-		}
-	} else {
-		update = bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}
+
+	// Aggregation pipeline: filter out threadID in one atomic pass, then unset
+	// threadUnread if the result is empty ($$REMOVE) and derive alert from that.
+	// Stage 1 stores the filtered array in a temp field _tuf; stage 2 applies it.
+	update := bson.A{
+		bson.M{"$set": bson.M{"_tuf": bson.M{"$filter": bson.M{
+			"input": bson.M{"$ifNull": bson.A{"$threadUnread", bson.A{}}},
+			"as":    "item",
+			"cond":  bson.M{"$ne": bson.A{"$$item", threadID}},
+		}}}},
+		bson.M{"$set": bson.M{
+			"threadUnread": bson.M{"$cond": bson.A{
+				bson.M{"$gt": bson.A{bson.M{"$size": "$_tuf"}, 0}},
+				"$_tuf",
+				"$$REMOVE",
+			}},
+			"alert": bson.M{"$cond": bson.A{
+				bson.M{"$gt": bson.A{bson.M{"$size": "$_tuf"}, 0}},
+				"$alert",
+				false,
+			}},
+		}},
+		bson.M{"$unset": "_tuf"},
 	}
-	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var updated model.Subscription
+	err := s.subscriptions.FindOneAndUpdate(ctx, filter, update, opts).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w",
 			account, roomID, model.ErrSubscriptionNotFound)
 	}
-	return nil
+	if err != nil {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
+	}
+	return updated.ThreadUnread, updated.Alert, nil
 }
 
 // ListDefaultChannelTabApps returns apps whose channelTab.enabled AND

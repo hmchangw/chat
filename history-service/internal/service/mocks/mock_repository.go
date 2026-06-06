@@ -247,13 +247,14 @@ func (mr *MockMessageWriterMockRecorder) RemoveReaction(ctx, msg, key, updatedAt
 }
 
 // SoftDeleteMessage mocks base method.
-func (m *MockMessageWriter) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+func (m *MockMessageWriter) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SoftDeleteMessage", ctx, msg, deletedAt)
 	ret0, _ := ret[0].(time.Time)
 	ret1, _ := ret[1].(bool)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret2, _ := ret[2].(*int)
+	ret3, _ := ret[3].(error)
+	return ret0, ret1, ret2, ret3
 }
 
 // SoftDeleteMessage indicates an expected call of SoftDeleteMessage.
@@ -492,13 +493,14 @@ func (mr *MockMessageRepositoryMockRecorder) RemoveReaction(ctx, msg, key, updat
 }
 
 // SoftDeleteMessage mocks base method.
-func (m *MockMessageRepository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, error) {
+func (m *MockMessageRepository) SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SoftDeleteMessage", ctx, msg, deletedAt)
 	ret0, _ := ret[0].(time.Time)
 	ret1, _ := ret[1].(bool)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret2, _ := ret[2].(*int)
+	ret3, _ := ret[3].(error)
+	return ret0, ret1, ret2, ret3
 }
 
 // SoftDeleteMessage indicates an expected call of SoftDeleteMessage.

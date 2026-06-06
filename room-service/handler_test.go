@@ -3434,8 +3434,8 @@ func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
-		gomock.Len(0), false).Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return(nil, false, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -3452,8 +3452,8 @@ func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
-		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return([]string{"p2"}, true, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -3468,8 +3468,8 @@ func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
-		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return([]string{"p2"}, true, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -3484,8 +3484,8 @@ func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, false), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
-		gomock.Len(0), false).Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return(nil, false, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
@@ -3500,8 +3500,8 @@ func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice",
-		[]string{"p2"}, true).Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return([]string{"p2"}, true, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
@@ -3536,8 +3536,8 @@ func TestHandler_MessageThreadRead_GetUserSiteID_Empty(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
-		Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any()).
+		Return(nil, false, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", nil)
@@ -3555,8 +3555,8 @@ func TestHandler_MessageThreadRead_GetUserSiteID_Error(t *testing.T) {
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("", fmt.Errorf("boom"))
 	// Writes are short-circuited by the read-phase error, but may race ahead.
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(nil).AnyTimes()
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, false, nil).AnyTimes()
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil).AnyTimes()
 
@@ -3572,8 +3572,8 @@ func TestHandler_MessageThreadRead_OutboxPublishError(t *testing.T) {
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
-		Return(nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any()).
+		Return(nil, false, nil)
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
@@ -3590,8 +3590,8 @@ func TestHandler_MessageThreadRead_UpdateSubscriptionError(t *testing.T) {
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
-		Return(fmt.Errorf("mongo down"))
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any()).
+		Return(nil, false, fmt.Errorf("mongo down"))
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(nil).AnyTimes()
 
@@ -3607,8 +3607,8 @@ func TestHandler_MessageThreadRead_UpdateThreadSubscriptionError(t *testing.T) {
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
 		Return(baseThreadSub("alice", "r1", "p1", "tr1"), nil)
 	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
-	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any(), gomock.Any()).
-		Return(nil).AnyTimes()
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", gomock.Any()).
+		Return(nil, false, nil).AnyTimes()
 	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), "tr1", "alice", gomock.Any()).
 		Return(fmt.Errorf("mongo down"))
 

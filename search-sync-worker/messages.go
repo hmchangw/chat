@@ -68,6 +68,12 @@ func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction,
 	if err := json.Unmarshal(data, &evt); err != nil {
 		return nil, fmt.Errorf("unmarshal message event: %w", err)
 	}
+	// Thread-reply badge events carry only the parent's tcount, not a
+	// searchable document — skip them before the document-shape guards below,
+	// which would otherwise reject the sparse Message as a hard error.
+	if evt.Event == model.EventThreadReplyAdded {
+		return nil, nil
+	}
 	if evt.Message.ID == "" {
 		return nil, fmt.Errorf("build message action: missing message id")
 	}

@@ -330,18 +330,24 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 
 	editedAtMs := editedAt.UnixMilli()
 
-	// Mentions intentionally omitted — broadcast-worker re-resolves them from Content.
+	// Carry the fields downstream actually reads: search-sync-worker reindexes
+	// by Content/EditedAt/UpdatedAt; broadcast-worker emits a slim
+	// MessageEditedPayload of {ID, Content, EditedBy, EditedAt, UpdatedAt} and
+	// routes thread-reply edits via ThreadParentMessageID + TShow.
+	// Mentions intentionally omitted — broadcast-worker re-resolves from Content.
 	canonicalEvt := model.MessageEvent{
 		Event: model.EventUpdated,
 		Message: model.Message{
-			ID:          msg.MessageID,
-			RoomID:      msg.RoomID,
-			UserID:      msg.Sender.ID,
-			UserAccount: msg.Sender.Account,
-			Content:     req.NewMsg,
-			CreatedAt:   msg.CreatedAt,
-			EditedAt:    &editedAt,
-			UpdatedAt:   &editedAt,
+			ID:                    msg.MessageID,
+			RoomID:                msg.RoomID,
+			UserID:                msg.Sender.ID,
+			UserAccount:           msg.Sender.Account,
+			Content:               req.NewMsg,
+			CreatedAt:             msg.CreatedAt,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: msg.ThreadParentID,
+			TShow:                 msg.TShow,
 		},
 		SiteID:    siteID,
 		Timestamp: editedAtMs,
@@ -374,10 +380,66 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 		return nil, errcode.Forbidden("only the sender can delete")
 	}
 
+	// Already-deleted short-circuit: echo the current updated_at as the DeletedAt.
+	// Prevents tcount double-decrement on caller retry and avoids duplicate events.
+	// Re-publishes the canonical deleted event so a badge update that was lost on
+	// the first attempt (publishCanonicalBestEffort is best-effort) gets retried.
+	// JetStream dedup ("<msgID>:deleted") prevents double-delivery if the first
+	// publish actually succeeded.
 	if msg.Deleted {
 		var deletedAtMs int64
 		if msg.UpdatedAt != nil {
 			deletedAtMs = msg.UpdatedAt.UnixMilli()
+		}
+		var newTcount *int
+		// Gate parent lookup on UpdatedAt != nil: nil-UpdatedAt records can never produce
+		// a valid EventDeleted, so the lookup result would be unconsumed anyway.
+		if msg.ThreadParentID != "" && msg.UpdatedAt != nil {
+			parent, parentErr := s.msgReader.GetMessageByID(c, msg.ThreadParentID)
+			switch {
+			case parentErr != nil:
+				// Return error so the caller retries the delete handler. On retry the
+				// lookup will either succeed (returning the correct tcount) or find the
+				// parent gone (default branch, which skips the publish). Publishing now
+				// with NewTCount=nil risks permanently dropping the badge update — the
+				// same reason the default branch skips the publish entirely.
+				return nil, fmt.Errorf("already-deleted retry: look up parent tcount for %s: %w", msg.ThreadParentID, parentErr)
+			case parent != nil:
+				newTcount = parent.TCount
+			default:
+				// Parent was concurrently hard-deleted. No badge to update — skip the
+				// canonical republish entirely to avoid publishing EventDeleted with
+				// NewTCount=nil, which would cause broadcast-worker to permanently drop
+				// the tcount decrement.
+				return &models.DeleteMessageResponse{
+					MessageID: req.MessageID,
+					DeletedAt: deletedAtMs,
+				}, nil
+			}
+		}
+		// Only republish when UpdatedAt is available. Legacy records with nil
+		// UpdatedAt cannot produce a valid EventDeleted — downstream handlers
+		// (broadcast-worker, search-sync) reject nil UpdatedAt and would NAK,
+		// causing an infinite redelivery loop.
+		if msg.UpdatedAt != nil {
+			canonicalEvt := model.MessageEvent{
+				Event: model.EventDeleted,
+				Message: model.Message{
+					ID:                    msg.MessageID,
+					RoomID:                msg.RoomID,
+					UserID:                msg.Sender.ID,
+					UserAccount:           msg.Sender.Account,
+					Content:               msg.Msg,
+					CreatedAt:             msg.CreatedAt,
+					UpdatedAt:             msg.UpdatedAt,
+					ThreadParentMessageID: msg.ThreadParentID,
+					TShow:                 msg.TShow,
+				},
+				SiteID:    siteID,
+				Timestamp: deletedAtMs,
+				NewTCount: newTcount,
+			}
+			s.publishCanonicalBestEffort(c, subject.MsgCanonicalDeleted(siteID), &canonicalEvt)
 		}
 		return &models.DeleteMessageResponse{
 			MessageID: req.MessageID,
@@ -386,7 +448,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	}
 
 	deletedAt := time.Now().UTC()
-	actualDeletedAt, applied, err := s.msgWriter.SoftDeleteMessage(c, msg, deletedAt)
+	actualDeletedAt, applied, newTcount, err := s.msgWriter.SoftDeleteMessage(c, msg, deletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("deleting message %s: %w", req.MessageID, err)
 	}
@@ -403,15 +465,19 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	canonicalEvt := model.MessageEvent{
 		Event: model.EventDeleted,
 		Message: model.Message{
-			ID:          msg.MessageID,
-			RoomID:      msg.RoomID,
-			UserID:      msg.Sender.ID,
-			UserAccount: msg.Sender.Account,
-			CreatedAt:   msg.CreatedAt,
-			UpdatedAt:   &actualDeletedAt,
+			ID:                    msg.MessageID,
+			RoomID:                msg.RoomID,
+			UserID:                msg.Sender.ID,
+			UserAccount:           msg.Sender.Account,
+			Content:               msg.Msg,
+			CreatedAt:             msg.CreatedAt,
+			UpdatedAt:             &actualDeletedAt,
+			ThreadParentMessageID: msg.ThreadParentID,
+			TShow:                 msg.TShow,
 		},
 		SiteID:    siteID,
 		Timestamp: deletedAtMs,
+		NewTCount: newTcount,
 	}
 	s.publishCanonicalBestEffort(c, subject.MsgCanonicalDeleted(siteID), &canonicalEvt)
 

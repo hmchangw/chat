@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,10 +26,13 @@ type publishRecord struct {
 }
 
 type mockPublisher struct {
+	mu      sync.Mutex
 	records []publishRecord
 }
 
 func (m *mockPublisher) Publish(_ context.Context, subj string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.records = append(m.records, publishRecord{subject: subj, data: data})
 	return nil
 }
@@ -71,8 +75,9 @@ func metaOf(r *model.Room) roommetacache.Meta {
 
 func makeMessageEvent(roomID, content string, msgTime time.Time) []byte {
 	evt := model.MessageEvent{
-		Event:  model.EventCreated,
-		SiteID: "site-a",
+		Event:     model.EventCreated,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
 		Message: model.Message{
 			ID: "msg-1", RoomID: roomID, UserID: "user-1", UserAccount: "sender",
 			Content: content, CreatedAt: msgTime,
@@ -239,7 +244,7 @@ func TestHandler_HandleMessage_ChannelRoom(t *testing.T) {
 			assert.Equal(t, "site-a", evt.SiteID)
 			assert.Equal(t, 5, evt.UserCount)
 			assert.Equal(t, "msg-1", evt.LastMsgID)
-			assert.Greater(t, evt.Timestamp, int64(0))
+			assert.Equal(t, msgTime.UnixMilli(), evt.Timestamp)
 			assert.Equal(t, tc.wantMentionAll, evt.MentionAll)
 
 			assert.Equal(t, "msg-1", msg.ID)
@@ -299,8 +304,9 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 			pub := &mockPublisher{}
 
 			evt := model.MessageEvent{
-				Event:  model.EventCreated,
-				SiteID: "site-a",
+				Event:     model.EventCreated,
+				SiteID:    "site-a",
+				Timestamp: msgTime.UnixMilli(),
 				Message: model.Message{
 					ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice",
 					Content: tc.content, CreatedAt: msgTime,
@@ -340,7 +346,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 
 			aliceEvt := evtBySubject[subject.UserRoomEvent("alice")]
 			assert.Equal(t, model.RoomEventNewMessage, aliceEvt.Type)
-			assert.Greater(t, aliceEvt.Timestamp, int64(0))
+			assert.Equal(t, msgTime.UnixMilli(), aliceEvt.Timestamp)
 			require.NotNil(t, aliceEvt.Message, "DM events must carry Message payload")
 			assert.Equal(t, "msg-1", aliceEvt.Message.ID)
 			require.NotNil(t, aliceEvt.Message.Sender)
@@ -350,7 +356,7 @@ func TestHandler_HandleMessage_DMRoom(t *testing.T) {
 
 			bobEvt := evtBySubject[subject.UserRoomEvent("bob")]
 			require.NotNil(t, bobEvt.Message)
-			assert.Greater(t, bobEvt.Timestamp, int64(0))
+			assert.Equal(t, msgTime.UnixMilli(), bobEvt.Timestamp)
 			assert.Equal(t, "msg-1", bobEvt.Message.ID)
 			require.NotNil(t, bobEvt.Message.Sender)
 			assert.Equal(t, tc.bobHasMention, bobEvt.HasMention)
@@ -531,12 +537,15 @@ func TestHandler_HandleMessage_Errors(t *testing.T) {
 }
 
 type failingPublisher struct {
+	mu        sync.Mutex
 	callCount int
 	failAfter int
 	records   []publishRecord
 }
 
 func (p *failingPublisher) Publish(_ context.Context, subj string, data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.callCount++
 	if p.callCount > p.failAfter {
 		return errors.New("publish failed")
@@ -1492,4 +1501,673 @@ func TestHandleUnpinned_DMRoom_FansOutToBothMembers(t *testing.T) {
 	}
 	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+// ---------------------------------------------------------------------------
+// Thread handler tests
+// ---------------------------------------------------------------------------
+
+func TestThreadFanOutAccounts(t *testing.T) {
+	tests := []struct {
+		name          string
+		sender        string
+		followers     map[string]struct{}
+		extraAccounts []string
+		want          []string
+	}{
+		{
+			name:          "no followers no extras",
+			sender:        "alice",
+			followers:     map[string]struct{}{},
+			extraAccounts: nil,
+			want:          nil,
+		},
+		{
+			name:      "sender excluded from followers",
+			sender:    "alice",
+			followers: map[string]struct{}{"alice": {}, "bob": {}},
+			want:      []string{"bob"},
+		},
+		{
+			name:          "extra accounts merged deduped",
+			sender:        "alice",
+			followers:     map[string]struct{}{"bob": {}},
+			extraAccounts: []string{"bob", "carol"},
+			want:          []string{"bob", "carol"},
+		},
+		{
+			name:          "bot accounts skipped",
+			sender:        "alice",
+			followers:     map[string]struct{}{"helper.bot": {}, "bob": {}},
+			extraAccounts: []string{"other.bot"},
+			want:          []string{"bob"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := threadFanOutAccounts(tc.sender, tc.followers, tc.extraAccounts)
+			assert.ElementsMatch(t, tc.want, got)
+		})
+	}
+}
+
+func TestHandleMessage_ThreadReplyAdded_DispatchesToHandleThreadTCountUpdated(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	tcount := 3
+	room := &model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(room, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventThreadReplyAdded,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		NewTCount: &tcount,
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			ThreadParentMessageID: "parent-1",
+			CreatedAt:             msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1)
+	var tmEvt model.ThreadMetadataUpdatedEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &tmEvt))
+	assert.Equal(t, model.RoomEventThreadMetadataUpdated, tmEvt.Type)
+	assert.Equal(t, "r1", tmEvt.RoomID)
+	assert.Equal(t, "site-a", tmEvt.SiteID)
+	assert.Equal(t, "parent-1", tmEvt.ParentMessageID)
+	assert.Equal(t, "reply-1", tmEvt.ReplyMessageID)
+	assert.Equal(t, 3, tmEvt.NewTCount)
+	assert.Equal(t, model.ThreadActionReplyAdded, tmEvt.Action)
+	assert.Equal(t, msgTime.UnixMilli(), tmEvt.Timestamp)
+}
+
+func TestHandleThreadTCountUpdated_MissingNewTCount_Skips(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+	// No store calls expected — event is silently dropped.
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventThreadReplyAdded,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		// NewTCount intentionally nil
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			ThreadParentMessageID: "parent-1",
+			CreatedAt:             msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleThreadTCountUpdated_MissingParentMessageID_Skips(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	tcount := 2
+	evt := model.MessageEvent{
+		Event:     model.EventThreadReplyAdded,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		NewTCount: &tcount,
+		Message: model.Message{
+			ID:          "reply-1",
+			RoomID:      "r1",
+			UserAccount: "alice",
+			// ThreadParentMessageID intentionally empty
+			CreatedAt: msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleThreadTCountUpdated_GetRoomError_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	tcount := 2
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, errors.New("db error"))
+
+	evt := model.MessageEvent{
+		Event:     model.EventThreadReplyAdded,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		NewTCount: &tcount,
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			ThreadParentMessageID: "parent-1",
+			CreatedAt:             msgTime,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	err := h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get room")
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleThreadCreated_ChannelRoom_FansOutToFollowers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	parentMsgID := "parent-1"
+	siteID := "site-a"
+	roomID := "r1"
+
+	followers := map[string]struct{}{"bob": {}, "carol": {}}
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).Return(metaOf(testChannelRoom), nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID, siteID).Return(followers, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		SiteID:    siteID,
+		Timestamp: msgTime.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                roomID,
+			UserID:                "u-alice",
+			UserAccount:           "alice",
+			Content:               "a thread reply",
+			CreatedAt:             msgTime,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	// bob and carol (followers), alice (sender) excluded
+	require.Len(t, pub.records, 2)
+	subjects := map[string]bool{}
+	for _, r := range pub.records {
+		subjects[r.subject] = true
+		var roomEvt model.RoomEvent
+		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+		assert.Equal(t, model.RoomEventNewMessage, roomEvt.Type)
+		assert.Equal(t, msgTime.UnixMilli(), roomEvt.Timestamp)
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+	assert.True(t, subjects[subject.UserRoomEvent("carol")])
+}
+
+func TestHandleThreadCreated_ChannelRoom_NoFollowers_Skips(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(metaOf(testChannelRoom), nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), "parent-1", "site-a").Return(map[string]struct{}{}, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			Content:               "hello",
+			CreatedAt:             msgTime,
+			ThreadParentMessageID: "parent-1",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+	assert.Empty(t, pub.records, "no followers → nothing published")
+}
+
+func TestHandleThreadCreated_DMRoom_FansOutToAllMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC)
+
+	store.EXPECT().GetRoomMeta(gomock.Any(), "dm-1").Return(metaOf(testDMRoom), nil)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "dm-1", "reply-1", msgTime, false).Return(nil)
+	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "dm-1",
+			UserID:                "u-alice",
+			UserAccount:           "alice",
+			Content:               "thread reply in DM",
+			CreatedAt:             msgTime,
+			ThreadParentMessageID: "parent-dm",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2, "DM thread reply fans out to all members")
+	subjects := map[string]bool{}
+	for _, r := range pub.records {
+		subjects[r.subject] = true
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestHandleThreadCreated_DMRoom_WithMention_SetsMentions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC)
+
+	store.EXPECT().GetRoomMeta(gomock.Any(), "dm-1").Return(metaOf(testDMRoom), nil)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "dm-1", "reply-1", msgTime, false).Return(nil)
+	store.EXPECT().SetSubscriptionMentions(gomock.Any(), "dm-1", []string{"bob"}).Return(nil)
+	store.EXPECT().ListSubscriptions(gomock.Any(), "dm-1").Return(testDMSubs, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob"}).Return(testUsers, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "dm-1",
+			UserID:                "u-alice",
+			UserAccount:           "alice",
+			Content:               "hey @bob",
+			CreatedAt:             msgTime,
+			ThreadParentMessageID: "parent-dm",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+	require.Len(t, pub.records, 2)
+}
+
+func TestHandleThreadUpdated_ChannelRoom_FansOutToFollowers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	editedAt := msgTime.Add(time.Minute)
+	parentMsgID := "parent-1"
+	siteID := "site-a"
+	roomID := "r1"
+
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: siteID}
+	followers := map[string]struct{}{"bob": {}, "carol": {}}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID, siteID).Return(followers, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    siteID,
+		Timestamp: editedAt.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                roomID,
+			UserAccount:           "alice",
+			Content:               "updated thread reply",
+			CreatedAt:             msgTime,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	for _, r := range pub.records {
+		var roomEvt model.EditRoomEvent
+		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
+		assert.Equal(t, "reply-1", roomEvt.MessageID)
+		assert.Equal(t, "updated thread reply", roomEvt.NewContent)
+		assert.Equal(t, editedAt.UnixMilli(), roomEvt.Timestamp)
+	}
+}
+
+func TestHandleThreadUpdated_ChannelRoom_GetThreadFollowersError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	editedAt := msgTime.Add(time.Minute)
+
+	room := &model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(room, nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), "parent-1", "site-a").Return(nil, errors.New("db error"))
+
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: editedAt.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			Content:               "edit",
+			CreatedAt:             msgTime,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: "parent-1",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	err := h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread fan-out")
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleThreadUpdated_DMRoom_FansOutToAllMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC)
+	editedAt := msgTime.Add(time.Minute)
+
+	room := &model.Room{
+		ID:       "dm-alice-bob",
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), "dm-alice-bob").Return(room, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventUpdated,
+		SiteID:    "site-a",
+		Timestamp: editedAt.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "dm-alice-bob",
+			UserAccount:           "alice",
+			Content:               "dm thread edit",
+			CreatedAt:             msgTime,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: "parent-dm",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	subjects := map[string]bool{}
+	for _, r := range pub.records {
+		subjects[r.subject] = true
+		var roomEvt model.EditRoomEvent
+		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
+		assert.Equal(t, "dm thread edit", roomEvt.NewContent)
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestHandleThreadDeleted_ChannelRoom_FansOutToFollowers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	deletedAt := msgTime.Add(time.Minute)
+	parentMsgID := "parent-1"
+	siteID := "site-a"
+	roomID := "r1"
+
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: siteID}
+	followers := map[string]struct{}{"bob": {}, "carol": {}}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), parentMsgID, siteID).Return(followers, nil)
+	// No NewTCount → no badge update.
+
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    siteID,
+		Timestamp: deletedAt.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                roomID,
+			UserAccount:           "alice",
+			Content:               "deleted thread reply",
+			CreatedAt:             msgTime,
+			UpdatedAt:             &deletedAt,
+			ThreadParentMessageID: parentMsgID,
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	for _, r := range pub.records {
+		var roomEvt model.DeleteRoomEvent
+		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
+		assert.Equal(t, "reply-1", roomEvt.MessageID)
+		assert.Equal(t, deletedAt.UnixMilli(), roomEvt.Timestamp)
+	}
+}
+
+func TestHandleThreadDeleted_ChannelRoom_WithBadgeUpdate(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	deletedAt := msgTime.Add(time.Minute)
+	tcount := 4
+
+	room := &model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(room, nil)
+	store.EXPECT().GetThreadFollowers(gomock.Any(), "parent-1", "site-a").Return(map[string]struct{}{"bob": {}}, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    "site-a",
+		Timestamp: deletedAt.UnixMilli(),
+		NewTCount: &tcount,
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			Content:               "",
+			CreatedAt:             msgTime,
+			UpdatedAt:             &deletedAt,
+			ThreadParentMessageID: "parent-1",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	// 1 delete event (to bob) + 1 badge update (to room channel)
+	require.Len(t, pub.records, 2)
+	var sawDelete, sawBadge bool
+	for _, r := range pub.records {
+		if r.subject == subject.RoomEvent("r1") {
+			var tmEvt model.ThreadMetadataUpdatedEvent
+			require.NoError(t, json.Unmarshal(r.data, &tmEvt))
+			assert.Equal(t, model.ThreadActionReplyDeleted, tmEvt.Action)
+			assert.Equal(t, 4, tmEvt.NewTCount)
+			sawBadge = true
+		} else {
+			var roomEvt model.DeleteRoomEvent
+			require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+			assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
+			sawDelete = true
+		}
+	}
+	assert.True(t, sawDelete, "delete event must be published to follower")
+	assert.True(t, sawBadge, "badge update must be published to room channel")
+}
+
+func TestHandleThreadDeleted_DMRoom_FansOutToAllMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC)
+	deletedAt := msgTime.Add(time.Minute)
+
+	room := &model.Room{
+		ID:       "dm-alice-bob",
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), "dm-alice-bob").Return(room, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventDeleted,
+		SiteID:    "site-a",
+		Timestamp: deletedAt.UnixMilli(),
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "dm-alice-bob",
+			UserAccount:           "alice",
+			CreatedAt:             msgTime,
+			UpdatedAt:             &deletedAt,
+			ThreadParentMessageID: "parent-dm",
+			TShow:                 false,
+		},
+	}
+	data, _ := json.Marshal(evt)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	subjects := map[string]bool{}
+	for _, r := range pub.records {
+		subjects[r.subject] = true
+		var roomEvt model.DeleteRoomEvent
+		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestPublishToThreadAccounts_AllFail_ReturnsError(t *testing.T) {
+	failPub := &failingPublisher{failAfter: 0}
+
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	h := NewHandler(store, us, failPub, keyStore, false)
+	err := h.publishToThreadAccounts(context.Background(), []string{"alice", "bob"}, []byte(`{}`), "parent-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish thread event")
+}
+
+func TestPublishToThreadAccounts_Empty_NoOp(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.publishToThreadAccounts(context.Background(), nil, []byte(`{}`), "parent-1"))
+	assert.Empty(t, pub.records)
 }

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1324,15 +1323,14 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 	// Plain errgroup.Group (not WithContext) so a NotFound from one goroutine does NOT cancel
 	// the siblings — otherwise context.Canceled in subErr/userSiteErr would outrank tsubErr.
 	var (
-		sub                          *model.Subscription
 		tsub                         *model.ThreadSubscription
 		userSiteID                   string
 		subErr, tsubErr, userSiteErr error
 	)
 	var g errgroup.Group
 	g.Go(func() error {
-		s, err := h.store.GetSubscription(ctx, account, roomID)
-		sub, subErr = s, err
+		_, err := h.store.GetSubscription(ctx, account, roomID)
+		subErr = err
 		return err
 	})
 	g.Go(func() error {
@@ -1361,13 +1359,15 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 		return nil, fmt.Errorf("get user siteId: %w", userSiteErr)
 	}
 
-	newThreadUnread := slices.DeleteFunc(slices.Clone(sub.ThreadUnread), func(s string) bool { return s == req.ThreadID })
-	newAlert := sub.Alert && len(newThreadUnread) > 0
 	now := time.Now().UTC()
 
+	var newThreadUnread []string
+	var newAlert bool
 	wg, wctx := errgroup.WithContext(ctx)
 	wg.Go(func() error {
-		if err := h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, newThreadUnread, newAlert); err != nil {
+		var err error
+		newThreadUnread, newAlert, err = h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, req.ThreadID)
+		if err != nil {
 			return fmt.Errorf("update subscription thread-read: %w", err)
 		}
 		return nil

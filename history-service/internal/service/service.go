@@ -35,7 +35,9 @@ type MessageWriter interface {
 	// runs the mirror-table and parent-tcount work when the LWT applies.
 	// Returns the updated_at value now persisted (the deletedAt argument when
 	// applied; the existing value when a concurrent delete won the race).
-	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, err error)
+	// newTcount is non-nil when the parent's tcount was decremented via CAS;
+	// nil means the CAS was skipped (e.g. parent row not found, or msg is not a thread reply).
+	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, newTcount *int, err error)
 	PinMessage(ctx context.Context, msg *models.Message, pinnedAt time.Time, pinnedBy models.Participant) error
 	UnpinMessage(ctx context.Context, msg *models.Message) error
 	// AddReaction writes one (emoji, user_account) map-cell to every mirror; idempotent.
@@ -64,9 +66,7 @@ type RoomRepository interface {
 	GetRoomUserCount(ctx context.Context, roomID string) (int, error)
 }
 
-// EventPublisher publishes canonical events to a JetStream-backed NATS
-// subject. msgID is sent as the Nats-Msg-Id header so the server collapses
-// duplicate publishes within the stream's dedup window.
+// EventPublisher publishes events to NATS with a Nats-Msg-Id dedup header.
 type EventPublisher interface {
 	Publish(ctx context.Context, subject string, data []byte, msgID string) error
 }
