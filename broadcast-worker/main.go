@@ -44,6 +44,9 @@ type config struct {
 	ValkeyAddrs          []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
+	RoomKeyCacheTTL      time.Duration           `env:"ROOM_KEY_CACHE_TTL"        envDefault:"10m"`
+	RoomKeyCacheSize     int                     `env:"ROOM_KEY_CACHE_SIZE"       envDefault:"50000"`
+	RoomKeyCacheStats    time.Duration           `env:"ROOM_KEY_CACHE_STATS_INTERVAL" envDefault:"0"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -143,7 +146,31 @@ func main() {
 	go coalescer.Run(flushCtx, cfg.LastMsgFlushInterval, 5*time.Second)
 	slog.Info("last-msg coalescer enabled", "flush_interval", cfg.LastMsgFlushInterval)
 
-	handler := NewHandler(coalescer, us, publisher, keyStore, cfg.Encryption.Enabled)
+	var keyProvider RoomKeyProvider = keyStore
+	var keyCache *CachedKeyProvider
+	switch {
+	case !cfg.Encryption.Enabled:
+		// No encryption: the key provider is never consulted, leave it unwrapped.
+	case cfg.RoomKeyCacheTTL <= 0 || cfg.RoomKeyCacheSize <= 0:
+		slog.Info("room-key cache disabled", "ttl", cfg.RoomKeyCacheTTL, "size", cfg.RoomKeyCacheSize)
+	case !keyCacheTTLSafe(cfg.RoomKeyCacheTTL, cfg.ValkeyKeyGracePeriod):
+		// Caching beyond the grace period could serve a rotated-out key that
+		// clients can no longer decrypt; refuse to cache rather than risk it.
+		slog.Warn("room-key cache disabled: TTL must be below key grace period",
+			"ttl", cfg.RoomKeyCacheTTL, "grace_period", cfg.ValkeyKeyGracePeriod)
+	default:
+		keyCache = NewCachedKeyProvider(keyStore, cfg.RoomKeyCacheSize, cfg.RoomKeyCacheTTL)
+		keyProvider = keyCache
+		slog.Info("room-key cache enabled", "size", cfg.RoomKeyCacheSize, "ttl", cfg.RoomKeyCacheTTL)
+	}
+
+	statsCtx, stopStats := context.WithCancel(ctx)
+	if keyCache != nil && cfg.RoomKeyCacheStats > 0 {
+		go keyCache.RunStatsLogger(statsCtx, cfg.RoomKeyCacheStats)
+		slog.Info("room-key cache stats logger started", "interval", cfg.RoomKeyCacheStats)
+	}
+
+	handler := NewHandler(coalescer, us, publisher, keyProvider, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
@@ -205,6 +232,7 @@ func main() {
 			flushCancel()
 			return nil
 		},
+		func(_ context.Context) error { stopStats(); return nil },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 	}
