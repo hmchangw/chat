@@ -277,10 +277,11 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - Primary keys: application-generated via `pkg/idgen`, mapped to `bson:"_id"`. Format depends on the entity:
   - **Subscriptions, RoomMembers, ThreadRooms, ThreadSubscriptions**: UUIDv7 hex without hyphens (32 chars) via `idgen.GenerateUUIDv7()` — time-ordered for B-tree locality on high-write collections
   - **Channel Rooms**: 17-char base62 via `idgen.GenerateID()` — short, human-friendly
-  - **DM Rooms**: sorted concat of two `user.ID` strings (~34 chars) via `idgen.BuildDMRoomID(a, b)` — deterministic, no separate dedup needed
+  - **DM Rooms**: sorted concat of two `user.ID` strings (~34 chars) via `idgen.BuildDMRoomID(a, b)` — deterministic, no separate dedup needed. A DM is between at most 2 people (the two `user.ID`s in the concat); group conversations are channel rooms, not DMs
   - **Messages**: 20-char base62 via `idgen.GenerateMessageID()` for new IDs (or client-supplied for user messages). `idgen.IsValidMessageID` accepts **either 17 or 20 char** base62 — 17 is the legacy length retained for backward compatibility with messages written before the 20-char cutover (federation replays, JetStream redeliveries, historical records).
 - Check `mongo.ErrNoDocuments` explicitly when a missing record is expected
 - Create indexes in the store constructor or a dedicated `EnsureIndexes` method at startup
+- Avoid `$lookup` (server-side joins) where possible — it's a performance trap on large collections. Prefer denormalization or a second application-level query. If a `$lookup` is genuinely necessary, add a comment at the call site specifying the reason it can't be avoided
 
 ### Cassandra
 - Driver: `github.com/gocql/gocql`
