@@ -287,7 +287,7 @@ list of steps, holds at each step for a measurement window, evaluates SLO
 signals, and reports the largest step at which every signal passed.
 
 ```bash
-loadgen max-rps --workload=messages|history --preset=<name> [flags]
+loadgen max-rps --workload=messages|history|read-receipt --preset=<name> [flags]
 ```
 
 ### Quick start
@@ -298,6 +298,10 @@ loadgen max-rps --workload=messages --preset=medium --steps=500,1k,2k,5k,10k
 
 # history: per-endpoint SLO, custom p95
 loadgen max-rps --workload=history --preset=history-medium --steps=200,500,1k,2k --slo-p95=80ms
+
+# read-receipt: seed reader state first, then ramp
+loadgen seed --workload=read-receipt --preset=history-medium --read-ratio=0.7
+loadgen max-rps --workload=read-receipt --preset=history-medium --steps=200,500,1k,2k
 ```
 
 Via the deploy Makefile:
@@ -311,9 +315,10 @@ make -C tools/loadgen/deploy run-max-rps WORKLOAD=history PRESET=history-medium 
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--workload` | `messages` | `messages` or `history` |
-| `--preset` | (required) | an existing preset for the chosen workload |
-| `--steps` | messages `500,1k,2k,5k,10k` / history `200,500,1k,2k,5k` | explicit ordered RPS list; `k` suffix = ×1000 |
+| `--workload` | `messages` | `messages`, `history`, or `read-receipt` |
+| `--preset` | (required) | an existing preset for the chosen workload (`read-receipt` reuses the history presets) |
+| `--steps` | messages `500,1k,2k,5k,10k` / history+read-receipt `200,500,1k,2k,5k` | explicit ordered RPS list; `k` suffix = ×1000 |
+| `--request-timeout` | `5s` | **history / read-receipt**: per-request reply timeout |
 | `--warmup` | `10s` | per-step warmup (samples discarded) |
 | `--hold` | `30s` | per-step measurement window |
 | `--cooldown` | `5s` | per-step settle gap before next step |
@@ -367,6 +372,45 @@ in the CSV:
 > can't honor (it silently coalesces ticks), which capped achievable RPS at
 > a few thousand regardless of `--steps`. Setting `MAX_IN_FLIGHT=0` selects
 > the legacy serial-on-ticker path for bisection only — it will not ramp.
+
+### Read-receipt workload (`--workload=read-receipt`)
+
+Drives the room-service read-receipt RPC
+(`chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt`) — a
+synchronous request/reply read ("who has read message X") — to find the maximum
+sustainable RPS under the latency/error SLOs. Like `history`, it is a read with
+no JetStream consumer, so `--slo-pending-growth` is ignored and the per-request
+timeout is set with `--request-timeout`.
+
+Read receipts reuse the **history** presets and seed: the requester for each
+target is the message's sender (the RPC requires `msgSender == requesterAccount`),
+and only top-level messages are used as targets. Reader state must be seeded so
+the `ListReadReceipts` Mongo query exercises its real `$match`/`$lookup`/`$unwind`
+path instead of short-circuiting on an empty `lastSeenAt` match.
+
+Seed (stamps `lastSeenAt` on a `--read-ratio` fraction — default `0.7` — of each
+room's subscribers; requires `CASSANDRA_HOSTS` like the history seed):
+
+```bash
+loadgen seed --workload=read-receipt --preset=history-medium --read-ratio=0.7
+```
+
+Then ramp:
+
+```bash
+loadgen max-rps --workload=read-receipt --preset=history-medium --steps=200,500,1k,2k,5k
+```
+
+The gated latency series is named `read-receipt`; the verdict, INCONCLUSIVE
+guard, and CSV output behave exactly as for the other workloads.
+
+To tear down, use the history teardown — read-receipt seeds the identical
+history fixtures, so `loadgen teardown --workload=history --preset=<name>` drops
+everything (dropping `subscriptions` removes the stamped `lastSeenAt` too):
+
+```bash
+loadgen teardown --workload=history --preset=history-medium
+```
 
 ### Bottleneck attribution
 

@@ -75,6 +75,76 @@ func runSeedHistory(ctx context.Context, cfg *config, preset string, seed int64)
 	return 0
 }
 
+// runSeedReadReceipt seeds the same Mongo+Cassandra fixtures as the history
+// workload, then stamps lastSeenAt on a readRatio fraction of each room's
+// subscribers so the read-receipt RPC's ListReadReceipts query returns real
+// readers. readRatio must be in (0, 1].
+func runSeedReadReceipt(ctx context.Context, cfg *config, preset string, seed int64, readRatio float64) int {
+	if readRatio <= 0 || readRatio > 1 {
+		fmt.Fprintln(os.Stderr, "--read-ratio must be in (0, 1]")
+		return 2
+	}
+	if cfg.CassandraHosts == "" {
+		fmt.Fprintln(os.Stderr, "read-receipt workload requires CASSANDRA_HOSTS")
+		return 2
+	}
+	p, ok := BuiltinHistoryPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown history preset: %s\n", preset)
+		return 2
+	}
+
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+
+	session, err := connectCassandra(cfg)
+	if err != nil {
+		slog.Error("cassandra connect", "error", err)
+		return 1
+	}
+	defer cassutil.Close(session)
+
+	now := time.Now().UTC()
+	res := BuildHistoryFixtures(&p, seed, cfg.SiteID, now)
+
+	if err := Seed(ctx, db, &res.Fixtures); err != nil {
+		slog.Error("seed mongo fixtures", "error", err)
+		return 1
+	}
+	if err := SeedRoomKeys(ctx, keyStore, res.Fixtures.RoomKeys); err != nil {
+		slog.Error("seed room keys", "error", err)
+		return 1
+	}
+	if err := SeedThreadRooms(ctx, db, &res, cfg.SiteID); err != nil {
+		slog.Error("seed thread rooms", "error", err)
+		return 1
+	}
+	sizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
+	msgCount, err := SeedHistoryCassandra(ctx, session, sizer, &res, cfg.SiteID)
+	if err != nil {
+		slog.Error("seed cassandra messages", "error", err)
+		return 1
+	}
+	plan := res.FullPlan()
+	if err := SeedReadReceiptState(ctx, db, res.Fixtures.Subscriptions, &plan, readRatio, seed); err != nil {
+		slog.Error("seed read-receipt reader state", "error", err)
+		return 1
+	}
+
+	slog.Info("seed complete (read-receipt)",
+		"preset", p.Name,
+		"users", len(res.Fixtures.Users),
+		"rooms", len(res.Fixtures.Rooms),
+		"subs", len(res.Fixtures.Subscriptions),
+		"messages", msgCount,
+		"readRatio", readRatio,
+		"bucketHours", cfg.MessageBucketHours)
+	return 0
+}
+
 func runTeardownHistory(ctx context.Context, cfg *config, preset string, seed int64) int {
 	if cfg.CassandraHosts == "" {
 		fmt.Fprintln(os.Stderr, "history workload requires CASSANDRA_HOSTS")
