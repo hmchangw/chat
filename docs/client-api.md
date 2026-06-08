@@ -296,6 +296,17 @@ HR display names.
 | `engName` | string | English display name. |
 | `chineseName` | string | Chinese display name. |
 
+#### AppAssistant
+
+An app's assistant (bot) subdocument. Only `name` is always present; the other
+fields appear per endpoint.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Assistant/bot name. |
+| `enabled` | boolean | Optional. Whether the assistant is enabled. |
+| `settingsUrl` | string | Optional. Assistant settings URL. |
+
 #### AsyncJobResult
 
 Delivered on `chat.user.{requesterAccount}.response.{requestID}` when an
@@ -513,7 +524,7 @@ Shared by Add Members, Remove Member, and Update Member Role.
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
-| `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
+| `subscription` | [Subscription](#subscription) | For `added` / `role_updated`: the full Subscription record. For `removed`: a [RemovedSubscriptionRef](#removedsubscriptionref) lean ref (see Remove Member). |
 | `action` | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -614,12 +625,17 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The removed user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
-| `subscription` | object | Lean ref — carries only the three fields below; no full `Subscription` payload. |
-| `subscription.roomId` | string | The room the user lost. |
-| `subscription.roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
-| `subscription.u` | object | The removed user: `{ id, account, isBot }`. On org removals only `account` is guaranteed. |
+| `subscription` | [RemovedSubscriptionRef](#removedsubscriptionref) | Lean ref — no full `Subscription` payload. |
 | `action` | string | Always `"removed"`. |
 | `timestamp` | number | Epoch ms (UTC). |
+
+###### RemovedSubscriptionRef
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the user lost. |
+| `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
+| `u` | [UserRef](#userref) | The removed user. On org removals only `account` is guaranteed. |
 
 ```json
 {
@@ -874,18 +890,18 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 | Field | Type | Notes |
 |---|---|---|
-| `members` | array<RoomMember> | One entry per individual or org membership. |
+| `members` | [RoomMember](#roommember)[] | One entry per individual or org membership. |
 
-`RoomMember`:
+###### RoomMember
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Membership record ID (UUIDv7 hex). |
 | `rid` | string | Room ID (note JSON key is `rid`, not `roomId`). |
 | `ts` | string | RFC 3339 timestamp of when the membership was created. |
-| `member` | object | See `RoomMemberEntry` below. |
+| `member` | [RoomMemberEntry](#roommemberentry) | The member identity. |
 
-`RoomMemberEntry`:
+###### RoomMemberEntry
 
 | Field | Type | Notes |
 |---|---|---|
@@ -1031,8 +1047,15 @@ Used by the message composer's `@…` mention autocomplete. Returns subscription
 | `userId` | string | The subscription's `u._id` (the user's `_id`). |
 | `account` | string | The user/bot account. |
 | `siteId` | string | User's home site for `"user"` rows; **empty string** for `"app"` rows. |
-| `hrInfo` | object | Present **only for `"user"` rows**. `{ engName, chineseName }`. |
-| `app` | object | Present **only for `"app"` rows**. `{ name, assistant: { name } }`. |
+| `hrInfo` | [HrInfo](#hrinfo) | Present **only for `"user"` rows**. |
+| `app` | [MentionableApp](#mentionableapp) | Present **only for `"app"` rows**. |
+
+###### MentionableApp
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | App display name. |
+| `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument (only `name` is set here). |
 
 ```json
 {
@@ -1218,7 +1241,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The requester's internal user ID. |
-| `subscription` | object | The `Subscription` record with the updated `muted`. |
+| `subscription` | [Subscription](#subscription) | The Subscription record with the updated `muted`. |
 | `action` | string | `"mute_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -1268,7 +1291,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The requester's internal user ID. |
-| `subscription` | object | The `Subscription` record with the updated `favorite`. |
+| `subscription` | [Subscription](#subscription) | The Subscription record with the updated `favorite`. |
 | `action` | string | `"favorite_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -1437,17 +1460,31 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
 
 | Field | Type | Notes |
 |---|---|---|
-| `apps` | array<RoomApp> | Apps whose `channelTab.enabled` AND `channelTab.default` are both true, sorted by `channelTab.name asc`. Empty by default in DM/botDM rooms. |
+| `apps` | [RoomApp](#roomapp)[] | Apps whose `channelTab.enabled` AND `channelTab.default` are both true, sorted by `channelTab.name asc`. Empty by default in DM/botDM rooms. |
 
-`RoomApp` fields:
+###### RoomApp
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | `apps._id`. |
 | `name` | string | `apps.channelTab.name`. |
 | `tabUrl` | string | Computed: `SITE_URL`'s scheme/host/path-prefix + `apps.channelTab.url.default`'s path; `${roomId}` and `${siteId}` are substituted. Apps whose template URL is empty or unparseable are silently skipped. |
-| `assistant` | object (optional) | `apps.assistant` subdocument if set. |
-| `avatarUrl` | string (optional) | `apps.avatarUrl` if set. |
+| `assistant` | [AppAssistant](#appassistant) | Optional. `apps.assistant` subdocument if set. |
+| `avatarUrl` | string | Optional. `apps.avatarUrl` if set. |
+
+```json
+{
+  "apps": [
+    {
+      "id": "app-weather",
+      "name": "Weather",
+      "tabUrl": "https://site-a.example.com/apps/weather?room=01970a4f8c2d7c9aQ",
+      "assistant": { "enabled": true, "name": "weather.bot" },
+      "avatarUrl": "https://site-a.example.com/avatars/weather.png"
+    }
+  ]
+}
+```
 
 ##### Error response
 
@@ -1478,15 +1515,53 @@ Empty body (`{}` is tolerated).
 
 | Field | Type | Notes |
 |---|---|---|
-| `appAssistants` | array<RoomAppAssistant> | One entry per bot currently subscribed in the room whose owning app has `assistant.enabled=true`. Sorted by `name asc`. |
+| `appAssistants` | [RoomAppAssistant](#roomappassistant)[] | One entry per bot currently subscribed in the room whose owning app has `assistant.enabled=true`. Sorted by `name asc`. |
 
-`RoomAppAssistant` fields:
+###### RoomAppAssistant
 
 | Field | Type | Notes |
 |---|---|---|
 | `appName` | string | `apps.name`. |
 | `name` | string | `apps.assistant.name` (the bot account). |
-| `cmdBlocks` | array<CmdBlock> (optional) | Active command-menu blocks from `bot_cmd_menu` joined by name. Omitted/nil if no active menu exists for the bot. `CmdBlock` is recursive (`blocks` may contain further `CmdBlock`s) and may carry a `modal` object with `command` and `param`. |
+| `cmdBlocks` | [CmdBlock](#cmdblock)[] | Optional. Active command-menu blocks from `bot_cmd_menu` joined by name. Omitted/nil if no active menu exists for the bot. |
+
+###### CmdBlock
+
+Recursive command-menu block: a block renders directly (`text` + `actionType` + `payload`), opens a `modal`, or groups nested `blocks`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `text` | string | Optional. Display text. |
+| `actionType` | string | Optional. The action type. |
+| `description` | string | Optional. Block description. |
+| `payload` | string | Optional. Action payload. |
+| `modal` | [CmdModal](#cmdmodal) | Optional. Modal opened by this block. |
+| `blocks` | [CmdBlock](#cmdblock)[] | Optional. Nested child blocks. |
+
+###### CmdModal
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | string | Optional. Slash-style command the modal invokes. |
+| `param` | string | Optional. Command parameter. |
+
+```json
+{
+  "appAssistants": [
+    {
+      "appName": "Helper",
+      "name": "helper.bot",
+      "cmdBlocks": [
+        {
+          "text": "Create ticket",
+          "actionType": "modal",
+          "modal": { "command": "/ticket", "param": "new" }
+        }
+      ]
+    }
+  ]
+}
+```
 
 ##### Error response
 
