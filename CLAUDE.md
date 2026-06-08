@@ -53,6 +53,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate` | Regenerate all mocks |
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
+| `USE_INFRA=true make -C tools/integration-suite-multisite local` | Run the integration test suite against a programmatically-booted 26-container two-site stack (testcontainers-go). Sparse `sites:` maps in scenario YAML mean single-site-shape scenarios run without paying cross-site cost. See `tools/integration-suite-multisite/RUNBOOK.md`. |
 | `make tools` | Install pinned dev/SAST tooling (`golangci-lint`, `gosec`, `govulncheck`, `semgrep`) |
 | `make sast` | Run all SAST scans (`gosec`, `govulncheck`, `semgrep`); fails on medium+ |
 | `make sast-gosec` / `make sast-vuln` / `make sast-semgrep` | Run a single SAST scan |
@@ -328,3 +329,12 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
 - HTTP services cleanup order: `nc.Drain()` → disconnect databases
 - Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)
+
+### Integration Test Suite (`tools/integration-suite-multisite/`)
+- A scenario-driven black-box test **platform** — distinct from per-service `integration_test.go` (which tests code) and `tools/loadgen/` (which measures capacity). It tests the assembled system against the architecture to find behavioral regressions.
+- **One active suite for ALL integration testing**, including single-site-shape scenarios. The `sites:` map is sparse: a scenario that declares only `sites: {site-a: ...}` (no `site-b` block) runs cleanly without paying cross-site cost. The `infra-sanity-rooms-pipeline-site-a` scenario is the canonical single-site example.
+- YAML scenarios under `scenarios/drafts/` declare per-site seed users + a single verb fire + a list of assertions; per-scenario a **Sandbox** materializes the seed and runs the assertions via **Gomega streaming matchers** against six universal data-source primitives (`reply`, `mongo_find`, `cassandra_select`, `jetstream_consume`, `nats_subscribe`, `logs_tail`). Run via the suite's self-contained Makefile (`USE_INFRA=true make -C tools/integration-suite-multisite local` from repo root) — never raw `go test`, never via the root Makefile (root stays clean).
+- **Owns its infrastructure under `USE_INFRA=true`.** Boots a 26-container two-site stack via `internal/infra` (testcontainers): 2× NATS (leafnode-linked, each with its own JetStream domain), 2× Mongo, 2× Valkey, 1× Cassandra (shared), 1× Toxiproxy, 18 service replicas.
+- **Authoring rules** are in `tools/integration-suite-multisite/AUTHORING.md`; YAML grammar in `tools/integration-suite-multisite/SCENARIO-REFERENCE.md`; architecture in `tools/integration-suite-multisite/ARCHITECTURE.md`; ops in `tools/integration-suite-multisite/RUNBOOK.md`. Expected behavior must come from a cited design doc, never invented (every scenario has a `source:` field).
+- **Scoring:** `@status:approved` scenarios form the authoritative CI-gating score (written to `docs/integration-suite-multisite/last-run-approved.md`); everything else is informational DRAFT (full report in `docs/integration-suite-multisite/last-run.md`). Per-scenario latest/best/worst tracked in `docs/integration-suite-multisite/performance.json`.
+- **Findings** — durable chat-app-team-facing reports from the suite live in `docs/integration-suite-multisite-findings.md`. Consult when triaging a scenario failure: it may already be documented as a known operational gap that lives outside both the tool's and the app's scope.
