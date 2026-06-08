@@ -40,6 +40,7 @@ paths.
    - [2.1 NATS connection](#21-nats-connection)
    - [2.2 HTTP — POST /auth](#22-http--post-auth)
 3. [Request/Reply Methods](#3-requestreply-methods)
+   - [3.0 Shared schemas](#30-shared-schemas)
    - [3.1 room-service](#31-room-service)
      - [Create Room](#create-room) · [Add Members](#add-members) · [Remove Member](#remove-member) · [Update Member Role](#update-member-role) · [Rename Room](#rename-room)
      - [List Members](#list-members) · [Get Member Statuses](#get-member-statuses) · [Get Mentionable Subscriptions](#get-mentionable-subscriptions) · [List Org Members](#list-org-members)
@@ -216,6 +217,112 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 ## 3. Request/Reply Methods
 
+### 3.0 Shared schemas
+
+Reusable payload types referenced by name throughout §3–§5. Each RPC links
+here instead of repeating the table.
+
+#### Participant
+
+Actor / sender identity embedded in room and message events. Optional fields
+are present per context.
+
+| Field | Type | Notes |
+|---|---|---|
+| `userId` | string | Internal user ID. |
+| `account` | string | The user's account name. |
+| `siteId` | string | Optional. The user's home site. |
+| `engName` | string | Optional. English display name. |
+| `chineseName` | string | Optional. Chinese display name. |
+
+#### UserRef
+
+Lean user reference (removed-member refs, mention rows, the `u` field on a
+`Subscription`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Internal user ID. |
+| `account` | string | The user's account name. On org-removal paths only `account` is guaranteed. |
+| `isBot` | boolean | Optional. True when the user is a bot. |
+
+#### ChannelRef
+
+Reference to another channel whose members are copied or added in bulk.
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The source channel's ID. |
+| `siteId` | string | The source channel's home site. |
+
+#### EncryptedMessage
+
+Room ciphertext envelope (`roomcrypto.EncryptedMessage`). See [§5 Room Encryption](#5-room-encryption).
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | Room-key version used to seal the payload. |
+| `nonce` | string | Base64-encoded nonce. |
+| `ciphertext` | string | Base64-encoded ciphertext. |
+
+#### Subscription
+
+A user's membership record for one room, embedded in `subscription.update`
+events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
+ID serializes as `id` (not `_id`) and the user under `u` (not `user`). All
+fields below are always present.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Subscription ID. |
+| `u` | [UserRef](#userref) | The subscribed user. |
+| `roomId` | string | The room. |
+| `siteId` | string | The room's home site. |
+| `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
+| `name` | string | The room's display name. |
+| `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
+| `joinedAt` | RFC3339 timestamp | When the user joined. |
+| `hasMention` | boolean | Whether the user has an unread mention. |
+| `alert` | boolean | Whether the room has an unread alert for the user. |
+| `muted` | boolean | Whether the user muted the room. |
+| `favorite` | boolean | Whether the user favorited the room. |
+
+#### HrInfo
+
+HR display names.
+
+| Field | Type | Notes |
+|---|---|---|
+| `engName` | string | English display name. |
+| `chineseName` | string | Chinese display name. |
+
+#### AsyncJobResult
+
+Delivered on `chat.user.{requesterAccount}.response.{requestID}` when an
+async-job RPC finishes. Shared by Create Room, Add Members, Remove Member,
+and Rename Room.
+
+| Field | Type | Notes |
+|---|---|---|
+| `requestId` | string | Echoes the `X-Request-ID` value from the original request. |
+| `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`, `"room.rename"`. |
+| `status` | string | `"ok"` or `"error"`. |
+| `roomId` | string | Optional. The affected room. |
+| `error` | string | Optional. User-safe message; present only when `status="error"`. |
+| `code` | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
+| `reason` | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
+| `timestamp` | number | Epoch ms (UTC). |
+
+```json
+{
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+  "operation": "room.member.add",
+  "status": "ok",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "timestamp": 1746518400456
+}
+```
+
 ### 3.1 room-service
 
 | RPC subject | Method |
@@ -315,7 +422,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously on val
 
 The creator (from the subject) plus any members supplied via `users` / `orgs` / `channels` are enrolled asynchronously. The following events fire:
 
-**1. `chat.user.{account}.response.{requestID}`** — an `AsyncJobResult` to the requester when the job finishes (requires the `X-Request-ID` header). See the [AsyncJobResult schema](#asyncjobresult) under Add Members. `operation` is `"room.create"`.
+**1. `chat.user.{account}.response.{requestID}`** — an `AsyncJobResult` to the requester when the job finishes (requires the `X-Request-ID` header). See the [AsyncJobResult schema](#asyncjobresult). `operation` is `"room.create"`.
 
 **2. `chat.user.{account}.event.subscription.update`** — one per enrolled member (including the owner), `action: "added"`. See the [subscription.update schema](#subscriptionupdate-event) under Add Members.
 
@@ -381,34 +488,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.user.{requesterAccount}.response.{requestID}`** — an `AsyncJobResult` delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request.
-
-###### `AsyncJobResult`
-
-Shared by Create Room, Add Members, and Remove Member.
-
-| Field | Type | Notes |
-|---|---|---|
-| `requestId` | string | Echoes the `X-Request-ID` value from the original request. |
-| `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`. |
-| `status` | string | `"ok"` or `"error"`. |
-| `roomId` | string | Optional. The affected room. |
-| `error` | string | Optional. User-safe message; present only when `status="error"`. |
-| `code` | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
-| `reason` | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
-| `timestamp` | number | Epoch ms (UTC). |
-
-Success example:
-
-```json
-{
-  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
-  "operation": "room.member.add",
-  "status": "ok",
-  "roomId": "01970a4f8c2d7c9aQ",
-  "timestamp": 1746518400123
-}
-```
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request. `operation` is `"room.member.add"`.
 
 Error example (e.g. requester not in room):
 
