@@ -346,7 +346,9 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 **1. `chat.user.{requesterAccount}.response.{requestID}`** — an `AsyncJobResult` delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request.
 
-<a id="asyncjobresult"></a>**`AsyncJobResult` schema** (shared by Create Room, Add Members, Remove Member):
+###### `AsyncJobResult`
+
+Shared by Create Room, Add Members, and Remove Member.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -387,7 +389,9 @@ Error example (e.g. requester not in room):
 
 **2. `chat.user.{newMember}.event.subscription.update`** — one event per **newly subscribed** member (not the requester, not existing members, not org→individual upgrades).
 
-<a id="subscriptionupdate-event"></a>**`subscription.update` schema** (shared by Add Members, Remove Member, Update Member Role):
+###### `subscription.update` event
+
+Shared by Add Members, Remove Member, and Update Member Role.
 
 | Field | Type | Notes |
 |---|---|---|
