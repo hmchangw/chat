@@ -216,6 +216,68 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 ---
 
+### 2.3 HTTP — Protected image upload/download (upload-service)
+
+Both endpoints require the `ssoToken` header (validated via OIDC) and that the
+caller is a member (has a subscription) of `:roomId`. Errors use the standard
+[§6](#6-error-envelope-reference) envelope `{ error, code, reason? }`.
+
+#### POST /api/v4/rooms/:roomId/upload/protected-images
+
+Uploads protected inline images for a room. `Content-Type: multipart/form-data`;
+repeat the form field `images` once per file.
+
+| Param | Source | Description |
+|-------|--------|-------------|
+| `roomId` | path | Target room ID. |
+| `images` | form (multi) | One or more image files (`.png/.jpeg/.jpg/.heic`, ≤ 25 MiB each, ≤ `MAX_FILES`). |
+
+Success (200): every file reports success or failure in one body.
+
+```json
+{
+  "results": [
+    { "name": "pic1.png", "status": "Success", "relativePath": "api/v4/rooms/abc123/protected-image/img-xyz?drive_host=https://drive.example.com" },
+    { "name": "big.exe", "status": "failure", "error": "file has an invalid file type" }
+  ]
+}
+```
+
+Per-file failure `error` values: `file size exceeds limit`, `file has an invalid file type`, `failed to open file`.
+
+| Status | `code` | `reason` | Condition |
+|--------|--------|----------|-----------|
+| 400 | `bad_request` | — | Missing `roomId`; not multipart; or too many files. |
+| 401 | `unauthenticated` | `sso_token_expired` / `invalid_sso_token` / `missing_fields` | Missing/invalid/expired `ssoToken`. |
+| 403 | `forbidden` | `not_room_member` | Caller is not a room member. |
+| 404 | `not_found` | — | Room does not exist. |
+| 500 | `internal` | — | User missing in context, no email on the account, or a Drive/store fault. |
+
+#### GET /api/v4/rooms/:roomId/protected-image/:fileId
+
+Downloads a protected image. The service proxies the bytes from Drive (signed
+URL → fetch → stream). Typically called with the `relativePath` from the upload
+response.
+
+| Param | Source | Description |
+|-------|--------|-------------|
+| `roomId` | path | Room the image belongs to. |
+| `fileId` | path | Drive file ID from the upload response. |
+| `drive_host` | query | Drive base URL from the upload response. |
+
+Success (200): raw image binary streamed (not JSON), with the upstream
+`Content-Type` (defaulting to `application/octet-stream`).
+
+| Status | `code` | `reason` | Condition |
+|--------|--------|----------|-----------|
+| 400 | `bad_request` | — | Missing `roomId`, `fileId`, or `drive_host`. |
+| 401 | `unauthenticated` | `sso_token_expired` / `invalid_sso_token` / `missing_fields` | Missing/invalid/expired `ssoToken`. |
+| 403 | `forbidden` | `not_room_member` | Caller is not a room member. |
+| 500 | `internal` | — | User missing in context. |
+| 503 | `unavailable` | — | Drive signer/download failure. |
+
+---
+
 ## 3. Request/Reply Methods
 
 ### 3.0 Shared schemas
@@ -3513,7 +3575,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 
 - **NATS sync replies** — on the reply subject for §3/§4 RPCs.
 - **JetStream async results** — `model.AsyncJobResult` carries the same `code` + `reason` fields when `status == "error"`, so a failed async job is surfaced the same way as a sync error.
-- **HTTP** — auth-service `POST /auth` writes the envelope as the response body with the matching HTTP status from the table above.
+- **HTTP** — auth-service `POST /auth` (§2.2) and upload-service's protected-image endpoints (§2.3) write the envelope as the response body with the matching HTTP status from the table above.
 
 ### Client branching guidance
 
