@@ -1,5 +1,6 @@
 # Chat Backend — Client API Reference
 
+> [!IMPORTANT]
 > **Changelog — centralized error codes (current release).** All client-facing
 > errors — over NATS sync replies, JetStream async results (`model.AsyncJobResult`),
 > and HTTP — now use the same envelope: `{ "error": <message>, "code": <category>,
@@ -40,8 +41,16 @@ paths.
    - [2.2 HTTP — POST /auth](#22-http--post-auth)
 3. [Request/Reply Methods](#3-requestreply-methods)
    - [3.1 room-service](#31-room-service)
+     - [Create Room](#create-room) · [Add Members](#add-members) · [Remove Member](#remove-member) · [Update Member Role](#update-member-role) · [Rename Room](#rename-room)
+     - [List Members](#list-members) · [Get Member Statuses](#get-member-statuses) · [Get Mentionable Subscriptions](#get-mentionable-subscriptions) · [List Org Members](#list-org-members)
+     - [Mark Messages Read](#mark-messages-read) · [Mark Thread as Read](#mark-thread-as-read) · [Read Message Receipts](#read-message-receipts) · [Toggle Mute](#toggle-mute) · [Toggle Favorite](#toggle-favorite)
+     - [Get Room App Tabs](#get-room-app-tabs) · [Get Room App Command Menu](#get-room-app-command-menu)
    - [3.2 history-service](#32-history-service)
+     - [Load History](#load-history) · [Load Next Messages](#load-next-messages) · [Load Surrounding Messages](#load-surrounding-messages) · [Get Message By ID](#get-message-by-id)
+     - [Edit Message](#edit-message) · [Delete Message](#delete-message) · [Pin Message](#pin-message) · [Unpin Message](#unpin-message) · [List Pinned Messages](#list-pinned-messages) · [React to Message](#react-to-message)
+     - [Get Thread Messages](#get-thread-messages) · [Get Thread Parent Messages](#get-thread-parent-messages)
    - [3.3 search-service](#33-search-service)
+     - [`search.messages`](#searchmessages--full-text-message-search) · [Search Rooms](#search-rooms) · [Search Apps](#search-apps) · [Search Users](#search-users)
 4. [Message Send](#4-message-send)
 5. [Room Encryption](#5-room-encryption)
 6. [Error envelope reference](#6-error-envelope-reference)
@@ -97,7 +106,7 @@ The `msg.send` flow is different — see [§4](#4-message-send): the client puts
 
 ### Timestamps
 
-All event payloads carry a top-level `timestamp` field that is **milliseconds since the Unix epoch in UTC**. Domain timestamps inside payloads (e.g. `Message.createdAt`) are RFC 3339 strings.
+All event payloads carry a top-level `timestamp` field that is **milliseconds since the Unix epoch in UTC** — abbreviated `Epoch ms (UTC)` in the field tables below. Domain timestamps inside payloads (e.g. `Message.createdAt`) are RFC 3339 strings.
 
 ---
 
@@ -201,6 +210,25 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 ### 3.1 room-service
 
+| RPC subject | Method |
+|---|---|
+| `chat.user.{account}.request.room.{siteID}.create` | [Create Room](#create-room) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.add` | [Add Members](#add-members) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.remove` | [Remove Member](#remove-member) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.role-update` | [Update Member Role](#update-member-role) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.room.rename` | [Rename Room](#rename-room) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.list` | [List Members](#list-members) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.member.statuses` | [Get Member Statuses](#get-member-statuses) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.subscription.mentionable` | [Get Mentionable Subscriptions](#get-mentionable-subscriptions) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.message.read` | [Mark Messages Read](#mark-messages-read) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.message.thread.read` | [Mark Thread as Read](#mark-thread-as-read) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.mute.toggle` | [Toggle Mute](#toggle-mute) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.favorite.toggle` | [Toggle Favorite](#toggle-favorite) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.message.read-receipt` | [Read Message Receipts](#read-message-receipts) |
+| `chat.user.{account}.request.orgs.{orgID}.{siteID}.members` | [List Org Members](#list-org-members) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.app.tabs` | [Get Room App Tabs](#get-room-app-tabs) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.app.cmd-menu` | [Get Room App Command Menu](#get-room-app-command-menu) |
+
 #### Create Room
 
 **Subject:** `chat.user.{account}.request.room.{siteID}.create`
@@ -255,6 +283,7 @@ The creator's account and the site come from the subject (`chat.user.{account}.r
 { "status": "exists", "roomId": "<existing room id>" }
 ```
 
+> [!WARNING]
 > **Contract change (breaking):** prior to the centralized error-codes migration this case returned the *error*-shaped envelope `{ "error": "dm already exists", "roomId": "<existing room id>" }`. Clients on the new release must route on `status === "exists"`. During the rollout window, the frontend predicate `isDMExistsReply` accepts BOTH shapes; see the migration changelog at the top of this file.
 
 ##### Error response
@@ -359,7 +388,7 @@ Shared by Create Room, Add Members, and Remove Member.
 | `error` | string | Optional. User-safe message; present only when `status="error"`. |
 | `code` | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
 | `reason` | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+| `timestamp` | number | Epoch ms (UTC). |
 
 Success example:
 
@@ -398,7 +427,7 @@ Shared by Add Members, Remove Member, and Update Member Role.
 | `userId` | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
 | `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
 | `action` | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+| `timestamp` | number | Epoch ms (UTC). |
 
 On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
@@ -432,13 +461,14 @@ On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `
 | `accounts` | string[] | The newly added accounts. |
 | `siteId` | string | The room's home site. |
 | `requesterAccount` | string | The account that initiated the add. Omitted when empty. |
-| `joinedAt` | number | Milliseconds since Unix epoch (UTC). |
-| `historySharedSince` | number | Optional. Milliseconds since Unix epoch (UTC); present when prior history is shared with the new members. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `joinedAt` | number | Epoch ms (UTC). |
+| `historySharedSince` | number | Optional. Epoch ms (UTC); present when prior history is shared with the new members. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 
 A `members_added` system message also flows through the message pipeline and arrives as a `new_message` room event.
 
-**No-op note:** if every requested account is already a member (and no new orgs), or the add only upgrades an existing org member to an individual membership, the requester still gets an `AsyncJobResult` with `status: "ok"` but **no** `subscription.update` / `room.key` / `member_added` events follow.
+> [!NOTE]
+> **No-op:** if every requested account is already a member (and no new orgs), or the add only upgrades an existing org member to an individual membership, the requester still gets an `AsyncJobResult` with `status: "ok"` but **no** `subscription.update` / `room.key` / `member_added` events follow.
 
 ##### Triggered events — error path
 
@@ -501,7 +531,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | `subscription.roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
 | `subscription.u` | object | The removed user: `{ id, account, isBot }`. On org removals only `account` is guaranteed. |
 | `action` | string | Always `"removed"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+| `timestamp` | number | Epoch ms (UTC). |
 
 ```json
 {
@@ -527,11 +557,12 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | `accounts` | string[] | The removed accounts. |
 | `siteId` | string | The room's home site. |
 | `orgId` | string | Present only on org removals. Omitted otherwise. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 
 A `member_left` / `member_removed` system message also flows through the message pipeline as a `new_message` room event.
 
-**No-op note:** removals that change no membership (e.g. an org member who still has an individual membership, or an org removal where every member is covered by another membership) still return an `AsyncJobResult` `ok` with no follow-on events.
+> [!NOTE]
+> **No-op:** removals that change no membership (e.g. an org member who still has an individual membership, or an org removal where every member is covered by another membership) still return an `AsyncJobResult` `ok` with no follow-on events.
 
 ##### Triggered events — error path
 
@@ -692,6 +723,7 @@ The event uses a **dedicated flat struct** (`type: "room_renamed"`) — mirrorin
 }
 ```
 
+> [!NOTE]
 > **No per-subscription `subscription.update` event is published for the rename.** Clients drive their local subscription `name` update off this single room-scoped event.
 
 **2. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) to the requester when the rename finishes (requires `X-Request-ID`). `operation` is `"room.rename"`. `status` is `"ok"` on success or `"error"` if the async job fails.
@@ -704,7 +736,8 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 ---
 
-> **Note (server-internal — not a client RPC):** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying:
+> [!NOTE]
+> **Server-internal — not a client RPC.** The "Set Room Restricted" RPC (formerly "Set Room Visibility") is admin-only and lives outside the client API surface. It is a **synchronous** server-to-server NATS request/reply on `chat.server.request.room.{siteID}.restricted`. Admin tooling sends a `RoomRestrictedRequest` (`pkg/model/room.go`) carrying:
 >
 > - `roomId` — channel room to mutate
 > - `account` — the admin caller (used for the sys-message authorship + audit log)
@@ -716,17 +749,17 @@ When the synchronous reply is an error envelope, the request was rejected before
 >
 > Clients learn about the change via a **`RoomRestrictedRoomEvent`** (`type: "room_restricted"`) on the same `chat.room.{roomID}.event` stream they already subscribe to for chat messages. Like `RoomRenamedRoomEvent`, it's a flat struct with no zero-valued envelope fields:
 >
-> | Field            | Type   | Notes |
-> |------------------|--------|-------|
-> | `type`           | string | Always `"room_restricted"`. |
-> | `roomId`         | string | The room whose flags changed. |
-> | `siteId`         | string | Home site of the room. |
-> | `timestamp`      | number | Publish time (UTC ms). |
-> | `restricted`     | bool   | The new restricted state. |
-> | `externalAccess` | bool   | The new external-access state. |
-> | `ownerAccount`   | string | Omitted unless this was an unrestricted→restricted transition with a designated owner. |
-> | `byAccount`      | string | The admin who made the change. |
-> | `changedAt`      | string | ISO-8601 timestamp of when the change was applied. |
+> | Field | Type | Notes |
+> |---|---|---|
+> | `type` | string | Always `"room_restricted"`. |
+> | `roomId` | string | The room whose flags changed. |
+> | `siteId` | string | Home site of the room. |
+> | `timestamp` | number | Publish time (UTC ms). |
+> | `restricted` | bool | The new restricted state. |
+> | `externalAccess` | bool | The new external-access state. |
+> | `ownerAccount` | string | Omitted unless this was an unrestricted→restricted transition with a designated owner. |
+> | `byAccount` | string | The admin who made the change. |
+> | `changedAt` | string | ISO-8601 timestamp of when the change was applied. |
 
 ---
 
@@ -1099,7 +1132,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | object | The `Subscription` record with the updated `muted`. |
 | `action` | string | `"mute_toggled"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+| `timestamp` | number | Epoch ms (UTC). |
 
 ##### Behaviour notes
 
@@ -1149,7 +1182,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | object | The `Subscription` record with the updated `favorite`. |
 | `action` | string | `"favorite_toggled"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+| `timestamp` | number | Epoch ms (UTC). |
 
 ##### Cross-site behaviour
 
@@ -1383,6 +1416,21 @@ Same envelope and sentinels as Get Room App Tabs.
 
 ### 3.2 history-service
 
+| RPC subject | Method |
+|---|---|
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` | [Load History](#load-history) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next` | [Load Next Messages](#load-next-messages) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding` | [Load Surrounding Messages](#load-surrounding-messages) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get` | [Get Message By ID](#get-message-by-id) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit` | [Edit Message](#edit-message) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete` | [Delete Message](#delete-message) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pin` | [Pin Message](#pin-message) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.unpin` | [Unpin Message](#unpin-message) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pinned.list` | [List Pinned Messages](#list-pinned-messages) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.react` | [React to Message](#react-to-message) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread` | [Get Thread Messages](#get-thread-messages) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread.parent` | [Get Thread Parent Messages](#get-thread-parent-messages) |
+
 #### Common request fields (read RPCs)
 
 The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread Messages) accept these shared optional fields in addition to their own:
@@ -1503,7 +1551,7 @@ Live reaction events (`MessageReactedPayload`) carry a single-actor delta (`{sho
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `before` | number | no | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt < before`. Omit (or `null`) for "now". |
+| `before` | number | no | Epoch ms (UTC). Returns messages with `createdAt < before`. Omit (or `null`) for "now". |
 | `limit` | number | no | Page size — see [Common request fields](#common-request-fields-read-rpcs) (default 20, max 100). |
 
 ```json
@@ -1570,7 +1618,7 @@ Fetches messages newer than a cursor — the forward-pagination counterpart to L
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `after` | number | no | Milliseconds since Unix epoch (UTC). Returns messages with `createdAt > after`. Omit for "no lower bound". |
+| `after` | number | no | Epoch ms (UTC). Returns messages with `createdAt > after`. Omit for "no lower bound". |
 | `limit` | number | no | Page size — see [Common request fields](#common-request-fields-read-rpcs) (default 20, max 100). |
 | `cursor` | string | yes | Pagination cursor returned by a previous response. Use empty string for the first page. |
 
@@ -1758,7 +1806,7 @@ Only the original sender may edit a message.
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | Echoes the input. |
-| `editedAt` | number | Milliseconds since Unix epoch (UTC). |
+| `editedAt` | number | Epoch ms (UTC). |
 
 ```json
 {
@@ -1793,7 +1841,7 @@ The payload is flat (no zero-valued room fields):
 | `type` | string | Always `"message_edited"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `messageId` | string | The edited message's ID. |
 | `newContent` | string | Optional. New plaintext content. Present for DMs and unencrypted channels. Omitted for encrypted channels — see `encryptedNewContent`. |
 | `encryptedNewContent` | object | Optional. The `roomcrypto.EncryptedMessage` (`{version, nonce, ciphertext}`) for encrypted channel rooms. Omitted otherwise. |
@@ -1845,7 +1893,7 @@ Soft-deletes a message (sets `deleted=true` on the row; row is preserved for aud
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | Echoes the input. |
-| `deletedAt` | number | Milliseconds since Unix epoch (UTC). For an already-deleted message, this is the original deletion time. |
+| `deletedAt` | number | Epoch ms (UTC). For an already-deleted message, this is the original deletion time. |
 
 ```json
 {
@@ -1878,7 +1926,7 @@ The payload is flat:
 | `type` | string | Always `"message_deleted"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `messageId` | string | The deleted message's ID. |
 | `deletedBy` | string | The sender's account. |
 | `deletedAt` | string | RFC 3339 timestamp. Domain time of the delete. |
@@ -1925,7 +1973,7 @@ Pins a message in the room. Idempotent — pinning an already-pinned message suc
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | Echoes the input. |
-| `pinnedAt` | number | Milliseconds since Unix epoch (UTC). For an already-pinned message, this is the original pin time. |
+| `pinnedAt` | number | Epoch ms (UTC). For an already-pinned message, this is the original pin time. |
 
 ```json
 {
@@ -1957,7 +2005,7 @@ Not published when the request hits an already-pinned message (idempotent short-
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_pinned"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messagePinned.messageId` | string | The pinned message's ID. |
@@ -1990,7 +2038,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 |---|---|---|
 | `event` | string | Always `"pinned"`. |
 | `siteId` | string | The originating site. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. See [Message schema](#message-schema). |
 
 ```json
@@ -2061,7 +2109,7 @@ Not published when the request hits an already-unpinned message (idempotent shor
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_unpinned"`. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messageUnpinned.messageId` | string | The unpinned message's ID. |
@@ -2094,7 +2142,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 |---|---|---|
 | `event` | string | Always `"unpinned"`. |
 | `siteId` | string | The originating site. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). See [Message schema](#message-schema). |
 
 ```json
@@ -2218,7 +2266,7 @@ Toggles a reaction on a message. Any subscribed room member may react — the se
 | `messageId` | string | Echoes the input. |
 | `shortcode` | string | The canonical NFC-normalised form of the input. ASCII shortcodes (`acme_party`, etc.) are byte-identical to the request; Unicode codepoints in alternate encodings (NFD, ZWJ variants) would collapse to NFC. Clients should treat this — not their request value — as the storage key. |
 | `action` | string | `"added"` or `"removed"` — which side of the toggle the server applied. |
-| `reactedAt` | number | Milliseconds since Unix epoch (UTC). |
+| `reactedAt` | number | Epoch ms (UTC). |
 
 ```json
 {
@@ -2242,7 +2290,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 | `type` | string | Always `"message_reacted"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `messageId` | string | The reacted-to message's ID. |
 | `shortcode` | string | The bare reaction shortcode. |
 | `action` | string | `"added"` or `"removed"`. |
@@ -2278,7 +2326,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 | `roomId` | string | The room containing the reacted-to message. |
 | `message` | object | The full reacted-to `Message` (same shape as the history [Message schema](#message-schema)). |
 | `reactionDelta` | object | `{ shortcode, action, actor }`. `action` is always `"added"` here (the notification only fires on add); `actor` is a `Participant` (`userId`, `account`, `siteId`, `engName`, `chineseName`). |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 
 To reconcile this delta with the grouped per-message `reactions` map returned by history endpoints (`map<emoji, [{account, displayName}]>`), clients append or remove one entry under `reactions[shortcode]` keyed on `actor.account`. See the "Message schema" section for the history-side shape.
 
@@ -2415,8 +2463,16 @@ See [Error envelope](#6-error-envelope-reference).
 
 ### 3.3 search-service
 
+| RPC subject | Method |
+|---|---|
+| `chat.user.{account}.request.search.{siteID}.messages` | [`search.messages`](#searchmessages--full-text-message-search) |
+| `chat.user.{account}.request.search.{siteID}.rooms` | [Search Rooms](#search-rooms) |
+| `chat.user.{account}.request.search.{siteID}.apps` | [Search Apps](#search-apps) |
+| `chat.user.{account}.request.search.{siteID}.users` | [Search Users](#search-users) |
+
 #### `search.messages` — full-text message search
 
+> [!WARNING]
 > **Breaking change (v2):** The response shape has changed from `{total, results}` to `{messages, total}`. The `results` field no longer exists. The per-hit type is now `SearchMessage` (an enriched projection) instead of the former `MessageSearchHit`. Update all clients before deploying this version.
 
 **Subject:** `chat.user.{account}.request.search.{siteID}.messages`
@@ -2700,7 +2756,7 @@ The same subject and request body cover three send variants: plain message, thre
 | `content` | string | yes | The message body. Must be non-empty and ≤ 20 KiB. |
 | `requestId` | string | yes | A 36-char hyphenated UUID (v4 or v7) the client generates. **Validated** — an empty or malformed `requestId` is rejected with no message published. The async reply is delivered to `chat.user.{account}.response.{requestId}`. |
 | `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. Pair with `threadParentMessageCreatedAt`. |
-| `threadParentMessageCreatedAt` | number | no | Required when `threadParentMessageId` is set. Milliseconds since Unix epoch (UTC). |
+| `threadParentMessageCreatedAt` | number | no | Required when `threadParentMessageId` is set. Epoch ms (UTC). |
 | `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
 
 ##### Plain message
@@ -2800,7 +2856,7 @@ A `RoomEvent`. Recipients: every client subscribed to the room (which includes t
 |---|---|---|
 | `type` | string | Always `"new_message"`. |
 | `roomId` | string | |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `roomName` | string | |
 | `roomType` | string | `channel`, `dm`, etc. |
 | `siteId` | string | |
@@ -3039,6 +3095,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `unavailable` | 503 | Transient server saturation/timeout (admission, expand timeout). |
 | `internal` | 500 | Unclassified server-side fault. The real cause is logged server-side only and never sent to the client. |
 
+> [!IMPORTANT]
 > **Malformed request bodies.** Any room request/reply RPC whose payload is not valid JSON for its schema is rejected uniformly with `code: bad_request` and the message `"invalid request payload"` — the transport layer rejects it before the handler runs. Treat this as a generic encoding error; do not pattern-match the message text.
 
 ### `reason` catalog (present today)
