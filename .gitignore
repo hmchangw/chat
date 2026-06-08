@@ -47,6 +47,12 @@ bin/
 # Git worktrees (local development, isolated branches)
 .worktrees/
 
+# Multi-site integration testing suite — per-machine env + per-run reports.
+# performance.json (the durable latency baseline) stays tracked; only the
+# transient per-run markdown reports are ignored here.
+tools/integration-suite-multisite/.env.local
+docs/integration-suite-multisite/last-run*.md
+
 # Frontend
 node_modules/
 chat-frontend/dist/
