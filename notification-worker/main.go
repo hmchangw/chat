@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
@@ -57,37 +58,51 @@ type mongoMemberLoader struct {
 }
 
 func (m *mongoMemberLoader) Load(ctx context.Context, roomID string) ([]roomsubcache.Member, error) {
-	// $project flattens the nested subscription (u._id/u.account/u.isBot) into
-	// roomsubcache.Member's shape and converts historySharedSince (a Date) to
-	// epoch-ms server-side, omitting it for full-access members so the *int64
-	// stays nil. Decoding then collapses to a single cursor.All.
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
-		{{Key: "$project", Value: bson.M{
-			"_id":      0,
-			"id":       "$u._id",
-			"account":  "$u.account",
-			"isBot":    "$u.isBot",
-			"roomType": 1,
-			"muted":    1,
-			"historySharedSince": bson.M{
-				"$cond": bson.A{
-					bson.M{"$ne": bson.A{"$historySharedSince", nil}},
-					bson.M{"$toLong": "$historySharedSince"},
-					"$$REMOVE",
-				},
-			},
-		}}},
+	projection := bson.M{
+		"u._id":              1,
+		"u.account":          1,
+		"u.isBot":            1,
+		"roomType":           1,
+		"muted":              1,
+		"historySharedSince": 1,
 	}
-	cur, err := m.col.Aggregate(ctx, pipeline)
+	cur, err := m.col.Find(ctx, bson.M{"roomId": roomID}, options.Find().SetProjection(projection))
 	if err != nil {
-		return nil, fmt.Errorf("aggregate subscriptions for room %s: %w", roomID, err)
+		return nil, fmt.Errorf("find subscriptions for room %s: %w", roomID, err)
 	}
 	defer cur.Close(ctx)
 
 	var out []roomsubcache.Member
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("decode subscriptions for room %s: %w", roomID, err)
+	for cur.Next(ctx) {
+		var doc struct {
+			User struct {
+				ID      string `bson:"_id"`
+				Account string `bson:"account"`
+				IsBot   bool   `bson:"isBot"`
+			} `bson:"u"`
+			RoomType           model.RoomType `bson:"roomType"`
+			Muted              bool           `bson:"muted"`
+			HistorySharedSince *time.Time     `bson:"historySharedSince"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode subscription: %w", err)
+		}
+		var hssMs *int64
+		if doc.HistorySharedSince != nil {
+			ms := doc.HistorySharedSince.UnixMilli()
+			hssMs = &ms
+		}
+		out = append(out, roomsubcache.Member{
+			ID:                 doc.User.ID,
+			Account:            doc.User.Account,
+			RoomType:           doc.RoomType,
+			IsBot:              doc.User.IsBot,
+			Muted:              doc.Muted,
+			HistorySharedSince: hssMs,
+		})
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("iterate subscriptions: %w", err)
 	}
 	return out, nil
 }

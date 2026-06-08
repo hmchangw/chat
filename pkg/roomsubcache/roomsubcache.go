@@ -26,15 +26,13 @@ const DefaultMaxValueBytes = 16 * 1024 * 1024
 
 // Member is the model.Subscription projection needed by the fan-out path.
 // Extra fields use omitempty so a plain member's JSON stays {id, account}.
-// bson tags mirror the notification-worker loader's aggregation projection so
-// Mongo decodes straight into this type (dual-purpose: Valkey JSON + Mongo BSON).
 type Member struct {
-	ID                 string         `json:"id" bson:"id"`
-	Account            string         `json:"account" bson:"account"`
-	RoomType           model.RoomType `json:"roomType,omitempty" bson:"roomType,omitempty"`
-	IsBot              bool           `json:"isBot,omitempty" bson:"isBot,omitempty"`
-	Muted              bool           `json:"muted,omitempty" bson:"muted,omitempty"`
-	HistorySharedSince *int64         `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
+	ID                 string         `json:"id"`
+	Account            string         `json:"account"`
+	RoomType           model.RoomType `json:"roomType,omitempty"`
+	IsBot              bool           `json:"isBot,omitempty"`
+	Muted              bool           `json:"muted,omitempty"`
+	HistorySharedSince *int64         `json:"historySharedSince,omitempty"`
 }
 
 // Cache stores and retrieves a room's member list.
