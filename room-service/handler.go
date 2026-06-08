@@ -74,28 +74,36 @@ func NewHandler(store RoomStore, keyStore RoomKeyStore, memberListClient MemberL
 }
 
 // Register wires every room-service RPC onto the natsrouter Router.
+// All user-facing and dedup-critical routes go through the strict group, which
+// re-applies RequireRequestID on top of the base (minting) middleware. The
+// server-to-server RoomsInfoBatch read RPC is registered on the base router so
+// it tolerates a missing X-Request-ID (one is minted for logging).
 // Register/RegisterNoBody panic on subscription failure (fatal at startup).
 func (h *Handler) Register(r *natsrouter.Router) {
-	natsrouter.RegisterNoBody(r, subject.MuteTogglePattern(h.siteID), h.muteToggle)
-	natsrouter.RegisterNoBody(r, subject.FavoriteTogglePattern(h.siteID), h.favoriteToggle)
-	natsrouter.RegisterNoBody(r, subject.RoomAppTabsPattern(h.siteID), h.getRoomAppTabs)
-	natsrouter.RegisterNoBody(r, subject.RoomAppCmdMenuPattern(h.siteID), h.getRoomAppCommandMenu)
-	natsrouter.RegisterNoBody(r, subject.OrgMembersPattern(h.siteID), h.listOrgMembers)
-	natsrouter.RegisterNoBody(r, subject.MemberListPattern(h.siteID), h.listMembers)
-	natsrouter.RegisterNoBody(r, subject.MemberStatusesPattern(h.siteID), h.listMemberStatuses)
-	natsrouter.RegisterNoBody(r, subject.MentionableSubscriptionsPattern(h.siteID), h.listMentionableSubscriptions)
-	natsrouter.RegisterNoBody(r, subject.RoomKeyGetPattern(h.siteID), h.getRoomKey)
-	natsrouter.RegisterNoBody(r, subject.MessageReadPattern(h.siteID), h.messageRead)
-	natsrouter.Register(r, subject.MessageReadReceiptPattern(h.siteID), h.messageReadReceipt)
-	natsrouter.Register(r, subject.MessageThreadReadPattern(h.siteID), h.messageThreadRead)
-	natsrouter.Register(r, subject.MemberRoleUpdatePattern(h.siteID), h.updateRole)
-	natsrouter.Register(r, subject.MemberRemovePattern(h.siteID), h.removeMember)
-	natsrouter.Register(r, subject.MemberAddPattern(h.siteID), h.addMembers)
-	natsrouter.Register(r, subject.RoomRenamePattern(h.siteID), h.roomRename)
-	natsrouter.Register(r, subject.RoomRestricted(h.siteID), h.roomRestricted)
+	strict := r.Group(natsrouter.RequireRequestID())
+
+	natsrouter.RegisterNoBody(strict, subject.MuteTogglePattern(h.siteID), h.muteToggle)
+	natsrouter.RegisterNoBody(strict, subject.FavoriteTogglePattern(h.siteID), h.favoriteToggle)
+	natsrouter.RegisterNoBody(strict, subject.RoomAppTabsPattern(h.siteID), h.getRoomAppTabs)
+	natsrouter.RegisterNoBody(strict, subject.RoomAppCmdMenuPattern(h.siteID), h.getRoomAppCommandMenu)
+	natsrouter.RegisterNoBody(strict, subject.OrgMembersPattern(h.siteID), h.listOrgMembers)
+	natsrouter.RegisterNoBody(strict, subject.MemberListPattern(h.siteID), h.listMembers)
+	natsrouter.RegisterNoBody(strict, subject.MemberStatusesPattern(h.siteID), h.listMemberStatuses)
+	natsrouter.RegisterNoBody(strict, subject.MentionableSubscriptionsPattern(h.siteID), h.listMentionableSubscriptions)
+	natsrouter.RegisterNoBody(strict, subject.RoomKeyGetPattern(h.siteID), h.getRoomKey)
+	natsrouter.RegisterNoBody(strict, subject.MessageReadPattern(h.siteID), h.messageRead)
+	natsrouter.Register(strict, subject.MessageReadReceiptPattern(h.siteID), h.messageReadReceipt)
+	natsrouter.Register(strict, subject.MessageThreadReadPattern(h.siteID), h.messageThreadRead)
+	natsrouter.Register(strict, subject.MemberRoleUpdatePattern(h.siteID), h.updateRole)
+	natsrouter.Register(strict, subject.MemberRemovePattern(h.siteID), h.removeMember)
+	natsrouter.Register(strict, subject.MemberAddPattern(h.siteID), h.addMembers)
+	natsrouter.Register(strict, subject.RoomRenamePattern(h.siteID), h.roomRename)
+	natsrouter.Register(strict, subject.RoomRestricted(h.siteID), h.roomRestricted)
+	natsrouter.Register(strict, subject.RoomKeyEnsure(h.siteID), h.ensureRoomKey)
+	natsrouter.Register(strict, subject.RoomCreatePattern(h.siteID), h.createRoom)
+
+	// Server-to-server read RPC: tolerates a missing X-Request-ID (base router mints).
 	natsrouter.Register(r, subject.RoomsInfoBatchSubscribe(h.siteID), h.roomsInfoBatch)
-	natsrouter.Register(r, subject.RoomKeyEnsure(h.siteID), h.ensureRoomKey)
-	natsrouter.Register(r, subject.RoomCreatePattern(h.siteID), h.createRoom)
 }
 
 func (h *Handler) createRoom(c *natsrouter.Context, req model.CreateRoomRequest) (*model.CreateRoomReply, error) { //nolint:gocritic // hugeParam: req is passed by value to satisfy the natsrouter.Register handler signature

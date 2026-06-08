@@ -1483,6 +1483,60 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	assert.Equal(t, "timeout listing members of channel source@site-b", ee.Message)
 }
 
+// TestRoomsInfoBatchRPC_NoRequestID proves the relaxed posture: with the
+// production base middleware (RequestID mints, not RequireRequestID), the
+// server-to-server RoomsInfoBatch RPC succeeds WITHOUT an X-Request-ID header,
+// while a dedup-critical server route (RoomKeyEnsure, on the strict group) still
+// rejects a header-less request.
+func TestRoomsInfoBatchRPC_NoRequestID(t *testing.T) {
+	db := setupMongo(t)
+	keyStore := setupValkey(t)
+	natsURL := setupNATS(t)
+
+	store := NewMongoStore(db)
+
+	mustInsertRoom(t, db, &model.Room{ID: "r1", Name: "room-1", Type: model.RoomTypeChannel, SiteID: "site-a"})
+
+	otelNC, err := otelnats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otelNC.Drain() })
+
+	handler := NewHandler(store, keyStore, nil, nil, "site-a", 1000, 500, 5*time.Second, 5, func(context.Context, string, []byte, string) error { return nil }, func(context.Context, string, []byte) error { return nil }, nil, 0)
+	router := natsrouter.New(otelNC, "room-service")
+	// Production-shaped base: mint, do not require.
+	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
+	handler.Register(router)
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+	require.NoError(t, otelNC.NatsConn().Flush())
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Drain() })
+
+	ctxReq, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 1. Header-less RoomsInfoBatch (relaxed, base router) — succeeds.
+	batchData, err := json.Marshal(model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}})
+	require.NoError(t, err)
+	msg, err := nc.RequestWithContext(ctxReq, subject.RoomsInfoBatch("site-a"), batchData)
+	require.NoError(t, err, "RoomsInfoBatch must answer a header-less request")
+	var resp model.RoomsInfoBatchResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
+	assert.True(t, resp.Rooms[0].Found)
+
+	// 2. Header-less RoomKeyEnsure (strict group) — rejected with BadRequest.
+	ensureData, err := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "r1"})
+	require.NoError(t, err)
+	ensureMsg, err := nc.RequestWithContext(ctxReq, subject.RoomKeyEnsure("site-a"), ensureData)
+	require.NoError(t, err, "expected an error envelope reply, not a transport failure")
+	e, ok := errcode.Parse(ensureMsg.Data)
+	require.True(t, ok, "strict route must reply with an errcode envelope: %s", ensureMsg.Data)
+	assert.Equal(t, errcode.CodeBadRequest, e.Code, "missing X-Request-ID must be a bad_request")
+}
+
 func TestRoomsInfoBatchRPC(t *testing.T) {
 	db := setupMongo(t)
 	keyStore := setupValkey(t)
