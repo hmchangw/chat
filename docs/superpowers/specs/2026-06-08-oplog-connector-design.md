@@ -1,4 +1,6 @@
-# Spec: `oplog-connector` — live-sync CDC pump (source Mongo → `MIGRATION_OPLOG_{site}`)
+# oplog-connector — live-sync CDC pump (Design)
+
+*source Mongo → `MIGRATION_OPLOG_{site}`*
 
 > **Status:** DESIGN — not yet implemented. This document is the agreed design record produced via brainstorming; the implementer follows the TDD cycle in CLAUDE.md §4 against the contract below.
 
