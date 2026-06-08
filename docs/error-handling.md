@@ -167,9 +167,18 @@ These entry points use the **strict** helper instead:
 - **NATS**: `natsutil.RequireRequestID(ctx, headers, subject) (ctx, id, error)`
   returns an `errcode.BadRequest` when the inbound header is missing or
   malformed. The error flows through `errnats.Reply` as a normal envelope.
-- **Strict callers today**: every handler in `room-service` (via the
-  `wrappedCtx` helper, which now returns an error) and
-  `room-worker.natsServerCreateDM` (sync DM endpoint).
+- **Strict callers today**: every **user-facing** room-service handler (the
+  strict route group installed in `room-service/handler.go`'s `Register`) and the
+  dedup-critical member RPCs. The base room-service router now **mints** via
+  `RequestID()`; the strict group re-applies `RequireRequestID` to all routes
+  except the server-to-server `RoomsInfoBatch` read RPC, which tolerates a
+  missing header.
+- **Relaxed server-to-server RPCs**: `room-service.RoomsInfoBatch`
+  (`chat.server.request.room.{siteID}.info.batch`, read-only) and
+  `room-worker.serverCreateDM` (`chat.server.request.room.{siteID}.create.dm`)
+  mint a request ID when absent. `serverCreateDM` keeps cross-site OUTBOX dedup
+  safe by deriving the dedup key from a deterministic payload seed (room id +
+  createdAt + destination site) instead of the request ID.
 - **The room-worker JetStream consume loop** keeps the default mint policy
   defensively — by the time a message lands on the ROOMS stream, room-service
   validated the header at publish time. The consume loop logs an `slog.Error`
