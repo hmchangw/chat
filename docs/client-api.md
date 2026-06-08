@@ -417,7 +417,20 @@ On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `
 
 **3. `chat.user.{newMember}.event.room.key`** — a `RoomKeyEvent` per newly-subscribed account (channels). Existing members do not receive a duplicate. See [§5 Room Encryption](#5-room-encryption).
 
-**4. `chat.room.{roomID}.event.member`** — a `MemberAddEvent` (`type: "member_added"`) published once when at least one new account or org was added. Carries `roomId`, `roomName`, `roomType`, `accounts` (the added accounts), `siteId`, `requesterAccount`, `joinedAt`, `historySharedSince`, `timestamp`. Delivered to clients subscribed to `chat.room.>` for the room.
+**4. `chat.room.{roomID}.event.member`** — a `MemberAddEvent` (`type: "member_added"`) published once when at least one new account or org was added. Delivered to clients subscribed to `chat.room.>` for the room.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"member_added"`. |
+| `roomId` | string | |
+| `roomName` | string | |
+| `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. Omitted when empty. |
+| `accounts` | string[] | The newly added accounts. |
+| `siteId` | string | The room's home site. |
+| `requesterAccount` | string | The account that initiated the add. Omitted when empty. |
+| `joinedAt` | number | Milliseconds since Unix epoch (UTC). |
+| `historySharedSince` | number | Optional. Milliseconds since Unix epoch (UTC); present when prior history is shared with the new members. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 
 A `members_added` system message also flows through the message pipeline and arrives as a `new_message` room event.
 
@@ -476,6 +489,16 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 **2. `chat.user.{removedAccount}.event.subscription.update`** — one per removed account, `action: "removed"`. The payload is a dedicated `SubscriptionRemovedEvent` (not the full `SubscriptionUpdateEvent`): its `subscription` carries **only** `roomId`, `roomType`, and `u` so no zero-valued `Subscription` fields are sent. On the **org-removal** path `userId` is omitted (only `subscription.u.account` is set).
 
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | string | The removed user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
+| `subscription` | object | Lean ref — carries only the three fields below; no full `Subscription` payload. |
+| `subscription.roomId` | string | The room the user lost. |
+| `subscription.roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
+| `subscription.u` | object | The removed user: `{ id, account, isBot }`. On org removals only `account` is guaranteed. |
+| `action` | string | Always `"removed"`. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). |
+
 ```json
 {
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
@@ -491,7 +514,16 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 **3. `chat.user.{survivor}.event.room.key`** — on a channel removal the room key is **rotated**; every surviving member receives a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving key events. See [§5 Room Encryption](#5-room-encryption).
 
-**4. `chat.room.{roomID}.event.member`** — a `MemberRemoveEvent` (`type: "member_left"` for a self-leave, `"member_removed"` for a forced removal or org removal) carrying `roomId`, `accounts` (removed accounts), `siteId`, `timestamp` (org removals also carry `orgId`). Delivered to clients subscribed to `chat.room.>`.
+**4. `chat.room.{roomID}.event.member`** — a `MemberRemoveEvent` (`type: "member_left"` for a self-leave, `"member_removed"` for a forced removal or org removal). Delivered to clients subscribed to `chat.room.>`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | `"member_left"` (self-leave) or `"member_removed"` (forced removal or org removal). |
+| `roomId` | string | |
+| `accounts` | string[] | The removed accounts. |
+| `siteId` | string | The room's home site. |
+| `orgId` | string | Present only on org removals. Omitted otherwise. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 
 A `member_left` / `member_removed` system message also flows through the message pipeline as a `new_message` room event.
 
@@ -2234,7 +2266,15 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 }
 ```
 
-**`chat.user.{account}.notification`** — `NotificationEvent` with `type: "reaction"`. Recipients: the message author only, and only when the toggle is an `"added"` action and the actor is not the author. The notification carries the same `reactionDelta` as the canonical event so the client can render which emoji was added and by whom.
+**`chat.user.{account}.notification`** — `NotificationEvent` with `type: "reaction"`. Recipients: the message author only, and only when the toggle is an `"added"` action and the actor is not the author. The notification carries the full reacted-to `message` plus the `reactionDelta` so the client can render which emoji was added, by whom, and on which message without a separate fetch.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"reaction"`. |
+| `roomId` | string | The room containing the reacted-to message. |
+| `message` | object | The full reacted-to `Message` (same shape as the history [Message schema](#message-schema)). |
+| `reactionDelta` | object | `{ shortcode, action, actor }`. `action` is always `"added"` here (the notification only fires on add); `actor` is a `Participant` (`userId`, `account`, `siteId`, `engName`, `chineseName`). |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). Event publish time. |
 
 To reconcile this delta with the grouped per-message `reactions` map returned by history endpoints (`map<emoji, [{account, displayName}]>`), clients append or remove one entry under `reactions[shortcode]` keyed on `actor.account`. See the "Message schema" section for the history-side shape.
 
