@@ -12,7 +12,7 @@ import (
 // Handler receives *Context (implements context.Context) and unmarshalled request.
 // Panics if subscription fails (startup-only, fatal).
 func Register[Req, Resp any](
-	r *Router,
+	r registrar,
 	pattern string,
 	fn func(c *Context, req Req) (*Resp, error),
 ) {
@@ -40,7 +40,7 @@ func Register[Req, Resp any](
 
 // RegisterNoBody subscribes a handler that takes no request body.
 func RegisterNoBody[Resp any](
-	r *Router,
+	r registrar,
 	pattern string,
 	fn func(c *Context) (*Resp, error),
 ) {
@@ -59,7 +59,7 @@ func RegisterNoBody[Resp any](
 
 // RegisterVoid subscribes a handler that processes a request without replying.
 func RegisterVoid[Req any](
-	r *Router,
+	r registrar,
 	pattern string,
 	fn func(c *Context, req Req) error,
 ) {
