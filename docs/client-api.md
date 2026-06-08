@@ -1555,20 +1555,20 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `roomId` | string | |
 | `createdAt` | string | RFC 3339 timestamp. |
 | `messageId` | string | 17- or 20-char base62. |
-| `sender` | object | A `Participant` — see below. |
+| `sender` | [MessageParticipant](#messageparticipant) | The message author. |
 | `msg` | string | The message body. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [MessageParticipant](#messageparticipant)[] | Optional. |
 | `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
-| `file` | object | Optional. `{id, name, type}`. |
-| `card` | object | Optional. `{template, data?}`. `data` is base64. |
-| `cardAction` | object | Optional. `{verb, text?, cardId?, displayText?, hideExecLog?, cardTmId?, data?}`. |
+| `file` | [MessageFile](#messagefile) | Optional. |
+| `card` | [MessageCard](#messagecard) | Optional. |
+| `cardAction` | [MessageCardAction](#messagecardaction) | Optional. |
 | `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
 | `tcount` | number | Optional. Number of replies on a thread parent. |
 | `threadParentId` | string | Optional. Set when this message is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
-| `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Optional. Embedded snapshot of the quoted message. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
+| `reactions` | map<emoji, [ReactionUser](#reactionuser)[]> | Optional. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`, `"room_renamed"`, `"room_restricted"`. For all six, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other / room-creates / renames / restricted changes, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -1577,9 +1577,13 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `updatedAt` | string | Optional. RFC 3339. Mirrors `editedAt` for edits, set on delete to record the deletion time. |
 | `threadRoomId` | string | Optional. The thread room ID when this is a thread message. |
 | `pinnedAt` | string | Optional. RFC 3339. |
-| `pinnedBy` | object | Optional. `Participant`. |
+| `pinnedBy` | [MessageParticipant](#messageparticipant) | Optional. |
 
-`Participant`:
+##### MessageParticipant
+
+The author/mention/pinner embedded in a message. Distinct from the event-actor
+[Participant](#participant) (which is `userId`-keyed) — this is the Cassandra
+message projection, keyed by `id`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -1591,22 +1595,53 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `isBot` | boolean | Optional. |
 | `account` | string | Optional. |
 
-`QuotedParentMessage` (embedded snapshot of the quoted message at the time of quoting):
+##### MessageFile
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | File ID. |
+| `name` | string | File name. |
+| `type` | string | MIME type. |
+
+##### MessageCard
+
+| Field | Type | Notes |
+|---|---|---|
+| `template` | string | Card template name. |
+| `data` | string | Optional. Base64-encoded card payload. |
+
+##### MessageCardAction
+
+| Field | Type | Notes |
+|---|---|---|
+| `verb` | string | The action verb. |
+| `text` | string | Optional. Button/label text. |
+| `cardId` | string | Optional. Target card ID. |
+| `displayText` | string | Optional. Text shown after the action runs. |
+| `hideExecLog` | boolean | Optional. Suppress the execution log entry. |
+| `cardTmId` | string | Optional. Card template ID. |
+| `data` | string | Optional. Base64-encoded action payload. |
+
+##### QuotedParentMessage
+
+Embedded snapshot of the quoted message at the time of quoting.
 
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | |
 | `roomId` | string | |
-| `sender` | object | `Participant`. |
+| `sender` | [MessageParticipant](#messageparticipant) | |
 | `createdAt` | string | RFC 3339. |
 | `msg` | string | Optional. Body snapshot. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [MessageParticipant](#messageparticipant)[] | Optional. |
 | `attachments` | string[] | Optional. |
 | `messageLink` | string | Optional. |
 | `threadParentId` | string | Optional. Set if the quoted message itself is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 
 When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
+
+##### ReactionUser
 
 `reactions` is keyed by emoji; each value is the list of users who reacted with that emoji. The inner record is intentionally minimal — the FE composes any further presentation it needs from these two fields:
 
