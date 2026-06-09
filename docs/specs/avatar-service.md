@@ -48,12 +48,12 @@ only via the §9 upload-authz decision). Mongo + MinIO backed.
 
 | File | Responsibility |
 |------|----------------|
-| `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO clients, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
-| `routes.go` | Register GET ×2, PUT ×2, DELETE ×2, `GET /healthz` |
+| `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO + `pkg/oidc` validator, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
+| `routes.go` | Register GET ×2 (public), PUT ×2 + DELETE ×2 (behind auth middleware), `GET /healthz` |
 | `handler.go` | Read path: resolve/redirect/stream decision tree |
-| `upload.go` | Write path: validate (type/size/decode), store to MinIO, bump `AvatarVersion`; authz middleware |
+| `upload.go` | Write path: OIDC authn + `RoomMember` ownership middleware, validate (type/size/decode), store to MinIO, bump `AvatarVersion` |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID`, `Bot`, `Room`, `SetRoomAvatar`/`SetBotAvatar` (bump version), ownership lookup + `//go:generate mockgen` |
+| `store.go` | `avatarStore` interface — `EmployeeID`, `Bot`, `Room`, `RoomMemberRole`, `SetRoomAvatar`/`SetBotAvatar` (bump version) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `rooms`, bots) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
@@ -74,6 +74,8 @@ timeouts, ≥80% coverage via TDD.
 | `CLUSTER_DOMAINS` | `siteID=baseURL` map for cross-cluster redirects | required |
 | `EMPLOYEE_PHOTO_BASE_URL` | external employee-photo host (the `xxx_domain`) | required |
 | `MONGO_URI` / `MONGO_DB` | operational DB | required / `chat` |
+| `OIDC_ISSUER_URL` / `OIDC_AUDIENCES` | validate upload Bearer tokens (`pkg/oidc`); required unless `DEV_MODE` | required when `DEV_MODE=false` |
+| `DEV_MODE` | bypass OIDC validation for local dev (mirrors auth-service) | `false` |
 | `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | object storage (custom uploads) | required |
 | `AVATAR_BUCKET` | MinIO bucket for avatars | `avatars` |
 | `MAX_UPLOAD_BYTES` | reject uploads larger than this | `1048576` (1 MiB) |
@@ -210,14 +212,13 @@ dynamic default on the GET path.
 
 - **Raster only — reject `image/svg+xml` uploads.** A user-supplied SVG served
   from our origin is **stored XSS** (SVG can carry `<script>`/`foreignObject`).
-  Allowlist: `image/png`, `image/jpeg`, `image/webp`. The *default* avatar is
-  SVG because **we** generate it (trusted); uploads never are.
+  v1 allowlist: **`image/png`, `image/jpeg`** (WebP deferred — §9). The *default*
+  avatar is SVG because **we** generate it (trusted); uploads never are.
 - **Size cap**: enforce `MAX_UPLOAD_BYTES` via `http.MaxBytesReader` before
   reading the body.
 - **Verify the bytes are really an image**: decode with the stdlib `image`
-  package (`image/png`, `image/jpeg`; WebP decode needs `golang.org/x/image` —
-  see §9) and reject on decode failure. Optionally re-encode to a normalized
-  format to strip EXIF/metadata and defeat polyglot files.
+  package (`image/png`, `image/jpeg`) and reject on decode failure. Optionally
+  re-encode to a normalized format to strip EXIF/metadata and defeat polyglots.
 - All responses (GET and the served upload) set `X-Content-Type-Options:
   nosniff` so browsers don't MIME-sniff the bytes into something executable.
 
@@ -243,10 +244,20 @@ at the correct domain — we do **not** proxy/`307` the body cross-cluster
 
 ### 7a.4 Authorization
 
-Authn + an **ownership check** (caller must own/admin the target room or bot)
-gate every write. The mechanism is **undecided** — this service is the first to
-authorize inbound mutating HTTP, and there is no existing middleware to reuse.
-See §9 for the options to pick from.
+Every write is gated by an auth middleware (`upload.go`):
+
+1. **Authn — validate the Bearer OIDC token** with `pkg/oidc.NewValidator`
+   (same issuer/audience config as auth-service; `OIDC_ISSUER_URL` /
+   `OIDC_AUDIENCES`). Extract `account` from claims (`PreferredUsername`, else
+   `Name` — mirroring auth-service). Missing/invalid token → `401`
+   (`errcode.Unauthenticated`). `DEV_MODE` bypasses validation for local dev.
+2. **Authz — ownership via Mongo `RoomMember`.** For a room upload, look up the
+   caller's `RoomMember` record and require an owner/admin role; non-owner →
+   `403` (`errcode.Forbidden`). For a bot upload, require the caller to be the
+   bot's owner (bot doc's owner field). The store exposes the role lookup
+   (`store.RoomMemberRole(ctx, roomID, account)` / bot owner check).
+
+Read endpoints (GET) remain public — no token required.
 
 ## 8. Default image — dynamic, deterministic, not persisted
 
@@ -300,35 +311,21 @@ are never stored, so there is no lazy "generate-and-store" and no pre-warm hook
 — a deterministic default needs no warming. A shared `renderDefaultSVG` keeps
 the rendering in one place.
 
-## 9. Open questions / deferred
+## 9. Resolved decisions & deferred items
 
-- **🔴 Upload auth mechanism (DECISION NEEDED before Phase 0).** Write endpoints
-  (§7a) need authn + ownership. This is the first HTTP service to authorize an
-  inbound *mutating* request; auth-service only *issues* NATS JWTs, so there is
-  no middleware to reuse. Options:
-  1. **Validate the NATS user JWT** (Bearer) that `auth-service` issued —
-     avatar-service holds the NATS account public key and verifies the
-     signature. Caveat: the user `account` is embedded in the JWT's pub/sub
-     permission subjects, not a clean claim, so extraction is awkward.
-  2. **Validate the OIDC/SSO token directly** via `pkg/oidc` (same path
-     auth-service uses) → clean `account` claim. Adds an OIDC dependency to this
-     service.
-  3. **Front the write path with NATS** instead of HTTP: a `room-service` /
-     bot-owner handler does the ownership check (it already has the context) and
-     either writes MinIO or calls avatar-service with a trusted internal token.
-     Keeps authz where ownership data lives; image bytes over NATS are the
-     downside.
-  4. **API-gateway** injects a verified identity header; avatar-service trusts it.
-  - Plus the **ownership check** itself: where does avatar-service learn that
-    `account` owns room/bot? (Mongo `RoomMember` role lookup, or a NATS request
-    to room-service.)
+**Resolved** (this session):
+- **Upload authn** → validate the Bearer **OIDC token** via `pkg/oidc` (§7a.4).
+- **Upload ownership** → **Mongo `RoomMember` role** lookup (room) / bot owner
+  field (bot) (§7a.4).
+- **Upload formats** → **PNG/JPEG only** in v1; SVG uploads always rejected (§7a.1).
+
+**Deferred / to confirm:**
 - **Bot avatar precedence** (§6): confirm custom upload → `LocationURL` →
   default is the intended order.
-- **WebP / re-encoding** (§7a.1): stdlib decodes PNG/JPEG only. Accept WebP
-  uploads (needs `golang.org/x/image` — a new dep, ask first) or restrict v1 to
-  PNG/JPEG? Re-encode-to-normalize or store-as-is?
-- **Read-path authz / privacy:** GET stays public; the redirect `Location`
-  exposes `employeeID` (org-info leakage / account enumeration). Accept, or gate.
+- **WebP support** (§7a.1): deferred — would need `golang.org/x/image` (new dep,
+  ask first). Also TBD: re-encode-to-normalize vs store-as-is.
+- **Read-path privacy:** GET stays public; the redirect `Location` exposes
+  `employeeID` (org-info leakage / account enumeration). Accept, or gate later.
 - **Employee-photo 404:** the external host may 404 for a user with no photo →
   broken image in the browser (inherent to the redirect approach). A default is
   only served for *our* lookups, not for the external host's 404.
