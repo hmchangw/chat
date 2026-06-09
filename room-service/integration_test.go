@@ -1483,11 +1483,11 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	assert.Equal(t, "timeout listing members of channel source@site-b", ee.Message)
 }
 
-// TestRoomsInfoBatchRPC_NoRequestID proves the relaxed posture: with the
-// production base middleware (RequestID mints, not RequireRequestID), the
-// server-to-server RoomsInfoBatch RPC succeeds WITHOUT an X-Request-ID header,
-// while a dedup-critical server route (RoomKeyEnsure, on the strict group) still
-// rejects a header-less request.
+// TestRoomsInfoBatchRPC_NoRequestID proves the relaxed posture: the base
+// middleware mints an X-Request-ID when absent (RequestID, not RequireRequestID),
+// so a header-less server-to-server call succeeds instead of being rejected. The
+// RoomsInfoBatch read RPC is the representative deterministic route; the minting
+// middleware applies to every room-service handler.
 func TestRoomsInfoBatchRPC_NoRequestID(t *testing.T) {
 	db := setupMongo(t)
 	keyStore := setupValkey(t)
@@ -1516,7 +1516,7 @@ func TestRoomsInfoBatchRPC_NoRequestID(t *testing.T) {
 	ctxReq, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// 1. Header-less RoomsInfoBatch (relaxed, base router) — succeeds.
+	// Header-less request succeeds — the middleware mints an ID instead of rejecting.
 	batchData, err := json.Marshal(model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}})
 	require.NoError(t, err)
 	msg, err := nc.RequestWithContext(ctxReq, subject.RoomsInfoBatch("site-a"), batchData)
@@ -1526,15 +1526,6 @@ func TestRoomsInfoBatchRPC_NoRequestID(t *testing.T) {
 	require.Len(t, resp.Rooms, 1)
 	assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 	assert.True(t, resp.Rooms[0].Found)
-
-	// 2. Header-less RoomKeyEnsure (strict group) — rejected with BadRequest.
-	ensureData, err := json.Marshal(model.RoomKeyEnsureRequest{RoomID: "r1"})
-	require.NoError(t, err)
-	ensureMsg, err := nc.RequestWithContext(ctxReq, subject.RoomKeyEnsure("site-a"), ensureData)
-	require.NoError(t, err, "expected an error envelope reply, not a transport failure")
-	e, ok := errcode.Parse(ensureMsg.Data)
-	require.True(t, ok, "strict route must reply with an errcode envelope: %s", ensureMsg.Data)
-	assert.Equal(t, errcode.CodeBadRequest, e.Code, "missing X-Request-ID must be a bad_request")
 }
 
 func TestRoomsInfoBatchRPC(t *testing.T) {
