@@ -43,7 +43,7 @@ layout. **It does not use NATS** — it is a pure read HTTP service.
 | `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO clients, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
 | `routes.go` | Register `GET /avatar/v1/:accountName`, `GET /avatar/v1/room/:roomID`, `GET /healthz` |
 | `handler.go` | Request handling + the resolve/redirect/stream decision tree |
-| `avatar.go` | `generateRoomAvatarSVG(room)` + object-key helpers (reusable internal func) |
+| `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
 | `store.go` | `avatarStore` interface (only the methods the handler needs) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `rooms`, bot lookup) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
@@ -73,16 +73,19 @@ timeouts, ≥80% coverage via TDD.
 avatar-service (e.g. `xxx-2=https://avatar-service-xxx-2`). Cross-cluster
 redirects and `EMPLOYEE_PHOTO_BASE_URL` are **config**, never hardcoded.
 
+The MinIO vars (`MINIO_*`, `AVATAR_BUCKET`) are **conditional** on the §9
+decision: if v1 holds no custom images, MinIO is dropped and these vars go away.
+
 ## 4. Common mechanisms
 
-### 4.1 Proxy streaming (the terminal "serve image" step)
+### 4.1 Proxy streaming (the MinIO-hit "serve image" step)
 
-When the avatar lives in *this* cluster's MinIO, the handler relays the bytes
-rather than redirecting again:
+When a **stored** image (a custom/uploaded room avatar) lives in *this*
+cluster's MinIO, the handler relays the bytes rather than redirecting again:
 
 1. `obj, err := mc.GetObject(ctx, bucket, key, opts)` — `*minio.Object` is an `io.Reader`.
 2. `st, err := obj.Stat()` → `Size`, `ContentType`, `ETag`.
-   - NotFound → serve the **default image** (same streaming path).
+   - **NotFound → fall through to the dynamic default (§8)** — *not* a stored asset.
    - other error → `fmt.Errorf("stat object: %w", err)` → collapses to `internal`.
 3. Set `Cache-Control: public, max-age=<cfg>` and `ETag: st.ETag`.
 4. If request `If-None-Match` == `st.ETag` → `304 Not Modified`, no body.
@@ -92,16 +95,21 @@ Rationale: the cacheable URL stays stable (avatar-service's own URL), so
 `Cache-Control` actually works and `ETag` enables conditional GET. Redirecting
 to a MinIO presigned URL would defeat caching (expiring `Location`) and add a hop.
 
+This path only applies when MinIO actually holds a stored image. A miss does
+**not** stream a stored default — the default is generated on the fly (§8) and
+never written back.
+
 ### 4.2 Cross-cluster loop breaker (`?fwd=1`)
 
 A request resolves to at most **one** cross-cluster hop. When forwarding,
 append `?fwd=1`. A handler that sees `fwd=1` MUST resolve locally or fall back
-to the default image — it MUST NOT redirect cross-cluster again. The default
-image is the universal backstop that guarantees termination.
+to the dynamic default image — it MUST NOT redirect cross-cluster again. The
+dynamic default (§8) is the universal backstop that guarantees termination.
 
 ### 4.3 Caching
 
-- Baseline: `ETag` (from the MinIO object) + `Cache-Control: public, max-age`.
+- Baseline: `ETag` (from the MinIO object, or the deterministic hash for a
+  generated default — §8) + `Cache-Control: public, max-age`.
 - Forward-compatible: a `?v={version}` query param (version carried in room
   metadata the frontend already holds). When present, the response MAY use a
   long `max-age` + `immutable`. Not required for v1; the metadata just reserves
@@ -139,6 +147,9 @@ else:                                        # ── user (synced; domain infor
         serveDefault()
 ```
 
+- `serveDefault()` **dynamically generates** a deterministic SVG from the
+  account (§8) and returns it directly — it does not read from MinIO and does
+  not store anything.
 - `Cache-Control: public, max-age=<cfg>` on every response (incl. redirects).
 - **Correctness rule:** a mapping-cache *miss* falls back to the DB; it must
   **not** skip to the default branch (that would give a real user the wrong
@@ -150,45 +161,80 @@ else:                                        # ── user (synced; domain infor
 
 ```text
 room, found := store.Room(ctx, roomID)
-if !found:                          serveDefault()        # incl. room owned by a cluster we can't resolve
-if room.Type in {dm, botDM}:        serveDefault()        # frontend should use Endpoint 1 instead
+if !found:                          serveDefault(roomID)   # incl. room owned by a cluster we can't resolve
+if room.Type in {dm, botDM}:        serveDefault(roomID)   # frontend should use Endpoint 1 instead
 # channel / discussion:
 if room.SiteID != cfg.SiteID && !fwd:
     307 → https://{clusterDomain(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1
 key := roomAvatarKey(roomID)
 obj, err := mc.GetObject(ctx, bucket, key)
-if NotFound:
-    singleflight(roomID): generateRoomAvatarSVG(room) → put(key)   # lazy-on-miss
-    obj = mc.GetObject(ctx, bucket, key)
-proxyStream(obj)                    # any residual failure → serveDefault()
+if found:        proxyStream(obj)          # stored custom image (§4.1)
+else:            serveDefault(room)         # MinIO miss → dynamic SVG (§8), NOT stored
 ```
 
+- The generated default is **never written back** to MinIO. MinIO is read-only
+  here and only holds custom/uploaded images; a miss is answered on the fly.
 - dm/botDM are **user-type** avatars; the frontend fetches them via Endpoint 1
   using the counterpart user / bot account. If such a roomID nonetheless lands
-  here, return the default image (safe, not a 4xx).
+  here, return the dynamic default (safe, not a 4xx).
 - Cross-cluster for rooms is a **defensive fallback**: normally the frontend
   resolves the owning domain first (via the existing room-location service) and
   hits the correct cluster directly. If this cluster has no record of the room,
   it serves the default image (it cannot know the owning siteID to forward).
 
-## 8. Image generation & storage
+## 8. Default image — dynamic, deterministic, not persisted
 
-- **Default / generated room image** is an **SVG** "initials" avatar: the room
-  name's first glyph(s) on a background colour derived from a hash of `roomID`.
-  SVG means **zero new dependencies** and CJK room names render via the
-  client's system fonts (no embedded multi-MB font). `Content-Type:
-  image/svg+xml`.
-- `generateRoomAvatarSVG(room)` is a **standalone, reusable internal function**.
-  The lazy path calls it on a MinIO miss (guarded by `singleflight` to collapse
-  concurrent first-requests). A future room-creation hook can call the *same*
-  function to pre-warm — generation logic stays in one place.
-- A **room rename** changes name-derived initials → regenerate + bump `version`.
-- **Storage:** image bytes live in **MinIO** (bucket `AVATAR_BUCKET`, key by
-  convention e.g. `room/{roomID}.svg`). Mongo holds at most a minimal reference
-  `{ minioKey, version }`; if the key is fully derivable from `roomID`, the DB
-  reference may be omitted and existence checked directly against MinIO.
-- A static **fallback default image** (when generation/lookup fails) is embedded
-  via `go:embed` or stored at a fixed MinIO key.
+The universal fallback for **every** kind (user, bot, room) — whenever the
+external photo / bot `LocationURL` / MinIO custom image is absent — is an
+**SVG "initials" avatar generated on the fly and returned directly to the
+client**. It is **never written back to MinIO or Mongo**.
+
+### 8.1 The generator is a pure, deterministic function
+
+```go
+// renderDefaultSVG returns the same bytes for the same (seed, initial) every
+// time, on every replica. No time, no randomness, no map-iteration order.
+func renderDefaultSVG(seed, initial string) []byte
+```
+
+- **Background colour** = `palette[ stableHash(seed) % len(palette) ]` using a
+  fixed hash (e.g. FNV-1a). Same `seed` → same colour, forever, everywhere.
+- **Initial** = the first display glyph; CJK names render via the client's
+  system fonts (SVG `<text>`), so **no embedded font and zero new dependencies**.
+- `Content-Type: image/svg+xml`.
+
+**Seed / initial sources:**
+
+| Kind | `seed` (colour) | `initial` |
+|------|-----------------|-----------|
+| room | `roomID` | first glyph of `room.Name` |
+| user | `account` | first glyph of display name if known, else `account` |
+| bot | bot `account` | first glyph of bot name, else `account` |
+
+### 8.2 Caching a generated default
+
+Because the output is deterministic, the default is still cacheable:
+
+- `ETag` = `"<templateVersion>-<hex(stableHash(seed+initial))>"` — identical
+  across replicas and requests; `If-None-Match` → `304` works.
+- `templateVersion` is a build-time constant; bump it when the SVG template
+  changes so existing caches re-fetch.
+- `Cache-Control: public, max-age=<cfg>` as usual.
+
+### 8.3 What this removes vs. a stored default
+
+No write-back path, no `singleflight`, no embedded static asset, no
+generation/storage consistency concerns. The fallback is stateless and
+self-healing.
+
+### 8.4 MinIO's remaining role (custom images only)
+
+MinIO holds **only** custom/uploaded images (a future feature — no upload API in
+v1). The lazy "generate-and-store" + create-time pre-warm hook are **no longer
+needed for defaults** (a deterministic default needs no warming); they become
+relevant only if/when custom uploads land. Whether v1 talks to MinIO at all is
+an open question — see §9. A shared `renderDefaultSVG` keeps the rendering in
+one place regardless.
 
 ## 9. Open questions / deferred
 
@@ -197,6 +243,12 @@ proxyStream(obj)                    # any residual failure → serveDefault()
 - **Employee-photo 404:** the external host may 404 for a user with no photo →
   broken image in the browser (inherent to the redirect approach). A default is
   only served for *our* lookups, not for the external host's 404.
+- **Does v1 talk to MinIO at all?** With the default generated dynamically and
+  never stored, MinIO only matters for *custom/uploaded* images. If v1 has no
+  way to populate MinIO (no upload, no pre-warm), Endpoint 2 should skip the
+  MinIO round-trip entirely and generate directly — dropping the MinIO client,
+  bucket config, and proxy-stream path from v1. **DECISION NEEDED** before
+  Phase 0; the spec currently keeps MinIO as the custom-image source.
 - **`?v` cache-busting** is reserved but not wired in v1.
 - **Avatar upload** API is out of scope for v1.
 
@@ -204,15 +256,16 @@ proxyStream(obj)                    # any residual failure → serveDefault()
 
 - **Handler unit tests** (`handler_test.go`, mocked `avatarStore` + a stream
   seam): table-driven over Endpoint 1 (user local hit/miss, cache hit/miss→DB,
-  bot local vs cross-cluster, `fwd=1` no-re-redirect, default fallback) and
-  Endpoint 2 (channel local stream, lazy-generate-on-miss, dm/botDM→default,
-  remote→307, not-found→default, `If-None-Match`→304). Assert status code,
-  `Location`, `Cache-Control`, `ETag`, and body bytes/Content-Type.
-- **Generation unit tests:** `generateRoomAvatarSVG` produces deterministic,
-  well-formed SVG (stable colour per roomID, correct initial, valid XML).
+  bot local vs cross-cluster, `fwd=1` no-re-redirect, dynamic-default fallback)
+  and Endpoint 2 (channel MinIO-hit stream, MinIO-miss→dynamic default,
+  dm/botDM→default, remote→307, not-found→default, `If-None-Match`→304). Assert
+  status code, `Location`, `Cache-Control`, `ETag`, and body bytes/Content-Type.
+- **Generation unit tests:** `renderDefaultSVG` is **deterministic** — same
+  `(seed, initial)` yields byte-identical SVG *and* the same `ETag` across
+  repeated calls; stable colour per seed, correct initial (incl. CJK), valid XML.
 - **Integration** (`integration_test.go`, `//go:build integration`): Mongo +
-  MinIO from `pkg/testutil`; real GetObject/Stat/stream round-trip, 304 path,
-  lazy generation persists to MinIO.
+  MinIO from `pkg/testutil`; real GetObject/Stat/stream round-trip for a stored
+  custom image, 304 path, and MinIO-miss → dynamic default (nothing written back).
 - Coverage ≥80% (target 90% on handler + generation).
 
 ## 11. Docs to update on implementation
