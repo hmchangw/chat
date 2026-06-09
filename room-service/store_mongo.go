@@ -29,7 +29,6 @@ type MongoStore struct {
 	rooms               *mongo.Collection
 	subscriptions       *mongo.Collection
 	threadSubscriptions *mongo.Collection
-	threadRooms         *mongo.Collection
 	roomMembers         *mongo.Collection
 	users               *mongo.Collection
 	apps                *mongo.Collection
@@ -41,7 +40,6 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:               db.Collection("rooms"),
 		subscriptions:       db.Collection("subscriptions"),
 		threadSubscriptions: db.Collection("thread_subscriptions"),
-		threadRooms:         db.Collection("thread_rooms"),
 		roomMembers:         db.Collection("room_members"),
 		users:               db.Collection("users"),
 		apps:                db.Collection("apps"),
