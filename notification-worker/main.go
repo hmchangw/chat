@@ -174,7 +174,7 @@ func main() {
 	}
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
-	cons, err := otelJS.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer))
+	cons, err := otelJS.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer, cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -343,8 +343,16 @@ func main() {
 }
 
 // buildConsumerConfig returns the durable consumer config for notification-worker.
-func buildConsumerConfig(s stream.ConsumerSettings) jetstream.ConsumerConfig {
+// FilterSubjects scopes the consumer to the only canonical events it acts on —
+// created (push fan-out) and reacted (author notification). updated/deleted/
+// pinned/unpinned are excluded at the broker so they are never delivered,
+// unmarshaled, or acked by this worker.
+func buildConsumerConfig(s stream.ConsumerSettings, siteID string) jetstream.ConsumerConfig {
 	cc := stream.DurableConsumerDefaults(s)
 	cc.Durable = "notification-worker"
+	cc.FilterSubjects = []string{
+		subject.MsgCanonicalCreated(siteID),
+		subject.MsgCanonicalReacted(siteID),
+	}
 	return cc
 }
