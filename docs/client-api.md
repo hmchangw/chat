@@ -2861,7 +2861,15 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Planned behavior:** the response will be scoped to apps the caller has subscribed to once the pipeline's `$lookup` access guard against the `subscriptions` collection is enabled. See `TODO(searchApps-pipeline)` in `search-service/query_apps.go`.
 
-**Request body:**
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
+| `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
+| `size` | integer | no | Page size. Default `25`, capped at `100`. |
+| `offset` | integer | no | Page offset. Default `0`. |
+
 ```json
 {
   "query": "weather",
@@ -2871,29 +2879,44 @@ See [Error envelope](#6-error-envelope-reference).
 }
 ```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
-| `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
-| `size` | integer | no | Page size. Default `25`, capped at `100`. |
-| `offset` | integer | no | Page offset. Default `0`. |
+##### Success response
 
-**Response body:**
+| Field | Type | Notes |
+|---|---|---|
+| `apps` | [SearchApp](#searchapp)[] | Matching apps. Empty array when none. |
+
+###### SearchApp
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | App ID. |
+| `name` | string | App name. |
+| `description` | string | Optional. App description. |
+| `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
+| `sponsors` | [Sponsor](#sponsor)[] | Optional. App sponsors. |
+
+###### Sponsor
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Sponsor name. |
+| `phone` | string | Sponsor phone number. |
+
 ```json
 {
   "apps": [
     {
       "id": "a1",
       "name": "Weather",
-      "description": "...",
-      "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "..." },
-      "sponsors": [{ "name": "...", "phone": "..." }]
+      "description": "Local forecasts",
+      "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "https://site-a.example.com/apps/weather/settings" },
+      "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
     }
   ]
 }
 ```
 
-**Errors:**
+##### Error response
 
 | Category | Reason |
 |---|---|
@@ -2911,7 +2934,14 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 
 `{siteID}` is the requester's home site; the supercluster routes the request to that site's search-service. Proxy search for users via the third-party HR endpoint. The `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout) and is used for logging/metrics only — company-scoping is enforced by the third-party endpoint.
 
-**Request body:**
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
+| `offset` | integer | no | Page offset forwarded to the HR endpoint. Default `0`. Must be non-negative. |
+| `limit` | integer | no | Page size forwarded to the HR endpoint. Default `25`, capped at `100`. Must be non-negative. |
+
 ```json
 {
   "query": "alice",
@@ -2920,13 +2950,20 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 }
 ```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
-| `offset` | integer | no | Page offset forwarded to the HR endpoint. Default `0`. Must be non-negative. |
-| `limit` | integer | no | Page size forwarded to the HR endpoint. Default `25`, capped at `100`. Must be non-negative. |
+##### Success response
 
-**Response body — raw JSON array (no envelope):**
+A top-level JSON array of [SearchUser](#searchuser) objects (no wrapping envelope).
+
+###### SearchUser
+
+| Field | Type | Notes |
+|---|---|---|
+| `account` | string | The user's account name. |
+| `engName` | string | Optional. English display name. |
+| `chineseName` | string | Optional. Chinese display name. |
+
+Additional legacy fields may be present, mirroring the `GET /api/v3/users` response shape.
+
 ```json
 [
   {
@@ -2937,9 +2974,7 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 ]
 ```
 
-The response is a top-level JSON array of `SearchUser` objects (no wrapping object). The full field set mirrors the legacy `GET /api/v3/users` response shape — see `pkg/model.SearchUser` for the authoritative list.
-
-**Errors:**
+##### Error response
 
 | Code | Reason |
 |---|---|
