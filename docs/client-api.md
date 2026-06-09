@@ -1601,7 +1601,14 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 | Field | Type | Notes |
 |---|---|---|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | object | Optional. `{ "lastMsgAt"?: number, "createdAt"?: number }`, both UTC milliseconds. |
+| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. |
+
+###### RoomMeta
+
+| Field | Type | Notes |
+|---|---|---|
+| `lastMsgAt` | number | Optional. Room's most-recent-message time, UTC ms. |
+| `createdAt` | number | Optional. Room's creation time, UTC ms. |
 
 **What to pass for `meta`:** the server needs the room's `lastMsgAt` and `createdAt` to pick the Cassandra time-bucket window to scan. `meta` lets the client supply the values it already holds so the server can skip a MongoDB lookup:
 
@@ -2042,7 +2049,7 @@ The payload is flat (no zero-valued room fields):
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `messageId` | string | The edited message's ID. |
 | `newContent` | string | Optional. New plaintext content. Present for DMs and unencrypted channels. Omitted for encrypted channels — see `encryptedNewContent`. |
-| `encryptedNewContent` | object | Optional. The `roomcrypto.EncryptedMessage` (`{version, nonce, ciphertext}`) for encrypted channel rooms. Omitted otherwise. |
+| `encryptedNewContent` | [EncryptedMessage](#encryptedmessage) | Optional. For encrypted channel rooms. Omitted otherwise. |
 | `editedBy` | string | The sender's account. |
 | `editedAt` | string | RFC 3339 timestamp. Domain time of the edit. |
 | `updatedAt` | string | RFC 3339 timestamp. |
@@ -2207,7 +2214,7 @@ Not published when the request hits an already-pinned message (idempotent short-
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messagePinned.messageId` | string | The pinned message's ID. |
-| `messagePinned.pinnedBy` | object | `Participant` (`userId`, `account`) of the actor who pinned. |
+| `messagePinned.pinnedBy` | [Participant](#participant) | The actor who pinned (`userId`, `account`). |
 | `messagePinned.pinnedAt` | string | RFC 3339. Domain time of the pin. |
 
 ```json
@@ -2237,7 +2244,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 | `event` | string | Always `"pinned"`. |
 | `siteId` | string | The originating site. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
-| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. See [Message schema](#message-schema). |
+| `message` | [Message](#message-schema) | `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. |
 
 ```json
 {
@@ -2311,7 +2318,7 @@ Not published when the request hits an already-unpinned message (idempotent shor
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messageUnpinned.messageId` | string | The unpinned message's ID. |
-| `messageUnpinned.unpinnedBy` | object | `Participant` (`userId`, `account`) of the actor who unpinned. |
+| `messageUnpinned.unpinnedBy` | [Participant](#participant) | The actor who unpinned (`userId`, `account`). |
 | `messageUnpinned.unpinnedAt` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
@@ -2341,7 +2348,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 | `event` | string | Always `"unpinned"`. |
 | `siteId` | string | The originating site. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
-| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). See [Message schema](#message-schema). |
+| `message` | [Message](#message-schema) | `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). |
 
 ```json
 {
@@ -2492,7 +2499,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 | `messageId` | string | The reacted-to message's ID. |
 | `shortcode` | string | The bare reaction shortcode. |
 | `action` | string | `"added"` or `"removed"`. |
-| `actor` | object | The user whose toggle produced this event. Fields: `userId`, `account`, `siteId`, `engName`, `chineseName`. |
+| `actor` | [Participant](#participant) | The user whose toggle produced this event. |
 | `reactedAt` | string (RFC 3339) | Domain time of the toggle. |
 | `updatedAt` | string (RFC 3339) | Mirrors `reactedAt`. |
 
@@ -2522,9 +2529,17 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 |---|---|---|
 | `type` | string | Always `"reaction"`. |
 | `roomId` | string | The room containing the reacted-to message. |
-| `message` | object | The full reacted-to `Message` (same shape as the history [Message schema](#message-schema)). |
-| `reactionDelta` | object | `{ shortcode, action, actor }`. `action` is always `"added"` here (the notification only fires on add); `actor` is a `Participant` (`userId`, `account`, `siteId`, `engName`, `chineseName`). |
+| `message` | [Message](#message-schema) | The full reacted-to message. |
+| `reactionDelta` | [ReactionDelta](#reactiondelta) | The single-reaction delta that triggered the notification. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+
+###### ReactionDelta
+
+| Field | Type | Notes |
+|---|---|---|
+| `shortcode` | string | The emoji shortcode reacted with. |
+| `action` | string | Always `"added"` here (the notification only fires on add). |
+| `actor` | [Participant](#participant) | The user who reacted. |
 
 To reconcile this delta with the grouped per-message `reactions` map returned by history endpoints (`map<emoji, [{account, displayName}]>`), clients append or remove one entry under `reactions[shortcode]` keyed on `actor.account`. See the "Message schema" section for the history-side shape.
 
