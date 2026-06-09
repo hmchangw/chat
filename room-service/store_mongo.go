@@ -29,6 +29,7 @@ type MongoStore struct {
 	rooms               *mongo.Collection
 	subscriptions       *mongo.Collection
 	threadSubscriptions *mongo.Collection
+	threadRooms         *mongo.Collection
 	roomMembers         *mongo.Collection
 	users               *mongo.Collection
 	apps                *mongo.Collection
@@ -40,6 +41,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:               db.Collection("rooms"),
 		subscriptions:       db.Collection("subscriptions"),
 		threadSubscriptions: db.Collection("thread_subscriptions"),
+		threadRooms:         db.Collection("thread_rooms"),
 		roomMembers:         db.Collection("room_members"),
 		users:               db.Collection("users"),
 		apps:                db.Collection("apps"),
@@ -145,6 +147,13 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,userAccount) index: %w", err)
+	}
+	// Backs GetThreadUnreadSummary's $match {userAccount, siteId}. No existing
+	// thread_subscriptions index has userAccount as a prefix.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "userAccount", Value: 1}, {Key: "siteId", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (userAccount,siteId) index: %w", err)
 	}
 	if _, err := s.apps.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{
@@ -1523,4 +1532,72 @@ func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string)
 		return nil, fmt.Errorf("decode users: %w", err)
 	}
 	return users, nil
+}
+
+// GetThreadUnreadSummary rolls up a single user's thread unread state on this
+// site. Unread = subscribed AND threadRoom.lastMsgAt > lastSeenAt (nil lastSeenAt
+// = never seen = unread, via BSON null being the smallest value). The booleans
+// are an OR across the user's threads, expressed as $max over per-row booleans
+// (BSON orders false < true). lastMessageAt is the newest thread message time.
+func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID string) (*ThreadUnreadSummary, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"userAccount": account, "siteId": siteID}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from":         "thread_rooms",
+			"localField":   "threadRoomId",
+			"foreignField": "_id",
+			"as":           "tr",
+		}}},
+		{{Key: "$unwind", Value: "$tr"}},
+		{{Key: "$lookup", Value: bson.M{
+			"from":         "rooms",
+			"localField":   "roomId",
+			"foreignField": "_id",
+			"as":           "room",
+		}}},
+		{{Key: "$unwind", Value: bson.M{"path": "$room", "preserveNullAndEmptyArrays": true}}},
+		{{Key: "$addFields", Value: bson.M{
+			"isUnread": bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
+			"isDMUnread": bson.M{"$and": bson.A{
+				bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
+				bson.M{"$eq": bson.A{"$room.type", string(model.RoomTypeDM)}},
+			}},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":                 nil,
+			"unread":              bson.M{"$max": "$isUnread"},
+			"unreadDirectMessage": bson.M{"$max": "$isDMUnread"},
+			"unreadMention":       bson.M{"$max": "$hasMention"},
+			"lastMessageAt":       bson.M{"$max": "$tr.lastMsgAt"},
+		}}},
+	}
+
+	cursor, err := s.threadSubscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate thread unread summary: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, fmt.Errorf("iterate thread unread summary: %w", err)
+		}
+		return &ThreadUnreadSummary{}, nil
+	}
+
+	var result struct {
+		Unread              bool       `bson:"unread"`
+		UnreadDirectMessage bool       `bson:"unreadDirectMessage"`
+		UnreadMention       bool       `bson:"unreadMention"`
+		LastMessageAt       *time.Time `bson:"lastMessageAt"`
+	}
+	if err := cursor.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode thread unread summary: %w", err)
+	}
+	return &ThreadUnreadSummary{
+		Unread:              result.Unread,
+		UnreadDirectMessage: result.UnreadDirectMessage,
+		UnreadMention:       result.UnreadMention,
+		LastMessageAt:       result.LastMessageAt,
+	}, nil
 }
