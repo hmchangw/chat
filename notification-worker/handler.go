@@ -75,6 +75,13 @@ type Handler struct {
 	deps HandlerDeps
 }
 
+// isNotifiable reports whether a message type produces push notifications.
+// Safe-by-default allowlist: new system types never notify. "" is the only
+// regular type today; add tcard/tcard_execute/app_execute here as they land.
+func isNotifiable(msgType string) bool {
+	return msgType == ""
+}
+
 func NewHandler(deps HandlerDeps) *Handler { //nolint:gocritic // hugeParam: one-time constructor arg
 	if deps.LargeRoomThreshold <= 0 {
 		deps.LargeRoomThreshold = 500
@@ -102,12 +109,17 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 	}
 	msg := evt.Message
 
-	// Member-change sys-messages drive cache invalidation (Option C; safe because room-worker guards add/remove to channels).
-	if msg.Type != "" {
-		switch msg.Type {
-		case model.MessageTypeMembersAdded, model.MessageTypeMemberLeft, model.MessageTypeMemberRemoved:
-			h.deps.Members.Invalidate(ctx, msg.RoomID)
-		}
+	// Phase 1 — side effects: member-change sys-messages invalidate the member
+	// cache (Option C; safe because room-worker guards add/remove to channels).
+	switch msg.Type {
+	case model.MessageTypeMembersAdded, model.MessageTypeMemberLeft, model.MessageTypeMemberRemoved:
+		h.deps.Members.Invalidate(ctx, msg.RoomID)
+	}
+
+	// Phase 2 — notification gate: only regular types push; every system type
+	// (current and future) is non-notifying. See isNotifiable.
+	if !isNotifiable(msg.Type) {
+		return nil
 	}
 
 	members, err := h.deps.Members.GetMembers(ctx, msg.RoomID)
@@ -321,6 +333,7 @@ func (h *Handler) handleReaction(ctx context.Context, evt *model.MessageEvent) e
 			"messageID", evt.Message.ID,
 			"roomID", evt.Message.RoomID,
 			"siteID", evt.SiteID,
+			"request_id", natsutil.RequestIDFromContext(ctx),
 		)
 		return nil
 	}
