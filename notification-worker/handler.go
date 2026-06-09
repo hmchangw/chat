@@ -333,6 +333,7 @@ func (h *Handler) handleReaction(ctx context.Context, evt *model.MessageEvent) e
 			"messageID", evt.Message.ID,
 			"roomID", evt.Message.RoomID,
 			"siteID", evt.SiteID,
+			"request_id", natsutil.RequestIDFromContext(ctx),
 		)
 		return nil
 	}
