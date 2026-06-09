@@ -398,6 +398,27 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 		}, nil
 	}
 
+	// Reply delete: decrement the Mongo-sourced count and mirror it to the
+	// Cassandra parent row. Runs only on an applied delete (the SoftDeleteMessage
+	// `IF deleted != true` gate guarantees exactly-once), so no extra dedup is
+	// needed here.
+	if msg.ThreadParentID != "" && msg.ThreadRoomID != "" && msg.ThreadParentCreatedAt != nil {
+		newCount, applied, err := s.threadRooms.DecrementReplyCount(c, msg.ThreadRoomID)
+		if err != nil {
+			return nil, fmt.Errorf("decrement thread reply count for %s: %w", req.MessageID, err)
+		}
+		// Mirror only when the decrement actually applied. A no-op decrement
+		// (missing thread room, or a pre-replyCount thread whose count is
+		// absent/zero) must NOT stamp tcount=0 onto the parent — that would
+		// trip the tcount==0 short-circuit in GetThreadMessages and hide the
+		// parent's still-present replies.
+		if applied {
+			if err := s.msgWriter.UpdateParentTcount(c, msg.RoomID, msg.ThreadParentID, *msg.ThreadParentCreatedAt, newCount); err != nil {
+				return nil, fmt.Errorf("mirror parent tcount for %s: %w", req.MessageID, err)
+			}
+		}
+	}
+
 	deletedAtMs := actualDeletedAt.UnixMilli()
 
 	canonicalEvt := model.MessageEvent{

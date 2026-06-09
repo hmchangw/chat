@@ -2,6 +2,7 @@ package mongorepo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,4 +89,31 @@ func (r *ThreadRoomRepo) GetUnreadThreadRooms(ctx context.Context, roomID, accou
 		return mongoutil.OffsetPage[model.ThreadRoom]{}, fmt.Errorf("querying unread thread rooms: %w", err)
 	}
 	return page, nil
+}
+
+// DecrementReplyCount atomically decrements replyCount by 1, guarded by
+// replyCount > 0 so it never goes negative, and returns the new count with
+// applied=true. When no document matches the guard — a missing thread room, or
+// one whose replyCount is absent/zero (e.g. a thread created before replyCount
+// existed) — it is a no-op returning (0, false): the caller MUST then skip
+// mirroring, otherwise it would stamp a spurious tcount=0 onto a parent that
+// still has replies and hide them. Idempotency of the caller (one decrement per
+// delete) is guaranteed upstream by the SoftDeleteMessage `IF deleted != true` gate.
+func (r *ThreadRoomRepo) DecrementReplyCount(ctx context.Context, threadRoomID string) (int, bool, error) {
+	var updated model.ThreadRoom
+	err := r.threadRooms.Raw().FindOneAndUpdate(
+		ctx,
+		bson.M{"_id": threadRoomID, "replyCount": bson.M{"$gt": 0}},
+		bson.M{"$inc": bson.M{"replyCount": -1}},
+		// Only replyCount is read back; project it to avoid decoding the rest
+		// of the document (notably the bounded countedReplies array).
+		options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"replyCount": 1}),
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("decrement reply count for thread room %s: %w", threadRoomID, err)
+	}
+	return updated.ReplyCount, true, nil
 }

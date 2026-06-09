@@ -262,6 +262,20 @@ func (mr *MockMessageWriterMockRecorder) UpdateMessageContent(ctx, msg, newMsg, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateMessageContent", reflect.TypeOf((*MockMessageWriter)(nil).UpdateMessageContent), ctx, msg, newMsg, editedAt)
 }
 
+// UpdateParentTcount mocks base method.
+func (m *MockMessageWriter) UpdateParentTcount(ctx context.Context, roomID, parentID string, parentCreatedAt time.Time, count int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateParentTcount", ctx, roomID, parentID, parentCreatedAt, count)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateParentTcount indicates an expected call of UpdateParentTcount.
+func (mr *MockMessageWriterMockRecorder) UpdateParentTcount(ctx, roomID, parentID, parentCreatedAt, count any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateParentTcount", reflect.TypeOf((*MockMessageWriter)(nil).UpdateParentTcount), ctx, roomID, parentID, parentCreatedAt, count)
+}
+
 // MockMessageRepository is a mock of MessageRepository interface.
 type MockMessageRepository struct {
 	ctrl     *gomock.Controller
@@ -479,6 +493,20 @@ func (mr *MockMessageRepositoryMockRecorder) UpdateMessageContent(ctx, msg, newM
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateMessageContent", reflect.TypeOf((*MockMessageRepository)(nil).UpdateMessageContent), ctx, msg, newMsg, editedAt)
 }
 
+// UpdateParentTcount mocks base method.
+func (m *MockMessageRepository) UpdateParentTcount(ctx context.Context, roomID, parentID string, parentCreatedAt time.Time, count int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateParentTcount", ctx, roomID, parentID, parentCreatedAt, count)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateParentTcount indicates an expected call of UpdateParentTcount.
+func (mr *MockMessageRepositoryMockRecorder) UpdateParentTcount(ctx, roomID, parentID, parentCreatedAt, count any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateParentTcount", reflect.TypeOf((*MockMessageRepository)(nil).UpdateParentTcount), ctx, roomID, parentID, parentCreatedAt, count)
+}
+
 // MockSubscriptionRepository is a mock of SubscriptionRepository interface.
 type MockSubscriptionRepository struct {
 	ctrl     *gomock.Controller
@@ -664,6 +692,22 @@ func NewMockThreadRoomRepository(ctrl *gomock.Controller) *MockThreadRoomReposit
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockThreadRoomRepository) EXPECT() *MockThreadRoomRepositoryMockRecorder {
 	return m.recorder
+}
+
+// DecrementReplyCount mocks base method.
+func (m *MockThreadRoomRepository) DecrementReplyCount(ctx context.Context, threadRoomID string) (int, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DecrementReplyCount", ctx, threadRoomID)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// DecrementReplyCount indicates an expected call of DecrementReplyCount.
+func (mr *MockThreadRoomRepositoryMockRecorder) DecrementReplyCount(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DecrementReplyCount", reflect.TypeOf((*MockThreadRoomRepository)(nil).DecrementReplyCount), ctx, threadRoomID)
 }
 
 // GetFollowingThreadRooms mocks base method.

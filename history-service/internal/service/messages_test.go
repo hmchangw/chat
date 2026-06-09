@@ -1471,6 +1471,136 @@ func TestHistoryService_DeleteMessage_PassesDedupMessageID(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestHistoryService_DeleteMessage_ReplyDecrementsThreadCount(t *testing.T) {
+	svc, msgs, subs, pub, threadRooms := newService(t)
+	c := testContext()
+
+	parentCreatedAt := time.Now().UTC()
+	reply := &models.Message{
+		MessageID: "m-reply", RoomID: "r1", CreatedAt: time.Now().UTC(),
+		Sender:                models.Participant{ID: "u1-id", Account: "u1"},
+		ThreadParentID:        "m-parent",
+		ThreadRoomID:          "tr-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-reply").Return(reply, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), reply, gomock.Any()).
+		Return(time.Now().UTC(), true, nil)
+
+	threadRooms.EXPECT().DecrementReplyCount(gomock.Any(), "tr-1").Return(4, true, nil)
+	msgs.EXPECT().UpdateParentTcount(gomock.Any(), "r1", "m-parent", parentCreatedAt, 4).Return(nil)
+	pub.EXPECT().Publish(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := svc.DeleteMessage(c, "site-a", models.DeleteMessageRequest{MessageID: "m-reply"})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_DeleteMessage_NonReplyDoesNotDecrementThreadCount(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	topLevel := &models.Message{
+		MessageID: "m-top",
+		RoomID:    "r1",
+		CreatedAt: time.Now().UTC(),
+		Sender:    models.Participant{ID: "u1-id", Account: "u1"},
+		// ThreadParentID == "" — not a thread reply
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-top").Return(topLevel, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), topLevel, gomock.Any()).
+		Return(time.Now().UTC(), true, nil)
+	// No DecrementReplyCount or UpdateParentTcount expected — gomock will fail if called.
+	pub.EXPECT().Publish(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := svc.DeleteMessage(c, "site-a", models.DeleteMessageRequest{MessageID: "m-top"})
+	require.NoError(t, err)
+}
+
+func TestHistoryService_DeleteMessage_DecrementReplyCountError(t *testing.T) {
+	svc, msgs, subs, _, threadRooms := newService(t)
+	c := testContext()
+
+	parentCreatedAt := time.Now().UTC()
+	reply := &models.Message{
+		MessageID: "m-reply", RoomID: "r1", CreatedAt: time.Now().UTC(),
+		Sender:                models.Participant{ID: "u1-id", Account: "u1"},
+		ThreadParentID:        "m-parent",
+		ThreadRoomID:          "tr-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-reply").Return(reply, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), reply, gomock.Any()).
+		Return(time.Now().UTC(), true, nil)
+
+	threadRooms.EXPECT().DecrementReplyCount(gomock.Any(), "tr-1").Return(0, false, errors.New("mongo down"))
+	// UpdateParentTcount must NOT be called when DecrementReplyCount fails.
+
+	resp, err := svc.DeleteMessage(c, "site-a", models.DeleteMessageRequest{MessageID: "m-reply"})
+	assert.Nil(t, resp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decrement thread reply count")
+}
+
+func TestHistoryService_DeleteMessage_UpdateParentTcountError(t *testing.T) {
+	svc, msgs, subs, pub, threadRooms := newService(t)
+	c := testContext()
+
+	parentCreatedAt := time.Now().UTC()
+	reply := &models.Message{
+		MessageID: "m-reply", RoomID: "r1", CreatedAt: time.Now().UTC(),
+		Sender:                models.Participant{ID: "u1-id", Account: "u1"},
+		ThreadParentID:        "m-parent",
+		ThreadRoomID:          "tr-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-reply").Return(reply, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), reply, gomock.Any()).
+		Return(time.Now().UTC(), true, nil)
+
+	threadRooms.EXPECT().DecrementReplyCount(gomock.Any(), "tr-1").Return(4, true, nil)
+	msgs.EXPECT().UpdateParentTcount(gomock.Any(), "r1", "m-parent", parentCreatedAt, 4).
+		Return(errors.New("cassandra down"))
+	// The error returns before the canonical delete publish, so it must never fire.
+	pub.EXPECT().Publish(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(0)
+
+	resp, err := svc.DeleteMessage(c, "site-a", models.DeleteMessageRequest{MessageID: "m-reply"})
+	assert.Nil(t, resp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mirror parent tcount")
+}
+
+// A no-op decrement (missing thread room, or a thread created before replyCount
+// existed) must skip the Cassandra mirror — otherwise it stamps tcount=0 and the
+// GetThreadMessages short-circuit hides the parent's still-present replies.
+func TestHistoryService_DeleteMessage_DecrementNoOpSkipsMirror(t *testing.T) {
+	svc, msgs, subs, pub, threadRooms := newService(t)
+	c := testContext()
+
+	parentCreatedAt := time.Now().UTC()
+	reply := &models.Message{
+		MessageID: "m-reply", RoomID: "r1", CreatedAt: time.Now().UTC(),
+		Sender:                models.Participant{ID: "u1-id", Account: "u1"},
+		ThreadParentID:        "m-parent",
+		ThreadRoomID:          "tr-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-reply").Return(reply, nil)
+	msgs.EXPECT().SoftDeleteMessage(gomock.Any(), reply, gomock.Any()).
+		Return(time.Now().UTC(), true, nil)
+
+	threadRooms.EXPECT().DecrementReplyCount(gomock.Any(), "tr-1").Return(0, false, nil)
+	// No UpdateParentTcount expectation — gomock fails if it is called.
+	pub.EXPECT().Publish(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := svc.DeleteMessage(c, "site-a", models.DeleteMessageRequest{MessageID: "m-reply"})
+	require.NoError(t, err)
+}
+
 // ============================================================
 // Quote redaction
 // ============================================================

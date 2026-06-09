@@ -9,10 +9,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 func insertThreadRoom(t *testing.T, db *mongo.Database, tr model.ThreadRoom) {
@@ -141,4 +143,50 @@ func TestThreadRoomRepo_GetUnreadThreadRooms(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), pageNone.Total)
 	assert.Empty(t, pageNone.Data)
+}
+
+func TestThreadRoomRepo_DecrementReplyCount(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "history_threadroom")
+	repo := NewThreadRoomRepo(db)
+
+	_, err := db.Collection("thread_rooms").InsertOne(ctx, model.ThreadRoom{
+		ID: "tr-dec", ParentMessageID: "m-p", RoomID: "r-1", SiteID: "site-a",
+		ReplyCount: 2, CountedReplies: []string{"m-1", "m-2"},
+	})
+	require.NoError(t, err)
+
+	n, applied, err := repo.DecrementReplyCount(ctx, "tr-dec")
+	require.NoError(t, err)
+	assert.True(t, applied)
+	assert.Equal(t, 1, n)
+
+	n, applied, err = repo.DecrementReplyCount(ctx, "tr-dec")
+	require.NoError(t, err)
+	assert.True(t, applied)
+	assert.Equal(t, 0, n)
+
+	// At zero: guarded — no-op, applied=false so the caller skips the mirror.
+	n, applied, err = repo.DecrementReplyCount(ctx, "tr-dec")
+	require.NoError(t, err)
+	assert.False(t, applied)
+	assert.Equal(t, 0, n)
+
+	// Missing thread room: no-op, applied=false.
+	n, applied, err = repo.DecrementReplyCount(ctx, "tr-missing")
+	require.NoError(t, err)
+	assert.False(t, applied)
+	assert.Equal(t, 0, n)
+
+	// Pre-replyCount thread (field absent → decodes as 0): the $gt:0 guard does
+	// not match, so it is a no-op with applied=false. This is the key case — the
+	// caller must NOT mirror tcount=0 onto a parent that still has replies.
+	_, err = db.Collection("thread_rooms").InsertOne(ctx, bson.M{
+		"_id": "tr-legacy", "parentMessageId": "m-legacy", "roomId": "r-1", "siteId": "site-a",
+	})
+	require.NoError(t, err)
+	n, applied, err = repo.DecrementReplyCount(ctx, "tr-legacy")
+	require.NoError(t, err)
+	assert.False(t, applied)
+	assert.Equal(t, 0, n)
 }

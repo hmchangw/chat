@@ -102,8 +102,8 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// Cassandra round-trip. tcount == nil means the column was never written:
 	// commonly a brand-new parent with no replies yet, but also briefly true
 	// between a successful SaveThreadMessage INSERT and the follow-up
-	// incrementParentTcount LWT. Fall through to Cassandra in the nil case so
-	// the optimisation can't hide replies during that window.
+	// UpdateParentTcount mirror write. Fall through to Cassandra in the nil case
+	// so the optimisation can't hide replies during that window.
 	if msg.TCount != nil && *msg.TCount == 0 {
 		return emptyThreadResponse(), nil
 	}

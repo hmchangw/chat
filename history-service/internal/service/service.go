@@ -35,6 +35,10 @@ type MessageWriter interface {
 	// Returns the updated_at value now persisted (the deletedAt argument when
 	// applied; the existing value when a concurrent delete won the race).
 	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, err error)
+	// UpdateParentTcount mirrors the authoritative reply count (sourced from
+	// MongoDB) onto the parent message row in both Cassandra tables with plain
+	// (non-LWT) UPDATEs. Called by the service layer after a Mongo decrement.
+	UpdateParentTcount(ctx context.Context, roomID, parentID string, parentCreatedAt time.Time, count int) error
 	PinMessage(ctx context.Context, msg *models.Message, pinnedAt time.Time, pinnedBy models.Participant) error
 	UnpinMessage(ctx context.Context, msg *models.Message) error
 }
@@ -70,6 +74,11 @@ type ThreadRoomRepository interface {
 	GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 	GetFollowingThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
+	// DecrementReplyCount atomically decrements replyCount by 1, guarded by
+	// replyCount > 0, returning (newCount, applied). A no-op (missing thread
+	// room, or absent/zero replyCount) returns (0, false) and the caller must
+	// skip mirroring so it can't stamp a spurious tcount=0 onto the parent.
+	DecrementReplyCount(ctx context.Context, threadRoomID string) (int, bool, error)
 }
 
 // HistoryService handles message history queries and mutations. Transport-agnostic.
@@ -135,3 +144,4 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 var _ MessageRepository = (*cassrepo.Repository)(nil)
 var _ SubscriptionRepository = (*mongorepo.SubscriptionRepo)(nil)
 var _ RoomRepository = (*mongorepo.RoomRepo)(nil)
+var _ ThreadRoomRepository = (*mongorepo.ThreadRoomRepo)(nil)

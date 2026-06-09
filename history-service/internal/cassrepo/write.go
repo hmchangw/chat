@@ -19,9 +19,6 @@ import (
 // is the only safe primitive when correctness depends on the row's
 // current state (e.g. "edit only if not soft-deleted"). The `applied`
 // boolean returned by gocql tells you whether the `IF` predicate held.
-//
-// casMaxRetries bounds the CAS loop; 16 retries cover realistic burst concurrency.
-const casMaxRetries = 16
 
 const (
 	// Plaintext-path edits. enc_payload/enc_meta are nulled to keep a
@@ -71,31 +68,6 @@ const (
 	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?"
 	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?"
 )
-
-// casDecrement atomically decrements a nullable INT toward zero (clamping at zero); mirrors message-worker/store_cassandra.go casIncrement.
-// When initial is nil the column was never written and the function returns immediately — no LWT is issued and no zero is materialised.
-func casDecrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
-	if initial == nil {
-		// tcount was never written — nothing to decrement; skip to avoid materialising a zero on a null column.
-		return nil
-	}
-	tcount := initial
-	for range maxRetries {
-		newVal := 0
-		if tcount != nil && *tcount > 0 {
-			newVal = *tcount - 1
-		}
-		applied, current, err := update(newVal, tcount)
-		if err != nil {
-			return err
-		}
-		if applied {
-			return nil
-		}
-		tcount = current
-	}
-	return fmt.Errorf("cas decrement exceeded %d retries", maxRetries)
-}
 
 // editPayload is the shared, pre-prepared edit payload passed to each
 // per-table UPDATE. It carries either the new plaintext body (cipher
@@ -350,65 +322,42 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		}
 	}
 
-	if msg.ThreadParentID != "" {
-		if err := r.decrementParentTcount(ctx, msg); err != nil {
-			return time.Time{}, false, fmt.Errorf("decrement parent tcount for message %s: %w", msg.MessageID, err)
-		}
-	}
-
 	return deletedAt, true, nil
 }
 
-// decrementParentTcount silently skips if ThreadParentCreatedAt is nil or if the parent row is missing.
-func (r *Repository) decrementParentTcount(ctx context.Context, msg *models.Message) error {
-	if msg.ThreadParentCreatedAt == nil {
-		return nil
-	}
-	parentID := msg.ThreadParentID
-	parentCreatedAt := *msg.ThreadParentCreatedAt
-
-	// CAS decrement on messages_by_id.
-	var tcount *int
+// UpdateParentTcount mirrors the authoritative reply count (sourced from
+// MongoDB) onto the parent message row in both Cassandra tables with plain
+// (non-LWT) UPDATEs. Called by the service layer after a Mongo decrement.
+//
+// A Cassandra UPDATE is an upsert, so writing to a parent that doesn't exist
+// would materialize a partial ghost row (PK + tcount only). The parent can
+// legitimately be absent here — e.g. a reply whose parent was never persisted
+// to Cassandra but was still counted in MongoDB — so we verify the canonical
+// row exists first and skip the mirror silently when it doesn't.
+func (r *Repository) UpdateParentTcount(ctx context.Context, roomID, parentID string, parentCreatedAt time.Time, count int) error {
+	var existing string
 	if err := r.session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		`SELECT message_id FROM messages_by_id WHERE message_id = ? AND created_at = ? LIMIT 1`,
 		parentID, parentCreatedAt,
-	).WithContext(ctx).Scan(&tcount); err != nil {
+	).WithContext(ctx).Scan(&existing); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil
 		}
-		return fmt.Errorf("read tcount for parent %s in messages_by_id: %w", parentID, err)
-	}
-	if err := casDecrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
-		var current *int
-		applied, err := r.session.Query(
-			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
-			newVal, parentID, parentCreatedAt, expected,
-		).WithContext(ctx).ScanCAS(&current)
-		return applied, current, err
-	}); err != nil {
-		return fmt.Errorf("cas tcount decrement in messages_by_id for parent %s: %w", parentID, err)
+		return fmt.Errorf("check parent %s exists before tcount mirror: %w", parentID, err)
 	}
 
-	// CAS decrement on messages_by_room.
 	parentBucket := r.bucket.Of(parentCreatedAt)
-	if err := r.session.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		msg.RoomID, parentBucket, parentCreatedAt, parentID,
-	).WithContext(ctx).Scan(&tcount); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read tcount for parent %s in messages_by_room: %w", parentID, err)
-	}
-	if err := casDecrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
-		var current *int
-		applied, err := r.session.Query(
-			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentBucket, parentCreatedAt, parentID, expected,
-		).WithContext(ctx).ScanCAS(&current)
-		return applied, current, err
-	}); err != nil {
-		return fmt.Errorf("cas tcount decrement in messages_by_room for parent %s: %w", parentID, err)
+	batch := r.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+	batch.Query(
+		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
+		count, parentID, parentCreatedAt,
+	)
+	batch.Query(
+		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		count, roomID, parentBucket, parentCreatedAt, parentID,
+	)
+	if err := r.session.ExecuteBatch(batch); err != nil {
+		return fmt.Errorf("update parent tcount for %s in room %s: %w", parentID, roomID, err)
 	}
 	return nil
 }

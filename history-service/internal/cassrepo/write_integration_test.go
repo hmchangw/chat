@@ -324,13 +324,9 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	).Scan(&replyInRoom))
 	assert.Equal(t, 0, replyInRoom, "thread-reply soft-delete must not write to messages_by_room")
 
-	// Parent's tcount should have been decremented from 1 to 0 — see Task 7.
-	var gotTcount int
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
-	).Scan(&gotTcount))
-	assert.Equal(t, 0, gotTcount, "tcount should be decremented on thread-reply soft-delete")
+	// tcount on the parent is NOT modified by SoftDeleteMessage now that the
+	// decrement is orchestrated in the service layer (UpdateParentTcount). This
+	// keeps cassrepo Mongo-free.
 }
 
 func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
@@ -393,66 +389,43 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 	assert.True(t, gotDeleted, "pinned_messages_by_room should be deleted")
 }
 
-func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
-	session := setupCassandra(t)
-	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
+func TestRepository_UpdateParentTcount(t *testing.T) {
 	ctx := context.Background()
+	session := setupCassandra(t)
+	bucket := msgbucket.New(24 * time.Hour)
+	repo := NewRepository(session, bucket, 365, nil)
 
-	sender := models.Participant{ID: "u1", Account: "alice"}
-	roomID := "room-tcount"
-	threadRoomID := "thread-tcount"
-	parentID := "m-tcount-parent"
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
-	replyID := "m-tcount-reply"
-	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
-
-	// Parent has tcount = 3 (three replies, of which we're about to delete one).
+	parentBucket := bucket.Of(parentCreatedAt)
 	require.NoError(t, session.Query(
-		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		parentID, roomID, parentCreatedAt, sender, "parent", "", 3, false,
-	).Exec())
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, site_id, tcount) VALUES (?, ?, ?, ?, ?, ?)`,
+		"r-1", parentBucket, parentCreatedAt, "m-parent", "site-a", 3).WithContext(ctx).Exec())
 	require.NoError(t, session.Query(
-		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID, sender, "parent", "", 3, false,
-	).Exec())
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, site_id, tcount) VALUES (?, ?, ?, ?, ?)`,
+		"m-parent", parentCreatedAt, "r-1", "site-a", 3).WithContext(ctx).Exec())
 
-	// Seed the reply we're deleting.
-	require.NoError(t, session.Query(
-		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		replyID, roomID, replyCreatedAt, sender, "reply", parentID, parentCreatedAt, threadRoomID, false,
-	).Exec())
-	require.NoError(t, session.Query(
-		`INSERT INTO thread_messages_by_thread (thread_room_id, created_at, message_id, room_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		threadRoomID, replyCreatedAt, replyID, roomID, sender, "reply", parentID, false,
-	).Exec())
+	require.NoError(t, repo.UpdateParentTcount(ctx, "r-1", "m-parent", parentCreatedAt, 2))
 
-	parentCreatedAtPtr := parentCreatedAt
-	msg := &models.Message{
-		MessageID:             replyID,
-		RoomID:                roomID,
-		CreatedAt:             replyCreatedAt,
-		Sender:                sender,
-		ThreadParentID:        parentID,
-		ThreadParentCreatedAt: &parentCreatedAtPtr,
-		ThreadRoomID:          threadRoomID,
-	}
-	_, applied, err := repo.SoftDeleteMessage(ctx, msg, replyCreatedAt.Add(time.Minute))
-	require.NoError(t, err)
-	require.True(t, applied, "first delete should apply")
-
-	// Both tables' tcount should now be 2.
-	var gotTcount int
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
-	).Scan(&gotTcount))
-	assert.Equal(t, 2, gotTcount, "messages_by_id.tcount should decrement 3 -> 2")
-
+	var byRoom, byID *int
 	require.NoError(t, session.Query(
 		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
-	).Scan(&gotTcount))
-	assert.Equal(t, 2, gotTcount, "messages_by_room.tcount should decrement 3 -> 2")
+		"r-1", parentBucket, parentCreatedAt, "m-parent").WithContext(ctx).Scan(&byRoom))
+	require.NoError(t, session.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		"m-parent", parentCreatedAt).WithContext(ctx).Scan(&byID))
+	assert.Equal(t, 2, *byRoom)
+	assert.Equal(t, 2, *byID)
+
+	// Absent parent: the existence gate must skip the mirror so no ghost row
+	// is upserted into messages_by_room (UPDATE is an upsert in Cassandra).
+	missingCreatedAt := parentCreatedAt.Add(time.Hour)
+	missingBucket := bucket.Of(missingCreatedAt)
+	require.NoError(t, repo.UpdateParentTcount(ctx, "r-1", "m-missing", missingCreatedAt, 7))
+	var ghost *int
+	err := session.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		"r-1", missingBucket, missingCreatedAt, "m-missing").WithContext(ctx).Scan(&ghost)
+	assert.ErrorIs(t, err, gocql.ErrNotFound, "no ghost row should be materialized for an absent parent")
 }
 
 func TestRepository_SoftDeleteMessage_TopLevelDoesNotTouchTcount(t *testing.T) {
@@ -563,32 +536,23 @@ func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testin
 	assert.Nil(t, gotUpdatedAt, "updated_at must remain nil on validation failure")
 }
 
-// TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement covers the
+// TestRepository_SoftDeleteMessage_LWTGatesDoubleApply covers the
 // concurrent-delete race: a thread reply that's already been soft-deleted
-// must not have its parent's tcount decremented again on a second delete.
-// This is the load-bearing test for the IF deleted != true CAS gate.
-func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
+// must return applied=false on a second delete attempt. This preserves
+// the IF deleted != true CAS gate so the service-layer orchestration
+// (DecrementReplyCount + UpdateParentTcount) is skipped on duplicates.
+func TestRepository_SoftDeleteMessage_LWTGatesDoubleApply(t *testing.T) {
 	session := setupCassandra(t)
 	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	ctx := context.Background()
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
-	roomID := "room-lwt"
-	threadRoomID := "thread-lwt-1"
-	parentID := "m-lwt-parent"
+	roomID := "room-lwt2"
+	threadRoomID := "thread-lwt-2"
+	parentID := "m-lwt2-parent"
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
-	replyID := "m-lwt-reply"
+	replyID := "m-lwt2-reply"
 	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
-
-	// Seed parent with tcount = 1 (one reply).
-	require.NoError(t, session.Query(
-		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		parentID, roomID, parentCreatedAt, sender, "parent", "", false, 1,
-	).Exec())
-	require.NoError(t, session.Query(
-		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, sender, msg, thread_parent_id, deleted, tcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID, sender, "parent", "", false, 1,
-	).Exec())
 
 	// Seed the reply in both messages_by_id and thread_messages_by_thread.
 	// Note: message-worker doesn't write `deleted` at INSERT time, so deleted
@@ -621,41 +585,13 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 	require.True(t, applied1, "first delete must apply (deleted was NULL)")
 	assert.Equal(t, firstAt.UnixMilli(), gotAt1.UnixMilli())
 
-	// Confirm tcount went 1 -> 0 on both parent rows.
-	var tcount int
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
-	).Scan(&tcount))
-	assert.Equal(t, 0, tcount, "first delete should have decremented messages_by_id.tcount")
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
-	).Scan(&tcount))
-	assert.Equal(t, 0, tcount, "first delete should have decremented messages_by_room.tcount")
-
 	// Second delete on the same reply: LWT must NOT apply (deleted is now
-	// true), and tcount must NOT be decremented a second time. Pass the same
-	// hydrated msg (Deleted=false) to simulate a stale read; the repo's CAS
-	// is authoritative.
+	// true). The service-layer decrement is therefore skipped (applied=false).
 	secondAt := firstAt.Add(time.Second)
 	gotAt2, applied2, err := repo.SoftDeleteMessage(ctx, msg, secondAt)
 	require.NoError(t, err)
 	require.False(t, applied2, "second delete must NOT apply — deleted is already true")
 	assert.Equal(t, firstAt.UnixMilli(), gotAt2.UnixMilli(), "actualDeletedAt should reflect the winning goroutine's timestamp")
-
-	// tcount must still be 0 (not -1 / not double-decremented). casDecrement
-	// also clamps at zero, but the LWT gate is the proper defense.
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
-	).Scan(&tcount))
-	assert.Equal(t, 0, tcount, "second delete must not double-decrement messages_by_id.tcount")
-	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
-	).Scan(&tcount))
-	assert.Equal(t, 0, tcount, "second delete must not double-decrement messages_by_room.tcount")
 }
 
 // TestRepository_UpdateMessageContent_RoundTrip verifies that after editing a
