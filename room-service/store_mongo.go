@@ -1543,8 +1543,12 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 			}},
 		}}},
 		{{Key: "$group", Value: bson.M{
-			"_id":                 nil,
-			"unread":              bson.M{"$max": "$isUnread"},
+			"_id":    nil,
+			"unread": bson.M{"$max": "$isUnread"},
+			// unreadMention is not conditioned on isUnread: UpdateThreadSubscriptionRead
+			// always clears hasMention to false, so a true value implies the thread is
+			// still unread. inbox-worker's $max-merge can re-set it on a late federated
+			// mention event after a local read — intentional, pre-existing behavior.
 			"unreadDirectMessage": bson.M{"$max": "$isDMUnread"},
 			"unreadMention":       bson.M{"$max": "$hasMention"},
 			"lastMessageAt":       bson.M{"$max": "$tr.lastMsgAt"},
