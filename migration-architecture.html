@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tchat 2.0 → NextGen Migration Architecture</title>
+  <style>
+    :root {
+      --bg:          #0d1117;
+      --surface:     #161b22;
+      --surface2:    #1c2128;
+      --border:      #30363d;
+      --text:        #e6edf3;
+      --muted:       #8b949e;
+
+      --p1:          #1f6feb;
+      --p1-light:    #79b8ff;
+      --p1-bg:       #0c1f3d;
+      --p1-border:   #1f6feb;
+
+      --p2:          #d29922;
+      --p2-light:    #ffdf5d;
+      --p2-bg:       #2d2008;
+      --p2-border:   #d29922;
+
+      --p3:          #238636;
+      --p3-light:    #56d364;
+      --p3-bg:       #0a2010;
+      --p3-border:   #238636;
+
+      --src:         #8957e5;
+      --src-bg:      #1a0f36;
+      --tgt:         #e85151;
+      --tgt-bg:      #2d1010;
+      --infra:       #0891b2;
+      --infra-bg:    #071e2b;
+
+      --recon:       #d08020;
+      --recon-bg:    #2a1c08;
+      --cut:         #3fb950;
+      --cut-bg:      #0a2010;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 28px 32px;
+      min-width: 1200px;
+    }
+
+    /* ── HEADER ────────────────────────────────── */
+    .page-header {
+      text-align: center;
+      padding: 22px 32px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 22px;
+    }
+    .page-header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .page-header .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+    .page-header .badges {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      padding: 3px 12px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge-blue   { background: rgba(31,111,235,0.2);  color: var(--p1-light); border: 1px solid rgba(31,111,235,0.4); }
+    .badge-yellow { background: rgba(210,153,34,0.2);  color: var(--p2-light); border: 1px solid rgba(210,153,34,0.4); }
+    .badge-green  { background: rgba(35,134,54,0.2);   color: var(--p3-light); border: 1px solid rgba(35,134,54,0.4);  }
+    .badge-gray   { background: rgba(139,148,158,0.1); color: var(--muted);    border: 1px solid rgba(139,148,158,0.3); }
+
+    /* ── SYSTEMS ROW ───────────────────────────── */
+    .systems-row {
+      display: grid;
+      grid-template-columns: 1fr 60px 1.6fr 60px 1fr;
+      align-items: center;
+      margin-bottom: 20px;
+      gap: 0;
+    }
+    .sys-box {
+      border-radius: 8px;
+      padding: 16px 18px;
+      border: 1px solid;
+    }
+    .sys-source { background: var(--src-bg);   border-color: var(--src); }
+    .sys-infra  { background: var(--infra-bg); border-color: var(--infra); }
+    .sys-target { background: var(--tgt-bg);   border-color: var(--tgt); }
+
+    .sys-box .sys-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 10px;
+    }
+    .sys-source .sys-title { color: var(--src);   }
+    .sys-infra  .sys-title { color: var(--infra); }
+    .sys-target .sys-title { color: var(--tgt);   }
+
+    .sys-items {
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .sys-item {
+      font-size: 12px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 4px;
+      padding: 3px 9px;
+      color: var(--muted);
+    }
+
+    .flow-arrow {
+      text-align: center;
+      font-size: 26px;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    /* ── PHASE LABEL ROW ───────────────────────── */
+    .phases-label-row {
+      display: grid;
+      grid-template-columns: 1fr 48px 1fr 48px 1fr;
+      gap: 0;
+      margin-bottom: 6px;
+      padding: 0 2px;
+    }
+    .phase-label {
+      text-align: center;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+    .phase-label.p1 { color: var(--p1-light); }
+    .phase-label.p2 { color: var(--p2-light); }
+    .phase-label.p3 { color: var(--p3-light); }
+
+    /* ── PHASES ROW ────────────────────────────── */
+    .phases-row {
+      display: grid;
+      grid-template-columns: 1fr 48px 1fr 48px 1fr;
+      align-items: stretch;
+      gap: 0;
+      margin-bottom: 20px;
+    }
+    .phase-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      color: var(--border);
+    }
+
+    .phase {
+      border-radius: 10px;
+      border: 1px solid;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .ph1 { background: var(--p1-bg); border-color: var(--p1-border); }
+    .ph2 { background: var(--p2-bg); border-color: var(--p2-border); }
+    .ph3 { background: var(--p3-bg); border-color: var(--p3-border); }
+
+    .phase-head {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      padding-bottom: 12px;
+    }
+    .phase-num {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      margin-bottom: 8px;
+    }
+    .ph1 .phase-num { background: var(--p1);  color: #fff;     }
+    .ph2 .phase-num { background: var(--p2);  color: #0d1117;  }
+    .ph3 .phase-num { background: var(--p3);  color: #fff;     }
+
+    .phase-name {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .ph1 .phase-name { color: var(--p1-light); }
+    .ph2 .phase-name { color: var(--p2-light); }
+    .ph3 .phase-name { color: var(--p3-light); }
+
+    .phase-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* Steps */
+    .steps { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+
+    .step {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .step-n {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ph1 .step-n { background: var(--p1); color: #fff;    }
+    .ph2 .step-n { background: var(--p2); color: #0d1117; }
+    .ph3 .step-n { background: var(--p3); color: #fff;    }
+
+    .step-body { flex: 1; }
+    .step-title { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3; }
+    .step-desc  { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+
+    .callout {
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-top: 6px;
+    }
+    .ph1 .callout { background: rgba(31,111,235,0.1);  border-left: 2px solid var(--p1); color: #aac8ff; }
+    .ph2 .callout { background: rgba(210,153,34,0.1);  border-left: 2px solid var(--p2); color: #f5d47a; }
+    .ph3 .callout { background: rgba(35,134,54,0.1);   border-left: 2px solid var(--p3); color: #88e899; }
+
+    /* ── BOTTOM ROW ────────────────────────────── */
+    .bottom-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .bottom-box {
+      border-radius: 10px;
+      padding: 20px;
+      border: 1px solid;
+    }
+    .b-recon { background: var(--recon-bg); border-color: var(--recon); }
+    .b-cut   { background: var(--cut-bg);   border-color: var(--cut);   }
+
+    .bottom-box h3 {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 14px;
+    }
+    .b-recon h3 { color: #f0a840; }
+    .b-cut   h3 { color: var(--cut); }
+
+    .check-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .check-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+    .check-icon {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      margin-top: 1px;
+    }
+    .b-recon .check-icon { background: rgba(210,153,34,0.2); color: #f0a840; }
+    .b-cut   .check-icon { background: rgba(63,185,80,0.2);  color: var(--cut); }
+
+    .check-label  { font-size: 13px; font-weight: 600; line-height: 1.3; }
+    .check-detail { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+    /* ── EFFORT TABLE ──────────────────────────── */
+    .effort-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .effort-section h3 {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(48,54,61,0.5);
+      color: var(--text);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; font-weight: 700; border-top: 1px solid var(--border); }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .t-par  { background: rgba(31,111,235,0.15);  color: var(--p1-light); }
+    .t-seq  { background: rgba(210,153,34,0.15);  color: var(--p2-light); }
+    .t-crit { background: rgba(232,81,81,0.15);   color: #ff8080;         }
+    .t-gray { background: rgba(139,148,158,0.1);  color: var(--muted);    }
+
+    /* ── FOOTER ────────────────────────────────── */
+    .footer {
+      text-align: center;
+      margin-top: 18px;
+      font-size: 11px;
+      color: rgba(139,148,158,0.5);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── HEADER ─────────────────────────────────────────────── -->
+<div class="page-header">
+  <h1>tchat 2.0 → NextGen Chat System &nbsp;·&nbsp; One-Time Batch Migration</h1>
+  <div class="sub">Apache Airflow Orchestrated &nbsp;·&nbsp; Three-Phase Architecture &nbsp;·&nbsp; Multi-Site Federated</div>
+  <div class="badges">
+    <span class="badge badge-blue">Phase 1: Metadata &nbsp;2–3 wks</span>
+    <span class="badge badge-yellow">Phase 2: Cross-Site Sync &nbsp;1 wk</span>
+    <span class="badge badge-green">Phase 3: Messages &nbsp;3–4 wks</span>
+    <span class="badge badge-gray">Total ~12–13 weeks</span>
+  </div>
+</div>
+
+<!-- ─── SYSTEMS ROW ────────────────────────────────────────── -->
+<div class="systems-row">
+  <div class="sys-box sys-source">
+    <div class="sys-title">Source &nbsp;· &nbsp;tchat 2.0 MongoDB</div>
+    <ul class="sys-items">
+      <li class="sys-item">users (HR data)</li>
+      <li class="sys-item">rooms</li>
+      <li class="sys-item">members</li>
+      <li class="sys-item">subscriptions</li>
+      <li class="sys-item">messages (75M+)</li>
+    </ul>
+  </div>
+
+  <div class="flow-arrow">⟶</div>
+
+  <div class="sys-box sys-infra">
+    <div class="sys-title">Migration Infrastructure &nbsp;·&nbsp; Apache Airflow</div>
+    <ul class="sys-items">
+      <li class="sys-item">Master DAG</li>
+      <li class="sys-item">Per-Site DAGs</li>
+      <li class="sys-item">Checkpoint Store</li>
+      <li class="sys-item">Quarantine Store</li>
+      <li class="sys-item">Thread Derivation Staging</li>
+      <li class="sys-item">Schema Mapping Spec</li>
+      <li class="sys-item">Alerting + Dashboards</li>
+    </ul>
+  </div>
+
+  <div class="flow-arrow">⟶</div>
+
+  <div class="sys-box sys-target">
+    <div class="sys-title">Target &nbsp;·&nbsp; NextGen Systems</div>
+    <ul class="sys-items">
+      <li class="sys-item">NextGen MongoDB</li>
+      <li class="sys-item">Cassandra</li>
+      <li class="sys-item">Elasticsearch</li>
+      <li class="sys-item">Multi-Site</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ─── PHASE LABELS ──────────────────────────────────────── -->
+<div class="phases-label-row">
+  <div class="phase-label p1">▶ Runs parallel across all sites</div>
+  <div></div>
+  <div class="phase-label p2">▶ Sequential — all Phase 1 must finish first</div>
+  <div></div>
+  <div class="phase-label p3">▶ Runs parallel across all sites</div>
+</div>
+
+<!-- ─── PHASES ─────────────────────────────────────────────── -->
+<div class="phases-row">
+
+  <!-- PHASE 1 -->
+  <div class="phase ph1">
+    <div class="phase-head">
+      <div class="phase-num">Phase 1</div>
+      <div class="phase-name">Metadata Migration</div>
+      <div class="phase-meta">2–3 weeks &nbsp;·&nbsp; MongoDB → NextGen MongoDB</div>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">1</div>
+        <div class="step-body">
+          <div class="step-title">Extract Collections</div>
+          <div class="step-desc">Batch cursor reads with resume-token checkpointing for safe replay</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">2</div>
+        <div class="step-body">
+          <div class="step-title">Transform + Schema Map</div>
+          <div class="step-desc">Field renaming, type coercion, siteId assignment per spec document</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">3</div>
+        <div class="step-body">
+          <div class="step-title">Load → NextGen MongoDB</div>
+          <div class="step-desc">Upsert (idempotent): users · rooms · subscriptions · members</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">4</div>
+        <div class="step-body">
+          <div class="step-title">Thread Derivation Pre-pass</div>
+          <div class="step-desc">MongoDB <code style="font-size:11px;color:#aac8ff;">$group</code> aggregation with <code style="font-size:11px;color:#aac8ff;">allowDiskUse:true</code></div>
+          <div class="callout">
+            Synthesizes <strong>threadRooms</strong> + <strong>threadSubscriptions</strong> — these collections do not exist in tchat 2.0. Required before Phase 3 can run.
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">5</div>
+        <div class="step-body">
+          <div class="step-title">Metadata Reconciliation</div>
+          <div class="step-desc">Count assertions per collection before marking phase complete</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase-arrow">➔</div>
+
+  <!-- PHASE 2 -->
+  <div class="phase ph2">
+    <div class="phase-head">
+      <div class="phase-num">Phase 2</div>
+      <div class="phase-name">Cross-Site Sync</div>
+      <div class="phase-meta">1 week &nbsp;·&nbsp; Federation of metadata across sites</div>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">1</div>
+        <div class="step-body">
+          <div class="step-title">Remote User Shadows</div>
+          <div class="step-desc">Copy user records to every site where they are a room member</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">2</div>
+        <div class="step-body">
+          <div class="step-title">Room Metadata Copies</div>
+          <div class="step-desc">Rooms with cross-site members replicated to member home sites</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">3</div>
+        <div class="step-body">
+          <div class="step-title">Subscription Copies</div>
+          <div class="step-desc"><code style="font-size:11px;color:#f5d47a;">siteId</code> = room's site, not user's home site — must be split across sites correctly</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">4</div>
+        <div class="step-body">
+          <div class="step-title">Cross-Site Thread Subscriptions</div>
+          <div class="step-desc">Foreign thread repliers → ThreadSubscription written to their home site</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top: 4px;">
+      <strong>Hard dependency for Phase 3:</strong> the message transformer looks up <code style="font-size:11px;">threadRoomID</code> from threadRooms collection. That lookup only succeeds if Phase 1 + Phase 2 are fully complete.
+    </div>
+  </div>
+
+  <div class="phase-arrow">➔</div>
+
+  <!-- PHASE 3 -->
+  <div class="phase ph3">
+    <div class="phase-head">
+      <div class="phase-num">Phase 3</div>
+      <div class="phase-name">Message Migration</div>
+      <div class="phase-meta">3–4 weeks &nbsp;·&nbsp; 75M+ messages &nbsp;·&nbsp; Dual-sink writes</div>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">1</div>
+        <div class="step-body">
+          <div class="step-title">Extract Messages</div>
+          <div class="step-desc">Per-room batch cursor with resume-token checkpoint (50 rooms concurrently via Airflow pool)</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">2</div>
+        <div class="step-body">
+          <div class="step-title">Transform + Map</div>
+          <div class="step-desc">Schema mapping · Cassandra time-bucket computation · threadRoomID lookup</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">3</div>
+        <div class="step-body">
+          <div class="step-title">Write → Cassandra</div>
+          <div class="step-desc">Bulk writes: <code style="font-size:11px;color:#88e899;">messages_by_room</code> + <code style="font-size:11px;color:#88e899;">thread_messages_by_thread</code> (LWW idempotent)</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">4</div>
+        <div class="step-body">
+          <div class="step-title">Index → Elasticsearch</div>
+          <div class="step-desc">Bulk API · external version = <code style="font-size:11px;color:#88e899;">createdAt_ms</code> for safe re-index</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">5</div>
+        <div class="step-body">
+          <div class="step-title">Advance Checkpoint</div>
+          <div class="step-desc">Only after both sinks confirm. Failed records → Quarantine (not silent drop)</div>
+          <div class="callout">Alert fires if quarantine rate exceeds <strong>1%</strong> of batch size</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ─── BOTTOM ROW ─────────────────────────────────────────── -->
+<div class="bottom-row">
+
+  <div class="bottom-box b-recon">
+    <h3>Reconciliation Gate &nbsp;·&nbsp; All checks must pass before cutover</h3>
+    <div class="check-row">
+      <div class="check-icon">✓</div>
+      <div>
+        <div class="check-label">Count Verification</div>
+        <div class="check-detail">Per-room: source message count == Cassandra partition count</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">✓</div>
+      <div>
+        <div class="check-label">1% Content Sampling</div>
+        <div class="check-detail">Random 1% of message IDs fetched from target — field-level equality check</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">✓</div>
+      <div>
+        <div class="check-label">Thread Integrity Check</div>
+        <div class="check-detail">Distinct threadParentMessageIDs in source == threadRooms count in target</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">✓</div>
+      <div>
+        <div class="check-label">Quarantine Rate Check</div>
+        <div class="check-detail">Total quarantined records must be below 1% threshold before proceeding</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom-box b-cut">
+    <h3>Cutover Sequence &nbsp;·&nbsp; Transition to Live Migration</h3>
+    <div class="check-row">
+      <div class="check-icon">→</div>
+      <div>
+        <div class="check-label">All Reconciliation Checks Pass</div>
+        <div class="check-detail">Gate clears across all sites simultaneously</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">→</div>
+      <div>
+        <div class="check-label">CDC Go Connector Activated</div>
+        <div class="check-detail">Resumes from T₀ resume token captured before batch migration began</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">→</div>
+      <div>
+        <div class="check-label">Live Traffic Switched Over</div>
+        <div class="check-detail">T₀ token fills the delta gap between batch completion and cutover moment</div>
+      </div>
+    </div>
+    <div class="check-row">
+      <div class="check-icon">→</div>
+      <div>
+        <div class="check-label">Drain Quarantine Store</div>
+        <div class="check-detail">Manual review and replay of quarantined records post-cutover</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ─── EFFORT TABLE ───────────────────────────────────────── -->
+<div class="effort-section">
+  <h3>Effort Summary &amp; Execution Mode</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Component</th>
+        <th>Estimate</th>
+        <th>Mode</th>
+        <th>Key Constraint / Risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Schema Mapping Specification Doc</td>
+        <td>1 week</td>
+        <td><span class="tag t-crit">Critical Path</span></td>
+        <td>Nothing else coded until signed off — governs both Airflow and CDC connector independently</td>
+      </tr>
+      <tr>
+        <td>Airflow Setup + Monitoring + Dashboards</td>
+        <td>1 week</td>
+        <td><span class="tag t-gray">Infra</span></td>
+        <td>DAGs, checkpoint store, quarantine alerts, per-room progress visibility</td>
+      </tr>
+      <tr>
+        <td>Phase 1 — Metadata Pipeline (per site)</td>
+        <td>2–3 weeks</td>
+        <td><span class="tag t-par">Parallel</span></td>
+        <td>Thread derivation pre-pass is the complex piece — allowDiskUse aggregation on 75M+ rows</td>
+      </tr>
+      <tr>
+        <td>Phase 2 — Cross-Site Sync</td>
+        <td>1 week</td>
+        <td><span class="tag t-seq">Sequential</span></td>
+        <td>4 cross-site data types; requires complete cross-site membership map</td>
+      </tr>
+      <tr>
+        <td>Phase 3 — Message Pipeline (per site)</td>
+        <td>3–4 weeks</td>
+        <td><span class="tag t-par">Parallel</span></td>
+        <td>Dual-sink (Cassandra + ES); Cassandra bucket config must match all nextgen services exactly</td>
+      </tr>
+      <tr>
+        <td>Reconciliation Framework</td>
+        <td>1 week</td>
+        <td><span class="tag t-seq">Sequential</span></td>
+        <td>Blocking gate — cutover cannot proceed without green on all checks</td>
+      </tr>
+      <tr>
+        <td>Full Dry Run (prod snapshot test)</td>
+        <td>2 weeks</td>
+        <td><span class="tag t-seq">Sequential</span></td>
+        <td>End-to-end pipeline test before live migration begins; validates throughput and timing</td>
+      </tr>
+      <tr>
+        <td><strong>Total</strong></td>
+        <td><strong>~12–13 weeks</strong></td>
+        <td></td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="footer">Migration Architecture · One-Time Batch Phase · tchat 2.0 → NextGen Chat System</div>
+
+</body>
+</html>
