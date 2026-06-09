@@ -196,6 +196,17 @@ func TestThreadSubscriptionJSON(t *testing.T) {
 	roundTrip(t, &ts, &model.ThreadSubscription{})
 }
 
+func TestThreadUnreadSummaryResponseJSON(t *testing.T) {
+	ms := int64(1717000000000)
+	r := model.ThreadUnreadSummaryResponse{
+		Unread:              true,
+		UnreadDirectMessage: false,
+		UnreadMention:       true,
+		LastMessageAt:       &ms,
+	}
+	roundTrip(t, &r, &model.ThreadUnreadSummaryResponse{})
+}
+
 func TestMessageJSON(t *testing.T) {
 	t.Run("with threadParentMessageId", func(t *testing.T) {
 		m := model.Message{
