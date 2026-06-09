@@ -11,10 +11,10 @@ import (
 // leaves the Vault server at all.
 //
 // GenerateDataKey is the preferred path for minting a new DEK: the KEK
-// provider produces both the plaintext DEK and its wrapped form in a
-// single call, so the DEK material originates inside the KEK provider
-// (an HSM, in compliant Vault deployments) rather than in the calling
-// process's address space.
+// provider generates the DEK and returns both its plaintext and wrapped
+// forms, so the DEK material originates inside the KEK provider (an HSM,
+// in compliant Vault deployments) rather than in the calling process's
+// address space.
 //
 // Wrap / Unwrap remain for legacy DEKs already persisted with the
 // local-random + Wrap flow, and for KEK-rotation re-wrap operations.

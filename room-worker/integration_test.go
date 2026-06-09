@@ -22,6 +22,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -1007,10 +1008,12 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 
 // --- Sync DM endpoint integration tests ---
 
-const integSyncDMRequestID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
-
-func newIntegSyncDMCtx() context.Context {
-	return natsutil.WithRequestID(context.Background(), integSyncDMRequestID)
+// newIntegSyncDMCtx returns a *natsrouter.Context with the canonical request ID
+// for serverCreateDM; it also satisfies context.Context for store calls.
+func newIntegSyncDMCtx() *natsrouter.Context {
+	c := natsrouter.NewContext(map[string]string{})
+	c.SetContext(natsutil.WithRequestID(context.Background(), testRequestID))
+	return c
 }
 
 func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
@@ -1026,8 +1029,7 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
-	got, err := handler.handleSyncCreateDM(ctx, data)
+	got, err := handler.serverCreateDM(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.True(t, got.Success)
@@ -1070,9 +1072,7 @@ func TestSyncCreateDM_SelfDM_PersistsSingleFavoritedSub(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"}
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-	got, err := handler.handleSyncCreateDM(ctx, data)
+	got, err := handler.serverCreateDM(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.True(t, got.Success)
@@ -1127,8 +1127,7 @@ func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
-	data, _ := json.Marshal(req)
-	_, err := handler.handleSyncCreateDM(newIntegSyncDMCtx(), data)
+	_, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 
 	pubs := cap.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
@@ -1148,11 +1147,10 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
 
-	r1, err := handler.handleSyncCreateDM(ctx, data)
+	r1, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
-	r2, err := handler.handleSyncCreateDM(ctx, data)
+	r2, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, r1)
 	require.NotNil(t, r2)
@@ -1170,8 +1168,9 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 
 // Federation convergence: the cross-site OUTBOX payload carries the deterministic
 // BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
-// room ID as the home site. Same X-Request-ID across replays produces the same
-// Nats-Msg-Id so JetStream dedup blocks duplicates.
+// room ID as the home site. The payload-derived dedup key (room id + requester
+// account + createdAt + dest) is identical across replays, so JetStream dedup
+// blocks duplicates.
 func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	ctx := newIntegSyncDMCtx()
 	db := setupMongo(t)
@@ -1185,9 +1184,7 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	handler := NewHandler(store, siteID, cap1.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-	_, err = handler.handleSyncCreateDM(ctx, data)
+	_, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 
 	// 1. Local Mongo room.ID equals the deterministic BuildDMRoomID.
@@ -1211,11 +1208,12 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	assert.Contains(t, pubs[0].msgID, "site-B",
 		"Nats-Msg-Id must include destSiteID for JetStream stream dedup")
 
-	// 3. Replay with the same X-Request-ID produces the same Nats-Msg-Id —
-	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
+	// 3. Replay produces the same Nats-Msg-Id because the dedup key is derived
+	//    from the (stable) payload seed — room id + requester account + createdAt +
+	//    dest — not the request ID. JetStream OUTBOX dedup rejects the second emit.
 	cap2 := &publishCapture{}
 	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
-	_, err = handler2.handleSyncCreateDM(ctx, data)
+	_, err = handler2.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
 	require.Len(t, pubs2, 1)

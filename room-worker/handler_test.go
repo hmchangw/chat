@@ -23,6 +23,7 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -321,6 +322,10 @@ func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
+	// The three up-front reads now run concurrently, so candidates/has-orgs are
+	// issued alongside GetRoom; their results are discarded once GetRoom errors.
+	store.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").Return(nil, nil).AnyTimes()
+	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil).AnyTimes()
 	h := NewHandler(store, "site1", func(_ context.Context, _ string, _ []byte, _ string) error {
 		return nil
 	}, testKeyStore, testKeySender)
@@ -2385,9 +2390,18 @@ func TestFillAsyncError_PermanentInternalCollision(t *testing.T) {
 	assert.True(t, errors.As(jobErr, &pe))
 }
 
-// newRequestCtx returns a context carrying a syntactically-valid X-Request-ID.
-func newRequestCtx() context.Context {
-	return natsutil.WithRequestID(context.Background(), "01970a4f-8c2d-7c9a-abcd-e0123456789f")
+// dmCtx builds a *natsrouter.Context carrying the canonical request ID for
+// serverCreateDM tests (normally stamped by RequireRequestID from the header).
+func dmCtx() *natsrouter.Context {
+	return dmCtxWithID(testRequestID)
+}
+
+// dmCtxWithID is dmCtx with a caller-chosen request ID for cases that pin a
+// specific dedup seed.
+func dmCtxWithID(id string) *natsrouter.Context {
+	c := natsrouter.NewContext(map[string]string{})
+	c.SetContext(natsutil.WithRequestID(context.Background(), id))
+	return c
 }
 
 // dmCapturedPublish + dmPublishCapture are unit-test-local equivalents of the
@@ -2420,14 +2434,6 @@ func newSyncDMTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, *dmPu
 	capture := &dmPublishCapture{}
 	h := &Handler{siteID: "site-a", store: store, publish: capture.fn}
 	return h, store, capture
-}
-
-// marshalReq JSON-encodes v or fails the test on error.
-func marshalReq(t *testing.T, v any) []byte {
-	t.Helper()
-	data, err := json.Marshal(v)
-	require.NoError(t, err)
-	return data
 }
 
 // assertSyncDMInternal asserts err marshals (via errnats) to an internal-code
@@ -2474,11 +2480,8 @@ func TestSyncDMErrorEnvelope(t *testing.T) {
 // TestHandleSyncCreateDM_MissingRequestID retired — see the comment above
 // TestProcessAddMembers_RequiresRequestID.
 
-func TestHandleSyncCreateDM_InvalidJSON(t *testing.T) {
-	h := &Handler{siteID: "site-a"}
-	_, err := h.handleSyncCreateDM(newRequestCtx(), []byte("{not json"))
-	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
-}
+// TestHandleSyncCreateDM_InvalidJSON retired — malformed JSON is now rejected by
+// natsrouter.Register's unmarshal step, covered by pkg/natsrouter tests.
 
 func TestHandleSyncCreateDM_InvalidRoomType(t *testing.T) {
 	h := &Handler{siteID: "site-a"}
@@ -2487,8 +2490,7 @@ func TestHandleSyncCreateDM_InvalidRoomType(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 }
 
@@ -2499,8 +2501,7 @@ func TestHandleSyncCreateDM_EmptyAccounts(t *testing.T) {
 		{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: ""},
 	}
 	for _, req := range cases {
-		data := marshalReq(t, req)
-		_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+		_, err := h.serverCreateDM(dmCtx(), req)
 		assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 	}
 }
@@ -2527,8 +2528,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 		})
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"}
-	data := marshalReq(t, req)
-	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.True(t, reply.Success)
@@ -2569,8 +2569,7 @@ func TestHandleSyncCreateDM_SelfBotDMRejected(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "alice",
 	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	assert.ErrorIs(t, err, errInvalidSyncDMRequest)
 }
 
@@ -2603,8 +2602,8 @@ func TestHandleSyncCreateDM_SelfDM_StoreErrors(t *testing.T) {
 			store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{alice}, nil)
 			tc.setup(store)
 
-			data := marshalReq(t, model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"})
-			_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"}
+			_, err := h.serverCreateDM(dmCtx(), req)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErrIn)
 			assert.Empty(t, capture.captured, "no publish on store error")
@@ -2622,8 +2621,7 @@ func TestHandleSyncCreateDM_RequesterNotFound(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	assert.ErrorIs(t, err, errUserLookupFailed)
 }
 
@@ -2637,8 +2635,7 @@ func TestHandleSyncCreateDM_OtherNotFound(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	assert.ErrorIs(t, err, errUserLookupFailed)
 }
 
@@ -2652,8 +2649,7 @@ func TestHandleSyncCreateDM_CrossSiteRequester(t *testing.T) {
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 	}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	assert.ErrorIs(t, err, errCrossSiteRequester)
 }
 
@@ -2683,8 +2679,7 @@ func TestHandleSyncCreateDM_RoomCollisionMismatch(t *testing.T) {
 			store.EXPECT().GetRoom(gomock.Any(), gomock.Any()).Return(&existing, nil)
 
 			req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-			data := marshalReq(t, req)
-			_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+			_, err := h.serverCreateDM(dmCtx(), req)
 			assert.ErrorIs(t, err, errRoomIDCollision)
 		})
 	}
@@ -2726,8 +2721,7 @@ func TestHandleSyncCreateDM_DM_PersistsSubsAndReturnsRequester(t *testing.T) {
 		}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.True(t, reply.Success)
@@ -2779,8 +2773,7 @@ func TestHandleSyncCreateDM_BotDM_RequesterSubIsSubscribedTrue(t *testing.T) {
 		}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
-	data := marshalReq(t, req)
-	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.True(t, reply.Subscription.IsSubscribed)
@@ -2818,8 +2811,7 @@ func TestHandleSyncCreateDM_ReturnsCanonicalPersistedSub(t *testing.T) {
 		}, nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	reply, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	reply, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.Equal(t, "canonical-sub", reply.Subscription.ID)
@@ -2834,8 +2826,7 @@ func TestHandleSyncCreateDM_GetUserTransientError_Internal(t *testing.T) {
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, errors.New("mongo: connection refused"))
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errUserLookupFailed,
 		"transient error must not be tagged as user-not-found")
@@ -2856,8 +2847,7 @@ func TestHandleSyncCreateDM_PublishesSubscriptionUpdateForBothUsers(t *testing.T
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 
 	subjects := map[string]int{}
@@ -2874,7 +2864,9 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
 	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
-	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error { insertedRoom = r; return nil })
 	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").Return(
 		&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}},
@@ -2882,8 +2874,7 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 
 	var outbox *dmCapturedPublish
@@ -2908,7 +2899,56 @@ func TestHandleSyncCreateDM_CrossSite_EmitsOutbox(t *testing.T) {
 	assert.Equal(t, "site-a", payload.SiteID)
 	assert.Equal(t, []string{"bob"}, payload.Accounts)
 	assert.Equal(t, "alice", payload.RequesterAccount)
-	assert.Equal(t, "01970a4f-8c2d-7c9a-abcd-e0123456789f:site-b", outbox.msgID)
+	// Dedup ID is payload-derived (room identity + createdAt + dest), NOT the
+	// request ID — so a minted/absent X-Request-ID cannot break JetStream dedup.
+	require.NotNil(t, insertedRoom)
+	wantSeed := fmt.Sprintf("%s:%s:%d", insertedRoom.ID, "alice", insertedRoom.CreatedAt.UnixMilli())
+	assert.Equal(t, wantSeed+":site-b", outbox.msgID)
+	assert.NotContains(t, outbox.msgID, testRequestID, "dedup id must not embed the request ID")
+}
+
+// dmCtxNoID builds a sync-DM context with NO request ID — the relaxed,
+// post-mint-boundary case (room-worker's router now mints instead of rejecting).
+func dmCtxNoID() *natsrouter.Context {
+	c := natsrouter.NewContext(map[string]string{})
+	c.SetContext(context.Background())
+	return c
+}
+
+func TestHandleSyncCreateDM_CrossSite_NoRequestID_PayloadDerivedDedup(t *testing.T) {
+	h, store, capture := newSyncDMTestHandler(t)
+
+	requester := &model.User{ID: "u-alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u-bob", Account: "bob", SiteID: "site-b"}
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return([]model.User{*requester, *other}, nil)
+	var insertedRoom *model.Room
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, r *model.Room) error { insertedRoom = r; return nil })
+	store.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().FindDMSubscriptionPair(gomock.Any(), gomock.Any(), "alice").Return(
+		&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}},
+		&model.Subscription{User: model.SubscriptionUser{ID: "u-bob", Account: "bob"}},
+		nil)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
+	reply, err := h.serverCreateDM(dmCtxNoID(), req)
+	require.NoError(t, err, "serverCreateDM must succeed without an X-Request-ID")
+	require.NotNil(t, reply)
+	assert.True(t, reply.Success)
+
+	var outbox *dmCapturedPublish
+	for i := range capture.captured {
+		if capture.captured[i].subject == subject.Outbox("site-a", "site-b", model.OutboxMemberAdded) {
+			outbox = &capture.captured[i]
+			break
+		}
+	}
+	require.NotNil(t, outbox, "expected a member_added outbox publish to site-b")
+
+	require.NotNil(t, insertedRoom)
+	wantSeed := fmt.Sprintf("%s:%s:%d", insertedRoom.ID, "alice", insertedRoom.CreatedAt.UnixMilli())
+	assert.Equal(t, wantSeed+":site-b", outbox.msgID,
+		"dedup id must be payload-derived even when no request ID was supplied")
 }
 
 func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
@@ -2925,8 +2965,7 @@ func TestHandleSyncCreateDM_SameSite_NoOutbox(t *testing.T) {
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 
 	for _, p := range capture.captured {
@@ -2959,8 +2998,7 @@ func TestHandleSyncCreateDM_OutboxPublishFails_FailsRequest(t *testing.T) {
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.Error(t, err)
 	assertSyncDMInternal(t, err)
 }
@@ -2977,8 +3015,7 @@ func TestHandleSyncCreateDM_BulkCreateSubsTransientError(t *testing.T) {
 		Return(errors.New("mongo: connection reset"))
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.Error(t, err)
 	assertSyncDMInternal(t, err)
 }
@@ -3019,8 +3056,7 @@ func TestHandleSyncCreateDM_IdempotentRecreate_UsesExistingCreatedAt(t *testing.
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 
 	require.Len(t, captured, 2)
@@ -3064,8 +3100,7 @@ func TestHandleSyncCreateDM_BotDM_Recreate_PreservesExistingCreatedAt(t *testing
 		nil)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
-	data := marshalReq(t, req)
-	_, err := h.handleSyncCreateDM(newRequestCtx(), data)
+	_, err := h.serverCreateDM(dmCtx(), req)
 	require.NoError(t, err)
 
 	require.Len(t, captured, 2)
@@ -3437,6 +3472,10 @@ func TestProcessAddMembers_RejectsNonChannel(t *testing.T) {
 	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeDM, SiteID: "site-a",
 	}, nil)
+	// The up-front reads run concurrently, so candidates/has-orgs fire before the
+	// channel guard rejects the non-channel room; their results are discarded.
+	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").Return(nil, nil).AnyTimes()
+	mockStore.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil).AnyTimes()
 
 	h := NewHandler(mockStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, testKeyStore, testKeySender)
 	req := model.AddMembersRequest{RoomID: "r1", RequesterAccount: "alice", Users: []string{"x"}, Timestamp: 1}
@@ -4198,7 +4237,6 @@ func TestHandleSyncCreateDM_SetsParticipantFieldsOnInitialCreate(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockStore := NewMockSubscriptionStore(ctrl)
 	h := &Handler{store: mockStore, siteID: "site-A", publish: func(_ context.Context, _ string, _ []byte, _ string) error { return nil }}
-	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
 
 	requester := model.User{ID: "u_zzz", Account: "alice", EngName: "Alice", ChineseName: "愛", SiteID: "site-A"}
 	other := model.User{ID: "u_aaa", Account: "bob", EngName: "Bob", ChineseName: "鮑", SiteID: "site-A"}
@@ -4218,14 +4256,13 @@ func TestHandleSyncCreateDM_SetsParticipantFieldsOnInitialCreate(t *testing.T) {
 		&model.Subscription{User: model.SubscriptionUser{ID: other.ID, Account: other.Account}},
 		nil)
 
-	reqBody, err := json.Marshal(model.SyncCreateDMRequest{
+	req := model.SyncCreateDMRequest{
 		RequesterAccount: "alice",
 		OtherAccount:     "bob",
 		RoomType:         model.RoomTypeDM,
-	})
-	require.NoError(t, err)
+	}
 
-	_, err = h.handleSyncCreateDM(ctx, reqBody)
+	_, err := h.serverCreateDM(dmCtxWithID(testRequestID), req)
 	require.NoError(t, err)
 	require.NotNil(t, captured)
 	assert.Equal(t, []string{"u_aaa", "u_zzz"}, captured.UIDs)
@@ -4337,40 +4374,8 @@ func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing
 	assert.Contains(t, err.Error(), "check existing org room members")
 }
 
-// natsServerCreateDM and the JetStream consume loop call this helper to
-// validate the inbound X-Request-ID before any downstream dedup-key derivation
-// runs. Missing/malformed → BadRequest (no server-side mint). The asymmetric
-// policy vs the consume loop (which still mints defensively) lives in
-// docs/error-handling.md §3a.
-func TestRequireDedupRequestID(t *testing.T) {
-	const validUUID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
-
-	t.Run("valid_passes", func(t *testing.T) {
-		h := nats.Header{natsutil.RequestIDHeader: []string{validUUID}}
-		ctx, id, err := requireDedupRequestID(context.Background(), h, "chat.test.subject")
-		require.NoError(t, err)
-		assert.Equal(t, validUUID, id)
-		assert.Equal(t, validUUID, natsutil.RequestIDFromContext(ctx))
-	})
-
-	cases := []struct {
-		name    string
-		headers nats.Header
-	}{
-		{name: "nil_rejects", headers: nil},
-		{name: "empty_rejects", headers: nats.Header{}},
-		{name: "malformed_rejects", headers: nats.Header{natsutil.RequestIDHeader: []string{"not-a-uuid"}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := requireDedupRequestID(context.Background(), tc.headers, "chat.test.subject")
-			require.Error(t, err)
-			var ec *errcode.Error
-			require.True(t, errors.As(err, &ec))
-			assert.Equal(t, errcode.CodeBadRequest, ec.Code)
-		})
-	}
-}
+// TestRequireDedupRequestID retired — the strict X-Request-ID gate now lives in
+// pkg/natsrouter.RequireRequestID (see TestRequireRequestID_* there).
 
 // TestHandler_RotateAndFanOut_ErrNoCurrentKey_UsesPredictedVersion pins the
 // contract that when Rotate returns ErrNoCurrentKey (Valkey lost the key between
@@ -4530,10 +4535,8 @@ func TestHandleSyncCreateDM_SelfDM_ProvisionsDEK(t *testing.T) {
 	}
 
 	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "alice", RoomType: model.RoomTypeDM}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
 
-	reply, err := h.handleSyncCreateDM(ctx, data)
+	reply, err := h.serverCreateDM(dmCtxWithID("0193abcd-0193-7abc-89ab-0193abcd0011"), req)
 	require.NoError(t, err)
 	require.True(t, reply.Success)
 	require.Len(t, prov.calls, 1)
@@ -4559,10 +4562,8 @@ func TestHandleSyncCreateDM_DEKFailure_AbortsBeforeCreate(t *testing.T) {
 	}
 
 	req := model.SyncCreateDMRequest{RequesterAccount: "alice", OtherAccount: "bob", RoomType: model.RoomTypeDM}
-	data, _ := json.Marshal(req)
-	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0011")
 
-	_, err := h.handleSyncCreateDM(ctx, data)
+	_, err := h.serverCreateDM(dmCtxWithID("0193abcd-0193-7abc-89ab-0193abcd0011"), req)
 	require.Error(t, err)
 	assert.Len(t, prov.calls, 1, "EnsureDEK should have been attempted once")
 }
@@ -4689,7 +4690,7 @@ func TestProcessRoomRename_UnmarshalFailure(t *testing.T) {
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 	var publishedSubjects []string
 	h := &Handler{store: store, siteID: "site-a", publish: func(_ context.Context, subj string, _ []byte, _ string) error {
 		publishedSubjects = append(publishedSubjects, subj)
@@ -4713,7 +4714,7 @@ func TestProcessRoomRename_RoomNotFound(t *testing.T) {
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(ErrRoomNotFound)
 
 	var asyncResults []model.AsyncJobResult
@@ -4742,7 +4743,7 @@ func TestProcessRoomRename_NotChannelRoom(t *testing.T) {
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(ErrNotChannelRoom)
 
 	var asyncResults []model.AsyncJobResult
@@ -4771,7 +4772,7 @@ func TestProcessRoomRename_TransientSubscriptionUpdateError(t *testing.T) {
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
 
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "renamed").Return(nil)
 	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), "r1", "renamed").Return(errors.New("mongo timeout"))
 
@@ -4792,7 +4793,7 @@ func TestProcessRoomRename_HappyPathNoRemoteSites(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	const roomID, newName = "r1", "renamed"
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 
 	subs := []model.Subscription{
 		{ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: roomID},
@@ -4836,7 +4837,7 @@ func TestProcessRoomRename_HappyPathWithRemoteSite(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	const roomID, newName = "r1", "renamed"
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 	ts := int64(1700000000000)
 
 	subs := []model.Subscription{
@@ -4902,7 +4903,7 @@ func TestProcessRoomRename_ErrorThenOkRetrySequence(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	store := NewMockSubscriptionStore(ctrl)
-	requestID := "01970a4f-8c2d-7c9a-abcd-e0123456789f"
+	requestID := testRequestID
 
 	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "x").Return(errors.New("mongo timeout"))
 	store.EXPECT().UpdateRoomName(gomock.Any(), "r1", "x").Return(nil)

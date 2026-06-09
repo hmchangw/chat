@@ -70,6 +70,16 @@ func TestIsPlatformAdmin(t *testing.T) {
 	}
 }
 
+func TestUserJSON_WithStatus(t *testing.T) {
+	u := model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a",
+		EngName: "Alice Wang", ChineseName: "愛麗絲",
+		StatusIsShow: true,
+		StatusText:   "available",
+	}
+	roundTrip(t, &u, &model.User{})
+}
+
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -975,6 +985,33 @@ func TestRoomKeyGetResponseJSON(t *testing.T) {
 	}
 	dst := model.RoomKeyGetResponse{}
 	roundTrip(t, &src, &dst)
+}
+
+// TestNotificationEventJSON_Reaction round-trips the reaction notification
+// envelope published on chat.user.{account}.notification when someone reacts
+// to a message.
+func TestNotificationEventJSON_Reaction(t *testing.T) {
+	src := model.NotificationEvent{
+		Type:   "reaction",
+		RoomID: "room-1",
+		Message: model.Message{
+			ID: "m1", RoomID: "room-1", UserID: "u1", UserAccount: "bob",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice",
+			},
+		},
+		Timestamp: 1735689600000,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	var dst model.NotificationEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
 }
 
 func TestUpdateRoleRequestJSON(t *testing.T) {
@@ -2220,6 +2257,100 @@ func TestReadReceiptResponseJSON(t *testing.T) {
 	roundTrip(t, &r, &model.ReadReceiptResponse{})
 }
 
+func TestListMemberStatusesRequestJSON(t *testing.T) {
+	limit := 5
+	r := model.ListMemberStatusesRequest{Limit: &limit}
+	roundTrip(t, &r, &model.ListMemberStatusesRequest{})
+}
+
+// Nil Limit must omit the wire key (omitempty contract) so the server can
+// distinguish "client supplied an explicit value" from "use the server default".
+func TestListMemberStatusesRequestJSON_NilLimitOmitted(t *testing.T) {
+	data, err := json.Marshal(model.ListMemberStatusesRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(data); got != "{}" {
+		t.Errorf("nil Limit must marshal to {}, got %s", got)
+	}
+}
+
+func TestMemberStatusJSON(t *testing.T) {
+	m := model.MemberStatus{
+		Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲",
+		StatusIsShow: true, StatusText: "in a meeting",
+	}
+	roundTrip(t, &m, &model.MemberStatus{})
+}
+
+func TestListMemberStatusesResponseJSON(t *testing.T) {
+	r := model.ListMemberStatusesResponse{Members: []model.MemberStatus{
+		{Account: "alice", EngName: "Alice", ChineseName: "愛麗絲", StatusIsShow: true, StatusText: "busy"},
+		{Account: "bob", EngName: "Bob", ChineseName: "陳博"},
+	}}
+	roundTrip(t, &r, &model.ListMemberStatusesResponse{})
+}
+
+func TestMentionableSubscriptionsRequestJSON(t *testing.T) {
+	limit := 10
+	r := model.MentionableSubscriptionsRequest{Limit: &limit, Filter: "ali"}
+	roundTrip(t, &r, &model.MentionableSubscriptionsRequest{})
+}
+
+// Nil Limit + empty Filter must marshal to {} so the server can apply its
+// default limit and treat the filter as "match everything".
+func TestMentionableSubscriptionsRequestJSON_NilLimitOmitted(t *testing.T) {
+	data, err := json.Marshal(model.MentionableSubscriptionsRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(data); got != "{}" {
+		t.Errorf("nil Limit + empty Filter must marshal to {}, got %s", got)
+	}
+}
+
+func TestMentionableSubscription_UserShape_JSON(t *testing.T) {
+	s := model.MentionableSubscription{
+		OptionType: "user",
+		UserID:     "u-alice",
+		Account:    "alice",
+		SiteID:     "site-a",
+		HRInfo:     &model.MentionableHRInfo{EngName: "Alice Wang", ChineseName: "愛麗絲"},
+	}
+	roundTrip(t, &s, &model.MentionableSubscription{})
+
+	data, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"app"`, "user-shape must omit app")
+}
+
+func TestMentionableSubscription_AppShape_JSON(t *testing.T) {
+	s := model.MentionableSubscription{
+		OptionType: "app",
+		UserID:     "u-bot",
+		Account:    "helper.bot",
+		App: &model.MentionableApp{
+			Name:      "Helper",
+			Assistant: model.MentionableAppAssistant{Name: "helper.bot"},
+		},
+	}
+	roundTrip(t, &s, &model.MentionableSubscription{})
+
+	data, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"hrInfo"`, "app-shape must omit hrInfo")
+}
+
+func TestMentionableSubscriptionsResponseJSON(t *testing.T) {
+	r := model.MentionableSubscriptionsResponse{Subscriptions: []model.MentionableSubscription{
+		{OptionType: "user", UserID: "u-a", Account: "a", SiteID: "site-a",
+			HRInfo: &model.MentionableHRInfo{EngName: "A", ChineseName: "A"}},
+		{OptionType: "app", UserID: "u-b", Account: "b.bot",
+			App: &model.MentionableApp{Name: "B", Assistant: model.MentionableAppAssistant{Name: "b.bot"}}},
+	}}
+	roundTrip(t, &r, &model.MentionableSubscriptionsResponse{})
+}
+
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
 func roundTrip[T any](t *testing.T, src *T, dst *T) {
 	t.Helper()
@@ -2715,6 +2846,119 @@ func TestDeleteRoomEventJSON(t *testing.T) {
 	roundTrip(t, &evt, &model.DeleteRoomEvent{})
 }
 
+func TestEventReactedConstant(t *testing.T) {
+	assert.Equal(t, model.EventType("reacted"), model.EventReacted)
+}
+
+func TestRoomEventMessageReactedConstant(t *testing.T) {
+	assert.Equal(t, model.RoomEventType("message_reacted"), model.RoomEventMessageReacted)
+}
+
+func TestReactionDeltaRoundtrip(t *testing.T) {
+	d := model.ReactionDelta{
+		Shortcode: "thumbsup",
+		Action:    "added",
+		Actor: model.Participant{
+			UserID:  "u-1",
+			Account: "alice",
+			SiteID:  "site-a",
+			EngName: "Alice",
+		},
+	}
+	var dst model.ReactionDelta
+	roundTrip(t, &d, &dst)
+}
+
+func TestMessageEventWithReactionDeltaJSON(t *testing.T) {
+	evt := model.MessageEvent{
+		Event: model.EventReacted,
+		Message: model.Message{
+			ID:          "msg-uuid",
+			RoomID:      "r1",
+			UserID:      "u-author",
+			UserAccount: "bob",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID:  "u-1",
+				Account: "alice",
+				SiteID:  "site-a",
+				EngName: "Alice",
+			},
+		},
+	}
+	roundTrip(t, &evt, &model.MessageEvent{})
+}
+
+func TestMessageEventOmitsReactionDeltaWhenAbsent(t *testing.T) {
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   model.Message{ID: "msg-uuid", RoomID: "r1"},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "reactionDelta")
+}
+
+func TestReactRoomEventJSON(t *testing.T) {
+	reactedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.ReactRoomEvent{
+		Type:      model.RoomEventMessageReacted,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1746518900123,
+		MessageID: "msg-uuid",
+		Shortcode: "thumbsup",
+		Action:    "added",
+		Actor: model.Participant{
+			UserID:  "u-1",
+			Account: "alice",
+			SiteID:  "site-a",
+			EngName: "Alice",
+		},
+		ReactedAt: reactedAt,
+		UpdatedAt: reactedAt,
+	}
+	roundTrip(t, &evt, &model.ReactRoomEvent{})
+}
+
+func TestCustomEmojiRoundtrip(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	var dst model.CustomEmoji
+	roundTrip(t, &e, &dst)
+	assert.Equal(t, "acme_party", dst.Shortcode)
+}
+
+func TestCustomEmojiBSON(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	data, err := bson.Marshal(&e)
+	require.NoError(t, err)
+	var dst model.CustomEmoji
+	require.NoError(t, bson.Unmarshal(data, &dst))
+	assert.Equal(t, e, dst)
+}
+
 func TestMessageThreadReadRequestJSON(t *testing.T) {
 	src := model.MessageThreadReadRequest{ThreadID: "01970a4f8c2d7c9aQRST"}
 	roundTrip(t, &src, &model.MessageThreadReadRequest{})
@@ -3033,4 +3277,29 @@ func TestPresenceSnapshotReply_RoundTrip(t *testing.T) {
 	var out model.PresenceSnapshotReply
 	require.NoError(t, json.Unmarshal(data, &out))
 	assert.Equal(t, in, out)
+}
+
+func TestStatusReply_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.StatusReply{Status: "ok"}, &model.StatusReply{})
+	roundTrip(t, &model.StatusReply{Status: "accepted"}, &model.StatusReply{})
+}
+
+func TestStatusWithRequestReply_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.StatusWithRequestReply{Status: "accepted", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}, &model.StatusWithRequestReply{})
+}
+
+func TestRoomRenameRequest_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.RoomRenameRequest{NewName: "New Name"}, &model.RoomRenameRequest{})
+}
+
+func TestStatusReply_JSONShape(t *testing.T) {
+	b, err := json.Marshal(model.StatusReply{Status: "accepted"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"accepted"}`, string(b))
+}
+
+func TestStatusWithRequestReply_JSONShape(t *testing.T) {
+	b, err := json.Marshal(model.StatusWithRequestReply{Status: "ok", RequestID: "rid"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"ok","requestId":"rid"}`, string(b))
 }

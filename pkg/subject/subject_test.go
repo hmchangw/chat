@@ -1,6 +1,7 @@
 package subject_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.user.alice.request.room.r1.site-a.member.list"},
 		{"MemberListWildcard", subject.MemberListWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.member.list"},
+		{"MemberStatuses", subject.MemberStatuses("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.member.statuses"},
+		{"MentionableSubscriptions", subject.MentionableSubscriptions("alice", "r1", "site-a"),
+			"chat.user.alice.request.room.r1.site-a.subscription.mentionable"},
 		{"OrgMembers", subject.OrgMembers("alice", "sect-eng", "site-a"),
 			"chat.user.alice.request.orgs.sect-eng.site-a.members"},
 		{"OrgMembersWildcard", subject.OrgMembersWildcard("site-a"),
@@ -112,6 +117,10 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.msg.canonical.site-a.pinned"},
 		{"MsgCanonicalUnpinned", subject.MsgCanonicalUnpinned("site-a"),
 			"chat.msg.canonical.site-a.unpinned"},
+		{"MsgReactPattern", subject.MsgReactPattern("site-a"),
+			"chat.user.{account}.request.room.{roomID}.site-a.msg.react"},
+		{"MsgCanonicalReacted", subject.MsgCanonicalReacted("site-a"),
+			"chat.msg.canonical.site-a.reacted"},
 		{"MsgGet", subject.MsgGet("alice", "r1", "site-a"),
 			"chat.user.alice.request.room.r1.site-a.msg.get"},
 		{"RoomKeyGet", subject.RoomKeyGet("alice", "r1", "site-a"),
@@ -267,6 +276,10 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.room.*.site-a.msg.thread.parent"},
 		{"RoomKeyGetWildcard", subject.RoomKeyGetWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.key.get"},
+		{"MemberStatusesWild", subject.MemberStatusesWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.member.statuses"},
+		{"MentionableSubscriptionsWild", subject.MentionableSubscriptionsWildcard("site-a"),
+			"chat.user.*.request.room.*.site-a.subscription.mentionable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -735,6 +748,22 @@ func TestRoomAppCmdMenu_ParseUserRoomSubject(t *testing.T) {
 	assert.Equal(t, "r1", roomID)
 }
 
+func TestMemberStatuses_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.MemberStatuses("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	assert.True(t, ok)
+	assert.Equal(t, "alice", account)
+	assert.Equal(t, "r1", roomID)
+}
+
+func TestMentionableSubscriptions_ParseUserRoomSubject(t *testing.T) {
+	subj := subject.MentionableSubscriptions("alice", "r1", "site-a")
+	account, roomID, ok := subject.ParseUserRoomSubject(subj)
+	assert.True(t, ok)
+	assert.Equal(t, "alice", account)
+	assert.Equal(t, "r1", roomID)
+}
+
 func TestUserServicePatternBuilders(t *testing.T) {
 	tests := []struct {
 		name string
@@ -790,4 +819,34 @@ func TestParseSubscriptionUpdateAccount(t *testing.T) {
 
 	_, ok = subject.ParseSubscriptionUpdateAccount("chat.user.*.event.subscription.update")
 	assert.False(t, ok) // wildcard token rejected
+}
+
+func TestRoomPatternsMatchWildcards(t *testing.T) {
+	const site = "site-a"
+	repl := strings.NewReplacer("{account}", "*", "{roomID}", "*", "{orgID}", "*")
+	cases := []struct{ name, pattern, wildcard string }{
+		{"create", subject.RoomCreatePattern(site), subject.RoomCreateWildcard(site)},
+		{"role-update", subject.MemberRoleUpdatePattern(site), subject.MemberRoleUpdateWildcard(site)},
+		{"remove", subject.MemberRemovePattern(site), subject.MemberRemoveWildcard(site)},
+		{"add", subject.MemberAddPattern(site), subject.MemberAddWildcard(site)},
+		{"list", subject.MemberListPattern(site), subject.MemberListWildcard(site)},
+		{"member-statuses", subject.MemberStatusesPattern(site), subject.MemberStatusesWildcard(site)},
+		{"mentionable", subject.MentionableSubscriptionsPattern(site), subject.MentionableSubscriptionsWildcard(site)},
+		{"org-members", subject.OrgMembersPattern(site), subject.OrgMembersWildcard(site)},
+		{"message-read", subject.MessageReadPattern(site), subject.MessageReadWildcard(site)},
+		{"read-receipt", subject.MessageReadReceiptPattern(site), subject.MessageReadReceiptWildcard(site)},
+		{"thread-read", subject.MessageThreadReadPattern(site), subject.MessageThreadReadWildcard(site)},
+		{"key-get", subject.RoomKeyGetPattern(site), subject.RoomKeyGetWildcard(site)},
+		{"mute", subject.MuteTogglePattern(site), subject.MuteToggleWildcard(site)},
+		{"favorite", subject.FavoriteTogglePattern(site), subject.FavoriteToggleWildcard(site)},
+		{"rename", subject.RoomRenamePattern(site), subject.RoomRenameWildcard(site)},
+		{"app-tabs", subject.RoomAppTabsPattern(site), subject.RoomAppTabsWildcard(site)},
+		{"app-cmd-menu", subject.RoomAppCmdMenuPattern(site), subject.RoomAppCmdMenuWildcard(site)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.wildcard, repl.Replace(tc.pattern),
+				"pattern with params replaced by * must equal the existing wildcard subscription subject")
+		})
+	}
 }
