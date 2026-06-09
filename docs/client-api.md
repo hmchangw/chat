@@ -3054,7 +3054,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 | `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
 | `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
 | `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
-| `quotedParentMessage` | object | Present only for a quoted send — the server-fetched snapshot of the quoted parent. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Present only for a quoted send — the server-fetched snapshot of the quoted parent. |
 
 The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
 
@@ -3111,11 +3111,15 @@ A `RoomEvent`. Recipients: every client subscribed to the room (which includes t
 | `userCount` | number | |
 | `lastMsgAt` | string | RFC 3339. |
 | `lastMsgId` | string | The new message's ID. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [Participant](#participant)[] | Optional. |
 | `mentionAll` | boolean | Optional. `true` if the message mentioned `@all` or `@here`. |
 | `hasMention` | boolean | Optional. Per-recipient flag (DM event only). Always absent on channel events. |
-| `message` | object | Optional. The `ClientMessage` (the [Message schema](#message-schema) plus a `sender` Participant: `{userId, account, chineseName, engName}`). Set for unencrypted rooms. |
-| `encryptedMessage` | object | Optional. The room ciphertext envelope `{version, nonce, ciphertext}` (see [§5 Room Encryption](#5-room-encryption)). Set for encrypted (channel) rooms. Clients decrypt with the room key for `version`. |
+| `message` | [ClientMessage](#clientmessage) | Optional. Set for unencrypted rooms. |
+| `encryptedMessage` | [EncryptedMessage](#encryptedmessage) | Optional. Set for encrypted (channel) rooms. Clients decrypt with the room key for `version`. |
+
+###### ClientMessage
+
+The [Message](#message-schema) shape, except `sender` is carried as an event-actor [Participant](#participant) (`userId`, `account`, `chineseName`, `engName`) rather than the message-projection [MessageParticipant](#messageparticipant).
 
 ```json
 {
@@ -3217,6 +3221,13 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 #### Payload (`RoomKeyEvent`)
 
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the key belongs to. |
+| `version` | integer | Room-key version. |
+| `privateKey` | string | Base64-encoded 32-byte room secret, used directly as the AES-256-GCM key. |
+| `timestamp` | number | Epoch ms (UTC). |
+
 ```json
 {
   "roomId": "<room id>",
@@ -3269,14 +3280,21 @@ inbound message event). Clients are already authorized for
 
 #### Request payload (`RoomKeyGetRequest`)
 
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | Optional (nullable). When omitted or `null`, the server returns the **current** key for the room. |
+
 ```json
 { "version": 3 }
 ```
 
-`version` is optional. When omitted (or `null`), the server returns the
-**current** key for the room.
-
 #### Success reply (`RoomKeyGetResponse`)
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the key belongs to. |
+| `version` | integer | Room-key version returned. |
+| `privateKey` | string | Base64-encoded 32-byte room secret. |
 
 ```json
 {
@@ -3286,7 +3304,7 @@ inbound message event). Clients are already authorized for
 }
 ```
 
-Same shape as `RoomKeyEvent` minus `Timestamp`, so a client can feed the
+Same shape as `RoomKeyEvent` minus `timestamp`, so a client can feed the
 reply through the same caching path it uses for live events.
 
 #### Errors
@@ -3328,7 +3346,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `error` | string | Human-readable, user-safe (never carries an internal cause). Do not parse or pattern-match against the text. |
 | `code` | string | **Always present.** One of the 7 categories below. Drives HTTP status. |
 | `reason` | string (optional) | Domain-specific machine code (e.g. `max_room_size_reached`, `not_subscribed`). When present, the client should branch on `reason ?? code`. |
-| `metadata` | object (optional) | Free-form `string→string` map for structured detail (e.g. `{ "limit": "500" }`). |
+| `metadata` | map<string, string> | Optional. Free-form map for structured detail (e.g. `{ "limit": "500" }`). |
 
 ### Generic `code` values (always present) → HTTP status
 
