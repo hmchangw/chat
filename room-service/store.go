@@ -35,6 +35,15 @@ type RoomCounts struct {
 	OwnerCount  int
 }
 
+// ThreadUnreadSummary is the result of GetThreadUnreadSummary — a per-site
+// rollup of a single user's thread unread state, computed in one aggregation.
+type ThreadUnreadSummary struct {
+	Unread              bool
+	UnreadDirectMessage bool
+	UnreadMention       bool
+	LastMessageAt       *time.Time
+}
+
 type ReadReceiptRow struct {
 	UserID      string `bson:"_id"`
 	Account     string `bson:"account"`
@@ -52,6 +61,7 @@ type RoomBotAppEntry struct {
 type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
+	GetThreadUnreadSummary(ctx context.Context, account, siteID string) (*ThreadUnreadSummary, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	// ListMemberStatuses returns up to `limit` members of roomID, each
 	// projected from the corresponding users document as {account, engName,
