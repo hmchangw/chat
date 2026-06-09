@@ -6,9 +6,9 @@
 > planned work, not shipped behaviour.
 
 *A new Gin HTTP service that, given an account or a room id, either **307-redirects**
-to where the avatar actually lives (external employee-photo service, a bot's
-`LocationURL`, or the owning cluster) or **proxy-streams the image bytes** from
-MinIO — falling back to a generated/default image so a request never dead-ends.*
+to where the avatar actually lives (external employee-photo service for users, or
+the owning cluster) or **proxy-streams the image bytes** from MinIO — falling
+back to a generated/default image so a request never dead-ends.*
 
 ---
 
@@ -28,33 +28,37 @@ Public read endpoints + authenticated write endpoints:
 |----------|---------|------|
 | `GET /avatar/v1/:accountName` | User **and** bot avatar (frontend routes dm/botDM room avatars here too) | public |
 | `GET /avatar/v1/room/:roomID` | Room avatar — **channel / discussion only** | public |
-| `PUT /avatar/v1/room/:roomID` | Upload a custom room avatar | **authn + ownership** |
-| `PUT /avatar/v1/bot/:botName` | Upload a custom bot avatar | **authn + ownership** |
-| `DELETE /avatar/v1/room/:roomID` · `…/bot/:botName` | Reset to dynamic default (optional) | **authn + ownership** |
+| `PUT /avatar/v1/bot/:botName` | Upload a custom bot avatar | **authn + authz** |
 
-Custom uploads are allowed for **bots and rooms only** — users never upload
-(their photo is the external employee-photo service). Custom image takes
-priority; the dynamic SVG (§8) is the fallback.
+**v1 write scope = bot uploads only.** Room and user avatars are never uploaded
+through this service: users resolve to the external employee-photo service, and
+room custom avatars are **read-only** — they arrive via a legacy-data migration
+that writes directly into the `avatars` collection + MinIO (§4.4), not through
+any endpoint. Room `PUT` and all `DELETE`/reset are out of scope for v1.
 
-Non-goals: per-size rendering (`_120` is fixed for the employee-photo
-redirect). **Read** endpoints are public; **write** endpoints require auth — the
-mechanism is the central open decision (§9).
+For any kind, a custom image (when present) takes priority; the dynamic SVG (§8)
+is the universal fallback.
+
+Non-goals: per-size rendering (`_120` is fixed for the employee-photo redirect);
+room/user uploads; deleting/resetting a custom avatar. **Read** endpoints are
+public; the bot-upload endpoint requires auth (§7a.4) — its **authorization
+source** is the remaining open item (§9).
 
 ## 2. Service shape
 
 A new flat service `avatar-service/` at repo root, following the per-service
-layout. **It does not use NATS** for its read path (a NATS dependency may enter
-only via the §9 upload-authz decision). Mongo + MinIO backed.
+layout. **It does not use NATS** — auth is OIDC-token validation (§7a.4), not a
+NATS callout. Mongo + MinIO backed.
 
 | File | Responsibility |
 |------|----------------|
 | `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO + `pkg/oidc` validator, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
-| `routes.go` | Register GET ×2 (public), PUT ×2 + DELETE ×2 (behind auth middleware), `GET /healthz` |
-| `handler.go` | Read path: resolve/redirect/stream decision tree |
-| `upload.go` | Write path: OIDC authn + `RoomMember` ownership middleware, validate (type/size/decode), store to MinIO, bump `AvatarVersion` |
+| `routes.go` | Register GET ×2 (public), `PUT /bot/:botName` (behind auth middleware), `GET /healthz` |
+| `handler.go` | Read path: resolve owning site → cross-cluster redirect → avatars-doc lookup → stream/default |
+| `upload.go` | Bot-upload write path: OIDC authn + bot authz middleware, validate (type/size/decode), store to MinIO, upsert `avatars` doc |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID`, `Bot`, `Room`, `RoomMemberRole`, `SetRoomAvatar`/`SetBotAvatar` (bump version) + `//go:generate mockgen` |
-| `store_mongo.go` | Mongo implementation (`users`, `rooms`, bots) |
+| `store.go` | `avatarStore` interface — `EmployeeID` (user), `RoomSite` (siteID+type via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
+| `store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
 | `mock_store_test.go` | Generated mock (never hand-edited) |
@@ -85,14 +89,15 @@ timeouts, ≥80% coverage via TDD.
 avatar-service (e.g. `xxx-2=https://avatar-service-xxx-2`). Cross-cluster
 redirects and `EMPLOYEE_PHOTO_BASE_URL` are **config**, never hardcoded.
 
-MinIO is **required** in v1 — it backs custom bot/room uploads (§6a).
+MinIO is **required** in v1 — it holds custom bot uploads and migrated room
+images (§4.4).
 
 ## 4. Common mechanisms
 
 ### 4.1 Proxy streaming (the MinIO-hit "serve image" step)
 
-When a **stored** image (a custom/uploaded room avatar) lives in *this*
-cluster's MinIO, the handler relays the bytes rather than redirecting again:
+When a **stored** image (a custom bot upload, or a migrated room image) lives in
+*this* cluster's MinIO, the handler relays the bytes rather than redirecting:
 
 1. `obj, err := mc.GetObject(ctx, bucket, key, opts)` — `*minio.Object` is an `io.Reader`.
 2. `st, err := obj.Stat()` → `Size`, `ContentType`, `ETag`.
@@ -121,11 +126,31 @@ dynamic default (§8) is the universal backstop that guarantees termination.
 
 - Baseline: `ETag` (from the MinIO object, or the deterministic hash for a
   generated default — §8) + `Cache-Control: public, max-age`.
-- Cache-busting via `?v={AvatarVersion}`: `AvatarVersion` lives on the bot/room
-  doc and is bumped on every upload/delete (§7a.2). The frontend already holds
-  it (room/bot metadata) and appends it, so a new upload is reflected
-  immediately even within the `max-age` window. A request carrying `?v` MAY be
-  served with a long `max-age` + `immutable`.
+- Cache-busting via `?v=`: **deferred**. The version now lives on the `avatars`
+  doc (§4.4), which avatar-service owns — the frontend's room/bot metadata
+  (sourced from room-service / apps) does not carry it, so a client-appended
+  `?v` is not yet wired. v1 relies on `ETag` revalidation; `?v`-based busting is
+  revisited once version propagation is designed (§9). A request that does carry
+  a `?v` MAY still be served with a long `max-age` + `immutable`.
+
+### 4.4 The `avatars` collection (custom-image existence source)
+
+A dedicated Mongo collection **owned by avatar-service**. **Presence of a
+document = "this entity has a custom image in MinIO";** absence = serve the
+dynamic default (§8). It is the authoritative existence check for both kinds, so
+the common "no custom image" case is a cheap `_id` point-lookup that never
+touches MinIO.
+
+- **Writers:** avatar-service writes a doc on a bot upload (§7a); the
+  legacy-data **migration** writes docs for pre-existing room images.
+  avatar-service never writes into room-service's `rooms` or the upstream `apps`
+  collection — it owns only `avatars`, respecting service data boundaries.
+- **Readers:** the GET path looks up the doc by entity key to decide
+  stream-from-MinIO vs dynamic default.
+- **Field schema:** finalized in a follow-up discussion. The `_id` keys the
+  entity (`<ownerType>:<ownerId>`), and the doc carries enough to serve the bytes
+  (MinIO key, detected content-type) and to validate caches without a MinIO Stat
+  (size, ETag).
 
 ## 5. Account format & parsing (Endpoint 1)
 
@@ -138,19 +163,23 @@ Parse: split `account` on `@` into `localPart` + optional `domain`. **Type is
 decided first by whether `localPart` ends in `.bot`.** For bots, `domain`
 (when present, ending `.example.com`) maps to the owning `siteID`.
 
+Owning-site resolution is isolated behind a single resolver seam so the read
+handler is agnostic to its source. **v1: a bot's owning `siteID` = the account
+`domain`** (no DB call); this can later be swapped for a `users`-record lookup
+(`SiteID` on the bot's user doc) without touching the redirect/stream logic.
+
 ## 6. Endpoint 1 — `GET /avatar/v1/:accountName`
 
 ```text
 localPart, domain := splitAt(accountName)
 if hasSuffix(localPart, ".bot"):            # ── bot (cluster-bound)
-    owning := siteFromDomain(domain)        # "" => treat as local
+    owning := resolveBotSite(localPart, domain)   # v1: from domain; "" => local
     if owning != "" && owning != cfg.SiteID && !fwd:
         307 → https://{clusterDomain(owning)}/avatar/v1/{accountName}?fwd=1
-    bot, found := store.Bot(ctx, localPart)              # local DB
-    if found && bot.AvatarVersion > 0:                   # custom upload wins
-        obj := mc.GetObject(ctx, bucket, botAvatarKey(localPart)); proxyStream(obj)
-    elif found && bot.LocationURL != "":  307 → bot.LocationURL
-    else:                                 serveDefault(localPart)
+    if av, found := store.Avatar(ctx, "bot", localPart); found:
+        proxyStream(mc.GetObject(ctx, bucket, av.MinioKey))   # custom upload (§4.1)
+    else:
+        serveDefault(localPart)                               # dynamic SVG (§8)
 else:                                        # ── user (synced; domain informational)
     eid, found := cache[localPart]
     if !found: eid, found = store.EmployeeID(ctx, localPart)   # MISS MUST hit DB
@@ -161,8 +190,10 @@ else:                                        # ── user (synced; domain infor
         serveDefault()
 ```
 
-- **Bot avatar precedence:** custom upload (MinIO) → bot `LocationURL` →
-  dynamic default. (Confirm this ordering — §9.)
+- **Bot read path:** resolve owning site → (cross-cluster redirect if remote) →
+  `avatars` doc present ? proxy-stream the MinIO object : dynamic default. There
+  is **no** redirect to an app-provided URL — every avatar is served through this
+  GET endpoint, so `App.AvatarURL` is not used.
 - `serveDefault()` **dynamically generates** a deterministic SVG from the
   account (§8) and returns it directly — it does not read from MinIO and does
   not store anything.
@@ -176,37 +207,37 @@ else:                                        # ── user (synced; domain infor
 ## 7. Endpoint 2 — `GET /avatar/v1/room/:roomID`
 
 ```text
-room, found := store.Room(ctx, roomID)
-if !found:                          serveDefault(roomID)   # incl. room owned by a cluster we can't resolve
-if room.Type in {dm, botDM}:        serveDefault(roomID)   # frontend should use Endpoint 1 instead
+room, found := store.RoomSite(ctx, roomID)   # SiteID + RoomType, via subscriptions
+if !found:                          serveDefault(roomID)   # unknown here → can't forward
+if room.RoomType in {dm, botDM}:    serveDefault(roomID)   # frontend should use Endpoint 1
 # channel / discussion:
 if room.SiteID != cfg.SiteID && !fwd:
     307 → https://{clusterDomain(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1
-if room.AvatarVersion == 0:         serveDefault(room)     # no custom image → dynamic SVG, no MinIO hit
-obj, err := mc.GetObject(ctx, bucket, roomAvatarKey(roomID))
-if found:        proxyStream(obj)          # stored custom image (§4.1)
-else:            serveDefault(room)         # race/inconsistency → dynamic SVG (§8)
+if av, found := store.Avatar(ctx, "room", roomID); found:
+    proxyStream(mc.GetObject(ctx, bucket, av.MinioKey))   # migrated custom image (§4.1)
+else:
+    serveDefault(roomID)                                   # dynamic SVG (§8)
 ```
 
-- The `AvatarVersion` flag on the room doc (bumped on upload, §6a) lets the
-  common "no custom image" case skip the MinIO round-trip and answer with the
-  dynamic default directly.
-- The generated default is **never written back** to MinIO. MinIO is read-only
-  on the GET path and only holds custom/uploaded images.
+- Owning site + room type come from the `subscriptions` collection
+  (`Subscription.SiteID` / `.RoomType`), so avatar-service does not read
+  room-service's `rooms` collection. No subscription record here → it cannot know
+  the owning site → serve the default (the frontend normally resolves the owning
+  domain first via the room-location service and hits the right cluster directly).
+- Room custom images are **read-only and migrated** — there is no room upload
+  (§1). The `avatars` doc (written by the migration, §4.4) is the existence
+  check; present → stream from MinIO, absent → dynamic default with no MinIO hit.
+- The generated default is **never written back** to MinIO.
 - dm/botDM are **user-type** avatars; the frontend fetches them via Endpoint 1
   using the counterpart user / bot account. If such a roomID nonetheless lands
   here, return the dynamic default (safe, not a 4xx).
-- Cross-cluster for rooms is a **defensive fallback**: normally the frontend
-  resolves the owning domain first (via the existing room-location service) and
-  hits the correct cluster directly. If this cluster has no record of the room,
-  it serves the default image (it cannot know the owning siteID to forward).
 
 ## 7a. Upload API (custom bot/room avatars)
 
-`PUT /avatar/v1/room/:roomID` and `PUT /avatar/v1/bot/:botName` accept a custom
-image (request body = raw image bytes; `Content-Type` declares the format).
-Users cannot upload. On success the custom image takes priority over the
-dynamic default on the GET path.
+`PUT /avatar/v1/bot/:botName` accepts a custom bot image (request body = raw
+image bytes; `Content-Type` declares the format). **Bots are the only uploadable
+kind in v1** — users and rooms never upload (§1). On success the custom image
+takes priority over the dynamic default on the bot's GET path.
 
 ### 7a.1 Validation & security (mandatory)
 
@@ -222,47 +253,47 @@ dynamic default on the GET path.
 - All responses (GET and the served upload) set `X-Content-Type-Options:
   nosniff` so browsers don't MIME-sniff the bytes into something executable.
 
-### 7a.2 Storage & versioning
+### 7a.2 Storage
 
-- Bytes stored in MinIO at the convention key (`room/{roomID}` / `bot/{botName}`),
-  with the validated `Content-Type` as object metadata.
-- After a successful put, **bump `AvatarVersion`** on the entity's Mongo doc.
-  This drives two things: the GET existence check (§7) and cache-busting — the
-  frontend appends `?v={AvatarVersion}` so a new upload is seen immediately
-  (§4.3). The MinIO object's `ETag` also changes naturally.
-- `DELETE` removes the object and sets `AvatarVersion = 0` → GET reverts to the
-  dynamic default.
+- Bytes stored in MinIO at the convention key (`bot/{botName}`), with the
+  **detected** content-type (from decode, not the client header) as object
+  metadata.
+- After a successful put, **upsert the bot's `avatars` doc** (§4.4, `_id =
+  bot:{botName}`) — its presence is the GET existence check (§6); it records the
+  MinIO key, detected content-type, size, and ETag. The MinIO object's `ETag`
+  changes naturally on overwrite.
+- No `DELETE`/reset in v1 (§1): a custom bot avatar can be **overwritten** by a
+  new upload but not cleared back to the default.
 
 ### 7a.3 Cluster locality
 
-Bots and rooms are cluster-bound, so an upload must land on the **owning
-cluster** (which owns the Mongo doc + MinIO). The frontend resolves the owning
-domain first (same room-location service as GET) and `PUT`s there directly. An
-upload that reaches the wrong cluster is **rejected** with an errcode pointing
-at the correct domain — we do **not** proxy/`307` the body cross-cluster
-(re-sending the upload body is wasteful; a 307 on PUT would resend it).
+Bots are cluster-bound, so an upload must land on the bot's **owning cluster**
+(which owns the MinIO bucket + `avatars` doc). The frontend resolves the owning
+site first and `PUT`s there directly. An upload that reaches the wrong cluster is
+**rejected** with an errcode pointing at the correct domain — we do **not**
+proxy/`307` the body cross-cluster (a 307 on PUT would resend the body).
 
 ### 7a.4 Authorization
 
-Every write is gated by an auth middleware (`upload.go`):
+The bot-upload endpoint is gated by an auth middleware (`upload.go`):
 
 1. **Authn — validate the Bearer OIDC token** with `pkg/oidc.NewValidator`
    (same issuer/audience config as auth-service; `OIDC_ISSUER_URL` /
    `OIDC_AUDIENCES`). Extract `account` from claims (`PreferredUsername`, else
    `Name` — mirroring auth-service). Missing/invalid token → `401`
    (`errcode.Unauthenticated`). `DEV_MODE` bypasses validation for local dev.
-2. **Authz — ownership via Mongo `RoomMember`.** For a room upload, look up the
-   caller's `RoomMember` record and require an owner/admin role; non-owner →
-   `403` (`errcode.Forbidden`). For a bot upload, require the caller to be the
-   bot's owner (bot doc's owner field). The store exposes the role lookup
-   (`store.RoomMemberRole(ctx, roomID, account)` / bot owner check).
+2. **Authz — who may set a given bot's avatar — is the open item (§9).** The
+   `apps` collection is upstream-provisioned, read-only, and has **no owner
+   field**, so there is no per-bot ownership source to key on yet. Candidate
+   approaches (platform-admin role via `User.Roles`, an internal/service token,
+   or a new bot-owner mapping) are under discussion.
 
 Read endpoints (GET) remain public — no token required.
 
 ## 8. Default image — dynamic, deterministic, not persisted
 
 The universal fallback for **every** kind (user, bot, room) — whenever the
-external photo / bot `LocationURL` / MinIO custom image is absent — is an
+external employee photo / MinIO custom image is absent — is an
 **SVG "initials" avatar generated on the fly and returned directly to the
 client**. It is **never written back to MinIO or Mongo**.
 
@@ -278,6 +309,11 @@ func renderDefaultSVG(seed, initial string) []byte
   fixed hash (e.g. FNV-1a). Same `seed` → same colour, forever, everywhere.
 - **Initial** = the first display glyph; CJK names render via the client's
   system fonts (SVG `<text>`), so **no embedded font and zero new dependencies**.
+- **Injection-safe (mandatory):** `seed`/`initial` are user-controlled (room
+  name, account), so any value placed in the SVG `<text>` MUST be XML-escaped and
+  the initial restricted to a single safe rune. The output is served as
+  `image/svg+xml`, so an unescaped `<`/`>` is the **same stored-XSS** we reject
+  uploads for (§7a.1). (Tracked in §9.)
 - `Content-Type: image/svg+xml`.
 
 **Seed / initial sources:**
@@ -311,44 +347,69 @@ are never stored, so there is no lazy "generate-and-store" and no pre-warm hook
 — a deterministic default needs no warming. A shared `renderDefaultSVG` keeps
 the rendering in one place.
 
-## 9. Resolved decisions & deferred items
+## 9. Resolved decisions & open items
 
-**Resolved** (this session):
-- **Upload authn** → validate the Bearer **OIDC token** via `pkg/oidc` (§7a.4).
-- **Upload ownership** → **Mongo `RoomMember` role** lookup (room) / bot owner
-  field (bot) (§7a.4).
-- **Upload formats** → **PNG/JPEG only** in v1; SVG uploads always rejected (§7a.1).
+**Resolved:**
+- **Write scope** → **bot uploads only** in v1; no room/user upload, no
+  `DELETE`/reset (§1).
+- **`avatars` collection** → avatar-service-owned; **doc presence = has custom
+  image**; authoritative existence source for room + bot; migration writes room
+  docs, avatar-service writes bot docs (§4.4).
+- **Unified read model** → resolve owning `siteID` → cross-cluster redirect →
+  local `avatars`-doc lookup → MinIO stream or dynamic default (§6, §7).
+- **Bot owning site** → from the account `domain` in v1, behind a resolver seam
+  (swappable to a `users`-record lookup) (§5).
+- **Room owning site + type** → from the `subscriptions` collection, not `rooms`
+  (§7).
+- **`App.AvatarURL` removed** → every avatar is served through this GET endpoint;
+  no redirect to an app-provided URL (§6).
+- **Upload authn** → OIDC Bearer-token validation via `pkg/oidc` (§7a.4).
+- **Upload formats** → PNG/JPEG only; SVG uploads rejected (§7a.1).
 
-**Deferred / to confirm:**
-- **Bot avatar precedence** (§6): confirm custom upload → `LocationURL` →
-  default is the intended order.
-- **WebP support** (§7a.1): deferred — would need `golang.org/x/image` (new dep,
-  ask first). Also TBD: re-encode-to-normalize vs store-as-is.
-- **Read-path privacy:** GET stays public; the redirect `Location` exposes
+**Open / in progress:**
+- **Bot-upload authorization source** (§7a.4) — the active discussion. `apps` has
+  no owner field; pick the authz model (platform-admin / service token / new
+  owner mapping).
+- **`avatars` field schema** (§4.4) — being finalized next.
+
+**Deferred / to address before implementation:**
+- **Default-SVG injection (S1):** the generated SVG embeds user-controlled text
+  in `<text>`; it MUST be XML-escaped and the initial restricted to a safe single
+  rune, or it is the same stored-XSS we reject uploaded SVGs for (§8).
+- **`?v` cache-bust propagation (C3):** the version lives on the `avatars` doc the
+  frontend can't see; v1 is ETag-only (§4.3).
+- **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
+  Also TBD: re-encode-to-normalize vs store-as-is.
+- **Cross-cutting observability:** add OTel tracing + Prometheus metrics per
+  CLAUDE.md (cache-hit / bytes / latency) — not yet in §2.
+- **Read-path privacy:** the employee-photo redirect `Location` exposes
   `employeeID` (org-info leakage / account enumeration). Accept, or gate later.
 - **Employee-photo 404:** the external host may 404 for a user with no photo →
-  broken image in the browser (inherent to the redirect approach). A default is
-  only served for *our* lookups, not for the external host's 404.
+  broken image (inherent to the redirect). A default is only served for *our*
+  lookups, not for the external host's 404.
 
 ## 10. Testing plan (TDD)
 
 - **Handler unit tests** (`handler_test.go`, mocked `avatarStore` + a stream
   seam): table-driven over Endpoint 1 (user local hit/miss, cache hit/miss→DB,
-  bot local vs cross-cluster, `fwd=1` no-re-redirect, dynamic-default fallback)
-  and Endpoint 2 (channel MinIO-hit stream, MinIO-miss→dynamic default,
-  dm/botDM→default, remote→307, not-found→default, `If-None-Match`→304). Assert
-  status code, `Location`, `Cache-Control`, `ETag`, and body bytes/Content-Type.
-- **Upload unit tests** (`upload.go`): accept PNG/JPEG within size; reject
+  bot local vs cross-cluster, `fwd=1` no-re-redirect, bot avatars-doc hit→stream,
+  miss→dynamic default) and Endpoint 2 (room resolved via subscription: channel
+  avatars-doc hit→stream, miss→dynamic default, dm/botDM→default, remote→307,
+  not-found→default, `If-None-Match`→304). Assert status code, `Location`,
+  `Cache-Control`, `ETag`, and body bytes/Content-Type.
+- **Bot-upload unit tests** (`upload.go`): accept PNG/JPEG within size; reject
   oversize (`MAX_UPLOAD_BYTES`), reject `image/svg+xml` and non-image bytes,
-  reject decode failures; on success store to MinIO + bump `AvatarVersion`;
-  `DELETE` removes object + zeroes version; wrong-cluster → rejected with
-  guiding error; unauthorized/non-owner → 401/403; assert `nosniff` header.
+  reject decode failures; on success store to MinIO + upsert the `avatars` doc;
+  wrong-cluster → rejected with guiding error; missing/invalid token → 401;
+  assert `nosniff` header. (Bot authz cases added once §9 resolves.)
 - **Generation unit tests:** `renderDefaultSVG` is **deterministic** — same
   `(seed, initial)` yields byte-identical SVG *and* the same `ETag` across
-  repeated calls; stable colour per seed, correct initial (incl. CJK), valid XML.
+  repeated calls; stable colour per seed, correct initial (incl. CJK), valid +
+  injection-safe XML (escapes hostile names).
 - **Integration** (`integration_test.go`, `//go:build integration`): Mongo +
   MinIO from `pkg/testutil`; real GetObject/Stat/stream round-trip for a stored
-  custom image, 304 path, and MinIO-miss → dynamic default (nothing written back).
+  custom image, 304 path, and avatars-doc-miss → dynamic default (nothing written
+  back).
 - Coverage ≥80% (target 90% on handler + generation).
 
 ## 11. Docs to update on implementation
