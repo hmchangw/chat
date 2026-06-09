@@ -3435,3 +3435,62 @@ func TestBotAndAdminPredicate_GoAndMongoAgree_Integration(t *testing.T) {
 		}
 	}
 }
+
+func TestMongoStore_GetThreadUnreadSummary_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	const account = "alice@example.com"
+	const site = "site-a"
+	seen := time.Now().UTC().Add(-time.Hour)
+	newer := time.Now().UTC()
+	older := time.Now().UTC().Add(-2 * time.Hour)
+
+	_, err := db.Collection("rooms").InsertMany(ctx, []interface{}{
+		model.Room{ID: "room-chan", Type: model.RoomTypeChannel, SiteID: site},
+		model.Room{ID: "room-dm", Type: model.RoomTypeDM, SiteID: site},
+	})
+	require.NoError(t, err)
+
+	_, err = db.Collection("thread_rooms").InsertMany(ctx, []interface{}{
+		model.ThreadRoom{ID: "tr1", RoomID: "room-chan", SiteID: site, LastMsgAt: newer},
+		model.ThreadRoom{ID: "tr2", RoomID: "room-dm", SiteID: site, LastMsgAt: newer},
+		model.ThreadRoom{ID: "tr3", RoomID: "room-chan", SiteID: site, LastMsgAt: older},
+	})
+	require.NoError(t, err)
+
+	seenCopy := seen
+	_, err = db.Collection("thread_subscriptions").InsertMany(ctx, []interface{}{
+		model.ThreadSubscription{ID: "ts1", ThreadRoomID: "tr1", RoomID: "room-chan", UserAccount: account, SiteID: site, LastSeenAt: &seenCopy},
+		model.ThreadSubscription{ID: "ts2", ThreadRoomID: "tr2", RoomID: "room-dm", UserAccount: account, SiteID: site, LastSeenAt: &seenCopy, HasMention: true},
+		model.ThreadSubscription{ID: "ts3", ThreadRoomID: "tr3", RoomID: "room-chan", UserAccount: account, SiteID: site, LastSeenAt: &newer},
+	})
+	require.NoError(t, err)
+
+	t.Run("rolls up unread, dm, mention, and max lastMessageAt", func(t *testing.T) {
+		got, err := store.GetThreadUnreadSummary(ctx, account, site)
+		require.NoError(t, err)
+		assert.True(t, got.Unread)
+		assert.True(t, got.UnreadDirectMessage)
+		assert.True(t, got.UnreadMention)
+		require.NotNil(t, got.LastMessageAt)
+		assert.WithinDuration(t, newer, got.LastMessageAt.UTC(), time.Millisecond)
+	})
+
+	t.Run("no subscriptions yields zero-value summary", func(t *testing.T) {
+		got, err := store.GetThreadUnreadSummary(ctx, "nobody@example.com", site)
+		require.NoError(t, err)
+		assert.False(t, got.Unread)
+		assert.False(t, got.UnreadDirectMessage)
+		assert.False(t, got.UnreadMention)
+		assert.Nil(t, got.LastMessageAt)
+	})
+
+	t.Run("other site is filtered out", func(t *testing.T) {
+		got, err := store.GetThreadUnreadSummary(ctx, account, "site-b")
+		require.NoError(t, err)
+		assert.False(t, got.Unread)
+		assert.Nil(t, got.LastMessageAt)
+	})
+}
