@@ -209,10 +209,14 @@ Serialization uses `encoding/json`, matching the project-wide convention.
   payload encryption. Keys are 32 bytes; nonces are 12 bytes generated from
   `crypto/rand` per operation; the 16-byte GCM auth tag is appended to each
   ciphertext.
-- **DEK generation:** Vault's transit `datakey/plaintext/<key>` endpoint
-  returns a fresh 256-bit DEK alongside its wrapped form in one call. In
-  HSM-backed Vault deployments the DEK is generated inside the HSM, so
-  the plaintext material originates there rather than in this process.
+- **DEK generation:** Vault's transit `datakey/wrapped/<key>` endpoint
+  mints a fresh 256-bit DEK and returns only its KEK-wrapped form; the
+  plaintext is then recovered with a `decrypt` call. In HSM-backed Vault
+  deployments the DEK is generated inside the HSM, so the plaintext
+  material originates there rather than in this process. Using the wrapped
+  endpoint (rather than `datakey/plaintext`) means a service's Vault
+  policy needs only `datakey/wrapped` + `decrypt`, never the
+  plaintext-datakey capability.
 - AES-GCM is consistent with `pkg/roomcrypto`; no new crypto primitives are
   introduced.
 
@@ -298,9 +302,10 @@ Encrypt logic:
 
 1. Look up cached `cipher.AEAD` by `roomID`.
 2. On cache miss: `DEKStore.Get`. If absent, call
-   `KeyWrapper.GenerateDataKey(ctx)` (Vault's transit `datakey/plaintext`
-   endpoint) which returns both the plaintext DEK and its wrapped form
-   in one call, then `DEKStore.Upsert`. A re-`Get` detects a concurrent
+   `KeyWrapper.GenerateDataKey(ctx)` (Vault's transit `datakey/wrapped`
+   endpoint, then `decrypt` to recover the plaintext) which returns both
+   the plaintext DEK and its wrapped form, then `DEKStore.Upsert`. A
+   re-`Get` detects a concurrent
    winner — if our wrapped bytes don't match, the winner's `WrappedDEK`
    is unwrapped via `KeyWrapper.Unwrap` instead. Build an AES-256-GCM
    AEAD around the unwrapped DEK and cache it.
@@ -438,9 +443,9 @@ One PR per step, each independently revertable:
 4. Wire decrypt into history-service read path. Add re-encrypt to edit
    and delete paths.
 5. Provision Vault in each environment: enable the transit engine,
-   create the `chat-kek` named key, configure a Kubernetes auth role
-   bound to each service's ServiceAccount with `decrypt` and `encrypt`
-   capabilities on `transit/encrypt/chat-kek` and
+   create the `chat-kek` named key, configure an auth role (Kubernetes or
+   AppRole) bound to each service with `update` capability on
+   `transit/datakey/wrapped/chat-kek`, `transit/encrypt/chat-kek`, and
    `transit/decrypt/chat-kek`. Confirm new messages are stored
    encrypted in staging Cassandra.
 6. (Future, separate spec.) Backfill of legacy plaintext rows.

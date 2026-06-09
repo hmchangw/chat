@@ -53,6 +53,18 @@ type RoomStore interface {
 	GetRoom(ctx context.Context, id string) (*model.Room, error)
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	// ListMemberStatuses returns up to `limit` members of roomID, each
+	// projected from the corresponding users document as {account, engName,
+	// chineseName, statusIsShow, statusText}. Subscriptions whose user
+	// document is missing are dropped. Caller is responsible for the limit
+	// cap (handler enforces > 0 and <= room.UserCount).
+	ListMemberStatuses(ctx context.Context, roomID string, limit int) ([]model.MemberStatus, error)
+	// ListMentionableSubscriptions returns up to `limit` mentionable members
+	// of roomID (users + apps), excluding excludeAccount, whose searchable
+	// keyword matches escapedFilter (case-insensitive substring). escapedFilter
+	// must already be regex-escaped (the handler runs regexp.QuoteMeta).
+	// Empty escapedFilter matches everything.
+	ListMentionableSubscriptions(ctx context.Context, roomID, excludeAccount, escapedFilter string, limit int) ([]model.MentionableSubscription, error)
 	GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error)
 	CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error)
 	CountOwners(ctx context.Context, roomID string) (int, error)
@@ -62,7 +74,7 @@ type RoomStore interface {
 	// dropped from the candidate set. create-channel passes the requester's
 	// account so an org-expanded requester is not double-counted against the
 	// cap (the requester is added separately as the owner).
-	// Used by handleAddMembers and handleCreateRoomChannel for capacity validation.
+	// Used by addMembers and handleCreateRoomChannel for capacity validation.
 	// Delegates to pkg/pipelines.GetNewMembersPipeline + a $count terminal stage.
 	CountNewMembers(ctx context.Context, orgIDs, directAccounts []string, roomID, excludeAccount string) (int, error)
 	// ListRoomMembers returns the members of roomID. When enrich=true, the
@@ -76,7 +88,7 @@ type RoomStore interface {
 	// not valid").
 	ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error)
 	// FindExistingOrgIDs returns the subset of orgIDs that match at least
-	// one user via sectId or deptId. Used by handleAddMembers and
+	// one user via sectId or deptId. Used by addMembers and
 	// handleCreateRoomChannel to reject requests carrying phantom org IDs
 	// before they reach the canonical stream — without this gate the
 	// worker would write a room_members row and fan out a "members added"

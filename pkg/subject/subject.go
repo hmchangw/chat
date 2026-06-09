@@ -197,6 +197,10 @@ func MsgCanonicalUnpinned(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.unpinned", siteID)
 }
 
+func MsgCanonicalReacted(siteID string) string {
+	return fmt.Sprintf("chat.msg.canonical.%s.reacted", siteID)
+}
+
 func RoomEvent(roomID string) string {
 	return fmt.Sprintf("chat.room.%s.event", roomID)
 }
@@ -262,6 +266,29 @@ func MemberRemoveWildcard(siteID string) string {
 
 func MemberListWildcard(siteID string) string {
 	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.list", siteID)
+}
+
+// MemberStatuses is the concrete subject for the per-room member.statuses RPC.
+// Pair with MemberStatusesWildcard for room-service's QueueSubscribe.
+func MemberStatuses(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.member.statuses", account, roomID, siteID)
+}
+
+// MemberStatusesWildcard is the per-site subscription pattern for member.statuses.
+func MemberStatusesWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.member.statuses", siteID)
+}
+
+// MentionableSubscriptions is the concrete subject for the per-room
+// subscription.mentionable RPC. Pair with MentionableSubscriptionsWildcard
+// for room-service's QueueSubscribe.
+func MentionableSubscriptions(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.subscription.mentionable", account, roomID, siteID)
+}
+
+// MentionableSubscriptionsWildcard is the per-site subscription pattern for subscription.mentionable.
+func MentionableSubscriptionsWildcard(siteID string) string {
+	return fmt.Sprintf("chat.user.*.request.room.*.%s.subscription.mentionable", siteID)
 }
 
 // OrgMembers builds the subject for listing members of an org. siteID
@@ -387,6 +414,12 @@ func MsgUnpinPattern(siteID string) string {
 // MsgPinnedListPattern is the natsrouter pattern for listing a room's pinned messages.
 func MsgPinnedListPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.pinned.list", siteID)
+}
+
+// MsgReactPattern is the natsrouter pattern for toggling a reaction on a message.
+// The {account} and {roomID} placeholders are extracted by natsrouter.
+func MsgReactPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.react", siteID)
 }
 
 func MsgThreadPattern(siteID string) string {
@@ -570,6 +603,76 @@ func SearchUsers(account, siteID string) string {
 // SearchUsersPattern is the natsrouter pattern for user search.
 func SearchUsersPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.search.%s.users", siteID)
+}
+
+// --- room-service natsrouter pattern builders (siteID baked in) ---
+
+func RoomCreatePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.%s.create", siteID)
+}
+
+func MemberRoleUpdatePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.member.role-update", siteID)
+}
+
+func MemberRemovePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.member.remove", siteID)
+}
+
+func MemberAddPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.member.add", siteID)
+}
+
+func MemberListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.member.list", siteID)
+}
+
+func MemberStatusesPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.member.statuses", siteID)
+}
+
+func MentionableSubscriptionsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.subscription.mentionable", siteID)
+}
+
+func OrgMembersPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.orgs.{orgID}.%s.members", siteID)
+}
+
+func MessageReadPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.message.read", siteID)
+}
+
+func MessageReadReceiptPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.message.read-receipt", siteID)
+}
+
+func MessageThreadReadPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.message.thread.read", siteID)
+}
+
+func RoomKeyGetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.key.get", siteID)
+}
+
+func MuteTogglePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.mute.toggle", siteID)
+}
+
+func FavoriteTogglePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.favorite.toggle", siteID)
+}
+
+func RoomRenamePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.room.rename", siteID)
+}
+
+func RoomAppTabsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.app.tabs", siteID)
+}
+
+func RoomAppCmdMenuPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.app.cmd-menu", siteID)
 }
 
 // isValidAccountToken rejects empty tokens and tokens containing NATS wildcard

@@ -4,14 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"time"
 
-	"github.com/nats-io/nats.go"
-
 	"github.com/hmchangw/chat/pkg/errcode"
-	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -36,9 +32,9 @@ var (
 	errRoomTypeGuard         = errcode.BadRequest("role update is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 	errAddMembersChannelOnly = errcode.BadRequest("cannot add members to a non-channel room", errcode.WithReason(errcode.RoomNonChannelOperation))
 	errTargetNotMember       = errcode.BadRequest("target user is not a member of this room", errcode.WithReason(errcode.RoomTargetNotMember))
-	// Used by both list-members (requester subscription check) and add-member
-	// channel-source expansion. Both contexts mean "the requester is not a
-	// member of the room they are asking about".
+	// Shared sentinel for any membership-gated RPC (list-members,
+	// member.statuses, subscription.mentionable, message.read) and the
+	// add-member channel-source expansion.
 	errNotRoomMember     = errcode.Forbidden("only room members can perform this action", errcode.WithReason(errcode.RoomNotMember))
 	errInvalidThreadID   = errcode.BadRequest("threadId is required")
 	errThreadSubNotFound = errcode.NotFound("thread subscription not found")
@@ -73,6 +69,10 @@ var (
 	errListLimitInvalid  = errcode.BadRequest("limit must be > 0")
 	errListOffsetInvalid = errcode.BadRequest("offset must be >= 0")
 
+	// Sentinels for member.statuses + subscription.mentionable limit validation.
+	errMemberStatusesLimitInvalid = errcode.BadRequest("limit must be > 0 and <= room user count")
+	errMentionableLimitInvalid    = errcode.BadRequest("limit must be > 0 and <= room user count + app count")
+
 	// errRoomKeyAbsent is returned when the requested key version is not held
 	// by the key store (either the current key is missing or the historical
 	// version has aged out of the grace window).
@@ -88,7 +88,6 @@ var (
 	errRenameChannelOnly        = errcode.BadRequest("rename is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 	errRestrictedChannelOnly    = errcode.BadRequest("restricted change is only allowed in channel rooms", errcode.WithReason(errcode.RoomNonChannelOperation))
 	errRoomNotFound             = errcode.NotFound("room not found")
-	errInvalidRenameSubject     = errcode.BadRequest("invalid rename subject")
 	errInvalidRestrictedSubject = errcode.BadRequest("invalid restricted subject")
 	// App-read RPC sentinels (app.tabs / app.cmd-menu). Forbidden when the
 	// caller is neither a room member nor a platform admin; Internal when a
@@ -98,6 +97,11 @@ var (
 )
 
 var botPattern = regexp.MustCompile(`\.bot$|^p_`)
+
+// platformAdminRegex matches platform-admin / webhook accounts by their `p_`
+// prefix. Mentionable autocomplete hides these accounts entirely so they do
+// not appear as `@`-mention targets.
+const platformAdminRegex = `^p_`
 
 // sameFloor reports whether two read-floor pointers represent the same instant.
 // Two nil pointers are equal (both "no floor"); a nil and a non-nil differ; two
@@ -214,19 +218,13 @@ func (h *Handler) marshalBounded(v any) ([]byte, error) {
 	return body, nil
 }
 
-// replyBoundedJSON sends v on msg's reply subject, enforcing the negotiated
-// NATS max_payload. nats* handlers use this in place of natsutil.ReplyJSON
-// when a response payload could exceed max_payload; an oversize payload is
-// surfaced to the caller via errnats.Reply rather than silently dropped.
-func (h *Handler) replyBoundedJSON(ctx context.Context, msg *nats.Msg, v any) {
-	body, err := h.marshalBounded(v)
-	if err != nil {
-		errnats.Reply(ctx, msg, err)
-		return
+// boundedReply size-checks resp against maxResponseBytes and returns it for the
+// router to marshal, or errResponseTooLarge if it would overflow the payload.
+func boundedReply[T any](h *Handler, resp *T) (*T, error) {
+	if _, err := h.marshalBounded(resp); err != nil {
+		return nil, err
 	}
-	if err := msg.Respond(body); err != nil {
-		slog.ErrorContext(ctx, "reply failed", "error", err)
-	}
+	return resp, nil
 }
 
 // isURLSafeIDToken reports whether s is safe to inline into a URL

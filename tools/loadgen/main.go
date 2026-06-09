@@ -123,9 +123,10 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history|room-read")
+	workload := fs.String("workload", "messages", "messages|members|history|read-receipt|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
+	readRatio := fs.Float64("read-ratio", 0.7, "read-receipt only: fraction of each room's subscribers to mark as readers")
 	// --users overrides preset.Users for the messages workload (daily presets
 	// hard-code 10000; pass --users=50000 to seed and run at a larger scale).
 	// Must match between `loadgen seed` and `loadgen daily` invocations, or
@@ -144,6 +145,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 		return runSeedMembers(ctx, cfg, *preset, *seed)
 	case "history":
 		return runSeedHistory(ctx, cfg, *preset, *seed)
+	case "read-receipt":
+		return runSeedReadReceipt(ctx, cfg, *preset, *seed, *readRatio)
 	case "room-read":
 		return runSeedRoomRead(ctx, cfg, *preset, *seed)
 	default:

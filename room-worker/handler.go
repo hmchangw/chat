@@ -11,17 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/errcode"
-	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
@@ -676,6 +675,59 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	return nil
 }
 
+// addMemberInputs bundles the three independent up-front reads processAddMembers
+// needs. None depends on another, so loadAddMemberInputs fetches them
+// concurrently to collapse three serial Mongo round trips into one.
+type addMemberInputs struct {
+	room          *model.Room
+	candidates    []AddMemberCandidate
+	hadOrgsBefore bool
+}
+
+// loadAddMemberInputs runs GetRoom, ListAddMemberCandidates, and
+// HasOrgRoomMembers concurrently, collapsing three serial Mongo round trips into
+// one. A plain errgroup.Group (not WithContext) is used deliberately: these are
+// independent reads, so a failure in one need not cancel the others — matching
+// the prior serial code, which returned the first error without cancellation.
+// g.Wait returns the first error; each is wrapped exactly as the serial code
+// did. Each goroutine writes a distinct field of out (no race) and g.Wait
+// establishes the happens-before for the reads of out below.
+func (h *Handler) loadAddMemberInputs(ctx context.Context, req *model.AddMembersRequest) (addMemberInputs, error) {
+	var (
+		out addMemberInputs
+		g   errgroup.Group
+	)
+	g.Go(func() error {
+		room, err := h.store.GetRoom(ctx, req.RoomID)
+		if err != nil {
+			return fmt.Errorf("get room: %w", err)
+		}
+		out.room = room
+		return nil
+	})
+	g.Go(func() error {
+		candidates, err := h.store.ListAddMemberCandidates(ctx, req.Orgs, req.Users, req.RoomID)
+		if err != nil {
+			return fmt.Errorf("list add-member candidates: %w", err)
+		}
+		out.candidates = candidates
+		return nil
+	})
+	g.Go(func() error {
+		// Fail closed: defaulting hadOrgsBefore=false on error would trigger spurious first-org backfill.
+		hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
+		if err != nil {
+			return fmt.Errorf("check existing org room members: %w", err)
+		}
+		out.hadOrgsBefore = hadOrgsBefore
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return addMemberInputs{}, err
+	}
+	return out, nil
+}
+
 func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error) {
 	// Defer must cover early failures; populate requesterAccount/roomID once available.
 	var (
@@ -696,31 +748,22 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		req.Timestamp = time.Now().UTC().UnixMilli()
 	}
 
-	room, err := h.store.GetRoom(ctx, req.RoomID)
+	// Fetch the three independent inputs concurrently (one round trip instead
+	// of three). candidates carries per-candidate flags (has-sub /
+	// has-individual-row) that split the writes into needSub (no subscription
+	// yet) and needIRM (no individual room_members row yet, writeIndividuals-
+	// gated) — this is what makes the org→individual upgrade path work.
+	inputs, err := h.loadAddMemberInputs(ctx, &req)
 	if err != nil {
-		return fmt.Errorf("get room: %w", err)
+		return err
 	}
+	room := inputs.room
 	// Defensive channel-only guard.
 	if room.Type != model.RoomTypeChannel {
 		return permanent(errcode.BadRequest(fmt.Sprintf("add-member only valid on channel rooms, got %s", room.Type)))
 	}
-
-	// Resolve candidates and per-candidate flags (has-sub / has-individual-row).
-	// Splits the writes into needSub (no subscription yet) and needIRM (no
-	// individual room_members row yet, writeIndividuals-gated): this is what
-	// makes the org→individual upgrade path work — alice already has a sub
-	// from an earlier org expansion, but no individual row, so an explicit
-	// re-add via req.Users only needs to write the missing IRM row.
-	candidates, err := h.store.ListAddMemberCandidates(ctx, req.Orgs, req.Users, req.RoomID)
-	if err != nil {
-		return fmt.Errorf("list add-member candidates: %w", err)
-	}
-
-	// Fail closed: defaulting hadOrgsBefore=false on error would trigger spurious first-org backfill.
-	hadOrgsBefore, err := h.store.HasOrgRoomMembers(ctx, req.RoomID)
-	if err != nil {
-		return fmt.Errorf("check existing org room members: %w", err)
-	}
+	candidates := inputs.candidates
+	hadOrgsBefore := inputs.hadOrgsBefore
 	writeIndividuals := len(req.Orgs) > 0 || hadOrgsBefore
 
 	allowedIndividual := make(map[string]struct{}, len(req.Users))
@@ -1533,20 +1576,12 @@ var (
 	errRoomIDCollision = permanent(errcode.Conflict("room id collision (existing room metadata mismatch)"))
 )
 
-// handleSyncCreateDM creates a DM, self-DM, or botDM room and returns the requester's subscription.
-// Errors flow through the centralized errcode.Classify path (the legacy
-// sanitizeSyncDMError helper was retired by the errcode migration).
-func (h *Handler) handleSyncCreateDM(ctx context.Context, data []byte) (*model.SyncCreateDMReply, error) {
+// serverCreateDM creates a DM, self-DM, or botDM room and returns the requester's
+// subscription; the router unmarshals req and supplies the request ID.
+func (h *Handler) serverCreateDM(c *natsrouter.Context, req model.SyncCreateDMRequest) (*model.SyncCreateDMReply, error) {
+	var ctx context.Context = c
 	requestID := natsutil.RequestIDFromContext(ctx)
 
-	var req model.SyncCreateDMRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		// Single %w on the errcode sentinel preserves errors.Is identity;
-		// the json.Unmarshal error text is folded in as %v so it surfaces in
-		// Classify's server-side log line without adding a second errcode to
-		// the chain (the semgrep no-multi-%w rule trips on two %w verbs).
-		return nil, fmt.Errorf("%w: %v", errInvalidSyncDMRequest, err)
-	}
 	if err := validateSyncCreateDMShape(&req); err != nil {
 		return nil, err
 	}
@@ -1686,7 +1721,7 @@ func (h *Handler) createSelfDM(ctx context.Context, requester *model.User, reque
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	// Provision the at-rest DEK before persisting the room (see handleSyncCreateDM).
+	// Provision the at-rest DEK before persisting the room (see serverCreateDM).
 	if h.dekProvisioner != nil {
 		if err := h.dekProvisioner.EnsureDEK(ctx, room.ID); err != nil {
 			return nil, fmt.Errorf("provision at-rest DEK for self-DM room %s: %w", room.ID, err)
@@ -1899,40 +1934,18 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	if err != nil {
 		return fmt.Errorf("marshal outbox envelope: %w", err)
 	}
-	// Dedup seed keys on room.CreatedAt (stable across retries and re-subscribes)
-	// rather than joinedAt — botDM re-subscribes carry a fresh joinedAt that
-	// would otherwise defeat JetStream dedup on a NATS request retry.
+	// Dedup keys on intrinsic room identity (stable across retries and
+	// re-subscribes) plus the destination site, NOT the request ID — the router
+	// now mints a fresh X-Request-ID when absent, which must not change the
+	// dedup key. room.CreatedAt is the original creation time on a retry (the
+	// duplicate-key reconcile path resolves room to the existing record); using
+	// joinedAt would break dedup because botDM re-subscribes carry a fresh value.
 	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, room.CreatedAt.UnixMilli())
 	return h.publish(ctx,
 		subject.Outbox(room.SiteID, other.SiteID, model.OutboxMemberAdded),
 		eData,
-		natsutil.OutboxDedupID(ctx, other.SiteID, payloadSeed),
+		payloadSeed+":"+other.SiteID,
 	)
-}
-
-// requireDedupRequestID is the strict X-Request-ID gate used by sync entry
-// points (natsServerCreateDM) whose downstream pipeline derives JetStream
-// Nats-Msg-Id and message-ID dedup keys from the request ID. Silently minting
-// would break client-retry dedup; see docs/error-handling.md §3a. Thin wrapper
-// over natsutil.RequireRequestID so the test sits in the same package.
-func requireDedupRequestID(ctx context.Context, headers nats.Header, subject string) (context.Context, string, error) {
-	return natsutil.RequireRequestID(ctx, headers, subject)
-}
-
-// natsServerCreateDM is the NATS entry point for chat.server.request.room.{siteID}.create.dm.
-func (h *Handler) natsServerCreateDM(m otelnats.Msg) {
-	ctx, id, err := requireDedupRequestID(m.Context(), m.Msg.Header, m.Msg.Subject)
-	if err != nil {
-		errnats.Reply(errcode.WithLogValues(m.Context(), "subject", m.Msg.Subject), m.Msg, err)
-		return
-	}
-	ctx = errcode.WithLogValues(ctx, "request_id", id, "subject", m.Msg.Subject)
-	reply, err := h.handleSyncCreateDM(ctx, m.Msg.Data)
-	if err != nil {
-		errnats.Reply(ctx, m.Msg, err)
-		return
-	}
-	natsutil.ReplyJSON(m.Msg, reply)
 }
 
 // fanOutRoomKeyToSurvivors sends the already-fetched room key to every survivor
