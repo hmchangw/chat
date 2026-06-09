@@ -208,6 +208,11 @@ func TestThreadUnreadSummaryResponseJSON(t *testing.T) {
 	roundTrip(t, &r, &model.ThreadUnreadSummaryResponse{})
 }
 
+func TestThreadUnreadSummaryRequestJSON(t *testing.T) {
+	r := model.ThreadUnreadSummaryRequest{UserAccount: "alice@example.com"}
+	roundTrip(t, &r, &model.ThreadUnreadSummaryRequest{})
+}
+
 func TestMessageJSON(t *testing.T) {
 	t.Run("with threadParentMessageId", func(t *testing.T) {
 		m := model.Message{
