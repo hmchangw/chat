@@ -41,8 +41,8 @@ is the universal fallback.
 
 Non-goals: per-size rendering (`_120` is fixed for the employee-photo redirect);
 room/user uploads; deleting/resetting a custom avatar. **Read** endpoints are
-public; the bot-upload endpoint requires auth (§7a.4) — its **authorization
-source** is the remaining open item (§9).
+public; the bot-upload endpoint requires OIDC auth + **platform-admin** role
+(§7a.4).
 
 ## 2. Service shape
 
@@ -57,7 +57,7 @@ NATS callout. Mongo + MinIO backed.
 | `handler.go` | Read path: resolve owning site → cross-cluster redirect → avatars-doc lookup → stream/default |
 | `upload.go` | Bot-upload write path: OIDC authn + bot authz middleware, validate (type/size/decode), store to MinIO, upsert `avatars` doc |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID` (user), `RoomSite` (siteID+type via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
+| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `RoomSite` (siteID+type via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
@@ -282,11 +282,14 @@ The bot-upload endpoint is gated by an auth middleware (`upload.go`):
    `OIDC_AUDIENCES`). Extract `account` from claims (`PreferredUsername`, else
    `Name` — mirroring auth-service). Missing/invalid token → `401`
    (`errcode.Unauthenticated`). `DEV_MODE` bypasses validation for local dev.
-2. **Authz — who may set a given bot's avatar — is the open item (§9).** The
-   `apps` collection is upstream-provisioned, read-only, and has **no owner
-   field**, so there is no per-bot ownership source to key on yet. Candidate
-   approaches (platform-admin role via `User.Roles`, an internal/service token,
-   or a new bot-owner mapping) are under discussion.
+2. **Authz — platform-admin only.** Bots are platform-level, upstream-provisioned
+   entities with no per-bot owner field, so there is no per-bot ownership to key
+   on. v1 therefore gates the upload on the **caller's** platform-admin role:
+   look up the caller's `users` record by `account` and require
+   `model.IsPlatformAdmin` (`Roles` contains `UserRoleAdmin`,
+   `pkg/model/user.go`); non-admin → `403` (`errcode.Forbidden`). No new data
+   model. (Per-bot ownership can be layered on later if a bot-owner source
+   appears.)
 
 Read endpoints (GET) remain public — no token required.
 
@@ -364,12 +367,11 @@ the rendering in one place.
 - **`App.AvatarURL` removed** → every avatar is served through this GET endpoint;
   no redirect to an app-provided URL (§6).
 - **Upload authn** → OIDC Bearer-token validation via `pkg/oidc` (§7a.4).
+- **Upload authz** → **platform-admin role** (caller's `users` record,
+  `model.IsPlatformAdmin`); no per-bot owner model in v1 (§7a.4).
 - **Upload formats** → PNG/JPEG only; SVG uploads rejected (§7a.1).
 
 **Open / in progress:**
-- **Bot-upload authorization source** (§7a.4) — the active discussion. `apps` has
-  no owner field; pick the authz model (platform-admin / service token / new
-  owner mapping).
 - **`avatars` field schema** (§4.4) — being finalized next.
 
 **Deferred / to address before implementation:**
@@ -401,7 +403,7 @@ the rendering in one place.
   oversize (`MAX_UPLOAD_BYTES`), reject `image/svg+xml` and non-image bytes,
   reject decode failures; on success store to MinIO + upsert the `avatars` doc;
   wrong-cluster → rejected with guiding error; missing/invalid token → 401;
-  assert `nosniff` header. (Bot authz cases added once §9 resolves.)
+  authenticated non-admin → 403; platform-admin → accepted; assert `nosniff`.
 - **Generation unit tests:** `renderDefaultSVG` is **deterministic** — same
   `(seed, initial)` yields byte-identical SVG *and* the same `ETag` across
   repeated calls; stable colour per seed, correct initial (incl. CJK), valid +
