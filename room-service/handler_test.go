@@ -5591,3 +5591,86 @@ func TestHandler_ListMentionableSubscriptions(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_threadUnreadSummary(t *testing.T) {
+	ms := time.UnixMilli(1717000000000).UTC()
+
+	tests := []struct {
+		name       string
+		req        model.ThreadUnreadSummaryRequest
+		setupStore func(*MockRoomStore)
+		wantErr    string
+		assertResp func(t *testing.T, resp model.ThreadUnreadSummaryResponse)
+	}{
+		{
+			name: "happy path maps all fields",
+			req:  model.ThreadUnreadSummaryRequest{UserAccount: "alice@example.com"},
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetThreadUnreadSummary(gomock.Any(), "alice@example.com", "site-a").
+					Return(&ThreadUnreadSummary{
+						Unread:              true,
+						UnreadDirectMessage: true,
+						UnreadMention:       false,
+						LastMessageAt:       &ms,
+					}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.ThreadUnreadSummaryResponse) {
+				assert.True(t, resp.Unread)
+				assert.True(t, resp.UnreadDirectMessage)
+				assert.False(t, resp.UnreadMention)
+				require.NotNil(t, resp.LastMessageAt)
+				assert.Equal(t, int64(1717000000000), *resp.LastMessageAt)
+			},
+		},
+		{
+			name: "nil lastMessageAt maps to nil",
+			req:  model.ThreadUnreadSummaryRequest{UserAccount: "bob@example.com"},
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetThreadUnreadSummary(gomock.Any(), "bob@example.com", "site-a").
+					Return(&ThreadUnreadSummary{}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.ThreadUnreadSummaryResponse) {
+				assert.False(t, resp.Unread)
+				assert.Nil(t, resp.LastMessageAt)
+			},
+		},
+		{
+			name:    "empty userAccount is rejected",
+			req:     model.ThreadUnreadSummaryRequest{UserAccount: ""},
+			wantErr: "userAccount must not be empty",
+		},
+		{
+			name: "store error propagates",
+			req:  model.ThreadUnreadSummaryRequest{UserAccount: "alice@example.com"},
+			setupStore: func(s *MockRoomStore) {
+				s.EXPECT().GetThreadUnreadSummary(gomock.Any(), "alice@example.com", "site-a").
+					Return(nil, errors.New("boom"))
+			},
+			wantErr: "get thread unread summary",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			if tc.setupStore != nil {
+				tc.setupStore(store)
+			}
+			h := &Handler{store: store, siteID: "site-a"}
+
+			resp, err := h.threadUnreadSummary(ctxParams(map[string]string{}), tc.req)
+
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			if tc.assertResp != nil {
+				tc.assertResp(t, *resp)
+			}
+		})
+	}
+}
