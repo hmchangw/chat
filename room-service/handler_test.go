@@ -5755,6 +5755,20 @@ func TestHandler_threadUnreadSummary(t *testing.T) {
 			},
 		},
 		{
+			name: "non-nil zero-time lastMessageAt maps to nil",
+			req:  model.ThreadUnreadSummaryRequest{UserAccount: "carol@example.com"},
+			setupStore: func(s *MockRoomStore) {
+				zero := time.Time{}
+				s.EXPECT().GetThreadUnreadSummary(gomock.Any(), "carol@example.com", "site-a").
+					Return(&ThreadUnreadSummary{Unread: true, UnreadMention: true, LastMessageAt: &zero}, nil)
+			},
+			assertResp: func(t *testing.T, resp model.ThreadUnreadSummaryResponse) {
+				assert.True(t, resp.Unread)
+				assert.True(t, resp.UnreadMention)
+				assert.Nil(t, resp.LastMessageAt, "non-nil zero *time.Time must produce nil LastMessageAt")
+			},
+		},
+		{
 			name:    "empty userAccount is rejected",
 			req:     model.ThreadUnreadSummaryRequest{UserAccount: ""},
 			wantErr: "userAccount must not be empty",

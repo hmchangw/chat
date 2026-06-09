@@ -1104,6 +1104,7 @@ func (h *Handler) threadUnreadSummary(c *natsrouter.Context, req model.ThreadUnr
 		"unread", resp.Unread,
 		"latency_ms", time.Since(start).Milliseconds(),
 	)
+
 	return resp, nil
 }
 
