@@ -126,17 +126,17 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 	return nil
 }
 
-func (m *mongoStore) GetThreadFollowers(ctx context.Context, parentMessageID, siteID string) (map[string]struct{}, error) {
+func (m *mongoStore) GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error) {
 	var doc struct {
 		ReplyAccounts []string `bson:"replyAccounts"`
 	}
 	opts := options.FindOne().SetProjection(bson.M{"replyAccounts": 1, "_id": 0})
-	err := m.threadRoomCol.FindOne(ctx, bson.M{"parentMessageId": parentMessageID, "siteId": siteID}, opts).Decode(&doc)
+	err := m.threadRoomCol.FindOne(ctx, bson.M{"parentMessageId": parentMessageID}, opts).Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return map[string]struct{}{}, nil
 		}
-		return nil, fmt.Errorf("find thread room by parent %s site %s: %w", parentMessageID, siteID, err)
+		return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, err)
 	}
 	out := make(map[string]struct{}, len(doc.ReplyAccounts))
 	for _, a := range doc.ReplyAccounts {

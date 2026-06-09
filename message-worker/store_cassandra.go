@@ -160,19 +160,12 @@ func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Me
 	return nil
 }
 
-// SaveThreadMessage writes the reply to messages_by_id using an LWT
-// (IF NOT EXISTS) and then unconditionally inserts into
-// thread_messages_by_thread.
-//
-// The LWT is the idempotency gate for tcount:
-//   - applied=true  → first delivery  → increment parent tcount.
-//   - applied=false → redelivery      → read and return the current tcount so
-//     the caller can still publish a badge event (no increment — avoids
-//     double-counting on publish-failure retries).
-//
-// Using IF NOT EXISTS eliminates the SELECT-before-INSERT TOCTOU window of the
-// previous pre-check design. The thread_messages_by_thread INSERT is plain
-// (no LWT): re-writing an identical row is safe and keeps that write fast.
+// SaveThreadMessage writes the reply to messages_by_id and then inserts into
+// thread_messages_by_thread. Both writes are plain INSERTs (no LWT): JetStream
+// MsgID dedup prevents double-delivery at the consumer level, so re-inserting
+// an identical row is safe and avoids the 5–10× Paxos overhead of IF NOT EXISTS.
+// countAndSetParentTcount derives tcount from a COUNT query and blind-SETs it,
+// which is idempotent on redelivery without any CAS.
 func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) (*int, error) {
 	if s.cipher != nil {
 		return s.saveThreadMessageEncrypted(ctx, msg, sender, siteID, threadRoomID)
@@ -180,24 +173,17 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 
 	mentions := toMentionSet(msg.Mentions)
 
-	// MapScanCAS is required here instead of ScanCAS(). When IF NOT EXISTS is
-	// not applied (row already exists), Cassandra returns [applied]=false PLUS
-	// all existing row columns. ScanCAS() with no destinations cannot absorb
-	// those extra columns and returns "not enough columns to scan into".
-	// MapScanCAS scans everything into a map so no column count is needed.
-	casRow := make(map[string]interface{})
-	_, err := s.cassSession.Query(
+	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message,
 		  attachments, card, card_action, file)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 		msg.Attachments, msg.Card, msg.CardAction, msg.File,
-	).WithContext(ctx).MapScanCAS(casRow)
-	if err != nil {
-		return nil, fmt.Errorf("lwt insert thread message %s into messages_by_id: %w", msg.ID, err)
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into messages_by_id: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(
@@ -218,7 +204,8 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 }
 
 // saveThreadMessageEncrypted is the cipher-enabled counterpart to
-// SaveThreadMessage. See SaveThreadMessage for the LWT idempotency rationale.
+// SaveThreadMessage. Both writes are plain INSERTs — see SaveThreadMessage for
+// the rationale (JetStream MsgID dedup + idempotent countAndSetParentTcount).
 //
 // Encrypted body columns (msg, attachments, card, card_action, file) are bound
 // to NULL so a redelivered pre-encryption row cannot end up in a hybrid
@@ -235,24 +222,19 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 	encMeta := &cassandra.EncMeta{Nonce: meta.Nonce}
 	mentions := toMentionSet(msg.Mentions)
 
-	// Same MapScanCAS rationale as SaveThreadMessage: IF NOT EXISTS returns all
-	// existing columns on non-apply, which ScanCAS() cannot absorb without
-	// explicit scan destinations.
-	casRow := make(map[string]interface{})
-	_, err = s.cassSession.Query(
+	if err = s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow,
 		  quoted_parent_message, sys_msg_data,
 		  msg, attachments, card, card_action, file,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?) IF NOT EXISTS`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow,
 		cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
-	).WithContext(ctx).MapScanCAS(casRow)
-	if err != nil {
-		return nil, fmt.Errorf("lwt insert thread message %s into messages_by_id: %w", msg.ID, err)
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into messages_by_id: %w", msg.ID, err)
 	}
 
 	if err := s.cassSession.Query(

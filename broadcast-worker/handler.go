@@ -8,7 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	"golang.org/x/sync/errgroup"
+	"sync"
+	"sync/atomic"
 
 	"github.com/hmchangw/chat/pkg/mention"
 	"github.com/hmchangw/chat/pkg/model"
@@ -76,14 +77,38 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return h.handleUnpinned(ctx, &evt)
 	case model.EventReacted:
 		return h.handleReacted(ctx, &evt)
-	case model.EventThreadReplyAdded:
-		return h.handleThreadTCountUpdated(ctx, &evt)
 	default:
 		slog.WarnContext(ctx, "unknown message event type, skipping",
 			"event", evt.Event,
 			"messageID", evt.Message.ID,
 			"request_id", natsutil.RequestIDFromContext(ctx))
 		return nil
+	}
+}
+
+// HandleServerBroadcast processes a single server-broadcast core-NATS message
+// (chat.server.broadcast.{siteID}.>). Currently handles EventThreadReplyAdded
+// badge events published by message-worker.
+func (h *Handler) HandleServerBroadcast(ctx context.Context, data []byte) {
+	var evt model.MessageEvent
+	if err := json.Unmarshal(data, &evt); err != nil {
+		slog.ErrorContext(ctx, "unmarshal server-broadcast event failed; dropping",
+			"error", err,
+			"request_id", natsutil.RequestIDFromContext(ctx))
+		return
+	}
+	switch evt.Event {
+	case model.EventThreadReplyAdded:
+		if err := h.handleThreadTCountUpdated(ctx, &evt); err != nil {
+			slog.ErrorContext(ctx, "handle thread tcount update failed",
+				"error", err,
+				"messageID", evt.Message.ID,
+				"request_id", natsutil.RequestIDFromContext(ctx))
+		}
+	default:
+		slog.WarnContext(ctx, "unknown server-broadcast event type; dropping",
+			"event", evt.Event,
+			"request_id", natsutil.RequestIDFromContext(ctx))
 	}
 }
 
@@ -165,7 +190,7 @@ func (h *Handler) handleThreadCreated(ctx context.Context, evt *model.MessageEve
 	// event. Fetch the subscriber list and build fanOut before any further work.
 	var fanOut []string
 	if meta.Type == model.RoomTypeChannel {
-		fanOut, err = h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, evt.SiteID, parsed.Accounts)
+		fanOut, err = h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return fmt.Errorf("channel thread fan-out for parent %s: %w", parentMsgID, err)
 		}
@@ -201,23 +226,19 @@ func (h *Handler) handleThreadCreated(ctx context.Context, evt *model.MessageEve
 		if len(resolved.Participants) > 0 {
 			roomEvt.Mentions = resolved.Participants
 		}
-		if err := h.encryptRoomEvent(ctx, meta.ID, clientMsg, &roomEvt); err != nil {
-			return fmt.Errorf("encrypt thread created event for parent %s: %w", parentMsgID, err)
-		}
 		payload, err := json.Marshal(roomEvt)
 		if err != nil {
 			return fmt.Errorf("marshal thread created event for parent %s: %w", parentMsgID, err)
 		}
 		return h.publishToThreadAccounts(ctx, fanOut, payload, parentMsgID)
 	case model.RoomTypeDM, model.RoomTypeBotDM:
-		// DM thread replies are visible to all members, so @-mention badges are correct.
+		// DM thread replies fan out to all members. @-mention badges are correct
+		// since DM members can see the reply. lastMsgAt is intentionally NOT
+		// updated: thread replies must not trigger hasUnread for non-participants.
 		if len(resolved.Accounts) > 0 {
 			if err := h.store.SetSubscriptionMentions(ctx, meta.ID, resolved.Accounts); err != nil {
 				return fmt.Errorf("set subscription mentions: %w", err)
 			}
-		}
-		if err := h.store.UpdateRoomLastMessage(ctx, msg.RoomID, msg.ID, msg.CreatedAt, resolved.MentionAll); err != nil {
-			return fmt.Errorf("update room last message %s: %w", msg.RoomID, err)
 		}
 		return h.publishDMEvents(ctx, meta, clientMsg, evt.Timestamp, resolved.Accounts)
 	default:
@@ -273,7 +294,7 @@ func (h *Handler) handleThreadUpdated(ctx context.Context, evt *model.MessageEve
 	switch room.Type {
 	case model.RoomTypeChannel:
 		parsed := mention.Parse(msg.Content)
-		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, evt.SiteID, parsed.Accounts)
+		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return fmt.Errorf("channel thread fan-out for thread update of parent %s: %w", parentMsgID, err)
 		}
@@ -282,11 +303,6 @@ func (h *Handler) handleThreadUpdated(ctx context.Context, evt *model.MessageEve
 				"parentMessageID", parentMsgID,
 				"request_id", natsutil.RequestIDFromContext(ctx))
 			return nil
-		}
-		if h.encrypt {
-			if err := h.encryptEditedContent(ctx, room.ID, &edit); err != nil {
-				return fmt.Errorf("encrypt thread updated event for parent %s: %w", parentMsgID, err)
-			}
 		}
 		payload, err := json.Marshal(&edit)
 		if err != nil {
@@ -331,7 +347,7 @@ func (h *Handler) handleThreadDeleted(ctx context.Context, evt *model.MessageEve
 		// receive the delete. Only the channel path uses mentions; the DM path
 		// fans out to all members.
 		parsed := mention.Parse(msg.Content)
-		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, evt.SiteID, parsed.Accounts)
+		fanOut, err := h.channelThreadFanOut(ctx, parentMsgID, msg.UserAccount, parsed.Accounts)
 		if err != nil {
 			return fmt.Errorf("channel thread fan-out for thread delete of parent %s: %w", parentMsgID, err)
 		}
@@ -385,11 +401,13 @@ func (h *Handler) handleThreadTCountUpdated(ctx context.Context, evt *model.Mess
 	if err != nil {
 		return fmt.Errorf("get room %s: %w", evt.Message.RoomID, err)
 	}
-	return h.publishThreadMetadata(ctx, room, *evt.NewTCount, evt.Message.ThreadParentMessageID, evt.Message.ID, model.ThreadActionReplyAdded, evt.Timestamp)
+	return h.publishThreadMetadata(ctx, room, *evt.NewTCount,
+		evt.Message.ThreadParentMessageID, evt.Message.ID,
+		model.ThreadActionReplyAdded, evt.Timestamp)
 }
 
 func (h *Handler) publishThreadMetadata(ctx context.Context, room *model.Room, newTcount int,
-	parentMsgID, replyMsgID string, action model.ThreadAction, timestamp int64) error {
+	parentMsgID, replyMsgID string, action model.ThreadAction, eventTimestamp int64) error {
 	evt := model.ThreadMetadataUpdatedEvent{
 		Type:            model.RoomEventThreadMetadataUpdated,
 		RoomID:          room.ID,
@@ -398,7 +416,8 @@ func (h *Handler) publishThreadMetadata(ctx context.Context, room *model.Room, n
 		ReplyMessageID:  replyMsgID,
 		NewTCount:       newTcount,
 		Action:          action,
-		Timestamp:       timestamp,
+		Timestamp:       time.Now().UTC().UnixMilli(),
+		EventTimestamp:  eventTimestamp,
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
@@ -479,13 +498,14 @@ func (h *Handler) handlePinned(ctx context.Context, evt *model.MessageEvent) err
 	}
 
 	pin := model.PinRoomEvent{
-		Type:      model.RoomEventMessagePinned,
-		RoomID:    room.ID,
-		SiteID:    room.SiteID,
-		Timestamp: evt.Timestamp,
-		MessageID: msg.ID,
-		PinnedBy:  msg.PinnedBy,
-		PinnedAt:  *msg.PinnedAt,
+		Type:           model.RoomEventMessagePinned,
+		RoomID:         room.ID,
+		SiteID:         room.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: evt.Timestamp,
+		MessageID:      msg.ID,
+		PinnedBy:       msg.PinnedBy,
+		PinnedAt:       *msg.PinnedAt,
 	}
 	return h.publishMutation(ctx, room, model.RoomEventMessagePinned, msg.ID, &pin)
 }
@@ -502,13 +522,14 @@ func (h *Handler) handleUnpinned(ctx context.Context, evt *model.MessageEvent) e
 	}
 
 	unpin := model.UnpinRoomEvent{
-		Type:       model.RoomEventMessageUnpinned,
-		RoomID:     room.ID,
-		SiteID:     room.SiteID,
-		Timestamp:  evt.Timestamp,
-		MessageID:  msg.ID,
-		UnpinnedBy: msg.PinnedBy,
-		UnpinnedAt: time.UnixMilli(evt.Timestamp).UTC(),
+		Type:           model.RoomEventMessageUnpinned,
+		RoomID:         room.ID,
+		SiteID:         room.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: evt.Timestamp,
+		MessageID:      msg.ID,
+		UnpinnedBy:     msg.PinnedBy,
+		UnpinnedAt:     time.UnixMilli(evt.Timestamp).UTC(),
 	}
 	return h.publishMutation(ctx, room, model.RoomEventMessageUnpinned, msg.ID, &unpin)
 }
@@ -541,16 +562,17 @@ func (h *Handler) handleReacted(ctx context.Context, evt *model.MessageEvent) er
 	}
 
 	react := model.ReactRoomEvent{
-		Type:      model.RoomEventMessageReacted,
-		RoomID:    room.ID,
-		SiteID:    room.SiteID,
-		Timestamp: time.Now().UTC().UnixMilli(),
-		MessageID: msg.ID,
-		Shortcode: evt.ReactionDelta.Shortcode,
-		Action:    evt.ReactionDelta.Action,
-		Actor:     evt.ReactionDelta.Actor,
-		ReactedAt: *msg.UpdatedAt,
-		UpdatedAt: *msg.UpdatedAt,
+		Type:           model.RoomEventMessageReacted,
+		RoomID:         room.ID,
+		SiteID:         room.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: evt.Timestamp,
+		MessageID:      msg.ID,
+		Shortcode:      evt.ReactionDelta.Shortcode,
+		Action:         evt.ReactionDelta.Action,
+		Actor:          evt.ReactionDelta.Actor,
+		ReactedAt:      *msg.UpdatedAt,
+		UpdatedAt:      *msg.UpdatedAt,
 	}
 	return h.publishMutation(ctx, room, model.RoomEventMessageReacted, msg.ID, &react)
 }
@@ -601,29 +623,31 @@ func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvt
 func buildEditRoomEvent(room *model.Room, evt *model.MessageEvent) model.EditRoomEvent {
 	msg := evt.Message
 	return model.EditRoomEvent{
-		Type:       model.RoomEventMessageEdited,
-		RoomID:     room.ID,
-		SiteID:     room.SiteID,
-		Timestamp:  evt.Timestamp,
-		MessageID:  msg.ID,
-		NewContent: msg.Content,
-		EditedBy:   msg.UserAccount,
-		EditedAt:   *msg.EditedAt,
-		UpdatedAt:  *msg.UpdatedAt,
+		Type:           model.RoomEventMessageEdited,
+		RoomID:         room.ID,
+		SiteID:         room.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: evt.Timestamp,
+		MessageID:      msg.ID,
+		NewContent:     msg.Content,
+		EditedBy:       msg.UserAccount,
+		EditedAt:       *msg.EditedAt,
+		UpdatedAt:      *msg.UpdatedAt,
 	}
 }
 
 func buildDeleteRoomEvent(room *model.Room, evt *model.MessageEvent) model.DeleteRoomEvent {
 	msg := evt.Message
 	return model.DeleteRoomEvent{
-		Type:      model.RoomEventMessageDeleted,
-		RoomID:    room.ID,
-		SiteID:    room.SiteID,
-		Timestamp: evt.Timestamp,
-		MessageID: msg.ID,
-		DeletedBy: msg.UserAccount,
-		DeletedAt: *msg.UpdatedAt,
-		UpdatedAt: *msg.UpdatedAt,
+		Type:           model.RoomEventMessageDeleted,
+		RoomID:         room.ID,
+		SiteID:         room.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: evt.Timestamp,
+		MessageID:      msg.ID,
+		DeletedBy:      msg.UserAccount,
+		DeletedAt:      *msg.UpdatedAt,
+		UpdatedAt:      *msg.UpdatedAt,
 	}
 }
 
@@ -745,18 +769,19 @@ func (h *Handler) publishDMEvents(ctx context.Context, meta roommetacache.Meta, 
 	return nil
 }
 
-func buildRoomEvent(meta roommetacache.Meta, clientMsg *model.ClientMessage, timestamp int64) model.RoomEvent {
+func buildRoomEvent(meta roommetacache.Meta, clientMsg *model.ClientMessage, eventTimestamp int64) model.RoomEvent {
 	return model.RoomEvent{
-		Type:      model.RoomEventNewMessage,
-		RoomID:    meta.ID,
-		Timestamp: timestamp,
-		RoomName:  meta.Name,
-		RoomType:  meta.Type,
-		SiteID:    meta.SiteID,
-		UserCount: meta.UserCount,
-		LastMsgAt: clientMsg.CreatedAt,
-		LastMsgID: clientMsg.ID,
-		Message:   clientMsg,
+		Type:           model.RoomEventNewMessage,
+		RoomID:         meta.ID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		EventTimestamp: eventTimestamp,
+		RoomName:       meta.Name,
+		RoomType:       meta.Type,
+		SiteID:         meta.SiteID,
+		UserCount:      meta.UserCount,
+		LastMsgAt:      clientMsg.CreatedAt,
+		LastMsgID:      clientMsg.ID,
+		Message:        clientMsg,
 	}
 }
 
@@ -779,29 +804,35 @@ func buildClientMessage(msg *model.Message, userMap map[string]model.User) *mode
 }
 
 // publishToThreadAccounts publishes payload concurrently to every account in
-// the list using an errgroup. On publish failure it logs and returns the error
-// so the caller can propagate it to JetStream for redelivery — thread per-user
-// events must have the same retry guarantee as room-channel events.
+// the list. Only returns an error (triggering JetStream redelivery) when every
+// publish fails — partial failure is tolerated to avoid duplicate delivery to
+// accounts that already received the event on the first attempt.
 func (h *Handler) publishToThreadAccounts(ctx context.Context, accounts []string, payload []byte, parentMsgID string) error {
 	if len(accounts) == 0 {
 		return nil
 	}
-	g, gctx := errgroup.WithContext(ctx)
+	var wg sync.WaitGroup
+	var failCount atomic.Int64
 	for _, account := range accounts {
 		account := account
-		g.Go(func() error {
-			if err := h.pub.Publish(gctx, subject.UserRoomEvent(account), payload); err != nil {
-				slog.ErrorContext(gctx, "publish thread event failed",
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.pub.Publish(ctx, subject.UserRoomEvent(account), payload); err != nil {
+				slog.ErrorContext(ctx, "publish thread event failed",
 					"error", err,
 					"account", account,
 					"parentMessageID", parentMsgID,
-					"request_id", natsutil.RequestIDFromContext(gctx))
-				return fmt.Errorf("publish thread event to %s for parent %s: %w", account, parentMsgID, err)
+					"request_id", natsutil.RequestIDFromContext(ctx))
+				failCount.Add(1)
 			}
-			return nil
-		})
+		}()
 	}
-	return g.Wait()
+	wg.Wait()
+	if failCount.Load() == int64(len(accounts)) {
+		return fmt.Errorf("all %d thread account publishes failed for parent %s", len(accounts), parentMsgID)
+	}
+	return nil
 }
 
 // threadFanOutAccounts builds the deduplicated fan-out recipient list for
@@ -838,8 +869,8 @@ func threadFanOutAccounts(senderAccount string, followers map[string]struct{}, e
 // thread event: it fetches the parent message's thread followers and merges
 // them with the @-mentioned accounts, excluding the sender. Shared by the
 // channel branch of every thread handler (created/updated/deleted).
-func (h *Handler) channelThreadFanOut(ctx context.Context, parentMsgID, sender, siteID string, mentions []string) ([]string, error) {
-	followers, err := h.store.GetThreadFollowers(ctx, parentMsgID, siteID)
+func (h *Handler) channelThreadFanOut(ctx context.Context, parentMsgID, sender string, mentions []string) ([]string, error) {
+	followers, err := h.store.GetThreadFollowers(ctx, parentMsgID)
 	if err != nil {
 		return nil, fmt.Errorf("get thread followers for parent %s: %w", parentMsgID, err)
 	}

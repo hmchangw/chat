@@ -971,6 +971,20 @@ func PushNotificationFilter(siteID string) string {
 	return fmt.Sprintf("chat.server.notification.push.%s.>", siteID)
 }
 
+// ServerBroadcastThreadTCount is the core-NATS subject on which message-worker
+// publishes thread reply-count badge events. Broadcast-worker queue-subscribes
+// using the wildcard ServerBroadcastWildcard so this stays fire-and-forget
+// without polluting MESSAGES_CANONICAL (which is reserved for message CRUD).
+func ServerBroadcastThreadTCount(siteID string) string {
+	return fmt.Sprintf("chat.server.broadcast.%s.thread.tcount", siteID)
+}
+
+// ServerBroadcastWildcard is the queue-subscribe subject used by broadcast-worker
+// to receive all server-broadcast events for a site.
+func ServerBroadcastWildcard(siteID string) string {
+	return fmt.Sprintf("chat.server.broadcast.%s.>", siteID)
+}
+
 // PresenceSnapshot is the bulk presence RPC subject (request/reply).
 func PresenceSnapshot(siteID string) string {
 	return fmt.Sprintf("chat.presence.%s.request.snapshot", siteID)

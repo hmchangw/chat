@@ -74,18 +74,18 @@ func (mr *MockStoreMockRecorder) GetRoomMeta(ctx, roomID any) *gomock.Call {
 }
 
 // GetThreadFollowers mocks base method.
-func (m *MockStore) GetThreadFollowers(ctx context.Context, parentMessageID, siteID string) (map[string]struct{}, error) {
+func (m *MockStore) GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetThreadFollowers", ctx, parentMessageID, siteID)
+	ret := m.ctrl.Call(m, "GetThreadFollowers", ctx, parentMessageID)
 	ret0, _ := ret[0].(map[string]struct{})
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetThreadFollowers indicates an expected call of GetThreadFollowers.
-func (mr *MockStoreMockRecorder) GetThreadFollowers(ctx, parentMessageID, siteID any) *gomock.Call {
+func (mr *MockStoreMockRecorder) GetThreadFollowers(ctx, parentMessageID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetThreadFollowers", reflect.TypeOf((*MockStore)(nil).GetThreadFollowers), ctx, parentMessageID, siteID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetThreadFollowers", reflect.TypeOf((*MockStore)(nil).GetThreadFollowers), ctx, parentMessageID)
 }
 
 // ListSubscriptions mocks base method.

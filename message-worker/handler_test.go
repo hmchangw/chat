@@ -496,8 +496,8 @@ func TestHandler_ProcessMessage_ThreadReply_PublishesBadgeEvent(t *testing.T) {
 	)
 	require.NoError(t, h.processMessage(context.Background(), data))
 
-	assert.Equal(t, subject.MsgCanonicalCreated("site-a"), capturedSubj,
-		"badge event must be published to the canonical created subject")
+	assert.Equal(t, subject.ServerBroadcastThreadTCount("site-a"), capturedSubj,
+		"badge event must be published via core NATS server-broadcast, not MESSAGES_CANONICAL")
 	var badgeEvt model.MessageEvent
 	require.NoError(t, json.Unmarshal(capturedData, &badgeEvt))
 	assert.Equal(t, model.EventThreadReplyAdded, badgeEvt.Event)
@@ -1878,8 +1878,8 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 		require.NoError(t, h.processMessage(context.Background(), threadData))
 
 		require.Equal(t, 1, publishCount, "exactly one publish call for thread reply event")
-		assert.Equal(t, "chat.msg.canonical.site-a.created", capturedSubj)
-		assert.Equal(t, "thread-reply-added:site-a:msg-reply", capturedMsgID)
+		assert.Equal(t, subject.ServerBroadcastThreadTCount("site-a"), capturedSubj)
+		assert.Equal(t, "", capturedMsgID, "core NATS publish must have empty msgID")
 
 		var evt model.MessageEvent
 		require.NoError(t, json.Unmarshal(capturedData, &evt))
@@ -1908,10 +1908,9 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 			return errors.New("nats: publish failed")
 		})
 
-		// Publish failure MUST propagate: the IF NOT EXISTS LWT on messages_by_id means
-		// redelivery detects applied=false and calls readParentTcount instead of
-		// incrementParentTcount, so there is no double-increment risk. Swallowing the
-		// error would permanently drop the badge tcount event.
+		// Publish failure propagates so the caller can log it; badge events are
+		// best-effort via core NATS so a transient error is expected to be swallowed
+		// by the caller rather than retried via JetStream.
 		require.Error(t, h.processMessage(context.Background(), threadData))
 	})
 
@@ -1958,8 +1957,8 @@ func TestHandler_PublishThreadReplyEvent(t *testing.T) {
 	err := h.publishThreadReplyEvent(context.Background(), msg, 5)
 	require.NoError(t, err)
 
-	assert.Equal(t, "chat.msg.canonical.site-a.created", captured.subj)
-	assert.Equal(t, "thread-reply-added:site-a:msg-2", captured.msgID)
+	assert.Equal(t, subject.ServerBroadcastThreadTCount("site-a"), captured.subj)
+	assert.Equal(t, "", captured.msgID, "core NATS publish must have empty msgID")
 
 	var evt model.MessageEvent
 	require.NoError(t, json.Unmarshal(captured.data, &evt))

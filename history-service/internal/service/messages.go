@@ -382,64 +382,12 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 
 	// Already-deleted short-circuit: echo the current updated_at as the DeletedAt.
 	// Prevents tcount double-decrement on caller retry and avoids duplicate events.
-	// Re-publishes the canonical deleted event so a badge update that was lost on
-	// the first attempt (publishCanonicalBestEffort is best-effort) gets retried.
-	// JetStream dedup ("<msgID>:deleted") prevents double-delivery if the first
-	// publish actually succeeded.
+	// countAndSetParentTcount already wrote the correct tcount on the first delete,
+	// so no re-publish is needed — the tcount is durable in Cassandra.
 	if msg.Deleted {
 		var deletedAtMs int64
 		if msg.UpdatedAt != nil {
 			deletedAtMs = msg.UpdatedAt.UnixMilli()
-		}
-		var newTcount *int
-		// Gate parent lookup on UpdatedAt != nil: nil-UpdatedAt records can never produce
-		// a valid EventDeleted, so the lookup result would be unconsumed anyway.
-		if msg.ThreadParentID != "" && msg.UpdatedAt != nil {
-			parent, parentErr := s.msgReader.GetMessageByID(c, msg.ThreadParentID)
-			switch {
-			case parentErr != nil:
-				// Return error so the caller retries the delete handler. On retry the
-				// lookup will either succeed (returning the correct tcount) or find the
-				// parent gone (default branch, which skips the publish). Publishing now
-				// with NewTCount=nil risks permanently dropping the badge update — the
-				// same reason the default branch skips the publish entirely.
-				return nil, fmt.Errorf("already-deleted retry: look up parent tcount for %s: %w", msg.ThreadParentID, parentErr)
-			case parent != nil:
-				newTcount = parent.TCount
-			default:
-				// Parent was concurrently hard-deleted. No badge to update — skip the
-				// canonical republish entirely to avoid publishing EventDeleted with
-				// NewTCount=nil, which would cause broadcast-worker to permanently drop
-				// the tcount decrement.
-				return &models.DeleteMessageResponse{
-					MessageID: req.MessageID,
-					DeletedAt: deletedAtMs,
-				}, nil
-			}
-		}
-		// Only republish when UpdatedAt is available. Legacy records with nil
-		// UpdatedAt cannot produce a valid EventDeleted — downstream handlers
-		// (broadcast-worker, search-sync) reject nil UpdatedAt and would NAK,
-		// causing an infinite redelivery loop.
-		if msg.UpdatedAt != nil {
-			canonicalEvt := model.MessageEvent{
-				Event: model.EventDeleted,
-				Message: model.Message{
-					ID:                    msg.MessageID,
-					RoomID:                msg.RoomID,
-					UserID:                msg.Sender.ID,
-					UserAccount:           msg.Sender.Account,
-					Content:               msg.Msg,
-					CreatedAt:             msg.CreatedAt,
-					UpdatedAt:             msg.UpdatedAt,
-					ThreadParentMessageID: msg.ThreadParentID,
-					TShow:                 msg.TShow,
-				},
-				SiteID:    siteID,
-				Timestamp: deletedAtMs,
-				NewTCount: newTcount,
-			}
-			s.publishCanonicalBestEffort(c, subject.MsgCanonicalDeleted(siteID), &canonicalEvt)
 		}
 		return &models.DeleteMessageResponse{
 			MessageID: req.MessageID,

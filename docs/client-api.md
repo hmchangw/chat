@@ -2142,7 +2142,8 @@ The payload is flat:
 | `type` | string | Always `"message_deleted"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Propagated from the canonical event's publish time. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
 | `messageId` | string | The deleted message's ID. |
 | `deletedBy` | string | The sender's account. |
 | `deletedAt` | string | RFC 3339 timestamp. Domain time of the delete. |
@@ -3291,7 +3292,8 @@ Pushed by `broadcast-worker` whenever a thread reply is **created** (`action: "r
 | `newTcount` | number | Authoritative post-CAS reply count for the parent message. Replaces any locally-computed count — do not delta. |
 | `action` | string | `"reply_added"` or `"reply_deleted"`. |
 | `replyMessageId` | string | The reply that was added or deleted. |
-| `timestamp` | number | Milliseconds since Unix epoch (UTC). Propagated from the canonical event's publish time. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
 
 ```json
 {

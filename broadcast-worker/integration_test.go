@@ -410,39 +410,37 @@ func TestBroadcastWorker_GetThreadFollowers_Integration(t *testing.T) {
 	ctx := context.Background()
 	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_rooms"))
 
-	// Seed a thread room document with replyAccounts and a siteId.
+	// Seed a thread room document with replyAccounts (siteID isolation is handled
+	// at the deployment level — each site has its own MongoDB instance).
 	_, err := db.Collection("thread_rooms").InsertMany(ctx, []interface{}{
 		bson.M{
 			"_id":             "tr-1",
 			"parentMessageId": "parent-1",
-			"siteId":          "site-a",
 			"replyAccounts":   []string{"bob", "carol", ""},
 		},
-		// Same parentMessageId but different siteId — must NOT be returned.
 		bson.M{
-			"_id":             "tr-2",
-			"parentMessageId": "parent-1",
-			"siteId":          "site-b",
+			"_id":             "tr-3",
+			"parentMessageId": "parent-2",
 			"replyAccounts":   []string{"dave"},
 		},
 	})
 	require.NoError(t, err)
 
-	t.Run("returns followers for correct siteId", func(t *testing.T) {
-		followers, err := store.GetThreadFollowers(ctx, "parent-1", "site-a")
+	t.Run("returns followers with empty strings filtered", func(t *testing.T) {
+		followers, err := store.GetThreadFollowers(ctx, "parent-1")
 		require.NoError(t, err)
 		// Empty string is filtered out.
 		assert.Equal(t, map[string]struct{}{"bob": {}, "carol": {}}, followers)
 	})
 
-	t.Run("cross-siteId isolation: different siteId returns empty", func(t *testing.T) {
-		followers, err := store.GetThreadFollowers(ctx, "parent-1", "site-b")
+	t.Run("different parentMessageId returns correct subset", func(t *testing.T) {
+		followers, err := store.GetThreadFollowers(ctx, "parent-2")
 		require.NoError(t, err)
 		assert.Equal(t, map[string]struct{}{"dave": {}}, followers)
 	})
 
 	t.Run("no document returns empty map", func(t *testing.T) {
-		followers, err := store.GetThreadFollowers(ctx, "nonexistent-parent", "site-a")
+		followers, err := store.GetThreadFollowers(ctx, "nonexistent-parent")
 		require.NoError(t, err)
 		assert.Empty(t, followers)
 	})
