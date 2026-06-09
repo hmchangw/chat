@@ -3319,6 +3319,7 @@ func TestMongoStore_GetThreadUnreadSummary_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
+	require.NoError(t, store.EnsureIndexes(ctx))
 
 	const account = "alice@example.com"
 	const site = "site-a"
@@ -3368,6 +3369,46 @@ func TestMongoStore_GetThreadUnreadSummary_Integration(t *testing.T) {
 
 	t.Run("other site is filtered out", func(t *testing.T) {
 		got, err := store.GetThreadUnreadSummary(ctx, account, "site-b")
+		require.NoError(t, err)
+		assert.False(t, got.Unread)
+		assert.Nil(t, got.LastMessageAt)
+	})
+
+	t.Run("never-seen subscription (nil lastSeenAt) is unread", func(t *testing.T) {
+		_, err := db.Collection("thread_rooms").InsertOne(ctx, model.ThreadRoom{ID: "tr-nil", RoomID: "room-chan", SiteID: site, LastMsgAt: newer})
+		require.NoError(t, err)
+		_, err = db.Collection("thread_subscriptions").InsertOne(ctx, model.ThreadSubscription{ID: "ts-nil", ThreadRoomID: "tr-nil", RoomID: "room-chan", UserAccount: "never@example.com", SiteID: site, LastSeenAt: nil})
+		require.NoError(t, err)
+
+		got, err := store.GetThreadUnreadSummary(ctx, "never@example.com", site)
+		require.NoError(t, err)
+		assert.True(t, got.Unread)
+		assert.False(t, got.UnreadDirectMessage)
+		assert.False(t, got.UnreadMention)
+		require.NotNil(t, got.LastMessageAt)
+	})
+
+	t.Run("all threads read yields unread false but non-nil lastMessageAt", func(t *testing.T) {
+		_, err := db.Collection("thread_rooms").InsertOne(ctx, model.ThreadRoom{ID: "tr-read", RoomID: "room-chan", SiteID: site, LastMsgAt: older})
+		require.NoError(t, err)
+		seenAfter := newer // newer > older, so this thread is fully read
+		_, err = db.Collection("thread_subscriptions").InsertOne(ctx, model.ThreadSubscription{ID: "ts-read", ThreadRoomID: "tr-read", RoomID: "room-chan", UserAccount: "read@example.com", SiteID: site, LastSeenAt: &seenAfter})
+		require.NoError(t, err)
+
+		got, err := store.GetThreadUnreadSummary(ctx, "read@example.com", site)
+		require.NoError(t, err)
+		assert.False(t, got.Unread)
+		assert.False(t, got.UnreadDirectMessage)
+		assert.False(t, got.UnreadMention)
+		require.NotNil(t, got.LastMessageAt)
+		assert.WithinDuration(t, older, got.LastMessageAt.UTC(), time.Millisecond)
+	})
+
+	t.Run("orphaned subscription (missing thread room) is dropped", func(t *testing.T) {
+		_, err := db.Collection("thread_subscriptions").InsertOne(ctx, model.ThreadSubscription{ID: "ts-orphan", ThreadRoomID: "missing-tr", RoomID: "room-chan", UserAccount: "orphan@example.com", SiteID: site, LastSeenAt: nil})
+		require.NoError(t, err)
+
+		got, err := store.GetThreadUnreadSummary(ctx, "orphan@example.com", site)
 		require.NoError(t, err)
 		assert.False(t, got.Unread)
 		assert.Nil(t, got.LastMessageAt)
