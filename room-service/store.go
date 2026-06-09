@@ -37,11 +37,12 @@ type RoomCounts struct {
 
 // ThreadUnreadSummary is the result of GetThreadUnreadSummary — a per-site
 // rollup of a single user's thread unread state, computed in one aggregation.
+// The bson tags let the aggregation's $group output decode straight into it.
 type ThreadUnreadSummary struct {
-	Unread              bool
-	UnreadDirectMessage bool
-	UnreadMention       bool
-	LastMessageAt       *time.Time
+	Unread              bool       `bson:"unread"`
+	UnreadDirectMessage bool       `bson:"unreadDirectMessage"`
+	UnreadMention       bool       `bson:"unreadMention"`
+	LastMessageAt       *time.Time `bson:"lastMessageAt"`
 }
 
 type ReadReceiptRow struct {

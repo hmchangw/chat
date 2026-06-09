@@ -1100,10 +1100,7 @@ func (h *Handler) threadUnreadSummary(c *natsrouter.Context, req model.ThreadUnr
 		Unread:              summary.Unread,
 		UnreadDirectMessage: summary.UnreadDirectMessage,
 		UnreadMention:       summary.UnreadMention,
-	}
-	if summary.LastMessageAt != nil && !summary.LastMessageAt.IsZero() {
-		ms := summary.LastMessageAt.UTC().UnixMilli()
-		resp.LastMessageAt = &ms
+		LastMessageAt:       timePtrToMillis(summary.LastMessageAt),
 	}
 
 	slog.Debug("thread unread summary handled",
@@ -1113,6 +1110,16 @@ func (h *Handler) threadUnreadSummary(c *natsrouter.Context, req model.ThreadUnr
 	)
 
 	return resp, nil
+}
+
+// timePtrToMillis converts a nullable timestamp to UnixMilli for wire responses,
+// returning nil for a nil or zero time so the field is omitted.
+func timePtrToMillis(t *time.Time) *int64 {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	ms := t.UTC().UnixMilli()
+	return &ms
 }
 
 func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) ([]model.RoomInfo, int, int) {
@@ -1133,14 +1140,8 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		foundCount++
 		entry.SiteID = r.SiteID
 		entry.Name = r.Name
-		if r.LastMsgAt != nil && !r.LastMsgAt.IsZero() {
-			ms := r.LastMsgAt.UTC().UnixMilli()
-			entry.LastMsgAt = &ms
-		}
-		if r.LastMentionAllAt != nil && !r.LastMentionAllAt.IsZero() {
-			ms := r.LastMentionAllAt.UTC().UnixMilli()
-			entry.LastMentionAllAt = &ms
-		}
+		entry.LastMsgAt = timePtrToMillis(r.LastMsgAt)
+		entry.LastMentionAllAt = timePtrToMillis(r.LastMentionAllAt)
 		if kp, ok := keys[id]; ok && kp != nil {
 			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
 			ver := kp.Version

@@ -1539,7 +1539,7 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 			"isUnread": bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
 			"isDMUnread": bson.M{"$and": bson.A{
 				bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
-				bson.M{"$eq": bson.A{"$room.type", string(model.RoomTypeDM)}},
+				bson.M{"$eq": bson.A{"$room.type", model.RoomTypeDM}},
 			}},
 		}}},
 		{{Key: "$group", Value: bson.M{
@@ -1568,19 +1568,9 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 		return &ThreadUnreadSummary{}, nil
 	}
 
-	var result struct {
-		Unread              bool       `bson:"unread"`
-		UnreadDirectMessage bool       `bson:"unreadDirectMessage"`
-		UnreadMention       bool       `bson:"unreadMention"`
-		LastMessageAt       *time.Time `bson:"lastMessageAt"`
-	}
+	var result ThreadUnreadSummary
 	if err := cursor.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode thread unread summary: %w", err)
 	}
-	return &ThreadUnreadSummary{
-		Unread:              result.Unread,
-		UnreadDirectMessage: result.UnreadDirectMessage,
-		UnreadMention:       result.UnreadMention,
-		LastMessageAt:       result.LastMessageAt,
-	}, nil
+	return &result, nil
 }
