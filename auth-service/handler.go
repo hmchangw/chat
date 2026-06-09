@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +15,8 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errhttp"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 )
 
@@ -52,18 +56,59 @@ type AuthHandler struct {
 	validator  TokenValidator
 	signingKey nkeys.KeyPair
 	jwtExpiry  time.Duration
+	jwtJitter  float64        // fraction of jwtExpiry; 0 = fixed lifetime
+	randFloat  func() float64 // injectable [0,1) source; defaults to crypto rand
 	devMode    bool
+}
+
+// Option configures optional AuthHandler behavior.
+type Option func(*AuthHandler)
+
+// WithJitter sets the JWT-lifetime jitter fraction (clamped to [0, 0.9]) so a
+// fleet of sessions minted together does not expire in lockstep.
+func WithJitter(frac float64) Option {
+	return func(h *AuthHandler) {
+		if frac < 0 {
+			frac = 0
+		}
+		if frac > 0.9 {
+			frac = 0.9
+		}
+		h.jwtJitter = frac
+	}
+}
+
+// WithRandFloat overrides the randomness source (test seam).
+func WithRandFloat(fn func() float64) Option {
+	return func(h *AuthHandler) { h.randFloat = fn }
 }
 
 // NewAuthHandler creates an AuthHandler with the given token validator,
 // NATS account signing key, and JWT expiry duration.
-func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration, devMode bool) *AuthHandler {
-	return &AuthHandler{
+func NewAuthHandler(validator TokenValidator, signingKey nkeys.KeyPair, jwtExpiry time.Duration, devMode bool, opts ...Option) *AuthHandler {
+	h := &AuthHandler{
 		validator:  validator,
 		signingKey: signingKey,
 		jwtExpiry:  jwtExpiry,
+		randFloat:  cryptoRandFloat,
 		devMode:    devMode,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// cryptoRandFloat returns a uniform float in [0,1) from crypto/rand. On the
+// (practically impossible) read error it returns 0.5 — the no-skew midpoint.
+func cryptoRandFloat() float64 {
+	const denom = 1 << 53
+	n, err := rand.Int(rand.Reader, big.NewInt(denom))
+	if err != nil {
+		slog.Error("crypto/rand read failed, using no-skew midpoint for JWT jitter", "error", err)
+		return 0.5
+	}
+	return float64(n.Int64()) / float64(denom)
 }
 
 // HandleAuth validates the SSO token, resolves permissions based on
@@ -74,26 +119,33 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
+	ctx := errcode.WithLogValues(c.Request.Context(), "request_id", c.GetString("request_id"))
+
 	var req authRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ssoToken and natsPublicKey are required"})
+		errhttp.Write(ctx, c, errcode.BadRequest("ssoToken and natsPublicKey are required",
+			errcode.WithReason(errcode.AuthMissingFields)))
 		return
 	}
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		errhttp.Write(ctx, c, errcode.BadRequest("invalid natsPublicKey format",
+			errcode.WithReason(errcode.AuthInvalidNKey)))
 		return
 	}
 
-	claims, err := h.validator.Validate(c.Request.Context(), req.SSOToken)
+	claims, err := h.validator.Validate(ctx, req.SSOToken)
 	if err != nil {
 		if errors.Is(err, pkgoidc.ErrTokenExpired) {
-			slog.Warn("sso token expired", "error", err)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "SSO token has expired, please re-login"})
+			errhttp.Write(ctx, c, errcode.Unauthenticated("SSO token has expired, please re-login",
+				errcode.WithReason(errcode.AuthTokenExpired)))
 			return
 		}
-		slog.Error("oidc validation failed", "error", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid SSO token"})
+		// Non-expiry failures surface as "invalid SSO token"; attach the raw
+		// cause so the server log carries the actual reason.
+		errhttp.Write(ctx, c, errcode.Unauthenticated("invalid SSO token",
+			errcode.WithReason(errcode.AuthInvalidToken),
+			errcode.WithCause(err)))
 		return
 	}
 
@@ -101,11 +153,17 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 	if account == "" {
 		account = claims.Name
 	}
+	if account == "" {
+		// Blank account would mint a JWT with chat.user..> permissions — refuse.
+		errhttp.Write(ctx, c, errcode.Unauthenticated("token missing account claim",
+			errcode.WithReason(errcode.AuthInvalidToken)))
+		return
+	}
+	ctx = errcode.WithLogValues(ctx, "account", account)
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {
-		slog.Error("nats jwt signing failed", "error", err, "account", account)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
+		errhttp.Write(ctx, c, fmt.Errorf("generating NATS token: %w", err))
 		return
 	}
 
@@ -131,21 +189,26 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 // handleDevAuth handles auth in dev mode: accepts account name directly
 // without OIDC validation, for use during local development only.
 func (h *AuthHandler) handleDevAuth(c *gin.Context) {
+	ctx := errcode.WithLogValues(c.Request.Context(), "request_id", c.GetString("request_id"))
+
 	var req devAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account and natsPublicKey are required"})
+		errhttp.Write(ctx, c, errcode.BadRequest("account and natsPublicKey are required",
+			errcode.WithReason(errcode.AuthMissingFields)))
 		return
 	}
 
 	if !nkeys.IsValidPublicUserKey(req.NATSPublicKey) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid natsPublicKey format"})
+		errhttp.Write(ctx, c, errcode.BadRequest("invalid natsPublicKey format",
+			errcode.WithReason(errcode.AuthInvalidNKey)))
 		return
 	}
 
+	ctx = errcode.WithLogValues(ctx, "account", req.Account)
+
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, req.Account)
 	if err != nil {
-		slog.Error("nats jwt signing failed", "error", err, "account", req.Account)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate NATS token"})
+		errhttp.Write(ctx, c, fmt.Errorf("generating NATS token: %w", err))
 		return
 	}
 
@@ -165,7 +228,7 @@ func (h *AuthHandler) handleDevAuth(c *gin.Context) {
 // to the user's namespace and standard chat subjects.
 func (h *AuthHandler) signNATSJWT(userPubKey, account string) (string, error) {
 	uc := jwt.NewUserClaims(userPubKey)
-	uc.Expires = time.Now().Add(h.jwtExpiry).Unix()
+	uc.Expires = h.jwtExpiryAt().Unix()
 
 	// Publish permissions: user's own namespace + inbox for request-reply.
 	uc.Pub.Allow.Add(fmt.Sprintf("chat.user.%s.>", account))
@@ -177,6 +240,13 @@ func (h *AuthHandler) signNATSJWT(userPubKey, account string) (string, error) {
 	uc.Sub.Allow.Add("_INBOX.>")
 
 	return uc.Encode(h.signingKey)
+}
+
+// jwtExpiryAt returns the absolute expiry, applying ±jwtJitter around the base
+// lifetime: factor = 1 + jitter*(2r-1), r in [0,1).
+func (h *AuthHandler) jwtExpiryAt() time.Time {
+	factor := 1 + h.jwtJitter*(2*h.randFloat()-1)
+	return time.Now().Add(time.Duration(float64(h.jwtExpiry) * factor))
 }
 
 // parseDescription splits the description field "employeeId, engName, chineseName"

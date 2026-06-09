@@ -17,8 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -95,7 +96,5 @@ func TestIntegration_SearchMessages_V2_EmptyQueryReturnsBadRequest(t *testing.T)
 	msg, err := f.clientNATS.Request(subject.SearchMessages("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+	errtest.AssertCode(t, msg.Data, errcode.CodeBadRequest)
 }

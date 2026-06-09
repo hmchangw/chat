@@ -10,9 +10,13 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsutil"
 )
+
+//go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
@@ -33,6 +37,16 @@ type InboxStore interface {
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
 	// UpdateSubscriptionMute sets muted by (roomID, account); missing-sub is a silent no-op for federation races.
 	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
+	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
+	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
+
+	// UpdateSubscriptionNamesForRoom mass-renames subscription mirrors on this site.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+
+	// ApplySubscriptionVisibility mirrors room-worker's counterpart (same 3 branches).
+	// On a remote site this only updates mirrored subs whose users are homed here;
+	// OwnerAccount is load-bearing so $cond can promote the chosen owner's local mirror.
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -65,10 +79,16 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleSubscriptionRead(ctx, &evt)
 	case "subscription_mute_toggled":
 		return h.handleSubscriptionMuteToggled(ctx, &evt)
+	case "subscription_favorite_toggled":
+		return h.handleSubscriptionFavoriteToggled(ctx, &evt)
 	case "thread_subscription_upserted":
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
 	case "thread_read":
 		return h.handleThreadRead(ctx, &evt)
+	case "room_renamed":
+		return h.handleRoomRenamed(ctx, &evt)
+	case "room_restricted":
+		return h.handleRoomRestricted(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -184,7 +204,11 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 	roomID := subEvt.Subscription.RoomID
 	roles := subEvt.Subscription.Roles
 	if len(roles) == 0 {
-		return fmt.Errorf("role_updated event has empty roles")
+		// Poison message — return errcode.Permanent so main.go's consume loop
+		// Acks (vs Nak-forever on a malformed payload).
+		slog.WarnContext(ctx, "role_updated event has empty roles",
+			"account", account, "room_id", roomID)
+		return errcode.Permanent(errcode.BadRequest("role_updated event has empty roles"))
 	}
 	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles); err != nil {
 		return fmt.Errorf("update subscription roles: %w", err)
@@ -219,6 +243,18 @@ func (h *Handler) handleSubscriptionMuteToggled(ctx context.Context, evt *model.
 	return nil
 }
 
+// handleSubscriptionFavoriteToggled mirrors a room-side favorite toggle onto the user's home-site subscription.
+func (h *Handler) handleSubscriptionFavoriteToggled(ctx context.Context, evt *model.OutboxEvent) error {
+	var e model.SubscriptionFavoriteToggledEvent
+	if err := json.Unmarshal(evt.Payload, &e); err != nil {
+		return fmt.Errorf("unmarshal subscription_favorite_toggled payload: %w", err)
+	}
+	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite); err != nil {
+		return fmt.Errorf("update subscription favorite for %q in room %q: %w", e.Account, e.RoomID, err)
+	}
+	return nil
+}
+
 // handleThreadSubscriptionUpserted upserts a ThreadSubscription on the local
 // site when message-worker on another site reports that a user (parent author,
 // replier, or mentionee) is participating in a thread. The Mongo store layer
@@ -244,6 +280,38 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
 		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
 			e.RoomID, e.ParentMessageID, e.Account, err)
+	}
+	return nil
+}
+
+func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent) error {
+	var payload model.RoomRenamedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal room_renamed payload: %w", err)
+	}
+	slog.Info("processing room_renamed",
+		"roomID", payload.RoomID,
+		"newName", payload.NewName,
+		"requestID", natsutil.RequestIDFromContext(ctx))
+	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, payload.RoomID, payload.NewName); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", payload.RoomID, err)
+	}
+	return nil
+}
+
+func (h *Handler) handleRoomRestricted(ctx context.Context, evt *model.OutboxEvent) error {
+	var payload model.RoomRestrictedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal room_restricted payload: %w", err)
+	}
+	slog.Info("processing room_restricted",
+		"roomID", payload.RoomID,
+		"restricted", payload.Restricted,
+		"externalAccess", payload.ExternalAccess,
+		"ownerAccount", payload.OwnerAccount,
+		"requestID", natsutil.RequestIDFromContext(ctx))
+	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
+		return fmt.Errorf("apply restricted for room %s: %w", payload.RoomID, err)
 	}
 	return nil
 }

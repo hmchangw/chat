@@ -22,6 +22,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -268,56 +269,25 @@ func TestMongoStore_GetOrgMembersWithIndividualStatus_Integration(t *testing.T) 
 	assert.False(t, statusMap["bob"])
 }
 
-func TestMongoStore_AddRole_RemoveRole_Integration(t *testing.T) {
+func TestMongoStore_RemoveRole_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
 	ctx := context.Background()
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1", Roles: []model.Role{model.RoleMember},
+		RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner},
 	})
 	if err != nil {
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	// Promote: add owner role
-	err = store.AddRole(ctx, "alice", "r1", model.RoleOwner)
-	if err != nil {
-		t.Fatalf("AddRole: %v", err)
-	}
-
-	sub, err := store.GetSubscription(ctx, "alice", "r1")
-	if err != nil {
-		t.Fatalf("GetSubscription after promote: %v", err)
-	}
-	if !slices.Contains(sub.Roles, model.RoleOwner) {
-		t.Errorf("roles after promote = %v, want to contain owner", sub.Roles)
-	}
-	if !slices.Contains(sub.Roles, model.RoleMember) {
-		t.Errorf("roles after promote = %v, want to still contain member", sub.Roles)
-	}
-
-	// AddRole is idempotent ($addToSet)
-	err = store.AddRole(ctx, "alice", "r1", model.RoleOwner)
-	if err != nil {
-		t.Fatalf("AddRole idempotent: %v", err)
-	}
-	sub, err = store.GetSubscription(ctx, "alice", "r1")
-	if err != nil {
-		t.Fatalf("GetSubscription after idempotent add: %v", err)
-	}
-	if len(sub.Roles) != 2 {
-		t.Errorf("roles after idempotent add = %v, want exactly 2", sub.Roles)
-	}
-
-	// Demote: remove owner role
-	err = store.RemoveRole(ctx, "alice", "r1", model.RoleOwner)
-	if err != nil {
+	// Demote: remove owner role, leaving member.
+	if err := store.RemoveRole(ctx, "alice", "r1", model.RoleOwner); err != nil {
 		t.Fatalf("RemoveRole: %v", err)
 	}
 
-	sub, err = store.GetSubscription(ctx, "alice", "r1")
+	sub, err := store.GetSubscription(ctx, "alice", "r1")
 	if err != nil {
 		t.Fatalf("GetSubscription after demote: %v", err)
 	}
@@ -326,6 +296,18 @@ func TestMongoStore_AddRole_RemoveRole_Integration(t *testing.T) {
 	}
 	if !slices.Contains(sub.Roles, model.RoleMember) {
 		t.Errorf("roles after demote = %v, want to contain member", sub.Roles)
+	}
+
+	// RemoveRole is idempotent ($pull) — removing again leaves member intact.
+	if err := store.RemoveRole(ctx, "alice", "r1", model.RoleOwner); err != nil {
+		t.Fatalf("RemoveRole idempotent: %v", err)
+	}
+	sub, err = store.GetSubscription(ctx, "alice", "r1")
+	if err != nil {
+		t.Fatalf("GetSubscription after idempotent remove: %v", err)
+	}
+	if len(sub.Roles) != 1 || !slices.Contains(sub.Roles, model.RoleMember) {
+		t.Errorf("roles after idempotent remove = %v, want exactly [member]", sub.Roles)
 	}
 }
 
@@ -470,8 +452,11 @@ func TestReconcileMemberCountsSplitsBots(t *testing.T) {
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s3", User: model.SubscriptionUser{Account: "carol"}, RoomID: "r1",
 	})
+	// Bot subs carry u.isBot=true in production (stamped by newSub via
+	// model.IsBotAccount); set it explicitly here since the test inserts the
+	// document directly. ReconcileMemberCounts now counts off this flag.
 	mustInsertSub(t, db, &model.Subscription{
-		ID: "s4", User: model.SubscriptionUser{Account: "weather.bot"}, RoomID: "r1",
+		ID: "s4", User: model.SubscriptionUser{Account: "weather.bot", IsBot: true}, RoomID: "r1",
 	})
 	mustInsertRoom(t, db, &model.Room{ID: "r1", Type: model.RoomTypeChannel})
 
@@ -828,7 +813,9 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.Len(t, pubsC, 1)
 	assert.Empty(t, pubsA, "no member_added outbox to home site-A")
 
-	// Decode site-B event.
+	// Each remote site receives only its own homed accounts — bob (site-B) and
+	// ian (site-C) are partitioned by the userMap[].SiteID filter at the publish
+	// site so we never ship cross-site account identities over the wire.
 	var envB model.OutboxEvent
 	require.NoError(t, json.Unmarshal(pubsB[0].data, &envB))
 	var evtB model.MemberAddEvent
@@ -838,7 +825,6 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	assert.Equal(t, "site-A", evtB.SiteID)
 	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
 
-	// Decode site-C event.
 	var envC model.OutboxEvent
 	require.NoError(t, json.Unmarshal(pubsC[0].data, &envC))
 	var evtC model.MemberAddEvent
@@ -1022,10 +1008,12 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 
 // --- Sync DM endpoint integration tests ---
 
-const integSyncDMRequestID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
-
-func newIntegSyncDMCtx() context.Context {
-	return natsutil.WithRequestID(context.Background(), integSyncDMRequestID)
+// newIntegSyncDMCtx returns a *natsrouter.Context with the canonical request ID
+// for serverCreateDM; it also satisfies context.Context for store calls.
+func newIntegSyncDMCtx() *natsrouter.Context {
+	c := natsrouter.NewContext(map[string]string{})
+	c.SetContext(natsutil.WithRequestID(context.Background(), testRequestID))
+	return c
 }
 
 func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
@@ -1041,8 +1029,7 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
-	got, err := handler.handleSyncCreateDM(ctx, data)
+	got, err := handler.serverCreateDM(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.True(t, got.Success)
@@ -1073,6 +1060,61 @@ func TestSyncCreateDM_DM_PersistsRoomAndSubs(t *testing.T) {
 	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("bob")])
 }
 
+func TestSyncCreateDM_SelfDM_PersistsSingleFavoritedSub(t *testing.T) {
+	ctx := newIntegSyncDMCtx()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	siteID := "site-A"
+
+	mustInsertUser(t, db, &model.User{ID: "u-alice", Account: "alice", SiteID: siteID, EngName: "Alice", ChineseName: "愛麗絲"})
+
+	cap := &publishCapture{}
+	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+
+	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "alice"}
+	got, err := handler.serverCreateDM(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Success)
+	assert.Equal(t, "alice", got.Subscription.User.Account)
+	assert.True(t, got.Subscription.Favorite)
+	assert.True(t, got.Subscription.IsSubscribed)
+	assert.Equal(t, model.RoomTypeDM, got.Subscription.RoomType)
+
+	roomID := got.Subscription.RoomID
+	require.NotEmpty(t, roomID)
+
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, model.RoomTypeDM, room.Type)
+	assert.Equal(t, siteID, room.SiteID)
+	assert.Equal(t, 1, room.UserCount)
+	assert.Equal(t, 0, room.AppCount)
+	assert.Equal(t, []string{"u-alice"}, room.UIDs)
+	assert.Equal(t, []string{"alice"}, room.Accounts)
+
+	subCount, err := db.Collection("subscriptions").CountDocuments(ctx, bson.M{"roomId": roomID})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), subCount, "self-DM is exactly one subscription")
+
+	persisted, err := store.GetSubscription(ctx, "alice", roomID)
+	require.NoError(t, err)
+	assert.True(t, persisted.Favorite)
+	assert.True(t, persisted.IsSubscribed)
+	assert.Equal(t, "alice", persisted.Name)
+	assert.Equal(t, model.RoomTypeDM, persisted.RoomType)
+
+	subjects := map[string]int{}
+	cap.mu.Lock()
+	total := len(cap.captured)
+	for _, p := range cap.captured {
+		subjects[p.subject]++
+	}
+	cap.mu.Unlock()
+	assert.Equal(t, 1, subjects[subject.SubscriptionUpdate("alice")])
+	assert.Equal(t, 1, total, "subscription.update only; no outbox (same-site) and no canonical member event (Option C)")
+}
+
 func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -1085,8 +1127,7 @@ func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeBotDM, RequesterAccount: "alice", OtherAccount: "helper.bot"}
-	data, _ := json.Marshal(req)
-	_, err := handler.handleSyncCreateDM(newIntegSyncDMCtx(), data)
+	_, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 
 	pubs := cap.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
@@ -1106,11 +1147,10 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	handler := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, _ := json.Marshal(req)
 
-	r1, err := handler.handleSyncCreateDM(ctx, data)
+	r1, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
-	r2, err := handler.handleSyncCreateDM(ctx, data)
+	r2, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, r1)
 	require.NotNil(t, r2)
@@ -1143,9 +1183,7 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	handler := NewHandler(store, siteID, cap1.fn(), testKeyStore, testKeySender)
 
 	req := model.SyncCreateDMRequest{RoomType: model.RoomTypeDM, RequesterAccount: "alice", OtherAccount: "bob"}
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-	_, err = handler.handleSyncCreateDM(ctx, data)
+	_, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 
 	// 1. Local Mongo room.ID equals the deterministic BuildDMRoomID.
@@ -1173,7 +1211,7 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	//    on the wire, JetStream OUTBOX dedup would reject the second emit.
 	cap2 := &publishCapture{}
 	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
-	_, err = handler2.handleSyncCreateDM(ctx, data)
+	_, err = handler2.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
 	require.Len(t, pubs2, 1)
@@ -1683,6 +1721,43 @@ func TestHandler_ProcessCreateRoom_DMConcurrentByCounterpart_Integration(t *test
 	}
 }
 
+func newSubFixture(id, userID, account, roomID, name string) model.Subscription {
+	s := newSubFixtureWithRoles(id, userID, account, roomID, []model.Role{model.RoleMember})
+	s.Name = name
+	return s
+}
+
+func newSubFixtureWithRoles(id, userID, account, roomID string, roles []model.Role) model.Subscription {
+	return model.Subscription{
+		ID:       id,
+		User:     model.SubscriptionUser{ID: userID, Account: account},
+		RoomID:   roomID,
+		SiteID:   "site-a",
+		Name:     "n",
+		Roles:    roles,
+		RoomType: model.RoomTypeChannel,
+		JoinedAt: time.Now().UTC(),
+	}
+}
+
+func TestMongoStore_UpdateRoomName(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-rename")
+	store := NewMongoStore(db)
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "r1", Name: "old", Type: model.RoomTypeChannel, SiteID: "site-a",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateRoomName(ctx, "r1", "new"))
+	got, err := store.GetRoom(ctx, "r1")
+	require.NoError(t, err)
+	assert.Equal(t, "new", got.Name)
+
+	assert.ErrorIs(t, store.UpdateRoomName(ctx, "missing", "x"), ErrRoomNotFound)
+}
+
 // TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash exercises the
 // recovery path when a worker crashed AFTER CreateRoom succeeded but BEFORE
 // BulkCreateSubscriptions wrote any subs. JetStream redelivers the canonical
@@ -1741,4 +1816,96 @@ func TestHandler_ProcessCreateRoom_RecoversFromMidWriteCrash(t *testing.T) {
 	room, err := store.GetRoom(ctx, roomID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, room.UserCount, "ReconcileMemberCounts ran on retry")
+}
+
+func TestIntegration_ProcessRoomRename(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "room-worker-rename-integ")
+	store := NewMongoStore(db)
+
+	const (
+		siteID     = "site-a"
+		remoteSite = "site-b"
+		roomID     = "r-rename-1"
+		oldName    = "old-name"
+		newName    = "new-name"
+	)
+
+	// Seed: channel room + 2 local subs + 1 remote sub + 3 users.
+	mustInsertRoom(t, db, &model.Room{
+		ID: roomID, Name: oldName, Type: model.RoomTypeChannel, SiteID: siteID,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleOwner}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u2", Account: "bob"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertSub(t, db, &model.Subscription{
+		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u3", Account: "carol"},
+		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
+	})
+	mustInsertUser(t, db, &model.User{ID: "u1", Account: "alice", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u2", Account: "bob", SiteID: siteID})
+	mustInsertUser(t, db, &model.User{ID: "u3", Account: "carol", SiteID: remoteSite})
+
+	cap := &publishCapture{}
+	h := NewHandler(store, siteID, cap.fn(), testKeyStore, testKeySender)
+	const reqID = "01970a4f-8c2d-7c9a-abcd-e0123456789a"
+	ctx = natsutil.WithRequestID(ctx, reqID)
+
+	body, err := json.Marshal(model.RenameRoomRequest{
+		RoomID:    roomID,
+		NewName:   newName,
+		Account:   "alice",
+		Timestamp: time.Now().UTC().UnixMilli(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	// Room name updated in Mongo.
+	room, err := store.GetRoom(ctx, roomID)
+	require.NoError(t, err)
+	assert.Equal(t, newName, room.Name, "room name must be updated")
+
+	// All subscriptions renamed.
+	subs, err := store.ListByRoom(ctx, roomID)
+	require.NoError(t, err)
+	for _, sub := range subs {
+		assert.Equal(t, newName, sub.Name, "sub %s name must be updated", sub.User.Account)
+	}
+
+	// One sys message published to canonical.
+	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated(siteID))
+	require.Len(t, sysPubs, 1, "exactly one sys message published for room rename")
+	var sysEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sysPubs[0].data, &sysEvt))
+	assert.Equal(t, model.MessageTypeRoomRenamed, sysEvt.Message.Type)
+	assert.Equal(t, "alice", sysEvt.Message.UserAccount)
+
+	// Rename publishes a single room-scoped sys message via canonical; no
+	// per-subscription fan-out — clients derive their state from the room event.
+	cap.mu.Lock()
+	for _, p := range cap.captured {
+		assert.False(t,
+			strings.HasPrefix(p.subject, "chat.user.") && strings.HasSuffix(p.subject, ".event.subscription.update"),
+			"rename must not fan out subscription.update events (got %s)", p.subject)
+	}
+	cap.mu.Unlock()
+
+	// One outbox publish to remote site-b.
+	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRenamed))
+	require.Len(t, outboxPubs, 1, "exactly one outbox publish to remote site-b")
+	var outboxEvt model.OutboxEvent
+	require.NoError(t, json.Unmarshal(outboxPubs[0].data, &outboxEvt))
+	var outboxPayload model.RoomRenamedOutboxPayload
+	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
+	assert.Equal(t, roomID, outboxPayload.RoomID)
+	assert.Equal(t, newName, outboxPayload.NewName)
 }

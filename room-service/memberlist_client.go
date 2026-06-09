@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
@@ -52,25 +54,48 @@ func (c *natsMemberListClient) ListMembers(ctx context.Context, requester string
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	out := &nats.Msg{
-		Subject: subject.MemberList(requester, ch.RoomID, ch.SiteID),
-		Data:    body,
-		Header:  nats.Header{},
-	}
+	// natsutil.NewMsg forwards the X-Request-ID from ctx; the remote member.list
+	// endpoint's RequireRequestID middleware rejects a header-less call.
+	out := natsutil.NewMsg(reqCtx, subject.MemberList(requester, ch.RoomID, ch.SiteID), body)
 	reply, err := c.nc.RequestMsgWithContext(reqCtx, out)
 	if err != nil {
 		return nil, fmt.Errorf("member.list request to %s: %w", ch.SiteID, err)
 	}
 
-	if errResp, ok := natsutil.TryParseError(reply.Data); ok {
-		// Map the remote sentinel string back onto the local sentinel so callers
+	if ee, ok := errcode.Parse(reply.Data); ok {
+		// Map the remote not-member reason back onto the local sentinel so callers
 		// can use errors.Is(err, errNotRoomMember) uniformly regardless of which
-		// site the source channel lives on. Other remote errors are passed
-		// through via the "remote member.list:" prefix sanitizeError whitelists.
-		if errResp.Error == errNotRoomMember.Error() {
+		// site the source channel lives on. Other remote errors are reconstructed
+		// as a typed *errcode.Error preserving the remote code/message/reason.
+		//
+		// Mixed-version rollout: a legacy remote that replies without a "code"
+		// still parses (only "error" is required) but yields Code=="" and no
+		// reason, so the not-member remap simply does not fire until both sides
+		// are upgraded — an acceptable degradation, not a bug. Tasks 20.5/20.16:
+		// errcode.New now panics on a non-canonical Code OR empty Message, so a
+		// legacy/non-canonical envelope falls back to errcode.Internal here and
+		// emits a single warn so SREs can spot legacy peers.
+		if ee.Reason == errcode.RoomNotMember {
 			return nil, errNotRoomMember
 		}
-		return nil, fmt.Errorf("remote member.list: %s", errResp.Error)
+		if !ee.Code.Valid() || ee.Message == "" {
+			slog.WarnContext(ctx, "legacy peer emitted non-canonical errcode",
+				"code", string(ee.Code), "message", ee.Message, "site", ch.SiteID)
+			msg := ee.Message
+			if msg == "" {
+				msg = "remote site returned an error"
+			}
+			return nil, errcode.Internal(msg)
+		}
+		opts := []errcode.Option{errcode.WithReason(ee.Reason)}
+		if len(ee.Metadata) > 0 {
+			kv := make([]string, 0, 2*len(ee.Metadata))
+			for k, v := range ee.Metadata {
+				kv = append(kv, k, v)
+			}
+			opts = append(opts, errcode.WithMetadata(kv...))
+		}
+		return nil, errcode.New(ee.Code, ee.Message, opts...)
 	}
 
 	var resp model.ListRoomMembersResponse

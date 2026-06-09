@@ -36,6 +36,7 @@ type config struct {
 	MongoUsername        string                  `env:"MONGO_USERNAME"            envDefault:""`
 	MongoPassword        string                  `env:"MONGO_PASSWORD"            envDefault:""`
 	MaxWorkers           int                     `env:"MAX_WORKERS"               envDefault:"100"`
+	LastMsgFlushInterval time.Duration           `env:"LAST_MSG_FLUSH_INTERVAL"   envDefault:"250ms"`
 	UserCacheSize        int                     `env:"USER_CACHE_SIZE"           envDefault:"10000"`
 	UserCacheTTL         time.Duration           `env:"USER_CACHE_TTL"            envDefault:"5m"`
 	RoomMetaCacheSize    int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
@@ -78,13 +79,13 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("room-meta-cache enabled", "size", cfg.RoomMetaCacheSize, "ttl", cfg.RoomMetaCacheTTL)
-	us := userstore.NewMongoStore(db.Collection("users"))
-	if cfg.UserCacheSize > 0 && cfg.UserCacheTTL > 0 {
-		us = NewCachedUserStore(us, cfg.UserCacheSize, cfg.UserCacheTTL)
-		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
-	} else {
-		slog.Info("user-cache disabled")
+	us, err := userstore.NewCache(userstore.NewMongoStore(db.Collection("users")),
+		cfg.UserCacheSize, cfg.UserCacheTTL)
+	if err != nil {
+		slog.Error("init user cache failed", "error", err)
+		os.Exit(1)
 	}
+	slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
 
 	var keyStore roomkeystore.RoomKeyStore
 	if cfg.Encryption.Enabled {
@@ -134,7 +135,15 @@ func main() {
 	}
 
 	publisher := &natsPublisher{nc: nc}
-	handler := NewHandler(cachedStore, us, publisher, keyStore, cfg.Encryption.Enabled)
+	// Coalesce per-message rooms.lastMsgAt writes into periodic BulkWrites.
+	// The handler still calls UpdateRoomLastMessage; the coalescing wrapper
+	// buffers it and drains via flushCtx/Run.
+	coalescer := newCoalescingStore(cachedStore, store)
+	flushCtx, flushCancel := context.WithCancel(context.Background())
+	go coalescer.Run(flushCtx, cfg.LastMsgFlushInterval, 5*time.Second)
+	slog.Info("last-msg coalescer enabled", "flush_interval", cfg.LastMsgFlushInterval)
+
+	handler := NewHandler(coalescer, us, publisher, keyStore, cfg.Encryption.Enabled)
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
@@ -158,7 +167,7 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx := natsutil.ContextWithRequestIDFromHeaders(msgCtx, msg.Headers())
+				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 					if err := msg.Nak(); err != nil {
@@ -189,6 +198,12 @@ func main() {
 			case <-ctx.Done():
 				return fmt.Errorf("worker drain timed out: %w", ctx.Err())
 			}
+		},
+		// Stop the coalescer AFTER in-flight handlers drain so any final
+		// buffered UpdateRoomLastMessage calls land in this last flush.
+		func(_ context.Context) error {
+			flushCancel()
+			return nil
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },

@@ -11,16 +11,20 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// requestIDMiddleware extracts X-Request-ID (or mints via idgen) and stores it on Gin keys, c.Request.Context() via natsutil, and the response header.
+// requestIDMiddleware funnels HTTP X-Request-ID through idgen.ResolveRequestID
+// (the same primitive the NATS path uses via natsutil.StampRequestID) so the
+// mint-vs-pass-through policy has a single owner. Missing → silent mint;
+// malformed → mint + Warn preserving the inbound value for traceability.
 func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := c.GetHeader(natsutil.RequestIDHeader)
-		if !idgen.IsValidUUID(id) {
-			id = idgen.GenerateRequestID()
-		}
+		inbound := c.GetHeader(natsutil.RequestIDHeader)
+		id, replaced := idgen.ResolveRequestID(inbound)
 		c.Set("request_id", id)
 		c.Request = c.Request.WithContext(natsutil.WithRequestID(c.Request.Context(), id))
 		c.Header(natsutil.RequestIDHeader, id)
+		if replaced {
+			slog.WarnContext(c.Request.Context(), "minted request_id (inbound invalid)", "inbound", inbound, "path", c.Request.URL.Path)
+		}
 		c.Next()
 	}
 }

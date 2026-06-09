@@ -360,3 +360,47 @@ func TestBroadcastWorker_PersistsLastMessage_Integration(t *testing.T) {
 	assert.Equal(t, "msg-last", got.LastMsgID)
 	assert.WithinDuration(t, msgTime, got.LastMsgAt, time.Millisecond)
 }
+
+func TestBroadcastWorker_BulkUpdateRoomLastMessage_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	_, err := db.Collection("rooms").InsertMany(ctx, []interface{}{
+		model.Room{ID: "r-bulk-a", Name: "a", Type: model.RoomTypeChannel, SiteID: "site-a"},
+		model.Room{ID: "r-bulk-b", Name: "b", Type: model.RoomTypeChannel, SiteID: "site-a"},
+	})
+	require.NoError(t, err)
+
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+
+	t1 := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Second)
+	updates := map[string]roomLastMsgUpdate{
+		"r-bulk-a": {msgID: "msg-a", at: t1},
+		"r-bulk-b": {msgID: "msg-b", at: t2, lastMentionAllAt: t2},
+	}
+	require.NoError(t, store.BulkUpdateRoomLastMessage(ctx, updates))
+
+	var a, b struct {
+		LastMsgAt        time.Time `bson:"lastMsgAt"`
+		LastMsgID        string    `bson:"lastMsgId"`
+		LastMentionAllAt time.Time `bson:"lastMentionAllAt"`
+	}
+	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r-bulk-a"}).Decode(&a))
+	require.NoError(t, db.Collection("rooms").FindOne(ctx, bson.M{"_id": "r-bulk-b"}).Decode(&b))
+
+	assert.Equal(t, "msg-a", a.LastMsgID)
+	assert.WithinDuration(t, t1, a.LastMsgAt, time.Millisecond)
+	assert.True(t, a.LastMentionAllAt.IsZero(), "no mention-all → field stays unset")
+
+	assert.Equal(t, "msg-b", b.LastMsgID)
+	assert.WithinDuration(t, t2, b.LastMsgAt, time.Millisecond)
+	assert.WithinDuration(t, t2, b.LastMentionAllAt, time.Millisecond)
+}
+
+func TestBroadcastWorker_BulkUpdateRoomLastMessage_EmptyIsNoOp_Integration(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	require.NoError(t, store.BulkUpdateRoomLastMessage(context.Background(), nil))
+	require.NoError(t, store.BulkUpdateRoomLastMessage(context.Background(), map[string]roomLastMsgUpdate{}))
+}

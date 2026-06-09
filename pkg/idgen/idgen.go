@@ -157,6 +157,24 @@ func GenerateRequestID() string {
 	return u.String()
 }
 
+// ResolveRequestID enforces the repo-wide "mint everywhere" policy on inbound
+// X-Request-ID values: if inbound is a valid hyphenated UUID, it passes through
+// unchanged; otherwise a fresh UUIDv7 is minted. replaced is true ONLY when
+// inbound was non-empty-and-invalid (i.e., a malformed client value was
+// swapped) — empty inbound returns (fresh, false) because "missing" is the
+// benign common case, not a client bug. Callers should emit a Warn on
+// replaced=true so a buggy client stays traceable.
+//
+// This is the transport-agnostic primitive. NATS callers wrap it in
+// natsutil.StampRequestID, which also handles ctx-stamping and the warn log;
+// HTTP callers (Gin middleware) call it directly with c.GetHeader(...).
+func ResolveRequestID(inbound string) (id string, replaced bool) {
+	if IsValidUUID(inbound) {
+		return inbound, false
+	}
+	return GenerateRequestID(), inbound != ""
+}
+
 // IsValidUUID reports whether s is a well-formed hyphenated UUID of any version
 // (case-insensitive). Used to validate inbound X-Request-ID headers — we don't
 // care which UUID scheme the caller used (v4 or v7), only that the shape is

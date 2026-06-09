@@ -53,12 +53,13 @@ func runSeedHistory(ctx context.Context, cfg *config, preset string, seed int64)
 		slog.Error("seed room keys", "error", err)
 		return 1
 	}
-	if err := SeedThreadRooms(ctx, db, &res.Plan, cfg.SiteID); err != nil {
+	if err := SeedThreadRooms(ctx, db, &res, cfg.SiteID); err != nil {
 		slog.Error("seed thread rooms", "error", err)
 		return 1
 	}
 	sizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
-	if err := SeedHistoryCassandra(ctx, session, sizer, &res.Plan, cfg.SiteID); err != nil {
+	msgCount, err := SeedHistoryCassandra(ctx, session, sizer, &res, cfg.SiteID)
+	if err != nil {
 		slog.Error("seed cassandra messages", "error", err)
 		return 1
 	}
@@ -68,8 +69,78 @@ func runSeedHistory(ctx context.Context, cfg *config, preset string, seed int64)
 		"users", len(res.Fixtures.Users),
 		"rooms", len(res.Fixtures.Rooms),
 		"subs", len(res.Fixtures.Subscriptions),
-		"messages", len(res.Plan.Messages),
+		"messages", msgCount,
 		"threadParents", countThreadParents(res.ThreadParents),
+		"bucketHours", cfg.MessageBucketHours)
+	return 0
+}
+
+// runSeedReadReceipt seeds the same Mongo+Cassandra fixtures as the history
+// workload, then stamps lastSeenAt on a readRatio fraction of each room's
+// subscribers so the read-receipt RPC's ListReadReceipts query returns real
+// readers. readRatio must be in (0, 1].
+func runSeedReadReceipt(ctx context.Context, cfg *config, preset string, seed int64, readRatio float64) int {
+	if readRatio <= 0 || readRatio > 1 {
+		fmt.Fprintln(os.Stderr, "--read-ratio must be in (0, 1]")
+		return 2
+	}
+	if cfg.CassandraHosts == "" {
+		fmt.Fprintln(os.Stderr, "read-receipt workload requires CASSANDRA_HOSTS")
+		return 2
+	}
+	p, ok := BuiltinHistoryPreset(preset)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown history preset: %s\n", preset)
+		return 2
+	}
+
+	db, keyStore, cleanup, err := connectStores(ctx, cfg)
+	if err != nil {
+		return 1
+	}
+	defer cleanup()
+
+	session, err := connectCassandra(cfg)
+	if err != nil {
+		slog.Error("cassandra connect", "error", err)
+		return 1
+	}
+	defer cassutil.Close(session)
+
+	now := time.Now().UTC()
+	res := BuildHistoryFixtures(&p, seed, cfg.SiteID, now)
+
+	if err := Seed(ctx, db, &res.Fixtures); err != nil {
+		slog.Error("seed mongo fixtures", "error", err)
+		return 1
+	}
+	if err := SeedRoomKeys(ctx, keyStore, res.Fixtures.RoomKeys); err != nil {
+		slog.Error("seed room keys", "error", err)
+		return 1
+	}
+	if err := SeedThreadRooms(ctx, db, &res, cfg.SiteID); err != nil {
+		slog.Error("seed thread rooms", "error", err)
+		return 1
+	}
+	sizer := msgbucket.New(time.Duration(cfg.MessageBucketHours) * time.Hour)
+	msgCount, err := SeedHistoryCassandra(ctx, session, sizer, &res, cfg.SiteID)
+	if err != nil {
+		slog.Error("seed cassandra messages", "error", err)
+		return 1
+	}
+	plan := res.FullPlan()
+	if err := SeedReadReceiptState(ctx, db, res.Fixtures.Subscriptions, &plan, readRatio, seed); err != nil {
+		slog.Error("seed read-receipt reader state", "error", err)
+		return 1
+	}
+
+	slog.Info("seed complete (read-receipt)",
+		"preset", p.Name,
+		"users", len(res.Fixtures.Users),
+		"rooms", len(res.Fixtures.Rooms),
+		"subs", len(res.Fixtures.Subscriptions),
+		"messages", msgCount,
+		"readRatio", readRatio,
 		"bucketHours", cfg.MessageBucketHours)
 	return 0
 }
@@ -288,7 +359,9 @@ func countThreadParents(m map[string][]ThreadParentRef) int {
 }
 
 // natsHistoryRequester is the production HistoryRequester. Each call performs
-// nats.Conn.RequestWithContext under a per-call timeout context.
+// nats.Conn.RequestMsgWithContext under a per-call timeout context, carrying the
+// X-Request-ID from ctx on the message header (nil header when ctx has none, so
+// callers that don't set a request ID are unaffected).
 type natsHistoryRequester struct {
 	nc *nats.Conn
 }
@@ -300,7 +373,7 @@ func newNATSHistoryRequester(nc *nats.Conn) *natsHistoryRequester {
 func (r *natsHistoryRequester) Request(ctx context.Context, subj string, data []byte, timeout time.Duration) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg, err := r.nc.RequestWithContext(reqCtx, subj, data)
+	msg, err := r.nc.RequestMsgWithContext(reqCtx, natsutil.NewMsg(ctx, subj, data))
 	if err != nil {
 		return nil, fmt.Errorf("nats request: %w", err)
 	}

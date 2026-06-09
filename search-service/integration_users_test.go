@@ -15,8 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/restyutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
@@ -78,10 +79,7 @@ func TestIntegration_SearchUsers_EmptyQueryReturnsBadRequest(t *testing.T) {
 	msg, err := f.clientNATS.Request(subject.SearchUsers("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	require.NotEmpty(t, envelope.Error)
-	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+	errtest.AssertCode(t, msg.Data, errcode.CodeBadRequest)
 }
 
 func TestIntegration_SearchUsers_ThirdPartyErrorReturnsInternal(t *testing.T) {
@@ -95,11 +93,9 @@ func TestIntegration_SearchUsers_ThirdPartyErrorReturnsInternal(t *testing.T) {
 	msg, err := f.clientNATS.Request(subject.SearchUsers("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	require.NotEmpty(t, envelope.Error)
-	assert.Equal(t, natsrouter.CodeInternal, envelope.Code,
+	envelope := errtest.Decode(t, msg.Data)
+	assert.Equal(t, errcode.CodeInternal, envelope.Code,
 		"non-2xx from third-party must surface as internal error, not raw status")
 	// Raw third-party details must not leak to the caller.
-	assert.NotContains(t, envelope.Error, "503", "status code from third-party must not leak")
+	assert.NotContains(t, envelope.Message, "503", "status code from third-party must not leak")
 }

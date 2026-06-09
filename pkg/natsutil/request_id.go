@@ -1,4 +1,8 @@
-// request_id.go: helpers to propagate X-Request-ID between context.Context and nats.Header. Missing IDs degrade to a log gap, not a correctness failure.
+// request_id.go: helpers to propagate X-Request-ID between context.Context and nats.Header.
+// Two entry-point helpers per docs/error-handling.md §3a:
+//   - StampRequestID — mint-on-missing (default; safe for paths where the ID is logging-only).
+//   - RequireRequestID — reject-on-missing (for paths that derive JetStream Nats-Msg-Id
+//     or document IDs from the request ID, where server-side minting would break client-retry dedup).
 package natsutil
 
 import (
@@ -6,6 +10,9 @@ import (
 	"log/slog"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/idgen"
 )
 
 // RequestIDHeader is the canonical NATS/HTTP header for the request correlation ID.
@@ -29,18 +36,6 @@ func RequestIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// ContextWithRequestIDFromHeaders returns ctx augmented with X-Request-ID from headers, or ctx unchanged if absent.
-func ContextWithRequestIDFromHeaders(ctx context.Context, headers nats.Header) context.Context {
-	if headers == nil {
-		return ctx
-	}
-	id := headers.Get(RequestIDHeader)
-	if id == "" {
-		return ctx
-	}
-	return WithRequestID(ctx, id)
-}
-
 // HeaderForContext returns a nats.Header carrying X-Request-ID from ctx, or nil if ctx has no request ID.
 func HeaderForContext(ctx context.Context) nats.Header {
 	id := RequestIDFromContext(ctx)
@@ -57,6 +52,57 @@ func NewMsg(ctx context.Context, subj string, data []byte) *nats.Msg {
 		Data:    data,
 		Header:  HeaderForContext(ctx),
 	}
+}
+
+// StampRequestID is the single boundary helper every NATS entry point should
+// use. It:
+//  1. Resolves the inbound X-Request-ID via idgen.ResolveRequestID (mint when
+//     missing/malformed per the repo-wide policy in docs/error-handling.md),
+//  2. Stamps the resolved id onto ctx via WithRequestID,
+//  3. Emits a single Warn line when a malformed inbound value was replaced
+//     (silent on missing — that's the benign common case),
+//  4. Returns the new ctx and the id so the caller can also enrich its slog
+//     values (c.WithLogValues for natsrouter, errcode.WithLogValues for raw
+//     QueueSubscribe handlers).
+//
+// subject is logged alongside the warn for trace context; pass "" if not
+// applicable (e.g., JetStream consume loops that prefer msg.Subject() at the
+// call site).
+func StampRequestID(ctx context.Context, headers nats.Header, subject string) (context.Context, string) {
+	var inbound string
+	if headers != nil {
+		inbound = headers.Get(RequestIDHeader)
+	}
+	id, replaced := idgen.ResolveRequestID(inbound)
+	ctx = WithRequestID(ctx, id)
+	if replaced {
+		slog.WarnContext(ctx, "minted request_id (inbound invalid)", "inbound", inbound, "subject", subject)
+	}
+	return ctx, id
+}
+
+// RequireRequestID is the strict variant of StampRequestID. Use it on entry
+// points whose downstream pipeline derives JetStream Nats-Msg-Id components
+// or deterministic document IDs from the request ID (room-service handlers,
+// room-worker.natsServerCreateDM) — silently minting a fresh UUID server-side
+// would break client-retry deduplication on those paths. Missing or malformed
+// inbound headers return an errcode.BadRequest; the ctx is returned unchanged
+// so the caller can still use it for logging the failure.
+//
+// See docs/error-handling.md §3a for the rationale and the list of paths that
+// must use this instead of StampRequestID.
+func RequireRequestID(ctx context.Context, headers nats.Header, subject string) (context.Context, string, error) {
+	var inbound string
+	if headers != nil {
+		inbound = headers.Get(RequestIDHeader)
+	}
+	if !idgen.IsValidUUID(inbound) {
+		return ctx, "", errcode.BadRequest(
+			"X-Request-ID header is required (must be a valid hyphenated UUID per docs/error-handling.md §3a)",
+			errcode.WithReason(errcode.RequestIDRequired),
+		)
+	}
+	return WithRequestID(ctx, inbound), inbound, nil
 }
 
 // OutboxDedupID composes a JetStream Nats-Msg-Id as base+":"+destSiteID. base

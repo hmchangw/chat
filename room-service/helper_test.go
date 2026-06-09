@@ -1,13 +1,11 @@
 package main
 
 import (
-	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -30,51 +28,6 @@ func TestHasRole(t *testing.T) {
 			got := hasRole(tt.roles, tt.target)
 			if got != tt.want {
 				t.Errorf("hasRole(%v, %q) = %v, want %v", tt.roles, tt.target, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSanitizeError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"sentinel: invalid role", errInvalidRole, "invalid role: must be owner or member"},
-		{"sentinel: only owners", errOnlyOwners, "only owners can update roles"},
-		{"sentinel: cannot demote", errCannotDemoteLast, "cannot demote the last owner"},
-		{"sentinel: already owner", errAlreadyOwner, "user is already an owner"},
-		{"sentinel: not owner", errNotOwner, "user is not an owner"},
-		{"sentinel: room type", errRoomTypeGuard, "role update is only allowed in channel rooms"},
-		{"sentinel: target not member", errTargetNotMember, "target user is not a member of this room"},
-		{"sentinel: not room member", errNotRoomMember, "only room members can list members"},
-		{"sentinel: invalid org", errInvalidOrg, "invalid org"},
-		{"sentinel: promote requires individual", errPromoteRequiresIndividual, "only individual members can be promoted to owner"},
-		{"sentinel: remove target ambiguous", errRemoveTargetAmbiguous, "exactly one of account or orgId must be set"},
-		{"sentinel: cannot remove last member", errCannotRemoveLastMember, "cannot remove the last member of the room"},
-		{"sentinel: last owner cannot leave", errLastOwnerCannotLeave, "last owner cannot leave the room"},
-		{"sentinel: org member cannot leave solo", errOrgMemberCannotLeaveSolo, "org members cannot leave individually"},
-		{"sentinel: room ID mismatch", errRoomIDMismatch, "room ID mismatch"},
-		{"wrapped remove-channel-only passes through", fmt.Errorf("%w, got %s", errRemoveChannelOnly, "dm"), "remove-member only supported on channel rooms, got dm"},
-		{"sentinel: list limit invalid", errListLimitInvalid, "limit must be > 0"},
-		{"sentinel: list offset invalid", errListOffsetInvalid, "offset must be >= 0"},
-		{"wrapped sentinel passes through", fmt.Errorf("get room: %w", errRoomTypeGuard), "get room: role update is only allowed in channel rooms"},
-		{"safe owner message", errors.New("only owners can add members"), "only owners can add members"},
-		{"safe cannot add", errors.New("cannot add members to a DM room"), "cannot add members to a DM room"},
-		{"safe capacity", errors.New("room is at maximum capacity (1000)"), "room is at maximum capacity (1000)"},
-		{"safe exceeds capacity", errors.New("exceeds maximum capacity (1000): would create 1001 members"), "exceeds maximum capacity (1000): would create 1001 members"},
-		{"safe requester", errors.New("requester not in room: not found"), "requester not in room: not found"},
-		{"safe invalid", errors.New("invalid request: bad json"), "invalid request: bad json"},
-		{"passes through invalid mute-toggle subject", fmt.Errorf("invalid mute-toggle subject: chat.user.alice.foo"), "invalid mute-toggle subject: chat.user.alice.foo"},
-		{"internal db error", fmt.Errorf("mongo timeout"), "internal error"},
-		{"generic error", fmt.Errorf("unexpected failure"), "internal error"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeError(tt.err)
-			if got != tt.want {
-				t.Errorf("sanitizeError(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -121,29 +74,57 @@ func TestDedup_Empty(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestSanitizeError_NotRoomMember_WhenWrapped(t *testing.T) {
-	// Guards the errors.Is whitelist — wrapping (e.g. by add-member's
-	// "expand channels: %w") must not lose the user-safe message.
-	wrapped := fmt.Errorf("expand channels: %w", errNotRoomMember)
-	assert.Equal(t, "only room members can list members", sanitizeError(wrapped))
-}
-
-func TestSanitizeError_RemoteMemberListPrefix(t *testing.T) {
-	remote := errors.New("remote member.list: only room members can list members")
-	assert.Equal(t, "remote member.list: only room members can list members", sanitizeError(remote))
-}
-
-func TestSanitizeError_RemoteMemberListWithContext(t *testing.T) {
-	// Error from cross-site RPC includes site context; preserve user-safe message.
-	remote := errors.New("expand channels: remote member.list: room not found")
-	msg := sanitizeError(remote)
-	assert.Contains(t, msg, "remote member.list:")
-	assert.Contains(t, msg, "room not found")
-}
-
-func TestSanitizeError_TransportFailureStillOpaque(t *testing.T) {
-	// Generic transport failure from the client — no user-safe substring — must still be "internal error".
-	assert.Equal(t, "internal error", sanitizeError(errors.New("member.list request to site-eu: nats: timeout")))
+// TestSentinelCodesAndReasons verifies each migrated sentinel carries the
+// category (and where applicable the reason) from the plan's mapping table.
+// This replaces the deleted sanitizeError suite.
+func TestSentinelCodesAndReasons(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    *errcode.Error
+		code   errcode.Code
+		reason errcode.Reason
+	}{
+		{"invalid role", errInvalidRole, errcode.CodeBadRequest, ""},
+		{"only owners", errOnlyOwners, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"only owners can remove", errOnlyOwnersCanRemove, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"only owners can add to restricted", errOnlyOwnersCanAddToRes, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"already owner", errAlreadyOwner, errcode.CodeConflict, errcode.RoomAlreadyOwner},
+		{"not owner", errNotOwner, errcode.CodeForbidden, errcode.RoomNotOwner},
+		{"cannot demote last", errCannotDemoteLast, errcode.CodeConflict, errcode.RoomCannotDemoteLastOwner},
+		{"room type guard", errRoomTypeGuard, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
+		{"add members channel only", errAddMembersChannelOnly, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
+		{"target not member", errTargetNotMember, errcode.CodeBadRequest, errcode.RoomTargetNotMember},
+		{"not room member", errNotRoomMember, errcode.CodeForbidden, errcode.RoomNotMember},
+		{"invalid thread id", errInvalidThreadID, errcode.CodeBadRequest, ""},
+		{"thread sub not found", errThreadSubNotFound, errcode.CodeNotFound, ""},
+		{"promote requires individual", errPromoteRequiresIndividual, errcode.CodeBadRequest, errcode.RoomPromoteRequiresIndividual},
+		{"empty create request", errEmptyCreateRequest, errcode.CodeBadRequest, ""},
+		{"self dm", errSelfDM, errcode.CodeBadRequest, errcode.RoomSelfDM},
+		{"bot in channel", errBotInChannel, errcode.CodeBadRequest, errcode.RoomBotInChannel},
+		{"bot not available", errBotNotAvailable, errcode.CodeNotFound, errcode.RoomBotNotAvailable},
+		{"invalid user data", errInvalidUserData, errcode.CodeBadRequest, ""},
+		{"channel name required", errChannelNameRequired, errcode.CodeBadRequest, ""},
+		{"channel name too long", errChannelNameTooLong, errcode.CodeBadRequest, ""},
+		{"message not found", errMessageNotFound, errcode.CodeNotFound, ""},
+		{"message room mismatch", errMessageRoomMismatch, errcode.CodeBadRequest, ""},
+		{"not message sender", errNotMessageSender, errcode.CodeForbidden, ""},
+		{"remove target ambiguous", errRemoveTargetAmbiguous, errcode.CodeBadRequest, ""},
+		{"cannot remove last member", errCannotRemoveLastMember, errcode.CodeConflict, errcode.RoomLastMemberCannotRemove},
+		{"last owner cannot leave", errLastOwnerCannotLeave, errcode.CodeConflict, errcode.RoomLastOwnerCannotLeave},
+		{"org member cannot leave solo", errOrgMemberCannotLeaveSolo, errcode.CodeForbidden, ""},
+		{"room id mismatch", errRoomIDMismatch, errcode.CodeBadRequest, ""},
+		{"remove channel only", errRemoveChannelOnly, errcode.CodeBadRequest, errcode.RoomNonChannelOperation},
+		{"list limit invalid", errListLimitInvalid, errcode.CodeBadRequest, ""},
+		{"list offset invalid", errListOffsetInvalid, errcode.CodeBadRequest, ""},
+		{"member statuses limit invalid", errMemberStatusesLimitInvalid, errcode.CodeBadRequest, ""},
+		{"mentionable limit invalid", errMentionableLimitInvalid, errcode.CodeBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.code, tc.err.Code)
+			assert.Equal(t, tc.reason, tc.err.Reason)
+		})
+	}
 }
 
 func TestNewSentinelErrorsExist(t *testing.T) {
@@ -152,25 +133,8 @@ func TestNewSentinelErrorsExist(t *testing.T) {
 	assert.Equal(t, "bots cannot be added to a channel", errBotInChannel.Error())
 	assert.Equal(t, "bot not available", errBotNotAvailable.Error())
 	assert.Equal(t, "user is missing required name fields", errInvalidUserData.Error())
-	assert.Equal(t, "missing X-Request-ID header", errMissingRequestID.Error())
-	assert.Equal(t, "invalid X-Request-ID format", errInvalidRequestID.Error())
 	assert.Equal(t, "channel name is required", errChannelNameRequired.Error())
 	assert.Equal(t, "channel name must be at most 100 characters", errChannelNameTooLong.Error())
-	assert.Equal(t, "user not found", errUserNotFound.Error())
-}
-
-func TestDMExistsErrorWrapsCorrectly(t *testing.T) {
-	e := newDMExistsError("r_existing")
-	assert.Equal(t, "dm already exists", e.Error())
-	assert.Equal(t, "r_existing", e.RoomID())
-
-	var sentinel *dmExistsError
-	assert.True(t, errors.Is(e, sentinel))
-
-	wrapped := fmt.Errorf("validation failed: %w", e)
-	var target *dmExistsError
-	require.True(t, errors.As(wrapped, &target))
-	assert.Equal(t, "r_existing", target.RoomID())
 }
 
 func TestStripAccount(t *testing.T) {
@@ -194,28 +158,52 @@ func TestStripAccount(t *testing.T) {
 	}
 }
 
-func TestSanitizeErrorPassesThroughCreateRoomSentinels(t *testing.T) {
-	cases := []error{
-		errEmptyCreateRequest,
-		errSelfDM,
-		errBotInChannel,
-		errBotNotAvailable,
-		errInvalidUserData,
-		errMissingRequestID,
-		errUserNotFound,
-		newDMExistsError("r_existing"),
-		fmt.Errorf("validation: %w", errSelfDM),
+func TestIsPlatformAdmin(t *testing.T) {
+	tests := []struct {
+		name string
+		user *model.User
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty roles", &model.User{Account: "alice"}, false},
+		{"user only", &model.User{Account: "a", Roles: []model.UserRole{model.UserRoleUser}}, false},
+		{"admin", &model.User{Account: "a", Roles: []model.UserRole{model.UserRoleAdmin}}, true},
+		{"mixed", &model.User{Account: "a", Roles: []model.UserRole{model.UserRoleUser, model.UserRoleAdmin}}, true},
 	}
-	for _, e := range cases {
-		t.Run(e.Error(), func(t *testing.T) {
-			assert.Equal(t, e.Error(), sanitizeError(e))
-		})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { assert.Equal(t, tt.want, isPlatformAdmin(tt.user)) })
 	}
 }
 
-func TestSanitizeErrorCollapsesUnknown(t *testing.T) {
-	got := sanitizeError(errors.New("mongo: connection refused: tcp 127.0.0.1:27017"))
-	assert.Equal(t, "internal error", got)
+func TestIsURLSafeIDToken(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty string", "", false},
+		{"simple alphanumeric", "site-a", true},
+		{"lowercase", "roomabc123", true},
+		{"uppercase", "SiteA", true},
+		{"underscore", "room_id", true},
+		{"dot", "v1.2.3", true},
+		{"tilde", "abc~def", true},
+		{"hyphen", "room-id-123", true},
+		{"question mark", "room?id", false},
+		{"hash", "room#id", false},
+		{"slash", "room/id", false},
+		{"asterisk", "room*", false},
+		{"greater than", "room>id", false},
+		{"less than", "room<id", false},
+		{"space", "room id", false},
+		{"percent", "room%20id", false},
+		{"at sign", "room@id", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isURLSafeIDToken(tt.input))
+		})
+	}
 }
 
 func TestDetermineRoomType(t *testing.T) {
@@ -261,7 +249,6 @@ func TestDetermineRoomType(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got := determineRoomType(&tt.req)
 			assert.Equal(t, tt.want, got)

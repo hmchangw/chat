@@ -1,6 +1,13 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"fmt"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+
+	"github.com/hmchangw/chat/pkg/atrest"
+)
 
 // CassandraConfig holds Cassandra connection settings (env prefix: CASSANDRA_).
 type CassandraConfig struct {
@@ -35,9 +42,57 @@ type Config struct {
 	MessageBucketHours      int             `env:"MESSAGE_BUCKET_HOURS"        envDefault:"72"`
 	MessageReadMaxBuckets   int             `env:"MESSAGE_READ_MAX_BUCKETS"    envDefault:"122"`
 	MessageHistoryFloorDays int             `env:"MESSAGE_HISTORY_FLOOR_DAYS"  envDefault:"365"`
+	LargeRoomThreshold      int             `env:"LARGE_ROOM_THRESHOLD"        envDefault:"500"`
+	MaxPinnedPerRoom        int             `env:"MAX_PINNED_PER_ROOM"         envDefault:"10"`
+	PinEnabled              bool            `env:"PIN_ENABLED"                 envDefault:"true"`
+
+	// Subscription access-check cache. Only positive subscriptions are cached,
+	// so the TTL bounds how long revoked access can stay readable. Set size or
+	// ttl to 0 to disable.
+	SubCacheSize int           `env:"HISTORY_SUB_CACHE_SIZE" envDefault:"100000"`
+	SubCacheTTL  time.Duration `env:"HISTORY_SUB_CACHE_TTL"  envDefault:"2m"`
+
+	// Room metadata cache (room times + minUserLastSeenAt). lastMsgAt advances
+	// on every message, so the TTL is short by default; client room hints cover
+	// the freshness-sensitive path. Set size or ttl to 0 to disable.
+	RoomCacheSize int           `env:"HISTORY_ROOM_CACHE_SIZE" envDefault:"50000"`
+	RoomCacheTTL  time.Duration `env:"HISTORY_ROOM_CACHE_TTL"  envDefault:"10s"`
+
+	// LRU+TTL bounds for the per-site custom_emojis existence-lookup cache.
+	CustomEmojiCacheSize int           `env:"CUSTOM_EMOJI_CACHE_SIZE" envDefault:"4096"`
+	CustomEmojiCacheTTL  time.Duration `env:"CUSTOM_EMOJI_CACHE_TTL"  envDefault:"60s"`
+
+	Atrest atrest.Config      // env vars are already prefixed ATREST_*
+	Vault  atrest.VaultConfig // env vars are already prefixed (VAULT_*, ATREST_VAULT_*)
 }
 
 // Load parses environment variables into Config; returns an error when required vars are absent.
 func Load() (Config, error) {
-	return env.ParseAs[Config]()
+	cfg, err := env.ParseAs[Config]()
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validate(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// validate rejects negative cache sizes/TTLs that would silently disable a
+// cache (because the main wiring guards on size>0 && ttl>0). Zero is the
+// documented disable value and is accepted.
+func validate(cfg *Config) error {
+	if cfg.SubCacheSize < 0 {
+		return fmt.Errorf("HISTORY_SUB_CACHE_SIZE must be >= 0, got %d", cfg.SubCacheSize)
+	}
+	if cfg.SubCacheTTL < 0 {
+		return fmt.Errorf("HISTORY_SUB_CACHE_TTL must be >= 0, got %s", cfg.SubCacheTTL)
+	}
+	if cfg.RoomCacheSize < 0 {
+		return fmt.Errorf("HISTORY_ROOM_CACHE_SIZE must be >= 0, got %d", cfg.RoomCacheSize)
+	}
+	if cfg.RoomCacheTTL < 0 {
+		return fmt.Errorf("HISTORY_ROOM_CACHE_TTL must be >= 0, got %s", cfg.RoomCacheTTL)
+	}
+	return nil
 }

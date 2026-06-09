@@ -8,6 +8,8 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
@@ -89,8 +91,8 @@ func Example_errorHandling() {
 		func(c *natsrouter.Context, req GreetRequest) (*Room, error) {
 			room := findRoom(c.Param("roomID"))
 			if room == nil {
-				// User-facing error — client receives: {"error":"room not found","code":"not_found"}
-				return nil, natsrouter.ErrWithCode("not_found", "room not found")
+				// User-facing error — client receives: {"code":"not_found","error":"room not found"}
+				return nil, errcode.NotFound("room not found")
 			}
 			return room, nil
 			// If findRoom returned a Go error (e.g. DB failure), return it as-is:
@@ -127,10 +129,12 @@ func Example_customMiddleware() {
 	nc, _ := otelnats.Connect(nats.DefaultURL)
 	router := natsrouter.New(nc, "my-service")
 
-	// Custom middleware that rejects requests with empty payloads.
+	// Custom middleware that rejects requests with empty payloads. Middleware
+	// can't return an error like a handler, so it replies with a typed errcode
+	// envelope directly via errnats.Reply.
 	requireBody := natsrouter.HandlerFunc(func(c *natsrouter.Context) {
 		if len(c.Msg.Data) == 0 {
-			c.ReplyError("request body required")
+			errnats.Reply(c, c.Msg, errcode.BadRequest("request body required"))
 			return
 		}
 		c.Next()

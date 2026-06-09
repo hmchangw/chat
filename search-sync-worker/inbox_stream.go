@@ -36,6 +36,13 @@ func (b *inboxMemberCollection) FilterSubjects(siteID string) []string {
 	return subject.InboxMemberEventSubjects(siteID)
 }
 
+// StoredScripts returns nil by default. Collections that depend on ES stored
+// scripts (user-room) override this; spotlight inherits the nil default since
+// it uses plain index/delete actions.
+func (b *inboxMemberCollection) StoredScripts() map[string]json.RawMessage {
+	return nil
+}
+
 // parseMemberEvent decodes an INBOX message into an OutboxEvent + its
 // InboxMemberEvent payload and validates the common preconditions shared by
 // all inbox-member collections.

@@ -39,6 +39,47 @@ func TestUserJSON_WithSectAndDept(t *testing.T) {
 	roundTrip(t, &u, &model.User{})
 }
 
+func TestUserJSON_RolesOmittedWhenEmpty(t *testing.T) {
+	u := model.User{ID: "u1", Account: "alice", SiteID: "site-a"}
+	data, err := json.Marshal(&u)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, has := raw["roles"]
+	assert.False(t, has, "nil Roles must be omitted from JSON")
+}
+
+func TestIsPlatformAdmin(t *testing.T) {
+	tests := []struct {
+		name string
+		u    *model.User
+		want bool
+	}{
+		{"nil receiver", nil, false},
+		{"nil roles", &model.User{Account: "alice"}, false},
+		{"empty roles", &model.User{Account: "alice", Roles: []model.UserRole{}}, false},
+		{"user role only", &model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser}}, false},
+		{"admin role present", &model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleAdmin}}, true},
+		{"admin among many", &model.User{Account: "alice", Roles: []model.UserRole{model.UserRoleUser, model.UserRoleAdmin, "auditor"}}, true},
+		{"case-sensitive (Admin not admin)", &model.User{Account: "alice", Roles: []model.UserRole{"Admin"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, model.IsPlatformAdmin(tt.u))
+		})
+	}
+}
+
+func TestUserJSON_WithStatus(t *testing.T) {
+	u := model.User{
+		ID: "u1", Account: "alice", SiteID: "site-a",
+		EngName: "Alice Wang", ChineseName: "愛麗絲",
+		StatusIsShow: true,
+		StatusText:   "available",
+	}
+	roundTrip(t, &u, &model.User{})
+}
+
 func TestRoomJSON(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	lastMention := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -478,6 +519,7 @@ func TestSubscriptionJSON(t *testing.T) {
 			ThreadUnread:       []string{"parent-1", "parent-2"},
 			Alert:              true,
 			Muted:              true,
+			Favorite:           true,
 		}
 		roundTrip(t, &s, &model.Subscription{})
 	})
@@ -503,6 +545,12 @@ func TestSubscriptionJSON(t *testing.T) {
 
 		roundTrip(t, &s, &model.Subscription{})
 	})
+}
+
+func TestIsRoomMember(t *testing.T) {
+	assert.False(t, model.IsRoomMember(nil), "nil sub is not a member")
+	assert.True(t, model.IsRoomMember(&model.Subscription{}), "zero-value sub is a member (no role gating)")
+	assert.True(t, model.IsRoomMember(&model.Subscription{RoomID: "r1"}), "populated sub is a member")
 }
 
 func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
@@ -533,10 +581,15 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 	assert.True(t, hasMuted, "muted must be present in JSON even when false")
 	assert.Equal(t, false, mutedVal)
 
+	favoriteVal, hasFavorite := raw["favorite"]
+	assert.True(t, hasFavorite, "favorite must be present in JSON even when false")
+	assert.Equal(t, false, favoriteVal)
+
 	var dst model.Subscription
 	require.NoError(t, json.Unmarshal(data, &dst))
 	assert.Nil(t, dst.ThreadUnread, "absent threadUnread must unmarshal to nil")
 	assert.False(t, dst.Alert)
+	assert.False(t, dst.Favorite)
 }
 
 func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
@@ -906,13 +959,51 @@ func TestRoomKeyEnsureResponseJSON(t *testing.T) {
 	roundTrip(t, &src, &model.RoomKeyEnsureResponse{})
 }
 
-func TestNotificationEventJSON(t *testing.T) {
+func TestRoomKeyGetRequestJSON(t *testing.T) {
+	t.Run("RoomKeyGetRequest_explicitVersion", func(t *testing.T) {
+		v := 3
+		src := model.RoomKeyGetRequest{Version: &v}
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
+		require.NotNil(t, dst.Version)
+		require.Equal(t, 3, *dst.Version)
+	})
+
+	t.Run("RoomKeyGetRequest_nilVersion", func(t *testing.T) {
+		src := model.RoomKeyGetRequest{Version: nil}
+		dst := model.RoomKeyGetRequest{}
+		roundTrip(t, &src, &dst)
+		require.Nil(t, dst.Version)
+	})
+}
+
+func TestRoomKeyGetResponseJSON(t *testing.T) {
+	src := model.RoomKeyGetResponse{
+		RoomID:     "r1",
+		Version:    2,
+		PrivateKey: []byte{0x01, 0x02, 0x03},
+	}
+	dst := model.RoomKeyGetResponse{}
+	roundTrip(t, &src, &dst)
+}
+
+// TestNotificationEventJSON_Reaction round-trips the reaction notification
+// envelope published on chat.user.{account}.notification when someone reacts
+// to a message.
+func TestNotificationEventJSON_Reaction(t *testing.T) {
 	src := model.NotificationEvent{
-		Type:   "new_message",
+		Type:   "reaction",
 		RoomID: "room-1",
 		Message: model.Message{
-			ID: "m1", RoomID: "room-1", UserID: "u1", UserAccount: "alice",
-			Content: "hello", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			ID: "m1", RoomID: "room-1", UserID: "u1", UserAccount: "bob",
+			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID: "u-alice", Account: "alice", SiteID: "site-a", EngName: "Alice",
+			},
 		},
 		Timestamp: 1735689600000,
 	}
@@ -1114,6 +1205,23 @@ func TestMemberRemoveEventJSON(t *testing.T) {
 
 func TestRoomTypeChannel(t *testing.T) {
 	assert.Equal(t, model.RoomType("channel"), model.RoomTypeChannel)
+}
+
+func TestEventPinnedConstants(t *testing.T) {
+	assert.Equal(t, model.EventType("pinned"), model.EventPinned)
+	assert.Equal(t, model.EventType("unpinned"), model.EventUnpinned)
+}
+
+func TestMessagePinnedFieldsRoundTrip(t *testing.T) {
+	at := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	src := model.Message{
+		ID:       "m1",
+		RoomID:   "r1",
+		PinnedAt: &at,
+		PinnedBy: &model.Participant{UserID: "u-123", Account: "alice"},
+	}
+	dst := model.Message{}
+	roundTrip(t, &src, &dst)
 }
 
 func TestRoom_RestrictedJSON(t *testing.T) {
@@ -1447,7 +1555,7 @@ func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q should be omitted when zero", k)
 	}
@@ -1456,7 +1564,7 @@ func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
 func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	entry := model.RoomMemberEntry{
 		ID: "org-1", Type: model.RoomMemberOrg,
-		SectName: "Engineering", MemberCount: 42,
+		OrgName: "Engineering", MemberCount: 42,
 	}
 	data, err := bson.Marshal(&entry)
 	require.NoError(t, err)
@@ -1465,10 +1573,70 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	require.NoError(t, bson.Unmarshal(data, &got))
 	assert.Equal(t, "org-1", got["id"])
 	assert.Equal(t, "org", got["type"])
-	for _, k := range []string{"engName", "chineseName", "isOwner", "sectName", "memberCount"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q must not be persisted to BSON", k)
 	}
+}
+
+func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
+	t.Run("bot member name round-trips via JSON", func(t *testing.T) {
+		entry := model.RoomMemberEntry{
+			ID:      "u-bot",
+			Type:    model.RoomMemberIndividual,
+			Account: "weather.bot",
+			Name:    "Weather App",
+		}
+		data, err := json.Marshal(&entry)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, "Weather App", raw["name"])
+		// Human display fields must be absent for a bot entry.
+		_, hasEngName := raw["engName"]
+		assert.False(t, hasEngName, "engName must be absent for bot entry")
+		_, hasChineseName := raw["chineseName"]
+		assert.False(t, hasChineseName, "chineseName must be absent for bot entry")
+
+		var dst model.RoomMemberEntry
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, entry, dst)
+	})
+
+	t.Run("name not persisted to BSON", func(t *testing.T) {
+		entry := model.RoomMemberEntry{
+			ID:      "u-bot",
+			Type:    model.RoomMemberIndividual,
+			Account: "weather.bot",
+			Name:    "Weather App",
+		}
+		data, err := bson.Marshal(&entry)
+		require.NoError(t, err)
+		var got bson.M
+		require.NoError(t, bson.Unmarshal(data, &got))
+		_, hasName := got["name"]
+		assert.False(t, hasName, "name must not be persisted to BSON")
+	})
+
+	t.Run("orgName round-trips via JSON", func(t *testing.T) {
+		entry := model.RoomMemberEntry{
+			ID:      "sect-eng",
+			Type:    model.RoomMemberOrg,
+			OrgName: "Engineering",
+		}
+		data, err := json.Marshal(&entry)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, "Engineering", raw["orgName"])
+		_, hasSectName := raw["sectName"]
+		assert.False(t, hasSectName, "sectName key must not appear (renamed to orgName)")
+
+		var dst model.RoomMemberEntry
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, entry, dst)
+	})
 }
 
 func TestOrgMemberJSON(t *testing.T) {
@@ -1999,17 +2167,10 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 	assert.Equal(t, int64(1740000000000), dst.Timestamp)
 }
 
-func TestErrorResponseRoomIDOmitempty(t *testing.T) {
-	er := model.ErrorResponse{Error: "internal"}
-	body, err := json.Marshal(er)
-	require.NoError(t, err)
-	assert.NotContains(t, string(body), "roomId")
-
-	er2 := model.ErrorResponse{Error: "dm already exists", RoomID: "r1"}
-	body2, err := json.Marshal(er2)
-	require.NoError(t, err)
-	assert.Contains(t, string(body2), `"roomId":"r1"`)
-}
+// TestErrorResponseRoomIDOmitempty was removed: model.ErrorResponse was deleted
+// alongside the rest of the legacy error machinery (see pkg/errcode for the
+// canonical client-facing error type). The DM-exists path now returns a success
+// reply (model.CreateRoomReply{Status: CreateRoomStatusExists, RoomID}).
 
 func TestAsyncJobResultShape(t *testing.T) {
 	r := model.AsyncJobResult{
@@ -2029,10 +2190,24 @@ func TestAsyncJobResultShape(t *testing.T) {
 	assert.NotContains(t, string(data), `"job"`)
 	assert.NotContains(t, string(data), `"success"`)
 
-	r2 := model.AsyncJobResult{Operation: model.AsyncJobOpRoomMemberAdd, Status: "error", Error: "failed"}
+	// Success case must omit the error-only fields.
+	assert.NotContains(t, string(data), `"code"`)
+	assert.NotContains(t, string(data), `"reason"`)
+
+	r2 := model.AsyncJobResult{
+		Operation: model.AsyncJobOpRoomMemberAdd,
+		Status:    "error",
+		Error:     "not subscribed",
+		Code:      "forbidden",
+		Reason:    "not_subscribed",
+	}
 	raw2, err := json.Marshal(r2)
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw2), `"roomId"`)
+	var dst2 model.AsyncJobResult
+	require.NoError(t, json.Unmarshal(raw2, &dst2))
+	assert.Equal(t, "forbidden", dst2.Code)
+	assert.Equal(t, "not_subscribed", dst2.Reason)
 }
 
 func TestAsyncJobResultOpConstants(t *testing.T) {
@@ -2055,23 +2230,8 @@ func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	assert.NotContains(t, string(body), "requestId")
 }
 
-func TestErrorResponseJSON(t *testing.T) {
-	t.Run("without code, omitempty hides the field", func(t *testing.T) {
-		src := model.ErrorResponse{Error: "boom"}
-		data, err := json.Marshal(src)
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"error":"boom"}`, string(data))
-		roundTrip(t, &src, &model.ErrorResponse{})
-	})
-
-	t.Run("with code, both fields present", func(t *testing.T) {
-		src := model.ErrorResponse{Error: "blocked", Code: "large_room_post_restricted"}
-		data, err := json.Marshal(src)
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"error":"blocked","code":"large_room_post_restricted"}`, string(data))
-		roundTrip(t, &src, &model.ErrorResponse{})
-	})
-}
+// TestErrorResponseJSON was removed alongside model.ErrorResponse. The wire
+// envelope is now owned by pkg/errcode (see pkg/errcode/error_test.go).
 
 func TestReadReceiptRequestJSON(t *testing.T) {
 	r := model.ReadReceiptRequest{MessageID: "m1"}
@@ -2095,6 +2255,100 @@ func TestReadReceiptResponseJSON(t *testing.T) {
 		},
 	}
 	roundTrip(t, &r, &model.ReadReceiptResponse{})
+}
+
+func TestListMemberStatusesRequestJSON(t *testing.T) {
+	limit := 5
+	r := model.ListMemberStatusesRequest{Limit: &limit}
+	roundTrip(t, &r, &model.ListMemberStatusesRequest{})
+}
+
+// Nil Limit must omit the wire key (omitempty contract) so the server can
+// distinguish "client supplied an explicit value" from "use the server default".
+func TestListMemberStatusesRequestJSON_NilLimitOmitted(t *testing.T) {
+	data, err := json.Marshal(model.ListMemberStatusesRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(data); got != "{}" {
+		t.Errorf("nil Limit must marshal to {}, got %s", got)
+	}
+}
+
+func TestMemberStatusJSON(t *testing.T) {
+	m := model.MemberStatus{
+		Account: "alice", EngName: "Alice Wang", ChineseName: "愛麗絲",
+		StatusIsShow: true, StatusText: "in a meeting",
+	}
+	roundTrip(t, &m, &model.MemberStatus{})
+}
+
+func TestListMemberStatusesResponseJSON(t *testing.T) {
+	r := model.ListMemberStatusesResponse{Members: []model.MemberStatus{
+		{Account: "alice", EngName: "Alice", ChineseName: "愛麗絲", StatusIsShow: true, StatusText: "busy"},
+		{Account: "bob", EngName: "Bob", ChineseName: "陳博"},
+	}}
+	roundTrip(t, &r, &model.ListMemberStatusesResponse{})
+}
+
+func TestMentionableSubscriptionsRequestJSON(t *testing.T) {
+	limit := 10
+	r := model.MentionableSubscriptionsRequest{Limit: &limit, Filter: "ali"}
+	roundTrip(t, &r, &model.MentionableSubscriptionsRequest{})
+}
+
+// Nil Limit + empty Filter must marshal to {} so the server can apply its
+// default limit and treat the filter as "match everything".
+func TestMentionableSubscriptionsRequestJSON_NilLimitOmitted(t *testing.T) {
+	data, err := json.Marshal(model.MentionableSubscriptionsRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(data); got != "{}" {
+		t.Errorf("nil Limit + empty Filter must marshal to {}, got %s", got)
+	}
+}
+
+func TestMentionableSubscription_UserShape_JSON(t *testing.T) {
+	s := model.MentionableSubscription{
+		OptionType: "user",
+		UserID:     "u-alice",
+		Account:    "alice",
+		SiteID:     "site-a",
+		HRInfo:     &model.MentionableHRInfo{EngName: "Alice Wang", ChineseName: "愛麗絲"},
+	}
+	roundTrip(t, &s, &model.MentionableSubscription{})
+
+	data, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"app"`, "user-shape must omit app")
+}
+
+func TestMentionableSubscription_AppShape_JSON(t *testing.T) {
+	s := model.MentionableSubscription{
+		OptionType: "app",
+		UserID:     "u-bot",
+		Account:    "helper.bot",
+		App: &model.MentionableApp{
+			Name:      "Helper",
+			Assistant: model.MentionableAppAssistant{Name: "helper.bot"},
+		},
+	}
+	roundTrip(t, &s, &model.MentionableSubscription{})
+
+	data, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"hrInfo"`, "app-shape must omit hrInfo")
+}
+
+func TestMentionableSubscriptionsResponseJSON(t *testing.T) {
+	r := model.MentionableSubscriptionsResponse{Subscriptions: []model.MentionableSubscription{
+		{OptionType: "user", UserID: "u-a", Account: "a", SiteID: "site-a",
+			HRInfo: &model.MentionableHRInfo{EngName: "A", ChineseName: "A"}},
+		{OptionType: "app", UserID: "u-b", Account: "b.bot",
+			App: &model.MentionableApp{Name: "B", Assistant: model.MentionableAppAssistant{Name: "b.bot"}}},
+	}}
+	roundTrip(t, &r, &model.MentionableSubscriptionsResponse{})
 }
 
 // roundTrip marshals src to JSON, unmarshals into dst, and compares.
@@ -2169,6 +2423,150 @@ func TestAppAssistantDisabledRoundtrip(t *testing.T) {
 	roundTrip(t, &a, &dst)
 	require.NotNil(t, dst.Assistant)
 	assert.False(t, dst.Assistant.Enabled)
+}
+
+func TestAppRoundtrip_WithChannelTabAndAvatar(t *testing.T) {
+	a := model.App{
+		ID:        "app1",
+		Name:      "Calendar",
+		AvatarURL: "https://cdn.example.com/avatars/calendar.png",
+		Assistant: &model.AppAssistant{Enabled: true, Name: "calendar.bot"},
+		ChannelTab: &model.AppChannelTab{
+			Enabled: true,
+			Default: true,
+			Name:    "Calendar",
+			URL: model.AppChannelTabURL{
+				Default: "https://upstream.example.com/calendar/${roomId}/${siteId}/index",
+			},
+		},
+	}
+	var dst model.App
+	roundTrip(t, &a, &dst)
+	require.NotNil(t, dst.ChannelTab)
+	assert.True(t, dst.ChannelTab.Enabled)
+	assert.True(t, dst.ChannelTab.Default)
+	assert.Equal(t, "Calendar", dst.ChannelTab.Name)
+	assert.Equal(t, "https://upstream.example.com/calendar/${roomId}/${siteId}/index",
+		dst.ChannelTab.URL.Default)
+	assert.Equal(t, "https://cdn.example.com/avatars/calendar.png", dst.AvatarURL)
+}
+
+func TestAppChannelTabRoundtrip(t *testing.T) {
+	tab := model.AppChannelTab{
+		Enabled: true,
+		Default: false,
+		Name:    "Notes",
+		URL:     model.AppChannelTabURL{Default: "https://upstream/notes"},
+	}
+	var dst model.AppChannelTab
+	roundTrip(t, &tab, &dst)
+}
+
+func TestBotCmdMenuRoundtrip(t *testing.T) {
+	m := model.BotCmdMenu{
+		ID:           "bcm1",
+		Name:         "weather.bot",
+		ActiveStatus: true,
+		CmdBlocks: []model.CmdBlock{
+			{Text: "/weather", ActionType: "command", Payload: "weather"},
+		},
+	}
+	var dst model.BotCmdMenu
+	roundTrip(t, &m, &dst)
+	require.Len(t, dst.CmdBlocks, 1)
+	assert.Equal(t, "/weather", dst.CmdBlocks[0].Text)
+}
+
+func TestBotCmdMenuRoundtrip_Inactive(t *testing.T) {
+	m := model.BotCmdMenu{
+		ID:           "bcm2",
+		Name:         "weather.bot",
+		ActiveStatus: false,
+	}
+	var dst model.BotCmdMenu
+	roundTrip(t, &m, &dst)
+	assert.False(t, dst.ActiveStatus)
+	assert.Nil(t, dst.CmdBlocks)
+}
+
+func TestCmdBlockRoundtrip_Recursive(t *testing.T) {
+	block := model.CmdBlock{
+		Text:        "menu",
+		ActionType:  "open",
+		Description: "open the menu",
+		Modal: &model.CmdModal{
+			Command: "menu.open",
+			Param:   "weather",
+		},
+		Blocks: []model.CmdBlock{
+			{Text: "today", Payload: "today"},
+			{Text: "tomorrow", Payload: "tomorrow", Blocks: []model.CmdBlock{
+				{Text: "morning", Payload: "tomorrow.am"},
+			}},
+		},
+	}
+	var dst model.CmdBlock
+	roundTrip(t, &block, &dst)
+	require.NotNil(t, dst.Modal)
+	assert.Equal(t, "menu.open", dst.Modal.Command)
+	assert.Equal(t, "weather", dst.Modal.Param)
+	require.Len(t, dst.Blocks, 2)
+	require.Len(t, dst.Blocks[1].Blocks, 1)
+	assert.Equal(t, "morning", dst.Blocks[1].Blocks[0].Text)
+}
+
+func TestGetRoomAppTabsResponseRoundtrip(t *testing.T) {
+	src := model.GetRoomAppTabsResponse{
+		Apps: []model.RoomApp{
+			{
+				ID:        "app1",
+				Name:      "Calendar",
+				TabURL:    "https://chat.example.com/calendar/r1/site-a/index",
+				Assistant: &model.AppAssistant{Enabled: true, Name: "cal.bot"},
+				AvatarURL: "https://cdn/cal.png",
+			},
+		},
+	}
+	var dst model.GetRoomAppTabsResponse
+	roundTrip(t, &src, &dst)
+	require.Len(t, dst.Apps, 1)
+	assert.Equal(t, "Calendar", dst.Apps[0].Name)
+}
+
+func TestGetRoomAppTabsResponse_EmptyIsArrayNotNull(t *testing.T) {
+	src := model.GetRoomAppTabsResponse{Apps: []model.RoomApp{}}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"apps":[]`)
+	assert.NotContains(t, string(data), `"apps":null`)
+}
+
+func TestGetRoomAppCommandMenuResponseRoundtrip(t *testing.T) {
+	src := model.GetRoomAppCommandMenuResponse{
+		AppAssistants: []model.RoomAppAssistant{
+			{
+				AppName: "Weather Bot",
+				Name:    "weather.bot",
+				CmdBlocks: []model.CmdBlock{
+					{Text: "/forecast", Payload: "forecast"},
+				},
+			},
+		},
+	}
+	var dst model.GetRoomAppCommandMenuResponse
+	roundTrip(t, &src, &dst)
+	require.Len(t, dst.AppAssistants, 1)
+	assert.Equal(t, "weather.bot", dst.AppAssistants[0].Name)
+}
+
+func TestGetRoomAppCommandMenuResponse_EmptyIsArrayNotNull(t *testing.T) {
+	src := model.GetRoomAppCommandMenuResponse{
+		AppAssistants: []model.RoomAppAssistant{},
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"appAssistants":[]`)
+	assert.NotContains(t, string(data), `"appAssistants":null`)
 }
 
 func TestCreateRoomReplyRoundtrip(t *testing.T) {
@@ -2263,6 +2661,43 @@ func TestSubscriptionMuteToggledEventJSON(t *testing.T) {
 
 func TestOutboxSubscriptionMuteToggledConst(t *testing.T) {
 	assert.Equal(t, model.OutboxEventType("subscription_mute_toggled"), model.OutboxSubscriptionMuteToggled)
+}
+
+func TestFavoriteToggleResponseJSON(t *testing.T) {
+	src := model.FavoriteToggleResponse{
+		Status:   "ok",
+		Favorite: true,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.FavoriteToggleResponse
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "ok", raw["status"])
+	assert.Equal(t, true, raw["favorite"])
+}
+
+func TestSubscriptionFavoriteToggledEventJSON(t *testing.T) {
+	src := model.SubscriptionFavoriteToggledEvent{
+		Account:   "alice",
+		RoomID:    "r1",
+		Favorite:  true,
+		Timestamp: 1234567890,
+	}
+	data, err := json.Marshal(src)
+	require.NoError(t, err)
+
+	var dst model.SubscriptionFavoriteToggledEvent
+	require.NoError(t, json.Unmarshal(data, &dst))
+	assert.Equal(t, src, dst)
+}
+
+func TestOutboxSubscriptionFavoriteToggledConst(t *testing.T) {
+	assert.Equal(t, model.OutboxEventType("subscription_favorite_toggled"), model.OutboxSubscriptionFavoriteToggled)
 }
 
 func TestSyncCreateDMRequestJSON(t *testing.T) {
@@ -2411,6 +2846,119 @@ func TestDeleteRoomEventJSON(t *testing.T) {
 	roundTrip(t, &evt, &model.DeleteRoomEvent{})
 }
 
+func TestEventReactedConstant(t *testing.T) {
+	assert.Equal(t, model.EventType("reacted"), model.EventReacted)
+}
+
+func TestRoomEventMessageReactedConstant(t *testing.T) {
+	assert.Equal(t, model.RoomEventType("message_reacted"), model.RoomEventMessageReacted)
+}
+
+func TestReactionDeltaRoundtrip(t *testing.T) {
+	d := model.ReactionDelta{
+		Shortcode: "thumbsup",
+		Action:    "added",
+		Actor: model.Participant{
+			UserID:  "u-1",
+			Account: "alice",
+			SiteID:  "site-a",
+			EngName: "Alice",
+		},
+	}
+	var dst model.ReactionDelta
+	roundTrip(t, &d, &dst)
+}
+
+func TestMessageEventWithReactionDeltaJSON(t *testing.T) {
+	evt := model.MessageEvent{
+		Event: model.EventReacted,
+		Message: model.Message{
+			ID:          "msg-uuid",
+			RoomID:      "r1",
+			UserID:      "u-author",
+			UserAccount: "bob",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor: model.Participant{
+				UserID:  "u-1",
+				Account: "alice",
+				SiteID:  "site-a",
+				EngName: "Alice",
+			},
+		},
+	}
+	roundTrip(t, &evt, &model.MessageEvent{})
+}
+
+func TestMessageEventOmitsReactionDeltaWhenAbsent(t *testing.T) {
+	evt := model.MessageEvent{
+		Event:     model.EventCreated,
+		Message:   model.Message{ID: "msg-uuid", RoomID: "r1"},
+		SiteID:    "site-a",
+		Timestamp: 1747800000000,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "reactionDelta")
+}
+
+func TestReactRoomEventJSON(t *testing.T) {
+	reactedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.ReactRoomEvent{
+		Type:      model.RoomEventMessageReacted,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1746518900123,
+		MessageID: "msg-uuid",
+		Shortcode: "thumbsup",
+		Action:    "added",
+		Actor: model.Participant{
+			UserID:  "u-1",
+			Account: "alice",
+			SiteID:  "site-a",
+			EngName: "Alice",
+		},
+		ReactedAt: reactedAt,
+		UpdatedAt: reactedAt,
+	}
+	roundTrip(t, &evt, &model.ReactRoomEvent{})
+}
+
+func TestCustomEmojiRoundtrip(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	var dst model.CustomEmoji
+	roundTrip(t, &e, &dst)
+	assert.Equal(t, "acme_party", dst.Shortcode)
+}
+
+func TestCustomEmojiBSON(t *testing.T) {
+	e := model.CustomEmoji{
+		ID:        "0190a0f000007c9aabcde0123456789f",
+		SiteID:    "site-a",
+		Shortcode: "acme_party",
+		ImageURL:  "https://cdn.example.com/emoji/acme_party.png",
+		CreatedBy: "alice",
+		CreatedAt: 1747800000000,
+	}
+	data, err := bson.Marshal(&e)
+	require.NoError(t, err)
+	var dst model.CustomEmoji
+	require.NoError(t, bson.Unmarshal(data, &dst))
+	assert.Equal(t, e, dst)
+}
+
 func TestMessageThreadReadRequestJSON(t *testing.T) {
 	src := model.MessageThreadReadRequest{ThreadID: "01970a4f8c2d7c9aQRST"}
 	roundTrip(t, &src, &model.MessageThreadReadRequest{})
@@ -2497,4 +3045,261 @@ func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
 		_, present := subRaw[leaked]
 		assert.False(t, present, "removed event subscription must not carry %q", leaked)
 	}
+}
+
+func TestPinRoomEventJSON(t *testing.T) {
+	pinnedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.PinRoomEvent{
+		Type:      model.RoomEventMessagePinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: pinnedAt.UnixMilli(),
+		MessageID: "msg-uuid",
+		PinnedBy:  &model.Participant{UserID: "u1", Account: "alice"},
+		PinnedAt:  pinnedAt,
+	}
+	roundTrip(t, &evt, &model.PinRoomEvent{})
+}
+
+func TestUnpinRoomEventJSON(t *testing.T) {
+	unpinnedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
+	evt := model.UnpinRoomEvent{
+		Type:       model.RoomEventMessageUnpinned,
+		RoomID:     "r1",
+		SiteID:     "site-a",
+		Timestamp:  unpinnedAt.UnixMilli(),
+		MessageID:  "msg-uuid",
+		UnpinnedBy: &model.Participant{UserID: "u1", Account: "alice"},
+		UnpinnedAt: unpinnedAt,
+	}
+	roundTrip(t, &evt, &model.UnpinRoomEvent{})
+}
+
+// --- User.Roles ---
+
+func TestUserJSON_WithRoles(t *testing.T) {
+	u := model.User{ID: "u1", Account: "admin1", SiteID: "site-a",
+		Roles: []model.UserRole{model.UserRoleAdmin}}
+	roundTrip(t, &u, &model.User{})
+}
+
+func TestUserRoleConstants(t *testing.T) {
+	if model.UserRoleAdmin != "admin" || model.UserRoleUser != "user" {
+		t.Fatalf("UserRole consts: admin=%q user=%q", model.UserRoleAdmin, model.UserRoleUser)
+	}
+}
+
+// --- Room.ExternalAccess ---
+
+func TestRoomJSON_RestrictedAndExternalAccess(t *testing.T) {
+	r := model.Room{
+		ID: "r1", Name: "x", Type: model.RoomTypeChannel, SiteID: "site-a", UserCount: 5,
+		CreatedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Restricted: true, ExternalAccess: true,
+	}
+	roundTrip(t, &r, &model.Room{})
+}
+
+func TestRoomJSON_ExternalAccessOmittedWhenFalse(t *testing.T) {
+	r := model.Room{ID: "r1", Name: "x", Type: model.RoomTypeChannel, SiteID: "site-a",
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, has := raw["externalAccess"]
+	assert.False(t, has, "false ExternalAccess must omit")
+}
+
+// --- Subscription.Restricted / ExternalAccess ---
+
+func TestSubscriptionJSON_RestrictedAndExternalAccess(t *testing.T) {
+	s := model.Subscription{
+		ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a",
+		Roles: []model.Role{model.RoleMember}, Name: "x", RoomType: model.RoomTypeChannel,
+		JoinedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Restricted: true, ExternalAccess: true,
+	}
+	roundTrip(t, &s, &model.Subscription{})
+}
+
+// --- Request types ---
+
+func TestRenameRoomRequestJSON(t *testing.T) {
+	r := model.RenameRoomRequest{RoomID: "r1", NewName: "new", Account: "alice", Timestamp: 1700000000000}
+	roundTrip(t, &r, &model.RenameRoomRequest{})
+}
+
+func TestRoomRestrictedRequestJSON(t *testing.T) {
+	r := model.RoomRestrictedRequest{
+		RoomID: "r1", Restricted: true, ExternalAccess: false,
+		OwnerAccount: "alice", Account: "admin1", Timestamp: 1700000000000,
+	}
+	roundTrip(t, &r, &model.RoomRestrictedRequest{})
+}
+
+func TestRoomRestrictedRequest_OwnerOmittedWhenEmpty(t *testing.T) {
+	r := model.RoomRestrictedRequest{RoomID: "r1", Account: "admin1", Timestamp: 1700000000000}
+	data, err := json.Marshal(&r)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, has := raw["ownerAccount"]
+	assert.False(t, has)
+}
+
+// --- Sys message + outbox payloads ---
+
+func TestRoomRenamedSysDataJSON(t *testing.T) {
+	d := model.RoomRenamedSysData{NewName: "renamed", ByAccount: "alice"}
+	roundTrip(t, &d, &model.RoomRenamedSysData{})
+}
+
+func TestRoomRenamedRoomEventJSON(t *testing.T) {
+	e := model.RoomRenamedRoomEvent{
+		Type:      model.RoomEventRoomRenamed,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1700000000000,
+		NewName:   "engineering",
+		ByAccount: "alice",
+		RenamedAt: time.UnixMilli(1700000000000).UTC(),
+	}
+	roundTrip(t, &e, &model.RoomRenamedRoomEvent{})
+}
+
+func TestRoomRestrictedRoomEventJSON(t *testing.T) {
+	e := model.RoomRestrictedRoomEvent{
+		Type:           model.RoomEventRoomRestricted,
+		RoomID:         "r1",
+		SiteID:         "site-a",
+		Timestamp:      1700000000000,
+		Restricted:     true,
+		ExternalAccess: false,
+		OwnerAccount:   "alice",
+		ByAccount:      "admin1",
+		ChangedAt:      time.UnixMilli(1700000000000).UTC(),
+	}
+	roundTrip(t, &e, &model.RoomRestrictedRoomEvent{})
+}
+
+func TestRoomRestrictedSysDataJSON(t *testing.T) {
+	d := model.RoomRestrictedSysData{
+		Restricted: true, ExternalAccess: false, ByAccount: "admin1", OwnerAccount: "alice",
+	}
+	roundTrip(t, &d, &model.RoomRestrictedSysData{})
+}
+
+func TestRoomRenamedOutboxPayloadJSON(t *testing.T) {
+	p := model.RoomRenamedOutboxPayload{RoomID: "r1", NewName: "x", Timestamp: 1700000000000}
+	roundTrip(t, &p, &model.RoomRenamedOutboxPayload{})
+}
+
+func TestRoomRestrictedOutboxPayloadJSON(t *testing.T) {
+	p := model.RoomRestrictedOutboxPayload{
+		RoomID: "r1", Restricted: true, ExternalAccess: false,
+		OwnerAccount: "alice", Timestamp: 1700000000000,
+	}
+	roundTrip(t, &p, &model.RoomRestrictedOutboxPayload{})
+}
+
+// --- Constants ---
+
+func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
+	assert.Equal(t, "room_renamed", model.MessageTypeRoomRenamed)
+	assert.Equal(t, "room_restricted", model.MessageTypeRoomRestricted)
+	assert.Equal(t, "room_renamed", model.OutboxRoomRenamed)
+	assert.Equal(t, "room_restricted", model.OutboxRoomRestricted)
+	assert.Equal(t, "room.rename", model.AsyncJobOpRoomRename)
+	assert.Equal(t, model.RoomEventType("room_renamed"), model.RoomEventRoomRenamed)
+	assert.Equal(t, model.RoomEventType("room_restricted"), model.RoomEventRoomRestricted)
+}
+
+func TestPushNotificationEvent_RoundTrip(t *testing.T) {
+	in := model.PushNotificationEvent{
+		ID:       "m1-b0",
+		Accounts: []string{"alice", "bob"},
+		Title:    "general",
+		Body:     "hello",
+		RoomID:   "r1",
+		Data: model.PushNotificationData{
+			RoomID:    "r1",
+			MessageID: "m1",
+			Type:      "c",
+			Sender:    &model.Participant{Account: "bob", ChineseName: "張三", EngName: "Bob"},
+			PushTime:  "2026-05-27T00:00:00Z",
+		},
+		Timestamp: 1700000000000,
+	}
+	data, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out model.PushNotificationEvent
+	require.NoError(t, json.Unmarshal(data, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestMessage_SenderDisplayName(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  model.Message
+		want string
+	}{
+		{
+			name: "uses UserDisplayName when populated",
+			msg:  model.Message{UserAccount: "alice", UserDisplayName: "Alice Wang 愛麗絲"},
+			want: "Alice Wang 愛麗絲",
+		},
+		{
+			name: "falls back to UserAccount on legacy in-flight message",
+			msg:  model.Message{UserAccount: "alice", UserDisplayName: ""},
+			want: "alice",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.msg.SenderDisplayName())
+		})
+	}
+}
+
+func TestPresenceSnapshotReply_RoundTrip(t *testing.T) {
+	in := model.PresenceSnapshotReply{
+		Presences: map[string]model.Presence{
+			"alice": {AggregatedStatus: "online"},
+			"bob":   {AggregatedStatus: "busy"},
+		},
+	}
+	data, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out model.PresenceSnapshotReply
+	require.NoError(t, json.Unmarshal(data, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestStatusReply_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.StatusReply{Status: "ok"}, &model.StatusReply{})
+	roundTrip(t, &model.StatusReply{Status: "accepted"}, &model.StatusReply{})
+}
+
+func TestStatusWithRequestReply_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.StatusWithRequestReply{Status: "accepted", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}, &model.StatusWithRequestReply{})
+}
+
+func TestRoomRenameRequest_RoundTrip(t *testing.T) {
+	roundTrip(t, &model.RoomRenameRequest{NewName: "New Name"}, &model.RoomRenameRequest{})
+}
+
+func TestStatusReply_JSONShape(t *testing.T) {
+	b, err := json.Marshal(model.StatusReply{Status: "accepted"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"accepted"}`, string(b))
+}
+
+func TestStatusWithRequestReply_JSONShape(t *testing.T) {
+	b, err := json.Marshal(model.StatusWithRequestReply{Status: "ok", RequestID: "rid"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"ok","requestId":"rid"}`, string(b))
 }

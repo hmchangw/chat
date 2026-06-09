@@ -1143,3 +1143,353 @@ func TestHandler_HandleMessage_ChannelEncryptionDisabled(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleReacted_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	reactedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventReacted,
+		SiteID:    "site-a",
+		Timestamp: reactedAt.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-bob",
+			UserAccount: "bob",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:   &reactedAt,
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup",
+			Action:    "added",
+			Actor:     model.Participant{UserID: "u-alice", Account: "alice", EngName: "Alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1, "channel: single room-scoped publish")
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.ReactRoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessageReacted, roomEvt.Type)
+	assert.Equal(t, roomID, roomEvt.RoomID)
+	assert.Equal(t, "msg-1", roomEvt.MessageID)
+	assert.Equal(t, "thumbsup", roomEvt.Shortcode)
+	assert.Equal(t, model.ReactionActionAdded, roomEvt.Action)
+	assert.Equal(t, "alice", roomEvt.Actor.Account)
+	assert.True(t, roomEvt.ReactedAt.Equal(reactedAt))
+	assert.True(t, roomEvt.UpdatedAt.Equal(reactedAt))
+}
+
+func TestHandleReacted_DMFanOut(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-r1"
+	room := &model.Room{
+		ID: roomID, Type: model.RoomTypeDM, SiteID: "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	reactedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventReacted,
+		SiteID:    "site-a",
+		Timestamp: reactedAt.UnixMilli(),
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserID: "u-bob", UserAccount: "bob",
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			UpdatedAt: &reactedAt,
+		},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "tada", Action: "added",
+			Actor: model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2, "DM: one event per non-bot account")
+	subjects := []string{pub.records[0].subject, pub.records[1].subject}
+	assert.ElementsMatch(t,
+		[]string{subject.UserRoomEvent("alice"), subject.UserRoomEvent("bob")},
+		subjects,
+	)
+}
+
+// TestHandleReacted_MissingDelta_LogsAndDrops covers the poison-pill
+// guard for malformed reaction events with a nil ReactionDelta. The
+// publisher-side dedup_id deliberately collides such events with the
+// EventCreated key (see pkg/natsutil/canonical_dedup.go), so the
+// publisher bug is "loud" — but the consumer must not respond by
+// NAK-ing forever. The handler logs the malformed event and Acks
+// (returns nil) so JetStream drains it instead of looping.
+func TestHandleReacted_MissingDelta_LogsAndDrops(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event:   model.EventReacted,
+		Message: model.Message{ID: "msg-1", RoomID: "r1"},
+	}
+	data, _ := json.Marshal(&evt)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err := h.HandleMessage(context.Background(), data)
+	require.NoError(t, err, "malformed event must be acked, not NAK-ed")
+	assert.Empty(t, pub.records)
+}
+
+// TestHandleReacted_MissingUpdatedAt_LogsAndDrops mirrors the missing-
+// Delta guard for the missing-UpdatedAt branch. Same poison-pill
+// rationale: a malformed event from a future publisher path (federation
+// replay, legacy producer) must drop cleanly rather than block the
+// consumer with infinite redelivery.
+func TestHandleReacted_MissingUpdatedAt_LogsAndDrops(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event:   model.EventReacted,
+		Message: model.Message{ID: "msg-1", RoomID: "r1"},
+		ReactionDelta: &model.ReactionDelta{
+			Shortcode: "thumbsup", Action: "added",
+			Actor: model.Participant{Account: "alice"},
+		},
+		// UpdatedAt deliberately nil.
+	}
+	data, _ := json.Marshal(&evt)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err := h.HandleMessage(context.Background(), data)
+	require.NoError(t, err, "malformed event must be acked, not NAK-ed")
+	assert.Empty(t, pub.records)
+}
+func TestHandlePinned_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	pinnedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventPinned,
+		SiteID:    "site-a",
+		Timestamp: pinnedAt.UnixMilli(),
+		Message: model.Message{
+			ID:          "msg-1",
+			RoomID:      roomID,
+			UserID:      "u-author",
+			UserAccount: "author",
+			CreatedAt:   time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			PinnedAt:    &pinnedAt,
+			PinnedBy:    &model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1)
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.PinRoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessagePinned, roomEvt.Type)
+	assert.Equal(t, roomID, roomEvt.RoomID)
+	assert.Equal(t, "site-a", roomEvt.SiteID)
+	assert.Equal(t, "msg-1", roomEvt.MessageID)
+	require.NotNil(t, roomEvt.PinnedBy)
+	assert.Equal(t, "alice", roomEvt.PinnedBy.Account)
+	assert.True(t, roomEvt.PinnedAt.Equal(pinnedAt))
+}
+
+func TestHandlePinned_DMRoom_FansOutToBothMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-alice-bob"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	pinnedAt := time.Date(2026, 5, 14, 12, 5, 0, 0, time.UTC)
+	evt := model.MessageEvent{
+		Event:     model.EventPinned,
+		SiteID:    "site-a",
+		Timestamp: pinnedAt.UnixMilli(),
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserAccount: "alice",
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			PinnedAt:  &pinnedAt,
+			PinnedBy:  &model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	subjects := map[string]bool{}
+	for _, c := range pub.records {
+		subjects[c.subject] = true
+		var roomEvt model.PinRoomEvent
+		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessagePinned, roomEvt.Type)
+		assert.Equal(t, "msg-1", roomEvt.MessageID)
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}
+
+func TestHandlePinned_MissingPinnedAt_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	evt := model.MessageEvent{
+		Event: model.EventPinned,
+		Message: model.Message{
+			ID: "msg-1", RoomID: "r1", UserAccount: "alice",
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	err = h.HandleMessage(context.Background(), data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing PinnedAt")
+	assert.Empty(t, pub.records)
+}
+
+func TestHandleUnpinned_ChannelRoomScopedPublish(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "r1"
+	room := &model.Room{ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	unpinnedAtMs := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC).UnixMilli()
+	evt := model.MessageEvent{
+		Event:     model.EventUnpinned,
+		SiteID:    "site-a",
+		Timestamp: unpinnedAtMs,
+		Message: model.Message{
+			ID:        "msg-1",
+			RoomID:    roomID,
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			PinnedBy:  &model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 1)
+	c := pub.records[0]
+	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
+	var roomEvt model.UnpinRoomEvent
+	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+	assert.Equal(t, model.RoomEventMessageUnpinned, roomEvt.Type)
+	assert.Equal(t, "msg-1", roomEvt.MessageID)
+	require.NotNil(t, roomEvt.UnpinnedBy)
+	assert.Equal(t, "alice", roomEvt.UnpinnedBy.Account)
+	assert.Equal(t, unpinnedAtMs, roomEvt.UnpinnedAt.UnixMilli())
+}
+
+func TestHandleUnpinned_DMRoom_FansOutToBothMembers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	roomID := "dm-alice-bob"
+	room := &model.Room{
+		ID:       roomID,
+		Type:     model.RoomTypeDM,
+		SiteID:   "site-a",
+		Accounts: []string{"alice", "bob"},
+	}
+	store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+	unpinnedAtMs := time.Date(2026, 5, 14, 12, 10, 0, 0, time.UTC).UnixMilli()
+	evt := model.MessageEvent{
+		Event:     model.EventUnpinned,
+		SiteID:    "site-a",
+		Timestamp: unpinnedAtMs,
+		Message: model.Message{
+			ID: "msg-1", RoomID: roomID, UserAccount: "alice",
+			CreatedAt: time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+			PinnedBy:  &model.Participant{UserID: "u-alice", Account: "alice"},
+		},
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, true)
+	require.NoError(t, h.HandleMessage(context.Background(), data))
+
+	require.Len(t, pub.records, 2)
+	subjects := map[string]bool{}
+	for _, c := range pub.records {
+		subjects[c.subject] = true
+		var roomEvt model.UnpinRoomEvent
+		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
+		assert.Equal(t, model.RoomEventMessageUnpinned, roomEvt.Type)
+	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+}

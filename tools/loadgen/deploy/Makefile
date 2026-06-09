@@ -3,13 +3,15 @@ DEPS_COMPOSE     := $(ROOT)/docker-local/compose.deps.yaml
 SERVICES_COMPOSE := $(ROOT)/docker-local/compose.services.yaml
 OVERLAY          := docker-compose.yml
 COMPOSE          := docker compose -f $(OVERLAY)
+WORKLOAD         ?= messages
+STEPS            ?=
 
 # Encryption is the default for broadcast-worker; the broadcast-worker compose
 # reads ENCRYPTION_ENABLED via env interpolation (defaulting to true). Flip to
 # `ENCRYPTION_ENABLED=false make up` for a plaintext comparison run.
 export ENCRYPTION_ENABLED ?= true
 
-.PHONY: up stack-up overlay-up seed teardown run run-dashboards down logs seed-members teardown-members reset-members run-sustained run-capacity
+.PHONY: up stack-up overlay-up seed teardown run run-dashboards run-max-rps run-daily down logs seed-members teardown-members reset-members run-sustained run-capacity seed-roomread teardown-roomread
 
 up: stack-up overlay-up
 
@@ -36,6 +38,14 @@ seed-members:
 teardown-members:
 	@test -n "$(PRESET)" || (echo "PRESET=<members-*> required" && exit 1)
 	$(COMPOSE) exec -T loadgen /loadgen teardown --workload=members --preset=$(PRESET)
+
+seed-roomread:
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen seed --workload=room-read --preset=$(PRESET)
+
+teardown-roomread:
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen teardown --workload=room-read --preset=$(PRESET)
 
 reset-members:
 	@test -n "$(PRESET)" || (echo "PRESET=<members-*> required" && exit 1)
@@ -72,6 +82,23 @@ run:
 run-dashboards:
 	$(COMPOSE) --profile dashboards up -d
 	$(MAKE) run PRESET=$(PRESET) RATE=$(RATE) DURATION=$(DURATION)
+
+run-max-rps: ## Ramp RPS to find the max under SLO (WORKLOAD=messages|history|room-read PRESET=.. STEPS=..)
+	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
+	$(COMPOSE) --profile dashboards up -d cadvisor prometheus
+	$(COMPOSE) exec -T loadgen /loadgen max-rps \
+	    --workload=$(WORKLOAD) \
+	    --preset=$(PRESET) \
+	    $(if $(STEPS),--steps=$(STEPS),)
+
+comma := ,
+run-daily:
+	@test -n "$(PRESET)" || (echo "PRESET=<daily-light|daily-heavy|daily-power> required" && exit 1)
+	$(COMPOSE) exec -T loadgen /loadgen daily \
+	    --preset=$(PRESET) \
+	    --steps=$(or $(STEPS),1000$(comma)2000$(comma)5000$(comma)10000$(comma)20000) \
+	    --hold=$(or $(HOLD),180s) \
+	    --csv=/results/daily-$(PRESET)-$$(date +%Y%m%d-%H%M%S).csv
 
 down:
 	$(COMPOSE) --profile dashboards down -v

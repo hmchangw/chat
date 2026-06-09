@@ -67,6 +67,12 @@ func (h *Handler) HandleMessage(ctx context.Context, data []byte) error {
 		return h.handleUpdated(ctx, &evt)
 	case model.EventDeleted:
 		return h.handleDeleted(ctx, &evt)
+	case model.EventPinned:
+		return h.handlePinned(ctx, &evt)
+	case model.EventUnpinned:
+		return h.handleUnpinned(ctx, &evt)
+	case model.EventReacted:
+		return h.handleReacted(ctx, &evt)
 	default:
 		slog.Warn("unknown message event type, skipping", "event", evt.Event, "messageID", evt.Message.ID)
 		return nil
@@ -107,6 +113,15 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		}
 	}
 
+	// Room-metadata sys messages publish typed RoomEvents instead of new_message
+	// so mention/sender/encryption fields they don't carry stay off the wire.
+	switch msg.Type {
+	case model.MessageTypeRoomRenamed:
+		return h.publishRoomRenamedEvent(ctx, meta, &msg)
+	case model.MessageTypeRoomRestricted:
+		return h.publishRoomRestrictedEvent(ctx, meta, &msg)
+	}
+
 	clientMsg := buildClientMessage(&msg, userByAccount)
 
 	switch meta.Type {
@@ -115,9 +130,63 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 	case model.RoomTypeDM:
 		return h.publishDMEvents(ctx, meta, clientMsg, resolved.Accounts)
 	default:
-		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "roomID", meta.ID)
+		slog.Warn("unknown room type, skipping fan-out", "type", meta.Type, "room_id", meta.ID)
 		return nil
 	}
+}
+
+func (h *Handler) publishRoomRenamedEvent(ctx context.Context, meta roommetacache.Meta, msg *model.Message) error {
+	var sys model.RoomRenamedSysData
+	if len(msg.SysMsgData) > 0 {
+		if err := json.Unmarshal(msg.SysMsgData, &sys); err != nil {
+			return fmt.Errorf("unmarshal room_renamed sysMsgData for room %s: %w", msg.RoomID, err)
+		}
+	}
+	evt := model.RoomRenamedRoomEvent{
+		Type:      model.RoomEventRoomRenamed,
+		RoomID:    meta.ID,
+		SiteID:    meta.SiteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		NewName:   sys.NewName,
+		ByAccount: sys.ByAccount,
+		RenamedAt: msg.CreatedAt,
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal room_renamed event for room %s: %w", msg.RoomID, err)
+	}
+	if err := h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload); err != nil {
+		return fmt.Errorf("publish room_renamed event for room %s: %w", msg.RoomID, err)
+	}
+	return nil
+}
+
+func (h *Handler) publishRoomRestrictedEvent(ctx context.Context, meta roommetacache.Meta, msg *model.Message) error {
+	var sys model.RoomRestrictedSysData
+	if len(msg.SysMsgData) > 0 {
+		if err := json.Unmarshal(msg.SysMsgData, &sys); err != nil {
+			return fmt.Errorf("unmarshal room_restricted sysMsgData for room %s: %w", msg.RoomID, err)
+		}
+	}
+	evt := model.RoomRestrictedRoomEvent{
+		Type:           model.RoomEventRoomRestricted,
+		RoomID:         meta.ID,
+		SiteID:         meta.SiteID,
+		Timestamp:      time.Now().UTC().UnixMilli(),
+		Restricted:     sys.Restricted,
+		ExternalAccess: sys.ExternalAccess,
+		OwnerAccount:   sys.OwnerAccount,
+		ByAccount:      sys.ByAccount,
+		ChangedAt:      msg.CreatedAt,
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal room_restricted event for room %s: %w", msg.RoomID, err)
+	}
+	if err := h.pub.Publish(ctx, subject.RoomEvent(meta.ID), payload); err != nil {
+		return fmt.Errorf("publish room_restricted event for room %s: %w", msg.RoomID, err)
+	}
+	return nil
 }
 
 func (h *Handler) handleUpdated(ctx context.Context, evt *model.MessageEvent) error {
@@ -174,6 +243,94 @@ func (h *Handler) handleDeleted(ctx context.Context, evt *model.MessageEvent) er
 	return h.publishMutation(ctx, room, model.RoomEventMessageDeleted, msg.ID, &del)
 }
 
+func (h *Handler) handlePinned(ctx context.Context, evt *model.MessageEvent) error {
+	msg := evt.Message
+	if msg.PinnedAt == nil {
+		return fmt.Errorf("pinned event missing PinnedAt: %s", msg.ID)
+	}
+
+	room, err := h.store.GetRoom(ctx, msg.RoomID)
+	if err != nil {
+		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
+	}
+
+	pin := model.PinRoomEvent{
+		Type:      model.RoomEventMessagePinned,
+		RoomID:    room.ID,
+		SiteID:    room.SiteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		MessageID: msg.ID,
+		PinnedBy:  msg.PinnedBy,
+		PinnedAt:  *msg.PinnedAt,
+	}
+	return h.publishMutation(ctx, room, model.RoomEventMessagePinned, msg.ID, &pin)
+}
+
+func (h *Handler) handleUnpinned(ctx context.Context, evt *model.MessageEvent) error {
+	msg := evt.Message
+	// UnpinnedAt comes from evt.Timestamp (set at publish): the canonical unpin
+	// payload from history-service clears PinnedAt, so the message itself
+	// carries no unpin timestamp.
+
+	room, err := h.store.GetRoom(ctx, msg.RoomID)
+	if err != nil {
+		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
+	}
+
+	unpin := model.UnpinRoomEvent{
+		Type:       model.RoomEventMessageUnpinned,
+		RoomID:     room.ID,
+		SiteID:     room.SiteID,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+		MessageID:  msg.ID,
+		UnpinnedBy: msg.PinnedBy,
+		UnpinnedAt: time.UnixMilli(evt.Timestamp).UTC(),
+	}
+	return h.publishMutation(ctx, room, model.RoomEventMessageUnpinned, msg.ID, &unpin)
+}
+
+// handleReacted fans out a single-actor reaction delta to clients in the
+// room. Reactions carry no content, so the encryption branch is skipped.
+func (h *Handler) handleReacted(ctx context.Context, evt *model.MessageEvent) error {
+	msg := evt.Message
+	// Log-and-drop on malformed payloads: NAK would loop forever on a publisher contract violation.
+	if evt.ReactionDelta == nil {
+		slog.Error("reacted event missing ReactionDelta; dropping",
+			"messageID", msg.ID,
+			"roomID", msg.RoomID,
+			"siteID", evt.SiteID,
+		)
+		return nil
+	}
+	if msg.UpdatedAt == nil {
+		slog.Error("reacted event missing UpdatedAt; dropping",
+			"messageID", msg.ID,
+			"roomID", msg.RoomID,
+			"siteID", evt.SiteID,
+		)
+		return nil
+	}
+
+	room, err := h.store.GetRoom(ctx, msg.RoomID)
+	if err != nil {
+		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
+	}
+
+	react := model.ReactRoomEvent{
+		Type:      model.RoomEventMessageReacted,
+		RoomID:    room.ID,
+		SiteID:    room.SiteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		MessageID: msg.ID,
+		Shortcode: evt.ReactionDelta.Shortcode,
+		Action:    evt.ReactionDelta.Action,
+		Actor:     evt.ReactionDelta.Actor,
+		ReactedAt: *msg.UpdatedAt,
+		UpdatedAt: *msg.UpdatedAt,
+	}
+	return h.publishMutation(ctx, room, model.RoomEventMessageReacted, msg.ID, &react)
+}
+
 // publishMutation marshals a flattened edit/delete event and routes it by room
 // type: channel events go to the room stream, DM/botDM events fan out per
 // non-bot member. evt must marshal to the wire payload for roomEvtType.
@@ -201,14 +358,14 @@ func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvt
 					"type", roomEvtType,
 					"account", account,
 					"messageID", messageID,
-					"roomID", room.ID,
+					"room_id", room.ID,
 				)
 			}
 		}
 		return nil
 
 	default:
-		slog.Warn("unknown room type, skipping mutation fan-out", "type", room.Type, "roomID", room.ID)
+		slog.Warn("unknown room type, skipping mutation fan-out", "type", room.Type, "room_id", room.ID)
 		return nil
 	}
 }

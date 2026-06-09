@@ -26,7 +26,7 @@ On connect, every client subscribes to `chat.user.{account}.>`. This single wild
 | Subject | Direction | Publisher | Purpose |
 |---------|-----------|-----------|---------|
 | `chat.user.{account}.stream.msg` | Server → Client | broadcast-worker | DM message delivery |
-| `chat.user.{account}.notification` | Server → Client | notification-worker | Desktop banner notification (new message alert) |
+| `chat.user.{account}.notification` | Server → Client | _(removed — see PUSH_NOTIFICATIONS stream below)_ | _(deprecated)_ |
 | `chat.user.{account}.event.subscription.update` | Server → Client | room-worker, inbox-worker | Room added/removed from user's list |
 | `chat.user.{account}.event.room.metadata.update` | Server → Client | room-worker | Room metadata changed (for rooms in sidebar) |
 | `chat.user.{account}.response.{requestID}` | Server → Client | various services | Response to a client request |
@@ -89,9 +89,9 @@ When offline, clients miss messages on non-active sidebar rooms. To restore ment
 2. **Subscription list response** (`chat.user.{account}.request.rooms.list`) — includes `mentionCountSinceLastSeen` per room, allowing the client to restore `@` badges without fetching message history for every sidebar room
 3. **Mark as read** — when the user opens a room, the client sends a read-position update (advancing `lastSeenAt`); the server resets `mentionCountSinceLastSeen` to `0` for that user+room
 
-#### Desktop Banner Notifications
+#### Desktop Banner Notifications (Mobile Push)
 
-notification-worker sends a `NotificationEvent` to `chat.user.{account}.notification` for immediate desktop banners (including mention notifications). This is an interrupt-style notification, separate from the persistent badge state above.
+notification-worker publishes a `PushNotificationEvent` to `chat.server.notification.push.{siteID}.send` (captured by the `PUSH_NOTIFICATIONS_{siteID}` JetStream stream) for each eligible recipient. The push service consumes this stream and delivers the notification to the recipient's mobile device. The old per-user NATS core subject `chat.user.{account}.notification` is no longer used.
 
 #### Reconnect Badge Restoration
 
@@ -155,6 +155,19 @@ These subjects are used exclusively by backend services via JetStream. Clients n
 
 Stream wildcard: `chat.user.*.room.*.{siteID}.msg.>`
 
+### MESSAGES_CANONICAL Stream (`MESSAGES_CANONICAL_{siteID}`)
+
+The single source of truth for downstream consumers (broadcast-worker, notification-worker, search-sync-worker). One subject per mutation kind keeps consumers filterable.
+
+| Subject Pattern | Publisher | Consumer | Purpose |
+|-----------------|-----------|----------|---------|
+| `chat.msg.canonical.{siteID}.created` | message-gatekeeper | broadcast-worker, notification-worker, search-sync-worker | New message persisted |
+| `chat.msg.canonical.{siteID}.updated` | history-service | broadcast-worker, search-sync-worker | Message edited |
+| `chat.msg.canonical.{siteID}.deleted` | history-service | broadcast-worker, search-sync-worker | Message soft-deleted |
+| `chat.msg.canonical.{siteID}.reacted` | history-service | broadcast-worker, notification-worker, search-sync-worker (skips) | Reaction toggled (add/remove). Payload carries a `ReactionDelta`. search-sync-worker subscribes via the stream wildcard but no-ops on this subject because reactions don't change indexed content. |
+
+Stream wildcard: `chat.msg.canonical.{siteID}.>`
+
 ### FANOUT Stream (`FANOUT_{siteID}`)
 
 | Subject Pattern | Publisher | Consumer | Purpose |
@@ -180,6 +193,16 @@ Stream wildcard: `chat.user.*.request.room.*.{siteID}.member.>`
 | `outbox.{siteID}.to.{destSiteID}.{eventType}` | room-worker, broadcast-worker | Remote site's INBOX | Cross-site outbound events |
 
 Stream wildcard: `outbox.{siteID}.>`
+
+### PUSH_NOTIFICATIONS Stream (`PUSH_NOTIFICATIONS_{siteID}`)
+
+| Subject Pattern | Publisher | Consumer | Purpose |
+|-----------------|-----------|----------|---------|
+| `chat.server.notification.push.{siteID}.send` | notification-worker | push service | Per-recipient mobile push event |
+
+Stream wildcard: `chat.server.notification.push.{siteID}.>` (wildcard accommodates future `.silent`, `.priority` siblings)
+
+This is a server-only, backend stream. Clients never interact with it.
 
 ### INBOX Stream (`INBOX_{siteID}`)
 
@@ -215,7 +238,7 @@ All client publishes — message sends, member invites, room CRUD requests, typi
 | `MsgHistory(account, roomID, siteID)` | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.history` |
 | `SubscriptionUpdate(account)` | `chat.user.{account}.event.subscription.update` |
 | `RoomMetadataChanged(account)` | `chat.user.{account}.event.room.metadata.update` |
-| `Notification(account)` | `chat.user.{account}.notification` |
+| `Notification(account)` | `chat.user.{account}.notification` _(deprecated; use `PushNotification(siteID)` for mobile push)_ |
 | `RoomsCreate(account)` | `chat.user.{account}.request.rooms.create` |
 | `RoomsList(account)` | `chat.user.{account}.request.rooms.list` |
 | `RoomsGet(account, roomID)` | `chat.user.{account}.request.rooms.get.{roomID}` |
@@ -273,9 +296,10 @@ Client A (sender)                    NATS                         Client B (rece
     |                                  |                               |
     |                        notification-worker                       |
     |                                  |                               |
-    |                                  |--- pub: chat.user.B           |
-    |                                  |        .notification -------->|
-    |                                  |   (desktop banner)            |
+    |                                  |--- pub: chat.server.          |
+    |                                  |    notification.push.         |
+    |                                  |    {siteID}.send              |
+    |                                  |   (PUSH_NOTIFICATIONS stream) |
     |                                  |                               |
     |--- pub: chat.user.A             |                               |
     |        .room.R1.typing -------->|                               |

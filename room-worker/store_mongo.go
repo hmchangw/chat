@@ -31,6 +31,10 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
+// ListByRoom returns all subscriptions for roomID across every site. Not part
+// of SubscriptionStore — the handler's hot paths only need accounts (see
+// GetSubscriptionAccounts); this full-document read is retained for integration
+// test verification.
 func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error) {
 	cursor, err := s.subscriptions.Find(ctx, bson.M{"roomId": roomID})
 	if err != nil {
@@ -43,59 +47,30 @@ func (s *MongoStore) ListByRoom(ctx context.Context, roomID string) ([]model.Sub
 	return subs, nil
 }
 
-// ReconcileMemberCounts counts the room's subscriptions, splitting on
-// the bot account naming pattern to produce both UserCount (non-bot) and
-// AppCount (bot). A single $group aggregation does both buckets in one
-// collection scan (was: two CountDocuments queries). Writes both fields
-// to the rooms collection in a single updateOne. The regex must stay in
-// lockstep with pkg/pipelines.GetNewMembersPipeline — both classify
-// accounts matching `.bot$|^p_` as bots.
+// ReconcileMemberCounts recomputes the room's AppCount (bot subs) and UserCount
+// (everyone else) and writes both back in a single updateOne. AppCount is an
+// index-backed CountDocuments on {roomId, u.isBot} (the flag is stamped at
+// sub-creation via model.IsBotAccount) and UserCount is total minus bots — both
+// counts use the index and no per-document regex runs. Deriving UserCount by
+// subtraction also means legacy docs written before u.isBot existed (and any
+// missing the field) correctly fall into UserCount rather than being dropped.
+// Recompute-and-$set keeps the counts idempotent under JetStream redelivery.
 func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) error {
-	const botRegex = `(\.bot$|^p_)`
-	pipe := []bson.M{
-		{"$match": bson.M{"roomId": roomID}},
-		{"$group": bson.M{
-			"_id": nil,
-			"appCount": bson.M{"$sum": bson.M{
-				"$cond": []any{
-					bson.M{"$regexMatch": bson.M{"input": "$u.account", "regex": botRegex}},
-					1, 0,
-				},
-			}},
-			"userCount": bson.M{"$sum": bson.M{
-				"$cond": []any{
-					bson.M{"$regexMatch": bson.M{"input": "$u.account", "regex": botRegex}},
-					0, 1,
-				},
-			}},
-		}},
-	}
-	cur, err := s.subscriptions.Aggregate(ctx, pipe)
+	// A transient count error must not fall through to an UpdateOne with zero
+	// counts, which would clobber the rooms doc.
+	total, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID})
 	if err != nil {
-		return fmt.Errorf("aggregate member counts: %w", err)
+		return fmt.Errorf("count subscriptions: %w", err)
 	}
-	defer cur.Close(ctx)
-
-	var counts struct {
-		UserCount int64 `bson:"userCount"`
-		AppCount  int64 `bson:"appCount"`
+	appCount, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "u.isBot": true})
+	if err != nil {
+		return fmt.Errorf("count app subscriptions: %w", err)
 	}
-	if cur.Next(ctx) {
-		if err := cur.Decode(&counts); err != nil {
-			return fmt.Errorf("decode member counts: %w", err)
-		}
-	} else if err := cur.Err(); err != nil {
-		// A cursor failure must not silently fall through to an UpdateOne with
-		// zero counts, which would clobber the rooms doc on a transient error.
-		return fmt.Errorf("iterate member counts: %w", err)
-	}
-	// No rows match → both counts stay 0, which is the correct reset behavior
-	// for a room whose last subscription was just removed.
 
 	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{
 		"$set": bson.M{
-			"userCount": counts.UserCount,
-			"appCount":  counts.AppCount,
+			"userCount": total - appCount,
+			"appCount":  appCount,
 			"updatedAt": time.Now().UTC(),
 		},
 	}); err != nil {
@@ -170,19 +145,6 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 		return nil, fmt.Errorf("get subscription for %q in room %q: %w", account, roomID, err)
 	}
 	return &sub, nil
-}
-
-func (s *MongoStore) AddRole(ctx context.Context, account, roomID string, role model.Role) error {
-	filter := bson.M{"u.account": account, "roomId": roomID}
-	update := bson.M{"$addToSet": bson.M{"roles": role}}
-	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("add role %q for %q in room %q: %w", role, account, roomID, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("subscription not found for %q in room %q", account, roomID)
-	}
-	return nil
 }
 
 func (s *MongoStore) RemoveRole(ctx context.Context, account, roomID string, role model.Role) error {
@@ -494,4 +456,33 @@ func (s *MongoStore) FindDMSubscriptionPair(ctx context.Context, roomID, request
 		return nil, nil, model.ErrSubscriptionNotFound
 	}
 	return requesterSub, counterpartSub, nil
+}
+
+func (s *MongoStore) UpdateRoomName(ctx context.Context, roomID, newName string) error {
+	return s.updateChannelRoom(ctx, roomID, bson.M{
+		"$set": bson.M{"name": newName, "updatedAt": time.Now().UTC()},
+	})
+}
+
+// updateChannelRoom applies a $set update; room-service validates type=channel
+// upstream before publishing the canonical event, so the store layer does not
+// re-check.
+func (s *MongoStore) updateChannelRoom(ctx context.Context, roomID string, update bson.M) error {
+	res, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, update)
+	if err != nil {
+		return fmt.Errorf("update channel room %s: %w", roomID, err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrRoomNotFound
+	}
+	return nil
+}
+
+func (s *MongoStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+	if _, err := s.subscriptions.UpdateMany(ctx,
+		bson.M{"roomId": roomID},
+		bson.M{"$set": bson.M{"name": newName}}); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", roomID, err)
+	}
+	return nil
 }

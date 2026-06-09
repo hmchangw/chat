@@ -5,6 +5,7 @@
 bin/
 demo
 /seed-sample-data
+/loadgen
 *.exe
 *.exe~
 *.dll
@@ -63,3 +64,4 @@ chat-frontend/junit.xml
 # air live-reload tmp artifacts.
 tmp/
 .air.*.toml
+/loadgen

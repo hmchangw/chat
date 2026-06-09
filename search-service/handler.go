@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
+	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -74,12 +77,14 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	if rerr != nil {
 		return nil, rerr
 	}
+	c.WithLogValues("request_id", natsutil.RequestIDFromContext(c), "account", account)
 
 	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
 		return nil, err
 	}
+	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" {
-		return nil, natsrouter.ErrBadRequest("query is required")
+		return nil, errcode.BadRequest("query is required")
 	}
 
 	ctx, cancel := h.withRequestTimeout(c)
@@ -98,22 +103,19 @@ func (h *handler) searchMessages(c *natsrouter.Context, req model.SearchMessages
 	// so no handler-level pre-classification is needed.
 	body, err := buildMessageQuery(req, account, restricted, h.cfg.RecentWindow, h.cfg.UserRoomIndex)
 	if err != nil {
-		slog.Error("build message query failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("unable to build search query")
+		return nil, fmt.Errorf("building search query: %w", err)
 	}
 
 	observeESDone := observeES()
 	raw, err := h.store.Search(ctx, MessageIndexPattern, body)
 	observeESDone()
 	if err != nil {
-		slog.Error("message search backend failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("search backend unavailable")
+		return nil, fmt.Errorf("message search backend: %w", err)
 	}
 
 	hits, total, err := parseMessagesResponse(raw)
 	if err != nil {
-		slog.Error("parse messages response failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("unexpected search response")
+		return nil, fmt.Errorf("parsing search response: %w", err)
 	}
 
 	messages := make([]model.SearchMessage, 0, len(hits))
@@ -130,6 +132,7 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 	if rerr != nil {
 		return nil, rerr
 	}
+	c.WithLogValues("request_id", natsutil.RequestIDFromContext(c), "account", account)
 
 	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
 		return nil, err
@@ -137,7 +140,7 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		return nil, natsrouter.ErrBadRequest("query is required")
+		return nil, errcode.BadRequest("query is required")
 	}
 	req.Query = query
 
@@ -146,35 +149,32 @@ func (h *handler) searchRooms(c *natsrouter.Context, req model.SearchRoomsReques
 
 	body, err := buildRoomQuery(req, account)
 	if err != nil {
-		// RouteError (invalid roomType) passes through;
+		// A typed errcode error (invalid roomType) passes through;
 		// anything else (marshal failure — unreachable) gets sanitized.
-		var rerr *natsrouter.RouteError
-		if errors.As(err, &rerr) {
+		var ee *errcode.Error
+		if errors.As(err, &ee) {
 			return nil, err
 		}
-		slog.Error("build subscription query failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("unable to build search query")
+		return nil, fmt.Errorf("building search query: %w", err)
 	}
 
 	observeESDone := observeES()
 	raw, err := h.store.Search(ctx, []string{h.cfg.SpotlightReadPattern}, body)
 	observeESDone()
 	if err != nil {
-		slog.Error("subscription search backend failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("search backend unavailable")
+		return nil, fmt.Errorf("subscription search backend: %w", err)
 	}
 
 	rooms, err := parseRooms(raw)
 	if err != nil {
-		slog.Error("parse spotlight rooms failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("unexpected search response")
+		return nil, fmt.Errorf("parsing spotlight rooms: %w", err)
 	}
 	return &model.SearchRoomsResponse{Rooms: rooms}, nil
 }
 
 // loadRestricted implements the 2-tier Valkey → ES read. Cache errors
 // alone never fail the request — log-and-fall-through. Only when both
-// cache AND ES prefetch fail do we surface ErrInternal.
+// cache AND ES prefetch fail do we collapse to errcode.Internal at the boundary.
 func (h *handler) loadRestricted(ctx context.Context, account string) (map[string]int64, error) {
 	cached, hit, cerr := h.cache.GetRestricted(ctx, account)
 	if cerr != nil {
@@ -185,12 +185,14 @@ func (h *handler) loadRestricted(ctx context.Context, account string) (map[strin
 	}
 	doc, _, err := h.store.GetUserRoomDoc(ctx, account)
 	if err != nil {
-		// Always log the store error, even if the cache GET also failed
-		// — it's the actionable signal when both fail. Include cache_err
-		// so operators can correlate, but don't let the cache warning
-		// mask the ES root cause.
-		slog.Error("user-room doc fetch failed", "account", account, "error", err, "cache_err", cerr)
-		return nil, natsrouter.ErrInternal("unable to resolve room access")
+		// Classify (via errnats.Reply at the handler boundary) logs the wrapped
+		// chain exactly once at ERROR; do not slog.Error here or every failure
+		// double-logs. cache_err is the only detail we'd add — fold it into the
+		// wrap so it survives in the centralized cause field.
+		if cerr != nil {
+			return nil, fmt.Errorf("resolving room access (cache_err=%v): %w", cerr, err)
+		}
+		return nil, fmt.Errorf("resolving room access: %w", err)
 	}
 
 	restricted := doc.RestrictedRooms
@@ -219,6 +221,7 @@ func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest)
 	if rerr != nil {
 		return nil, rerr
 	}
+	c.WithLogValues("request_id", natsutil.RequestIDFromContext(c), "account", account)
 
 	if err := h.normalizePagination(&req.Size, &req.Offset); err != nil {
 		return nil, err
@@ -226,7 +229,7 @@ func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest)
 
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		return nil, natsrouter.ErrBadRequest("query is required")
+		return nil, errcode.BadRequest("query is required")
 	}
 
 	ctx, cancel := h.withRequestTimeout(c)
@@ -234,8 +237,7 @@ func (h *handler) searchApps(c *natsrouter.Context, req model.SearchAppsRequest)
 
 	apps, err := h.mongo.SearchAppsByName(ctx, query, account, req.AssistantEnabled, req.Offset, req.Size)
 	if err != nil {
-		slog.Error("app search backend failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("search backend unavailable")
+		return nil, fmt.Errorf("app search backend: %w", err)
 	}
 
 	if apps == nil {
@@ -255,13 +257,14 @@ func (h *handler) searchUsers(c *natsrouter.Context, req model.SearchUsersReques
 	if rerr != nil {
 		return nil, rerr
 	}
+	c.WithLogValues("request_id", natsutil.RequestIDFromContext(c), "account", account)
 
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		return nil, natsrouter.ErrBadRequest("query is required")
+		return nil, errcode.BadRequest("query is required")
 	}
 	if req.Offset < 0 || req.Limit < 0 {
-		return nil, natsrouter.ErrBadRequest("offset and limit must be non-negative")
+		return nil, errcode.BadRequest("offset and limit must be non-negative")
 	}
 	limit := req.Limit
 	if limit == 0 {
@@ -276,8 +279,7 @@ func (h *handler) searchUsers(c *natsrouter.Context, req model.SearchUsersReques
 
 	users, err := h.users.SearchUsers(ctx, query, req.Offset, limit)
 	if err != nil {
-		slog.Error("user search backend failed", "account", account, "error", err)
-		return nil, natsrouter.ErrInternal("user search backend unavailable")
+		return nil, fmt.Errorf("user search backend: %w", err)
 	}
 
 	if users == nil {
@@ -289,10 +291,10 @@ func (h *handler) searchUsers(c *natsrouter.Context, req model.SearchUsersReques
 // normalizePagination validates and clamps size/offset in place. size=0
 // falls back to DocCounts; size>MaxDocCounts is capped. Negative size
 // or offset is a client bug, not a defaultable value, so it returns
-// ErrBadRequest.
+// errcode.BadRequest.
 func (h *handler) normalizePagination(size, offset *int) error {
 	if *size < 0 || *offset < 0 {
-		return natsrouter.ErrBadRequest("size and offset must be non-negative")
+		return errcode.BadRequest("size and offset must be non-negative")
 	}
 	if *size == 0 {
 		*size = h.cfg.DocCounts

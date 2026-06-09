@@ -26,6 +26,13 @@ type Collection interface {
 	TemplateName() string
 	// TemplateBody returns the ES index template JSON. nil means no template.
 	TemplateBody() json.RawMessage
+	// StoredScripts returns the ES stored scripts this collection depends on,
+	// keyed by script id. Each value is the full `PUT /_scripts/{id}` body.
+	// nil/empty means the collection inlines no scripts (or uses none). The
+	// worker registers these at startup before consuming so BuildAction can
+	// emit lightweight `{"script":{"id":...}}` references instead of repeating
+	// the full source in every fan-out bulk action.
+	StoredScripts() map[string]json.RawMessage
 	// BuildAction converts raw JetStream message data into one or more
 	// BulkActions. An empty slice means the event should be acked without
 	// any ES write (e.g., filtered out).

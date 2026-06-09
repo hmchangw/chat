@@ -82,60 +82,40 @@ func NewGenerator(cfg *GeneratorConfig, seed int64) *Generator {
 const drainGracePeriod = 5 * time.Second
 
 // Run publishes at the configured rate until ctx is cancelled. When
-// MaxInFlight > 0, each tick dispatches the publish to a bounded
-// goroutine pool so the ticker stays punctual under load; saturation
-// (pool full when a tick fires) is recorded as a publish error with
-// reason="saturated" rather than silently dropping the tick.
+// MaxInFlight > 0 it drives a batched pacer (see runPaced); MaxInFlight == 0
+// keeps the legacy serial-on-ticker path for bisection (see runSerial).
 func (g *Generator) Run(ctx context.Context) error {
 	if g.cfg.Rate <= 0 {
 		return fmt.Errorf("rate must be > 0")
 	}
-	interval := time.Second / time.Duration(g.cfg.Rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-
 	if g.cfg.MaxInFlight <= 0 {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-tick.C:
-				g.publishOne(ctx)
-			}
-		}
+		return g.runSerial(ctx)
 	}
+	return g.runPaced(ctx)
+}
 
-	sem := make(chan struct{}, g.cfg.MaxInFlight)
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(drainGracePeriod):
+// runSerial is the legacy one-publish-per-tick path (MaxInFlight == 0), retained
+// for bisection; it will not ramp past the single-ticker ceiling.
+func (g *Generator) runSerial(ctx context.Context) error {
+	serialDispatch(ctx, g.cfg.Rate, g.publishOne)
+	return nil
+}
+
+// runPaced drives the batched pacer into a bounded worker pool so achieved RPS
+// is not capped by single-ticker resolution. A full pool is recorded as
+// "saturated" (raise MaxInFlight); events the pacer could not release on
+// schedule as "underrun" (the load box could not keep up).
+func (g *Generator) runPaced(ctx context.Context) error {
+	pubErrs := g.cfg.Metrics.PublishErrors
+	pacedDispatch(ctx, g.cfg.Rate, g.cfg.MaxInFlight,
+		func(n int) {
+			if n > 0 {
+				pubErrs.WithLabelValues(g.cfg.Preset.Name, "underrun").Add(float64(n))
 			}
-			return nil
-		case <-tick.C:
-			select {
-			case sem <- struct{}{}:
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
-					}()
-					g.publishOne(ctx)
-				}()
-			default:
-				g.cfg.Metrics.PublishErrors.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc()
-			}
-		}
-	}
+		},
+		func() { pubErrs.WithLabelValues(g.cfg.Preset.Name, "saturated").Inc() },
+		g.publishOne)
+	return nil
 }
 
 // intn returns rng.Intn(n) with mutex protection so publishOne is
