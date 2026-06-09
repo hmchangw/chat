@@ -62,6 +62,9 @@ func (s *threadStoreMongo) CreateThreadRoom(ctx context.Context, room *model.Thr
 	if toInsert.ReplyAccounts == nil {
 		toInsert.ReplyAccounts = []string{}
 	}
+	if toInsert.CountedReplies == nil {
+		toInsert.CountedReplies = []string{}
+	}
 	_, err := s.threadRooms.InsertOne(ctx, &toInsert)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -129,21 +132,43 @@ func (s *threadStoreMongo) MarkThreadSubscriptionMention(ctx context.Context, su
 	return nil
 }
 
-func (s *threadStoreMongo) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID, lastMsgID string, replyAccounts []string, lastMsgAt time.Time) error {
+// UpdateThreadRoomLastMessage atomically (single document) increments replyCount
+// only if replyID has not already been counted, records replyID in the bounded
+// countedReplies guard, bumps the last-message pointer, and merges replyAccounts.
+// Returns the new count and applied=true on the first delivery; on redelivery
+// (replyID already in countedReplies) it is a no-op returning applied=false.
+func (s *threadStoreMongo) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID, lastMsgID string, replyAccounts []string, lastMsgAt time.Time, replyID string) (int, bool, error) {
 	update := bson.M{
+		"$inc": bson.M{"replyCount": 1},
 		"$set": bson.M{
 			"lastMsgAt": lastMsgAt,
 			"lastMsgId": lastMsgID,
 			"updatedAt": lastMsgAt,
 		},
+		"$push": bson.M{
+			"countedReplies": bson.M{"$each": bson.A{replyID}, "$slice": -model.CountedRepliesCap},
+		},
 	}
 	if len(replyAccounts) > 0 {
 		update["$addToSet"] = bson.M{"replyAccounts": bson.M{"$each": replyAccounts}}
 	}
-	if _, err := s.threadRooms.UpdateOne(ctx, bson.M{"_id": threadRoomID}, update); err != nil {
-		return fmt.Errorf("update thread room last message: %w", err)
+
+	var updated model.ThreadRoom
+	err := s.threadRooms.FindOneAndUpdate(
+		ctx,
+		bson.M{"_id": threadRoomID, "countedReplies": bson.M{"$ne": replyID}},
+		update,
+		// Only replyCount is read back; projecting it avoids decoding the
+		// bounded countedReplies array (up to countedRepliesCap entries).
+		options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"replyCount": 1}),
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0, false, nil
 	}
-	return nil
+	if err != nil {
+		return 0, false, fmt.Errorf("update thread room last message: %w", err)
+	}
+	return updated.ReplyCount, true, nil
 }
 
 func (s *threadStoreMongo) AddReplyAccounts(ctx context.Context, threadRoomID string, accounts []string) error {

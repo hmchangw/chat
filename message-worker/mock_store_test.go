@@ -99,6 +99,20 @@ func (mr *MockStoreMockRecorder) UpdateParentMessageThreadRoomID(ctx, parentMess
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateParentMessageThreadRoomID", reflect.TypeOf((*MockStore)(nil).UpdateParentMessageThreadRoomID), ctx, parentMessageID, roomID, parentCreatedAt, threadRoomID)
 }
 
+// UpdateParentTcount mocks base method.
+func (m *MockStore) UpdateParentTcount(ctx context.Context, roomID, parentID string, parentCreatedAt time.Time, count int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateParentTcount", ctx, roomID, parentID, parentCreatedAt, count)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateParentTcount indicates an expected call of UpdateParentTcount.
+func (mr *MockStoreMockRecorder) UpdateParentTcount(ctx, roomID, parentID, parentCreatedAt, count any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateParentTcount", reflect.TypeOf((*MockStore)(nil).UpdateParentTcount), ctx, roomID, parentID, parentCreatedAt, count)
+}
+
 // MockThreadStore is a mock of ThreadStore interface.
 type MockThreadStore struct {
 	ctrl     *gomock.Controller
@@ -181,17 +195,19 @@ func (mr *MockThreadStoreMockRecorder) MarkThreadSubscriptionMention(ctx, sub an
 }
 
 // UpdateThreadRoomLastMessage mocks base method.
-func (m *MockThreadStore) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID, lastMsgID string, replyAccounts []string, lastMsgAt time.Time) error {
+func (m *MockThreadStore) UpdateThreadRoomLastMessage(ctx context.Context, threadRoomID, lastMsgID string, replyAccounts []string, lastMsgAt time.Time, replyID string) (int, bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateThreadRoomLastMessage", ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "UpdateThreadRoomLastMessage", ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt, replyID)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // UpdateThreadRoomLastMessage indicates an expected call of UpdateThreadRoomLastMessage.
-func (mr *MockThreadStoreMockRecorder) UpdateThreadRoomLastMessage(ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt any) *gomock.Call {
+func (mr *MockThreadStoreMockRecorder) UpdateThreadRoomLastMessage(ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt, replyID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomLastMessage", reflect.TypeOf((*MockThreadStore)(nil).UpdateThreadRoomLastMessage), ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomLastMessage", reflect.TypeOf((*MockThreadStore)(nil).UpdateThreadRoomLastMessage), ctx, threadRoomID, lastMsgID, replyAccounts, lastMsgAt, replyID)
 }
 
 // AddReplyAccounts mocks base method.

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
@@ -94,6 +95,9 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			bucket                BIGINT,
 			created_at            TIMESTAMP,
 			message_id            TEXT,
+			thread_room_id        TEXT,
+			thread_parent_id      TEXT,
+			thread_parent_created_at TIMESTAMP,
 			sender                FROZEN<"Participant">,
 			msg                   TEXT,
 			site_id               TEXT,
@@ -906,14 +910,18 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 		SiteID:          "site-a",
 		LastMsgAt:       now,
 		LastMsgID:       "msg-1",
+		ReplyCount:      1,
+		CountedReplies:  []string{"msg-1"},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 	require.NoError(t, store.CreateThreadRoom(ctx, room))
 
 	later := now.Add(10 * time.Minute)
-	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", []string{"bob"}, later)
+	count, applied, err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", []string{"bob"}, later, "msg-5")
 	require.NoError(t, err)
+	assert.True(t, applied)
+	assert.Equal(t, 2, count)
 
 	got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent-update")
 	require.NoError(t, err)
@@ -922,19 +930,133 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	assert.Contains(t, got.ReplyAccounts, "bob", "replier account should be added to ReplyAccounts")
 }
 
-func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
+func TestThreadStoreMongo_UpdateThreadRoomLastMessage_IdempotentIncrement(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "message_worker")
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	now := time.Now().UTC()
+	room := &model.ThreadRoom{
+		ID:              "tr-inc",
+		ParentMessageID: "m-parent-inc",
+		RoomID:          "r-1",
+		SiteID:          "site-a",
+		LastMsgID:       "m-1",
+		LastMsgAt:       now,
+		ReplyAccounts:   []string{"alice"},
+		ReplyCount:      1,
+		CountedReplies:  []string{"m-1"},
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	require.NoError(t, store.CreateThreadRoom(ctx, room))
+
+	// First time we see m-2: increments to 2, applied=true.
+	count, applied, err := store.UpdateThreadRoomLastMessage(ctx, "tr-inc", "m-2", []string{"bob"}, now, "m-2")
+	require.NoError(t, err)
+	assert.True(t, applied)
+	assert.Equal(t, 2, count)
+
+	// Redelivery of m-2: no-op, applied=false, count unchanged.
+	count, applied, err = store.UpdateThreadRoomLastMessage(ctx, "tr-inc", "m-2", []string{"bob"}, now, "m-2")
+	require.NoError(t, err)
+	assert.False(t, applied)
+	assert.Equal(t, 0, count)
+
+	// Confirm persisted count is still 2.
+	got, err := store.GetThreadRoomByParentMessageID(ctx, "m-parent-inc")
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.ReplyCount)
+}
+
+// TestThreadStoreMongo_UpdateThreadRoomLastMessage_CountedRepliesCapped asserts
+// the $slice bound: replyCount tracks every distinct reply unbounded, while the
+// countedReplies dedup guard is capped at model.CountedRepliesCap (keeping the most
+// recent IDs) so the document can't grow without limit on a busy thread.
+func TestThreadStoreMongo_UpdateThreadRoomLastMessage_CountedRepliesCapped(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "message_worker")
+	store := newThreadStoreMongo(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateThreadRoom(ctx, &model.ThreadRoom{
+		ID:              "tr-cap",
+		ParentMessageID: "m-parent-cap",
+		RoomID:          "r-1",
+		SiteID:          "site-a",
+		LastMsgID:       "m-0",
+		LastMsgAt:       now,
+		ReplyAccounts:   []string{"alice"},
+		ReplyCount:      1,
+		CountedReplies:  []string{"m-0"},
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}))
+
+	// Push well past the cap with distinct reply IDs.
+	const extra = model.CountedRepliesCap + 100
+	for i := 0; i < extra; i++ {
+		id := fmt.Sprintf("m-cap-%d", i)
+		_, applied, err := store.UpdateThreadRoomLastMessage(ctx, "tr-cap", id, []string{"bob"}, now, id)
+		require.NoError(t, err)
+		require.True(t, applied)
+	}
+
+	got, err := store.GetThreadRoomByParentMessageID(ctx, "m-parent-cap")
+	require.NoError(t, err)
+	// replyCount counts every distinct reply (seed + extra), unbounded by the cap.
+	assert.Equal(t, 1+extra, got.ReplyCount)
+	// countedReplies is bounded to the cap by $slice...
+	assert.Len(t, got.CountedReplies, model.CountedRepliesCap)
+	// ...and retains the most-recent IDs (the $slice ring buffer keeps the tail).
+	assert.Equal(t, fmt.Sprintf("m-cap-%d", extra-1), got.CountedReplies[len(got.CountedReplies)-1])
+}
+
+func TestCassandraStore_UpdateParentTcount(t *testing.T) {
+	cassSession := setupCassandra(t)
+	bucket := msgbucket.New(24 * time.Hour)
+	store := NewCassandraStore(cassSession, bucket, nil)
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	parentBucket := bucket.Of(parentCreatedAt)
+	// Seed a parent row in both tables (tcount null initially).
+	require.NoError(t, cassSession.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, site_id) VALUES (?, ?, ?, ?, ?)`,
+		"r-upt-1", parentBucket, parentCreatedAt, "m-parent-upt", "site-a").WithContext(ctx).Exec())
+	require.NoError(t, cassSession.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, site_id) VALUES (?, ?, ?, ?)`,
+		"m-parent-upt", parentCreatedAt, "r-upt-1", "site-a").WithContext(ctx).Exec())
+
+	require.NoError(t, store.UpdateParentTcount(ctx, "r-upt-1", "m-parent-upt", parentCreatedAt, 5))
+
+	var byRoom, byID *int
+	require.NoError(t, cassSession.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		"r-upt-1", parentBucket, parentCreatedAt, "m-parent-upt").WithContext(ctx).Scan(&byRoom))
+	require.NoError(t, cassSession.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		"m-parent-upt", parentCreatedAt).WithContext(ctx).Scan(&byID))
+	require.NotNil(t, byRoom)
+	require.NotNil(t, byID)
+	assert.Equal(t, 5, *byRoom)
+	assert.Equal(t, 5, *byID)
+}
+
+func TestCassandraStore_SaveThreadMessage_DoesNotModifyParentTcount(t *testing.T) {
 	cassSession := setupCassandra(t)
 	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
-	parentBucket := msgbucket.New(24 * time.Hour).Of(parentCreatedAt)
 	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
 
 	parentSender := &cassParticipant{ID: "u-parent", Account: "alice", EngName: "Alice"}
 	parentMsg := &model.Message{
-		ID:        "tcount-parent",
-		RoomID:    "tcount-room",
+		ID:        "tcount-no-lwt-parent",
+		RoomID:    "tcount-no-lwt-room",
 		UserID:    "u-parent",
 		CreatedAt: parentCreatedAt,
 		Content:   "parent message",
@@ -943,90 +1065,26 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 
 	replySender := &cassParticipant{ID: "u-replier", Account: "bob", EngName: "Bob"}
 	replyMsg := &model.Message{
-		ID:                           "tcount-reply-1",
-		RoomID:                       "tcount-room",
+		ID:                           "tcount-no-lwt-reply",
+		RoomID:                       "tcount-no-lwt-room",
 		UserID:                       "u-replier",
 		Content:                      "first reply",
 		CreatedAt:                    replyCreatedAt,
-		ThreadParentMessageID:        "tcount-parent",
+		ThreadParentMessageID:        "tcount-no-lwt-parent",
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1"))
+	// SaveThreadMessage must NOT modify tcount on the parent — that is now
+	// the responsibility of UpdateParentTcount, called separately by the handler.
+	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-no-lwt-1"))
 
-	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
-		var tcount int
+	t.Run("tcount is null after SaveThreadMessage (no LWT)", func(t *testing.T) {
+		var tcount *int
 		err := cassSession.Query(
 			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
+			"tcount-no-lwt-parent", parentCreatedAt,
 		).Scan(&tcount)
 		require.NoError(t, err)
-		assert.Equal(t, 1, tcount)
-	})
-
-	t.Run("tcount incremented to 1 in messages_by_room", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-			"tcount-room", parentBucket, parentCreatedAt, "tcount-parent",
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 1, tcount)
-	})
-
-	// A second reply must increment tcount to 2.
-	reply2CreatedAt := replyCreatedAt.Add(5 * time.Minute)
-	replyMsg2 := &model.Message{
-		ID:                           "tcount-reply-2",
-		RoomID:                       "tcount-room",
-		UserID:                       "u-replier",
-		Content:                      "second reply",
-		CreatedAt:                    reply2CreatedAt,
-		ThreadParentMessageID:        "tcount-parent",
-		ThreadParentMessageCreatedAt: &parentCreatedAt,
-	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1"))
-
-	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
-	})
-
-	t.Run("tcount incremented to 2 in messages_by_room after second reply", func(t *testing.T) {
-		var tcount int
-		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-			"tcount-room", parentBucket, parentCreatedAt, "tcount-parent",
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
-	})
-
-	t.Run("nil ThreadParentMessageCreatedAt skips tcount update without error", func(t *testing.T) {
-		noTsReply := &model.Message{
-			ID:                    "tcount-reply-nots",
-			RoomID:                "tcount-room",
-			UserID:                "u-replier",
-			Content:               "reply without parent ts",
-			CreatedAt:             reply2CreatedAt.Add(5 * time.Minute),
-			ThreadParentMessageID: "tcount-parent",
-			// ThreadParentMessageCreatedAt intentionally nil
-		}
-		err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
-		assert.NoError(t, err)
-
-		// tcount must stay at 2 — nil timestamp skips the increment
-		var tcount int
-		err = cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
-		).Scan(&tcount)
-		require.NoError(t, err)
-		assert.Equal(t, 2, tcount)
+		assert.Nil(t, tcount, "tcount must remain null — SaveThreadMessage no longer does LWT increments")
 	})
 }
 
@@ -1165,9 +1223,9 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 
 	parentCreatedAt := time.Date(2026, 4, 30, 9, 0, 0, 0, time.UTC)
 	parentBucket := bucket.Of(parentCreatedAt)
-	parentID := "parent-1"
+	parentID := "parent-1-partition"
 
-	// seed parent so incrementParentTcount has a row to update.
+	// seed parent row.
 	sender := &cassParticipant{ID: "u1", Account: "alice"}
 	require.NoError(t, store.SaveMessage(ctx, &model.Message{
 		ID:        parentID,
@@ -1179,7 +1237,7 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 
 	replyCreatedAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	reply := &model.Message{
-		ID:                           "reply-1",
+		ID:                           "reply-1-partition",
 		RoomID:                       "room-thread-1",
 		Content:                      "reply",
 		CreatedAt:                    replyCreatedAt,
@@ -1198,13 +1256,14 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 	).Scan(&gotRoomID))
 	assert.Equal(t, reply.RoomID, gotRoomID)
 
-	// 2. incrementParentTcount still uses the parent's bucket in messages_by_room.
-	var tcount int
+	// 2. tcount on the parent is null after SaveThreadMessage — UpdateParentTcount
+	// (called separately by the handler) is responsible for mirroring the count.
+	var tcount *int
 	require.NoError(t, cassSession.Query(
 		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		reply.RoomID, parentBucket, parentCreatedAt, parentID,
 	).Scan(&tcount))
-	assert.Equal(t, 1, tcount)
+	assert.Nil(t, tcount, "tcount must be null after SaveThreadMessage — no more LWT increment")
 }
 
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
@@ -1390,4 +1449,63 @@ func TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns(t *testing.T)
 		assert.Nil(t, attachments, "%s: attachments must be NULL after redelivered encrypted insert", tableQuery.name)
 		assert.Equal(t, originalSysMsgData, sysMsgData, "%s: un-encrypted sys_msg_data must be preserved after redelivered encrypted insert", tableQuery.name)
 	}
+}
+
+func TestHandler_ThreadReply_RedeliveryDoesNotDoubleCount(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.MongoDB(t, "message_worker")
+	cassSession := setupCassandra(t)
+	bucket := msgbucket.New(24 * time.Hour)
+
+	threadStore := newThreadStoreMongo(db)
+	require.NoError(t, threadStore.EnsureIndexes(ctx))
+	cassStore := NewCassandraStore(cassSession, bucket, nil)
+
+	ctrl := gomock.NewController(t)
+	userStore := NewMockUserStore(ctrl)
+	userStore.EXPECT().FindUserByID(gomock.Any(), gomock.Any()).Return(&model.User{ID: "u-bob", SiteID: "site-a"}, nil).AnyTimes()
+	userStore.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	h := NewHandler(cassStore, userStore, threadStore, "site-a", func(context.Context, string, []byte, string) error { return nil })
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	parentBucket := bucket.Of(parentCreatedAt)
+	// Seed the parent message row so the mirror UPDATE has a row to hit.
+	require.NoError(t, cassSession.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, site_id) VALUES (?, ?, ?, ?)`,
+		"m-parent-redelivery", parentCreatedAt, "r-redelivery", "site-a").WithContext(ctx).Exec())
+	require.NoError(t, cassSession.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, site_id) VALUES (?, ?, ?, ?, ?)`,
+		"r-redelivery", parentBucket, parentCreatedAt, "m-parent-redelivery", "site-a").WithContext(ctx).Exec())
+
+	reply := func(id string) []byte {
+		evt := model.MessageEvent{SiteID: "site-a", Message: model.Message{
+			ID: id, RoomID: "r-redelivery", UserID: "u-bob", UserAccount: "bob", Content: "hi",
+			CreatedAt: time.Now().UTC(), ThreadParentMessageID: "m-parent-redelivery", ThreadParentMessageCreatedAt: &parentCreatedAt,
+		}}
+		data, _ := json.Marshal(evt)
+		return data
+	}
+
+	require.NoError(t, h.processMessage(ctx, reply("m-r1"))) // first reply -> count 1
+	require.NoError(t, h.processMessage(ctx, reply("m-r2"))) // second reply -> count 2
+	require.NoError(t, h.processMessage(ctx, reply("m-r2"))) // REDELIVERY of m-r2 -> still 2
+
+	room, err := threadStore.GetThreadRoomByParentMessageID(ctx, "m-parent-redelivery")
+	require.NoError(t, err)
+	assert.Equal(t, 2, room.ReplyCount)
+
+	var tcount *int
+	require.NoError(t, cassSession.Query(
+		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		"r-redelivery", parentBucket, parentCreatedAt, "m-parent-redelivery").WithContext(ctx).Scan(&tcount))
+	require.NotNil(t, tcount)
+	assert.Equal(t, 2, *tcount, "Cassandra mirror must equal Mongo ReplyCount")
+
+	var tcountByID *int
+	require.NoError(t, cassSession.Query(
+		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+		"m-parent-redelivery", parentCreatedAt).WithContext(ctx).Scan(&tcountByID))
+	require.NotNil(t, tcountByID)
+	assert.Equal(t, 2, *tcountByID, "messages_by_id tcount mirror must also equal Mongo ReplyCount")
 }
