@@ -1168,8 +1168,9 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 
 // Federation convergence: the cross-site OUTBOX payload carries the deterministic
 // BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
-// room ID as the home site. The payload-derived dedup key (room id + createdAt +
-// dest) is identical across replays, so JetStream dedup blocks duplicates.
+// room ID as the home site. The payload-derived dedup key (room id + requester
+// account + createdAt + dest) is identical across replays, so JetStream dedup
+// blocks duplicates.
 func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	ctx := newIntegSyncDMCtx()
 	db := setupMongo(t)
@@ -1208,8 +1209,8 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 		"Nats-Msg-Id must include destSiteID for JetStream stream dedup")
 
 	// 3. Replay produces the same Nats-Msg-Id because the dedup key is derived
-	//    from the (stable) payload seed — room identity + createdAt + dest — not
-	//    the request ID. On the wire, JetStream OUTBOX dedup rejects the second emit.
+	//    from the (stable) payload seed — room id + requester account + createdAt +
+	//    dest — not the request ID. JetStream OUTBOX dedup rejects the second emit.
 	cap2 := &publishCapture{}
 	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
 	_, err = handler2.serverCreateDM(newIntegSyncDMCtx(), req)
