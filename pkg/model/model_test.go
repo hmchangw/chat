@@ -3021,6 +3021,19 @@ func TestMessage_SenderDisplayName(t *testing.T) {
 	}
 }
 
+func TestThreadRoom_ReplyCountFieldsRoundTrip(t *testing.T) {
+	tr := model.ThreadRoom{
+		ID:              "tr-1",
+		ParentMessageID: "m-parent",
+		RoomID:          "r-1",
+		SiteID:          "site-a",
+		ReplyAccounts:   []string{"alice"},
+		ReplyCount:      3,
+		CountedReplies:  []string{"m-1", "m-2", "m-3"},
+	}
+	roundTrip(t, &tr, &model.ThreadRoom{})
+}
+
 func TestPresenceSnapshotReply_RoundTrip(t *testing.T) {
 	in := model.PresenceSnapshotReply{
 		Presences: map[string]model.Presence{
