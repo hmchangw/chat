@@ -14,7 +14,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
-	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -38,11 +37,6 @@ type config struct {
 	ValkeyAddrs              []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
 	ValkeyPassword           string          `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyGracePeriod        time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
-	CassandraHosts           string          `env:"CASSANDRA_HOSTS,required"`
-	CassandraKeyspace        string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
-	CassandraUsername        string          `env:"CASSANDRA_USERNAME"        envDefault:""`
-	CassandraPassword        string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
-	CassandraNumConns        int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
 	Bootstrap                bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 	RestrictedRoomMinMembers int             `env:"RESTRICTED_ROOM_MIN_MEMBERS" envDefault:"5"`
 	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
@@ -126,18 +120,12 @@ func main() {
 	}
 	ensureCancel()
 
-	cassSession, err := cassutil.Connect(cassutil.Config{
-		Hosts:    cfg.CassandraHosts,
-		Keyspace: cfg.CassandraKeyspace,
-		Username: cfg.CassandraUsername,
-		Password: cfg.CassandraPassword,
-		NumConns: cfg.CassandraNumConns,
-	})
-	if err != nil {
-		slog.Error("cassandra connect failed", "error", err)
-		os.Exit(1)
-	}
-	cassReader := NewCassMessageReader(cassSession)
+	// Read receipts resolve the target message through history-service (which
+	// owns message history) over NATS, so room-service has no direct Cassandra
+	// dependency. A history-service outage degrades only read receipts
+	// (errcode.Unavailable); core room/membership/subscription operations are
+	// all MongoDB-backed and unaffected.
+	msgReader := newHistoryMessageReader(nc, cfg.SiteID)
 
 	// Eager at-rest DEK provisioning: when enabled, room creation provisions
 	// the room's wrapped DEK so the first message write doesn't pay the create
@@ -157,7 +145,7 @@ func main() {
 	}
 
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
-	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, cfg.RestrictedRoomMinMembers,
+	handler := NewHandler(store, keyStore, memberListClient, msgReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, cfg.RestrictedRoomMinMembers,
 		func(ctx context.Context, subj string, data []byte, msgID string) error {
 			msg := natsutil.NewMsg(ctx, subj, data)
 			var opts []jetstream.PublishOpt
@@ -197,7 +185,6 @@ func main() {
 			return nil
 		},
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(context.Context) error {
 			if vaultWrapper != nil {
 				return vaultWrapper.Close()

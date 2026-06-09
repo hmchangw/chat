@@ -53,8 +53,6 @@ services:
       - MAX_BATCH_SIZE=500
       - VALKEY_ADDRS=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
-      - CASSANDRA_HOSTS=cassandra
-      - CASSANDRA_KEYSPACE=chat
       - BOOTSTRAP_STREAMS=true
       - ATREST_ENABLED=true
       - VAULT_ADDR=http://vault:8200
