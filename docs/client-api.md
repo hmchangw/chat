@@ -224,27 +224,26 @@ here instead of repeating the table.
 
 #### Participant
 
-Actor / sender identity embedded in room and message events. Optional fields
-are present per context.
+Actor / sender identity embedded in room and message events.
 
 | Field | Type | Notes |
 |---|---|---|
-| `userId` | string | Internal user ID. |
+| `userId` | string | Optional. Internal user ID. |
 | `account` | string | The user's account name. |
 | `siteId` | string | Optional. The user's home site. |
-| `engName` | string | Optional. English display name. |
-| `chineseName` | string | Optional. Chinese display name. |
+| `chineseName` | string | Chinese display name (always present; may be empty). |
+| `engName` | string | English display name (always present; may be empty). |
+| `displayName` | string | Optional. Server-composed render-ready name. |
 
-#### UserRef
+#### SubscriptionUser
 
-Lean user reference (removed-member refs, mention rows, the `u` field on a
-`Subscription`).
+The `u` field on a [Subscription](#subscription) / [RemovedSubscriptionRef](#removedsubscriptionref).
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Internal user ID. |
 | `account` | string | The user's account name. On org-removal paths only `account` is guaranteed. |
-| `isBot` | boolean | Optional. True when the user is a bot. |
+| `isBot` | boolean | True when the user is a bot. |
 
 #### ChannelRef
 
@@ -269,13 +268,13 @@ Room ciphertext envelope (`roomcrypto.EncryptedMessage`). See [§5 Room Encrypti
 
 A user's membership record for one room, embedded in `subscription.update`
 events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
-ID serializes as `id` (not `_id`) and the user under `u` (not `user`). All
-fields below are always present.
+ID serializes as `id` (not `_id`) and the user under `u` (not `user`). The
+first group is always present; the rest are optional (omitted when empty/unset).
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Subscription ID. |
-| `u` | [UserRef](#userref) | The subscribed user. |
+| `u` | [SubscriptionUser](#subscriptionuser) | The subscribed user. |
 | `roomId` | string | The room. |
 | `siteId` | string | The room's home site. |
 | `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
@@ -286,6 +285,12 @@ fields below are always present.
 | `alert` | boolean | Whether the room has an unread alert for the user. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
+| `isSubscribed` | boolean | Optional. Whether the user is actively subscribed. |
+| `historySharedSince` | RFC3339 timestamp | Optional. Boundary before which prior history is shared. |
+| `lastSeenAt` | RFC3339 timestamp | Optional. The user's last-seen time in the room. |
+| `threadUnread` | string[] | Optional. Thread room IDs with unread replies. |
+| `restricted` | boolean | Optional. Denormalized room restricted flag. |
+| `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
 
 #### HrInfo
 
@@ -635,7 +640,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 |---|---|---|
 | `roomId` | string | The room the user lost. |
 | `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
-| `u` | [UserRef](#userref) | The removed user. On org removals only `account` is guaranteed. |
+| `u` | [SubscriptionUser](#subscriptionuser) | The removed user. On org removals only `account` is guaranteed. |
 
 ```json
 {
@@ -2883,19 +2888,36 @@ See [Error envelope](#6-error-envelope-reference).
 
 | Field | Type | Notes |
 |---|---|---|
-| `apps` | [SearchApp](#searchapp)[] | Matching apps. Empty array when none. |
+| `apps` | [App](#app)[] | Matching apps. Empty array when none. |
 
-###### SearchApp
+###### App
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | App ID. |
 | `name` | string | App name. |
 | `description` | string | Optional. App description. |
+| `avatarUrl` | string | Optional. App avatar URL. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
-| `sponsors` | [Sponsor](#sponsor)[] | Optional. App sponsors. |
+| `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab embedding config. |
+| `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsors. |
 
-###### Sponsor
+###### AppChannelTab
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | boolean | Whether the tab is enabled. |
+| `default` | boolean | Whether the tab appears by default in every channel. |
+| `name` | string | Tab name. |
+| `url` | [AppChannelTabURL](#appchanneltaburl) | Tab URL template. |
+
+###### AppChannelTabURL
+
+| Field | Type | Notes |
+|---|---|---|
+| `default` | string | Canonical URL template with literal `${roomId}` / `${siteId}` placeholders. |
+
+###### AppSponsor
 
 | Field | Type | Notes |
 |---|---|---|
@@ -2909,7 +2931,9 @@ See [Error envelope](#6-error-envelope-reference).
       "id": "a1",
       "name": "Weather",
       "description": "Local forecasts",
+      "avatarUrl": "https://site-a.example.com/avatars/weather.png",
       "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "https://site-a.example.com/apps/weather/settings" },
+      "channelTab": { "enabled": true, "default": false, "name": "Weather", "url": { "default": "https://site-a.example.com/apps/weather?room=${roomId}&site=${siteId}" } },
       "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
     }
   ]
@@ -3050,6 +3074,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 | `roomId` | string | Derived from the request subject. |
 | `userId` | string | Sender's internal user ID (resolved from the sender's subscription). |
 | `userAccount` | string | Sender's account. |
+| `userDisplayName` | string | Render-ready sender name composed server-side (falls back to `userAccount`). |
 | `content` | string | The message body, exactly as sent. |
 | `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
 | `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
@@ -3064,6 +3089,7 @@ The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`
   "roomId": "01970a4f8c2d7c9aQ",
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "userAccount": "alice",
+  "userDisplayName": "Alice 愛麗絲",
   "content": "morning team",
   "createdAt": "2026-05-06T07:55:00Z"
 }
@@ -3119,7 +3145,33 @@ A `RoomEvent`. Recipients: every client subscribed to the room (which includes t
 
 ###### ClientMessage
 
-The [Message](#message-schema) shape, except `sender` is carried as an event-actor [Participant](#participant) (`userId`, `account`, `chineseName`, `engName`) rather than the message-projection [MessageParticipant](#messageparticipant).
+The canonical broadcast message (distinct from the history [Message schema](#message-schema), which is the Cassandra projection): it uses `content`/`userId`/`userAccount` and carries an enriched `sender` [Participant](#participant).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Message ID. |
+| `roomId` | string | The room. |
+| `userId` | string | Sender's internal user ID. |
+| `userAccount` | string | Sender's account. |
+| `userDisplayName` | string | Optional. Render-ready sender name. |
+| `content` | string | The message body. |
+| `sender` | [Participant](#participant) | Optional. Enriched sender identity. |
+| `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
+| `file` | [MessageFile](#messagefile) | Optional. |
+| `card` | [MessageCard](#messagecard) | Optional. |
+| `cardAction` | [MessageCardAction](#messagecardaction) | Optional. |
+| `mentions` | [Participant](#participant)[] | Optional. |
+| `createdAt` | string | RFC 3339. |
+| `editedAt` | string | Optional. RFC 3339. |
+| `updatedAt` | string | Optional. RFC 3339. |
+| `threadParentMessageId` | string | Optional. Set for a thread reply. |
+| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
+| `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
+| `type` | string | Optional. System-message type when set. |
+| `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Optional. |
+| `pinnedAt` | string | Optional. RFC 3339. |
+| `pinnedBy` | [Participant](#participant) | Optional. |
 
 ```json
 {
