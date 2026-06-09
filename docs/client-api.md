@@ -40,6 +40,7 @@ paths.
    - [2.1 NATS connection](#21-nats-connection)
    - [2.2 HTTP — POST /auth](#22-http--post-auth)
 3. [Request/Reply Methods](#3-requestreply-methods)
+   - [3.0 Shared schemas](#30-shared-schemas)
    - [3.1 room-service](#31-room-service)
      - [Create Room](#create-room) · [Add Members](#add-members) · [Remove Member](#remove-member) · [Update Member Role](#update-member-role) · [Rename Room](#rename-room)
      - [List Members](#list-members) · [Get Member Statuses](#get-member-statuses) · [Get Mentionable Subscriptions](#get-mentionable-subscriptions) · [List Org Members](#list-org-members)
@@ -216,6 +217,128 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 ## 3. Request/Reply Methods
 
+### 3.0 Shared schemas
+
+Reusable payload types referenced by name throughout §3–§5. Each RPC links
+here instead of repeating the table.
+
+#### Participant
+
+Actor / sender identity embedded in room and message events.
+
+| Field | Type | Notes |
+|---|---|---|
+| `userId` | string | Optional. Internal user ID. |
+| `account` | string | The user's account name. |
+| `siteId` | string | Optional. The user's home site. |
+| `chineseName` | string | Chinese display name (always present; may be empty). |
+| `engName` | string | English display name (always present; may be empty). |
+| `displayName` | string | Optional. Server-composed render-ready name. |
+
+#### SubscriptionUser
+
+The `u` field on a [Subscription](#subscription) / [RemovedSubscriptionRef](#removedsubscriptionref).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Internal user ID. |
+| `account` | string | The user's account name. On org-removal paths only `account` is guaranteed. |
+| `isBot` | boolean | True when the user is a bot. |
+
+#### ChannelRef
+
+Reference to another channel whose members are copied or added in bulk.
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The source channel's ID. |
+| `siteId` | string | The source channel's home site. |
+
+#### EncryptedMessage
+
+Room ciphertext envelope (`roomcrypto.EncryptedMessage`). See [§5 Room Encryption](#5-room-encryption).
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | Room-key version used to seal the payload. |
+| `nonce` | string | Base64-encoded nonce. |
+| `ciphertext` | string | Base64-encoded ciphertext. |
+
+#### Subscription
+
+A user's membership record for one room, embedded in `subscription.update`
+events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
+ID serializes as `id` (not `_id`) and the user under `u` (not `user`). The
+first group is always present; the rest are optional (omitted when empty/unset).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Subscription ID. |
+| `u` | [SubscriptionUser](#subscriptionuser) | The subscribed user. |
+| `roomId` | string | The room. |
+| `siteId` | string | The room's home site. |
+| `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
+| `name` | string | The room's display name. |
+| `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
+| `joinedAt` | RFC3339 timestamp | When the user joined. |
+| `hasMention` | boolean | Whether the user has an unread mention. |
+| `alert` | boolean | Whether the room has an unread alert for the user. |
+| `muted` | boolean | Whether the user muted the room. |
+| `favorite` | boolean | Whether the user favorited the room. |
+| `isSubscribed` | boolean | Optional. Whether the user is actively subscribed. |
+| `historySharedSince` | RFC3339 timestamp | Optional. Boundary before which prior history is shared. |
+| `lastSeenAt` | RFC3339 timestamp | Optional. The user's last-seen time in the room. |
+| `threadUnread` | string[] | Optional. Thread room IDs with unread replies. |
+| `restricted` | boolean | Optional. Denormalized room restricted flag. |
+| `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
+
+#### HrInfo
+
+HR display names.
+
+| Field | Type | Notes |
+|---|---|---|
+| `engName` | string | English display name. |
+| `chineseName` | string | Chinese display name. |
+
+#### AppAssistant
+
+An app's assistant (bot) subdocument. Only `name` is always present; the other
+fields appear per endpoint.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Assistant/bot name. |
+| `enabled` | boolean | Optional. Whether the assistant is enabled. |
+| `settingsUrl` | string | Optional. Assistant settings URL. |
+
+#### AsyncJobResult
+
+Delivered on `chat.user.{requesterAccount}.response.{requestID}` when an
+async-job RPC finishes. Shared by Create Room, Add Members, Remove Member,
+and Rename Room.
+
+| Field | Type | Notes |
+|---|---|---|
+| `requestId` | string | Echoes the `X-Request-ID` value from the original request. |
+| `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`, `"room.rename"`. |
+| `status` | string | `"ok"` or `"error"`. |
+| `roomId` | string | Optional. The affected room. |
+| `error` | string | Optional. User-safe message; present only when `status="error"`. |
+| `code` | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
+| `reason` | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
+| `timestamp` | number | Epoch ms (UTC). |
+
+```json
+{
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+  "operation": "room.member.add",
+  "status": "ok",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "timestamp": 1746518400456
+}
+```
+
 ### 3.1 room-service
 
 | RPC subject | Method |
@@ -315,7 +438,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously on val
 
 The creator (from the subject) plus any members supplied via `users` / `orgs` / `channels` are enrolled asynchronously. The following events fire:
 
-**1. `chat.user.{account}.response.{requestID}`** — an `AsyncJobResult` to the requester when the job finishes (requires the `X-Request-ID` header). See the [AsyncJobResult schema](#asyncjobresult) under Add Members. `operation` is `"room.create"`.
+**1. `chat.user.{account}.response.{requestID}`** — an `AsyncJobResult` to the requester when the job finishes (requires the `X-Request-ID` header). See the [AsyncJobResult schema](#asyncjobresult). `operation` is `"room.create"`.
 
 **2. `chat.user.{account}.event.subscription.update`** — one per enrolled member (including the owner), `action: "added"`. See the [subscription.update schema](#subscriptionupdate-event) under Add Members.
 
@@ -381,34 +504,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.user.{requesterAccount}.response.{requestID}`** — an `AsyncJobResult` delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request.
-
-###### `AsyncJobResult`
-
-Shared by Create Room, Add Members, and Remove Member.
-
-| Field | Type | Notes |
-|---|---|---|
-| `requestId` | string | Echoes the `X-Request-ID` value from the original request. |
-| `operation` | string | One of `"room.create"`, `"room.member.add"`, `"room.member.remove"`, `"room.member.remove_org"`. |
-| `status` | string | `"ok"` or `"error"`. |
-| `roomId` | string | Optional. The affected room. |
-| `error` | string | Optional. User-safe message; present only when `status="error"`. |
-| `code` | string | Optional. The errcode category (`bad_request`, `not_found`, `forbidden`, `conflict`, `internal`, …) — same closed set as sync replies (see §6). Present only when `status="error"`. |
-| `reason` | string | Optional. Domain reason from `pkg/errcode/codes_room.go` (e.g. `not_room_member`, `max_room_size_reached`) when the frontend needs to distinguish cases. Present only when `status="error"` and a reason was attached server-side. |
-| `timestamp` | number | Epoch ms (UTC). |
-
-Success example:
-
-```json
-{
-  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789f",
-  "operation": "room.member.add",
-  "status": "ok",
-  "roomId": "01970a4f8c2d7c9aQ",
-  "timestamp": 1746518400123
-}
-```
+**1. `chat.user.{requesterAccount}.response.{requestID}`** — an [`AsyncJobResult`](#asyncjobresult) delivered to the **requester** when the bulk add finishes. Only published if the client set `X-Request-ID` on the original request. `operation` is `"room.member.add"`.
 
 Error example (e.g. requester not in room):
 
@@ -433,7 +529,7 @@ Shared by Add Members, Remove Member, and Update Member Role.
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
-| `subscription` | object | For `added` / `role_updated`: the full `Subscription` record (see below). For `removed`: a lean ref carrying only `roomId`, `roomType`, and `u` (see Remove Member). |
+| `subscription` | [Subscription](#subscription) | For `added` / `role_updated`: the full Subscription record. For `removed`: a [RemovedSubscriptionRef](#removedsubscriptionref) lean ref (see Remove Member). |
 | `action` | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -534,12 +630,17 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The removed user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
-| `subscription` | object | Lean ref — carries only the three fields below; no full `Subscription` payload. |
-| `subscription.roomId` | string | The room the user lost. |
-| `subscription.roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
-| `subscription.u` | object | The removed user: `{ id, account, isBot }`. On org removals only `account` is guaranteed. |
+| `subscription` | [RemovedSubscriptionRef](#removedsubscriptionref) | Lean ref — no full `Subscription` payload. |
 | `action` | string | Always `"removed"`. |
 | `timestamp` | number | Epoch ms (UTC). |
+
+###### RemovedSubscriptionRef
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the user lost. |
+| `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
+| `u` | [SubscriptionUser](#subscriptionuser) | The removed user. On org removals only `account` is guaranteed. |
 
 ```json
 {
@@ -794,18 +895,18 @@ When the synchronous reply is an error envelope, the request was rejected before
 
 | Field | Type | Notes |
 |---|---|---|
-| `members` | array<RoomMember> | One entry per individual or org membership. |
+| `members` | [RoomMember](#roommember)[] | One entry per individual or org membership. |
 
-`RoomMember`:
+###### RoomMember
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Membership record ID (UUIDv7 hex). |
 | `rid` | string | Room ID (note JSON key is `rid`, not `roomId`). |
 | `ts` | string | RFC 3339 timestamp of when the membership was created. |
-| `member` | object | See `RoomMemberEntry` below. |
+| `member` | [RoomMemberEntry](#roommemberentry) | The member identity. |
 
-`RoomMemberEntry`:
+###### RoomMemberEntry
 
 | Field | Type | Notes |
 |---|---|---|
@@ -951,8 +1052,15 @@ Used by the message composer's `@…` mention autocomplete. Returns subscription
 | `userId` | string | The subscription's `u._id` (the user's `_id`). |
 | `account` | string | The user/bot account. |
 | `siteId` | string | User's home site for `"user"` rows; **empty string** for `"app"` rows. |
-| `hrInfo` | object | Present **only for `"user"` rows**. `{ engName, chineseName }`. |
-| `app` | object | Present **only for `"app"` rows**. `{ name, assistant: { name } }`. |
+| `hrInfo` | [HrInfo](#hrinfo) | Present **only for `"user"` rows**. |
+| `app` | [MentionableApp](#mentionableapp) | Present **only for `"app"` rows**. |
+
+###### MentionableApp
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | App display name. |
+| `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument (only `name` is set here). |
 
 ```json
 {
@@ -1138,7 +1246,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The requester's internal user ID. |
-| `subscription` | object | The `Subscription` record with the updated `muted`. |
+| `subscription` | [Subscription](#subscription) | The Subscription record with the updated `muted`. |
 | `action` | string | `"mute_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -1188,7 +1296,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | Field | Type | Notes |
 |---|---|---|
 | `userId` | string | The requester's internal user ID. |
-| `subscription` | object | The `Subscription` record with the updated `favorite`. |
+| `subscription` | [Subscription](#subscription) | The Subscription record with the updated `favorite`. |
 | `action` | string | `"favorite_toggled"`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
@@ -1357,17 +1465,31 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
 
 | Field | Type | Notes |
 |---|---|---|
-| `apps` | array<RoomApp> | Apps whose `channelTab.enabled` AND `channelTab.default` are both true, sorted by `channelTab.name asc`. Empty by default in DM/botDM rooms. |
+| `apps` | [RoomApp](#roomapp)[] | Apps whose `channelTab.enabled` AND `channelTab.default` are both true, sorted by `channelTab.name asc`. Empty by default in DM/botDM rooms. |
 
-`RoomApp` fields:
+###### RoomApp
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | `apps._id`. |
 | `name` | string | `apps.channelTab.name`. |
 | `tabUrl` | string | Computed: `SITE_URL`'s scheme/host/path-prefix + `apps.channelTab.url.default`'s path; `${roomId}` and `${siteId}` are substituted. Apps whose template URL is empty or unparseable are silently skipped. |
-| `assistant` | object (optional) | `apps.assistant` subdocument if set. |
-| `avatarUrl` | string (optional) | `apps.avatarUrl` if set. |
+| `assistant` | [AppAssistant](#appassistant) | Optional. `apps.assistant` subdocument if set. |
+| `avatarUrl` | string | Optional. `apps.avatarUrl` if set. |
+
+```json
+{
+  "apps": [
+    {
+      "id": "app-weather",
+      "name": "Weather",
+      "tabUrl": "https://site-a.example.com/apps/weather?room=01970a4f8c2d7c9aQ",
+      "assistant": { "enabled": true, "name": "weather.bot" },
+      "avatarUrl": "https://site-a.example.com/avatars/weather.png"
+    }
+  ]
+}
+```
 
 ##### Error response
 
@@ -1398,15 +1520,53 @@ Empty body (`{}` is tolerated).
 
 | Field | Type | Notes |
 |---|---|---|
-| `appAssistants` | array<RoomAppAssistant> | One entry per bot currently subscribed in the room whose owning app has `assistant.enabled=true`. Sorted by `name asc`. |
+| `appAssistants` | [RoomAppAssistant](#roomappassistant)[] | One entry per bot currently subscribed in the room whose owning app has `assistant.enabled=true`. Sorted by `name asc`. |
 
-`RoomAppAssistant` fields:
+###### RoomAppAssistant
 
 | Field | Type | Notes |
 |---|---|---|
 | `appName` | string | `apps.name`. |
 | `name` | string | `apps.assistant.name` (the bot account). |
-| `cmdBlocks` | array<CmdBlock> (optional) | Active command-menu blocks from `bot_cmd_menu` joined by name. Omitted/nil if no active menu exists for the bot. `CmdBlock` is recursive (`blocks` may contain further `CmdBlock`s) and may carry a `modal` object with `command` and `param`. |
+| `cmdBlocks` | [CmdBlock](#cmdblock)[] | Optional. Active command-menu blocks from `bot_cmd_menu` joined by name. Omitted/nil if no active menu exists for the bot. |
+
+###### CmdBlock
+
+Recursive command-menu block: a block renders directly (`text` + `actionType` + `payload`), opens a `modal`, or groups nested `blocks`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `text` | string | Optional. Display text. |
+| `actionType` | string | Optional. The action type. |
+| `description` | string | Optional. Block description. |
+| `payload` | string | Optional. Action payload. |
+| `modal` | [CmdModal](#cmdmodal) | Optional. Modal opened by this block. |
+| `blocks` | [CmdBlock](#cmdblock)[] | Optional. Nested child blocks. |
+
+###### CmdModal
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | string | Optional. Slash-style command the modal invokes. |
+| `param` | string | Optional. Command parameter. |
+
+```json
+{
+  "appAssistants": [
+    {
+      "appName": "Helper",
+      "name": "helper.bot",
+      "cmdBlocks": [
+        {
+          "text": "Create ticket",
+          "actionType": "modal",
+          "modal": { "command": "/ticket", "param": "new" }
+        }
+      ]
+    }
+  ]
+}
+```
 
 ##### Error response
 
@@ -1446,7 +1606,14 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 | Field | Type | Notes |
 |---|---|---|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | object | Optional. `{ "lastMsgAt"?: number, "createdAt"?: number }`, both UTC milliseconds. |
+| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. |
+
+###### RoomMeta
+
+| Field | Type | Notes |
+|---|---|---|
+| `lastMsgAt` | number | Optional. Room's most-recent-message time, UTC ms. |
+| `createdAt` | number | Optional. Room's creation time, UTC ms. |
 
 **What to pass for `meta`:** the server needs the room's `lastMsgAt` and `createdAt` to pick the Cassandra time-bucket window to scan. `meta` lets the client supply the values it already holds so the server can skip a MongoDB lookup:
 
@@ -1475,20 +1642,20 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `roomId` | string | |
 | `createdAt` | string | RFC 3339 timestamp. |
 | `messageId` | string | 17- or 20-char base62. |
-| `sender` | object | A `Participant` — see below. |
+| `sender` | [MessageParticipant](#messageparticipant) | The message author. |
 | `msg` | string | The message body. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [MessageParticipant](#messageparticipant)[] | Optional. |
 | `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
-| `file` | object | Optional. `{id, name, type}`. |
-| `card` | object | Optional. `{template, data?}`. `data` is base64. |
-| `cardAction` | object | Optional. `{verb, text?, cardId?, displayText?, hideExecLog?, cardTmId?, data?}`. |
+| `file` | [MessageFile](#messagefile) | Optional. |
+| `card` | [MessageCard](#messagecard) | Optional. |
+| `cardAction` | [MessageCardAction](#messagecardaction) | Optional. |
 | `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
 | `tcount` | number | Optional. Number of replies on a thread parent. |
 | `threadParentId` | string | Optional. Set when this message is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
-| `quotedParentMessage` | object | Optional. Embedded snapshot — see below. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Optional. Embedded snapshot of the quoted message. |
 | `visibleTo` | string | Optional. Visibility scope. |
-| `reactions` | object | Optional. `map<emoji, User[]>` — see below. Omitted when absent; `{}` when present but empty. |
+| `reactions` | map<emoji, [ReactionUser](#reactionuser)[]> | Optional. Omitted when absent; `{}` when present but empty. |
 | `deleted` | boolean | Optional. `true` for tombstoned messages. |
 | `type` | string | Optional. System-message type when set; regular messages omit it. Known values: `"room_created"`, `"members_added"`, `"member_removed"`, `"member_left"`, `"room_renamed"`, `"room_restricted"`. For all six, `msg` is populated with a server-rendered human-readable body and `sender.account` is the responsible actor (the requester for adds/removes-by-other / room-creates / renames / restricted changes, the leaving user for self-leave). |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -1497,9 +1664,13 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `updatedAt` | string | Optional. RFC 3339. Mirrors `editedAt` for edits, set on delete to record the deletion time. |
 | `threadRoomId` | string | Optional. The thread room ID when this is a thread message. |
 | `pinnedAt` | string | Optional. RFC 3339. |
-| `pinnedBy` | object | Optional. `Participant`. |
+| `pinnedBy` | [MessageParticipant](#messageparticipant) | Optional. |
 
-`Participant`:
+##### MessageParticipant
+
+The author/mention/pinner embedded in a message. Distinct from the event-actor
+[Participant](#participant) (which is `userId`-keyed) — this is the Cassandra
+message projection, keyed by `id`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -1511,22 +1682,53 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `isBot` | boolean | Optional. |
 | `account` | string | Optional. |
 
-`QuotedParentMessage` (embedded snapshot of the quoted message at the time of quoting):
+##### MessageFile
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | File ID. |
+| `name` | string | File name. |
+| `type` | string | MIME type. |
+
+##### MessageCard
+
+| Field | Type | Notes |
+|---|---|---|
+| `template` | string | Card template name. |
+| `data` | string | Optional. Base64-encoded card payload. |
+
+##### MessageCardAction
+
+| Field | Type | Notes |
+|---|---|---|
+| `verb` | string | The action verb. |
+| `text` | string | Optional. Button/label text. |
+| `cardId` | string | Optional. Target card ID. |
+| `displayText` | string | Optional. Text shown after the action runs. |
+| `hideExecLog` | boolean | Optional. Suppress the execution log entry. |
+| `cardTmId` | string | Optional. Card template ID. |
+| `data` | string | Optional. Base64-encoded action payload. |
+
+##### QuotedParentMessage
+
+Embedded snapshot of the quoted message at the time of quoting.
 
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | |
 | `roomId` | string | |
-| `sender` | object | `Participant`. |
+| `sender` | [MessageParticipant](#messageparticipant) | |
 | `createdAt` | string | RFC 3339. |
 | `msg` | string | Optional. Body snapshot. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [MessageParticipant](#messageparticipant)[] | Optional. |
 | `attachments` | string[] | Optional. |
 | `messageLink` | string | Optional. |
 | `threadParentId` | string | Optional. Set if the quoted message itself is a thread reply. |
 | `threadParentCreatedAt` | string | Optional. RFC 3339. |
 
 When the reader is in a restricted access window and the quoted parent falls outside it, the embedded snapshot is redacted to `{ "msg": "This message is unavailable" }` — all other quote fields are dropped.
+
+##### ReactionUser
 
 `reactions` is keyed by emoji; each value is the list of users who reacted with that emoji. The inner record is intentionally minimal — the FE composes any further presentation it needs from these two fields:
 
@@ -1852,7 +2054,7 @@ The payload is flat (no zero-valued room fields):
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
 | `messageId` | string | The edited message's ID. |
 | `newContent` | string | Optional. New plaintext content. Present for DMs and unencrypted channels. Omitted for encrypted channels — see `encryptedNewContent`. |
-| `encryptedNewContent` | object | Optional. The `roomcrypto.EncryptedMessage` (`{version, nonce, ciphertext}`) for encrypted channel rooms. Omitted otherwise. |
+| `encryptedNewContent` | [EncryptedMessage](#encryptedmessage) | Optional. For encrypted channel rooms. Omitted otherwise. |
 | `editedBy` | string | The sender's account. |
 | `editedAt` | string | RFC 3339 timestamp. Domain time of the edit. |
 | `updatedAt` | string | RFC 3339 timestamp. |
@@ -2017,7 +2219,7 @@ Not published when the request hits an already-pinned message (idempotent short-
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messagePinned.messageId` | string | The pinned message's ID. |
-| `messagePinned.pinnedBy` | object | `Participant` (`userId`, `account`) of the actor who pinned. |
+| `messagePinned.pinnedBy` | [Participant](#participant) | The actor who pinned (`userId`, `account`). |
 | `messagePinned.pinnedAt` | string | RFC 3339. Domain time of the pin. |
 
 ```json
@@ -2047,7 +2249,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 | `event` | string | Always `"pinned"`. |
 | `siteId` | string | The originating site. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
-| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. See [Message schema](#message-schema). |
+| `message` | [Message](#message-schema) | `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedAt`, `pinnedBy` populated. |
 
 ```json
 {
@@ -2121,7 +2323,7 @@ Not published when the request hits an already-unpinned message (idempotent shor
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
 | `messageUnpinned.messageId` | string | The unpinned message's ID. |
-| `messageUnpinned.unpinnedBy` | object | `Participant` (`userId`, `account`) of the actor who unpinned. |
+| `messageUnpinned.unpinnedBy` | [Participant](#participant) | The actor who unpinned (`userId`, `account`). |
 | `messageUnpinned.unpinnedAt` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
@@ -2151,7 +2353,7 @@ On success, the service publishes a `MessageEvent` to **`chat.msg.canonical.{sit
 | `event` | string | Always `"unpinned"`. |
 | `siteId` | string | The originating site. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
-| `message` | object | `Message` with `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). See [Message schema](#message-schema). |
+| `message` | [Message](#message-schema) | `id`, `roomId`, `userId`, `userAccount`, `createdAt`, `pinnedBy` populated (no `pinnedAt` — the message is now unpinned). |
 
 ```json
 {
@@ -2302,7 +2504,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 | `messageId` | string | The reacted-to message's ID. |
 | `shortcode` | string | The bare reaction shortcode. |
 | `action` | string | `"added"` or `"removed"`. |
-| `actor` | object | The user whose toggle produced this event. Fields: `userId`, `account`, `siteId`, `engName`, `chineseName`. |
+| `actor` | [Participant](#participant) | The user whose toggle produced this event. |
 | `reactedAt` | string (RFC 3339) | Domain time of the toggle. |
 | `updatedAt` | string (RFC 3339) | Mirrors `reactedAt`. |
 
@@ -2332,9 +2534,17 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"messageId is
 |---|---|---|
 | `type` | string | Always `"reaction"`. |
 | `roomId` | string | The room containing the reacted-to message. |
-| `message` | object | The full reacted-to `Message` (same shape as the history [Message schema](#message-schema)). |
-| `reactionDelta` | object | `{ shortcode, action, actor }`. `action` is always `"added"` here (the notification only fires on add); `actor` is a `Participant` (`userId`, `account`, `siteId`, `engName`, `chineseName`). |
+| `message` | [Message](#message-schema) | The full reacted-to message. |
+| `reactionDelta` | [ReactionDelta](#reactiondelta) | The single-reaction delta that triggered the notification. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+
+###### ReactionDelta
+
+| Field | Type | Notes |
+|---|---|---|
+| `shortcode` | string | The emoji shortcode reacted with. |
+| `action` | string | Always `"added"` here (the notification only fires on add). |
+| `actor` | [Participant](#participant) | The user who reacted. |
 
 To reconcile this delta with the grouped per-message `reactions` map returned by history endpoints (`map<emoji, [{account, displayName}]>`), clients append or remove one entry under `reactions[shortcode]` keyed on `actor.account`. See the "Message schema" section for the history-side shape.
 
@@ -2656,7 +2866,15 @@ See [Error envelope](#6-error-envelope-reference).
 
 **Planned behavior:** the response will be scoped to apps the caller has subscribed to once the pipeline's `$lookup` access guard against the `subscriptions` collection is enabled. See `TODO(searchApps-pipeline)` in `search-service/query_apps.go`.
 
-**Request body:**
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
+| `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
+| `size` | integer | no | Page size. Default `25`, capped at `100`. |
+| `offset` | integer | no | Page offset. Default `0`. |
+
 ```json
 {
   "query": "weather",
@@ -2666,29 +2884,63 @@ See [Error envelope](#6-error-envelope-reference).
 }
 ```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | string | **yes** | Case-insensitive substring match on `app.name`. Whitespace-only is rejected. |
-| `assistantEnabled` | boolean (nullable) | no | When set, strict equality on `app.assistant.enabled`. Omit for no filter. |
-| `size` | integer | no | Page size. Default `25`, capped at `100`. |
-| `offset` | integer | no | Page offset. Default `0`. |
+##### Success response
 
-**Response body:**
+| Field | Type | Notes |
+|---|---|---|
+| `apps` | [App](#app)[] | Matching apps. Empty array when none. |
+
+###### App
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | App ID. |
+| `name` | string | App name. |
+| `description` | string | Optional. App description. |
+| `avatarUrl` | string | Optional. App avatar URL. |
+| `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
+| `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab embedding config. |
+| `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsors. |
+
+###### AppChannelTab
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | boolean | Whether the tab is enabled. |
+| `default` | boolean | Whether the tab appears by default in every channel. |
+| `name` | string | Tab name. |
+| `url` | [AppChannelTabURL](#appchanneltaburl) | Tab URL template. |
+
+###### AppChannelTabURL
+
+| Field | Type | Notes |
+|---|---|---|
+| `default` | string | Canonical URL template with literal `${roomId}` / `${siteId}` placeholders. |
+
+###### AppSponsor
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Sponsor name. |
+| `phone` | string | Sponsor phone number. |
+
 ```json
 {
   "apps": [
     {
       "id": "a1",
       "name": "Weather",
-      "description": "...",
-      "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "..." },
-      "sponsors": [{ "name": "...", "phone": "..." }]
+      "description": "Local forecasts",
+      "avatarUrl": "https://site-a.example.com/avatars/weather.png",
+      "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "https://site-a.example.com/apps/weather/settings" },
+      "channelTab": { "enabled": true, "default": false, "name": "Weather", "url": { "default": "https://site-a.example.com/apps/weather?room=${roomId}&site=${siteId}" } },
+      "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
     }
   ]
 }
 ```
 
-**Errors:**
+##### Error response
 
 | Category | Reason |
 |---|---|
@@ -2706,7 +2958,14 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 
 `{siteID}` is the requester's home site; the supercluster routes the request to that site's search-service. Proxy search for users via the third-party HR endpoint. The `{account}` in the subject is the authenticated identity (enforced by the NATS auth callout) and is used for logging/metrics only — company-scoping is enforced by the third-party endpoint.
 
-**Request body:**
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
+| `offset` | integer | no | Page offset forwarded to the HR endpoint. Default `0`. Must be non-negative. |
+| `limit` | integer | no | Page size forwarded to the HR endpoint. Default `25`, capped at `100`. Must be non-negative. |
+
 ```json
 {
   "query": "alice",
@@ -2715,13 +2974,20 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 }
 ```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | string | **yes** | Search term forwarded to the third-party HR endpoint. Whitespace-only is rejected. |
-| `offset` | integer | no | Page offset forwarded to the HR endpoint. Default `0`. Must be non-negative. |
-| `limit` | integer | no | Page size forwarded to the HR endpoint. Default `25`, capped at `100`. Must be non-negative. |
+##### Success response
 
-**Response body — raw JSON array (no envelope):**
+A top-level JSON array of [SearchUser](#searchuser) objects (no wrapping envelope).
+
+###### SearchUser
+
+| Field | Type | Notes |
+|---|---|---|
+| `account` | string | The user's account name. |
+| `engName` | string | Optional. English display name. |
+| `chineseName` | string | Optional. Chinese display name. |
+
+Additional legacy fields may be present, mirroring the `GET /api/v3/users` response shape.
+
 ```json
 [
   {
@@ -2732,9 +2998,7 @@ These are documentation categories. The wire error envelope shape — `{ "error"
 ]
 ```
 
-The response is a top-level JSON array of `SearchUser` objects (no wrapping object). The full field set mirrors the legacy `GET /api/v3/users` response shape — see `pkg/model.SearchUser` for the authoritative list.
-
-**Errors:**
+##### Error response
 
 | Code | Reason |
 |---|---|
@@ -2810,11 +3074,12 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 | `roomId` | string | Derived from the request subject. |
 | `userId` | string | Sender's internal user ID (resolved from the sender's subscription). |
 | `userAccount` | string | Sender's account. |
+| `userDisplayName` | string | Render-ready sender name composed server-side (falls back to `userAccount`). |
 | `content` | string | The message body, exactly as sent. |
 | `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
 | `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
 | `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
-| `quotedParentMessage` | object | Present only for a quoted send — the server-fetched snapshot of the quoted parent. See [Message schema](#message-schema)'s `QuotedParentMessage` table. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Present only for a quoted send — the server-fetched snapshot of the quoted parent. |
 
 The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
 
@@ -2824,6 +3089,7 @@ The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`
   "roomId": "01970a4f8c2d7c9aQ",
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "userAccount": "alice",
+  "userDisplayName": "Alice 愛麗絲",
   "content": "morning team",
   "createdAt": "2026-05-06T07:55:00Z"
 }
@@ -2871,11 +3137,41 @@ A `RoomEvent`. Recipients: every client subscribed to the room (which includes t
 | `userCount` | number | |
 | `lastMsgAt` | string | RFC 3339. |
 | `lastMsgId` | string | The new message's ID. |
-| `mentions` | array<Participant> | Optional. |
+| `mentions` | [Participant](#participant)[] | Optional. |
 | `mentionAll` | boolean | Optional. `true` if the message mentioned `@all` or `@here`. |
 | `hasMention` | boolean | Optional. Per-recipient flag (DM event only). Always absent on channel events. |
-| `message` | object | Optional. The `ClientMessage` (the [Message schema](#message-schema) plus a `sender` Participant: `{userId, account, chineseName, engName}`). Set for unencrypted rooms. |
-| `encryptedMessage` | object | Optional. The room ciphertext envelope `{version, nonce, ciphertext}` (see [§5 Room Encryption](#5-room-encryption)). Set for encrypted (channel) rooms. Clients decrypt with the room key for `version`. |
+| `message` | [ClientMessage](#clientmessage) | Optional. Set for unencrypted rooms. |
+| `encryptedMessage` | [EncryptedMessage](#encryptedmessage) | Optional. Set for encrypted (channel) rooms. Clients decrypt with the room key for `version`. |
+
+###### ClientMessage
+
+The canonical broadcast message (distinct from the history [Message schema](#message-schema), which is the Cassandra projection): it uses `content`/`userId`/`userAccount` and carries an enriched `sender` [Participant](#participant).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Message ID. |
+| `roomId` | string | The room. |
+| `userId` | string | Sender's internal user ID. |
+| `userAccount` | string | Sender's account. |
+| `userDisplayName` | string | Optional. Render-ready sender name. |
+| `content` | string | The message body. |
+| `sender` | [Participant](#participant) | Optional. Enriched sender identity. |
+| `attachments` | string[] | Optional. Each entry is base64-encoded bytes. |
+| `file` | [MessageFile](#messagefile) | Optional. |
+| `card` | [MessageCard](#messagecard) | Optional. |
+| `cardAction` | [MessageCardAction](#messagecardaction) | Optional. |
+| `mentions` | [Participant](#participant)[] | Optional. |
+| `createdAt` | string | RFC 3339. |
+| `editedAt` | string | Optional. RFC 3339. |
+| `updatedAt` | string | Optional. RFC 3339. |
+| `threadParentMessageId` | string | Optional. Set for a thread reply. |
+| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
+| `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
+| `type` | string | Optional. System-message type when set. |
+| `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Optional. |
+| `pinnedAt` | string | Optional. RFC 3339. |
+| `pinnedBy` | [Participant](#participant) | Optional. |
 
 ```json
 {
@@ -2977,6 +3273,13 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 #### Payload (`RoomKeyEvent`)
 
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the key belongs to. |
+| `version` | integer | Room-key version. |
+| `privateKey` | string | Base64-encoded 32-byte room secret, used directly as the AES-256-GCM key. |
+| `timestamp` | number | Epoch ms (UTC). |
+
 ```json
 {
   "roomId": "<room id>",
@@ -3029,14 +3332,21 @@ inbound message event). Clients are already authorized for
 
 #### Request payload (`RoomKeyGetRequest`)
 
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | Optional (nullable). When omitted or `null`, the server returns the **current** key for the room. |
+
 ```json
 { "version": 3 }
 ```
 
-`version` is optional. When omitted (or `null`), the server returns the
-**current** key for the room.
-
 #### Success reply (`RoomKeyGetResponse`)
+
+| Field | Type | Notes |
+|---|---|---|
+| `roomId` | string | The room the key belongs to. |
+| `version` | integer | Room-key version returned. |
+| `privateKey` | string | Base64-encoded 32-byte room secret. |
 
 ```json
 {
@@ -3046,7 +3356,7 @@ inbound message event). Clients are already authorized for
 }
 ```
 
-Same shape as `RoomKeyEvent` minus `Timestamp`, so a client can feed the
+Same shape as `RoomKeyEvent` minus `timestamp`, so a client can feed the
 reply through the same caching path it uses for live events.
 
 #### Errors
@@ -3088,7 +3398,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `error` | string | Human-readable, user-safe (never carries an internal cause). Do not parse or pattern-match against the text. |
 | `code` | string | **Always present.** One of the 7 categories below. Drives HTTP status. |
 | `reason` | string (optional) | Domain-specific machine code (e.g. `max_room_size_reached`, `not_subscribed`). When present, the client should branch on `reason ?? code`. |
-| `metadata` | object (optional) | Free-form `string→string` map for structured detail (e.g. `{ "limit": "500" }`). |
+| `metadata` | map<string, string> | Optional. Free-form map for structured detail (e.g. `{ "limit": "500" }`). |
 
 ### Generic `code` values (always present) → HTTP status
 

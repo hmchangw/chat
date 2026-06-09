@@ -196,6 +196,12 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - If your changes touch a client-facing handler (any handler registered with `nc.QueueSubscribe` or `natsrouter.Register` whose subject begins with `chat.user.{account}.request.…` or `chat.user.{account}.room.{roomID}.{siteID}.msg.send`, or any HTTP route in `auth-service`), update `docs/client-api.md` in the same PR to reflect the new request/response schema, error cases, and triggered events.
 - `docs/reviews/` holds session-scoped multi-agent review reports (output of the `branch_review` skill). Delete every file under `docs/reviews/` from the branch just before creating the PR — these reports are working notes for the author, not shippable artifacts.
 
+### Documenting the Client API (`docs/client-api.md`)
+- Any change to a client-facing RPC (a handler whose NATS subject begins with `chat.user.`) must be reflected in `docs/client-api.md` in the same PR (see the client-facing-handler bullet above).
+- Every request body and response payload is a field table (current style). Each field has an explicit type — never `object`. Compound types get their own named table (shared types in §3.0 Shared schemas, one-offs inline) and are referenced by linked name (e.g. `[Participant](#participant)`, `ChannelRef[]`, `map<emoji, UserRef[]>`).
+- Every success response includes a JSON example.
+- Keep edits clean: minimal prose, no redundant comments or long explanations.
+
 ### Before Editing
 - Always read a file before modifying it — understand existing code before suggesting changes
 - Follow existing patterns in the codebase — don't invent new conventions
