@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -44,6 +45,7 @@ type config struct {
 	ValkeyAddrs          []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	ValkeyKeyGracePeriod time.Duration           `env:"VALKEY_KEY_GRACE_PERIOD" envDefault:"24h"`
+	HealthAddr           string                  `env:"HEALTH_ADDR"              envDefault:":8081"`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -182,6 +184,14 @@ func main() {
 		}
 	}()
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("broadcast-worker started", "site", cfg.SiteID, "encryption", cfg.Encryption.Enabled)
 
 	hooks := []func(context.Context) error{
@@ -211,7 +221,10 @@ func main() {
 	if keyStore != nil {
 		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
 	}
-	hooks = append(hooks, func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil })
+	hooks = append(hooks,
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error { return healthStop(ctx) },
+	)
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
 }

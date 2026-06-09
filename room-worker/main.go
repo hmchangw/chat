@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -37,6 +38,7 @@ type config struct {
 	KeyFanoutWorkers int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
 	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	HealthAddr       string                  `env:"HEALTH_ADDR" envDefault:":8081"`
 
 	// Required: room-worker reads/rotates the room key on every create/add/remove path.
 	ValkeyAddrs    []string `env:"VALKEY_ADDRS,required"     envSeparator:","`
@@ -191,6 +193,14 @@ func main() {
 		}
 	}()
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("room-worker running", "site", cfg.SiteID)
 
 	// Shutdown ordering: drain inbound work first, then close client connections,
@@ -223,6 +233,8 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return meterShutdown(ctx) },
 	}
+
+	hooks = append(hooks, func(ctx context.Context) error { return healthStop(ctx) })
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
 }

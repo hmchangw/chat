@@ -15,6 +15,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -42,6 +43,7 @@ type config struct {
 	CassandraUsername        string          `env:"CASSANDRA_USERNAME"        envDefault:""`
 	CassandraPassword        string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
 	CassandraNumConns        int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
+	HealthAddr               string          `env:"HEALTH_ADDR" envDefault:":8081"`
 	Bootstrap                bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 	RestrictedRoomMinMembers int             `env:"RESTRICTED_ROOM_MIN_MEMBERS" envDefault:"5"`
 	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
@@ -184,6 +186,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("room-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
@@ -203,5 +213,6 @@ func main() {
 			}
 			return nil
 		},
+		func(ctx context.Context) error { return healthStop(ctx) },
 	)
 }
