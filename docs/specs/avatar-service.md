@@ -126,31 +126,90 @@ dynamic default (§8) is the universal backstop that guarantees termination.
 
 - Baseline: `ETag` (from the MinIO object, or the deterministic hash for a
   generated default — §8) + `Cache-Control: public, max-age`.
-- Cache-busting via `?v=`: **deferred**. The version now lives on the `avatars`
-  doc (§4.4), which avatar-service owns — the frontend's room/bot metadata
-  (sourced from room-service / apps) does not carry it, so a client-appended
-  `?v` is not yet wired. v1 relies on `ETag` revalidation; `?v`-based busting is
-  revisited once version propagation is designed (§9). A request that does carry
-  a `?v` MAY still be served with a long `max-age` + `immutable`.
+- Cache-busting via `?v=`: **deferred, and not stored.** There is no `version`
+  field on the `avatars` doc (§4.4), and the frontend's room/bot metadata
+  (sourced from room-service / apps) carries no version it could append anyway.
+  v1 relies on `ETag` revalidation; `?v`-based busting is revisited once version
+  propagation is designed (§9). A request that does carry a `?v` MAY still be
+  served with a long `max-age` + `immutable`.
 
 ### 4.4 The `avatars` collection (custom-image existence source)
 
 A dedicated Mongo collection **owned by avatar-service**. **Presence of a
-document = "this entity has a custom image in MinIO";** absence = serve the
+document = "this subject has a custom image in MinIO";** absence = serve the
 dynamic default (§8). It is the authoritative existence check for both kinds, so
 the common "no custom image" case is a cheap `_id` point-lookup that never
 touches MinIO.
 
-- **Writers:** avatar-service writes a doc on a bot upload (§7a); the
-  legacy-data **migration** writes docs for pre-existing room images.
-  avatar-service never writes into room-service's `rooms` or the upstream `apps`
-  collection — it owns only `avatars`, respecting service data boundaries.
-- **Readers:** the GET path looks up the doc by entity key to decide
+- **Writers:** avatar-service writes a doc on a bot upload (§7a); the legacy-data
+  **migration** writes docs for pre-existing room (and bot) images. avatar-service
+  never writes into room-service's `rooms` or the upstream `apps` collection — it
+  owns only `avatars`, respecting service data boundaries.
+- **Readers:** the GET path looks up the doc by `_id` to decide
   stream-from-MinIO vs dynamic default.
-- **Field schema:** finalized in a follow-up discussion. The `_id` keys the
-  entity (`<ownerType>:<ownerId>`), and the doc carries enough to serve the bytes
-  (MinIO key, detected content-type) and to validate caches without a MinIO Stat
-  (size, ETag).
+- **Cluster-local invariant:** every document belongs to **this** site — a
+  subject owned by another cluster has its avatar data only in that cluster's
+  `avatars` + MinIO. Cross-cluster routing is decided upstream (§6/§7) before the
+  lookup, so the doc needs no `siteId`.
+
+**Schema** (`pkg/model/avatar.go`; added to the `model_test` round-trip):
+
+```go
+type AvatarSubjectType string
+
+const (
+    AvatarSubjectRoom AvatarSubjectType = "room"
+    AvatarSubjectBot  AvatarSubjectType = "bot"
+)
+
+// Avatar is a custom (uploaded or migrated) avatar for a room or bot. Presence
+// of a document means the subject has a custom image in MinIO; absence means the
+// service serves a generated default (§8). The collection is cluster-local, so
+// no siteId is stored.
+type Avatar struct {
+    ID          string            `json:"id"          bson:"_id"`         // "<subjectType>:<subjectId>"
+    SubjectType AvatarSubjectType `json:"subjectType" bson:"subjectType"` // "room" | "bot"
+    // SubjectID is the id this service looks the subject up by:
+    //   room → roomID;  bot → bot account (".bot").
+    SubjectID   string    `json:"subjectId"   bson:"subjectId"`
+    MinioKey    string    `json:"minioKey"    bson:"minioKey"`    // MinIO object key, used verbatim
+    ContentType string    `json:"contentType" bson:"contentType"` // detected type (image/png|image/jpeg)
+    Size        int64     `json:"size"        bson:"size"`        // object size, bytes (Content-Length)
+    ETag        string    `json:"etag"        bson:"etag"`        // MinIO ETag — 304 without a MinIO hit
+    CreatedAt   time.Time `json:"createdAt"   bson:"createdAt"`
+    UpdatedAt   time.Time `json:"updatedAt"   bson:"updatedAt"`
+}
+```
+
+`_id` is the deterministic composite `"<subjectType>:<subjectId>"` (e.g.
+`room:r123`, `bot:helper.bot`) — the natural key, so "one custom image per
+subject" is structural (no surrogate id, no extra unique index) and an upload
+**upserts by `_id`**. No `version` field (§4.3); if `?v` is ever wired, a missing
+int reads as 0.
+
+**Migration from the legacy `avatars` collection** (one-time; writes this
+cluster's docs — MinIO objects are **not** moved):
+
+| legacy field | → `Avatar` |
+|--------------|------------|
+| `rid` | `subjectType=room`, `subjectId=rid` |
+| `userId` (a bot) | `subjectType=bot`, `subjectId=`account (resolve `userId`→account) |
+| `path` | `minioKey` (used verbatim) |
+| `type` | `contentType` |
+| `size` | `size` |
+| `etag` | `etag` |
+| `uploadedAt` | `createdAt` |
+| `updatedAt` | `updatedAt` |
+
+Migration rules:
+1. **Only migrate `complete == true` records** — skip in-flight/abandoned legacy
+   uploads (`uploading` / incomplete), whose MinIO object may be partial or absent.
+2. **Bot records:** resolve legacy `userId` → bot `account` (join to `users`) to
+   build `subjectId` / `_id`; the read path keys bots by account, not user id.
+3. **Human-user avatars are not migrated** — real users resolve to the external
+   employee-photo service and have no `avatars` doc.
+4. Legacy `progress` / `complete` / `uploading` are **not** carried over — the
+   single-PUT upload model (§7a.2) tracks no upload state.
 
 ## 5. Account format & parsing (Endpoint 1)
 
@@ -255,15 +314,19 @@ takes priority over the dynamic default on the bot's GET path.
 
 ### 7a.2 Storage
 
-- Bytes stored in MinIO at the convention key (`bot/{botName}`), with the
-  **detected** content-type (from decode, not the client header) as object
-  metadata.
-- After a successful put, **upsert the bot's `avatars` doc** (§4.4, `_id =
-  bot:{botName}`) — its presence is the GET existence check (§6); it records the
-  MinIO key, detected content-type, size, and ETag. The MinIO object's `ETag`
-  changes naturally on overwrite.
-- No `DELETE`/reset in v1 (§1): a custom bot avatar can be **overwritten** by a
-  new upload but not cleared back to the default.
+- **Write order: MinIO object first, then the `avatars` doc.** The doc is upserted
+  only after the object is durably stored, so "doc exists ⟺ a complete image
+  exists" — no upload-state flags are needed (contrast the legacy
+  `progress`/`complete`/`uploading` fields, dropped in §4.4).
+- The object's key is chosen by avatar-service and stored **verbatim** in
+  `minioKey`, used as-is on reads — never re-derived from a convention (migrated
+  room objects keep their legacy paths, §4.4). The **detected** content-type
+  (from decode, not the client header) is set as object metadata and stored.
+- The upserted doc (`_id = bot:{botName}`, §4.4) records `minioKey`,
+  `contentType`, `size`, `etag` and bumps `updatedAt`; its presence is the GET
+  existence check (§6). A re-upload **overwrites** in place.
+- No `DELETE`/reset in v1 (§1): a custom bot avatar can be overwritten by a new
+  upload but not cleared back to the default.
 
 ### 7a.3 Cluster locality
 
@@ -370,9 +433,9 @@ the rendering in one place.
 - **Upload authz** → **platform-admin role** (caller's `users` record,
   `model.IsPlatformAdmin`); no per-bot owner model in v1 (§7a.4).
 - **Upload formats** → PNG/JPEG only; SVG uploads rejected (§7a.1).
-
-**Open / in progress:**
-- **`avatars` field schema** (§4.4) — being finalized next.
+- **`avatars` field schema** → finalized: `_id = subjectType:subjectId`,
+  `subjectType`/`subjectId`/`minioKey`/`contentType`/`size`/`etag`/`createdAt`/
+  `updatedAt`; no `siteId`/`version`; migration maps the legacy collection (§4.4).
 
 **Deferred / to address before implementation:**
 - **Default-SVG injection (S1):** the generated SVG embeds user-controlled text
