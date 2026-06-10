@@ -7,6 +7,3 @@ func registerRoutes(r *gin.Engine, h *handler) {
 	r.GET("/avatar/v1/room/:roomID", h.HandleRoomAvatar)
 	r.GET("/avatar/v1/:accountName", h.HandleAccountAvatar)
 }
-
-// registerUploadRoutes is a temporary stub; Task 9 provides the real one.
-func registerUploadRoutes(_ *gin.Engine, _ *handler) {}

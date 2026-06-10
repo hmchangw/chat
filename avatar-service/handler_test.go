@@ -28,6 +28,7 @@ func newTestRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore)
 		CacheMaxAgeSeconds:   3600,
 		AvatarBucket:         "avatars",
 		ClusterDomains:       map[string]string{"s2": "https://avatar-s2"},
+		MaxUploadBytes:       1048576,
 	})
 	r := gin.New()
 	registerRoutes(r, h)
