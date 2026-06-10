@@ -57,7 +57,7 @@ NATS callout. Mongo + MinIO backed.
 | `handler.go` | Read path: resolve owning site → cross-cluster redirect → avatars-doc lookup → stream/default |
 | `upload.go` | Bot-upload write path: OIDC authn + bot authz middleware, validate (type/size/decode), store to MinIO, upsert `avatars` doc |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `RoomSite` (siteID+type+name via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
+| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `BotExists` (upload target check), `RoomSite` (siteID+type+name via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
@@ -374,13 +374,27 @@ check (§7a.3).
 - No `DELETE`/reset in v1 (§1): a custom bot avatar can be overwritten by a new
   upload but not cleared back to the default.
 
-### 7a.3 Cluster locality
+### 7a.3 Cluster locality & existence
 
-Bots are cluster-bound, so an upload must land on the bot's **owning cluster**
-(which owns the MinIO bucket + `avatars` doc). The frontend resolves the owning
-site first and `PUT`s there directly. An upload that reaches the wrong cluster is
-**rejected** with an errcode pointing at the correct domain — we do **not**
-proxy/`307` the body cross-cluster (a 307 on PUT would resend the body).
+Bots are cluster-bound — a bot's `.bot` record and its MinIO/`avatars` data live
+only on its **owning cluster**, so an upload must land there. The handler:
+
+1. Parses `:botName` into `localPart` + optional `@domain` (§7a, §5).
+2. **Wrong cluster, with a hint.** If `domain` is present and resolves to a site
+   ≠ `SITE_ID`, reject with an errcode carrying the correct domain
+   (`clusterBaseURL(owning)`, a `wrong-cluster` reason). We do **not** proxy or
+   `307` the body: a cross-origin redirect would make the browser **strip the
+   `Authorization` header** (the OIDC token) → the target sees an unauthenticated
+   request; and server-side proxying would re-send up to 1 MiB and add an
+   outbound-HTTP + service-to-service-auth dependency. Instead the client
+   re-issues the PUT to the correct domain itself — a fresh authenticated request.
+3. **Existence (on the owning cluster).** Look up the bot's `.bot` record in
+   `users` (`store.BotExists`). Not found → `404` (`errcode.NotFound`): the bot
+   does not exist here — either genuinely unknown, or a wrong-cluster PUT that
+   carried no `domain` hint (so none can be returned). Found → proceed.
+
+The frontend normally resolves the owning site first (the bot account carries its
+domain) and PUTs directly, so a wrong-cluster upload is a rare misconfiguration.
 
 ### 7a.4 Authorization
 
@@ -533,11 +547,13 @@ the rendering in one place.
   avatars-doc hit→stream, miss→dynamic default, dm/botDM→default, remote→307,
   not-found→default, `If-None-Match`→304). Assert status code, `Location`,
   `Cache-Control`, `ETag`, and body bytes/Content-Type.
-- **Bot-upload unit tests** (`upload.go`): accept PNG/JPEG within size; reject
-  oversize (`MAX_UPLOAD_BYTES`), reject `image/svg+xml` and non-image bytes,
-  reject decode failures; on success store to MinIO + upsert the `avatars` doc;
-  wrong-cluster → rejected with guiding error; missing/invalid token → 401;
-  authenticated non-admin → 403; platform-admin → accepted; assert `nosniff`.
+- **Bot-upload unit tests** (`upload.go`): malformed botName (not `botPattern`)
+  → 400; `:botName` whose `@domain` ≠ local → wrong-cluster error carrying the
+  correct domain; unknown bot (`BotExists`=false) → 404; accept PNG/JPEG within
+  size; reject oversize (`MAX_UPLOAD_BYTES`), reject `image/svg+xml` and non-image
+  bytes, reject decode failures; on success store to MinIO + upsert the `avatars`
+  doc; missing/invalid token → 401; authenticated non-admin → 403; platform-admin
+  → accepted; assert `nosniff`.
 - **Generation unit tests:** `renderDefaultSVG` is **deterministic** — same
   `(seed, initial)` yields byte-identical SVG *and* the same `ETag` across
   repeated calls; stable colour per seed, correct initial (incl. CJK), valid +
