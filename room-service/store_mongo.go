@@ -119,6 +119,22 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,name) index: %w", err)
 	}
+	// Backs getRoomSubscriptions: filter roomId, sort {joinedAt, _id} with
+	// skip/limit pagination. Including the sort keys lets Mongo return ordered
+	// pages from the index instead of an in-memory sort that risks the 32MB
+	// sort limit on large rooms.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "joinedAt", Value: 1}, {Key: "_id", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,joinedAt,_id) index: %w", err)
+	}
+	// Backs CountOwners (filters on roomId+roles) so owner counts stay
+	// index-only instead of scanning every subscription in the room.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "roles", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,roles) index: %w", err)
+	}
 	// Mirrors the unique index created by message-worker / history-service so per-service test DBs also enforce it.
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
