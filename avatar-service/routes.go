@@ -4,7 +4,7 @@ import "github.com/gin-gonic/gin"
 
 func registerRoutes(r *gin.Engine, h *handler) {
 	r.GET("/healthz", h.HandleHealth)
-	// read endpoints are registered in Task 7/8.
+	r.GET("/avatar/v1/:accountName", h.HandleAccountAvatar)
 }
 
 // registerUploadRoutes is a temporary stub; Task 9 provides the real one.

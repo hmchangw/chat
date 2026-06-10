@@ -72,5 +72,85 @@ func TestHandleHealth(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ok")
 }
 
-// silence unused import until later tasks use it
-var _ = model.AvatarSubjectBot
+func TestEndpoint1_UserRedirectToEmployeePhoto(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().EmployeeID(gomock.Any(), "alice").Return("E123", true, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/alice", nil))
+	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+	assert.Equal(t, "https://photos.example.com/xxxPhoto/po/E123_120.JPG", w.Header().Get("Location"))
+}
+
+func TestEndpoint1_UserNoEmployeeID_ServesDefault(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().EmployeeID(gomock.Any(), "alice").Return("", false, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/alice", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/svg+xml", w.Header().Get("Content-Type"))
+	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	assert.Contains(t, w.Body.String(), "<svg")
+}
+
+func TestEndpoint1_BotLocalCustomImage_Streams(t *testing.T) {
+	r, store, blobs := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
+		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
+	blobs.objects = map[string][]byte{"bot/helper.bot": []byte("PNG")}
+	blobs.info = map[string]blobInfo{"bot/helper.bot": {Size: 3, ContentType: "image/png", ETag: `"e1"`}}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))
+	assert.Equal(t, "PNG", w.Body.String())
+}
+
+func TestEndpoint1_BotCustomImage_NotModified(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
+		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil)
+	req.Header.Set("If-None-Match", `"e1"`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotModified, w.Code)
+	assert.Empty(t, w.Body.String())
+}
+
+func TestEndpoint1_BotNoRecord_ServesDefault(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("", false, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/svg+xml", w.Header().Get("Content-Type"))
+}
+
+func TestEndpoint1_BotRemoteCluster_Redirects(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s2", true, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+	assert.Equal(t, "https://avatar-s2/avatar/v1/helper.bot?fwd=1", w.Header().Get("Location"))
+}
+
+func TestEndpoint1_BotSiteidHint_SkipsBotSite(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	_ = store // no BotSite EXPECT — the hint must skip the lookup
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot?siteid=s2", nil))
+	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+	assert.Equal(t, "https://avatar-s2/avatar/v1/helper.bot?fwd=1", w.Header().Get("Location"))
+}
+
+func TestEndpoint1_BotRemoteWithFwd_NoReRedirect(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s2", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").Return(nil, false, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot?fwd=1", nil))
+	assert.Equal(t, http.StatusOK, w.Code) // served default locally despite remote site
+}
