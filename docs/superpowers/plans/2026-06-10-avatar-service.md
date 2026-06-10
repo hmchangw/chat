@@ -2,19 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `avatar-service` — a Gin HTTP service that resolves user/bot/room avatars by 307-redirecting (external employee-photo or owning cluster) or proxy-streaming custom images from MinIO, with a deterministic SVG fallback, plus a platform-admin-gated bot-avatar upload endpoint.
+**Goal:** Build `avatar-service` — a Gin HTTP service that resolves user/bot/room avatars by 307-redirecting (external employee-photo or owning cluster) or proxy-streaming custom images from MinIO, with a deterministic SVG fallback, plus a bot-avatar upload endpoint.
 
-**Architecture:** Read path resolves the subject's owning site → cross-cluster 307 (loop-broken by `?fwd=1`) → looks up the `avatars` Mongo doc → streams the MinIO object (304 answered from the doc's ETag, no MinIO hit) or generates a deterministic initials SVG. Custom-image existence is the presence of an `avatars` doc (written by bot uploads here, or by an external one-off migration for legacy room images). No NATS; auth is OIDC token validation; upload authz is the caller's platform-admin role.
+**Architecture:** Read path resolves the subject's owning site → cross-cluster 307 (loop-broken by `?fwd=1`) → looks up the `avatars` Mongo doc → streams the MinIO object (304 answered from the doc's ETag, no MinIO hit) or generates a deterministic initials SVG. Custom-image existence is the presence of an `avatars` doc (written by bot uploads here, or by an external one-off migration for legacy room images). Bot owning-site comes from `User.SiteID` (bots are users, synced everywhere); a `?siteid=` query hint skips the lookup. **No NATS. v1 has no auth.**
 
-**Tech Stack:** Go 1.25, Gin, `go.mongodb.org/mongo-driver/v2` (via `pkg/mongoutil`), `minio-go/v7` (via `pkg/minioutil`), `pkg/oidc`, `pkg/errcode`+`errhttp`, `pkg/shutdown`, `caarlos0/env/v11`, `go.uber.org/mock` (mockgen), `testify`, `pkg/testutil` (testcontainers).
+**Tech Stack:** Go 1.25, Gin, `go.mongodb.org/mongo-driver/v2` (via `pkg/mongoutil`), `minio-go/v7` (via `pkg/minioutil`), `pkg/errcode`+`errhttp`, `pkg/shutdown`, `caarlos0/env/v11`, `go.uber.org/mock` (mockgen), `testify`, `pkg/testutil` (testcontainers).
 
 **Source spec:** `docs/specs/avatar-service.md`.
 
-**Out of scope (this plan):** the legacy-data **migration** (a separate external one-off job, spec §4.4); OTel/Prometheus (spec defers post-v1); public-GET rate-limiting (spec §9, not yet considered).
+**Out of scope (this plan):** the legacy-data **migration** (a separate external one-off job, spec §4.4); upload **auth** (deferred — v1 endpoint is open, spec §7a.4); OTel/Prometheus (spec defers post-v1); public-GET rate-limiting (spec §9).
 
-**Two spec gaps resolved in this plan (confirm with author):**
-- Bot detection uses the codebase's canonical `botPattern` = `` `\.bot$|^p_` `` (matches `.bot` suffix **and** `p_` prefix), not the spec's `.bot`-only wording (spec §5).
-- The account `@domain`→`siteID` mapping is unspecified in the spec; this plan adds a `DOMAIN_SITES` (domain→siteID) config map. `CLUSTER_DOMAINS` remains siteID→baseURL.
+**🔴 Security note:** the `PUT /avatar/v1/bot/:botName` endpoint is **unauthenticated in v1** by design (spec §7a.4) — anyone reachable can overwrite any bot's avatar. Must be network-restricted now and gated before production.
 
 ---
 
@@ -29,12 +27,12 @@
 | `avatar-service/store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `avatar-service/minio.go` | `blobStore` seam + `minioBlobStore` (MinIO impl), `errBlobNotFound` |
 | `avatar-service/cache.go` | thread-safe bounded TTL cache for account→employeeID |
-| `avatar-service/config.go` | `config` struct (`caarlos0/env`) + helpers (`clusterBaseURL`, `resolveBotSite`) |
-| `avatar-service/middleware.go` | `requestIDMiddleware`, `accessLogMiddleware`, `corsMiddleware`, `adminAuthMiddleware` |
+| `avatar-service/config.go` | `config` struct (`caarlos0/env`) + `clusterBaseURL` helper |
+| `avatar-service/middleware.go` | `requestIDMiddleware`, `accessLogMiddleware`, `corsMiddleware` |
 | `avatar-service/routes.go` | route registration |
 | `avatar-service/handler.go` | `handler` struct, `HandleHealth`, read endpoints, `serveStored`, `serveDefault` |
-| `avatar-service/upload.go` | `HandleBotUpload` (parse/locality/existence/validate/store/upsert) |
-| `avatar-service/main.go` | config parse, wire Mongo+MinIO+OIDC, Gin server, graceful shutdown |
+| `avatar-service/upload.go` | `HandleBotUpload` (parse/locality/existence/validate/store/upsert) — no auth in v1 |
+| `avatar-service/main.go` | config parse, wire Mongo+MinIO, Gin server, graceful shutdown |
 | `avatar-service/*_test.go` | unit tests (same `package main`) |
 | `avatar-service/mock_store_test.go` | generated mock (never hand-edited) |
 | `avatar-service/integration_test.go` | testcontainers (Mongo + MinIO), `//go:build integration` |
@@ -53,7 +51,7 @@ Each task is TDD: write the failing test, run it red, implement minimally, run i
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `pkg/model/model_test.go`:
+Add to `pkg/model/model_test.go` (ensure `time` is imported):
 
 ```go
 func TestAvatarJSON(t *testing.T) {
@@ -72,12 +70,10 @@ func TestAvatarJSON(t *testing.T) {
 }
 ```
 
-(If `time` is not already imported in the test file, add it.)
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./pkg/model/ -run TestAvatarJSON -v`
-Expected: FAIL — `undefined: model.Avatar` / `model.AvatarSubjectBot`.
+Expected: FAIL — `undefined: model.Avatar`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -104,7 +100,7 @@ type Avatar struct {
 	ID          string            `json:"id"          bson:"_id"`
 	SubjectType AvatarSubjectType `json:"subjectType" bson:"subjectType"`
 	// SubjectID is the id the service looks the subject up by:
-	//   room → roomID;  bot → bot account (".bot").
+	//   room → roomID;  bot → bot account (".bot" / "p_…").
 	SubjectID   string    `json:"subjectId"   bson:"subjectId"`
 	MinioKey    string    `json:"minioKey"    bson:"minioKey"`
 	ContentType string    `json:"contentType" bson:"contentType"`
@@ -117,8 +113,7 @@ type Avatar struct {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./pkg/model/ -run TestAvatarJSON -v`
-Expected: PASS.
+Run: `go test ./pkg/model/ -run TestAvatarJSON -v` → PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -168,12 +163,12 @@ func TestParseAccount(t *testing.T) {
 
 func TestSanitizeInitial(t *testing.T) {
 	cases := map[string]string{
-		"alice":        "A",
-		"張三":           "張",
-		"7eleven":      "7",
-		"</text>":      "?", // not a letter/digit → placeholder
-		"":             "?",
-		" leading":     "?", // leading space → placeholder (first rune is space)
+		"alice":   "A",
+		"張三":      "張",
+		"7eleven": "7",
+		"</text>": "?",
+		"":        "?",
+		" x":      "?",
 	}
 	for in, want := range cases {
 		assert.Equalf(t, want, sanitizeInitial(in), "sanitizeInitial(%q)", in)
@@ -181,31 +176,26 @@ func TestSanitizeInitial(t *testing.T) {
 }
 
 func TestRenderDefaultSVG_Deterministic(t *testing.T) {
-	a := renderDefaultSVG("room-1", "General")
-	b := renderDefaultSVG("room-1", "General")
-	assert.Equal(t, a, b, "same input must yield byte-identical SVG")
+	assert.Equal(t, renderDefaultSVG("room-1", "General"), renderDefaultSVG("room-1", "General"))
 }
 
 func TestRenderDefaultSVG_StableColourPerSeed(t *testing.T) {
-	// Same seed → same fill, regardless of the name.
-	a := renderDefaultSVG("room-1", "Alpha")
-	b := renderDefaultSVG("room-1", "Beta")
-	fa := strings.Split(strings.SplitN(a, `fill="`, 2)[1], `"`)[0]
-	_ = b
-	assert.Contains(t, string(a), `fill="`+fa+`"`)
+	a := string(renderDefaultSVG("room-1", "Alpha"))
+	b := string(renderDefaultSVG("room-1", "Beta"))
+	fillA := strings.Split(strings.SplitN(a, `fill="`, 2)[1], `"`)[0]
+	assert.Contains(t, b, `fill="`+fillA+`"`, "same seed → same colour regardless of name")
 }
 
-func TestRenderDefaultSVG_ValidXMLAndInjectionSafe(t *testing.T) {
+func TestRenderDefaultSVG_InjectionSafe(t *testing.T) {
 	out := renderDefaultSVG("seed", `</text><script>alert(1)</script>`)
 	require.NoError(t, xml.Unmarshal(out, new(struct{ XMLName xml.Name })), "must be well-formed XML")
-	assert.NotContains(t, string(out), "<script>", "hostile name must not produce raw markup")
+	assert.NotContains(t, string(out), "<script>")
 }
 
 func TestDefaultETag_StableAndQuoted(t *testing.T) {
 	e1 := defaultETag("room-1", "General")
-	e2 := defaultETag("room-1", "General")
-	assert.Equal(t, e1, e2)
-	assert.True(t, strings.HasPrefix(e1, `"`) && strings.HasSuffix(e1, `"`), "ETag must be quoted")
+	assert.Equal(t, e1, defaultETag("room-1", "General"))
+	assert.True(t, strings.HasPrefix(e1, `"`) && strings.HasSuffix(e1, `"`))
 }
 
 func TestBotObjectKey(t *testing.T) {
@@ -213,13 +203,10 @@ func TestBotObjectKey(t *testing.T) {
 }
 ```
 
-Note `renderDefaultSVG` returns `[]byte`; the tests above index it as a string in a couple of places — wrap with `string(...)`. Adjust:
-- `strings.Split(strings.SplitN(string(a), ...))` and `string(b)`.
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./avatar-service/ -run 'TestIsBot|TestParseAccount|TestSanitizeInitial|TestRenderDefaultSVG|TestDefaultETag|TestBotObjectKey' -v`
-Expected: FAIL — undefined symbols (package `main` has no other files yet; this is the first file).
+Expected: FAIL — undefined symbols.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -247,6 +234,7 @@ var botPattern = regexp.MustCompile(`\.bot$|^p_`)
 func isBot(account string) bool { return botPattern.MatchString(account) }
 
 // parseAccount splits "<local>@<domain>" into its parts; domain is "" if absent.
+// Accounts are bare in practice; this just defensively strips a stray @domain.
 func parseAccount(account string) (local, domain string) {
 	if i := strings.IndexByte(account, '@'); i >= 0 {
 		return account[:i], account[i+1:]
@@ -299,15 +287,14 @@ func renderDefaultSVG(seed, name string) []byte {
 	return []byte(svg)
 }
 
-// botObjectKey is the MinIO key chosen for a new bot upload; it is then stored
-// verbatim in the avatars doc and used as-is on reads.
-func botObjectKey(localPart string) string { return "bot/" + localPart }
+// botObjectKey is the MinIO key chosen for a new bot upload; stored verbatim in
+// the avatars doc and used as-is on reads.
+func botObjectKey(account string) string { return "bot/" + account }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./avatar-service/ -run 'TestIsBot|TestParseAccount|TestSanitizeInitial|TestRenderDefaultSVG|TestDefaultETag|TestBotObjectKey' -v`
-Expected: PASS.
+Run the same command as Step 2 → PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -324,7 +311,7 @@ git commit -m "feat(avatar-service): deterministic default-SVG generator + accou
 - Create: `avatar-service/store.go`, `avatar-service/store_mongo.go`
 - Test: `avatar-service/integration_test.go`
 
-- [ ] **Step 1: Write the store interface (no test yet — it's the contract)**
+- [ ] **Step 1: Write the store interface**
 
 Create `avatar-service/store.go`:
 
@@ -345,10 +332,9 @@ type avatarStore interface {
 	// EmployeeID returns a user's employeeId (users collection). found=false when
 	// the account has no user record or no employeeId.
 	EmployeeID(ctx context.Context, account string) (eid string, found bool, err error)
-	// IsPlatformAdmin reports whether the account's user record holds the admin role.
-	IsPlatformAdmin(ctx context.Context, account string) (bool, error)
-	// BotExists reports whether a bot's user record exists on this cluster.
-	BotExists(ctx context.Context, account string) (bool, error)
+	// BotSite returns a bot's owning siteID from its user record (bots are users,
+	// synced to every cluster). found=false when no such bot record exists.
+	BotSite(ctx context.Context, account string) (siteID string, found bool, err error)
 	// RoomSite returns the room's owning site, type, and name from any one of its
 	// local subscriptions. found=false when no local subscription exists.
 	RoomSite(ctx context.Context, roomID string) (siteID string, roomType model.RoomType, name string, found bool, err error)
@@ -400,36 +386,21 @@ func TestMongoStore_EmployeeID(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestMongoStore_IsPlatformAdmin(t *testing.T) {
+func TestMongoStore_BotSite(t *testing.T) {
 	db := testutil.MongoDB(t, "avatar")
 	ctx := context.Background()
-	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "admin", Roles: []model.UserRole{model.UserRoleAdmin}})
-	require.NoError(t, err)
-	_, err = db.Collection("users").InsertOne(ctx, model.User{ID: "u3", Account: "joe", Roles: []model.UserRole{model.UserRoleUser}})
+	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "b1", Account: "helper.bot", SiteID: "site-b"})
 	require.NoError(t, err)
 	st := newMongoStore(db)
 
-	ok, err := st.IsPlatformAdmin(ctx, "admin")
+	site, found, err := st.BotSite(ctx, "helper.bot")
 	require.NoError(t, err)
-	assert.True(t, ok)
-	ok, err = st.IsPlatformAdmin(ctx, "joe")
-	require.NoError(t, err)
-	assert.False(t, ok)
-}
+	assert.True(t, found)
+	assert.Equal(t, "site-b", site)
 
-func TestMongoStore_BotExists(t *testing.T) {
-	db := testutil.MongoDB(t, "avatar")
-	ctx := context.Background()
-	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "b1", Account: "helper.bot", SiteID: "s1"})
+	_, found, err = st.BotSite(ctx, "ghost.bot")
 	require.NoError(t, err)
-	st := newMongoStore(db)
-
-	ok, err := st.BotExists(ctx, "helper.bot")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	ok, err = st.BotExists(ctx, "ghost.bot")
-	require.NoError(t, err)
-	assert.False(t, ok)
+	assert.False(t, found)
 }
 
 func TestMongoStore_RoomSite(t *testing.T) {
@@ -474,15 +445,13 @@ func TestMongoStore_AvatarAndSetBotAvatar(t *testing.T) {
 	assert.True(t, found)
 	assert.Equal(t, "bot/helper.bot", got.MinioKey)
 
-	// upsert overwrites in place
 	av.ETag = "e2"
 	require.NoError(t, st.SetBotAvatar(ctx, av))
 	got, _, err = st.Avatar(ctx, model.AvatarSubjectBot, "helper.bot")
 	require.NoError(t, err)
 	assert.Equal(t, "e2", got.ETag)
 
-	var count int64
-	count, err = db.Collection("avatars").CountDocuments(ctx, bson.M{"_id": "bot:helper.bot"})
+	count, err := db.Collection("avatars").CountDocuments(ctx, bson.M{"_id": "bot:helper.bot"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
@@ -542,29 +511,17 @@ func (s *mongoStore) EmployeeID(ctx context.Context, account string) (string, bo
 	return u.EmployeeID, true, nil
 }
 
-func (s *mongoStore) IsPlatformAdmin(ctx context.Context, account string) (bool, error) {
+func (s *mongoStore) BotSite(ctx context.Context, account string) (string, bool, error) {
 	var u model.User
 	err := s.users.FindOne(ctx, bson.M{"account": account},
-		options.FindOne().SetProjection(bson.M{"roles": 1})).Decode(&u)
+		options.FindOne().SetProjection(bson.M{"siteId": 1})).Decode(&u)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("find user roles: %w", err)
+		return "", false, fmt.Errorf("find bot site: %w", err)
 	}
-	return model.IsPlatformAdmin(&u), nil
-}
-
-func (s *mongoStore) BotExists(ctx context.Context, account string) (bool, error) {
-	err := s.users.FindOne(ctx, bson.M{"account": account},
-		options.FindOne().SetProjection(bson.M{"_id": 1})).Decode(&struct{}{})
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("find bot: %w", err)
-	}
-	return true, nil
+	return u.SiteID, true, nil
 }
 
 func (s *mongoStore) RoomSite(ctx context.Context, roomID string) (string, model.RoomType, string, bool, error) {
@@ -605,12 +562,11 @@ func (s *mongoStore) SetBotAvatar(ctx context.Context, av *model.Avatar) error {
 - [ ] **Step 5: Generate the mock**
 
 Run: `make generate SERVICE=avatar-service`
-Expected: creates `avatar-service/mock_store_test.go` (mock of `avatarStore`). It compiles against `package main`.
+Expected: creates `avatar-service/mock_store_test.go`.
 
 - [ ] **Step 6: Run integration tests to verify they pass**
 
-Run: `make test-integration SERVICE=avatar-service`
-Expected: PASS (all `TestMongoStore_*`).
+Run: `make test-integration SERVICE=avatar-service` → PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -629,7 +585,7 @@ git commit -m "feat(avatar-service): avatarStore interface + Mongo implementatio
 
 - [ ] **Step 1: Write the failing integration test**
 
-Append to `avatar-service/integration_test.go`:
+Append to `avatar-service/integration_test.go` (add imports `io`, `strings`):
 
 ```go
 func TestMinioBlobStore_PutGet(t *testing.T) {
@@ -660,8 +616,6 @@ func TestMinioBlobStore_GetMissing(t *testing.T) {
 }
 ```
 
-Add imports `io` and `strings` to the integration test file's import block.
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `make test-integration SERVICE=avatar-service`
@@ -683,8 +637,7 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// errBlobNotFound is returned by blobStore.Get when the object does not exist —
-// the read path treats it as "doc/object inconsistency" and serves the default.
+// errBlobNotFound is returned by blobStore.Get when the object does not exist.
 var errBlobNotFound = errors.New("blob not found")
 
 type blobInfo struct {
@@ -693,8 +646,6 @@ type blobInfo struct {
 	ETag        string
 }
 
-// blobStore is the object-storage seam the handler depends on (so handler tests
-// need no real MinIO).
 type blobStore interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, blobInfo, error)
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) (etag string, err error)
@@ -736,8 +687,7 @@ func (m *minioBlobStore) Put(ctx context.Context, key string, r io.Reader, size 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `make test-integration SERVICE=avatar-service`
-Expected: PASS.
+Run: `make test-integration SERVICE=avatar-service` → PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -748,7 +698,7 @@ git commit -m "feat(avatar-service): MinIO blob seam (Get with NotFound sentinel
 
 ---
 
-## Task 5: Config + helpers + employeeID cache
+## Task 5: Config + employeeID cache
 
 **Files:**
 - Create: `avatar-service/config.go`, `avatar-service/cache.go`
@@ -768,16 +718,9 @@ import (
 )
 
 func TestClusterBaseURL(t *testing.T) {
-	c := config{ClusterDomains: map[string]string{"xxx-2": "https://avatar-2"}}
-	assert.Equal(t, "https://avatar-2", c.clusterBaseURL("xxx-2"))
+	c := config{ClusterDomains: map[string]string{"site-b": "https://avatar-b"}}
+	assert.Equal(t, "https://avatar-b", c.clusterBaseURL("site-b"))
 	assert.Equal(t, "", c.clusterBaseURL("unknown"))
-}
-
-func TestResolveBotSite(t *testing.T) {
-	c := config{DomainSites: map[string]string{"site2.example.com": "xxx-2"}}
-	assert.Equal(t, "xxx-2", c.resolveBotSite("site2.example.com"))
-	assert.Equal(t, "", c.resolveBotSite(""))            // no domain → local
-	assert.Equal(t, "", c.resolveBotSite("unknown.com")) // unknown → local
 }
 ```
 
@@ -802,21 +745,21 @@ func TestTTLCache_GetPutExpire(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 	_, ok = c.Get("a")
-	assert.False(t, ok, "entry must expire after TTL")
+	assert.False(t, ok)
 }
 
 func TestTTLCache_CapacityBound(t *testing.T) {
 	c := newTTLCache(2, time.Minute)
 	c.Put("a", "1")
 	c.Put("b", "2")
-	c.Put("c", "3") // exceeds capacity → cache must not grow unbounded
+	c.Put("c", "3")
 	assert.LessOrEqual(t, c.len(), 2)
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./avatar-service/ -run 'TestClusterBaseURL|TestResolveBotSite|TestTTLCache' -v`
+Run: `go test ./avatar-service/ -run 'TestClusterBaseURL|TestTTLCache' -v`
 Expected: FAIL — undefined `config`, `newTTLCache`.
 
 - [ ] **Step 3: Write minimal implementations**
@@ -834,9 +777,6 @@ type config struct {
 	// CLUSTER_DOMAINS maps siteID → that cluster's avatar-service base URL
 	// (incl. scheme), used verbatim as a redirect target.
 	ClusterDomains map[string]string `env:"CLUSTER_DOMAINS,required" envKeyValSeparator:"=" envSeparator:","`
-	// DOMAIN_SITES maps a bot account's @domain → siteID (resolves the spec's
-	// unspecified domain→site mapping; see plan header).
-	DomainSites map[string]string `env:"DOMAIN_SITES" envKeyValSeparator:"=" envSeparator:","`
 
 	EmployeePhotoBaseURL string `env:"EMPLOYEE_PHOTO_BASE_URL,required"`
 
@@ -844,11 +784,6 @@ type config struct {
 	MongoDB       string `env:"MONGO_DB" envDefault:"chat"`
 	MongoUsername string `env:"MONGO_USERNAME"`
 	MongoPassword string `env:"MONGO_PASSWORD"`
-
-	OIDCIssuerURL string   `env:"OIDC_ISSUER_URL"`
-	OIDCAudiences []string `env:"OIDC_AUDIENCES" envSeparator:","`
-	DevMode       bool     `env:"DEV_MODE" envDefault:"false"`
-	TLSSkipVerify bool     `env:"TLS_SKIP_VERIFY" envDefault:"false"`
 
 	MinioEndpoint  string `env:"MINIO_ENDPOINT,required"`
 	MinioAccessKey string `env:"MINIO_ACCESS_KEY,required"`
@@ -862,15 +797,6 @@ type config struct {
 
 // clusterBaseURL returns the configured base URL for a site, or "" if unknown.
 func (c config) clusterBaseURL(siteID string) string { return c.ClusterDomains[siteID] }
-
-// resolveBotSite maps a bot account's @domain to its owning siteID. "" means
-// "treat as local" (no domain, or unknown domain).
-func (c config) resolveBotSite(domain string) string {
-	if domain == "" {
-		return ""
-	}
-	return c.DomainSites[domain]
-}
 ```
 
 Create `avatar-service/cache.go`:
@@ -892,10 +818,10 @@ type cacheEntry struct {
 // capacity is exceeded it drops all entries (simple bounded behaviour — the
 // cache is only an accelerator). Stores positive lookups only.
 type ttlCache struct {
-	mu   sync.Mutex
-	m    map[string]cacheEntry
-	cap  int
-	ttl  time.Duration
+	mu  sync.Mutex
+	m   map[string]cacheEntry
+	cap int
+	ttl time.Duration
 }
 
 func newTTLCache(capacity int, ttl time.Duration) *ttlCache {
@@ -930,14 +856,13 @@ func (c *ttlCache) len() int {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./avatar-service/ -run 'TestClusterBaseURL|TestResolveBotSite|TestTTLCache' -v`
-Expected: PASS.
+Run: `go test ./avatar-service/ -run 'TestClusterBaseURL|TestTTLCache' -v` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add avatar-service/config.go avatar-service/cache.go avatar-service/config_test.go avatar-service/cache_test.go
-git commit -m "feat(avatar-service): config + cluster/bot-site helpers + ttl cache"
+git commit -m "feat(avatar-service): config + clusterBaseURL helper + ttl cache"
 ```
 
 ---
@@ -956,6 +881,9 @@ Create `avatar-service/handler_test.go`:
 package main
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -964,6 +892,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func newTestRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore) {
@@ -978,44 +908,21 @@ func newTestRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore)
 		CacheMaxAgeSeconds:   3600,
 		AvatarBucket:         "avatars",
 		ClusterDomains:       map[string]string{"s2": "https://avatar-s2"},
-		DomainSites:          map[string]string{"site2.example.com": "s2"},
 	})
 	r := gin.New()
 	registerRoutes(r, h)
+	registerUploadRoutes(r, h)
 	return r, store, blobs
 }
 
-func TestHandleHealth(t *testing.T) {
-	r, _, _ := newTestRouter(t)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	r.ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "ok")
-}
-```
-
-Also create the shared test fake — add to `handler_test.go`:
-
-```go
-import (
-	"bytes"
-	"context"
-	"io"
-)
-
 // fakeBlobStore is an in-memory blobStore for handler tests.
 type fakeBlobStore struct {
-	objects map[string][]byte // key → bytes
+	objects map[string][]byte
 	info    map[string]blobInfo
 	putErr  error
-	getErr  error
 }
 
 func (f *fakeBlobStore) Get(_ context.Context, key string) (io.ReadCloser, blobInfo, error) {
-	if f.getErr != nil {
-		return nil, blobInfo{}, f.getErr
-	}
 	b, ok := f.objects[key]
 	if !ok {
 		return nil, blobInfo{}, errBlobNotFound
@@ -1036,14 +943,23 @@ func (f *fakeBlobStore) Put(_ context.Context, key string, r io.Reader, _ int64,
 	f.info[key] = blobInfo{Size: int64(len(b)), ContentType: ct, ETag: "etag-" + key}
 	return "etag-" + key, nil
 }
-```
 
-(Combine all imports into one block per Go rules.)
+func TestHandleHealth(t *testing.T) {
+	r, _, _ := newTestRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ok")
+}
+
+// silence unused imports until later tasks use them
+var _ = model.AvatarSubjectBot
+```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./avatar-service/ -run TestHandleHealth -v`
-Expected: FAIL — `undefined: newHandler`, `registerRoutes`, `NewMockavatarStore` (mock already generated in Task 3; `newHandler`/`registerRoutes` are not).
+Expected: FAIL — `undefined: newHandler`, `registerRoutes`, `registerUploadRoutes`.
 
 - [ ] **Step 3: Write minimal implementations**
 
@@ -1054,6 +970,7 @@ package main
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -1079,8 +996,6 @@ func (h *handler) HandleHealth(c *gin.Context) {
 }
 ```
 
-(Add `"time"` to the import block.)
-
 Create `avatar-service/routes.go`:
 
 ```go
@@ -1090,12 +1005,11 @@ import "github.com/gin-gonic/gin"
 
 func registerRoutes(r *gin.Engine, h *handler) {
 	r.GET("/healthz", h.HandleHealth)
-	// read endpoints (Task 7/8) and upload (Task 10) are registered below as
-	// they are implemented.
+	// read endpoints are registered in Task 7/8.
 }
 ```
 
-Create `avatar-service/middleware.go` (mirrors auth-service):
+Create `avatar-service/middleware.go` (mirrors auth-service; no auth middleware in v1):
 
 ```go
 package main
@@ -1129,7 +1043,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
 		c.Header("Access-Control-Max-Age", "300")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -1175,7 +1089,6 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/gin-gonic/gin"
 
-	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/minioutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
@@ -1209,21 +1122,6 @@ func run() error {
 	}
 	blobs := newMinioBlobStore(minioClient, cfg.AvatarBucket)
 
-	var validator *pkgoidc.Validator
-	if !cfg.DevMode {
-		if cfg.OIDCIssuerURL == "" || len(cfg.OIDCAudiences) == 0 {
-			return fmt.Errorf("OIDC_ISSUER_URL and OIDC_AUDIENCES are required when DEV_MODE is false")
-		}
-		validator, err = pkgoidc.NewValidator(ctx, pkgoidc.Config{
-			IssuerURL:     cfg.OIDCIssuerURL,
-			Audiences:     cfg.OIDCAudiences,
-			TLSSkipVerify: cfg.TLSSkipVerify,
-		})
-		if err != nil {
-			return fmt.Errorf("create oidc validator: %w", err)
-		}
-	}
-
 	h := newHandler(store, blobs, cfg)
 
 	gin.SetMode(gin.ReleaseMode)
@@ -1233,7 +1131,7 @@ func run() error {
 	r.Use(accessLogMiddleware())
 	r.Use(corsMiddleware())
 	registerRoutes(r, h)
-	registerUploadRoutes(r, h, validator, cfg) // defined in upload.go (Task 10)
+	registerUploadRoutes(r, h) // defined in upload.go (Task 9)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
@@ -1257,13 +1155,13 @@ func run() error {
 }
 ```
 
-> NOTE: `registerUploadRoutes` is created in Task 10. Until then, to keep the build green, temporarily add a stub at the bottom of `routes.go`:
+> NOTE: `registerUploadRoutes` is created in Task 9. Until then, add a temporary stub at the bottom of `routes.go` to keep the build green:
 > ```go
-> func registerUploadRoutes(_ *gin.Engine, _ *handler, _ interface{}, _ config) {}
+> func registerUploadRoutes(_ *gin.Engine, _ *handler) {}
 > ```
-> Task 10 replaces this stub with the real signature.
+> Task 9 replaces this stub with the real implementation (same signature).
 
-- [ ] **Step 4: Run test + build to verify they pass**
+- [ ] **Step 4: Run test + build**
 
 Run: `go test ./avatar-service/ -run TestHandleHealth -v` → PASS
 Run: `make build SERVICE=avatar-service` → builds `bin/avatar-service`.
@@ -1291,10 +1189,8 @@ Append to `avatar-service/handler_test.go`:
 func TestEndpoint1_UserRedirectToEmployeePhoto(t *testing.T) {
 	r, store, _ := newTestRouter(t)
 	store.EXPECT().EmployeeID(gomock.Any(), "alice").Return("E123", true, nil)
-
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/alice", nil))
-
 	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
 	assert.Equal(t, "https://photos.example.com/xxxPhoto/po/E123_120.JPG", w.Header().Get("Location"))
 }
@@ -1302,10 +1198,8 @@ func TestEndpoint1_UserRedirectToEmployeePhoto(t *testing.T) {
 func TestEndpoint1_UserNoEmployeeID_ServesDefault(t *testing.T) {
 	r, store, _ := newTestRouter(t)
 	store.EXPECT().EmployeeID(gomock.Any(), "alice").Return("", false, nil)
-
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/alice", nil))
-
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "image/svg+xml", w.Header().Get("Content-Type"))
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
@@ -1314,14 +1208,13 @@ func TestEndpoint1_UserNoEmployeeID_ServesDefault(t *testing.T) {
 
 func TestEndpoint1_BotLocalCustomImage_Streams(t *testing.T) {
 	r, store, blobs := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
 	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
-		Return(&model.Avatar{MinioKey: "bot/helper.bot", ContentType: "image/png", Size: 3, ETag: `"e1"`}, true, nil)
+		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
 	blobs.objects = map[string][]byte{"bot/helper.bot": []byte("PNG")}
 	blobs.info = map[string]blobInfo{"bot/helper.bot": {Size: 3, ContentType: "image/png", ETag: `"e1"`}}
-
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
-
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))
 	assert.Equal(t, "PNG", w.Body.String())
@@ -1329,49 +1222,56 @@ func TestEndpoint1_BotLocalCustomImage_Streams(t *testing.T) {
 
 func TestEndpoint1_BotCustomImage_NotModified(t *testing.T) {
 	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
 	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
 		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
-
 	req := httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil)
 	req.Header.Set("If-None-Match", `"e1"`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-
 	assert.Equal(t, http.StatusNotModified, w.Code)
 	assert.Empty(t, w.Body.String())
 }
 
-func TestEndpoint1_BotNoCustomImage_ServesDefault(t *testing.T) {
+func TestEndpoint1_BotNoRecord_ServesDefault(t *testing.T) {
 	r, store, _ := newTestRouter(t)
-	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").Return(nil, false, nil)
-
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("", false, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
-
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "image/svg+xml", w.Header().Get("Content-Type"))
 }
 
 func TestEndpoint1_BotRemoteCluster_Redirects(t *testing.T) {
-	r, _, _ := newTestRouter(t)
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s2", true, nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot@site2.example.com", nil))
-
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
 	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
-	assert.Equal(t, "https://avatar-s2/avatar/v1/helper.bot@site2.example.com?fwd=1", w.Header().Get("Location"))
+	assert.Equal(t, "https://avatar-s2/avatar/v1/helper.bot?fwd=1", w.Header().Get("Location"))
+}
+
+func TestEndpoint1_BotSiteidHint_SkipsBotSite(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	// hint says remote → redirect without ever calling BotSite (no EXPECT on it).
+	_ = store
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot?siteid=s2", nil))
+	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+	assert.Equal(t, "https://avatar-s2/avatar/v1/helper.bot?fwd=1", w.Header().Get("Location"))
 }
 
 func TestEndpoint1_BotRemoteWithFwd_NoReRedirect(t *testing.T) {
 	r, store, _ := newTestRouter(t)
-	// fwd=1 means "resolve locally": even though domain≠local, do not redirect again.
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s2", true, nil)
 	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").Return(nil, false, nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot@site2.example.com?fwd=1", nil))
-	assert.Equal(t, http.StatusOK, w.Code) // served default locally
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot?fwd=1", nil))
+	assert.Equal(t, http.StatusOK, w.Code) // served default locally despite remote site
 }
 ```
 
-Add `"github.com/hmchangw/chat/pkg/model"` to the test import block.
+(Remove the `var _ = model.AvatarSubjectBot` line added in Task 6 — it is now used.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1380,19 +1280,12 @@ Expected: FAIL — route not registered (404).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `avatar-service/handler.go`:
+Add to `avatar-service/handler.go` (extend the import block with `fmt`, `net/url`, and `github.com/hmchangw/chat/pkg/model`):
 
 ```go
-import (
-	"fmt"
-	"net/url"
-	// existing: net/http, time, gin
-	"github.com/hmchangw/chat/pkg/model"
-)
+const forwardedParam = "fwd"
+const siteIDParam = "siteid"
 
-const requestForwardedParam = "fwd"
-
-// setImageCacheHeaders applies the common cache + safety headers.
 func (h *handler) setImageCacheHeaders(c *gin.Context, etag string) {
 	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d", h.cfg.CacheMaxAgeSeconds))
 	c.Header("X-Content-Type-Options", "nosniff")
@@ -1402,15 +1295,13 @@ func (h *handler) setImageCacheHeaders(c *gin.Context, etag string) {
 	}
 }
 
-// serveDefault generates and writes a deterministic initials SVG (with a 304
-// fast path against its deterministic ETag).
 func (h *handler) serveDefault(c *gin.Context, kind, seed, name string) {
 	c.Set("avatar_kind", kind)
 	c.Set("avatar_outcome", "default")
 	etag := defaultETag(seed, name)
 	h.setImageCacheHeaders(c, etag)
 	c.Header("Content-Type", "image/svg+xml")
-	if match := c.GetHeader("If-None-Match"); match == etag {
+	if c.GetHeader("If-None-Match") == etag {
 		c.Set("avatar_outcome", "304")
 		c.Status(http.StatusNotModified)
 		return
@@ -1418,24 +1309,22 @@ func (h *handler) serveDefault(c *gin.Context, kind, seed, name string) {
 	c.Data(http.StatusOK, "image/svg+xml", renderDefaultSVG(seed, name))
 }
 
-// serveStored serves a stored MinIO image referenced by the avatars doc. The 304
-// is answered from av.ETag with no MinIO call.
-func (h *handler) serveStored(c *gin.Context, kind string, av *model.Avatar, fallbackSeed, fallbackName string) {
+func (h *handler) serveStored(c *gin.Context, kind string, av *model.Avatar, fbSeed, fbName string) {
 	c.Set("avatar_kind", kind)
 	h.setImageCacheHeaders(c, av.ETag)
-	if match := c.GetHeader("If-None-Match"); match != "" && match == av.ETag {
+	if m := c.GetHeader("If-None-Match"); m != "" && m == av.ETag {
 		c.Set("avatar_outcome", "304")
 		c.Status(http.StatusNotModified)
 		return
 	}
 	rc, info, err := h.blobs.Get(c.Request.Context(), av.MinioKey)
 	if err == errBlobNotFound {
-		h.serveDefault(c, kind, fallbackSeed, fallbackName)
+		h.serveDefault(c, kind, fbSeed, fbName)
 		return
 	}
 	if err != nil {
 		c.Set("avatar_outcome", "error")
-		_ = c.Error(fmt.Errorf("get avatar object: %w", err))
+		_ = c.Error(err)
 		c.Status(http.StatusInternalServerError)
 		return
 	}
@@ -1444,24 +1333,46 @@ func (h *handler) serveStored(c *gin.Context, kind string, av *model.Avatar, fal
 	c.DataFromReader(http.StatusOK, info.Size, info.ContentType, rc, nil)
 }
 
+// redirectCrossCluster writes a 307 to the owning cluster if it is remote and
+// resolvable; returns true if it handled the request.
+func (h *handler) redirectCrossCluster(c *gin.Context, kind, owning, path string) bool {
+	if owning == "" || owning == h.cfg.SiteID || c.Query(forwardedParam) != "" {
+		return false
+	}
+	base := h.cfg.clusterBaseURL(owning)
+	if base == "" {
+		return false // unknown site → caller falls through to default
+	}
+	c.Set("avatar_kind", kind)
+	c.Set("avatar_outcome", "redirect")
+	c.Redirect(http.StatusTemporaryRedirect, base+path+"?fwd=1")
+	return true
+}
+
 func (h *handler) HandleAccountAvatar(c *gin.Context) {
-	account := c.Param("accountName")
-	localPart, domain := parseAccount(account)
-	fwd := c.Query(requestForwardedParam) != ""
+	account, _ := parseAccount(c.Param("accountName"))
 	ctx := c.Request.Context()
 
-	if isBot(localPart) {
-		if owning := h.cfg.resolveBotSite(domain); owning != "" && owning != h.cfg.SiteID && !fwd {
-			if base := h.cfg.clusterBaseURL(owning); base != "" {
-				c.Set("avatar_kind", "bot")
-				c.Set("avatar_outcome", "redirect")
-				c.Redirect(http.StatusTemporaryRedirect,
-					fmt.Sprintf("%s/avatar/v1/%s?fwd=1", base, url.PathEscape(account)))
+	if isBot(account) {
+		owning := c.Query(siteIDParam)
+		if owning == "" {
+			s, found, err := h.store.BotSite(ctx, account)
+			if err != nil {
+				c.Set("avatar_outcome", "error")
+				_ = c.Error(err)
+				c.Status(http.StatusInternalServerError)
 				return
 			}
-			// unknown site → fall through to default (never dead-end)
+			if !found {
+				h.serveDefault(c, "bot", account, account)
+				return
+			}
+			owning = s
 		}
-		av, found, err := h.store.Avatar(ctx, model.AvatarSubjectBot, localPart)
+		if h.redirectCrossCluster(c, "bot", owning, "/avatar/v1/"+url.PathEscape(account)) {
+			return
+		}
+		av, found, err := h.store.Avatar(ctx, model.AvatarSubjectBot, account)
 		if err != nil {
 			c.Set("avatar_outcome", "error")
 			_ = c.Error(err)
@@ -1469,19 +1380,19 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 			return
 		}
 		if found {
-			h.serveStored(c, "bot", av, localPart, localPart)
+			h.serveStored(c, "bot", av, account, account)
 			return
 		}
-		h.serveDefault(c, "bot", localPart, localPart)
+		h.serveDefault(c, "bot", account, account)
 		return
 	}
 
-	// user (synced everywhere; domain informational)
-	eid, ok := h.eidCache.Get(localPart)
+	// user (always local)
+	eid, ok := h.eidCache.Get(account)
 	if !ok {
 		var found bool
 		var err error
-		eid, found, err = h.store.EmployeeID(ctx, localPart)
+		eid, found, err = h.store.EmployeeID(ctx, account)
 		if err != nil {
 			c.Set("avatar_outcome", "error")
 			_ = c.Error(err)
@@ -1489,10 +1400,10 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 			return
 		}
 		if !found {
-			h.serveDefault(c, "user", localPart, localPart)
+			h.serveDefault(c, "user", account, account)
 			return
 		}
-		h.eidCache.Put(localPart, eid)
+		h.eidCache.Put(account, eid)
 	}
 	c.Set("avatar_kind", "user")
 	c.Set("avatar_outcome", "redirect")
@@ -1504,22 +1415,18 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 Register the route — modify `avatar-service/routes.go`:
 
 ```go
-func registerRoutes(r *gin.Engine, h *handler) {
-	r.GET("/healthz", h.HandleHealth)
 	r.GET("/avatar/v1/:accountName", h.HandleAccountAvatar)
-}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./avatar-service/ -run 'TestEndpoint1|TestHandleHealth' -v`
-Expected: PASS.
+Run: `go test ./avatar-service/ -run 'TestEndpoint1|TestHandleHealth' -v` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add avatar-service/handler.go avatar-service/routes.go avatar-service/handler_test.go
-git commit -m "feat(avatar-service): Endpoint 1 — user/bot avatar resolve, redirect, stream, default"
+git commit -m "feat(avatar-service): Endpoint 1 — user/bot resolve via BotSite + ?siteid hint"
 ```
 
 ---
@@ -1539,10 +1446,9 @@ func TestEndpoint2_ChannelCustomImage_Streams(t *testing.T) {
 	r, store, blobs := newTestRouter(t)
 	store.EXPECT().RoomSite(gomock.Any(), "room-1").Return("s1", model.RoomTypeChannel, "General", true, nil)
 	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectRoom, "room-1").
-		Return(&model.Avatar{MinioKey: "room/room-1", ContentType: "image/png", Size: 3, ETag: `"r1"`}, true, nil)
+		Return(&model.Avatar{MinioKey: "room/room-1", ETag: `"r1"`}, true, nil)
 	blobs.objects = map[string][]byte{"room/room-1": []byte("PNG")}
 	blobs.info = map[string]blobInfo{"room/room-1": {Size: 3, ContentType: "image/png", ETag: `"r1"`}}
-
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1", nil))
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1553,7 +1459,6 @@ func TestEndpoint2_ChannelNoCustomImage_Default(t *testing.T) {
 	r, store, _ := newTestRouter(t)
 	store.EXPECT().RoomSite(gomock.Any(), "room-1").Return("s1", model.RoomTypeChannel, "General", true, nil)
 	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectRoom, "room-1").Return(nil, false, nil)
-
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1", nil))
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1586,6 +1491,23 @@ func TestEndpoint2_RemoteCluster_Redirects(t *testing.T) {
 	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
 	assert.Equal(t, "https://avatar-s2/avatar/v1/room/room-1?fwd=1", w.Header().Get("Location"))
 }
+
+func TestEndpoint2_SiteidHint_RemoteRedirect_SkipsRoomSite(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	_ = store // no RoomSite EXPECT — the hint skips it
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1?siteid=s2", nil))
+	assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
+	assert.Equal(t, "https://avatar-s2/avatar/v1/room/room-1?fwd=1", w.Header().Get("Location"))
+}
+
+func TestEndpoint2_SiteidHint_Local_AvatarsLookupOnly(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectRoom, "room-1").Return(nil, false, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1?siteid=s1", nil))
+	assert.Equal(t, http.StatusOK, w.Code) // default, no RoomSite call
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1600,8 +1522,16 @@ Add to `avatar-service/handler.go`:
 ```go
 func (h *handler) HandleRoomAvatar(c *gin.Context) {
 	roomID := c.Param("roomID")
-	fwd := c.Query(requestForwardedParam) != ""
 	ctx := c.Request.Context()
+
+	// Fast path: trust the ?siteid= hint, skip the subscription query.
+	if hint := c.Query(siteIDParam); hint != "" {
+		if h.redirectCrossCluster(c, "room", hint, "/avatar/v1/room/"+url.PathEscape(roomID)) {
+			return
+		}
+		h.serveRoomLocal(c, roomID, roomID) // no Name available → use roomID
+		return
+	}
 
 	siteID, roomType, name, found, err := h.store.RoomSite(ctx, roomID)
 	if err != nil {
@@ -1618,17 +1548,15 @@ func (h *handler) HandleRoomAvatar(c *gin.Context) {
 		h.serveDefault(c, "room", roomID, name)
 		return
 	}
-	if siteID != h.cfg.SiteID && !fwd {
-		if base := h.cfg.clusterBaseURL(siteID); base != "" {
-			c.Set("avatar_kind", "room")
-			c.Set("avatar_outcome", "redirect")
-			c.Redirect(http.StatusTemporaryRedirect,
-				fmt.Sprintf("%s/avatar/v1/room/%s?fwd=1", base, url.PathEscape(roomID)))
-			return
-		}
-		// unknown site → default
+	if h.redirectCrossCluster(c, "room", siteID, "/avatar/v1/room/"+url.PathEscape(roomID)) {
+		return
 	}
-	av, found, err := h.store.Avatar(ctx, model.AvatarSubjectRoom, roomID)
+	h.serveRoomLocal(c, roomID, name)
+}
+
+// serveRoomLocal does the avatars-doc lookup + stream/default for a local room.
+func (h *handler) serveRoomLocal(c *gin.Context, roomID, name string) {
+	av, found, err := h.store.Avatar(c.Request.Context(), model.AvatarSubjectRoom, roomID)
 	if err != nil {
 		c.Set("avatar_outcome", "error")
 		_ = c.Error(err)
@@ -1651,209 +1579,25 @@ Register the route — modify `avatar-service/routes.go`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./avatar-service/ -run TestEndpoint2 -v`
-Expected: PASS.
+Run: `go test ./avatar-service/ -run TestEndpoint2 -v` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add avatar-service/handler.go avatar-service/routes.go avatar-service/handler_test.go
-git commit -m "feat(avatar-service): Endpoint 2 — room avatar via subscription, redirect, stream, default"
+git commit -m "feat(avatar-service): Endpoint 2 — room avatar via subscription + ?siteid hint"
 ```
 
 ---
 
-## Task 9: Upload auth middleware (OIDC + platform-admin)
-
-**Files:**
-- Modify: `avatar-service/middleware.go`
-- Test: `avatar-service/middleware_test.go`
-
-- [ ] **Step 1: Write the failing tests**
-
-Create `avatar-service/middleware_test.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
-	"go.uber.org/mock/gomock"
-)
-
-// stubVerifier lets tests inject account/err without a real OIDC issuer.
-type stubVerifier struct {
-	account string
-	err     error
-}
-
-func (s stubVerifier) accountFromBearer(_ context.Context, _ string) (string, error) {
-	return s.account, s.err
-}
-
-func TestAdminAuth_NoToken_401(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctrl := gomock.NewController(t)
-	store := NewMockavatarStore(ctrl)
-	r := gin.New()
-	r.PUT("/x", adminAuthMiddleware(stubVerifier{}, store, false), func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/x", nil))
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-}
-
-func TestAdminAuth_NonAdmin_403(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctrl := gomock.NewController(t)
-	store := NewMockavatarStore(ctrl)
-	store.EXPECT().IsPlatformAdmin(gomock.Any(), "joe").Return(false, nil)
-	r := gin.New()
-	r.PUT("/x", adminAuthMiddleware(stubVerifier{account: "joe"}, store, false), func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/x", nil)
-	req.Header.Set("Authorization", "Bearer t")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusForbidden, w.Code)
-}
-
-func TestAdminAuth_Admin_PassesThrough(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctrl := gomock.NewController(t)
-	store := NewMockavatarStore(ctrl)
-	store.EXPECT().IsPlatformAdmin(gomock.Any(), "boss").Return(true, nil)
-	r := gin.New()
-	r.PUT("/x", adminAuthMiddleware(stubVerifier{account: "boss"}, store, false), func(c *gin.Context) { c.Status(204) })
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/x", nil)
-	req.Header.Set("Authorization", "Bearer t")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusNoContent, w.Code)
-	assert.Equal(t, "boss", w.Header().Get("X-Test-Account")) // see middleware: sets context only; this asserts pass-through via handler
-}
-```
-
-Note: the last assertion on `X-Test-Account` requires the test handler to echo it. Simplify the final assert to just `assert.Equal(t, http.StatusNoContent, w.Code)` and drop the header line (the pass-through is proven by reaching the 204 handler).
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `go test ./avatar-service/ -run TestAdminAuth -v`
-Expected: FAIL — `undefined: adminAuthMiddleware`, `accountVerifier`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-Add to `avatar-service/middleware.go`:
-
-```go
-import (
-	"context"
-	"strings"
-	// existing imports …
-	"github.com/hmchangw/chat/pkg/errcode"
-	"github.com/hmchangw/chat/pkg/errcode/errhttp"
-)
-
-// accountVerifier extracts an authenticated account from a bearer token. The
-// production impl wraps pkg/oidc; tests inject a stub.
-type accountVerifier interface {
-	accountFromBearer(ctx context.Context, raw string) (account string, err error)
-}
-
-const ctxAccountKey = "account"
-
-// adminAuthMiddleware authenticates the OIDC bearer token and requires the
-// caller to be a platform admin. devMode bypasses authentication.
-func adminAuthMiddleware(v accountVerifier, store avatarStore, devMode bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-		var account string
-		if devMode {
-			account = "dev-admin"
-		} else {
-			raw := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-			if raw == "" || raw == c.GetHeader("Authorization") { // missing or no "Bearer " prefix
-				errhttp.Write(ctx, c, errcode.Unauthenticated("missing bearer token"))
-				c.Abort()
-				return
-			}
-			acc, err := v.accountFromBearer(ctx, raw)
-			if err != nil {
-				errhttp.Write(ctx, c, errcode.Unauthenticated("invalid token"))
-				c.Abort()
-				return
-			}
-			account = acc
-		}
-		if !devMode {
-			admin, err := store.IsPlatformAdmin(ctx, account)
-			if err != nil {
-				errhttp.Write(ctx, c, err)
-				c.Abort()
-				return
-			}
-			if !admin {
-				errhttp.Write(ctx, c, errcode.Forbidden("platform-admin role required"))
-				c.Abort()
-				return
-			}
-		}
-		c.Set(ctxAccountKey, account)
-		c.Next()
-	}
-}
-```
-
-Also create the production verifier — add to `avatar-service/upload.go` is fine, but since it wraps oidc, put it in `middleware.go`:
-
-```go
-import pkgoidc "github.com/hmchangw/chat/pkg/oidc"
-
-type oidcVerifier struct{ v *pkgoidc.Validator }
-
-func (o oidcVerifier) accountFromBearer(ctx context.Context, raw string) (string, error) {
-	claims, err := o.v.Validate(ctx, raw)
-	if err != nil {
-		return "", err
-	}
-	account := claims.PreferredUsername
-	if account == "" {
-		account = claims.Name
-	}
-	if account == "" {
-		return "", errcode.Unauthenticated("token has no account claim")
-	}
-	return account, nil
-}
-```
-
-- [ ] **Step 4: Run tests to verify they pass** (after simplifying the last assert per the note)
-
-Run: `go test ./avatar-service/ -run TestAdminAuth -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add avatar-service/middleware.go avatar-service/middleware_test.go
-git commit -m "feat(avatar-service): OIDC + platform-admin upload auth middleware"
-```
-
----
-
-## Task 10: Bot upload handler (`upload.go`)
+## Task 9: Bot upload handler (`upload.go`) — no auth in v1
 
 **Files:**
 - Create: `avatar-service/upload.go`
-- Modify: `avatar-service/routes.go` (replace the `registerUploadRoutes` stub), `avatar-service/main.go` (wrap the validator)
+- Modify: `avatar-service/routes.go` (replace the `registerUploadRoutes` stub)
 - Test: `avatar-service/upload_test.go`
+
+> **🔴 v1 has no auth on this endpoint** (spec §7a.4). It still validates botName, existence, cluster locality, and the image bytes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1870,7 +1614,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -1885,69 +1628,55 @@ func pngBytes(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// newUploadRouter wires only the upload route with devMode auth bypass.
-func newUploadRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore) {
-	t.Helper()
-	gin.SetMode(gin.TestMode)
-	ctrl := gomock.NewController(t)
-	store := NewMockavatarStore(ctrl)
-	blobs := &fakeBlobStore{}
-	h := newHandler(store, blobs, config{SiteID: "s1", AvatarBucket: "avatars",
-		DomainSites: map[string]string{"site2.example.com": "s2"}, ClusterDomains: map[string]string{"s2": "https://avatar-s2"},
-		MaxUploadBytes: 1 << 20})
-	r := gin.New()
-	registerUploadRoutes(r, h, stubVerifier{account: "dev"}, config{DevMode: true})
-	return r, store, blobs
-}
-
-func putReq(method, path string, body []byte, ct string) *http.Request {
-	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+func putReq(path string, body []byte, ct string) *http.Request {
+	req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", ct)
 	return req
 }
 
 func TestUpload_MalformedBotName_400(t *testing.T) {
-	r, _, _ := newUploadRouter(t)
+	r, _, _ := newTestRouter(t)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/alice", pngBytes(t), "image/png")) // not a bot
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/alice", pngBytes(t), "image/png")) // not a bot
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestUpload_WrongCluster_RejectsWithDomain(t *testing.T) {
-	r, _, _ := newUploadRouter(t)
+func TestUpload_UnknownBot_404(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("", false, nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/helper.bot@site2.example.com", pngBytes(t), "image/png"))
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestUpload_WrongCluster_RejectsWithDomain(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s2", true, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "https://avatar-s2")
 }
 
-func TestUpload_UnknownBot_404(t *testing.T) {
-	r, store, _ := newUploadRouter(t)
-	store.EXPECT().BotExists(gomock.Any(), "helper.bot").Return(false, nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
 func TestUpload_RejectSVG(t *testing.T) {
-	r, store, _ := newUploadRouter(t)
-	store.EXPECT().BotExists(gomock.Any(), "helper.bot").Return(true, nil)
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/helper.bot", []byte("<svg/>"), "image/svg+xml"))
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", []byte("<svg/>"), "image/svg+xml"))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestUpload_RejectNonImage(t *testing.T) {
-	r, store, _ := newUploadRouter(t)
-	store.EXPECT().BotExists(gomock.Any(), "helper.bot").Return(true, nil)
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/helper.bot", []byte("not an image"), "image/png"))
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", []byte("not an image"), "image/png"))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestUpload_Success_StoresAndUpserts(t *testing.T) {
-	r, store, blobs := newUploadRouter(t)
-	store.EXPECT().BotExists(gomock.Any(), "helper.bot").Return(true, nil)
+func TestUpload_Success_StoresThenUpserts(t *testing.T) {
+	r, store, blobs := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
 	store.EXPECT().SetBotAvatar(gomock.Any(), gomock.Any()).DoAndReturn(func(_ any, av *model.Avatar) error {
 		assert.Equal(t, "bot:helper.bot", av.ID)
 		assert.Equal(t, "bot/helper.bot", av.MinioKey)
@@ -1956,18 +1685,18 @@ func TestUpload_Success_StoresAndUpserts(t *testing.T) {
 		return nil
 	})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, putReq(http.MethodPut, "/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
 	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
 	_, ok := blobs.objects["bot/helper.bot"]
-	assert.True(t, ok, "object must be stored in MinIO before the doc")
+	assert.True(t, ok, "object stored before the doc")
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./avatar-service/ -run TestUpload -v`
-Expected: FAIL — `undefined: registerUploadRoutes` (real one) / handler.
+Expected: FAIL — real `registerUploadRoutes` / handler not defined.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1994,36 +1723,33 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-// registerUploadRoutes wires PUT /avatar/v1/bot/:botName behind admin auth.
-func registerUploadRoutes(r *gin.Engine, h *handler, v accountVerifier, cfg config) {
-	r.PUT("/avatar/v1/bot/:botName",
-		adminAuthMiddleware(v, h.store, cfg.DevMode),
-		h.HandleBotUpload)
+// registerUploadRoutes wires PUT /avatar/v1/bot/:botName. v1 has NO auth (§7a.4).
+func registerUploadRoutes(r *gin.Engine, h *handler) {
+	r.PUT("/avatar/v1/bot/:botName", h.HandleBotUpload)
 }
 
 func (h *handler) HandleBotUpload(c *gin.Context) {
 	ctx := c.Request.Context()
-	localPart, domain := parseAccount(c.Param("botName"))
+	account, _ := parseAccount(c.Param("botName"))
 
-	if !isBot(localPart) {
+	if !isBot(account) {
 		errhttp.Write(ctx, c, errcode.BadRequest("not a bot account"))
 		return
 	}
 
-	// Wrong cluster, with a hint → reject with the correct domain.
-	if owning := h.cfg.resolveBotSite(domain); owning != "" && owning != h.cfg.SiteID {
-		base := h.cfg.clusterBaseURL(owning)
-		errhttp.Write(ctx, c, errcode.Conflict(fmt.Sprintf("bot is owned by another cluster; upload to %s", base)))
-		return
-	}
-
-	exists, err := h.store.BotExists(ctx, localPart)
+	// Existence + cluster locality from one user-record lookup.
+	siteID, found, err := h.store.BotSite(ctx, account)
 	if err != nil {
 		errhttp.Write(ctx, c, err)
 		return
 	}
-	if !exists {
-		errhttp.Write(ctx, c, errcode.NotFound("bot not found on this cluster"))
+	if !found {
+		errhttp.Write(ctx, c, errcode.NotFound("bot not found"))
+		return
+	}
+	if siteID != h.cfg.SiteID {
+		base := h.cfg.clusterBaseURL(siteID)
+		errhttp.Write(ctx, c, errcode.Conflict(fmt.Sprintf("bot is owned by another cluster; upload to %s", base)))
 		return
 	}
 
@@ -2035,7 +1761,7 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 		return
 	}
 
-	// Decode to confirm it is a real PNG/JPEG; capture the detected format.
+	// Decode to confirm a real PNG/JPEG; capture the detected format.
 	_, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil || (format != "png" && format != "jpeg") {
 		errhttp.Write(ctx, c, errcode.BadRequest("body is not a valid PNG or JPEG image"))
@@ -2044,25 +1770,24 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 	contentType := "image/" + format
 
 	// Store the object FIRST, then upsert the doc (doc exists ⟺ object exists).
-	key := botObjectKey(localPart)
+	key := botObjectKey(account)
 	etag, err := h.blobs.Put(ctx, key, bytes.NewReader(raw), int64(len(raw)), contentType)
 	if err != nil {
 		errhttp.Write(ctx, c, fmt.Errorf("store avatar object: %w", err))
 		return
 	}
 	now := time.Now().UTC()
-	av := &model.Avatar{
-		ID:          "bot:" + localPart,
+	if err := h.store.SetBotAvatar(ctx, &model.Avatar{
+		ID:          "bot:" + account,
 		SubjectType: model.AvatarSubjectBot,
-		SubjectID:   localPart,
+		SubjectID:   account,
 		MinioKey:    key,
 		ContentType: contentType,
 		Size:        int64(len(raw)),
 		ETag:        etag,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}
-	if err := h.store.SetBotAvatar(ctx, av); err != nil {
+	}); err != nil {
 		errhttp.Write(ctx, c, fmt.Errorf("upsert avatar doc: %w", err))
 		return
 	}
@@ -2071,15 +1796,9 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 }
 ```
 
-Remove the temporary stub `registerUploadRoutes` from `routes.go` (added in Task 6) so there is exactly one definition. The real signature takes an `accountVerifier`, so **update the call site in `main.go`** from `registerUploadRoutes(r, h, validator, cfg)` to:
+Remove the temporary stub `registerUploadRoutes` from `routes.go` (added in Task 6) so there is exactly one definition. The signature is unchanged (`(*gin.Engine, *handler)`), so `main.go` needs no edit.
 
-```go
-registerUploadRoutes(r, h, oidcVerifier{v: validator}, cfg)
-```
-
-(In `DEV_MODE`, `validator` is nil but `cfg.DevMode` makes the middleware skip `Validate`, so the nil is never dereferenced.)
-
-> NOTE on `CreatedAt` upsert: a re-upload overwrites `CreatedAt` with `now`. If preserving the original `CreatedAt` matters, fetch-then-set; v1 accepts overwriting (uploads are admin-only and rare). This matches spec §7a.2 "overwrites in place".
+> NOTE: a re-upload overwrites `CreatedAt` with `now` — accepted in v1 (spec §7a.2; uploads are rare).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2091,57 +1810,40 @@ Run: `make build SERVICE=avatar-service` → builds.
 
 ```bash
 git add avatar-service/upload.go avatar-service/routes.go avatar-service/upload_test.go
-git commit -m "feat(avatar-service): bot-avatar upload — locality, existence, validate, store, upsert"
+git commit -m "feat(avatar-service): bot-avatar upload — locality, existence, validate, store, upsert (no auth v1)"
 ```
 
 ---
 
-## Task 11: Lint, coverage, and full verification
+## Task 10: Lint, coverage, and full verification
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run goimports/format**
-
-Run: `make fmt`
-Expected: no diff, or formatting applied (then re-commit if changed).
-
-- [ ] **Step 2: Run the linter**
-
-Run: `make lint`
-Expected: PASS (fix any findings: unused imports, error-wrap messages, etc.).
-
-- [ ] **Step 3: Run unit tests with race + coverage**
+- [ ] **Step 1: Format** — Run: `make fmt` (re-commit if it changes anything).
+- [ ] **Step 2: Lint** — Run: `make lint` (fix findings).
+- [ ] **Step 3: Unit tests + race + coverage**
 
 Run: `go test -race -coverprofile=cover.out ./avatar-service/... && go tool cover -func=cover.out | tail -1`
-Expected: PASS; total coverage ≥ 80%. If below, add table cases for uncovered branches (error paths in handlers, `serveStored` blob error, cache expiry).
+Expected: PASS; total ≥ 80%. If below, add cases for uncovered branches (store error paths in handlers, `serveStored` blob error, cache expiry).
 
-- [ ] **Step 4: Run integration tests**
-
-Run: `make test-integration SERVICE=avatar-service`
-Expected: PASS.
-
-- [ ] **Step 5: Run SAST**
-
-Run: `make sast`
-Expected: PASS (no medium+). The `image.Decode` of untrusted bytes is bounded by `http.MaxBytesReader`; if gosec flags a decompression-bomb concern, document the size cap with a justified `// #nosec` only if truly a false positive.
-
+- [ ] **Step 4: Integration tests** — Run: `make test-integration SERVICE=avatar-service` → PASS.
+- [ ] **Step 5: SAST** — Run: `make sast` → no medium+. The untrusted `image.Decode` is bounded by `http.MaxBytesReader`; if gosec flags a decompression concern, justify with a `// #nosec` only if a genuine false positive.
 - [ ] **Step 6: Commit any fixes**
 
 ```bash
-git add -A
-git commit -m "chore(avatar-service): lint, format, coverage fixes"
+git add -A && git commit -m "chore(avatar-service): lint, format, coverage fixes"
 ```
 
 ---
 
-## Task 12: Deploy artifacts
+## Task 11: Deploy artifacts
 
 **Files:**
 - Create: `avatar-service/deploy/Dockerfile`, `avatar-service/deploy/docker-compose.yml`, `avatar-service/deploy/azure-pipelines.yml`
 
-- [ ] **Step 1: Create the Dockerfile**
+- [ ] **Step 1: Dockerfile**
 
-Create `avatar-service/deploy/Dockerfile` (copy an existing service's, e.g. `auth-service/deploy/Dockerfile`, changing the binary name). Multi-stage: `golang:1.25.11-alpine` builder, `alpine:3.21` runtime; build context = repo root; build `./avatar-service/`.
+Create `avatar-service/deploy/Dockerfile`:
 
 ```dockerfile
 FROM golang:1.25.11-alpine AS build
@@ -2158,18 +1860,11 @@ EXPOSE 8080
 ENTRYPOINT ["avatar-service"]
 ```
 
-- [ ] **Step 2: Create docker-compose.yml**
+- [ ] **Step 2: docker-compose.yml** — Create `avatar-service/deploy/docker-compose.yml` for local dev: the service + Mongo + MinIO, with env `SITE_ID`, `CLUSTER_DOMAINS`, `EMPLOYEE_PHOTO_BASE_URL`, `MONGO_URI`, `MINIO_*`, `AVATAR_BUCKET`. Mirror the Mongo/MinIO service blocks from another service's compose (e.g. `search-service/deploy/docker-compose.yml`).
 
-Create `avatar-service/deploy/docker-compose.yml` for local dev: the service + Mongo + MinIO, with `DEV_MODE=true`, `SITE_ID`, `CLUSTER_DOMAINS`, `DOMAIN_SITES`, `EMPLOYEE_PHOTO_BASE_URL`, `MONGO_URI`, `MINIO_*`, `AVATAR_BUCKET`. (Mirror an existing service's compose for Mongo/MinIO service blocks.)
+- [ ] **Step 3: azure-pipelines.yml** — Create `avatar-service/deploy/azure-pipelines.yml` mirroring another service's pipeline with name `avatar-service`.
 
-- [ ] **Step 3: Create azure-pipelines.yml**
-
-Create `avatar-service/deploy/azure-pipelines.yml` mirroring another service's pipeline, with the service name `avatar-service`.
-
-- [ ] **Step 4: Verify the image builds**
-
-Run: `docker build -f avatar-service/deploy/Dockerfile -t avatar-service:dev .`
-Expected: image builds.
+- [ ] **Step 4: Verify image builds** — Run: `docker build -f avatar-service/deploy/Dockerfile -t avatar-service:dev .` → builds.
 
 - [ ] **Step 5: Commit**
 
@@ -2180,18 +1875,16 @@ git commit -m "chore(avatar-service): deploy artifacts (Dockerfile, compose, pip
 
 ---
 
-## Task 13: Client API docs
+## Task 12: Client API docs
 
 **Files:**
 - Modify: `docs/client-api.md`
 
-- [ ] **Step 1: Add an avatar-service section**
-
-Append a section to `docs/client-api.md` documenting the public HTTP surface:
-- `GET /avatar/v1/:accountName` — user/bot avatar; 307 to employee-photo (users) or owning cluster (remote bots); streams custom bot image (200, `ETag`, `Cache-Control`); deterministic SVG default; `?fwd=1` loop-breaker; `If-None-Match`→304.
-- `GET /avatar/v1/room/:roomID` — channel/discussion only; 307 to owning cluster; stream/default; dm/botDM→default.
-- `PUT /avatar/v1/bot/:botName` — auth: Bearer OIDC + platform-admin; body = PNG/JPEG bytes; `400` malformed/invalid image, `401` no/invalid token, `403` non-admin, `404` unknown bot, `409` wrong cluster (body names the correct domain), `204` success.
-- Note the frontend-default contract for employee-photo 404 (spec §6/§9).
+- [ ] **Step 1: Add an avatar-service section** documenting:
+- `GET /avatar/v1/:accountName` — user/bot; 307 to employee-photo (users) or owning cluster (remote bots); streams custom bot image (200, `ETag`, `Cache-Control`); deterministic SVG default; `?siteid=` hint; `?fwd=1` loop-breaker; `If-None-Match`→304.
+- `GET /avatar/v1/room/:roomID` — channel/discussion only; 307 to owning cluster; stream/default; dm/botDM→default; `?siteid=` hint.
+- `PUT /avatar/v1/bot/:botName` — **🔴 unauthenticated in v1**; body = PNG/JPEG bytes; `400` malformed/invalid image, `404` unknown bot, `409` wrong cluster (body names the correct domain), `204` success.
+- The frontend-default contract for employee-photo 404 (spec §6/§9).
 
 - [ ] **Step 2: Commit**
 
@@ -2204,6 +1897,6 @@ git commit -m "docs(client-api): add avatar-service HTTP endpoints"
 
 ## Self-Review Checklist (run before execution)
 
-- **Spec coverage:** §4.1 serve-stored (Task 7/8 `serveStored`), §4.2 fwd loop-breaker (Task 7/8), §4.3 caching headers (Task 7), §4.4 avatars collection (Task 1, 3), §5 parsing + resolver seam (Task 2, 5), §6 Endpoint 1 (Task 7), §7 Endpoint 2 (Task 8), §7a.1–7a.4 upload (Task 9, 10), §8 default SVG (Task 2, 7), §2 cross-cutting middleware/healthz (Task 6), config §3 (Task 5), testing §10 (each task + Task 11), deploy (Task 12), docs §11 (Task 13). ✅
-- **Out of scope, intentionally:** migration job, OTel/Prometheus, rate-limiting.
-- **Type consistency:** `avatarStore` methods match between `store.go`, the mock usage in tests, and `store_mongo.go`; `blobStore.Get/Put`, `blobInfo`, `errBlobNotFound` consistent across `minio.go`, fake, handler; `config` field names consistent across `config.go`, `main.go`, tests; `serveDefault(c, kind, seed, name)` / `serveStored(c, kind, av, seed, name)` signatures consistent.
+- **Spec coverage:** §4.1 serve-stored (Task 7 `serveStored`), §4.2 fwd loop-breaker + unknown-site→default (Task 7 `redirectCrossCluster`), §4.3 caching headers (Task 7), §4.4 avatars collection (Task 1, 3), §5 parsing + `?siteid=` + bot-site-via-BotSite (Task 2, 7), §6 Endpoint 1 (Task 7), §7 Endpoint 2 + `?siteid=` (Task 8), §7a.1–7a.3 upload validate/locality/existence (Task 9), §7a.4 no-auth (Task 9, by omission), §8 default SVG (Task 2, 7), §2 cross-cutting middleware/healthz (Task 6), config §3 (Task 5), testing §10 (each task + Task 10), deploy (Task 11), docs §11 (Task 12). ✅
+- **Out of scope, intentionally:** migration job, upload auth, OTel/Prometheus, rate-limiting.
+- **Type consistency:** `avatarStore` = {`EmployeeID`, `BotSite`, `RoomSite`, `Avatar`, `SetBotAvatar`} consistent across `store.go`, `store_mongo.go`, mock usage, and handler/upload calls; `blobStore.Get/Put` + `blobInfo` + `errBlobNotFound` consistent across `minio.go`, fake, handler; `config` fields consistent across `config.go`, `main.go`, tests; `serveDefault(c, kind, seed, name)` / `serveStored(c, kind, av, seed, name)` / `redirectCrossCluster(c, kind, owning, path)` / `serveRoomLocal(c, roomID, name)` signatures consistent; `registerUploadRoutes(*gin.Engine, *handler)` identical in the Task 6 stub and the Task 9 real definition (so `main.go` is untouched).
