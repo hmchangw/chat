@@ -28,7 +28,7 @@ Public read endpoints + authenticated write endpoints:
 |----------|---------|------|
 | `GET /avatar/v1/:accountName` | User **and** bot avatar (frontend routes dm/botDM room avatars here too) | public |
 | `GET /avatar/v1/room/:roomID` | Room avatar — **channel / discussion only** | public |
-| `PUT /avatar/v1/bot/:botName` | Upload a custom bot avatar | **authn + authz** |
+| `PUT /avatar/v1/bot/:botName` | Upload a custom bot avatar | **🔴 none (v1)** |
 
 **v1 write scope = bot uploads only.** Room and user avatars are never uploaded
 through this service: users resolve to the external employee-photo service, and
@@ -41,23 +41,28 @@ is the universal fallback.
 
 Non-goals: per-size rendering (`_120` is fixed for the employee-photo redirect);
 room/user uploads; deleting/resetting a custom avatar. **Read** endpoints are
-public; the bot-upload endpoint requires OIDC auth + **platform-admin** role
-(§7a.4).
+public; **🔴 the bot-upload endpoint is UNAUTHENTICATED in v1** — auth is
+deferred until the model is decided (§7a.4). This is a known risk (anyone can
+overwrite any bot's avatar / fill storage) and **MUST be gated before
+production**.
+
+> **Bot detection** uses the codebase's canonical `botPattern` (`` `\.bot$|^p_` ``):
+> an account is a bot if it ends in `.bot` **or** begins with `p_`. (Earlier
+> drafts said `.bot`-only.)
 
 ## 2. Service shape
 
 A new flat service `avatar-service/` at repo root, following the per-service
-layout. **It does not use NATS** — auth is OIDC-token validation (§7a.4), not a
-NATS callout. Mongo + MinIO backed.
+layout. **It does not use NATS, and v1 has no auth** (§7a.4). Mongo + MinIO backed.
 
 | File | Responsibility |
 |------|----------------|
-| `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO + `pkg/oidc` validator, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
-| `routes.go` | Register GET ×2 (public), `PUT /bot/:botName` (behind auth middleware), `GET /healthz` |
+| `main.go` | Config (`caarlos0/env`), wire Mongo + MinIO, Gin server + timeouts, graceful shutdown (`pkg/shutdown.Wait`) |
+| `routes.go` | Register GET ×2 (public), `PUT /bot/:botName` (open in v1), `GET /healthz` |
 | `handler.go` | Read path: resolve owning site → cross-cluster redirect → avatars-doc lookup → stream/default |
-| `upload.go` | Bot-upload write path: OIDC authn + bot authz middleware, validate (type/size/decode), store to MinIO, upsert `avatars` doc |
+| `upload.go` | Bot-upload write path: validate (botPattern/type/size/decode), locality+existence, store to MinIO, upsert `avatars` doc |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `BotExists` (upload target check), `RoomSite` (siteID+type+name via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
+| `store.go` | `avatarStore` interface — `EmployeeID` (user), `BotSite` (bot owning siteID + existence via user record), `RoomSite` (siteID+type+name via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
@@ -90,8 +95,6 @@ label — instrumented at one seam, not scattered across the decision tree.
 | `CLUSTER_DOMAINS` | `siteID=baseURL` map for cross-cluster redirects | required |
 | `EMPLOYEE_PHOTO_BASE_URL` | external employee-photo host (the `xxx_domain`) | required |
 | `MONGO_URI` / `MONGO_DB` | operational DB | required / `chat` |
-| `OIDC_ISSUER_URL` / `OIDC_AUDIENCES` | validate upload Bearer tokens (`pkg/oidc`); required unless `DEV_MODE` | required when `DEV_MODE=false` |
-| `DEV_MODE` | bypass OIDC validation for local dev (mirrors auth-service) | `false` |
 | `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | object storage (custom uploads) | required |
 | `AVATAR_BUCKET` | MinIO bucket for avatars | `avatars` |
 | `MAX_UPLOAD_BYTES` | reject uploads larger than this | `1048576` (1 MiB) |
@@ -242,48 +245,62 @@ The migration is a **separate one-off job, run outside avatar-service**, and is
 **idempotent** (upsert by `_id`), so it can be re-run safely. It needs no
 coordination with the service: a doc becomes live the moment it is written.
 
-## 5. Account format & parsing (Endpoint 1)
+## 5. Account format, type, and owning-site resolution (Endpoint 1)
 
-| Kind | Forms | Routing |
-|------|-------|---------|
-| user | `<name>` · `<name>@site.example.com` | synced everywhere → **always local**; domain is informational |
-| bot | `<name>.bot` · `<name>.bot@site.example.com` | cluster-bound → domain identifies the **owning cluster** |
+Accounts are **bare** — no `@domain` segment (any stray `@…` is stripped and
+ignored). **Type is decided by `isBot(account)`** (`botPattern` = `` `\.bot$|^p_` ``):
+bots end in `.bot` or begin with `p_`; everything else is a user.
 
-Parse: split `account` on `@` into `localPart` + optional `domain`. **Type is
-decided first by whether `localPart` ends in `.bot`.** For bots, `domain`
-(when present, ending `.example.com`) maps to the owning `siteID`.
+| Kind | Routing |
+|------|---------|
+| user | synced to every cluster → **always local** (no cross-cluster hop, no owning-site lookup) |
+| bot | cluster-bound avatar data → owning site resolved from the bot's **user record** (`User.SiteID`), then a cross-cluster redirect if remote |
 
-Owning-site resolution is isolated behind a single resolver seam so the read
-handler is agnostic to its source. **v1: a bot's owning `siteID` = the account
-`domain`** (no DB call); this can later be swapped for a `users`-record lookup
-(`SiteID` on the bot's user doc) without touching the redirect/stream logic.
+**Owning-site resolution (bots and rooms):**
+1. **`?siteid=` query hint (fast path).** If the request carries `?siteid=<id>`,
+   use it directly — **no DB lookup** for the site. The frontend already knows the
+   owning site, so this skips the resolution query entirely.
+2. **Otherwise look it up** — bot: `store.BotSite(account)` → `User.SiteID`
+   (`found=false` → bot has no record → default); room: `store.RoomSite(roomID)`
+   via subscriptions (§7).
+
+`CLUSTER_DOMAINS` (siteID→base URL) maps the resolved `siteID` to a redirect
+target. Users never need this (always local).
 
 ## 6. Endpoint 1 — `GET /avatar/v1/:accountName`
 
 ```text
-localPart, domain := splitAt(accountName)
-if hasSuffix(localPart, ".bot"):            # ── bot (cluster-bound)
-    owning := resolveBotSite(localPart, domain)   # v1: from domain; "" => local
-    if owning != "" && owning != cfg.SiteID && !fwd:
-        307 → {clusterBaseURL(owning)}/avatar/v1/{accountName}?fwd=1   # value incl. scheme
-    if av, found := store.Avatar(ctx, "bot", localPart); found:
-        serveStored(av)                                       # 304 / stream (§4.1)
+account := stripDomain(accountName)          # bare account; tolerate stray @…
+if isBot(account):                           # ── bot (avatar data is cluster-bound)
+    owning := c.Query("siteid")              # fast path: trust the hint, no DB
+    if owning == "":
+        owning, found := store.BotSite(ctx, account)   # User.SiteID
+        if !found: serveDefault(account, account); return
+    if owning != cfg.SiteID && !fwd:
+        if base := clusterBaseURL(owning); base != "":
+            307 → {base}/avatar/v1/{account}?fwd=1   # value incl. scheme
+        # else unknown site → fall through to default
+    if av, found := store.Avatar(ctx, "bot", account); found:
+        serveStored(av)                                # 304 / stream (§4.1)
     else:
-        serveDefault(localPart, localPart)                    # dynamic SVG (§8)
-else:                                        # ── user (synced; domain informational)
-    eid, found := cache[localPart]
-    if !found: eid, found = store.EmployeeID(ctx, localPart)   # MISS MUST hit DB
+        serveDefault(account, account)                 # dynamic SVG (§8)
+else:                                        # ── user (synced everywhere → always local)
+    eid, found := cache[account]
+    if !found: eid, found = store.EmployeeID(ctx, account)   # MISS MUST hit DB
     if found:
-        cache.put(localPart, eid)
+        cache.put(account, eid)
         307 → {EMPLOYEE_PHOTO_BASE_URL}/xxxPhoto/po/{eid}_120.JPG
     else:
-        serveDefault(localPart, localPart)
+        serveDefault(account, account)
 ```
 
-- **Bot read path:** resolve owning site → (cross-cluster redirect if remote) →
-  `avatars` doc present ? proxy-stream the MinIO object : dynamic default. There
-  is **no** redirect to an app-provided URL — every avatar is served through this
-  GET endpoint, so `App.AvatarURL` is not used.
+- **Bot read path:** resolve owning site (`?siteid=` hint, else `User.SiteID` via
+  `store.BotSite`) → cross-cluster redirect if remote → `avatars` doc present ?
+  stream the MinIO object : dynamic default. There is **no** redirect to an
+  app-provided URL — every avatar is served through this GET endpoint, so
+  `App.AvatarURL` is not used.
+- **Users are always local** (synced everywhere) — no owning-site lookup, no
+  `?siteid=` needed; the hint applies to bots and rooms only.
 - `serveDefault()` **dynamically generates** a deterministic SVG from the
   account (§8) and returns it directly — it does not read from MinIO and does
   not store anything.
@@ -303,10 +320,19 @@ else:                                        # ── user (synced; domain infor
 ## 7. Endpoint 2 — `GET /avatar/v1/room/:roomID`
 
 ```text
-room, found := store.RoomSite(ctx, roomID)   # SiteID + RoomType + Name, via subscriptions
+if hint := c.Query("siteid"); hint != "":   # fast path: trust hint, skip the subscription query
+    if hint != cfg.SiteID && !fwd:
+        if base := clusterBaseURL(hint); base != "":
+            307 → {base}/avatar/v1/room/{roomID}?fwd=1; return
+        # else unknown site → fall through to default
+    # local (or unknown site): no RoomType/Name available → seed+initial = roomID
+    if av, found := store.Avatar(ctx, "room", roomID); found: serveStored(av); return
+    serveDefault(roomID, roomID); return
+
+# no hint → resolve via subscriptions (yields SiteID + RoomType + Name)
+room, found := store.RoomSite(ctx, roomID)
 if !found:                          serveDefault(roomID, roomID)     # unknown here → can't forward
 if room.RoomType in {dm, botDM}:    serveDefault(roomID, room.Name)  # frontend should use Endpoint 1
-# channel / discussion:
 if room.SiteID != cfg.SiteID && !fwd:
     307 → {clusterBaseURL(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1   # value incl. scheme
 if av, found := store.Avatar(ctx, "room", roomID); found:
@@ -315,6 +341,13 @@ else:
     serveDefault(roomID, room.Name)                      # dynamic SVG (§8)
 ```
 
+- **`?siteid=` fast path.** When the frontend supplies the owning site, the
+  subscription query is skipped: a remote hint → immediate redirect; a local hint
+  → straight to the `avatars` lookup. Trade-off (accepted): without the
+  subscription we have no `RoomType` or `Name`, so the default's initial uses
+  `roomID`, and the dm/botDM guard is not applied (the frontend is trusted not to
+  route dm/botDM rooms to this endpoint). Without the hint, the full path below
+  runs.
 - Owning site, room type, and room name come from the `subscriptions` collection
   (`Subscription.SiteID` / `.RoomType` / `.Name`), so avatar-service does not read
   room-service's `rooms` collection, and the default's initial is the room's name
@@ -343,17 +376,16 @@ image bytes; `Content-Type` declares the format). **Bots are the only uploadable
 kind in v1** — users and rooms never upload (§1). On success the custom image
 takes priority over the dynamic default on the bot's GET path.
 
-`:botName` is parsed **exactly like Endpoint 1's account** (§5): `localPart` +
-optional `@domain`. The avatars doc keys on `localPart` (`_id = bot:{localPart}`),
-**identical to the GET read key** (§6), so an upload and its later read always
-address the same doc. The `domain` (when present) drives the cluster-locality
-check (§7a.3).
+`:botName` is a **bare bot account** (any stray `@…` stripped, §5). The avatars
+doc keys on it (`_id = bot:{account}`), **identical to the GET read key** (§6), so
+an upload and its later read always address the same doc. The bot's owning site
+(for the locality check, §7a.3) comes from its user record, not the path.
 
 ### 7a.1 Validation & security (mandatory)
 
-- **Well-formed bot account.** `localPart` (after stripping any `@domain`) MUST
-  match `botPattern` (`.bot` suffix); otherwise `400` (`errcode.BadRequest`).
-  This prevents `_id` pollution from arbitrary `PUT /bot/<anything>`.
+- **Well-formed bot account.** The `:botName` (stray `@…` stripped) MUST satisfy
+  `isBot` (`botPattern` = `` `\.bot$|^p_` ``); otherwise `400`
+  (`errcode.BadRequest`). This prevents `_id` pollution from `PUT /bot/<anything>`.
 - **Raster only — reject `image/svg+xml` uploads.** A user-supplied SVG served
   from our origin is **stored XSS** (SVG can carry `<script>`/`foreignObject`).
   v1 allowlist: **`image/png`, `image/jpeg`** (WebP deferred — §9). The *default*
@@ -390,45 +422,30 @@ check (§7a.3).
 
 ### 7a.3 Cluster locality & existence
 
-Bots are cluster-bound — a bot's `.bot` record and its MinIO/`avatars` data live
-only on its **owning cluster**, so an upload must land there. The handler:
+A bot's `avatars`/MinIO data lives only on its **owning cluster**, so an upload
+must land there. Both checks come from one `store.BotSite(account)` lookup (the
+bot's user record is synced to every cluster, so its `SiteID` is resolvable
+locally even for a remote bot):
 
-1. Parses `:botName` into `localPart` + optional `@domain` (§7a, §5).
-2. **Wrong cluster, with a hint.** If `domain` is present and resolves to a site
-   ≠ `SITE_ID`, reject with an errcode carrying the correct domain
-   (`clusterBaseURL(owning)`, a `wrong-cluster` reason). We do **not** proxy or
-   `307` the body: a cross-origin redirect would make the browser **strip the
-   `Authorization` header** (the OIDC token) → the target sees an unauthenticated
-   request; and server-side proxying would re-send up to 1 MiB and add an
-   outbound-HTTP + service-to-service-auth dependency. Instead the client
-   re-issues the PUT to the correct domain itself — a fresh authenticated request.
-3. **Existence (on the owning cluster).** Look up the bot's `.bot` record in
-   `users` (`store.BotExists`). Not found → `404` (`errcode.NotFound`): the bot
-   does not exist here — either genuinely unknown, or a wrong-cluster PUT that
-   carried no `domain` hint (so none can be returned). Found → proceed.
+1. **Existence.** `found == false` → `404` (`errcode.NotFound`): no such bot.
+2. **Wrong cluster.** `siteID != SITE_ID` → reject with an errcode carrying the
+   correct target (`clusterBaseURL(siteID)`, a `wrong-cluster` reason). We do
+   **not** proxy or `307` the body (server-side proxying would re-send up to 1 MiB
+   and add an outbound-HTTP dependency); the client re-issues the PUT to the
+   correct domain itself.
+3. Otherwise (`siteID == SITE_ID`, exists) → proceed.
 
-The frontend normally resolves the owning site first (the bot account carries its
-domain) and PUTs directly, so a wrong-cluster upload is a rare misconfiguration.
+### 7a.4 Authorization — 🔴 NONE in v1
 
-### 7a.4 Authorization
+**The bot-upload endpoint is unauthenticated in v1** — no OIDC, no role check;
+**anyone who can reach it can upload/overwrite any existing bot's avatar.** This
+is a deliberate interim decision: the auth model is deferred until it is decided
+(candidates: OIDC + platform-admin role, an internal/service token, or a per-bot
+owner source). **It is a known risk and MUST be gated before any production
+exposure** (network-restrict the endpoint in the meantime). avatar-service
+therefore has **no `pkg/oidc` dependency and no auth config** in v1.
 
-The bot-upload endpoint is gated by an auth middleware (`upload.go`):
-
-1. **Authn — validate the Bearer OIDC token** with `pkg/oidc.NewValidator`
-   (same issuer/audience config as auth-service; `OIDC_ISSUER_URL` /
-   `OIDC_AUDIENCES`). Extract `account` from claims (`PreferredUsername`, else
-   `Name` — mirroring auth-service). Missing/invalid token → `401`
-   (`errcode.Unauthenticated`). `DEV_MODE` bypasses validation for local dev.
-2. **Authz — platform-admin only.** Bots are platform-level, upstream-provisioned
-   entities with no per-bot owner field, so there is no per-bot ownership to key
-   on. v1 therefore gates the upload on the **caller's** platform-admin role:
-   look up the caller's `users` record by `account` and require
-   `model.IsPlatformAdmin` (`Roles` contains `UserRoleAdmin`,
-   `pkg/model/user.go`); non-admin → `403` (`errcode.Forbidden`). No new data
-   model. (Per-bot ownership can be layered on later if a bot-owner source
-   appears.)
-
-Read endpoints (GET) remain public — no token required.
+Read endpoints (GET) are public by design.
 
 ## 8. Default image — dynamic, deterministic, not persisted
 
@@ -505,15 +522,14 @@ the rendering in one place.
   docs, avatar-service writes bot docs (§4.4).
 - **Unified read model** → resolve owning `siteID` → cross-cluster redirect →
   local `avatars`-doc lookup → MinIO stream or dynamic default (§6, §7).
-- **Bot owning site** → from the account `domain` in v1, behind a resolver seam
-  (swappable to a `users`-record lookup) (§5).
+- **Bot owning site** → from `User.SiteID` via `store.BotSite` (bots are users,
+  synced everywhere, so a remote bot's site is resolvable locally) (§5).
 - **Room owning site + type** → from the `subscriptions` collection, not `rooms`
   (§7).
+- **`?siteid=` fast path** → a frontend-supplied owning site skips the
+  site-resolution query for room/bot reads; trade-off documented (§5, §7).
 - **`App.AvatarURL` removed** → every avatar is served through this GET endpoint;
   no redirect to an app-provided URL (§6).
-- **Upload authn** → OIDC Bearer-token validation via `pkg/oidc` (§7a.4).
-- **Upload authz** → **platform-admin role** (caller's `users` record,
-  `model.IsPlatformAdmin`); no per-bot owner model in v1 (§7a.4).
 - **Upload formats** → PNG/JPEG only; SVG uploads rejected (§7a.1).
 - **`avatars` field schema** → finalized: `_id = subjectType:subjectId`,
   `subjectType`/`subjectId`/`minioKey`/`contentType`/`size`/`etag`/`createdAt`/
@@ -524,6 +540,10 @@ the rendering in one place.
   'none'` on responses (§8.1, §7a.1).
 
 **Deferred (post-v1, decided):**
+- **🔴 Bot-upload authentication/authorization:** removed in v1 — the endpoint is
+  **OPEN** (§7a.4). Deferred until the model is decided (OIDC + platform-admin /
+  internal service token / per-bot owner). **Must be gated before production**;
+  network-restrict the endpoint until then.
 - **OTel tracing + Prometheus `/metrics`:** deferred to post-v1. v1 ships
   auth-service-parity logging (slog + request-id + access-log, §2). The infra is
   ready to copy (`pkg/otelutil`; search-service's promauto + separate `/metrics`
@@ -557,18 +577,20 @@ the rendering in one place.
 
 - **Handler unit tests** (`handler_test.go`, mocked `avatarStore` + a stream
   seam): table-driven over Endpoint 1 (user local hit/miss, cache hit/miss→DB,
-  bot local vs cross-cluster, `fwd=1` no-re-redirect, bot avatars-doc hit→stream,
-  miss→dynamic default) and Endpoint 2 (room resolved via subscription: channel
-  avatars-doc hit→stream, miss→dynamic default, dm/botDM→default, remote→307,
-  not-found→default, `If-None-Match`→304). Assert status code, `Location`,
-  `Cache-Control`, `ETag`, and body bytes/Content-Type.
+  bot site via `BotSite` local vs cross-cluster, `?siteid=` hint skips `BotSite`,
+  `fwd=1` no-re-redirect, bot avatars-doc hit→stream, miss→dynamic default) and
+  Endpoint 2 (room resolved via subscription: channel avatars-doc hit→stream,
+  miss→dynamic default, dm/botDM→default, remote→307, not-found→default;
+  `?siteid=` remote hint→redirect without subscription query, local hint→avatars
+  lookup with roomID default; `If-None-Match`→304). Assert status code,
+  `Location`, `Cache-Control`, `ETag`, and body bytes/Content-Type.
 - **Bot-upload unit tests** (`upload.go`): malformed botName (not `botPattern`)
-  → 400; `:botName` whose `@domain` ≠ local → wrong-cluster error carrying the
-  correct domain; unknown bot (`BotExists`=false) → 404; accept PNG/JPEG within
-  size; reject oversize (`MAX_UPLOAD_BYTES`), reject `image/svg+xml` and non-image
-  bytes, reject decode failures; on success store to MinIO + upsert the `avatars`
-  doc; missing/invalid token → 401; authenticated non-admin → 403; platform-admin
-  → accepted; assert `nosniff`.
+  → 400; unknown bot (`BotSite` found=false) → 404; bot owned by another site
+  (`BotSite` siteID ≠ local) → wrong-cluster error carrying the correct domain;
+  accept PNG/JPEG within size; reject oversize (`MAX_UPLOAD_BYTES`), reject
+  `image/svg+xml` and non-image bytes, reject decode failures; on success store to
+  MinIO + upsert the `avatars` doc; assert `nosniff`. (No auth tests — v1 endpoint
+  is open, §7a.4.)
 - **Generation unit tests:** `renderDefaultSVG` is **deterministic** — same
   `(seed, initial)` yields byte-identical SVG *and* the same `ETag` across
   repeated calls; stable colour per seed, correct initial (incl. CJK), valid +
