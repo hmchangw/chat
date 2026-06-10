@@ -307,9 +307,16 @@ else:
 - Owning site, room type, and room name come from the `subscriptions` collection
   (`Subscription.SiteID` / `.RoomType` / `.Name`), so avatar-service does not read
   room-service's `rooms` collection, and the default's initial is the room's name
-  (§8.1). No subscription record here → it cannot know the owning site → serve the
-  default (the frontend normally resolves the owning domain first via the
-  room-location service and hits the right cluster directly).
+  (§8.1). **`Subscription.SiteID` is the room's *owning* site** (verified:
+  `inbox-worker` mirrors a remote room's membership onto each member's home site
+  with `SiteID = event.SiteID`, the room's site) — so it correctly drives the
+  cross-cluster redirect, and a member's home cluster does hold a local
+  subscription for a remote room.
+- **Resolution requires ≥1 local subscription for the room.** On the room's
+  owning cluster this always holds (a channel/discussion has an owner). Elsewhere
+  with no local member it returns not-found → default — the correct defensive
+  outcome, since the frontend normally resolves the owning domain first (via the
+  room-location service) and hits the right cluster directly.
 - Room custom images are **read-only and migrated** — there is no room upload
   (§1). The `avatars` doc (written by the migration, §4.4) is the existence
   check; present → stream from MinIO, absent → dynamic default with no MinIO hit.
@@ -500,6 +507,10 @@ the rendering in one place.
   frontend's room/bot metadata carries none to append; v1 relies on `ETag`
   revalidation (§4.3). Revisit if/when version propagation to the frontend is
   designed.
+
+**Not yet considered (tracked):**
+- **Public-GET abuse** (rate limiting / negative caching / account enumeration) —
+  explicitly out of scope for now; revisit before production.
 
 **Accepted residual risks (by design):**
 - **Read-path privacy:** the employee-photo redirect `Location` exposes the
