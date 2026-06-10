@@ -96,9 +96,11 @@ label — instrumented at one seam, not scattered across the decision tree.
 | `MAX_UPLOAD_BYTES` | reject uploads larger than this | `1048576` (1 MiB) |
 | `CACHE_MAX_AGE_SECONDS` | `Cache-Control: public, max-age=` value | `21600` (6h) |
 
-`CLUSTER_DOMAINS` maps a `siteID` to the base URL of *that cluster's*
-avatar-service (e.g. `xxx-2=https://avatar-service-xxx-2`). Cross-cluster
-redirects and `EMPLOYEE_PHOTO_BASE_URL` are **config**, never hardcoded.
+`CLUSTER_DOMAINS` maps a `siteID` to the **full base URL (including scheme)** of
+*that cluster's* avatar-service (e.g. `xxx-2=https://avatar-service-xxx-2`).
+Redirect targets use this value **verbatim** — `clusterBaseURL(siteID)` returns
+it and the handler never prepends a scheme. Cross-cluster redirects and
+`EMPLOYEE_PHOTO_BASE_URL` are **config**, never hardcoded.
 
 MinIO is **required** in v1 — it holds custom bot uploads and migrated room
 images (§4.4).
@@ -253,7 +255,7 @@ localPart, domain := splitAt(accountName)
 if hasSuffix(localPart, ".bot"):            # ── bot (cluster-bound)
     owning := resolveBotSite(localPart, domain)   # v1: from domain; "" => local
     if owning != "" && owning != cfg.SiteID && !fwd:
-        307 → https://{clusterDomain(owning)}/avatar/v1/{accountName}?fwd=1
+        307 → {clusterBaseURL(owning)}/avatar/v1/{accountName}?fwd=1   # value incl. scheme
     if av, found := store.Avatar(ctx, "bot", localPart); found:
         serveStored(av)                                       # 304 / stream (§4.1)
     else:
@@ -295,7 +297,7 @@ if !found:                          serveDefault(roomID)   # unknown here → ca
 if room.RoomType in {dm, botDM}:    serveDefault(roomID)   # frontend should use Endpoint 1
 # channel / discussion:
 if room.SiteID != cfg.SiteID && !fwd:
-    307 → https://{clusterDomain(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1
+    307 → {clusterBaseURL(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1   # value incl. scheme
 if av, found := store.Avatar(ctx, "room", roomID); found:
     serveStored(av)                                      # 304 / stream (§4.1)
 else:
