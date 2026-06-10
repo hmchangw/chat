@@ -6,9 +6,9 @@ import "github.com/gin-gonic/gin"
 func registerRoutes(r *gin.Engine, h *Handler, v TokenValidator, devMode bool) {
 	r.GET("/healthz", h.HandleHealth)
 
-	api := r.Group("/api/v4")
+	api := r.Group("/api/v1")
 	api.Use(otelMiddleware())
 	api.Use(authMiddleware(v, devMode))
-	api.POST("/rooms/:roomId/upload/protected-images", h.HandleUploadProtectedImages)
-	api.GET("/rooms/:roomId/protected-image/:fileId", h.HandleDownloadProtectedImage)
+	api.POST("/rooms/:roomId/upload/images", h.HandleUploadImages)
+	api.GET("/rooms/:roomId/image/:fileId", h.HandleDownloadImage)
 }

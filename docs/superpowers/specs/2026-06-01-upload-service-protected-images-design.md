@@ -2,19 +2,52 @@
 
 Date: 2026-06-01
 
+> **Update 2 (post-review, authoritative).** Per later PR feedback the API was
+> revised; where this note conflicts with the body below, this note wins:
+> - **Endpoints** are now `/api/v1`: `POST /api/v1/rooms/:roomId/upload/image`
+>   and `GET /api/v1/rooms/:roomId/image/:fileId` (was `/api/v4/.../upload/
+>   protected-images` and `/api/v4/.../protected-image/:fileId`).
+> - **Single-image upload** (industry standard for user-facing uploads), not
+>   batch. One file under the `image` form field; validation failures return a
+>   `4xx`/`5xx` errcode (no per-file `results` array). Success returns
+>   `{ "name", "relativePath" }` (200), with `relativePath` =
+>   `api/v1/rooms/{groupId}/image/{fileId}?drive_host=…`.
+> - **Drive client**: `UploadGroupImages([]MultipartFile) []resp` →
+>   `UploadGroupImage(MultipartFile) (*resp, error)` (single file via the bulk
+>   endpoint, returns the lone result).
+> - **Handlers renamed**: `HandleUploadProtectedImages`→`HandleUploadImage`,
+>   `HandleDownloadProtectedImage`→`HandleDownloadImage`.
+> - **Max image size is configurable**: `MAX_IMAGE_SIZE_BYTES` env (default
+>   `26214400` = 25 MiB), validated in the handler. The `drive.UploadImageMaxSizeBytes`
+>   constant and the `MAX_FILES` env var were removed.
+>
+> **Update 3 (post-review, authoritative).** The single-image upload from Update 2
+> was reverted to the **batch** API (partial-success `results` array), keeping the
+> `/api/v1` move and configurable size:
+> - `POST /api/v1/rooms/:roomId/upload/images` (plural), form field `images`
+>   (repeatable), handler `HandleUploadImages`. Download endpoint unchanged.
+> - Per-file validation (size/type/open) yields per-file `failure` entries in the
+>   `200` `{ "results": [ { name, status, error?, relativePath? } ] }` body;
+>   `relativePath` = `api/v1/rooms/{groupId}/image/{fileId}?drive_host=…`. Whole-
+>   request failures (missing roomId, non-multipart, **too many files**, no
+>   email, membership, room-not-found, Drive transport) use the errcode envelope.
+> - Drive client back to `UploadGroupImages([]MultipartFile) ([]resp, error)`
+>   (bulk). `preprocessFiles` restored.
+> - **Both** size knobs apply: `MAX_FILES` (count, default 10) **and**
+>   `MAX_IMAGE_SIZE_BYTES` (per-image bytes, default 25 MiB).
+
 ## 1. Summary
 
 A new flat `package main` HTTP service at the repo root, `upload-service/`, that
 proxies protected inline images to/from an internal Drive. It exposes two
 authenticated, room-scoped HTTP endpoints:
 
-- `POST /api/v4/rooms/:roomId/upload/protected-images` — upload one or more
-  images on behalf of a room. Protected images (unlike public ones) are stored
-  with user-ownership metadata and later served via signed URLs.
-- `GET /api/v4/rooms/:roomId/protected-image/:fileId` — download a single
-  protected image. The service acts as a proxy: it asks Drive for a signed
-  URL, streams the bytes from that URL, and pipes them straight back to the
-  client.
+- `POST /api/v1/rooms/:roomId/upload/image` — upload a single image on behalf
+  of a room. Protected images (unlike public ones) are stored with
+  user-ownership metadata and later served via signed URLs.
+- `GET /api/v1/rooms/:roomId/image/:fileId` — download a single protected
+  image. The service acts as a proxy: it asks Drive for a signed URL, streams
+  the bytes from that URL, and pipes them straight back to the client.
 
 The service is **HTTP-in, Mongo + Drive-HTTP-out** — it does **not** use NATS or
 JetStream. It follows the `auth-service` Gin pattern (`gin.New()` +
@@ -415,10 +448,11 @@ General:
 
 ## 4. Configuration (env)
 
-`PORT`, `DEV_MODE`, `SITE_ID`, `MONGO_URI`, `MONGO_DB`, `MAX_FILES` (default
-`10`), `OIDC_ISSUER_URL`, `OIDC_AUDIENCES`, `TLS_SKIP_VERIFY`, and Drive vars
-under prefix `DRIVE_`: `DRIVE_URL`, `DRIVE_API_TOKEN`,
-`DRIVE_BASE_URL_CONFIG_PATH` (default `etc/config/baseurls.json`).
+`PORT`, `DEV_MODE`, `SITE_ID`, `MONGO_URI`, `MONGO_DB`, `MAX_IMAGE_SIZE_BYTES`
+(default `26214400` = 25 MiB), `OIDC_ISSUER_URL`, `OIDC_AUDIENCES`,
+`TLS_SKIP_VERIFY`, and Drive vars under prefix `DRIVE_`: `DRIVE_URL`,
+`DRIVE_API_TOKEN`, `DRIVE_BASE_URL_CONFIG_PATH` (default
+`etc/config/baseurls.json`).
 
 ## 5. Testing (TDD, Red → Green → Refactor)
 
@@ -460,7 +494,8 @@ under prefix `DRIVE_`: `DRIVE_URL`, `DRIVE_API_TOKEN`,
    here can't carry it — multipart upload / bodyless GET); validated via
    `pkg/oidc.Validator`.
 2. New package location is `pkg/drive`.
-3. `MAX_FILES` defaults to **10**.
+3. ~~`MAX_FILES` defaults to **10**.~~ **Superseded** (single-image API): the
+   per-image ceiling is `MAX_IMAGE_SIZE_BYTES` (default `26214400` = 25 MiB).
 4. Drive `groupId == roomId`; Drive `origin == room.SiteID`.
 5. ~~Any Drive download failure maps to **502 Bad Gateway**.~~ **Superseded** (errcode adoption): errcode has no 502, so Drive failures map to **503 `unavailable`**, and room-not-found maps to **404 `not_found`** (semantic statuses).
 

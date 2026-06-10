@@ -41,8 +41,8 @@ func TestClient_UploadGroupImages(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(&Config{URL: srv.URL, Token: "tok"})
-	files := []MultipartFile{{File: fakeMultipart("aaa"), Filename: "a.png"}}
-	resp, err := c.UploadGroupImages("alice", "Alice", "a@x.com", "r1", "site-x", files)
+	resp, err := c.UploadGroupImages("alice", "Alice", "a@x.com", "r1", "site-x",
+		[]MultipartFile{{File: fakeMultipart("aaa"), Filename: "a.png"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
