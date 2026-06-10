@@ -1,0 +1,75 @@
+name: avatar-service
+
+services:
+  avatar-service:
+    build:
+      context: ../..
+      dockerfile: avatar-service/deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=info
+      - SITE_ID=site-local
+      # Maps siteID=baseURL for cross-cluster avatar redirects. Adjust for your local setup.
+      - CLUSTER_DOMAINS=site-local=http://localhost:8080
+      - EMPLOYEE_PHOTO_BASE_URL=http://localhost:8081/photos
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_USE_SSL=false
+      - AVATAR_BUCKET=avatars
+      - MAX_UPLOAD_BYTES=1048576
+      - CACHE_MAX_AGE_SECONDS=21600
+    networks:
+      - chat-local
+
+  mongodb:
+    image: mongo:8.2.9
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'db.runCommand({ping:1}).ok' | mongosh --quiet | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - chat-local
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || wget -qO- http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - chat-local
+
+volumes:
+  mongo-data:
+  minio-data:
+
+networks:
+  chat-local:
+    external: true
