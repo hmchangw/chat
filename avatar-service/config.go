@@ -1,6 +1,5 @@
 package main
 
-//nolint:unused // wired in a later task
 type config struct {
 	Port     string `env:"PORT" envDefault:"8080"`
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
@@ -28,4 +27,4 @@ type config struct {
 }
 
 // clusterBaseURL returns the configured base URL for a site, or "" if unknown.
-func (c config) clusterBaseURL(siteID string) string { return c.ClusterDomains[siteID] }
+func (c *config) clusterBaseURL(siteID string) string { return c.ClusterDomains[siteID] }

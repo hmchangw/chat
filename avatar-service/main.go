@@ -1,11 +1,77 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/gin-gonic/gin"
+
+	"github.com/hmchangw/chat/pkg/minioutil"
+	"github.com/hmchangw/chat/pkg/mongoutil"
+	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("avatar-service exited", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	// TODO: wire config, MongoDB, MinIO, NATS, and HTTP server (avatar-service Task 4+).
+	ctx := context.Background()
+
+	cfg, err := env.ParseAs[config]()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
+	if err != nil {
+		return fmt.Errorf("connect mongo: %w", err)
+	}
+	store := newMongoStore(mongoClient.Database(cfg.MongoDB))
+
+	minioClient, err := minioutil.Connect(ctx, cfg.MinioEndpoint, cfg.MinioUseSSL, cfg.MinioAccessKey, cfg.MinioSecretKey)
+	if err != nil {
+		return fmt.Errorf("connect minio: %w", err)
+	}
+	blobs := newMinioBlobStore(minioClient, cfg.AvatarBucket)
+
+	h := newHandler(store, blobs, &cfg)
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(requestIDMiddleware())
+	r.Use(accessLogMiddleware())
+	r.Use(corsMiddleware())
+	registerRoutes(r, h)
+	registerUploadRoutes(r, h)
+
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%s", cfg.Port),
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	go func() {
+		slog.Info("avatar-service listening", "port", cfg.Port, "site", cfg.SiteID)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+		}
+	}()
+
+	shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
+		slog.Info("shutting down avatar-service")
+		return srv.Shutdown(ctx)
+	})
+	return nil
 }
