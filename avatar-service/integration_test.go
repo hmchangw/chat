@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,4 +104,31 @@ func TestMongoStore_AvatarAndSetBotAvatar(t *testing.T) {
 	count, err := db.Collection("avatars").CountDocuments(ctx, bson.M{"_id": "bot:helper.bot"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
+}
+
+func TestMinioBlobStore_PutGet(t *testing.T) {
+	client, bucket := testutil.MinIO(t, "avatar")
+	ctx := context.Background()
+	bs := newMinioBlobStore(client, bucket)
+
+	etag, err := bs.Put(ctx, "bot/x", strings.NewReader("PNGDATA"), int64(len("PNGDATA")), "image/png")
+	require.NoError(t, err)
+	assert.NotEmpty(t, etag)
+
+	rc, info, err := bs.Get(ctx, "bot/x")
+	require.NoError(t, err)
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, "PNGDATA", string(body))
+	assert.Equal(t, "image/png", info.ContentType)
+	assert.Equal(t, int64(7), info.Size)
+	assert.NotEmpty(t, info.ETag)
+}
+
+func TestMinioBlobStore_GetMissing(t *testing.T) {
+	client, bucket := testutil.MinIO(t, "avatar")
+	bs := newMinioBlobStore(client, bucket)
+	_, _, err := bs.Get(context.Background(), "bot/missing")
+	assert.ErrorIs(t, err, errBlobNotFound)
 }
