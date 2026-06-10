@@ -322,8 +322,17 @@ image bytes; `Content-Type` declares the format). **Bots are the only uploadable
 kind in v1** — users and rooms never upload (§1). On success the custom image
 takes priority over the dynamic default on the bot's GET path.
 
+`:botName` is parsed **exactly like Endpoint 1's account** (§5): `localPart` +
+optional `@domain`. The avatars doc keys on `localPart` (`_id = bot:{localPart}`),
+**identical to the GET read key** (§6), so an upload and its later read always
+address the same doc. The `domain` (when present) drives the cluster-locality
+check (§7a.3).
+
 ### 7a.1 Validation & security (mandatory)
 
+- **Well-formed bot account.** `localPart` (after stripping any `@domain`) MUST
+  match `botPattern` (`.bot` suffix); otherwise `400` (`errcode.BadRequest`).
+  This prevents `_id` pollution from arbitrary `PUT /bot/<anything>`.
 - **Raster only — reject `image/svg+xml` uploads.** A user-supplied SVG served
   from our origin is **stored XSS** (SVG can carry `<script>`/`foreignObject`).
   v1 allowlist: **`image/png`, `image/jpeg`** (WebP deferred — §9). The *default*
@@ -349,7 +358,7 @@ takes priority over the dynamic default on the bot's GET path.
   `minioKey`, used as-is on reads — never re-derived from a convention (migrated
   room objects keep their legacy paths, §4.4). The **detected** content-type
   (from decode, not the client header) is set as object metadata and stored.
-- The upserted doc (`_id = bot:{botName}`, §4.4) records `minioKey`,
+- The upserted doc (`_id = bot:{localPart}`, §4.4) records `minioKey`,
   `contentType`, `size`, `etag` and bumps `updatedAt`; its presence is the GET
   existence check (§6). A re-upload **overwrites** in place.
 - No `DELETE`/reset in v1 (§1): a custom bot avatar can be overwritten by a new
