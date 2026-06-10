@@ -31,7 +31,7 @@ func TestSanitizeInitial(t *testing.T) {
 		"7eleven": "7",
 		"</text>": "?",
 		"":        "?",
-		" x":      "?",
+		" x":      "?", //nolint:gocritic // intentional: test sanitizeInitial with leading space
 	}
 	for in, want := range cases {
 		assert.Equalf(t, want, sanitizeInitial(in), "sanitizeInitial(%q)", in)
