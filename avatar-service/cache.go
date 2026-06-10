@@ -13,8 +13,6 @@ type cacheEntry struct {
 // ttlCache is a tiny thread-safe cache with a TTL and a hard capacity. When the
 // capacity is exceeded it drops all entries (simple bounded behaviour — the
 // cache is only an accelerator). Stores positive lookups only.
-//
-//nolint:unused // wired in a later task
 type ttlCache struct {
 	mu  sync.Mutex
 	m   map[string]cacheEntry
@@ -22,7 +20,6 @@ type ttlCache struct {
 	ttl time.Duration
 }
 
-//nolint:unused // wired in a later task
 func newTTLCache(capacity int, ttl time.Duration) *ttlCache {
 	return &ttlCache{m: make(map[string]cacheEntry), cap: capacity, ttl: ttl}
 }

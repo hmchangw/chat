@@ -44,7 +44,9 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 	}
 	if siteID != h.cfg.SiteID {
 		base := h.cfg.clusterBaseURL(siteID)
-		errhttp.Write(ctx, c, errcode.Conflict(fmt.Sprintf("bot is owned by another cluster; upload to %s", base)))
+		errhttp.Write(ctx, c, errcode.Conflict(
+			fmt.Sprintf("bot is owned by another cluster; upload to %s", base),
+			errcode.WithReason(errcode.AvatarWrongCluster)))
 		return
 	}
 

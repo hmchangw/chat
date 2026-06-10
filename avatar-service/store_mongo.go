@@ -55,7 +55,6 @@ func (s *mongoStore) BotSite(ctx context.Context, account string) (string, bool,
 	return u.SiteID, true, nil
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func (s *mongoStore) RoomSite(ctx context.Context, roomID string) (string, model.RoomType, string, bool, error) {
 	var sub model.Subscription
 	err := s.subscriptions.FindOne(ctx, bson.M{"roomId": roomID},
@@ -69,7 +68,6 @@ func (s *mongoStore) RoomSite(ctx context.Context, roomID string) (string, model
 	return sub.SiteID, sub.RoomType, sub.Name, true, nil
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func (s *mongoStore) Avatar(ctx context.Context, subjectType model.AvatarSubjectType, subjectID string) (*model.Avatar, bool, error) {
 	id := string(subjectType) + ":" + subjectID
 	var av model.Avatar
@@ -83,7 +81,6 @@ func (s *mongoStore) Avatar(ctx context.Context, subjectType model.AvatarSubject
 	return &av, true, nil
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func (s *mongoStore) SetBotAvatar(ctx context.Context, av *model.Avatar) error {
 	_, err := s.avatars.ReplaceOne(ctx, bson.M{"_id": av.ID}, av, options.Replace().SetUpsert(true))
 	if err != nil {
