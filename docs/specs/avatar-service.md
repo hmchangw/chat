@@ -105,26 +105,34 @@ images (§4.4).
 
 ## 4. Common mechanisms
 
-### 4.1 Proxy streaming (the MinIO-hit "serve image" step)
+### 4.1 Serving a stored image (the MinIO path)
 
-When a **stored** image (a custom bot upload, or a migrated room image) lives in
-*this* cluster's MinIO, the handler relays the bytes rather than redirecting:
+The read path (§6/§7) reaches here **with the `avatars` doc `av` already in hand**
+(the `_id` lookup that proved the image exists). Serving is driven by the doc, so
+warm-cache revalidation never touches MinIO:
 
-1. `obj, err := mc.GetObject(ctx, bucket, key, opts)` — `*minio.Object` is an `io.Reader`.
-2. `st, err := obj.Stat()` → `Size`, `ContentType`, `ETag`.
-   - **NotFound → fall through to the dynamic default (§8)** — *not* a stored asset.
-   - other error → `fmt.Errorf("stat object: %w", err)` → collapses to `internal`.
-3. Set `Cache-Control: public, max-age=<cfg>` and `ETag: st.ETag`.
-4. If request `If-None-Match` == `st.ETag` → `304 Not Modified`, no body.
-5. `c.DataFromReader(http.StatusOK, st.Size, st.ContentType, obj, nil)` — streams.
+1. Set `Cache-Control: public, max-age=<cfg>` and `ETag: av.ETag`.
+2. **Conditional revalidation — no MinIO call.** If `If-None-Match == av.ETag` →
+   `304 Not Modified`, empty body, return. This is the dominant warm-cache path;
+   the denormalized `av.ETag` (§4.4) lets it skip MinIO entirely.
+3. Otherwise fetch the bytes: `obj := mc.GetObject(ctx, bucket, av.MinioKey)`,
+   then `st, err := obj.Stat()` (`defer obj.Close()`):
+   - **NotFound → dynamic default (§8).** A doc without its object is an
+     inconsistency (e.g. a migrated `path` that no longer resolves); fall back
+     rather than error, so the request never dead-ends.
+   - other error → `fmt.Errorf("stat avatar object: %w", err)` → collapses to `internal`.
+4. `c.DataFromReader(http.StatusOK, st.Size, st.ContentType, obj, nil)` — streams.
 
 Rationale: the cacheable URL stays stable (avatar-service's own URL), so
-`Cache-Control` actually works and `ETag` enables conditional GET. Redirecting
+`Cache-Control`/`ETag` work and the 304 is answered from Mongo alone; redirecting
 to a MinIO presigned URL would defeat caching (expiring `Location`) and add a hop.
+The 200 (cold-fetch) path uses the authoritative `Stat` values so it stays correct
+even if doc and object disagree — `av.Size`/`av.ContentType` are kept for audit
+and a future no-Stat fast path, **not** the live 200 response (only `av.ETag` is
+on the hot path).
 
-This path only applies when MinIO actually holds a stored image. A miss does
-**not** stream a stored default — the default is generated on the fly (§8) and
-never written back.
+A doc-miss in §6/§7 (no `av`) never reaches here — the default is generated on the
+fly (§8) and never written back.
 
 ### 4.2 Cross-cluster loop breaker (`?fwd=1`)
 
@@ -247,7 +255,7 @@ if hasSuffix(localPart, ".bot"):            # ── bot (cluster-bound)
     if owning != "" && owning != cfg.SiteID && !fwd:
         307 → https://{clusterDomain(owning)}/avatar/v1/{accountName}?fwd=1
     if av, found := store.Avatar(ctx, "bot", localPart); found:
-        proxyStream(mc.GetObject(ctx, bucket, av.MinioKey))   # custom upload (§4.1)
+        serveStored(av)                                       # 304 / stream (§4.1)
     else:
         serveDefault(localPart)                               # dynamic SVG (§8)
 else:                                        # ── user (synced; domain informational)
@@ -289,9 +297,9 @@ if room.RoomType in {dm, botDM}:    serveDefault(roomID)   # frontend should use
 if room.SiteID != cfg.SiteID && !fwd:
     307 → https://{clusterDomain(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1
 if av, found := store.Avatar(ctx, "room", roomID); found:
-    proxyStream(mc.GetObject(ctx, bucket, av.MinioKey))   # migrated custom image (§4.1)
+    serveStored(av)                                      # 304 / stream (§4.1)
 else:
-    serveDefault(roomID)                                   # dynamic SVG (§8)
+    serveDefault(roomID)                                 # dynamic SVG (§8)
 ```
 
 - Owning site + room type come from the `subscriptions` collection
