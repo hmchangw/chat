@@ -64,7 +64,8 @@ NATS callout. Mongo + MinIO backed.
 | `mock_store_test.go` | Generated mock (never hand-edited) |
 | `deploy/` | `Dockerfile`, `docker-compose.yml`, `azure-pipelines.yml` |
 
-Mandatory cross-cutting: `GET /healthz`; the auth-service middleware trio —
+Mandatory cross-cutting: `GET /healthz` (liveness 200; dependency-readiness
+probing is out of scope for v1); the auth-service middleware trio —
 `requestIDMiddleware` (via `idgen.ResolveRequestID` + `natsutil.WithRequestID`),
 `accessLogMiddleware` (`slog` JSON: method/path/status/latency/request_id), CORS;
 `errcode`/`errhttp` for client-facing errors; server timeouts; ≥80% coverage via
@@ -142,6 +143,11 @@ A request resolves to at most **one** cross-cluster hop. When forwarding,
 append `?fwd=1`. A handler that sees `fwd=1` MUST resolve locally or fall back
 to the dynamic default image — it MUST NOT redirect cross-cluster again. The
 dynamic default (§8) is the universal backstop that guarantees termination.
+
+If the resolved owning site has **no `CLUSTER_DOMAINS` entry** (misconfig /
+unknown site), the handler cannot build a redirect target → it serves the dynamic
+default rather than redirecting to nowhere, preserving the never-dead-end
+guarantee.
 
 ### 4.3 Caching
 
@@ -232,6 +238,10 @@ Migration rules:
 4. Legacy `progress` / `complete` / `uploading` are **not** carried over — the
    single-PUT upload model (§7a.2) tracks no upload state.
 
+The migration is a **separate one-off job, run outside avatar-service**, and is
+**idempotent** (upsert by `_id`), so it can be re-run safely. It needs no
+coordination with the service: a doc becomes live the moment it is written.
+
 ## 5. Account format & parsing (Endpoint 1)
 
 | Kind | Forms | Routing |
@@ -280,7 +290,8 @@ else:                                        # ── user (synced; domain infor
 - `Cache-Control: public, max-age=<cfg>` on every response (incl. redirects).
 - **Correctness rule:** a mapping-cache *miss* falls back to the DB; it must
   **not** skip to the default branch (that would give a real user the wrong
-  avatar). The cache is an accelerator only — bounded LRU + TTL.
+  avatar). The cache is an accelerator only — bounded LRU + TTL, and
+  **thread-safe** (Gin serves requests concurrently).
 - `accountName`, `eid` are validated/escaped (`url.PathEscape`, allowlist
   regex) before being placed in a redirect `Location`.
 - **Frontend-default contract:** once we 307 to the employee-photo host we no
@@ -350,8 +361,11 @@ check (§7a.3).
 - **Size cap**: enforce `MAX_UPLOAD_BYTES` via `http.MaxBytesReader` before
   reading the body.
 - **Verify the bytes are really an image**: decode with the stdlib `image`
-  package (`image/png`, `image/jpeg`) and reject on decode failure. Optionally
-  re-encode to a normalized format to strip EXIF/metadata and defeat polyglots.
+  package (`image/png`, `image/jpeg`) and reject on decode failure. **v1 stores
+  the original bytes** (no re-encode) — uploads are admin-only with low EXIF risk,
+  and polyglots are neutralized on serving by the correct `Content-Type` +
+  `nosniff` + CSP (below), not by re-encoding. (Re-encode-to-normalize is a future
+  option, §9.)
 - All served responses set `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: default-src 'none'`, so a browser neither MIME-sniffs
   the bytes into something executable nor runs any script if a generated SVG is
@@ -516,7 +530,8 @@ the rendering in one place.
   listener) and purely additive; v1 preserves the seams (ctx everywhere + a typed
   read-outcome in the access log → future `resolution_total{kind,outcome}`).
 - **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
-  Also TBD: re-encode-to-normalize vs store-as-is.
+- **Re-encode-to-normalize uploads** (strip EXIF / extra polyglot defense):
+  deferred — v1 stores original bytes (§7a.1).
 - **`?v` cache-busting:** not in v1 — no `version` is stored (§4.4) and the
   frontend's room/bot metadata carries none to append; v1 relies on `ETag`
   revalidation (§4.3). Revisit if/when version propagation to the frontend is
