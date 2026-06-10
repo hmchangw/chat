@@ -10,8 +10,6 @@ import (
 
 // avatarStore is the data access this service needs. Each method reads/writes
 // exactly one collection: users, subscriptions, or avatars.
-//
-//nolint:unused // wired in main.go in a subsequent task
 type avatarStore interface {
 	// EmployeeID returns a user's employeeId (users collection). found=false when
 	// the account has no user record or no employeeId.

@@ -12,14 +12,12 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-//nolint:unused // wired in main.go in a subsequent task
 type mongoStore struct {
 	users         *mongo.Collection
 	subscriptions *mongo.Collection
 	avatars       *mongo.Collection
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func newMongoStore(db *mongo.Database) *mongoStore {
 	return &mongoStore{
 		users:         db.Collection("users"),
@@ -28,7 +26,6 @@ func newMongoStore(db *mongo.Database) *mongoStore {
 	}
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func (s *mongoStore) EmployeeID(ctx context.Context, account string) (string, bool, error) {
 	var u model.User
 	err := s.users.FindOne(ctx, bson.M{"account": account},
@@ -45,7 +42,6 @@ func (s *mongoStore) EmployeeID(ctx context.Context, account string) (string, bo
 	return u.EmployeeID, true, nil
 }
 
-//nolint:unused // wired in main.go in a subsequent task
 func (s *mongoStore) BotSite(ctx context.Context, account string) (string, bool, error) {
 	var u model.User
 	err := s.users.FindOne(ctx, bson.M{"account": account},
