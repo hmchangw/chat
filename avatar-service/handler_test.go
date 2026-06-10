@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,9 +42,13 @@ type fakeBlobStore struct {
 	objects map[string][]byte
 	info    map[string]blobInfo
 	putErr  error
+	getErr  error
 }
 
 func (f *fakeBlobStore) Get(_ context.Context, key string) (io.ReadCloser, blobInfo, error) {
+	if f.getErr != nil {
+		return nil, blobInfo{}, f.getErr
+	}
 	b, ok := f.objects[key]
 	if !ok {
 		return nil, blobInfo{}, errBlobNotFound
@@ -221,4 +226,69 @@ func TestEndpoint2_SiteidHint_Local_AvatarsLookupOnly(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1?siteid=s1", nil))
 	assert.Equal(t, http.StatusOK, w.Code) // default, no RoomSite call
+}
+
+func TestEndpoint1_BotSiteError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("", false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestEndpoint1_BotAvatarError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").Return(nil, false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestEndpoint1_UserEmployeeIDError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().EmployeeID(gomock.Any(), "alice").Return("", false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/alice", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestServeStored_BlobError_500(t *testing.T) {
+	r, store, blobs := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
+		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
+	blobs.getErr = errors.New("minio down")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestServeStored_BlobNotFound_FallsBackToDefault(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectBot, "helper.bot").
+		Return(&model.Avatar{MinioKey: "bot/helper.bot", ETag: `"e1"`}, true, nil)
+	// blobs has no object for that key → Get returns errBlobNotFound → default SVG
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/helper.bot", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/svg+xml", w.Header().Get("Content-Type"))
+}
+
+func TestEndpoint2_RoomSiteError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().RoomSite(gomock.Any(), "room-1").Return("", model.RoomType(""), "", false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestEndpoint2_RoomAvatarError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().RoomSite(gomock.Any(), "room-1").Return("s1", model.RoomTypeChannel, "General", true, nil)
+	store.EXPECT().Avatar(gomock.Any(), model.AvatarSubjectRoom, "room-1").Return(nil, false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/avatar/v1/room/room-1", nil))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
