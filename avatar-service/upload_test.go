@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/png"
 	"net/http"
@@ -84,4 +85,30 @@ func TestUpload_Success_StoresThenUpserts(t *testing.T) {
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
 	_, ok := blobs.objects["bot/helper.bot"]
 	assert.True(t, ok, "object stored before the doc")
+}
+
+func TestUpload_BotSiteError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("", false, errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestUpload_PutError_500(t *testing.T) {
+	r, store, blobs := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	blobs.putErr = errors.New("minio down")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestUpload_SetBotAvatarError_500(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	store.EXPECT().SetBotAvatar(gomock.Any(), gomock.Any()).Return(errors.New("mongo down"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
