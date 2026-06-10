@@ -14,9 +14,10 @@ services:
       - PORT=8080
       - DEV_MODE=${DEV_MODE:-true}
       - SITE_ID=${SITE_ID:-site-local}
-      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - MAX_FILES=10
+      - MAX_IMAGE_SIZE_BYTES=26214400
       - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
       - OIDC_AUDIENCES=nats-chat
       - TLS_SKIP_VERIFY=false

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -80,7 +81,7 @@ func (c *Client) UploadGroupImages(userID, username, email, groupID, origin stri
 		return nil, fmt.Errorf("upload group images: %w", err)
 	}
 	if resp.IsError() {
-		return nil, fmt.Errorf("drive bulk upload returned status %d", resp.StatusCode())
+		return nil, fmt.Errorf("drive bulk upload returned status %d: %s", resp.StatusCode(), strings.TrimSpace(resp.String()))
 	}
 	return result, nil
 }

@@ -28,7 +28,10 @@ type config struct {
 	MongoUsername string `env:"MONGO_USERNAME"  envDefault:""`
 	MongoPassword string `env:"MONGO_PASSWORD"  envDefault:""`
 
+	// MaxFiles caps the number of images per upload request.
 	MaxFiles int `env:"MAX_FILES" envDefault:"10"`
+	// MaxImageSizeBytes is the per-image upload ceiling (default 25 MiB).
+	MaxImageSizeBytes int64 `env:"MAX_IMAGE_SIZE_BYTES" envDefault:"26214400"`
 
 	OIDCIssuerURL string   `env:"OIDC_ISSUER_URL"`
 	OIDCAudiences []string `env:"OIDC_AUDIENCES" envSeparator:","`
@@ -82,7 +85,7 @@ func run() error {
 		validator = v
 	}
 
-	handler := NewHandler(store, driveClient, cfg.MaxFiles)
+	handler := NewHandler(store, driveClient, cfg.MaxFiles, cfg.MaxImageSizeBytes)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

@@ -52,7 +52,4 @@ func TestAllowedImageFileTypes(t *testing.T) {
 	if AllowedImageFileTypes[".exe"] {
 		t.Fatal(".exe must not be allowed")
 	}
-	if UploadImageMaxSizeBytes != 25*1024*1024 {
-		t.Fatalf("max size = %d", UploadImageMaxSizeBytes)
-	}
 }

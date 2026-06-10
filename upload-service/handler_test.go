@@ -19,6 +19,11 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+const (
+	testMaxFiles           = 10
+	testMaxImageSize int64 = 25 << 20
+)
+
 // fakeDrive implements driveClient for handler tests.
 type fakeDrive struct {
 	uploadResp []drive.UploadGroupImageResponse
@@ -46,6 +51,7 @@ func (f *fakeDrive) GetGroupImage(host, groupID, fileID string) (*drive.GetGroup
 }
 func (f *fakeDrive) GetBaseURLFromRoomOrigin(string) string { return f.baseURL }
 
+// multipartBody builds a multipart body with the named files under one field.
 func multipartBody(t *testing.T, field string, files map[string][]byte) (*bytes.Buffer, string) {
 	t.Helper()
 	body := &bytes.Buffer{}
@@ -64,7 +70,7 @@ func newUploadCtx(t *testing.T, roomID string, body *bytes.Buffer, contentType s
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	req := httptest.NewRequest(http.MethodPost, "/api/v4/rooms/"+roomID+"/upload/protected-images", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/"+roomID+"/upload/images", body)
 	req.Header.Set("Content-Type", contentType)
 	c.Request = req
 	if roomID != "" {
@@ -80,34 +86,38 @@ func okUser() *AuthenticatedUser {
 	return &AuthenticatedUser{User: model.User{Account: "alice", EngName: "Alice", ChineseName: "陳"}, Email: "alice@x.com"}
 }
 
+func newHandler(store Store, dc driveClient) *Handler {
+	return NewHandler(store, dc, testMaxFiles, testMaxImageSize)
+}
+
 func TestUpload_MissingRoomID_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	c, w := newUploadCtx(t, "", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
 
 func TestUpload_NoUserInContext_500(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	c, w := newUploadCtx(t, "r1", body, ct, nil)
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Equal(t, "internal", decodeErr(t, w).Code)
 }
 
 func TestUpload_NoEmail_500(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	u := okUser()
 	u.Email = ""
 	c, w := newUploadCtx(t, "r1", body, ct, u)
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Equal(t, "internal", decodeErr(t, w).Code)
 }
@@ -116,10 +126,10 @@ func TestUpload_NotMember_403(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(false, nil)
-	h := NewHandler(store, &fakeDrive{}, 10)
+	h := newHandler(store, &fakeDrive{})
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	env := decodeErr(t, w)
 	assert.Equal(t, "forbidden", env.Code)
@@ -131,10 +141,10 @@ func TestUpload_RoomNotFound_404(t *testing.T) {
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, ErrRoomNotFound)
-	h := NewHandler(store, &fakeDrive{}, 10)
+	h := newHandler(store, &fakeDrive{})
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Equal(t, "not_found", decodeErr(t, w).Code)
 }
@@ -144,9 +154,9 @@ func TestUpload_NotMultipart_400(t *testing.T) {
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-x"}, nil)
-	h := NewHandler(store, &fakeDrive{}, 10)
+	h := newHandler(store, &fakeDrive{})
 	c, w := newUploadCtx(t, "r1", bytes.NewBufferString("not-multipart"), "text/plain", okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
@@ -156,10 +166,10 @@ func TestUpload_TooManyFiles_400(t *testing.T) {
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-x"}, nil)
-	h := NewHandler(store, &fakeDrive{}, 1) // limit 1
+	h := NewHandler(store, &fakeDrive{}, 1, testMaxImageSize) // limit 1
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x"), "b.png": []byte("y")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
@@ -170,20 +180,41 @@ func TestUpload_AllRejected_EarlyExit_NoDriveCall(t *testing.T) {
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-x"}, nil)
 	fd := &fakeDrive{}
-	h := NewHandler(store, fd, 10)
+	h := newHandler(store, fd)
 	// .exe is an invalid type -> rejected in preprocessing.
 	body, ct := multipartBody(t, "images", map[string][]byte{"big.exe": []byte("x")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 0, fd.uploadGot.n, "drive must not be called when all files are rejected")
 	var got struct {
-		Results []drive.UploadProtectedImageResponse `json:"results"`
+		Results []uploadResultItem `json:"results"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got.Results, 1)
 	assert.Equal(t, "failure", got.Results[0].Status)
 	assert.Equal(t, "file has an invalid file type", got.Results[0].Error)
+}
+
+func TestUpload_OversizeRejectedPerFile(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-x"}, nil)
+	fd := &fakeDrive{}
+	h := NewHandler(store, fd, testMaxFiles, 4) // 4-byte per-image ceiling
+	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("0123456789")})
+	c, w := newUploadCtx(t, "r1", body, ct, okUser())
+	h.HandleUploadImages(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 0, fd.uploadGot.n, "oversized file must not reach drive")
+	var got struct {
+		Results []uploadResultItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Results, 1)
+	assert.Equal(t, "failure", got.Results[0].Status)
+	assert.Equal(t, "file size exceeds limit", got.Results[0].Error)
 }
 
 func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
@@ -197,11 +228,11 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 			{Status: "Success", File: drive.GroupImageObject{FileID: "img-xyz", GroupID: "r1", Filename: "a.png"}},
 		},
 	}
-	h := NewHandler(store, fd, 10)
+	h := newHandler(store, fd)
 	// one valid (a.png), one invalid (big.exe).
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x"), "big.exe": []byte("y")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 1, fd.uploadGot.n, "only the valid file reaches drive")
@@ -211,11 +242,11 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 	assert.Equal(t, "site-x", fd.uploadGot.origin)
 
 	var got struct {
-		Results []drive.UploadProtectedImageResponse `json:"results"`
+		Results []uploadResultItem `json:"results"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got.Results, 2)
-	var success, failure drive.UploadProtectedImageResponse
+	var success, failure uploadResultItem
 	for _, r := range got.Results {
 		if r.Status == "Success" {
 			success = r
@@ -224,7 +255,7 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "a.png", success.Name)
-	assert.Equal(t, "api/v4/rooms/r1/protected-image/img-xyz?drive_host=https://drive.example.com", success.RelativePath)
+	assert.Equal(t, "api/v1/rooms/r1/image/img-xyz?drive_host=https://drive.example.com", success.RelativePath)
 	assert.Equal(t, "big.exe", failure.Name)
 	assert.Equal(t, "file has an invalid file type", failure.Error)
 }
@@ -235,10 +266,10 @@ func TestUpload_DriveError_500(t *testing.T) {
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", SiteID: "site-x"}, nil)
 	fd := &fakeDrive{uploadErr: errors.New("boom")}
-	h := NewHandler(store, fd, 10)
+	h := newHandler(store, fd)
 	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
 	c, w := newUploadCtx(t, "r1", body, ct, okUser())
-	h.HandleUploadProtectedImages(c)
+	h.HandleUploadImages(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Equal(t, "internal", decodeErr(t, w).Code)
 }
@@ -259,7 +290,7 @@ func decodeErr(t *testing.T, w *httptest.ResponseRecorder) errEnvelope {
 
 func TestHandleHealth(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -271,7 +302,7 @@ func TestHandleHealth(t *testing.T) {
 
 func TestRegisterRoutes_HealthAndAuthGuard(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	// devMode=true so the auth middleware doesn't need a validator.
@@ -284,7 +315,7 @@ func TestRegisterRoutes_HealthAndAuthGuard(t *testing.T) {
 
 	// the api group rejects a request with no ssoToken header (401).
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v4/rooms/r1/protected-image/f1?drive_host=h", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/rooms/r1/image/f1?drive_host=h", nil))
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -297,7 +328,7 @@ func newDownloadCtx(t *testing.T, roomID, fileID, driveHost string, user *Authen
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	url := "/api/v4/rooms/" + roomID + "/protected-image/" + fileID
+	url := "/api/v1/rooms/" + roomID + "/image/" + fileID
 	if driveHost != "" {
 		url += "?drive_host=" + driveHost
 	}
@@ -318,36 +349,36 @@ func newDownloadCtx(t *testing.T, roomID, fileID, driveHost string, user *Authen
 
 func TestDownload_MissingRoomID_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
 
 func TestDownload_MissingFileID_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "", "https://d.example.com", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
 
 func TestDownload_MissingDriveHost_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
 
 func TestDownload_NoUser_500(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	h := NewHandler(NewMockStore(ctrl), &fakeDrive{}, 10)
+	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", nil)
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Equal(t, "internal", decodeErr(t, w).Code)
 }
@@ -356,9 +387,9 @@ func TestDownload_NotMember_403(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(false, nil)
-	h := NewHandler(store, &fakeDrive{}, 10)
+	h := newHandler(store, &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	env := decodeErr(t, w)
 	assert.Equal(t, "forbidden", env.Code)
@@ -370,9 +401,9 @@ func TestDownload_DriveError_503(t *testing.T) {
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
 	fd := &fakeDrive{getErr: errors.New("image not found")}
-	h := NewHandler(store, fd, 10)
+	h := newHandler(store, fd)
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Equal(t, "unavailable", decodeErr(t, w).Code)
 }
@@ -386,9 +417,9 @@ func TestDownload_Success_StreamsBinary(t *testing.T) {
 		ContentType:   "image/png",
 		ContentLength: 7,
 	}}
-	h := NewHandler(store, fd, 10)
+	h := newHandler(store, fd)
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadProtectedImage(c)
+	h.HandleDownloadImage(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))

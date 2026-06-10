@@ -15,7 +15,50 @@
 ## Post-review updates (applied after execution)
 
 The tasks below were executed as written, then revised during PR review
-(PR #263). Where this addendum conflicts with a task body, this addendum wins:
+(PR #263). Where this addendum conflicts with a task body, this addendum wins;
+later updates supersede earlier ones.
+
+### Update 3 — revert single-image back to batch
+
+The Update 2 single-image upload was reverted to the **batch** API (partial
+success), keeping the `/api/v1` move and the configurable size:
+
+- `POST /api/v1/rooms/:roomId/upload/images` (plural), form field `images`
+  (repeatable), handler `HandleUploadImages`. Download endpoint unchanged.
+- `200` body is `{ "results": [ { name, status, error?, relativePath? } ] }`;
+  per-file size/type/open rejections are `failure` entries (not request errors);
+  `relativePath` = `api/v1/rooms/{groupId}/image/{fileId}?drive_host=…`.
+- Drive client back to `UploadGroupImages([]MultipartFile) ([]resp, error)`
+  (bulk); `preprocessFiles` restored.
+- Both knobs apply: `MAX_FILES` (count, default 10, → 400 `too many files`) and
+  `MAX_IMAGE_SIZE_BYTES` (per-image bytes, default 25 MiB). `NewHandler(store,
+  drive, maxFiles, maxImageSize)`.
+
+### Update 2 — single-image API, `/api/v1`, configurable size
+
+- **Endpoints** moved to `/api/v1`: `POST /api/v1/rooms/:roomId/upload/image`
+  and `GET /api/v1/rooms/:roomId/image/:fileId`. `relativePath` is now
+  `api/v1/rooms/{groupId}/image/{fileId}?drive_host=…`.
+- **Single-image upload** replaces the batch flow: one file under the `image`
+  form field; validation failures (missing file / size / type) return a `4xx`
+  errcode rather than a per-file `results` array; success returns
+  `{ "name", "relativePath" }` (200). `preprocessFiles` was removed.
+- **Drive client**: `UploadGroupImages([]MultipartFile) ([]resp,…)` →
+  `UploadGroupImage(MultipartFile) (*resp,…)` (single file via the bulk
+  endpoint; returns the lone result, erroring on an empty result).
+- **Handlers renamed**: `HandleUploadProtectedImages`→`HandleUploadImage`,
+  `HandleDownloadProtectedImage`→`HandleDownloadImage`.
+- **Configurable max size**: `drive.UploadImageMaxSizeBytes` const removed; the
+  ceiling is now `MAX_IMAGE_SIZE_BYTES` (env, default `26214400` = 25 MiB),
+  passed into `NewHandler` and checked in the handler. `MAX_FILES` was removed.
+- Tests rewritten accordingly (`TestUpload_Success_200`,
+  `TestUpload_MissingImageFile_400`, `…_FileTooLarge_400`,
+  `…_InvalidFileType_400`, `…_DriveStatusFailure_500`; batch-specific tests
+  dropped). drive tests: `TestClient_UploadGroupImage` (+ `_EmptyResult`).
+
+### Update 1 — errcode adoption & review fixes
+
+Where this addendum conflicts with a task body, this addendum wins:
 
 - **Error model — adopted `pkg/errcode` + `pkg/errcode/errhttp`.** Task 7's
   bespoke `errorResponse{errorType,error}` envelope + `abortError` helper was

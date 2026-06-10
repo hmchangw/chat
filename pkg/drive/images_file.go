@@ -2,9 +2,6 @@ package drive
 
 import "io"
 
-// UploadImageMaxSizeBytes is the per-file upload ceiling (25 MiB).
-const UploadImageMaxSizeBytes int64 = 25 * 1024 * 1024
-
 // defaultContentType is used when a file's content type is unknown.
 const defaultContentType = "application/octet-stream"
 
@@ -35,14 +32,6 @@ type GetGroupImageResponse struct {
 	Reader        io.ReadCloser
 	ContentType   string
 	ContentLength int64
-}
-
-// UploadProtectedImageResponse is one item in the HTTP upload response.
-type UploadProtectedImageResponse struct {
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	Error        string `json:"error,omitempty"`
-	RelativePath string `json:"relativePath,omitempty"`
 }
 
 // UploadImageResponse is the public-image equivalent (kept for parity; unused
