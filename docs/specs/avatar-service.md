@@ -309,8 +309,11 @@ takes priority over the dynamic default on the bot's GET path.
 - **Verify the bytes are really an image**: decode with the stdlib `image`
   package (`image/png`, `image/jpeg`) and reject on decode failure. Optionally
   re-encode to a normalized format to strip EXIF/metadata and defeat polyglots.
-- All responses (GET and the served upload) set `X-Content-Type-Options:
-  nosniff` so browsers don't MIME-sniff the bytes into something executable.
+- All served responses set `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'`, so a browser neither MIME-sniffs
+  the bytes into something executable nor runs any script if a generated SVG is
+  opened as a top-level document. Both are unconditional and cheap (harmless on
+  PNG/JPEG, meaningful for the generated SVG, §8.1).
 
 ### 7a.2 Storage
 
@@ -375,11 +378,15 @@ func renderDefaultSVG(seed, initial string) []byte
   fixed hash (e.g. FNV-1a). Same `seed` → same colour, forever, everywhere.
 - **Initial** = the first display glyph; CJK names render via the client's
   system fonts (SVG `<text>`), so **no embedded font and zero new dependencies**.
-- **Injection-safe (mandatory):** `seed`/`initial` are user-controlled (room
-  name, account), so any value placed in the SVG `<text>` MUST be XML-escaped and
-  the initial restricted to a single safe rune. The output is served as
-  `image/svg+xml`, so an unescaped `<`/`>` is the **same stored-XSS** we reject
-  uploads for (§7a.1). (Tracked in §9.)
+- **Injection-safe (mandatory).** Only `initial` reaches the output; `seed` is
+  hash-only and never rendered. `initial` is reduced to the **first rune**, then
+  allowlisted to a letter/digit (Unicode `L*`/`Nd`, incl. CJK; uppercased when
+  cased); anything else (punctuation, symbol, control, combining/bidi/zero-width,
+  or empty) falls back to a single placeholder **`?`**. The chosen glyph is then
+  run through `html.EscapeString` before embedding (defense-in-depth — the
+  allowlist already excludes `<>&"'`). The output is served as `image/svg+xml`,
+  so an unescaped `<`/`>` would be the **same stored-XSS** we reject uploads for
+  (§7a.1); responses also carry `nosniff` + CSP `default-src 'none'` (§7a.1).
 - `Content-Type: image/svg+xml`.
 
 **Seed / initial sources:**
@@ -394,8 +401,10 @@ func renderDefaultSVG(seed, initial string) []byte
 
 Because the output is deterministic, the default is still cacheable:
 
-- `ETag` = `"<templateVersion>-<hex(stableHash(seed+initial))>"` — identical
-  across replicas and requests; `If-None-Match` → `304` works.
+- `ETag` = `"<templateVersion>-<hex(stableHash(seed + sanitizedInitial))>"` —
+  over the **sanitized** glyph (§8.1), so names that render to the same
+  colour+glyph share an ETag; identical across replicas/requests, so
+  `If-None-Match` → `304` works.
 - `templateVersion` is a build-time constant; bump it when the SVG template
   changes so existing caches re-fetch.
 - `Cache-Control: public, max-age=<cfg>` as usual.
@@ -437,10 +446,11 @@ the rendering in one place.
   `subjectType`/`subjectId`/`minioKey`/`contentType`/`size`/`etag`/`createdAt`/
   `updatedAt`; no `siteId`/`version`; migration maps the legacy collection (§4.4).
 
+- **Default-SVG injection (S1)** → first rune + letter/digit allowlist (else
+  placeholder `?`) + `html.EscapeString`, plus `nosniff` + CSP `default-src
+  'none'` on responses (§8.1, §7a.1).
+
 **Deferred / to address before implementation:**
-- **Default-SVG injection (S1):** the generated SVG embeds user-controlled text
-  in `<text>`; it MUST be XML-escaped and the initial restricted to a safe single
-  rune, or it is the same stored-XSS we reject uploaded SVGs for (§8).
 - **`?v` cache-bust propagation (C3):** the version lives on the `avatars` doc the
   frontend can't see; v1 is ETag-only (§4.3).
 - **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
