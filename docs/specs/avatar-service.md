@@ -273,6 +273,11 @@ else:                                        # ── user (synced; domain infor
   avatar). The cache is an accelerator only — bounded LRU + TTL.
 - `accountName`, `eid` are validated/escaped (`url.PathEscape`, allowlist
   regex) before being placed in a redirect `Location`.
+- **Frontend-default contract:** once we 307 to the employee-photo host we no
+  longer control the outcome — a user with an `employeeID` but no actual photo
+  gets a `404` there. The client MUST render its own fallback on image-load
+  failure (`<img onerror>`); our server-side default only covers bots, rooms, and
+  users with no `employeeID` (§9, accepted).
 
 ## 7. Endpoint 2 — `GET /avatar/v1/room/:roomID`
 
@@ -461,21 +466,30 @@ the rendering in one place.
   placeholder `?`) + `html.EscapeString`, plus `nosniff` + CSP `default-src
   'none'` on responses (§8.1, §7a.1).
 
-**Deferred / to address before implementation:**
-- **`?v` cache-bust propagation (C3):** the version lives on the `avatars` doc the
-  frontend can't see; v1 is ETag-only (§4.3).
-- **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
-  Also TBD: re-encode-to-normalize vs store-as-is.
+**Deferred (post-v1, decided):**
 - **OTel tracing + Prometheus `/metrics`:** deferred to post-v1. v1 ships
   auth-service-parity logging (slog + request-id + access-log, §2). The infra is
   ready to copy (`pkg/otelutil`; search-service's promauto + separate `/metrics`
   listener) and purely additive; v1 preserves the seams (ctx everywhere + a typed
   read-outcome in the access log → future `resolution_total{kind,outcome}`).
-- **Read-path privacy:** the employee-photo redirect `Location` exposes
-  `employeeID` (org-info leakage / account enumeration). Accept, or gate later.
-- **Employee-photo 404:** the external host may 404 for a user with no photo →
-  broken image (inherent to the redirect). A default is only served for *our*
-  lookups, not for the external host's 404.
+- **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
+  Also TBD: re-encode-to-normalize vs store-as-is.
+- **`?v` cache-busting:** not in v1 — no `version` is stored (§4.4) and the
+  frontend's room/bot metadata carries none to append; v1 relies on `ETag`
+  revalidation (§4.3). Revisit if/when version propagation to the frontend is
+  designed.
+
+**Accepted residual risks (by design):**
+- **Read-path privacy:** the employee-photo redirect `Location` exposes the
+  `employeeID` (org-info leakage / account enumeration). **Accepted** — GET is
+  public and must be `<img>`-loadable; gating would defeat the redirect design.
+- **Employee-photo 404 → frontend default (contract):** for a user who *has* an
+  `employeeID` but no actual photo, the external host 404s and we cannot serve our
+  own default (we already 307'd; we never fetch the photo). **Accepted**, relying
+  on a **frontend contract**: the client renders its own fallback on image-load
+  failure (`<img onerror>`, §6). Consequence: that one case shows the *frontend's*
+  default rather than our initials SVG — a minor, accepted visual inconsistency;
+  our server-side default still covers bots, rooms, and users with no `employeeID`.
 
 ## 10. Testing plan (TDD)
 
