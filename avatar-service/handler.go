@@ -1,10 +1,15 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 type handler struct {
@@ -25,4 +30,132 @@ func newHandler(store avatarStore, blobs blobStore, cfg *config) *handler {
 
 func (h *handler) HandleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+const forwardedParam = "fwd"
+const siteIDParam = "siteid"
+
+func (h *handler) setImageCacheHeaders(c *gin.Context, etag string) {
+	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d", h.cfg.CacheMaxAgeSeconds))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'")
+	if etag != "" {
+		c.Header("ETag", etag)
+	}
+}
+
+func (h *handler) serveDefault(c *gin.Context, kind, seed, name string) {
+	c.Set("avatar_kind", kind)
+	c.Set("avatar_outcome", "default")
+	etag := defaultETag(seed, name)
+	h.setImageCacheHeaders(c, etag)
+	c.Header("Content-Type", "image/svg+xml")
+	if c.GetHeader("If-None-Match") == etag {
+		c.Set("avatar_outcome", "304")
+		c.Status(http.StatusNotModified)
+		return
+	}
+	c.Data(http.StatusOK, "image/svg+xml", renderDefaultSVG(seed, name))
+}
+
+func (h *handler) serveStored(c *gin.Context, kind string, av *model.Avatar, fbSeed, fbName string) {
+	c.Set("avatar_kind", kind)
+	h.setImageCacheHeaders(c, av.ETag)
+	if m := c.GetHeader("If-None-Match"); m != "" && m == av.ETag {
+		c.Set("avatar_outcome", "304")
+		c.Status(http.StatusNotModified)
+		return
+	}
+	rc, info, err := h.blobs.Get(c.Request.Context(), av.MinioKey)
+	if errors.Is(err, errBlobNotFound) {
+		h.serveDefault(c, kind, fbSeed, fbName)
+		return
+	}
+	if err != nil {
+		c.Set("avatar_outcome", "error")
+		_ = c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer rc.Close()
+	c.Set("avatar_outcome", "stream")
+	c.DataFromReader(http.StatusOK, info.Size, info.ContentType, rc, nil)
+}
+
+// redirectCrossCluster writes a 307 to the owning cluster if it is remote and
+// resolvable; returns true if it handled the request.
+func (h *handler) redirectCrossCluster(c *gin.Context, kind, owning, path string) bool {
+	if owning == "" || owning == h.cfg.SiteID || c.Query(forwardedParam) != "" {
+		return false
+	}
+	base := h.cfg.clusterBaseURL(owning)
+	if base == "" {
+		return false // unknown site → caller falls through to default
+	}
+	c.Set("avatar_kind", kind)
+	c.Set("avatar_outcome", "redirect")
+	c.Redirect(http.StatusTemporaryRedirect, base+path+"?fwd=1")
+	return true
+}
+
+func (h *handler) HandleAccountAvatar(c *gin.Context) {
+	account, _ := parseAccount(c.Param("accountName"))
+	ctx := c.Request.Context()
+
+	if isBot(account) {
+		owning := c.Query(siteIDParam)
+		if owning == "" {
+			s, found, err := h.store.BotSite(ctx, account)
+			if err != nil {
+				c.Set("avatar_outcome", "error")
+				_ = c.Error(err)
+				c.Status(http.StatusInternalServerError)
+				return
+			}
+			if !found {
+				h.serveDefault(c, "bot", account, account)
+				return
+			}
+			owning = s
+		}
+		if h.redirectCrossCluster(c, "bot", owning, "/avatar/v1/"+url.PathEscape(account)) {
+			return
+		}
+		av, found, err := h.store.Avatar(ctx, model.AvatarSubjectBot, account)
+		if err != nil {
+			c.Set("avatar_outcome", "error")
+			_ = c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		if found {
+			h.serveStored(c, "bot", av, account, account)
+			return
+		}
+		h.serveDefault(c, "bot", account, account)
+		return
+	}
+
+	// user (always local)
+	eid, ok := h.eidCache.Get(account)
+	if !ok {
+		var found bool
+		var err error
+		eid, found, err = h.store.EmployeeID(ctx, account)
+		if err != nil {
+			c.Set("avatar_outcome", "error")
+			_ = c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		if !found {
+			h.serveDefault(c, "user", account, account)
+			return
+		}
+		h.eidCache.Put(account, eid)
+	}
+	c.Set("avatar_kind", "user")
+	c.Set("avatar_outcome", "redirect")
+	c.Redirect(http.StatusTemporaryRedirect,
+		fmt.Sprintf("%s/xxxPhoto/po/%s_120.JPG", h.cfg.EmployeePhotoBaseURL, url.PathEscape(eid)))
 }
