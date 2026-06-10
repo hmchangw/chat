@@ -1,5 +1,4 @@
-// Package publisher adapts a JetStream context to the service.EventPublisher
-// interface.
+// Package publisher adapts NATS connections to the service.EventPublisher interface.
 package publisher
 
 import (
@@ -12,8 +11,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// Publisher publishes byte payloads to JetStream subjects. Each publish blocks
-// on PubAck so transient JetStream failures surface as errors to the caller.
+// Publisher publishes byte payloads to NATS JetStream with dedup support.
 type Publisher struct {
 	js oteljetstream.JetStream
 }

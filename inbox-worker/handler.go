@@ -13,10 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 )
-
-//go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
@@ -39,13 +36,12 @@ type InboxStore interface {
 	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
 	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
 	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
-
-	// UpdateSubscriptionNamesForRoom mass-renames subscription mirrors on this site.
+	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room.
+	// Used when a channel is renamed — replicated via the outbox to remote sites.
 	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
-
-	// ApplySubscriptionVisibility mirrors room-worker's counterpart (same 3 branches).
-	// On a remote site this only updates mirrored subs whose users are homed here;
-	// OwnerAccount is load-bearing so $cond can promote the chosen owner's local mirror.
+	// ApplySubscriptionVisibility writes {restricted, externalAccess, roles} to all subs
+	// in the room. When restricted=true and ownerAccount is non-empty, a $cond pipeline
+	// demotes all accounts except ownerAccount to RoleMember.
 	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
 }
 
@@ -85,10 +81,10 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
 	case "thread_read":
 		return h.handleThreadRead(ctx, &evt)
-	case "room_renamed":
+	case model.OutboxRoomRenamed:
 		return h.handleRoomRenamed(ctx, &evt)
-	case "room_restricted":
-		return h.handleRoomRestricted(ctx, &evt)
+	case model.OutboxRoomRestricted:
+		return h.handleRoomVisibilityChanged(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -278,40 +274,30 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 	}
 	lastSeenAt := time.UnixMilli(e.LastSeenAt).UTC()
 	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
-		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
-			e.RoomID, e.ParentMessageID, e.Account, err)
+		return fmt.Errorf("apply thread read (room %q, thread %q, account %q): %w",
+			e.RoomID, e.ThreadRoomID, e.Account, err)
 	}
 	return nil
 }
 
 func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent) error {
-	var payload model.RoomRenamedOutboxPayload
-	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal room_renamed payload: %w", err)
+	var p model.RoomRenamedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &p); err != nil {
+		return errcode.Permanent(errcode.BadRequest("unmarshal room_renamed payload"))
 	}
-	slog.Info("processing room_renamed",
-		"roomID", payload.RoomID,
-		"newName", payload.NewName,
-		"requestID", natsutil.RequestIDFromContext(ctx))
-	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, payload.RoomID, payload.NewName); err != nil {
-		return fmt.Errorf("update subscription names for room %s: %w", payload.RoomID, err)
+	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, p.RoomID, p.NewName); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", p.RoomID, err)
 	}
 	return nil
 }
 
-func (h *Handler) handleRoomRestricted(ctx context.Context, evt *model.OutboxEvent) error {
-	var payload model.RoomRestrictedOutboxPayload
-	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal room_restricted payload: %w", err)
+func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.OutboxEvent) error {
+	var p model.RoomRestrictedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &p); err != nil {
+		return errcode.Permanent(errcode.BadRequest("unmarshal room_restricted payload"))
 	}
-	slog.Info("processing room_restricted",
-		"roomID", payload.RoomID,
-		"restricted", payload.Restricted,
-		"externalAccess", payload.ExternalAccess,
-		"ownerAccount", payload.OwnerAccount,
-		"requestID", natsutil.RequestIDFromContext(ctx))
-	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
-		return fmt.Errorf("apply restricted for room %s: %w", payload.RoomID, err)
+	if err := h.store.ApplySubscriptionVisibility(ctx, p.RoomID, p.Restricted, p.ExternalAccess, p.OwnerAccount); err != nil {
+		return fmt.Errorf("apply subscription visibility for room %s: %w", p.RoomID, err)
 	}
 	return nil
 }

@@ -799,7 +799,11 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"X-Request-ID header is required …"` — `bad_request` (reason `request_id_required`); the `X-Request-ID` header is absent or not a valid hyphenated UUID.
 
 ```json
-{ "error": "rename is only allowed in channel rooms" }
+{
+  "error": "rename is only allowed in channel rooms",
+  "code": "bad_request",
+  "reason": "non_channel_operation"
+}
 ```
 
 ##### Triggered events — success path
@@ -1190,7 +1194,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Behaviour notes
 
-- **Alert recomputation:** new `alert = oldSub.alert && len(newThreadUnread) > 0`. A thread-read can only clear an alert, never set one. When the post-removal `threadUnread` is empty, `alert` becomes false.
+- **Alert recomputation:** `alert = oldSub.alert && len(newThreadUnread) > 0`. A thread-read can only clear an alert, never set one. When the post-removal `threadUnread` is empty, `alert` becomes false. This computation runs atomically inside the MongoDB aggregation pipeline on the handler's site — not derived client-side.
 - **Concurrent local writes:** the room-`Subscription` update and the `ThreadSubscription` update run in parallel inside an `errgroup`. Both must succeed before the handler proceeds.
 - **Cross-site federation:** if the user's home site differs from the handler's site, a `thread_read` event is published to `outbox.{handlerSite}.to.{userSite}.thread_read` with payload `{account, roomId, threadRoomId, parentMessageId, newThreadUnread, alert, lastSeenAt, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the supplied `newThreadUnread`+`alert` to the local Subscription cache and applies `lastSeenAt`+`updatedAt`+`hasMention=false` to the local ThreadSubscription with an `$lt` order-safety guard so out-of-order delivery cannot regress the thread's read position.
 - **Defensive `roomId` filter:** the thread-subscription lookup additionally enforces that the supplied `threadId` belongs to the room named in the subject. Mismatches return `thread subscription not found` (rather than silently clearing an unrelated thread).
@@ -2124,10 +2128,12 @@ See [Error envelope](#6-error-envelope-reference). Errors:
 
 ##### Triggered events — success path
 
-A `DeleteRoomEvent` is fanned out by `broadcast-worker` (not published when the request hits an already-deleted message or loses a concurrent-delete CAS). The subject depends on room type:
+A `DeleteRoomEvent` is fanned out by `broadcast-worker` (not published when the request hits an already-deleted message or loses a concurrent-delete CAS). The subject and recipients depend on message type:
 
-- **Channel rooms — `chat.room.{roomID}.event`** — one publish to the room stream.
-- **DM/botDM rooms — `chat.user.{recipient}.event.room`** — published once per non-bot member.
+- **Top-level channel message — `chat.room.{roomID}.event`** — one publish to the room stream; all room subscribers receive it.
+- **Thread reply (TShow=false) in a channel** — `chat.user.{recipient}.event.room` — published once per thread subscriber (followers + @-mentioned accounts). Non-subscribers do not receive this event.
+- **Thread reply (TShow=true) in a channel** — `chat.room.{roomID}.event` — visible in the main channel, so the full room stream receives it.
+- **DM/botDM message — `chat.user.{recipient}.event.room`** — published once per non-bot member.
 
 The payload is flat:
 
@@ -2136,7 +2142,8 @@ The payload is flat:
 | `type` | string | Always `"message_deleted"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
 | `messageId` | string | The deleted message's ID. |
 | `deletedBy` | string | The sender's account. |
 | `deletedAt` | string | RFC 3339 timestamp. Domain time of the delete. |
@@ -2154,6 +2161,8 @@ The payload is flat:
   "updatedAt": "2026-05-06T08:06:40Z"
 }
 ```
+
+**Thread-reply deletes additionally emit a `ThreadMetadataUpdatedEvent`** (see [§4.1 Thread Metadata Event](#41-thread-metadata-event)) to update the parent message's reply-count badge. The `DeleteRoomEvent` and `ThreadMetadataUpdatedEvent` are published independently; clients must handle each on its own.
 
 ##### Triggered events — error path
 
@@ -3225,6 +3234,8 @@ A `RoomEvent` (same struct as above) published once per DM participant. Recipien
 }
 ```
 
+**Thread replies additionally emit a `ThreadMetadataUpdatedEvent`** (see [§4.1 Thread Metadata Event](#41-thread-metadata-event)) to update the parent message's reply-count badge. This event is published to all room members (not only thread subscribers) so every client can show the correct badge without subscribing to the thread.
+
 #### Triggered events — error path
 
 When validation fails, the gatekeeper publishes the error envelope to `chat.user.{account}.response.{requestId}` and **no downstream events are emitted**. The client should display the error and offer a retry.
@@ -3254,6 +3265,57 @@ The worker filters recipients per message:
 - Bots never receive a mobile push.
 - Presence-busy / in-call recipients are not pushed; everyone else
   (online, offline, away, missing) receives one.
+
+---
+
+## 4.1 Thread Metadata Event
+
+### ThreadMetadataUpdatedEvent
+
+Pushed by `broadcast-worker` whenever a thread reply is **created** (`action: "reply_added"`) or **deleted** (`action: "reply_deleted"`). Its purpose is to let clients update the reply-count badge on the parent message without reloading the thread.
+
+#### Subjects
+
+| Room type | Subject |
+|-----------|---------|
+| Channel | `chat.room.{roomID}.event` |
+| DM / botDM | `chat.user.{account}.event.room` — published once per non-bot member |
+
+#### Payload
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"thread_metadata_updated"`. |
+| `roomId` | string | The room the thread lives in. |
+| `siteId` | string | |
+| `parentMessageId` | string | The thread parent message's ID. Clients use this to locate the message in their cache and update its badge. |
+| `newTcount` | number | Authoritative post-CAS reply count for the parent message. Replaces any locally-computed count — do not delta. |
+| `action` | string | `"reply_added"` or `"reply_deleted"`. |
+| `replyMessageId` | string | The reply that was added or deleted. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
+
+```json
+{
+  "type": "thread_metadata_updated",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "parentMessageId": "01970a4f8c2d7c9aQRST",
+  "newTcount": 4,
+  "action": "reply_added",
+  "replyMessageId": "01970a4f8c2d7c9aUVWX",
+  "timestamp": 1746518100123
+}
+```
+
+#### When it fires
+
+- **Reply added (`action: "reply_added"`):** fired when a new thread reply is successfully persisted (triggered by a `Send Message` RPC with `threadParentId` set). Published in addition to the per-subscriber `new_message` `RoomEvent` that carries the reply content.
+- **Reply deleted (`action: "reply_deleted"`):** fired when a thread reply is soft-deleted (triggered by a `Delete Message` RPC). Published in addition to the `DeleteRoomEvent` that carries the delete notification.
+
+#### Client handling
+
+Apply `newTcount` directly to the parent message's badge — do not compute a delta. Events for the same parent may arrive out of order due to JetStream redelivery; always prefer the event with the larger `timestamp` for badge state.
 
 ---
 
@@ -3396,9 +3458,9 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | Field | Type | Notes |
 |---|---|---|
 | `error` | string | Human-readable, user-safe (never carries an internal cause). Do not parse or pattern-match against the text. |
-| `code` | string | **Always present.** One of the 7 categories below. Drives HTTP status. |
+| `code` | string | **Always present.** One of the 8 categories below. Drives HTTP status. |
 | `reason` | string (optional) | Domain-specific machine code (e.g. `max_room_size_reached`, `not_subscribed`). When present, the client should branch on `reason ?? code`. |
-| `metadata` | map<string, string> | Optional. Free-form map for structured detail (e.g. `{ "limit": "500" }`). |
+| `metadata` | object (optional) | Free-form `string→string` map for structured detail (e.g. `{ "limit": "500" }`). |
 
 ### Generic `code` values (always present) → HTTP status
 

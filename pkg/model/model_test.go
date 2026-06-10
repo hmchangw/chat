@@ -3303,3 +3303,74 @@ func TestStatusWithRequestReply_JSONShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"status":"ok","requestId":"rid"}`, string(b))
 }
+
+func TestMessageEvent_NewTCount(t *testing.T) {
+	t.Run("NewTCount nil is omitted from JSON", func(t *testing.T) {
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["newTcount"]
+		assert.False(t, present, "nil NewTCount must be omitted from JSON")
+	})
+
+	t.Run("NewTCount zero is included in JSON", func(t *testing.T) {
+		zero := 0
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &zero,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		val, present := raw["newTcount"]
+		assert.True(t, present, "non-nil zero NewTCount must be present in JSON")
+		assert.Equal(t, float64(0), val, "zero NewTCount must marshal as 0")
+
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.NewTCount)
+		assert.Equal(t, 0, *dst.NewTCount)
+	})
+
+	t.Run("NewTCount positive round-trips", func(t *testing.T) {
+		count := 3
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &count,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.NewTCount)
+		assert.Equal(t, 3, *dst.NewTCount)
+	})
+
+	t.Run("NewTCount zero in BSON round-trips — omitempty must not drop zero", func(t *testing.T) {
+		zero := 0
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1"},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &zero,
+		}
+		data, err := bson.Marshal(e)
+		require.NoError(t, err)
+		var raw bson.M
+		require.NoError(t, bson.Unmarshal(data, &raw))
+		val, present := raw["newTcount"]
+		assert.True(t, present, "zero NewTCount must be present in BSON — bson omitempty must not be used")
+		assert.EqualValues(t, 0, val, "zero BSON value must be 0, not missing")
+	})
+}

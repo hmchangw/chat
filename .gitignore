@@ -65,3 +65,4 @@ chat-frontend/junit.xml
 tmp/
 .air.*.toml
 /loadgen
+.claude/worktrees/

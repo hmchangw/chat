@@ -120,6 +120,7 @@ func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte
 	return nil
 }
 
+// alwaysSubscribedRepo stubs SubscriptionRepository so the subscription gate passes.
 type alwaysSubscribedRepo struct{}
 
 func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string) (*time.Time, bool, error) {
@@ -339,4 +340,72 @@ func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
 	).Scan(&gotTcount))
 	assert.Equal(t, 1, gotTcount, "parent tcount should be unchanged (replies still exist and are counted)")
+}
+
+func TestDeleteMessage_Integration_ThreadReplyPublishesMetadataEvent(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
+	pub := &recordingPublisher{}
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, nil, &config.Config{
+		MessageHistoryFloorDays: 730,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	})
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-thread-meta-event"
+	threadRoomID := "thread-meta-event"
+	parentID := "m-parent-meta"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-reply-meta"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Seed parent message with tcount = 1 (one existing reply).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent message", "", 1, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID, sender, "parent message", "", 1, false,
+	).Exec())
+
+	// Seed thread reply referencing the parent.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "thread reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_thread (thread_room_id, created_at, message_id, room_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		threadRoomID, replyCreatedAt, replyID, roomID, sender, "thread reply", parentID, false,
+	).Exec())
+
+	// Delete the thread reply as alice.
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: replyID})
+	require.NoError(t, err)
+	assert.Equal(t, replyID, resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+
+	// Collect all published messages.
+	pub.mu.Lock()
+	sent := make([]recordedMessage, len(pub.sent))
+	copy(sent, pub.sent)
+	pub.mu.Unlock()
+
+	// Expect exactly one publish: the canonical .deleted event with NewTCount embedded.
+	// Badge routing (ThreadMetadataUpdatedEvent) is now broadcast-worker's responsibility;
+	// history-service no longer publishes directly to subject.RoomEvent.
+	require.Len(t, sent, 1, "expected exactly one canonical delete publish")
+
+	assert.Equal(t, subject.MsgCanonicalDeleted("site-test"), sent[0].Subject)
+
+	var canonicalEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sent[0].Data, &canonicalEvt))
+	assert.Equal(t, model.EventDeleted, canonicalEvt.Event)
+	assert.Equal(t, replyID, canonicalEvt.Message.ID)
+	assert.Equal(t, parentID, canonicalEvt.Message.ThreadParentMessageID)
+	require.NotNil(t, canonicalEvt.NewTCount, "canonical delete for a thread reply must carry NewTCount")
+	assert.Equal(t, 0, *canonicalEvt.NewTCount, "tcount seeded at 1 minus one decrement must equal 0")
 }

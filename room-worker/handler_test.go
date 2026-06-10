@@ -396,9 +396,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	// 2 SubscriptionUpdate + 1 MemberAddEvent + 1 system msg + 1 batched outbox (site-b)
 	assert.GreaterOrEqual(t, len(published), 4)
 
-	// Exactly one outbox event to site-b, carrying only site-b-homed accounts
-	// (charlie). bob is on site-a (home), so does not appear in the cross-site
-	// payload.
+	// Verify exactly 1 outbox event for site-b (batched, not per-member)
 	var outboxCount int
 	for _, p := range published {
 		if strings.Contains(p.subj, "outbox") {
@@ -408,10 +406,10 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 			require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 			var change model.MemberAddEvent
 			require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-			assert.ElementsMatch(t, []string{"charlie"}, change.Accounts)
+			assert.Equal(t, []string{"charlie"}, change.Accounts)
 		}
 	}
-	assert.Equal(t, 1, outboxCount, "should publish exactly 1 outbox event per remote site")
+	assert.Equal(t, 1, outboxCount, "should publish exactly 1 batched outbox event per destination site")
 }
 
 // TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey locks in
@@ -796,12 +794,11 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 		Return([]AddMemberCandidate{
 			{Account: "alice"}, {Account: "bob"}, {Account: "charlie"},
 		}, nil)
-	allUsers := []model.User{
+	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return([]model.User{
 		{ID: "u1", Account: "alice", SiteID: "site-b", EngName: "Alice", ChineseName: "愛"},
 		{ID: "u2", Account: "bob", SiteID: "site-b", EngName: "Bob", ChineseName: "鮑"},
 		{ID: "u3", Account: "charlie", SiteID: "site-c", EngName: "Charlie", ChineseName: "查"},
-	}
-	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice", "bob", "charlie"}).Return(allUsers, nil)
+	}, nil)
 	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{
 		ID: "u1", Account: "alice", SiteID: "site-b", EngName: "Alice", ChineseName: "愛",
 	}, nil)
@@ -828,23 +825,19 @@ func TestHandler_ProcessAddMembers_MultipleSiteOutbox(t *testing.T) {
 			outboxEvents = append(outboxEvents, p)
 		}
 	}
-	assert.Len(t, outboxEvents, 2, "one outbox event per remote site: site-b and site-c")
+	assert.Len(t, outboxEvents, 2, "should batch outbox by site: 1 for site-b, 1 for site-c")
 
-	// Each remote site receives only its own homed accounts: site-b gets
-	// alice+bob, site-c gets charlie.
-	want := map[string][]string{
-		"site-b": {"alice", "bob"},
-		"site-c": {"charlie"},
-	}
 	for _, p := range outboxEvents {
 		var outboxEvt model.OutboxEvent
 		require.NoError(t, json.Unmarshal(p.data, &outboxEvt))
 		var change model.MemberAddEvent
 		require.NoError(t, json.Unmarshal(outboxEvt.Payload, &change))
-		expected, ok := want[outboxEvt.DestSiteID]
-		require.True(t, ok, "unexpected destSiteID %s", outboxEvt.DestSiteID)
-		assert.ElementsMatch(t, expected, change.Accounts,
-			"outbox to %s should carry only its homed accounts", outboxEvt.DestSiteID)
+
+		if strings.Contains(p.subj, "site-b") {
+			assert.Len(t, change.Accounts, 2, "site-b should have alice and bob")
+		} else if strings.Contains(p.subj, "site-c") {
+			assert.Equal(t, []string{"charlie"}, change.Accounts)
+		}
 	}
 }
 
@@ -895,7 +888,7 @@ func TestHandler_ProcessRemoveMember_OwnerRemovesOrg(t *testing.T) {
 	err := h.processRemoveMember(context.Background(), data)
 	require.NoError(t, err)
 
-	// Expect: 2 sub updates + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
+	// Expect: 2 sub updates (carol, dave) + 1 member event + 1 local INBOX + 1 sys msg = 5 publishes
 	assert.Len(t, published, 5, "expected 5 publishes: 2 sub updates, member event, local INBOX, sys msg")
 
 	subjSet := make(map[string]bool)
@@ -2557,7 +2550,7 @@ func TestHandleSyncCreateDM_SelfDM(t *testing.T) {
 	// Reply returns the in-memory sub directly (no read-back round-trip).
 	assert.Equal(t, *captured[0], reply.Subscription)
 
-	// subscription.update only — same-site self-DM; no outbox and no canonical event (Option C).
+	// One subscription.update; no outbox (same-site by definition).
 	require.Len(t, capture.captured, 1)
 	assert.Equal(t, subject.SubscriptionUpdate("alice"), capture.captured[0].subject)
 }

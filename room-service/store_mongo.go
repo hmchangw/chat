@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -1119,27 +1120,38 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
-func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
+// UpdateSubscriptionThreadRead removes threadID from threadUnread using a $pull
+// and returns the resulting state. If threadUnread becomes empty a second update
+// clears alert and removes the field.
+func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) ([]string, bool, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
-	var update bson.M
-	if len(threadUnread) == 0 {
-		update = bson.M{
-			"$set":   bson.M{"alert": alert},
-			"$unset": bson.M{"threadUnread": ""},
-		}
-	} else {
-		update = bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}
-	}
-	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var updated model.Subscription
+	err := s.subscriptions.FindOneAndUpdate(ctx, filter,
+		bson.M{"$pull": bson.M{"threadUnread": threadID}},
+		opts,
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w",
 			account, roomID, model.ErrSubscriptionNotFound)
 	}
-	return nil
+	if err != nil {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
+	}
+
+	if len(updated.ThreadUnread) == 0 {
+		if _, err = s.subscriptions.UpdateOne(ctx, filter, bson.M{
+			"$set":   bson.M{"alert": false},
+			"$unset": bson.M{"threadUnread": ""},
+		}); err != nil {
+			slog.WarnContext(ctx, "clear alert after empty threadUnread",
+				"error", err, "account", account, "roomID", roomID)
+		}
+		return nil, false, nil
+	}
+
+	return updated.ThreadUnread, updated.Alert, nil
 }
 
 // ListDefaultChannelTabApps returns apps whose channelTab.enabled AND

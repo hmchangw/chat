@@ -96,8 +96,14 @@ func (h *Handler) processMessage(ctx context.Context, data []byte) error {
 		if err := h.markThreadMentions(ctx, &evt.Message, threadRoomID, evt.SiteID); err != nil {
 			return fmt.Errorf("mark thread mentions: %w", err)
 		}
-		if err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID); err != nil {
+		newTcount, err := h.store.SaveThreadMessage(ctx, &evt.Message, sender, evt.SiteID, threadRoomID)
+		if err != nil {
 			return fmt.Errorf("save thread message: %w", err)
+		}
+		if newTcount != nil {
+			if err := h.publishThreadReplyEvent(ctx, &evt.Message, *newTcount); err != nil {
+				return fmt.Errorf("publish thread reply event: %w", err)
+			}
 		}
 	} else {
 		if err := h.store.SaveMessage(ctx, &evt.Message, sender, evt.SiteID); err != nil {
@@ -432,4 +438,27 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 		return fmt.Errorf("publish thread subscription outbox to %s: %w", ownerSiteID, err)
 	}
 	return nil
+}
+
+// publishThreadReplyEvent fires a badge event via core NATS so broadcast-worker
+// can update the reply-count badge for thread followers. Published to
+// chat.server.broadcast.{siteID}.thread.tcount (not MESSAGES_CANONICAL) because
+// badge updates are best-effort and do not belong in the message CRUD event store.
+func (h *Handler) publishThreadReplyEvent(ctx context.Context, msg *model.Message, newTcount int) error {
+	evt := model.MessageEvent{
+		Event: model.EventThreadReplyAdded,
+		Message: model.Message{
+			ID:                    msg.ID,
+			RoomID:                msg.RoomID,
+			ThreadParentMessageID: msg.ThreadParentMessageID,
+		},
+		SiteID:    h.siteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		NewTCount: &newTcount,
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("marshal thread reply event: %w", err)
+	}
+	return h.publish(ctx, subject.ServerBroadcastThreadTCount(h.siteID), data, "")
 }

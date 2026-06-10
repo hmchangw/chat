@@ -20,6 +20,7 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
+	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
@@ -72,7 +73,11 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"))
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_rooms"))
+	if err := store.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
 	cachedStore, err := newCachedMetaStore(store, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
 	if err != nil {
 		slog.Error("init room meta cache failed", "error", err)
@@ -145,6 +150,18 @@ func main() {
 
 	handler := NewHandler(coalescer, us, publisher, keyStore, cfg.Encryption.Enabled)
 
+	// Core-NATS queue subscriber for server-broadcast events (e.g. thread tcount badge).
+	// Fire-and-forget: errors are logged inside HandleServerBroadcast; no retry path.
+	broadcastSub, err := nc.QueueSubscribe(subject.ServerBroadcastWildcard(cfg.SiteID), "broadcast-worker",
+		func(msg otelnats.Msg) {
+			broadcastCtx, _ := natsutil.StampRequestID(context.Background(), msg.Msg.Header, msg.Msg.Subject)
+			handler.HandleServerBroadcast(broadcastCtx, msg.Msg.Data)
+		})
+	if err != nil {
+		slog.Error("subscribe server-broadcast failed", "error", err)
+		os.Exit(1)
+	}
+
 	iter, err := cons.Messages(jetstream.PullMaxMessages(2 * cfg.MaxWorkers))
 	if err != nil {
 		slog.Error("messages failed", "error", err)
@@ -185,6 +202,9 @@ func main() {
 	slog.Info("broadcast-worker started", "site", cfg.SiteID, "encryption", cfg.Encryption.Enabled)
 
 	hooks := []func(context.Context) error{
+		func(_ context.Context) error {
+			return broadcastSub.Unsubscribe()
+		},
 		func(ctx context.Context) error {
 			iter.Stop()
 			return nil
