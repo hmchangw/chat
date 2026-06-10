@@ -61,6 +61,7 @@ func defaultETag(seed, name string) string {
 // replica. seed picks the background colour; the first sanitized rune of name is
 // the glyph. The glyph is html.EscapeString-escaped as defense-in-depth.
 func renderDefaultSVG(seed, name string) []byte {
+	// #nosec G115 -- palette is a fixed 8-element literal; len(palette) cannot overflow uint32
 	bg := palette[stableHash(seed)%uint32(len(palette))]
 	initial := html.EscapeString(sanitizeInitial(name))
 	svg := fmt.Sprintf(
