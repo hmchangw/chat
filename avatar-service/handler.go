@@ -98,6 +98,56 @@ func (h *handler) redirectCrossCluster(c *gin.Context, kind, owning, path string
 	return true
 }
 
+func (h *handler) HandleRoomAvatar(c *gin.Context) {
+	roomID := c.Param("roomID")
+	ctx := c.Request.Context()
+
+	// Fast path: trust the ?siteid= hint, skip the subscription query.
+	if hint := c.Query(siteIDParam); hint != "" {
+		if h.redirectCrossCluster(c, "room", hint, "/avatar/v1/room/"+url.PathEscape(roomID)) {
+			return
+		}
+		h.serveRoomLocal(c, roomID, roomID) // no Name available → use roomID
+		return
+	}
+
+	siteID, roomType, name, found, err := h.store.RoomSite(ctx, roomID)
+	if err != nil {
+		c.Set("avatar_outcome", "error")
+		_ = c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		h.serveDefault(c, "room", roomID, roomID)
+		return
+	}
+	if roomType == model.RoomTypeDM || roomType == model.RoomTypeBotDM {
+		h.serveDefault(c, "room", roomID, name)
+		return
+	}
+	if h.redirectCrossCluster(c, "room", siteID, "/avatar/v1/room/"+url.PathEscape(roomID)) {
+		return
+	}
+	h.serveRoomLocal(c, roomID, name)
+}
+
+// serveRoomLocal does the avatars-doc lookup + stream/default for a local room.
+func (h *handler) serveRoomLocal(c *gin.Context, roomID, name string) {
+	av, found, err := h.store.Avatar(c.Request.Context(), model.AvatarSubjectRoom, roomID)
+	if err != nil {
+		c.Set("avatar_outcome", "error")
+		_ = c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	if found {
+		h.serveStored(c, "room", av, roomID, name)
+		return
+	}
+	h.serveDefault(c, "room", roomID, name)
+}
+
 func (h *handler) HandleAccountAvatar(c *gin.Context) {
 	account, _ := parseAccount(c.Param("accountName"))
 	ctx := c.Request.Context()
