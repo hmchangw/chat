@@ -64,9 +64,20 @@ NATS callout. Mongo + MinIO backed.
 | `mock_store_test.go` | Generated mock (never hand-edited) |
 | `deploy/` | `Dockerfile`, `docker-compose.yml`, `azure-pipelines.yml` |
 
-Mandatory cross-cutting (per CLAUDE.md): `GET /healthz`, request-ID middleware
-+ `slog` JSON, `errcode`/`errhttp` for client-facing errors, server + Resty
-timeouts, ≥80% coverage via TDD.
+Mandatory cross-cutting: `GET /healthz`; the auth-service middleware trio —
+`requestIDMiddleware` (via `idgen.ResolveRequestID` + `natsutil.WithRequestID`),
+`accessLogMiddleware` (`slog` JSON: method/path/status/latency/request_id), CORS;
+`errcode`/`errhttp` for client-facing errors; server timeouts; ≥80% coverage via
+TDD.
+
+**Observability scope = auth-service parity** (slog + request-id + access-log).
+OTel tracing + Prometheus `/metrics` are **deferred to post-v1** (§9) — but v1
+preserves the seams so adding them later is additive: `context.Context` is
+threaded through every store/MinIO call, and the read handler returns a **typed
+outcome** (`kind` ∈ user/bot/room × `outcome` ∈ `redirect`/`stream`/`default`/
+`304`) that `accessLogMiddleware` records. That outcome gives v1 traffic-split
+visibility in logs and becomes the future `resolution_total{kind,outcome}` metric
+label — instrumented at one seam, not scattered across the decision tree.
 
 ## 3. Configuration (env, `caarlos0/env`)
 
@@ -455,8 +466,11 @@ the rendering in one place.
   frontend can't see; v1 is ETag-only (§4.3).
 - **WebP support:** deferred — needs `golang.org/x/image` (new dep, ask first).
   Also TBD: re-encode-to-normalize vs store-as-is.
-- **Cross-cutting observability:** add OTel tracing + Prometheus metrics per
-  CLAUDE.md (cache-hit / bytes / latency) — not yet in §2.
+- **OTel tracing + Prometheus `/metrics`:** deferred to post-v1. v1 ships
+  auth-service-parity logging (slog + request-id + access-log, §2). The infra is
+  ready to copy (`pkg/otelutil`; search-service's promauto + separate `/metrics`
+  listener) and purely additive; v1 preserves the seams (ctx everywhere + a typed
+  read-outcome in the access log → future `resolution_total{kind,outcome}`).
 - **Read-path privacy:** the employee-photo redirect `Location` exposes
   `employeeID` (org-info leakage / account enumeration). Accept, or gate later.
 - **Employee-photo 404:** the external host may 404 for a user with no photo →
