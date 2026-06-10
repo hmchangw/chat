@@ -57,7 +57,7 @@ NATS callout. Mongo + MinIO backed.
 | `handler.go` | Read path: resolve owning site → cross-cluster redirect → avatars-doc lookup → stream/default |
 | `upload.go` | Bot-upload write path: OIDC authn + bot authz middleware, validate (type/size/decode), store to MinIO, upsert `avatars` doc |
 | `avatar.go` | `renderDefaultSVG(seed, initial)` pure deterministic generator + object-key helpers |
-| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `RoomSite` (siteID+type via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
+| `store.go` | `avatarStore` interface — `EmployeeID` (user), `IsPlatformAdmin` (caller role, upload authz), `RoomSite` (siteID+type+name via subscriptions), `Avatar` (avatars-doc lookup), `SetBotAvatar` (upsert) + `//go:generate mockgen` |
 | `store_mongo.go` | Mongo implementation (`users`, `subscriptions`, `avatars`) |
 | `handler_test.go` | Unit tests with mocked store + fake MinIO/stream seam |
 | `integration_test.go` | testcontainers (Mongo + MinIO via `pkg/testutil`), `//go:build integration` |
@@ -259,7 +259,7 @@ if hasSuffix(localPart, ".bot"):            # ── bot (cluster-bound)
     if av, found := store.Avatar(ctx, "bot", localPart); found:
         serveStored(av)                                       # 304 / stream (§4.1)
     else:
-        serveDefault(localPart)                               # dynamic SVG (§8)
+        serveDefault(localPart, localPart)                    # dynamic SVG (§8)
 else:                                        # ── user (synced; domain informational)
     eid, found := cache[localPart]
     if !found: eid, found = store.EmployeeID(ctx, localPart)   # MISS MUST hit DB
@@ -267,7 +267,7 @@ else:                                        # ── user (synced; domain infor
         cache.put(localPart, eid)
         307 → {EMPLOYEE_PHOTO_BASE_URL}/xxxPhoto/po/{eid}_120.JPG
     else:
-        serveDefault()
+        serveDefault(localPart, localPart)
 ```
 
 - **Bot read path:** resolve owning site → (cross-cluster redirect if remote) →
@@ -292,23 +292,24 @@ else:                                        # ── user (synced; domain infor
 ## 7. Endpoint 2 — `GET /avatar/v1/room/:roomID`
 
 ```text
-room, found := store.RoomSite(ctx, roomID)   # SiteID + RoomType, via subscriptions
-if !found:                          serveDefault(roomID)   # unknown here → can't forward
-if room.RoomType in {dm, botDM}:    serveDefault(roomID)   # frontend should use Endpoint 1
+room, found := store.RoomSite(ctx, roomID)   # SiteID + RoomType + Name, via subscriptions
+if !found:                          serveDefault(roomID, roomID)     # unknown here → can't forward
+if room.RoomType in {dm, botDM}:    serveDefault(roomID, room.Name)  # frontend should use Endpoint 1
 # channel / discussion:
 if room.SiteID != cfg.SiteID && !fwd:
     307 → {clusterBaseURL(room.SiteID)}/avatar/v1/room/{roomID}?fwd=1   # value incl. scheme
 if av, found := store.Avatar(ctx, "room", roomID); found:
     serveStored(av)                                      # 304 / stream (§4.1)
 else:
-    serveDefault(roomID)                                 # dynamic SVG (§8)
+    serveDefault(roomID, room.Name)                      # dynamic SVG (§8)
 ```
 
-- Owning site + room type come from the `subscriptions` collection
-  (`Subscription.SiteID` / `.RoomType`), so avatar-service does not read
-  room-service's `rooms` collection. No subscription record here → it cannot know
-  the owning site → serve the default (the frontend normally resolves the owning
-  domain first via the room-location service and hits the right cluster directly).
+- Owning site, room type, and room name come from the `subscriptions` collection
+  (`Subscription.SiteID` / `.RoomType` / `.Name`), so avatar-service does not read
+  room-service's `rooms` collection, and the default's initial is the room's name
+  (§8.1). No subscription record here → it cannot know the owning site → serve the
+  default (the frontend normally resolves the owning domain first via the
+  room-location service and hits the right cluster directly).
 - Room custom images are **read-only and migrated** — there is no room upload
   (§1). The `avatars` doc (written by the migration, §4.4) is the existence
   check; present → stream from MinIO, absent → dynamic default with no MinIO hit.
@@ -406,6 +407,8 @@ client**. It is **never written back to MinIO or Mongo**.
 ```go
 // renderDefaultSVG returns the same bytes for the same (seed, initial) every
 // time, on every replica. No time, no randomness, no map-iteration order.
+// Callers pass renderDefaultSVG(seed, nameForInitial); the first sanitized rune
+// of nameForInitial is the glyph (else placeholder), seed picks the colour.
 func renderDefaultSVG(seed, initial string) []byte
 ```
 
@@ -426,11 +429,11 @@ func renderDefaultSVG(seed, initial string) []byte
 
 **Seed / initial sources:**
 
-| Kind | `seed` (colour) | `initial` |
-|------|-----------------|-----------|
-| room | `roomID` | first glyph of `room.Name` |
-| user | `account` | first glyph of display name if known, else `account` |
-| bot | bot `account` | first glyph of bot name, else `account` |
+| Kind | `seed` (colour) | `initial` source |
+|------|-----------------|------------------|
+| room | `roomID` | `room.Name` (subscription, §7); if unknown-here → `roomID` |
+| user | `localPart` | `localPart` (read path fetches no display name) |
+| bot | `localPart` (`.bot` account) | `localPart` |
 
 ### 8.2 Caching a generated default
 
