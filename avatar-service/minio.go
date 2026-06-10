@@ -18,7 +18,6 @@ type blobInfo struct {
 	ETag        string
 }
 
-//nolint:unused // wired in a later task
 type blobStore interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, blobInfo, error)
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) (etag string, err error)
@@ -29,7 +28,6 @@ type minioBlobStore struct {
 	bucket string
 }
 
-//nolint:unused // wired in a later task
 func newMinioBlobStore(client *minio.Client, bucket string) *minioBlobStore {
 	return &minioBlobStore{client: client, bucket: bucket}
 }

@@ -50,7 +50,9 @@ func TestUpload_WrongCluster_RejectsWithDomain(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
 	assert.Equal(t, http.StatusConflict, w.Code)
-	assert.Contains(t, w.Body.String(), "https://avatar-s2")
+	body := w.Body.String()
+	assert.Contains(t, body, "https://avatar-s2")
+	assert.Contains(t, body, "wrong_cluster")
 }
 
 func TestUpload_RejectSVG(t *testing.T) {
