@@ -55,6 +55,10 @@ paths.
 4. [Message Send](#4-message-send)
 5. [Room Encryption](#5-room-encryption)
 6. [Error envelope reference](#6-error-envelope-reference)
+7. [Avatar Service](#7-avatar-service)
+   - [GET /avatar/v1/:accountName](#get-avatarv1accountname)
+   - [GET /avatar/v1/room/:roomID](#get-avatarv1roomroomid)
+   - [PUT /avatar/v1/bot/:botName](#put-avatarv1botbotname)
 
 ---
 
@@ -3455,3 +3459,125 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 ### Client branching guidance
 
 Compute the trigger as `reason ?? code` and branch on that. Use `code` for generic copy ("you don't have permission", "service unavailable, try again"), `reason` for endpoint-specific UX (open the "room is full" dialog on `max_room_size_reached`; redirect to re-login on `sso_token_expired`/`invalid_sso_token`; surface "join the room first" on `not_subscribed`). Never branch on the `error` text — message wording can change without notice.
+
+---
+
+## 7. Avatar Service
+
+Public HTTP endpoints served by `avatar-service`. All three endpoints apply these headers unconditionally:
+
+| Header | Value |
+|---|---|
+| `X-Content-Type-Options` | `nosniff` |
+| `Content-Security-Policy` | `default-src 'none'` |
+
+**Bot detection:** an account is a bot if it ends in `.bot` **or** begins with `p_`. Everything else is a user.
+
+**Default image:** when no custom image exists (and for users with no `employeeId`), the service returns a deterministic SVG "initials" avatar (`Content-Type: image/svg+xml`) generated on the fly — never stored. The SVG is cacheable: it carries a stable `ETag` and `Cache-Control: public, max-age=<cfg>`.
+
+**Frontend-default contract for user avatars:** after a `307` to the employee-photo host, a user who has an `employeeId` but no actual photo on that host receives a `404` from the external service. The client MUST render its own fallback on image-load failure (`<img onerror>`). The server-side default (initials SVG) only covers users with no `employeeId`, bots, and rooms.
+
+### GET /avatar/v1/:accountName
+
+**Auth:** public (no credentials required)
+
+Resolves a user or bot avatar. The frontend also routes DM/botDM room avatars here by passing the counterpart account (the other user or bot).
+
+#### Query parameters
+
+| Parameter | Notes |
+|---|---|
+| `siteid` | Optional. Owning site ID hint for bots. When supplied the bot's home site is trusted directly — no DB lookup. Ignored for users (always resolved locally). |
+| `fwd` | Internal loop-breaker. Set to `1` by the service on cross-cluster redirects. A handler that receives `fwd=1` resolves locally or falls back to the default SVG — it does not redirect again. Clients must not set this; it is reserved for server-to-server hops. |
+
+#### Response
+
+| Status | Condition | Notes |
+|---|---|---|
+| `307 Temporary Redirect` | User with a known `employeeId` | `Location: {EMPLOYEE_PHOTO_BASE_URL}/xxxPhoto/po/{employeeId}_120.JPG` |
+| `304 Not Modified` | `If-None-Match` matches the stored `ETag` | Empty body. |
+| `200 OK` | Bot with a custom image (local) | Streams the MinIO object. `Content-Type` as stored. `ETag` + `Cache-Control: public, max-age=<cfg>`. |
+| `200 OK` | No custom image or user with no `employeeId` | Returns the generated default SVG (`Content-Type: image/svg+xml`). `ETag` + `Cache-Control: public, max-age=<cfg>`. |
+| `307 Temporary Redirect` | Bot whose owning site is a remote cluster | `Location: {clusterBaseURL}/avatar/v1/{account}?fwd=1`. Single hop only. |
+
+**Decision logic:**
+
+1. If the account matches the bot pattern: resolve owning site from `?siteid=` hint (no DB) or from the bot's user record (`User.SiteID`). If no user record exists → default SVG. If the owning site is a remote cluster → `307` to that cluster (unless `fwd=1`, in which case → default SVG). If local: check `avatars` collection; custom image found → `304`/stream; else → default SVG.
+2. Otherwise (user): look up `employeeId` locally (users are synced to every cluster). If found → `307` to employee-photo URL. If not found → default SVG.
+
+```
+GET /avatar/v1/alice          → 307 to employee-photo host
+GET /avatar/v1/helper.bot     → 200 (custom image) or 200 (default SVG)
+GET /avatar/v1/p_webhook      → 200 (custom image) or 200 (default SVG)
+```
+
+---
+
+### GET /avatar/v1/room/:roomID
+
+**Auth:** public (no credentials required)
+
+Resolves a channel or discussion room avatar. For DM and botDM rooms the service returns the default SVG — the frontend should use [GET /avatar/v1/:accountName](#get-avatarv1accountname) for those.
+
+#### Query parameters
+
+| Parameter | Notes |
+|---|---|
+| `siteid` | Optional. Owning site ID hint. When supplied, skips the subscription lookup — a remote hint triggers an immediate redirect; a local hint goes straight to the `avatars` lookup. Trade-off: without the subscription the dm/botDM guard and the room `Name` are unavailable (the default's initial falls back to `roomID`). |
+| `fwd` | Same loop-breaker semantics as Endpoint 1. Single cross-cluster hop only. |
+
+#### Response
+
+| Status | Condition | Notes |
+|---|---|---|
+| `304 Not Modified` | `If-None-Match` matches the stored `ETag` | Empty body. |
+| `200 OK` | Local room with a custom image | Streams the MinIO object. `ETag` + `Cache-Control: public, max-age=<cfg>`. |
+| `200 OK` | DM/botDM room, unknown room, or no custom image | Default SVG (`Content-Type: image/svg+xml`). Initial derived from room name when available, else from `roomID`. |
+| `307 Temporary Redirect` | Room owned by a remote cluster | `Location: {clusterBaseURL}/avatar/v1/room/{roomID}?fwd=1`. Single hop only. |
+
+**Decision logic:**
+
+1. Owning site, room type, and room name are resolved from the `subscriptions` collection (or from the `?siteid=` hint). If no local subscription and no hint → not found → default SVG.
+2. If room type is `dm` or `botDM` → default SVG (use Endpoint 1 for these).
+3. If owning site is a remote cluster → `307` (unless `fwd=1` → default SVG).
+4. Check `avatars` collection: custom image found → `304`/stream; else → default SVG.
+
+```
+GET /avatar/v1/room/01970a4f8c2d7c9aQ    → 200 (custom) or 200 (default SVG)
+GET /avatar/v1/room/<dm-room-id>         → 200 (default SVG — use Endpoint 1 for DMs)
+```
+
+---
+
+### PUT /avatar/v1/bot/:botName
+
+> [!WARNING]
+> **This endpoint is UNAUTHENTICATED in v1.** Anyone who can reach the service can upload or overwrite any bot's avatar. Auth is deferred until the authorization model is decided. **It MUST be network-restricted or gated before any production exposure.**
+
+**Auth:** none (v1)
+
+Uploads a custom PNG or JPEG avatar for a bot. The body is the raw image bytes; `Content-Type` declares the format.
+
+#### Request
+
+| | Notes |
+|---|---|
+| Path | `:botName` — bare bot account (stray `@…` is stripped). Must satisfy the bot pattern (ends in `.bot` or begins with `p_`). |
+| Body | Raw image bytes (PNG or JPEG). SVG and non-image payloads are rejected. |
+| `Content-Type` header | `image/png` or `image/jpeg`. |
+| Max size | `MAX_UPLOAD_BYTES` (default 1 MiB). |
+
+The service decodes the image bytes to verify they are a valid PNG or JPEG — malformed bytes are rejected even if `Content-Type` is correct.
+
+#### Response
+
+| Status | Condition |
+|---|---|
+| `204 No Content` | Upload accepted and stored. |
+| `400 Bad Request` | `botName` does not match the bot pattern; `Content-Type` is not `image/png` or `image/jpeg`; body is not a valid image; body exceeds `MAX_UPLOAD_BYTES`. |
+| `404 Not Found` | No user record for `botName` — unknown bot. |
+| `409 Conflict` | Bot is owned by a different cluster. Response body names the correct domain. |
+
+On `409`, the response body carries a human-readable message indicating which cluster to re-upload to (e.g. `"bot is owned by site-b — upload to https://avatar-service-site-b"`). The client must re-issue the `PUT` to the correct domain.
+
+On success, the custom image takes effect immediately: subsequent `GET /avatar/v1/:accountName` calls for that bot will stream it (or return `304`). A re-upload overwrites the previous image; there is no delete/reset in v1.
