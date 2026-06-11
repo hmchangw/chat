@@ -139,3 +139,37 @@ Findings:
   only offset/limit, not `favorite`/`updatedWithinDays` omission (pre-existing gap).
 - Micro-gap (informational): the cap test uses 5000→1000 but not `limit == 1000` exactly;
   the boundary passes through un-capped by trivially correct logic.
+
+## Bug & security
+
+**SAST:** `make sast-gosec` exits 0 — no findings introduced. `govulncheck` and remote
+semgrep rulesets blocked by network egress in this environment (403 to `vuln.go.dev` /
+`semgrep.dev`) — environmental, not a branch finding; **must be re-run in CI where the
+`sast` job is a blocking gate.** Local semgrep errcode ruleset clean.
+
+- **[medium]** `user-service/service/subscriptions.go:44` + `mongorepo/subscriptions.go:103` —
+  `updatedWithinDays` rejects negatives but has no upper bound. An extreme value (e.g.
+  MaxInt64) overflows `time.AddDate`'s date arithmetic into a garbage/future cutoff and
+  silently returns an empty list — no error, no log. **Pre-existing** (same code path
+  before this branch), but the handler was rewritten here and the fix is one validation
+  line (cap at e.g. 3650 days).
+- **[low]** `pkg/mongoutil/pagination.go:22` — `offset` has no upper bound; a client can
+  force a large `$skip` walk (allowDiskUse) — but only over their OWN `$match`-bounded
+  subscription set (~1000 docs max), so no cross-user DoS surface. Acceptable; optionally
+  cap or leave documented.
+- ~~[nitpick] plan/spec files committed to the branch should be removed before PR~~ —
+  **CORRECTED during synthesis: contrary to repo convention.** `docs/superpowers/specs/`
+  and `plans/` hold 100+ committed documents; CLAUDE.md's pre-PR deletion rule covers
+  `docs/reviews/` only. Finding withdrawn; not counted.
+- **[nitpick]** `service/subscriptions.go:57` — `int(result.Total)` bounds-check would
+  future-proof a 32-bit port (dedup of the Go expert high; counted once there).
+
+**Cleared after investigation:**
+- BSON injection via `account`: extracted from NATS subject tokens (cannot contain dots /
+  operator structures); used in value position in query context; `$literal`-wrapped in the
+  one expression context (`_selfDm` `$eq`). Safe.
+- `listType` injection: whitelist-validated (`validListTypes`) before any BSON construction.
+- `AggregatePaged` empty-facet edge: `len(wrapper[0].Total)==0 → 0` and nil-Data guard
+  prevent both panics and `null` marshaling.
+- `enrichWithRoomInfo` races: per-iteration loop vars (Go ≥1.22) + goroutine-unique slot
+  writes; unchanged by this diff.
