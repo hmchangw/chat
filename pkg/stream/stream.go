@@ -86,3 +86,15 @@ func Inbox(siteID string) Config {
 		},
 	}
 }
+
+// MigrationOplog returns the MIGRATION_OPLOG_{siteID} stream config. The
+// oplog-connector (data-migration suite) owns this stream and bootstraps it in
+// dev only; in production it is provisioned by ops/IaC. It carries raw,
+// uninterpreted CDC events tailed from the legacy source MongoDB, one subject
+// per (collection, op): chat.oplog.{siteID}.{rawCollection}.{op}.
+func MigrationOplog(siteID string) Config {
+	return Config{
+		Name:     fmt.Sprintf("MIGRATION_OPLOG_%s", siteID),
+		Subjects: []string{subject.MigrationOplogWildcard(siteID)},
+	}
+}
