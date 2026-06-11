@@ -225,6 +225,41 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		assert.Empty(t, page.Data)
 		assert.Equal(t, int64(0), page.Total)
 	})
+
+	t.Run("current favorite pages with self-DM first", func(t *testing.T) {
+		// The frontend sidebar's exact shape: {type: current, favorite: true}, paged.
+		// Favorited current rows: sub-self (dm, name==account) then sub-eng ("Eng").
+		page, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, true, pg(0, 1))
+		require.NoError(t, err)
+		require.Len(t, page.Data, 1)
+		assert.Equal(t, int64(2), page.Total)
+		assert.Equal(t, "sub-self", page.Data[0].ID, "self-DM first through the current $or pipeline")
+
+		rest, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, true, pg(1, 1))
+		require.NoError(t, err)
+		require.Len(t, rest.Data, 1)
+		assert.Equal(t, int64(2), rest.Total)
+		assert.Equal(t, "sub-eng", rest.Data[0].ID)
+	})
+
+	t.Run("window combines with offset", func(t *testing.T) {
+		within := 30
+		// Windowed rooms order: [sub-eng(fav), sub-xsite("Remote"), sub-dm("bob")] —
+		// sub-old is stale and sub-self's room has no lastMsgAt, both dropped by the window.
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", &within, false, pg(1, 2))
+		require.NoError(t, err)
+		require.Len(t, page.Data, 2)
+		assert.Equal(t, int64(3), page.Total)
+		assert.Equal(t, "sub-xsite", page.Data[0].ID)
+		assert.Equal(t, "sub-dm", page.Data[1].ID)
+	})
+
+	t.Run("apps offset beyond single row is empty with full total", func(t *testing.T) {
+		page, err := r.AggregateSubscriptions(ctx, "alice", "apps", nil, false, pg(1, 40))
+		require.NoError(t, err)
+		assert.Empty(t, page.Data)
+		assert.Equal(t, int64(1), page.Total)
+	})
 }
 
 func TestFindChannelsByMembers_Integration(t *testing.T) {
