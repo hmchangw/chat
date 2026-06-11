@@ -1034,3 +1034,127 @@ func TestInboxStore_ApplyThreadRead_MissingThreadSubscription_NoError(t *testing
 	assert.Equal(t, []string{"p1"}, gotSub.ThreadUnread)
 	assert.True(t, gotSub.Alert)
 }
+
+func newGuardStore(db *mongo.Database) *mongoInboxStore {
+	return &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+}
+
+func TestInbox_UpdateSubscriptionRoles_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Seed a sub whose roles were last set by a newer event (ts=200).
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"roles": []model.Role{model.RoleOwner}, "rolesEventTs": int64(200),
+	})
+	require.NoError(t, err)
+
+	// An older role_updated (ts=100) must be a silent no-op.
+	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleMember}, 100))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.Equal(t, []model.Role{model.RoleOwner}, got.Roles) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionRoles_NewerApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"roles": []model.Role{model.RoleMember}, "rolesEventTs": int64(100),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleOwner}, 200))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.Equal(t, []model.Role{model.RoleOwner}, got.Roles)
+}
+
+func TestInbox_UpdateSubscriptionRoles_MissingSubscriptionErrors(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// No subscription seeded — a genuinely missing sub must still error so the
+	// event is redelivered until member_added lands (federation race).
+	err := store.UpdateSubscriptionRoles(ctx, "ghost", "r1", []model.Role{model.RoleMember}, 100)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subscription not found")
+}
+
+func TestInbox_UpdateSubscriptionMute_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Sub last muted=false by a newer event (ts=200).
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"muted": false, "muteEventTs": int64(200),
+	})
+	require.NoError(t, err)
+
+	// An older toggle (ts=100) must not regress mute state.
+	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, 100))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.False(t, got.Muted) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionMute_NewerApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"muted": false, "muteEventTs": int64(100),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, 200))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.True(t, got.Muted)
+}
+
+func TestInbox_UpsertRoom_OlderUpdatedAtSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	t2 := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, store.UpsertRoom(ctx, &model.Room{ID: "r1", Name: "newer", UpdatedAt: t2}))
+
+	// An older room_sync (UpdatedAt=t1<t2) must be a silent no-op, not regress
+	// the name back to the stale value.
+	t1 := t2.Add(-time.Minute)
+	require.NoError(t, store.UpsertRoom(ctx, &model.Room{ID: "r1", Name: "older", UpdatedAt: t1}))
+
+	var got model.Room
+	require.NoError(t, store.roomCol.FindOne(ctx, bson.M{"_id": "r1"}).Decode(&got))
+	assert.Equal(t, "newer", got.Name) // unchanged
+}
+
+func TestInbox_UpsertRoom_NewerUpdatedAtApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	t1 := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	require.NoError(t, store.UpsertRoom(ctx, &model.Room{ID: "r1", Name: "older", UpdatedAt: t1}))
+
+	t2 := t1.Add(time.Minute)
+	require.NoError(t, store.UpsertRoom(ctx, &model.Room{ID: "r1", Name: "newer", UpdatedAt: t2}))
+
+	var got model.Room
+	require.NoError(t, store.roomCol.FindOne(ctx, bson.M{"_id": "r1"}).Decode(&got))
+	assert.Equal(t, "newer", got.Name)
+}
