@@ -173,3 +173,26 @@ semgrep rulesets blocked by network egress in this environment (403 to `vuln.go.
   prevent both panics and `null` marshaling.
 - `enrichWithRoomInfo` races: per-iteration loop vars (Go ≥1.22) + goroutine-unique slot
   writes; unchanged by this diff.
+
+## Performance
+
+- **[medium]** `user-service/mongorepo/subscriptions.go` (`AggregateSubscriptions`) — the
+  unified pipeline joins rooms (`$lookup`) for EVERY matched subscription before the
+  blocking `$sort`, where the old `current` path bounded the sort to 2×limit docs via its
+  `$facet` top-K trick. The regression is real but bounded: per-account sets are capped
+  (~1000), the `$lookup` is an indexed `_id` foreign-field join, and an exact paginated
+  `total` requires touching the full filtered set anyway (the deleted-room filter needs the
+  join, so sort-before-join cannot preserve correctness). Trade-off: accepted and
+  documented; revisit only if account caps grow by an order of magnitude.
+- **[medium]** `pkg/mongoutil/collection.go:74` (`AggregatePaged`) — the `$count` branch
+  re-walks the full post-join set on EVERY page request; the frontend fires 3 calls at
+  bootstrap. Acceptable at current scale; candidate follow-up: short-TTL per
+  `(account, listType)` total cache if bootstrap cost ever shows up in traces.
+- **[low]** `user-service/mongorepo/subscriptions.go` (`EnsureIndexes`) — `{u.account,
+  roomType}` serves the new matches; a `{u.account, favorite}` index would prune the
+  favorite view pre-join, but at the 1000-doc cap the win is marginal. Optional follow-up.
+- Improvement (no finding): `enrichWithRoomInfo` now receives ≤ page-limit rows (40
+  default) instead of up to 1000 — worst-case per-site `GetRoomsInfo` RPC payload drops
+  25×. `maxSiteFanout=8` bounds unchanged.
+- **[nitpick]** `mongorepo/subscriptions.go:~106` — pre-size the pipeline slice
+  (`make(bson.A, 0, 8)`) to skip one re-allocation. Trivial.
