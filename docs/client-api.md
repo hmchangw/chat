@@ -3363,7 +3363,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
    - **The cipher is identical for both event kinds (same `roomcrypto` AES-256-GCM seal); only the plaintext payload differs**, because each event encrypts exactly what the client needs:
      - **`encryptedMessage`** (new message) decrypts to a UTF-8-encoded JSON `ClientMessage` — a brand-new message the client has never seen, so the whole object (sender, timestamps, thread/quote fields) is sealed.
      - **`encryptedNewContent`** (edit) decrypts to a plain UTF-8 content **string** — the client already has the original message rendered, and an edit only replaces its `content`, so just the new body is sealed (the surrounding message metadata is unchanged and already known).
-3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
+3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `ROOM_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
 #### When clients receive `RoomKeyEvent`s
 
