@@ -116,8 +116,8 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 	}
 }
 
-// applyRoomInfo overwrites name/lastMsgAt and computes alert/hasMention; zero-value
-// info (Found=false) is skipped. Pointer-passed to avoid a hugeParam copy; read-only.
+// applyRoomInfo overwrites name/userCount/lastMsgId/lastMsgAt and computes alert/hasMention;
+// zero-value info (Found=false) is skipped. Pointer-passed to avoid a hugeParam copy; read-only.
 func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	if !info.Found {
 		return
