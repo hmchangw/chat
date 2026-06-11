@@ -15,7 +15,7 @@ import (
 
 // SubscriptionRepository is the consumer-defined interface for subscription persistence (botDM app-subscription rows included).
 type SubscriptionRepository interface {
-	AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, limit int) ([]model.Subscription, error)
+	AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, favorite bool, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error)
 	FindChannelsByMembers(ctx context.Context, account string, members []string, limit int) ([]model.Subscription, error)
 	GetDMSubscription(ctx context.Context, account, target string) (*model.DMSubscription, error)
 	GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.Subscription, error)

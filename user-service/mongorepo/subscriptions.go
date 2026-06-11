@@ -81,15 +81,22 @@ func roomsEnrichStages(localSiteID string, windowCutoff *time.Time) bson.A {
 	)
 }
 
-// AggregateSubscriptions lists account's subscriptions by listType: rooms (dm+channel), apps (subscribed botDMs), or current (merged $facet set).
-func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, limit int) ([]model.Subscription, error) {
-	if listType == "current" {
-		return r.aggregateCurrent(ctx, account, limit)
-	}
-	match := bson.M{"u.account": account, "muted": bson.M{"$ne": true}}
+// AggregateSubscriptions returns one page of account's subscriptions by listType —
+// current (active dm/channel + subscribed botDMs), rooms (dm+channel), apps
+// (subscribed botDMs) — with Total = the full filtered count. favorite narrows to
+// favorited rows and sorts the caller's self-DM first. The trailing _id sort key
+// keeps page boundaries deterministic when (favorite, name) ties.
+func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, favorite bool, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+	match := bson.M{"u.account": account}
 	var windowCutoff *time.Time
 	switch listType {
+	case "current":
+		match["$or"] = bson.A{
+			bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}, "muted": bson.M{"$ne": true}},
+			bson.M{"roomType": "botDM", "muted": bson.M{"$ne": true}, "isSubscribed": true},
+		}
 	case "rooms":
+		match["muted"] = bson.M{"$ne": true}
 		match["roomType"] = bson.M{"$in": bson.A{"dm", "channel"}}
 		if withinDays != nil {
 			// Windows on whole-room activity (room.lastMsgAt) post-$lookup — subscriptions carry no updatedAt.
@@ -98,48 +105,30 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 		}
 	case "apps":
 		// withinDays is intentionally not applied to apps subscriptions.
+		match["muted"] = bson.M{"$ne": true}
 		match["roomType"] = "botDM"
 		match["isSubscribed"] = true
 	}
+	if favorite {
+		match["favorite"] = true
+	}
 	pipeline := bson.A{bson.M{"$match": match}}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, windowCutoff)...)
-	pipeline = append(pipeline,
-		bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}}},
-		bson.M{"$limit": int64(limit)},
-	)
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
-}
-
-// aggregateCurrent merges the rooms (dm/channel) and apps (botDM) $facet branches — each needs a different roomType $match; no window.
-func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
-	match := bson.M{"u.account": account, "$or": bson.A{
-		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}, "muted": bson.M{"$ne": true}},
-		bson.M{"roomType": "botDM", "muted": bson.M{"$ne": true}, "isSubscribed": true},
-	}}
-	pipeline := bson.A{bson.M{"$match": match}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
-	sortStage := bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}}}
-	limitStage := bson.M{"$limit": int64(limit)}
-	pipeline = append(pipeline,
-		bson.M{"$facet": bson.M{
-			// Branches sort+limit BEFORE the merge so the post-concat $sort sees
-			// ≤ 2*limit docs — the global top-K is within the union of branch top-Ks.
-			"rooms": bson.A{
-				bson.M{"$match": bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}}},
-				sortStage, limitStage,
-			},
-			"apps": bson.A{
-				bson.M{"$match": bson.M{"roomType": "botDM"}},
-				sortStage, limitStage,
-			},
-		}},
-		bson.M{"$project": bson.M{"all": bson.M{"$concatArrays": bson.A{"$rooms", "$apps"}}}},
-		bson.M{"$unwind": "$all"},
-		bson.M{"$replaceRoot": bson.M{"newRoot": "$all"}},
-		sortStage,
-		limitStage,
-	)
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	if favorite {
+		// Self-DM-first applies only to the favorite view. account is $literal-wrapped:
+		// a $-prefixed value would otherwise be read as a field path in $eq.
+		pipeline = append(pipeline,
+			bson.M{"$addFields": bson.M{"_selfDm": bson.M{"$and": bson.A{
+				bson.M{"$eq": bson.A{"$roomType", "dm"}},
+				bson.M{"$eq": bson.A{"$name", bson.M{"$literal": account}}},
+			}}}},
+			bson.M{"$sort": bson.D{{Key: "_selfDm", Value: -1}, {Key: "favorite", Value: -1}, {Key: "name", Value: 1}, {Key: "_id", Value: 1}}},
+			bson.M{"$project": bson.M{"_selfDm": 0}},
+		)
+	} else {
+		pipeline = append(pipeline, bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}, {Key: "_id", Value: 1}}})
+	}
+	return r.subscriptions.AggregatePaged(ctx, pipeline, page, mongoutil.WithAllowDiskUse())
 }
 
 // FindChannelsByMembers returns the requester's channel subs whose room contains ALL given members (bots excluded), room.createdAt desc.

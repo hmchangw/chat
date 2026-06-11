@@ -44,18 +44,18 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 }
 
 // AggregateSubscriptions mocks base method.
-func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, limit int) ([]model.Subscription, error) {
+func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, favorite bool, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AggregateSubscriptions", ctx, account, listType, withinDays, limit)
-	ret0, _ := ret[0].([]model.Subscription)
+	ret := m.ctrl.Call(m, "AggregateSubscriptions", ctx, account, listType, withinDays, favorite, page)
+	ret0, _ := ret[0].(mongoutil.OffsetPage[model.Subscription])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AggregateSubscriptions indicates an expected call of AggregateSubscriptions.
-func (mr *MockSubscriptionRepositoryMockRecorder) AggregateSubscriptions(ctx, account, listType, withinDays, limit any) *gomock.Call {
+func (mr *MockSubscriptionRepositoryMockRecorder) AggregateSubscriptions(ctx, account, listType, withinDays, favorite, page any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AggregateSubscriptions", reflect.TypeOf((*MockSubscriptionRepository)(nil).AggregateSubscriptions), ctx, account, listType, withinDays, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AggregateSubscriptions", reflect.TypeOf((*MockSubscriptionRepository)(nil).AggregateSubscriptions), ctx, account, listType, withinDays, favorite, page)
 }
 
 // CountActiveSubscriptions mocks base method.

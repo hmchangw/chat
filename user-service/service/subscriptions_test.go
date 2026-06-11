@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
@@ -18,14 +19,89 @@ func TestListSubscriptions_Types(t *testing.T) {
 	for _, typ := range []string{"current", "rooms", "apps"} {
 		t.Run(typ, func(t *testing.T) {
 			svc, subs, _, _, rooms, _ := newSvc(t)
-			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, gomock.Any(), 1000).
-				Return([]model.Subscription{{ID: "s1"}}, nil)
+			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, gomock.Any(), false, mongoutil.OffsetPageRequest{Offset: 0, Limit: 40}).
+				Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "s1"}}, Total: 1}, nil)
 			rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: typ})
 			require.NoError(t, err)
 			assert.Equal(t, 1, resp.Total)
 		})
 	}
+}
+
+func TestListSubscriptions_PageBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		offset  int
+		limit   int
+		wantOff int64
+		wantLim int64
+	}{
+		{"omitted defaults to 40", 0, 0, 0, 40},
+		{"explicit passthrough", 80, 25, 80, 25},
+		{"limit capped at maxSubs", 0, 5000, 0, 1000},
+		{"negatives clamped", -3, -9, 0, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, subs, _, _, _, _ := newSvc(t)
+			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "rooms", gomock.Any(), false,
+				mongoutil.OffsetPageRequest{Offset: tc.wantOff, Limit: tc.wantLim}).
+				Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}}, nil)
+			_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
+				models.SubscriptionListRequest{Type: "rooms", Offset: tc.offset, Limit: tc.limit})
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestListSubscriptions_TotalIsFullCount(t *testing.T) {
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "rooms", gomock.Any(), false, gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{
+			Data:  []model.Subscription{{ID: "s1"}, {ID: "s2"}},
+			Total: 57,
+		}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "rooms"})
+	require.NoError(t, err)
+	assert.Equal(t, 57, resp.Total, "total must be the full filtered count, not the page length")
+	assert.Len(t, resp.Subscriptions, 2)
+}
+
+func TestListSubscriptions_FavoriteForwarded(t *testing.T) {
+	svc, subs, _, _, _, _ := newSvc(t)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), true, gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}}, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"),
+		models.SubscriptionListRequest{Type: "current", Favorite: ptrBool(true)})
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Total)
+}
+
+func TestListSubscriptions_FavoriteFalseNotForwarded(t *testing.T) {
+	svc, subs, _, _, _, _ := newSvc(t)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), false, gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}}, nil)
+	_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
+		models.SubscriptionListRequest{Type: "current", Favorite: ptrBool(false)})
+	require.NoError(t, err)
+}
+
+func TestListSubscriptions_EnrichesPage(t *testing.T) {
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	someMillis := int64(500)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "rooms", gomock.Any(), false, gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{
+			Data:  []model.Subscription{{ID: "s1", SiteID: "site-a", RoomID: "r1", Name: "Stale"}},
+			Total: 1,
+		}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).
+		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Renamed", LastMsgAt: &someMillis}}, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "rooms"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 1)
+	assert.Equal(t, "Renamed", resp.Subscriptions[0].Name, "page rows must be room-info-enriched")
 }
 
 func TestListSubscriptions_BadType(t *testing.T) {
@@ -46,81 +122,12 @@ func TestListSubscriptions_NegativeWithinDays(t *testing.T) {
 	requireCode(t, err, errcode.CodeBadRequest)
 }
 
-func TestFilterFavorites(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "a", Favorite: true},
-		{ID: "b", Favorite: false},
-		{ID: "c", Favorite: true},
-	}
-	got := filterFavorites(subs)
-	require.Len(t, got, 2)
-	assert.Equal(t, "a", got[0].ID)
-	assert.Equal(t, "c", got[1].ID)
-}
-
-func TestMoveSelfDMFront(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "a", RoomType: model.RoomTypeChannel, Name: "Eng"},
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice"},
-		{ID: "b", RoomType: model.RoomTypeDM, Name: "bob"},
-	}
-	got := moveSelfDMFront(subs, "alice")
-	require.Len(t, got, 3)
-	assert.Equal(t, "self", got[0].ID)
-	assert.Equal(t, "a", got[1].ID)
-	assert.Equal(t, "b", got[2].ID)
-}
-
-func TestMoveSelfDMFront_NoSelf(t *testing.T) {
-	subs := []model.Subscription{{ID: "a", RoomType: model.RoomTypeChannel}}
-	got := moveSelfDMFront(subs, "alice")
-	require.Equal(t, "a", got[0].ID)
-}
-
-func TestMoveSelfDMFront_Nil(t *testing.T) {
-	got := moveSelfDMFront(nil, "alice")
-	assert.Empty(t, got)
-}
-
-func TestMoveSelfDMFront_AlreadyFirst(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice"},
-		{ID: "a", RoomType: model.RoomTypeChannel, Name: "Eng"},
-		{ID: "b", RoomType: model.RoomTypeDM, Name: "bob"},
-	}
-	got := moveSelfDMFront(subs, "alice")
-	require.Len(t, got, 3)
-	assert.Equal(t, "self", got[0].ID)
-	assert.Equal(t, "a", got[1].ID)
-	assert.Equal(t, "b", got[2].ID)
-}
-
 func TestListSubscriptions_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
-		Return(nil, errors.New("db down"))
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), false, gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{}, errors.New("db down"))
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	requireCode(t, err, errcode.CodeInternal)
-}
-
-func TestListSubscriptions_Favorite(t *testing.T) {
-	svc, subs, _, _, rooms, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "ch1", RoomType: model.RoomTypeChannel, Name: "general", Favorite: false},
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true},
-		{ID: "ch2", RoomType: model.RoomTypeChannel, Name: "random", Favorite: true},
-	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
-		Return(storeSubs, nil)
-	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{
-		Type:     "current",
-		Favorite: ptrBool(true),
-	})
-	require.NoError(t, err)
-	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "self", resp.Subscriptions[0].ID, "self-DM favorite must be first")
-	assert.Equal(t, "ch2", resp.Subscriptions[1].ID)
 }
 
 func ptrBool(b bool) *bool { return &b }

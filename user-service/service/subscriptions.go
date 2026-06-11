@@ -12,6 +12,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/user-service/models"
@@ -33,6 +34,9 @@ const (
 // maxAccountNames caps getChannels' accountNames — unbounded input builds an arbitrarily large $in/$setIsSubset operand.
 const maxAccountNames = 100
 
+// defaultSubPageSize is subscription.list's page size when the request omits limit.
+const defaultSubPageSize = 40
+
 func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.SubscriptionListResponse, error) {
 	if !validListTypes[req.Type] {
 		return nil, errcode.BadRequest("unknown subscription type")
@@ -43,16 +47,14 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 	}
 	account := c.Param("account")
 	c.WithLogValues("account", account)
-	subs, err := s.subs.AggregateSubscriptions(c, account, req.Type, req.UpdatedWithinDays, s.maxSubs)
+	favorite := req.Favorite != nil && *req.Favorite
+	page := mongoutil.NewOffsetPageRequestWithBounds(req.Offset, req.Limit, defaultSubPageSize, s.maxSubs)
+	result, err := s.subs.AggregateSubscriptions(c, account, req.Type, req.UpdatedWithinDays, favorite, page)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
-	if req.Favorite != nil && *req.Favorite {
-		subs = filterFavorites(subs)
-		subs = moveSelfDMFront(subs, account)
-	}
-	s.enrichWithRoomInfo(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: subs, Total: len(subs)}, nil
+	s.enrichWithRoomInfo(c, result.Data)
+	return &models.SubscriptionListResponse{Subscriptions: result.Data, Total: int(result.Total)}, nil
 }
 
 // enrichWithRoomInfo overwrites room-derived fields per site in parallel; a failed
@@ -150,29 +152,6 @@ func unread(lastSeen *time.Time, ms *int64) bool {
 		return true
 	}
 	return lastSeen.UTC().UnixMilli() < *ms
-}
-
-func filterFavorites(subs []model.Subscription) []model.Subscription {
-	// [:0:0] — cap 0 forces a fresh backing array so append never aliases/mutates the input
-	out := subs[:0:0]
-	for i := range subs {
-		if subs[i].Favorite {
-			out = append(out, subs[i])
-		}
-	}
-	return out
-}
-
-func moveSelfDMFront(subs []model.Subscription, account string) []model.Subscription {
-	for i := range subs {
-		if subs[i].RoomType == model.RoomTypeDM && subs[i].Name == account {
-			out := make([]model.Subscription, 0, len(subs))
-			out = append(out, subs[i])
-			out = append(out, subs[:i]...)
-			return append(out, subs[i+1:]...)
-		}
-	}
-	return subs
 }
 
 func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsRequest) (*models.SubscriptionListResponse, error) {

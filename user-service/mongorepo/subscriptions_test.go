@@ -10,7 +10,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/hmchangw/chat/pkg/mongoutil"
 )
+
+// pg builds an explicit page for integration calls (no defaulting — the
+// service-level constructor owns defaults).
+func pg(offset, limit int64) mongoutil.OffsetPageRequest {
+	return mongoutil.OffsetPageRequest{Offset: offset, Limit: limit}
+}
 
 func TestAggregateSubscriptions_Integration(t *testing.T) {
 	r, db := newTestSubscriptionRepo(t)
@@ -33,6 +41,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		bson.M{"_id": "r-del", "name": "Del-Old", "siteId": "site-a", "userCount": 3},
 		// r-missing intentionally NOT seeded
 		// cross-site room is not in the local rooms collection by design
+		bson.M{"_id": "r-self", "name": "alice", "siteId": "site-a", "userCount": 1},
 	)
 
 	seed(t, db, "subscriptions",
@@ -42,6 +51,10 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		// local dm (kept, enriched)
 		bson.M{"_id": "sub-dm", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-dm",
 			"name": "bob", "roomType": "dm", "siteId": "site-a", "updatedAt": now, "createdAt": now},
+		// favorited self-DM (name == account): must sort FIRST in the favorite view,
+		// even though "Eng" < "alice" by name.
+		bson.M{"_id": "sub-self", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-self",
+			"name": "alice", "roomType": "dm", "siteId": "site-a", "favorite": true, "updatedAt": now, "createdAt": now},
 		// local subscribed botDM (kept for current/apps)
 		bson.M{"_id": "sub-bot", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-bot",
 			"name": "helper.bot", "roomType": "botDM", "siteId": "site-a", "isSubscribed": true, "updatedAt": now, "createdAt": now},
@@ -64,8 +77,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	)
 
 	t.Run("rooms returns dm+channel, drops Del- and missing, keeps cross-site", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -79,8 +93,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("local row enriched, cross-site empty", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		byID := map[string]int{}
 		for i, sub := range subs {
 			byID[sub.ID] = i
@@ -95,15 +110,17 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("favorite sorts before non-favorite then by name", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		require.NotEmpty(t, subs)
 		assert.Equal(t, "sub-eng", subs[0].ID, "favorite Eng sorts first")
 	})
 
 	t.Run("apps returns only subscribed botDMs", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "apps", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "apps", nil, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -114,8 +131,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("current merges rooms+subscribed botDMs", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -130,8 +148,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 
 	t.Run("rooms window drops stale-ROOM subs, keeps fresh + cross-site", func(t *testing.T) {
 		within := 30
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", &within, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", &within, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -143,8 +162,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 
 	t.Run("current ignores withinDays — keeps stale rows", func(t *testing.T) {
 		within := 30
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "current", &within, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "current", &within, false, pg(0, 100))
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -153,9 +173,57 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("limit caps results", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 1)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 1))
 		require.NoError(t, err)
-		assert.Len(t, subs, 1)
+		assert.Len(t, page.Data, 1)
+	})
+
+	t.Run("pages slice deterministically and total is the full count", func(t *testing.T) {
+		// rooms view, favorite desc then name asc then _id. BOTH favorites lead
+		// (sub-eng "Eng" < sub-self "alice" in BSON binary order), then non-favorites:
+		// [sub-eng(fav), sub-self(fav), sub-old("EngOld"), sub-xsite("Remote"), sub-dm("bob")]
+		first, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 2))
+		require.NoError(t, err)
+		require.Len(t, first.Data, 2)
+		assert.Equal(t, int64(5), first.Total)
+		assert.Equal(t, "sub-eng", first.Data[0].ID)
+		assert.Equal(t, "sub-self", first.Data[1].ID)
+
+		second, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(2, 2))
+		require.NoError(t, err)
+		require.Len(t, second.Data, 2)
+		assert.Equal(t, int64(5), second.Total, "total must not change across pages")
+		assert.Equal(t, "sub-old", second.Data[0].ID)
+		assert.Equal(t, "sub-xsite", second.Data[1].ID)
+
+		last, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(4, 2))
+		require.NoError(t, err)
+		require.Len(t, last.Data, 1)
+		assert.Equal(t, "sub-dm", last.Data[0].ID)
+	})
+
+	t.Run("offset beyond end yields empty page with full total", func(t *testing.T) {
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(100, 2))
+		require.NoError(t, err)
+		assert.Empty(t, page.Data)
+		assert.NotNil(t, page.Data, "empty page must be a non-nil slice")
+		assert.Equal(t, int64(5), page.Total)
+	})
+
+	t.Run("favorite filters in-DB and self-DM sorts first", func(t *testing.T) {
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, true, pg(0, 40))
+		require.NoError(t, err)
+		require.Len(t, page.Data, 2, "only the two favorited rows")
+		assert.Equal(t, int64(2), page.Total)
+		assert.Equal(t, "sub-self", page.Data[0].ID, "favorited self-DM first despite name order")
+		assert.Equal(t, "sub-eng", page.Data[1].ID)
+	})
+
+	t.Run("favorite view with no favorites is empty", func(t *testing.T) {
+		page, err := r.AggregateSubscriptions(ctx, "bob", "rooms", nil, true, pg(0, 40))
+		require.NoError(t, err)
+		assert.Empty(t, page.Data)
+		assert.Equal(t, int64(0), page.Total)
 	})
 }
 
