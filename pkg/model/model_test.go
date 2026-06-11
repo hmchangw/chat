@@ -3398,3 +3398,59 @@ func TestMessageEvent_NewTCount(t *testing.T) {
 		assert.EqualValues(t, 0, val, "zero BSON value must be 0, not missing")
 	})
 }
+
+func TestUserStatusFields_RoundTrip(t *testing.T) {
+	src := model.User{
+		ID:           "u1",
+		Account:      "alice",
+		SiteID:       "site-a",
+		StatusText:   "busy",
+		StatusIsShow: true,
+	}
+	dst := model.User{}
+	roundTrip(t, &src, &dst)
+}
+
+func TestUserStatusUpdated_RoundTrip(t *testing.T) {
+	show := true
+	src := model.UserStatusUpdated{
+		Account:      "alice",
+		StatusText:   "in a meeting",
+		StatusIsShow: &show,
+		Timestamp:    1735689600000,
+	}
+	dst := model.UserStatusUpdated{}
+	roundTrip(t, &src, &dst)
+}
+
+func TestUserStatusUpdated_StatusIsShowOmittedWhenNil(t *testing.T) {
+	src := model.UserStatusUpdated{
+		Account:    "alice",
+		StatusText: "in a meeting",
+		Timestamp:  1735689600000,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, present := raw["statusIsShow"]
+	assert.False(t, present, "nil StatusIsShow must be omitted from JSON")
+}
+
+func TestSubscriptionEnrichmentFields_RoundTrip(t *testing.T) {
+	lastMsg := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	src := model.Subscription{
+		ID:        "s1",
+		User:      model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Roles:     []model.Role{model.RoleMember},
+		JoinedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UserCount: 42,
+		LastMsgAt: &lastMsg,
+		LastMsgID: "msg-abc",
+	}
+	dst := model.Subscription{}
+	roundTrip(t, &src, &dst)
+}
