@@ -13,12 +13,23 @@ import (
 func TestSubscriptionListRequest_RoundTrip(t *testing.T) {
 	fav := true
 	days := 7
-	in := SubscriptionListRequest{Type: "rooms", Favorite: &fav, UpdatedWithinDays: &days}
+	in := SubscriptionListRequest{Type: "rooms", Favorite: &fav, UpdatedWithinDays: &days, Offset: 40, Limit: 25}
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
 	var out SubscriptionListRequest
 	require.NoError(t, json.Unmarshal(b, &out))
 	require.Equal(t, in, out)
+}
+
+func TestSubscriptionListRequest_ZeroPageFieldsOmitted(t *testing.T) {
+	b, err := json.Marshal(SubscriptionListRequest{Type: "rooms"})
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(b, &raw))
+	_, hasOffset := raw["offset"]
+	_, hasLimit := raw["limit"]
+	require.False(t, hasOffset, "zero offset must be omitted on the wire")
+	require.False(t, hasLimit, "zero limit must be omitted on the wire")
 }
 
 func TestSubscriptionListResponse_RoundTrip(t *testing.T) {

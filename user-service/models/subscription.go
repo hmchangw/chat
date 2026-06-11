@@ -4,10 +4,13 @@ import "github.com/hmchangw/chat/pkg/model"
 
 // SubscriptionListRequest is the body of subscription.list.
 // Type ∈ {current, rooms, apps}. UpdatedWithinDays nil ⇒ no age filter.
+// Offset/Limit page the result: limit ≤ 0 ⇒ server default 40, capped at MAX_SUBSCRIPTION_LIMIT.
 type SubscriptionListRequest struct {
 	Type              string `json:"type"`
 	Favorite          *bool  `json:"favorite,omitempty"`
 	UpdatedWithinDays *int   `json:"updatedWithinDays,omitempty"`
+	Offset            int    `json:"offset,omitempty"`
+	Limit             int    `json:"limit,omitempty"`
 }
 
 // SubscriptionListResponse is returned by subscription.list and subscription.getChannels.
