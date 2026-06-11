@@ -17,12 +17,16 @@ func EmptyPage[T any]() OffsetPage[T] {
 
 // NewOffsetPageRequestWithBounds validates offset+limit against caller-supplied
 // bounds: limit <= 0 -> defaultLimit, limit > maxLimit -> maxLimit, negative offset -> 0.
+// If defaultLimit > maxLimit, the effective default is maxLimit; non-positive defaultLimit floors the limit at 1.
 func NewOffsetPageRequestWithBounds(offset, limit, defaultLimit, maxLimit int) OffsetPageRequest {
 	if offset < 0 {
 		offset = 0
 	}
 	if limit <= 0 {
 		limit = defaultLimit
+	}
+	if limit <= 0 { // defaultLimit was also non-positive — floor at 1; $limit:0 is rejected by MongoDB
+		limit = 1
 	}
 	if limit > maxLimit {
 		limit = maxLimit

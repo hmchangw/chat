@@ -48,6 +48,7 @@ func TestNewOffsetPageRequestWithBounds_DefaultApplied(t *testing.T) {
 
 func TestNewOffsetPageRequestWithBounds_NegativeLimitDefaulted(t *testing.T) {
 	p := NewOffsetPageRequestWithBounds(0, -7, 40, 1000)
+	assert.Equal(t, int64(0), p.Offset)
 	assert.Equal(t, int64(40), p.Limit)
 }
 
@@ -65,4 +66,14 @@ func TestNewOffsetPageRequestWithBounds_CapApplied(t *testing.T) {
 func TestNewOffsetPageRequestWithBounds_NegativeOffsetClamped(t *testing.T) {
 	p := NewOffsetPageRequestWithBounds(-5, 40, 40, 1000)
 	assert.Equal(t, int64(0), p.Offset)
+}
+
+func TestNewOffsetPageRequestWithBounds_DefaultExceedsCap(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(0, 0, 200, 100)
+	assert.Equal(t, int64(100), p.Limit)
+}
+
+func TestNewOffsetPageRequestWithBounds_NonPositiveDefaultFloorsAtOne(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(0, 0, 0, 100)
+	assert.Equal(t, int64(1), p.Limit)
 }
