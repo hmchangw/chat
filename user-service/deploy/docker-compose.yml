@@ -14,7 +14,6 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
       - MAX_SUBSCRIPTION_LIMIT=1000
-      - METRICS_ADDR=:9090
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

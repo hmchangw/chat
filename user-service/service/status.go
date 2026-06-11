@@ -66,7 +66,6 @@ func (s *UserService) publishStatus(c *natsrouter.Context, account, text string,
 			continue
 		}
 		if err := s.pub.Publish(c, subject.Outbox(s.siteID, dest, model.OutboxUserStatusUpdated), data); err != nil {
-			metricOutboxPublishFailures.WithLabelValues(dest).Inc()
 			slog.ErrorContext(c, "publish status outbox", "error", err, "site", s.siteID, "dest", dest, "account", account, "request_id", natsutil.RequestIDFromContext(c))
 		}
 	}

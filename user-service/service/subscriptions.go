@@ -92,7 +92,6 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 			}
 			infos, err := s.rooms.GetRoomsInfo(c, site, roomIDs)
 			if err != nil {
-				metricEnrichmentDegraded.WithLabelValues(site).Inc()
 				slog.WarnContext(c, "room-info enrichment degraded", "account", c.Param("account"), "site", site, "request_id", natsutil.RequestIDFromContext(c), "error", err)
 				return
 			}
@@ -313,7 +312,6 @@ func (s *UserService) countUnread(ctx context.Context, account string, total int
 		})
 	}
 	if err := g.Wait(); err != nil {
-		metricUnreadFallback.Inc()
 		slog.WarnContext(ctx, "unread count fell back to total", "account", account, "request_id", natsutil.RequestIDFromContext(ctx), "error", err)
 		return &models.CountResponse{Count: total}, nil
 	}
