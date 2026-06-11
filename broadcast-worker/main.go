@@ -22,6 +22,7 @@ import (
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/userstore"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type encryptionConfig struct {
@@ -46,6 +47,9 @@ type config struct {
 	RoomKeyCacheTTL      time.Duration           `env:"ROOM_KEY_CACHE_TTL"        envDefault:"10m"`
 	RoomKeyCacheSize     int                     `env:"ROOM_KEY_CACHE_SIZE"       envDefault:"50000"`
 	RoomKeyCacheStats    time.Duration           `env:"ROOM_KEY_CACHE_STATS_INTERVAL" envDefault:"0"`
+	RoomMetaL2TTL        time.Duration           `env:"ROOM_META_L2_TTL"          envDefault:"15m"`
+	ValkeyAddrs          []string                `env:"VALKEY_ADDRS"              envSeparator:","`
+	ValkeyPassword       string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
@@ -74,7 +78,16 @@ func main() {
 		os.Exit(1)
 	}
 	db := mongoClient.Database(cfg.MongoDB)
-	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_rooms"))
+	var metaValkey valkeyutil.Client
+	if len(cfg.ValkeyAddrs) > 0 {
+		metaValkey, err = valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+		if err != nil {
+			slog.Error("valkey connect (room-meta L2) failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("room-meta L2 cache enabled", "ttl", cfg.RoomMetaL2TTL)
+	}
+	store := NewMongoStore(db.Collection("rooms"), db.Collection("subscriptions"), db.Collection("thread_rooms"), metaValkey, cfg.RoomMetaL2TTL)
 	if err := store.EnsureIndexes(ctx); err != nil {
 		slog.Error("ensure indexes failed", "error", err)
 		os.Exit(1)
@@ -245,7 +258,10 @@ func main() {
 	if keyStore != nil {
 		hooks = append(hooks, func(ctx context.Context) error { return keyStore.Close() })
 	}
-	hooks = append(hooks, func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil })
+	hooks = append(hooks,
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(_ context.Context) error { valkeyutil.Disconnect(metaValkey); return nil },
+	)
 
 	shutdown.Wait(ctx, 25*time.Second, hooks...)
 }
