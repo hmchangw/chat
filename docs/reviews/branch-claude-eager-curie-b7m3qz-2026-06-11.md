@@ -217,3 +217,32 @@ Follow-ups (non-blocking):
   see clamped values and cap-hitting clients.
 - **[low]** `service/subscriptions.go:52` — log `result.Total` for latency investigations
   (distinguishes a 500ms query over 3 rows vs 3000).
+
+## Prioritized action list
+
+1. **[high]** Unify the `Total` width — make the wire field `int64` (or `OffsetPage.Total`
+   an `int`) and drop the `int(result.Total)` casts.
+   `user-service/models/subscription.go:19`, `service/subscriptions.go:57` (+ `apps.go:60`
+   same pattern). Why: silent-narrowing pattern that spreads with every new paged endpoint.
+2. **[medium]** Cap `updatedWithinDays` (e.g. ≤ 3650) in `ListSubscriptions` validation.
+   `user-service/service/subscriptions.go:44`. Why: extreme values overflow `AddDate` into
+   a garbage cutoff and silently return an empty list; pre-existing but a one-line fix in
+   code this branch rewrote.
+3. **[medium]** Add `assert.NotNil(t, resp.Subscriptions)` to an empty-page handler unit
+   test. `user-service/service/subscriptions_test.go:72-89`. Why: pins the JSON
+   `[]`-not-`null` contract at the handler boundary, not just the DB boundary.
+4. **[low]** Document `OffsetPage.Data`'s always-non-nil contract in godoc.
+   `pkg/mongoutil/pagination.go:8`. Why: callers rely on it for wire correctness.
+5. **[low]** Consolidate the 7 `NewOffsetPageRequestWithBounds` tests into one table-driven
+   test. `pkg/mongoutil/pagination_test.go`. Why: CLAUDE.md §4 style; parameter space at a
+   glance.
+6. **[low]** Log effective `offset`/`limit` (and optionally `total`) via `WithLogValues`.
+   `user-service/service/subscriptions.go:51-52`. Why: slow-query triage visibility.
+7. **[low]** Optional hardening: upper-bound `offset` or document the unbounded `$skip`
+   (self-scoped, ≤ ~1000 docs). `pkg/mongoutil/pagination.go:22`.
+8. **[low]** Optional: `{u.account, favorite}` index if the favorite view ever shows in
+   profiles. `user-service/mongorepo/subscriptions.go` (`EnsureIndexes`).
+
+Deferred by design (documented in spec/plan): frontend sidebar truncation at 40/bucket
+until the frontend adopts paging; `$count`-per-page cost (TTL-cache candidate); re-run
+`make sast` in CI (govulncheck/semgrep egress-blocked in this environment).
