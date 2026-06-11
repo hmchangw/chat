@@ -12,6 +12,15 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
+// subscriptionListRequest mirrors user-service's subscription.list wire body.
+// Defined locally (matching the JSON shape) so loadgen does not import across
+// the service boundary into user-service/models, same as the history DTOs.
+type subscriptionListRequest struct {
+	Type              string `json:"type"`
+	Favorite          *bool  `json:"favorite,omitempty"`
+	UpdatedWithinDays *int   `json:"updatedWithinDays,omitempty"`
+}
+
 // publishFn matches the existing Publisher interface used by generator.go.
 type publishFn func(ctx context.Context, subj string, data []byte) error
 
@@ -91,7 +100,11 @@ func markRead(a actionCtx, u *userState, lastMsgID string) error {
 
 // refreshRoomList does a NATS request/reply for the user's subscription list.
 func refreshRoomList(a actionCtx, u *userState) error {
-	_, err := a.Request(a.Ctx, subject.UserSubscriptionGetRooms(u.Account, a.SiteID), nil, defaultRequestTimeout)
+	payload, err := json.Marshal(subscriptionListRequest{Type: "rooms"})
+	if err != nil {
+		return fmt.Errorf("marshal room-list: %w", err)
+	}
+	_, err = a.Request(a.Ctx, subject.UserSubscriptionList(u.Account, a.SiteID), payload, defaultRequestTimeout)
 	if err != nil {
 		return fmt.Errorf("request room-list: %w", err)
 	}
