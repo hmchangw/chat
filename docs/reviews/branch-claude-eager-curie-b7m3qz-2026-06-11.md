@@ -196,3 +196,24 @@ semgrep rulesets blocked by network egress in this environment (403 to `vuln.go.
   25×. `maxSiteFanout=8` bounds unchanged.
 - **[nitpick]** `mongorepo/subscriptions.go:~106` — pre-size the pipeline slice
   (`make(bson.A, 0, 8)`) to skip one re-allocation. Trivial.
+
+## Observability
+
+Clean across the board: slog-JSON discipline holds (no print-family logging introduced);
+request-ID propagation intact — `c.WithLogValues("account", ...)` before the repo call and
+the `natsrouter.Context` flows into both `AggregateSubscriptions` and `enrichWithRoomInfo`;
+error paths return raw wrapped errors that classify-and-log exactly once at the router
+boundary (no double-logging, no silent paths); per-site enrichment degradation still warns
+with `account`/`site`/`request_id`/`error`; no secrets or payloads logged.
+
+OTel posture noted (no finding): service handlers carry transport-level trace context via
+`otelnats` but define no handler spans today — the diff is consistent with that posture.
+Prometheus deliberately absent from user-service (removed in `28ef362`); no
+recommendation to re-add.
+
+Follow-ups (non-blocking):
+- **[low]** `service/subscriptions.go:51` — log the EFFECTIVE page params
+  (`c.WithLogValues("offset", page.Offset, "limit", page.Limit)`) so slow-query triage can
+  see clamped values and cap-hitting clients.
+- **[low]** `service/subscriptions.go:52` — log `result.Total` for latency investigations
+  (distinguishes a 500ms query over 3 rows vs 3000).
