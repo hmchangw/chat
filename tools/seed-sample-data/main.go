@@ -67,7 +67,7 @@ func dryRunSummary() string {
 		fmt.Sprintf("messages %d", len(BuildMessages())),
 		fmt.Sprintf("thread_rooms %d", len(BuildThreadRooms())),
 		fmt.Sprintf("thread_subscriptions %d", len(BuildThreadSubscriptions())),
-		fmt.Sprintf("valkey:roomKeys %d", len(BuildRoomKeys())),
+		fmt.Sprintf("mongo:roomKeys %d", len(BuildRoomKeys())),
 		fmt.Sprintf("valkey:restrictedCache %d", len(BuildRestrictedCache())),
 	}
 	return strings.Join(lines, "\n")
@@ -109,19 +109,9 @@ func run(reset bool) error {
 	defer mongoutil.Disconnect(ctx, mongoClient)
 	db := mongoClient.Database(cfg.MongoDB)
 
-	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
-		Addrs:       cfg.ValkeyAddrs,
-		Password:    cfg.ValkeyPassword,
-		GracePeriod: 5 * time.Minute,
-	})
-	if err != nil {
-		return fmt.Errorf("valkey roomkeystore connect: %w", err)
-	}
-	defer func() {
-		if cerr := keyStore.Close(); cerr != nil {
-			slog.Warn("valkey roomkeystore close", "error", cerr)
-		}
-	}()
+	// Room keys live in the rooms collection; upsertAll inserts the rooms before
+	// writeValkey provisions their keys.
+	keyStore := roomkeystore.NewMongoStore(db.Collection("rooms"), 5*time.Minute)
 
 	valkeyClient, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
 	if err != nil {
