@@ -44,15 +44,21 @@ type InboxStore interface {
 	// (the source event's publish time): older/duplicate events are silent
 	// no-ops. Missing-sub is also a silent no-op for federation races.
 	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, eventTs int64) error
-	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
-	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
-	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room.
-	// Used when a channel is renamed — replicated via the outbox to remote sites.
-	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+	// UpdateSubscriptionFavorite sets favorite by (roomID, account), guarded by
+	// eventTs (the source event's publish time): older/duplicate events are
+	// silent no-ops. Missing-sub is also a silent no-op for federation races.
+	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool, eventTs int64) error
+	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room,
+	// each guarded by its own nameEventTs so an out-of-order rename cannot regress
+	// a sub to a stale name. Used when a channel is renamed — replicated via the
+	// outbox to remote sites.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, eventTs int64) error
 	// ApplySubscriptionVisibility writes {restricted, externalAccess, roles} to all subs
-	// in the room. When restricted=true and ownerAccount is non-empty, a $cond pipeline
-	// demotes all accounts except ownerAccount to RoleMember.
-	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
+	// in the room, each guarded by its own visibilityEventTs so an out-of-order
+	// visibility change cannot regress the flags/roles. When restricted=true and
+	// ownerAccount is non-empty, a $cond pipeline demotes all accounts except
+	// ownerAccount to RoleMember.
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string, eventTs int64) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -255,7 +261,7 @@ func (h *Handler) handleSubscriptionFavoriteToggled(ctx context.Context, evt *mo
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal subscription_favorite_toggled payload: %w", err)
 	}
-	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite); err != nil {
+	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite, e.Timestamp); err != nil {
 		return fmt.Errorf("update subscription favorite for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil
@@ -295,7 +301,7 @@ func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent)
 	if err := json.Unmarshal(evt.Payload, &p); err != nil {
 		return errcode.Permanent(errcode.BadRequest("unmarshal room_renamed payload"))
 	}
-	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, p.RoomID, p.NewName); err != nil {
+	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, p.RoomID, p.NewName, p.Timestamp); err != nil {
 		return fmt.Errorf("update subscription names for room %s: %w", p.RoomID, err)
 	}
 	return nil
@@ -306,7 +312,7 @@ func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.Ou
 	if err := json.Unmarshal(evt.Payload, &p); err != nil {
 		return errcode.Permanent(errcode.BadRequest("unmarshal room_restricted payload"))
 	}
-	if err := h.store.ApplySubscriptionVisibility(ctx, p.RoomID, p.Restricted, p.ExternalAccess, p.OwnerAccount); err != nil {
+	if err := h.store.ApplySubscriptionVisibility(ctx, p.RoomID, p.Restricted, p.ExternalAccess, p.OwnerAccount, p.Timestamp); err != nil {
 		return fmt.Errorf("apply subscription visibility for room %s: %w", p.RoomID, err)
 	}
 	return nil

@@ -195,13 +195,21 @@ func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, ac
 	return nil
 }
 
-// UpdateSubscriptionFavorite sets favorite by (roomID, account); missing is a silent no-op.
-func (s *mongoInboxStore) UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error {
-	_, err := s.subCol.UpdateOne(ctx,
-		bson.M{"roomId": roomID, "u.account": account},
-		bson.M{"$set": bson.M{"favorite": favorite}},
-	)
-	if err != nil {
+// UpdateSubscriptionFavorite sets favorite by (roomID, account) under a
+// favoriteEventTs guard so an out-of-order or duplicate toggle cannot regress
+// favorite state. Missing-sub and guard-rejected events both leave MatchedCount
+// 0 and are silent no-ops.
+func (s *mongoInboxStore) UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool, eventTs int64) error {
+	filter := bson.M{
+		"roomId":    roomID,
+		"u.account": account,
+		"$or": bson.A{
+			bson.M{"favoriteEventTs": bson.M{"$exists": false}},
+			bson.M{"favoriteEventTs": bson.M{"$lt": eventTs}},
+		},
+	}
+	update := bson.M{"$set": bson.M{"favorite": favorite, "favoriteEventTs": eventTs}}
+	if _, err := s.subCol.UpdateOne(ctx, filter, update); err != nil {
 		return fmt.Errorf("update subscription favorite for %q in room %q: %w", account, roomID, err)
 	}
 	return nil
@@ -273,22 +281,44 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 	return nil
 }
 
-func (s *mongoInboxStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
-	if _, err := s.subCol.UpdateMany(ctx,
-		bson.M{"roomId": roomID},
-		bson.M{"$set": bson.M{"name": newName}}); err != nil {
+// UpdateSubscriptionNamesForRoom sets name on every subscription in the room,
+// each guarded by its own nameEventTs ($lt) so an out-of-order rename cannot
+// regress a sub to a stale name. UpdateMany applies the guard per document, so
+// subs already carrying a newer rename are skipped while the rest advance.
+func (s *mongoInboxStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, eventTs int64) error {
+	filter := bson.M{
+		"roomId": roomID,
+		"$or": bson.A{
+			bson.M{"nameEventTs": bson.M{"$exists": false}},
+			bson.M{"nameEventTs": bson.M{"$lt": eventTs}},
+		},
+	}
+	update := bson.M{"$set": bson.M{"name": newName, "nameEventTs": eventTs}}
+	if _, err := s.subCol.UpdateMany(ctx, filter, update); err != nil {
 		return fmt.Errorf("update subscription names for room %s: %w", roomID, err)
 	}
 	return nil
 }
 
-func (s *mongoInboxStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
-	filter := bson.M{"roomId": roomID}
+// ApplySubscriptionVisibility writes {restricted, externalAccess, roles} to all
+// subs in the room, each guarded by its own visibilityEventTs ($lt) so an
+// out-of-order visibility change cannot regress the flags/roles. The guard
+// lives in the filter for both the restrict-with-owner pipeline branch and the
+// flags-only branch.
+func (s *mongoInboxStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string, eventTs int64) error {
+	filter := bson.M{
+		"roomId": roomID,
+		"$or": bson.A{
+			bson.M{"visibilityEventTs": bson.M{"$exists": false}},
+			bson.M{"visibilityEventTs": bson.M{"$lt": eventTs}},
+		},
+	}
 	if restricted && ownerAccount != "" {
 		pipeline := mongo.Pipeline{
 			bson.D{{Key: "$set", Value: bson.M{
-				"restricted":     true,
-				"externalAccess": externalAccess,
+				"restricted":        true,
+				"externalAccess":    externalAccess,
+				"visibilityEventTs": eventTs,
 				"roles": bson.M{"$cond": bson.M{
 					"if":   bson.M{"$eq": bson.A{"$u.account", ownerAccount}},
 					"then": bson.A{string(model.RoleOwner)},
@@ -302,7 +332,7 @@ func (s *mongoInboxStore) ApplySubscriptionVisibility(ctx context.Context, roomI
 		return nil
 	}
 	if _, err := s.subCol.UpdateMany(ctx, filter, bson.M{
-		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess},
+		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess, "visibilityEventTs": eventTs},
 	}); err != nil {
 		return fmt.Errorf("apply visibility (flags only): %w", err)
 	}

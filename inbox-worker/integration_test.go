@@ -804,7 +804,7 @@ func TestMongoInboxStore_UpdateSubscriptionNamesForRoom(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new"))
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new", 1))
 
 	// r1 subs must be updated.
 	cur, err := db.Collection("subscriptions").Find(ctx, bson.M{"roomId": "r1"})
@@ -852,7 +852,7 @@ func TestMongoInboxStore_ApplySubscriptionVisibility(t *testing.T) {
 		store := &mongoInboxStore{subCol: db.Collection("subscriptions")}
 		seed(t, db)
 
-		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, false, "bob"))
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, false, "bob", 1))
 
 		subs := loadSubs(t, db)
 		roles := rolesByAccount(subs)
@@ -870,7 +870,7 @@ func TestMongoInboxStore_ApplySubscriptionVisibility(t *testing.T) {
 		store := &mongoInboxStore{subCol: db.Collection("subscriptions")}
 		seed(t, db)
 
-		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, true, ""))
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", true, true, "", 1))
 
 		subs := loadSubs(t, db)
 		roles := rolesByAccount(subs)
@@ -888,7 +888,7 @@ func TestMongoInboxStore_ApplySubscriptionVisibility(t *testing.T) {
 		store := &mongoInboxStore{subCol: db.Collection("subscriptions")}
 		seed(t, db)
 
-		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", false, false, "bob"))
+		require.NoError(t, store.ApplySubscriptionVisibility(context.Background(), "r1", false, false, "bob", 1))
 
 		subs := loadSubs(t, db)
 		roles := rolesByAccount(subs)
@@ -1157,4 +1157,120 @@ func TestInbox_UpsertRoom_NewerUpdatedAtApplies(t *testing.T) {
 	var got model.Room
 	require.NoError(t, store.roomCol.FindOne(ctx, bson.M{"_id": "r1"}).Decode(&got))
 	assert.Equal(t, "newer", got.Name)
+}
+
+func TestInbox_UpdateSubscriptionFavorite_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Sub last favorited=false by a newer event (ts=200).
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"favorite": false, "favoriteEventTs": int64(200),
+	})
+	require.NoError(t, err)
+
+	// An older toggle (ts=100) must not regress favorite state.
+	require.NoError(t, store.UpdateSubscriptionFavorite(ctx, "r1", "alice", true, 100))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.False(t, got.Favorite) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionFavorite_NewerApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"favorite": false, "favoriteEventTs": int64(100),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionFavorite(ctx, "r1", "alice", true, 200))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.True(t, got.Favorite)
+}
+
+func TestInbox_UpdateSubscriptionNamesForRoom_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Sub last renamed by a newer event (ts=200).
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"name": "newer", "nameEventTs": int64(200),
+	})
+	require.NoError(t, err)
+
+	// An older rename (ts=100) must not regress the name.
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "older", 100))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.Equal(t, "newer", got.Name) // unchanged
+}
+
+func TestInbox_UpdateSubscriptionNamesForRoom_NewerApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"name": "older", "nameEventTs": int64(100),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "newer", 200))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.Equal(t, "newer", got.Name)
+}
+
+func TestInbox_ApplySubscriptionVisibility_OutOfOrderSkipped(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Sub last set restricted=true by a newer event (ts=200).
+	_, err := store.subCol.InsertOne(ctx, bson.M{
+		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+		"restricted": true, "externalAccess": false, "visibilityEventTs": int64(200),
+	})
+	require.NoError(t, err)
+
+	// An older unrestrict (ts=100) must not regress visibility state.
+	require.NoError(t, store.ApplySubscriptionVisibility(ctx, "r1", false, false, "", 100))
+
+	var got model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
+	assert.True(t, got.Restricted) // unchanged
+}
+
+func TestInbox_ApplySubscriptionVisibility_NewerApplies(t *testing.T) {
+	ctx := context.Background()
+	store := newGuardStore(setupMongo(t))
+
+	// Two subs: alice (owner) and bob (member), both at an older visibilityEventTs.
+	_, err := store.subCol.InsertMany(ctx, []any{
+		bson.M{"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
+			"roles": []model.Role{model.RoleOwner}, "restricted": false, "visibilityEventTs": int64(100)},
+		bson.M{"_id": "s2", "roomId": "r1", "u": bson.M{"account": "bob"},
+			"roles": []model.Role{model.RoleMember}, "restricted": false, "visibilityEventTs": int64(100)},
+	})
+	require.NoError(t, err)
+
+	// Newer restrict (ts=200) with bob as sole owner applies and rewrites roles.
+	require.NoError(t, store.ApplySubscriptionVisibility(ctx, "r1", true, false, "bob", 200))
+
+	var alice, bob model.Subscription
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&alice))
+	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s2"}).Decode(&bob))
+	assert.True(t, alice.Restricted)
+	assert.True(t, bob.Restricted)
+	assert.Equal(t, []model.Role{model.RoleOwner}, bob.Roles)
+	assert.Equal(t, []model.Role{model.RoleMember}, alice.Roles)
 }

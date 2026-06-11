@@ -66,7 +66,7 @@ inspects each message's subject and routes it to one of two lanes:
 
 | Lane            | Events                                          | Concurrency           | Why                                                                                 |
 |-----------------|-------------------------------------------------|-----------------------|-------------------------------------------------------------------------------------|
-| **Fan-out**     | read receipts, `role_updated`, `room_sync`, mute/favorite toggles, renames, visibility | up to `MAX_WORKERS`   | Handlers are idempotent and order-safe (Mongo `$lt`/`$max`/`$setOnInsert` guards).  |
+| **Fan-out**     | read receipts, `role_updated`, `room_sync`, mute/favorite toggles, renames, visibility | up to `MAX_WORKERS`   | Every handler is idempotent and order-safe via a per-document high-water-mark guard (Mongo `$lt`/`$max`/`$setOnInsert`) — see [Order-Safety Guards](#order-safety-guards-group-b). |
 | **Membership**  | `member_added`, `member_removed`                | 1 (FIFO)              | No per-document high-water mark; must be applied in arrival order.                   |
 
 ```text
@@ -116,11 +116,14 @@ of publish order. The read-receipt handler already used a `$lt`
 last-seen guard; this extends the same idiom to the remaining mutable
 `$set` writes so they are order-independent.
 
-| Handler                        | Write                                  | Guard field    | Rule                                              |
-|--------------------------------|----------------------------------------|----------------|---------------------------------------------------|
-| `room_sync`                    | room metadata `$set`                   | `updatedAt`    | apply only if event `UpdatedAt` > stored          |
-| `role_updated`                 | subscription roles `$set`              | `rolesEventTs` | apply only if event timestamp > stored            |
-| `subscription_mute_toggled`    | subscription `muted` `$set`            | `muteEventTs`  | apply only if event timestamp > stored            |
+| Handler                          | Write                                       | Guard field         | Rule                                              |
+|----------------------------------|---------------------------------------------|---------------------|---------------------------------------------------|
+| `room_sync`                      | room metadata `$set`                        | `updatedAt`         | apply only if event `UpdatedAt` > stored          |
+| `role_updated`                   | subscription roles `$set`                   | `rolesEventTs`      | apply only if event timestamp > stored            |
+| `subscription_mute_toggled`      | subscription `muted` `$set`                 | `muteEventTs`       | apply only if event timestamp > stored            |
+| `subscription_favorite_toggled`  | subscription `favorite` `$set`              | `favoriteEventTs`   | apply only if event timestamp > stored            |
+| `room_renamed`                   | per-sub `name` `$set` (UpdateMany)          | `nameEventTs`       | apply per sub only if event timestamp > stored    |
+| `room_restricted` (visibility)   | per-sub `{restricted, externalAccess, roles}` `$set` (UpdateMany) | `visibilityEventTs` | apply per sub only if event timestamp > stored    |
 
 The guard timestamp is the source event's publish time, threaded from the
 event into the store method (e.g. `UpdateSubscriptionMute(..., eventTs)`).
@@ -129,12 +132,19 @@ subscription is also a silent no-op (federation race — the user may have
 left mid-flight), except `role_updated`, which returns an error so the
 event is redelivered until `member_added` lands.
 
+The two room-wide handlers (`room_renamed`, `room_restricted`) are
+`UpdateMany` writes; the `$lt` guard lives in the filter so it is evaluated
+**per document**. A sub already carrying a newer event is skipped while its
+siblings advance, so a partially-applied newer event is never regressed by a
+later-arriving stale one.
+
 ### No schema migration
 
-The guard fields (`updatedAt`/`rolesEventTs`/`muteEventTs`) are seeded
-lazily: the guard treats a missing field (`$exists: false`) as "older than
-any event," so existing documents accept the first write and adopt the
-field. No backfill is required.
+The guard fields (`updatedAt`/`rolesEventTs`/`muteEventTs`/`favoriteEventTs`/
+`nameEventTs`/`visibilityEventTs`) are seeded lazily: the guard treats a
+missing field (`$exists: false`) as "older than any event," so existing
+documents accept the first write and adopt the field. No backfill is
+required.
 
 ## Membership Ordering (A1)
 
