@@ -142,17 +142,17 @@ func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionFavorite(ctx, roomID, ac
 }
 
 // UpdateSubscriptionMute mocks base method.
-func (m *MockInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error {
+func (m *MockInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, eventTs int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateSubscriptionMute", ctx, roomID, account, muted)
+	ret := m.ctrl.Call(m, "UpdateSubscriptionMute", ctx, roomID, account, muted, eventTs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // UpdateSubscriptionMute indicates an expected call of UpdateSubscriptionMute.
-func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionMute(ctx, roomID, account, muted any) *gomock.Call {
+func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionMute(ctx, roomID, account, muted, eventTs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionMute", reflect.TypeOf((*MockInboxStore)(nil).UpdateSubscriptionMute), ctx, roomID, account, muted)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionMute", reflect.TypeOf((*MockInboxStore)(nil).UpdateSubscriptionMute), ctx, roomID, account, muted, eventTs)
 }
 
 // UpdateSubscriptionNamesForRoom mocks base method.
@@ -184,17 +184,17 @@ func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionRead(ctx, roomID, accoun
 }
 
 // UpdateSubscriptionRoles mocks base method.
-func (m *MockInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error {
+func (m *MockInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, eventTs int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateSubscriptionRoles", ctx, account, roomID, roles)
+	ret := m.ctrl.Call(m, "UpdateSubscriptionRoles", ctx, account, roomID, roles, eventTs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // UpdateSubscriptionRoles indicates an expected call of UpdateSubscriptionRoles.
-func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionRoles(ctx, account, roomID, roles any) *gomock.Call {
+func (mr *MockInboxStoreMockRecorder) UpdateSubscriptionRoles(ctx, account, roomID, roles, eventTs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionRoles", reflect.TypeOf((*MockInboxStore)(nil).UpdateSubscriptionRoles), ctx, account, roomID, roles)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionRoles", reflect.TypeOf((*MockInboxStore)(nil).UpdateSubscriptionRoles), ctx, account, roomID, roles, eventTs)
 }
 
 // UpsertRoom mocks base method.
