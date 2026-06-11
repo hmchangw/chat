@@ -34,8 +34,9 @@ import (
 // working without churn.
 var errPermanent = errcode.ErrPermanent
 
-// errRoomKeyAbsent fires when keyStore.Get returns (nil, nil) — Valkey responded but the room
-// has no current key. Distinct from transient Valkey errors so operators can alert separately.
+// errRoomKeyAbsent fires when keyStore.Get returns (nil, nil) — the store
+// responded but the room has no current key. Distinct from transient store
+// errors so operators can alert separately.
 var errRoomKeyAbsent = errors.New("room key absent")
 
 // PublishFunc publishes data; non-empty msgID sets Nats-Msg-Id for JetStream stream-level dedup.
@@ -249,7 +250,7 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) (err err
 	// Accepted as a documented limitation; see docs/superpowers/specs/2026-05-08-room-encryption-keys-design.md.
 	currentPair, err := h.keyStore.Get(ctx, req.RoomID)
 	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 		return fmt.Errorf("get room key: %w", err)
 	}
 
@@ -260,7 +261,7 @@ func (h *Handler) processRemoveMember(ctx context.Context, data []byte) (err err
 	return h.processRemoveIndividual(ctx, &req, currentPair)
 }
 
-// rotateAndFanOut generates v+1, fans it out to survivors, then commits via Valkey Rotate.
+// rotateAndFanOut generates v+1, fans it out to survivors, then commits via Rotate.
 // Fan-out before Rotate is intentional so survivors hold v+1 before broadcast-worker switches.
 // survivorAccounts is a pre-computed post-deletion snapshot of the room's member accounts.
 func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPair *roomkeystore.VersionedKeyPair, survivorAccounts []string) error {
@@ -277,7 +278,7 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 
 	if currentPair == nil {
 		if _, err := h.keyStore.Set(ctx, roomID, *newPair); err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+			roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
 			return fmt.Errorf("store room key (no prior): %w", err)
 		}
 		return nil
@@ -288,12 +289,12 @@ func (h *Handler) rotateAndFanOut(ctx context.Context, roomID string, currentPai
 			// the same version so broadcast-worker reads under the same key clients
 			// hold. Using Set here would stamp v0 and create a version mismatch.
 			if setErr := h.keyStore.SetWithVersion(ctx, roomID, *newPair, predictedVersion); setErr != nil {
-				roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "SetWithVersion")))
+				roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "SetWithVersion")))
 				return fmt.Errorf("store room key (fallback): %w", setErr)
 			}
 			return nil
 		}
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
+		roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Rotate")))
 		return fmt.Errorf("rotate room key: %w", err)
 	}
 	return nil
@@ -992,7 +993,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	if len(newSubUsers) > 0 {
 		pair, err := h.keyStore.Get(ctx, req.RoomID)
 		if err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+			roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
 			return fmt.Errorf("get room key for fan-out: %w", err)
 		}
 		if err := h.buildAndFanOutRoomKey(ctx, req.RoomID, pair, newSubUsers); err != nil {
@@ -1206,17 +1207,9 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 	requesterAccount = req.RequesterAccount
 	roomID = req.RoomID
 
-	// Gate: key MUST exist before any Mongo write.
-	pair, err := h.keyStore.Get(ctx, req.RoomID)
-	if err != nil {
-		roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
-		return fmt.Errorf("get room key: %w", err)
-	}
-	if pair == nil {
-		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
-		return permanent(errcode.Internal("room key absent", errcode.WithCause(errRoomKeyAbsent)))
-	}
-
+	// The room key is a field of the room document, so it is provisioned right
+	// after the room is inserted (see ensureRoomKey below) rather than gated on
+	// here — room-service no longer pre-provisions it.
 	requester, err := h.store.GetUser(ctx, req.RequesterAccount)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
@@ -1266,6 +1259,12 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		room = existing
 	}
 
+	// Provision (or reuse) the room key now that the room document exists.
+	pair, err := h.ensureRoomKey(ctx, room.ID)
+	if err != nil {
+		return err
+	}
+
 	switch roomType {
 	case model.RoomTypeDM, model.RoomTypeBotDM:
 		var subs []*model.Subscription
@@ -1293,6 +1292,32 @@ func (h *Handler) processCreateRoom(ctx context.Context, data []byte) (err error
 		// then logs at INFO, not ERROR).
 		return permanent(errcode.BadRequest(fmt.Sprintf("unknown room type %q", roomType)))
 	}
+}
+
+// ensureRoomKey returns the room's current encryption key, generating and
+// storing a fresh version-0 key when the room has none yet. It is called right
+// after the room document is inserted so the key — a field of that document —
+// can be attached. On a redelivery where a key already exists it is reused
+// unchanged so clients holding it keep decrypting.
+func (h *Handler) ensureRoomKey(ctx context.Context, roomID string) (*roomkeystore.VersionedKeyPair, error) {
+	pair, err := h.keyStore.Get(ctx, roomID)
+	if err != nil {
+		roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Get")))
+		return nil, fmt.Errorf("get room key: %w", err)
+	}
+	if pair != nil {
+		return pair, nil
+	}
+	newPair, err := roomkeystore.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("generate room key: %w", err)
+	}
+	ver, err := h.keyStore.Set(ctx, roomID, *newPair)
+	if err != nil {
+		roomkeymetrics.StoreErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
+		return nil, fmt.Errorf("store room key: %w", err)
+	}
+	return &roomkeystore.VersionedKeyPair{Version: ver, KeyPair: *newPair}, nil
 }
 
 // determineRoomTypeFromPayload mirrors room-service's determineRoomType on the
@@ -1953,7 +1978,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 // sites. survivorAccounts is a pre-computed post-deletion snapshot supplied by
 // the caller; pair must be non-nil.
 func (h *Handler) fanOutRoomKeyToSurvivors(ctx context.Context, roomID string, pair *roomkeystore.VersionedKeyPair, survivorAccounts []string) {
-	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
+	// PublicKey omitted: server-side only, read from the room store by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,
@@ -1969,7 +1994,7 @@ func (h *Handler) buildAndFanOutRoomKey(ctx context.Context, roomID string, pair
 		roomkeymetrics.KeyAbsentErrors.Add(ctx, 1)
 		return permanent(errcode.Internal("room key absent", errcode.WithCause(errRoomKeyAbsent)))
 	}
-	// PublicKey omitted: server-side only, read from Valkey by broadcast-worker.
+	// PublicKey omitted: server-side only, read from the room store by broadcast-worker.
 	evt := model.RoomKeyEvent{
 		RoomID:     roomID,
 		Version:    pair.Version,

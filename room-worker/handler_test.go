@@ -1843,6 +1843,106 @@ func makeCreateRoomBody(t *testing.T, req *model.CreateRoomRequest) []byte {
 
 // ---- Task 33: DM branch tests ----
 
+// TestProcessCreateRoom_ProvisionsKeyWhenAbsent verifies that room-worker
+// provisions the room encryption key after inserting the room when none exists
+// yet (room-service no longer pre-provisions it). The key is generated, stored,
+// and fanned out to members.
+func TestProcessCreateRoom_ProvisionsKeyWhenAbsent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockKeys := NewMockRoomKeyStore(ctrl)
+	pub := &mockPublisher{}
+	h := &Handler{
+		store:     mockStore,
+		publish:   func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+		siteID:    "site-A",
+		keyStore:  mockKeys,
+		keySender: roomkeysender.NewSender(pub),
+	}
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+
+	// No key exists yet → worker generates and stores one.
+	mockKeys.EXPECT().Get(gomock.Any(), "room-dm-key").Return(nil, nil)
+	mockKeys.EXPECT().Set(gomock.Any(), "room-dm-key", gomock.Any()).Return(0, nil)
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-key", "alice").
+		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, *model.Subscription, error) {
+			return capturedSubs[0], capturedSubs[1], nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-key").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-dm-key",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+	require.GreaterOrEqual(t, pub.publishCount(), 1, "room key must be fanned out to members")
+}
+
+// TestProcessCreateRoom_UsesExistingKey verifies that when a key already exists
+// (e.g. JetStream redelivery), the worker reuses it rather than overwriting it,
+// so clients holding the key keep decrypting.
+func TestProcessCreateRoom_UsesExistingKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockSubscriptionStore(ctrl)
+	mockKeys := NewMockRoomKeyStore(ctrl)
+	pub := &mockPublisher{}
+	h := &Handler{
+		store:     mockStore,
+		publish:   func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+		siteID:    "site-A",
+		keyStore:  mockKeys,
+		keySender: roomkeysender.NewSender(pub),
+	}
+	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
+
+	requester := &model.User{ID: "u_alice", Account: "alice", SiteID: "site-A"}
+	other := &model.User{ID: "u_bob", Account: "bob", SiteID: "site-A"}
+
+	mockStore.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	mockStore.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	mockStore.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+
+	existing := &roomkeystore.VersionedKeyPair{Version: 2, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: bytes.Repeat([]byte{0x09}, 32)}}
+	mockKeys.EXPECT().Get(gomock.Any(), "room-dm-key").Return(existing, nil)
+	// Set must NOT be called: existing key is reused.
+
+	var capturedSubs []*model.Subscription
+	mockStore.EXPECT().BulkCreateSubscriptions(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, subs []*model.Subscription) error {
+			capturedSubs = subs
+			return nil
+		})
+	mockStore.EXPECT().FindDMSubscriptionPair(gomock.Any(), "room-dm-key", "alice").
+		DoAndReturn(func(_ context.Context, _, _ string) (*model.Subscription, *model.Subscription, error) {
+			return capturedSubs[0], capturedSubs[1], nil
+		})
+	mockStore.EXPECT().ReconcileMemberCounts(gomock.Any(), "room-dm-key").Return(nil)
+
+	body := makeCreateRoomBody(t, &model.CreateRoomRequest{
+		RoomID:           "room-dm-key",
+		RequesterAccount: "alice",
+		Users:            []string{"bob"},
+		Timestamp:        time.Now().UnixMilli(),
+	})
+	require.NoError(t, h.processCreateRoom(ctx, body))
+}
+
 func TestProcessCreateRoom_DM_BuildsTwoSubs(t *testing.T) {
 	h, mockStore, getPublished := newCreateRoomTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), testRequestID)
@@ -3314,19 +3414,27 @@ func TestBuildAndFanOutRoomKey_SendsToAllMembersIncludingRemoteSite(t *testing.T
 	assert.Equal(t, 3, pub.publishCount(), "all members including remote-site should receive key events")
 }
 
-func TestProcessCreateRoom_PermanentErrorWhenKeyMissing(t *testing.T) {
+// TestProcessCreateRoom_KeyStoreGetError verifies that a key-store read failure
+// while provisioning the room key surfaces as an error (the room insert already
+// happened; a retry reconciles on duplicate-key and re-provisions).
+func TestProcessCreateRoom_KeyStoreGetError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
 	keyStore := NewMockRoomKeyStore(ctrl)
 
-	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(nil, nil) // no key
+	requester := &model.User{ID: "u_alice", Account: "alice", SiteID: "site-a"}
+	other := &model.User{ID: "u_bob", Account: "bob", SiteID: "site-a"}
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(requester, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").Return(other, nil)
+	store.EXPECT().CreateRoom(gomock.Any(), gomock.Any()).Return(nil)
+	keyStore.EXPECT().Get(gomock.Any(), "r1").Return(nil, fmt.Errorf("mongo timeout"))
 
 	h := NewHandler(store, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil }, keyStore, nil)
 
-	// Name is non-empty → determineRoomTypeFromPayload returns RoomTypeChannel.
+	// No Name/orgs/channels with a single user → DM.
 	req := model.CreateRoomRequest{
 		RoomID: "r1", RequesterAccount: "alice",
-		Name: "general", Users: []string{"bob"},
+		Users:     []string{"bob"},
 		Timestamp: time.Now().UnixMilli(),
 	}
 	data, _ := json.Marshal(req)
@@ -3334,13 +3442,7 @@ func TestProcessCreateRoom_PermanentErrorWhenKeyMissing(t *testing.T) {
 
 	err := h.processCreateRoom(ctx, data)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errPermanent), "missing key must be permanent")
-	assert.True(t, errors.Is(err, errRoomKeyAbsent), "missing key must satisfy errRoomKeyAbsent sentinel")
-	// The SAME error value must yield the *errcode.Error (internal) for the reply
-	// envelope AND still satisfy errors.Is(errRoomKeyAbsent) for the alert path.
-	var ee *errcode.Error
-	require.True(t, errors.As(err, &ee), "absent-key error must carry an *errcode.Error")
-	assert.Equal(t, errcode.CodeInternal, ee.Code)
+	assert.Contains(t, err.Error(), "get room key")
 }
 
 // ---- Task 11: fan-out current key to newly-added channel members ----
