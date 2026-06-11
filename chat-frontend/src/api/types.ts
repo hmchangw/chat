@@ -30,7 +30,7 @@ export interface SubscriptionHRInfo {
  *  type (`DMSubscription`) that extends this with HRInfo. */
 export interface Subscription {
   id: string
-  u: { id: string; account: string }
+  u: { id: string; account: string; isBot?: boolean }
   roomId: string
   siteId: string
   roles: Role[]
@@ -43,11 +43,10 @@ export interface Subscription {
   hasMention: boolean
   threadUnread?: string[]
   alert: boolean
-  /** Room-level metadata that the real user-service embeds on subscription
-   *  replies (the three `subscription.get*` RPCs return joined Room data
-   *  inline so the frontend doesn't need a separate `rooms.list` call).
-   *  Optional because mock-user-service and live `subscription.update`
-   *  events don't carry them today; default to 0 / null at the consumer. */
+  /** Room-level metadata that user-service embeds on `subscription.list`
+   *  replies inline, so the frontend doesn't need a separate `rooms.list`
+   *  call. Optional because live `subscription.update` events don't carry
+   *  them; default to 0 / null at the consumer. */
   userCount?: number
   lastMsgAt?: string | null
   lastMsgId?: string
