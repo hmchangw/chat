@@ -38,3 +38,41 @@ fresh, page math pinned by integration tests against real Mongo), behavior-prese
 the favorite/self-DM semantics, and documented in `docs/client-api.md`. The known
 consumer-visible effect — the frontend sidebar truncating to 40 items per bucket until it
 adopts paging — is a deliberate, spec-documented follow-up, not a defect.
+
+## Service: user-service
+
+### (a) Diff correctness against existing conventions
+Clean on mechanics: error wrapping follows the `fmt.Errorf("...: %w", err)` pattern; the
+mock was regenerated (not hand-edited); `$sort` correctly uses ordered `bson.D`; `$literal`
+wrapping of `account` in the `$eq` expression is sound.
+
+- **[medium]** `service/subscriptions.go:57` — `Total: int(result.Total)` narrows `int64`
+  to `int`; the wire model `SubscriptionListResponse.Total` is `int` while upstream
+  plumbing is `int64`. Harmless at this scale (and lossless on 64-bit), but pick one width
+  (see Go expert — same finding rated high there; deduplicated in the action list).
+
+### (b) Scope drift / refactor-readiness
+Clean. Removing `filterFavorites`/`moveSelfDMFront` from the service layer and pushing
+that logic into the DB pipeline is a coherent tightening, not drift.
+
+### (c) Abstraction changes
+- **[medium]** `service/service.go:18` — `SubscriptionRepository` now takes/returns
+  `mongoutil.OffsetPageRequest`/`OffsetPage[T]`, leaking a persistence-infrastructure type
+  into the consumer-defined interface. This continues the established pattern
+  (`AppRepository` already does it, line 37) rather than setting a new precedent — accepted
+  prior art, flagged for awareness.
+- Clean: folding `aggregateCurrent` into the unified `AggregateSubscriptions` switch
+  removes a two-path divergence; both branches verified by integration tests.
+
+### (d) Design coherence
+Clean. Pagination is a natural extension of a list endpoint; in-DB favorite filtering makes
+`total` correct for the favorite view.
+
+### (e) Project-pattern adherence
+Clean. `pkg/subject` builders for registration (unchanged), Tier-1 errcode usage
+(`errcode.BadRequest` for validation, raw wrapped for infra), no JetStream involvement
+(user-service is core-NATS-only by design).
+
+### (f) Client-API doc rule
+Clean. `docs/client-api.md` is modified in the same diff: `offset`/`limit` request rows,
+`total` semantics, pagination prose block, updated JSON example.
