@@ -76,3 +76,35 @@ Clean. `pkg/subject` builders for registration (unchanged), Tier-1 errcode usage
 ### (f) Client-API doc rule
 Clean. `docs/client-api.md` is modified in the same diff: `offset`/`limit` request rows,
 `total` semantics, pagination prose block, updated JSON example.
+
+## Go expert
+
+- **[high]** `user-service/models/subscription.go:19` + `user-service/service/subscriptions.go:57` —
+  `SubscriptionListResponse.Total` is `int`, `OffsetPage.Total` is `int64`; `int(result.Total)`
+  narrowing cast at every call site (also `apps.go:60`). Unforced inconsistency that will
+  spread; pick one width (wire `int64`, or `OffsetPage.Total` as `int`) and drop the casts.
+- ~~[medium] `NewOffsetPageRequest` is a dead-letter constructor with no production callers~~
+  — **CORRECTED during synthesis: factually wrong.** `user-service/service/apps.go:56` and
+  `history-service/internal/service/threads.go:180` both call it in production. The 20/100
+  defaults are their live contract. Finding withdrawn; not counted.
+- **[medium]** `user-service/service/subscriptions.go:37` — `defaultSubPageSize` lives in
+  the `service` package while integration tests hard-code numeric literals (`pg(0, 40)`),
+  allowing future drift between the documented default and fixtures. Consider hoisting
+  where both layers can reference it. (Counter-point: cross-layer constants for tests is a
+  weak coupling; treat as optional.)
+- **[low]** `pkg/mongoutil/pagination.go:21` — constructor accepts `int` and widens to
+  `int64` at return; accepting `int64` directly would match the struct fields and remove
+  platform ambiguity.
+- **[low]** `pkg/mongoutil/pagination.go:8-12` — `OffsetPage.Data`'s always-non-nil
+  contract (empty results are `[]T{}`, never nil — the JSON-`[]`-not-`null` guarantee) is
+  enforced by `AggregatePaged`/`EmptyPage` but undocumented; add one godoc line.
+- **[nitpick]** `pkg/mongoutil/pagination_test.go` — 7 `TestNewOffsetPageRequestWithBounds_*`
+  flat functions are variations of one function; CLAUDE.md §4 prefers a table-driven test
+  (see also Test-automation low — same item, deduplicated).
+- **[nitpick]** `user-service/models/subscription_test.go:128` — `ptrBool` is defined in
+  `status_test.go`; same package so it compiles, but a shared helpers `_test.go` would make
+  the dependency explicit.
+
+Clean areas: error wrapping, naming, struct tags (camelCase), `bson.D` for `$sort` /
+`bson.M` elsewhere (matches the file's pre-existing style), `enrichWithRoomInfo` semaphore
+pattern untouched and correct.
