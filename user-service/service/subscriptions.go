@@ -37,7 +37,8 @@ const maxAccountNames = 100
 // defaultSubPageSize is subscription.list's page size when the request omits limit.
 const defaultSubPageSize = 40
 
-// maxUpdatedWithinDays caps the activity window — huge values overflow AddDate into a garbage cutoff that silently returns empty.
+// maxUpdatedWithinDays bounds the activity window: negative values compute a FUTURE cutoff
+// and huge values overflow AddDate into a garbage one — both silently return empty.
 const maxUpdatedWithinDays = 3650
 
 func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.SubscriptionListResponse, error) {
