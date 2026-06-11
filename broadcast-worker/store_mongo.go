@@ -2,23 +2,38 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
 )
 
-type mongoStore struct {
-	roomCol *mongo.Collection
-	subCol  *mongo.Collection
+// EnsureIndexes creates indexes that back the store's read paths.
+// Must be called once at startup; index creation is idempotent when the key
+// spec matches.
+func (m *mongoStore) EnsureIndexes(ctx context.Context) error {
+	if _, err := m.threadRoomCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "siteId", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_rooms (parentMessageId, siteId) index: %w", err)
+	}
+	return nil
 }
 
-func NewMongoStore(roomCol, subCol *mongo.Collection) *mongoStore {
-	return &mongoStore{roomCol: roomCol, subCol: subCol}
+type mongoStore struct {
+	roomCol       *mongo.Collection
+	subCol        *mongo.Collection
+	threadRoomCol *mongo.Collection
+}
+
+func NewMongoStore(roomCol, subCol, threadRoomCol *mongo.Collection) *mongoStore {
+	return &mongoStore{roomCol: roomCol, subCol: subCol, threadRoomCol: threadRoomCol}
 }
 
 func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -70,6 +85,34 @@ func (m *mongoStore) UpdateRoomLastMessage(ctx context.Context, roomID, msgID st
 	return nil
 }
 
+// BulkUpdateRoomLastMessage applies a batch of room.lastMsgAt/lastMsgId
+// updates in a single unordered BulkWrite. Missing rooms (MatchedCount==0
+// per model) are not surfaced — lastMsgAt is decorative and the source-of-
+// truth message has already been persisted to Cassandra by message-worker.
+func (m *mongoStore) BulkUpdateRoomLastMessage(ctx context.Context, updates map[string]roomLastMsgUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(updates))
+	for roomID, u := range updates {
+		fields := bson.M{
+			"lastMsgAt": u.at,
+			"lastMsgId": u.msgID,
+			"updatedAt": u.at,
+		}
+		if !u.lastMentionAllAt.IsZero() {
+			fields["lastMentionAllAt"] = u.lastMentionAllAt
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": roomID}).
+			SetUpdate(bson.M{"$set": fields}))
+	}
+	if _, err := m.roomCol.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
+		return fmt.Errorf("bulk update room last message (%d rooms): %w", len(updates), err)
+	}
+	return nil
+}
+
 func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string, accounts []string) error {
 	filter := bson.M{
 		"roomId":    roomID,
@@ -81,4 +124,25 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 		return fmt.Errorf("set subscription mentions for room %s: %w", roomID, err)
 	}
 	return nil
+}
+
+func (m *mongoStore) GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error) {
+	var doc struct {
+		ReplyAccounts []string `bson:"replyAccounts"`
+	}
+	opts := options.FindOne().SetProjection(bson.M{"replyAccounts": 1, "_id": 0})
+	err := m.threadRoomCol.FindOne(ctx, bson.M{"parentMessageId": parentMessageID}, opts).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, err)
+	}
+	out := make(map[string]struct{}, len(doc.ReplyAccounts))
+	for _, a := range doc.ReplyAccounts {
+		if a != "" {
+			out[a] = struct{}{}
+		}
+	}
+	return out, nil
 }

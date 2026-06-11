@@ -57,6 +57,12 @@ func (c *messageCollection) TemplateBody() json.RawMessage {
 	return messageTemplateBody(c.indexPrefix)
 }
 
+// StoredScripts returns nil — message indexing uses plain index/delete bulk
+// actions with no painless scripts.
+func (c *messageCollection) StoredScripts() map[string]json.RawMessage {
+	return nil
+}
+
 func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction, error) {
 	var evt model.MessageEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -72,6 +78,11 @@ func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction,
 		return nil, fmt.Errorf("build message action: missing timestamp")
 	}
 	if !c.syncFrom.IsZero() && evt.Message.CreatedAt.Before(c.syncFrom) {
+		return nil, nil
+	}
+	// Reactions don't change indexed content; skip rather than re-upserting
+	// the same document with a bumped updatedAt.
+	if evt.Event == model.EventReacted {
 		return nil, nil
 	}
 	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil

@@ -274,11 +274,35 @@ export interface RoomKeyEvent {
   timestamp: number
 }
 
-/** Two-phase async-job result returned by `requestWithAsyncResult`. */
+/** Two-phase async-job result returned by `requestWithAsyncResult`. The
+ *  outer wrapper; `S` is the sync reply shape, `A` is the wire-side async
+ *  payload (typically `AsyncJobResultEnvelope` below). */
 export interface AsyncJobResult<S = unknown, A = unknown> {
   requestId: string
   sync: S
   async: A | null
+}
+
+/**
+ * Wire-side envelope published by room-worker on the per-request response
+ * subject when an async job finishes. Mirrors `pkg/model.AsyncJobResult`
+ * field-by-field (the strict TS-mirror rule). Use as the `A` generic on
+ * `AsyncJobResult<S, A>` when the caller wants typed access to the worker's
+ * result payload.
+ *
+ * `code` and `reason` mirror the errcode envelope and are populated only
+ * when `status === 'error'`. Branch on `reason ?? code`; never on `error`
+ * text. See chat-frontend/CLAUDE.md "Error envelope (server contract)".
+ */
+export interface AsyncJobResultEnvelope {
+  requestId: string
+  operation: string
+  status: 'ok' | 'error'
+  roomId?: string
+  error?: string
+  code?: string
+  reason?: string
+  timestamp: number
 }
 
 /** Options forwarded to `requestWithAsyncResult` from the api layer. */

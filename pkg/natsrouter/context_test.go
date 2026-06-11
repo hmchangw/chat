@@ -1,14 +1,37 @@
 package natsrouter
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/hmchangw/chat/pkg/errcode"
 )
+
+// TestContext_WithLogValues_NoCycleAndEnriches verifies the seam derives from
+// the inner ctx (no Value-delegation cycle) and that the attached attrs reach
+// the centralized Classify log line.
+func TestContext_WithLogValues_NoCycleAndEnriches(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewContext(map[string]string{})
+	c.SetContext(errcode.WithLogger(c.ctx, slog.New(slog.NewJSONHandler(&buf, nil))))
+
+	c.WithLogValues("account", "alice") // must not hang (no ctx cycle)
+	_ = c.Value("anything")             // a lookup must terminate (would loop on a cycle)
+
+	errcode.Classify(c, errors.New("boom"))
+	if !strings.Contains(buf.String(), "alice") {
+		t.Fatalf("log values not applied: %s", buf.String())
+	}
+}
 
 // TestContext_ConcurrentKeysAccess_NoRace proves that Set and Get are safe to
 // call concurrently. Without a mutex, Go's map detector panics on concurrent
@@ -159,4 +182,17 @@ func TestContext_GetHeader(t *testing.T) {
 		assert.Equal(t, "token", c.GetHeader("authorization"),
 			"exact case match must succeed")
 	})
+}
+
+// Use-after-release safety: chainState is pooled, so a post-handler goroutine
+// calling Next/Abort/IsAborted on a released *Context would silently read the
+// next request's chain state. The nil-out + nil-check converts the silent
+// corruption into a loud panic.
+func TestContext_ChainMethodsPanicAfterRelease(t *testing.T) {
+	c := acquireContext(context.Background(), nil, Params{}, []HandlerFunc{func(*Context) {}})
+	releaseContext(c)
+
+	assert.PanicsWithValue(t, chainAfterReleasePanic, func() { c.Next() })
+	assert.PanicsWithValue(t, chainAfterReleasePanic, func() { c.Abort() })
+	assert.PanicsWithValue(t, chainAfterReleasePanic, func() { c.IsAborted() })
 }

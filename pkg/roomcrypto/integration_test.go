@@ -30,10 +30,22 @@ type decryptPayload struct {
 	Message    *EncryptedMessage `json:"message"`
 }
 
+// skipOnVFS skips the test when DOCKER_STORAGE_DRIVER=vfs. VFS has no
+// copy-on-write so pulling node:20-alpine + running npm install eats minutes
+// of disk thrash — exceeds default timeouts. Matches the pkg/roomkeysender
+// pattern. Unset env var keeps the test running on real overlay2/btrfs CI.
+func skipOnVFS(t *testing.T) {
+	t.Helper()
+	if os.Getenv("DOCKER_STORAGE_DRIVER") == "vfs" {
+		t.Skip("skipping node container test: VFS storage driver is too slow (unset DOCKER_STORAGE_DRIVER or set to overlay2/btrfs to enable)")
+	}
+}
+
 // setupNodeContainer starts a node:20-alpine container, copies decrypt.ts into it,
 // and installs tsx. The container is terminated via t.Cleanup.
 func setupNodeContainer(t *testing.T) testcontainers.Container {
 	t.Helper()
+	skipOnVFS(t)
 	ctx := context.Background()
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

@@ -337,6 +337,38 @@ func TestGenerator_PoolSaturationCountedAsError(t *testing.T) {
 	assert.Greater(t, saturated, float64(0), "expected saturated counter to increment under pool-full conditions")
 }
 
+func TestGenerator_PacedRunBeatsSingleTickerCeiling(t *testing.T) {
+	// Regression for the single-ticker RPS ceiling: the legacy serial path
+	// (MaxInFlight=0) releases one event per delivered tick, and the runtime
+	// cannot deliver 100k sub-millisecond ticks/sec, so it plateaus far below
+	// target. The batched pacer releases rate*interval events per coarse tick
+	// and must out-dispatch it by a wide margin. A relative comparison (same
+	// process, back to back) cancels host-speed and race-detector overhead, so
+	// the assertion holds under `-race` and on loaded CI.
+	runAt := func(maxInFlight int) int {
+		p, _ := BuiltinPreset("small")
+		f := BuildFixtures(&p, 42, "site-local")
+		rp := &recordingPublisher{}
+		m := NewMetrics()
+		g := NewGenerator(&GeneratorConfig{
+			Preset: &p, Fixtures: f, SiteID: "site-local",
+			Rate: 100000, Inject: InjectFrontdoor,
+			Publisher: rp, Metrics: m, Collector: NewCollector(m, p.Name),
+			MaxInFlight: maxInFlight,
+		}, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		require.NoError(t, g.Run(ctx))
+		return rp.count()
+	}
+
+	serial := runAt(0)   // legacy one-per-tick ceiling
+	paced := runAt(5000) // batched pacer
+	require.Positive(t, serial)
+	assert.Greater(t, float64(paced), float64(serial)*1.3,
+		"batched pacer (%d) should out-dispatch the serial ticker (%d) at 100k rps", paced, serial)
+}
+
 func TestParseInjectMode(t *testing.T) {
 	cases := []struct {
 		in   string

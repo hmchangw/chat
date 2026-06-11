@@ -17,8 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/searchengine"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -190,10 +191,7 @@ func TestIntegration_SearchRooms_EmptyQueryReturnsBadRequest(t *testing.T) {
 	msg, err := f.clientNATS.Request(subject.SearchRooms("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	require.NotEmpty(t, envelope.Error)
-	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+	errtest.AssertCode(t, msg.Data, errcode.CodeBadRequest)
 }
 
 func TestIntegration_SearchRooms_RoomTypeAppReturnsBadRequest(t *testing.T) {
@@ -205,9 +203,7 @@ func TestIntegration_SearchRooms_RoomTypeAppReturnsBadRequest(t *testing.T) {
 	msg, err := f.clientNATS.Request(subject.SearchRooms("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	require.NotEmpty(t, envelope.Error)
-	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
-	assert.Contains(t, envelope.Error, "invalid roomType")
+	envelope := errtest.Decode(t, msg.Data)
+	assert.Equal(t, errcode.CodeBadRequest, envelope.Code)
+	assert.Contains(t, envelope.Message, "invalid roomType")
 }

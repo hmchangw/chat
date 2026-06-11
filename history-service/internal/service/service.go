@@ -5,15 +5,17 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/mongorepo"
+	"github.com/hmchangw/chat/pkg/emoji"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,UserStore,CustomEmojiStore
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -23,6 +25,8 @@ type MessageReader interface {
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
 	GetThreadMessages(ctx context.Context, threadRoomID string, before, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
 	GetMessagesByIDs(ctx context.Context, messageIDs []string) ([]models.Message, error)
+	GetPinnedMessages(ctx context.Context, roomID string, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
+	GetAllPinnedMessages(ctx context.Context, roomID string) ([]models.Message, error)
 }
 
 type MessageWriter interface {
@@ -31,7 +35,15 @@ type MessageWriter interface {
 	// runs the mirror-table and parent-tcount work when the LWT applies.
 	// Returns the updated_at value now persisted (the deletedAt argument when
 	// applied; the existing value when a concurrent delete won the race).
-	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, err error)
+	// newTcount is non-nil when the parent's tcount was decremented via CAS;
+	// nil means the CAS was skipped (e.g. parent row not found, or msg is not a thread reply).
+	SoftDeleteMessage(ctx context.Context, msg *models.Message, deletedAt time.Time) (actualDeletedAt time.Time, applied bool, newTcount *int, err error)
+	PinMessage(ctx context.Context, msg *models.Message, pinnedAt time.Time, pinnedBy models.Participant) error
+	UnpinMessage(ctx context.Context, msg *models.Message) error
+	// AddReaction writes one (emoji, user_account) map-cell to every mirror; idempotent.
+	AddReaction(ctx context.Context, msg *models.Message, key models.ReactionKey, reactor models.ReactorInfo) error
+	// RemoveReaction deletes one (emoji, user_account) map-cell from every mirror; idempotent on a miss.
+	RemoveReaction(ctx context.Context, msg *models.Message, key models.ReactionKey, updatedAt time.Time) error
 }
 
 // MessageRepository composes read and write access; satisfied by *cassrepo.Repository.
@@ -42,6 +54,7 @@ type MessageRepository interface {
 
 type SubscriptionRepository interface {
 	GetHistorySharedSince(ctx context.Context, account, roomID string) (*time.Time, bool, error)
+	GetSubscription(ctx context.Context, account, roomID string) (*pkgmodel.Subscription, error)
 }
 
 // RoomRepository reads room metadata required by history handlers:
@@ -50,11 +63,10 @@ type SubscriptionRepository interface {
 type RoomRepository interface {
 	GetMinUserLastSeenAt(ctx context.Context, roomID string) (*time.Time, error)
 	GetRoomTimes(ctx context.Context, roomID string) (lastMsgAt, createdAt time.Time, err error)
+	GetRoomUserCount(ctx context.Context, roomID string) (int, error)
 }
 
-// EventPublisher publishes canonical events to a JetStream-backed NATS
-// subject. msgID is sent as the Nats-Msg-Id header so the server collapses
-// duplicate publishes within the stream's dedup window.
+// EventPublisher publishes events to NATS with a Nats-Msg-Id dedup header.
 type EventPublisher interface {
 	Publish(ctx context.Context, subject string, data []byte, msgID string) error
 }
@@ -65,15 +77,30 @@ type ThreadRoomRepository interface {
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 }
 
+// UserStore resolves the calling user's full profile for ReactorInfo and the Participant on the canonical event.
+type UserStore interface {
+	FindUsersByAccounts(ctx context.Context, accounts []string) ([]pkgmodel.User, error)
+}
+
+// CustomEmojiStore reports whether a custom emoji shortcode is registered for the site.
+type CustomEmojiStore interface {
+	CustomEmojiExists(ctx context.Context, siteID, shortcode string) (bool, error)
+}
+
 // HistoryService handles message history queries and mutations. Transport-agnostic.
 type HistoryService struct {
-	msgReader     MessageReader
-	msgWriter     MessageWriter
-	subscriptions SubscriptionRepository
-	rooms         RoomRepository
-	publisher     EventPublisher
-	threadRooms   ThreadRoomRepository
-	historyFloor  time.Duration // from MESSAGE_HISTORY_FLOOR_DAYS
+	msgReader          MessageReader
+	msgWriter          MessageWriter
+	subscriptions      SubscriptionRepository
+	rooms              RoomRepository
+	publisher          EventPublisher
+	threadRooms        ThreadRoomRepository
+	users              UserStore
+	emojiValidator     *emoji.Validator // owns the CustomEmojiStore lookup; reused per request
+	historyFloor       time.Duration    // from MESSAGE_HISTORY_FLOOR_DAYS
+	largeRoomThreshold int
+	maxPinnedPerRoom   int
+	pinEnabled         bool // from PIN_ENABLED env var; false disables pin/unpin globally
 }
 
 func New(
@@ -82,16 +109,23 @@ func New(
 	rooms RoomRepository,
 	pub EventPublisher,
 	threadRooms ThreadRoomRepository,
-	historyFloor time.Duration,
+	users UserStore,
+	customEmojis CustomEmojiStore,
+	cfg *config.Config,
 ) *HistoryService {
 	return &HistoryService{
-		msgReader:     msgs,
-		msgWriter:     msgs,
-		subscriptions: subs,
-		rooms:         rooms,
-		publisher:     pub,
-		threadRooms:   threadRooms,
-		historyFloor:  historyFloor,
+		msgReader:          msgs,
+		msgWriter:          msgs,
+		subscriptions:      subs,
+		rooms:              rooms,
+		publisher:          pub,
+		threadRooms:        threadRooms,
+		users:              users,
+		emojiValidator:     emoji.NewValidator(customEmojis),
+		historyFloor:       time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour,
+		largeRoomThreshold: cfg.LargeRoomThreshold,
+		maxPinnedPerRoom:   cfg.MaxPinnedPerRoom,
+		pinEnabled:         cfg.PinEnabled,
 	}
 }
 
@@ -107,10 +141,21 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgDeletePattern(siteID), func(c *natsrouter.Context, req models.DeleteMessageRequest) (*models.DeleteMessageResponse, error) {
 		return s.DeleteMessage(c, siteID, req)
 	})
+	natsrouter.Register(r, subject.MsgPinPattern(siteID), func(c *natsrouter.Context, req models.PinMessageRequest) (*models.PinMessageResponse, error) {
+		return s.PinMessage(c, siteID, req)
+	})
+	natsrouter.Register(r, subject.MsgUnpinPattern(siteID), func(c *natsrouter.Context, req models.UnpinMessageRequest) (*models.UnpinMessageResponse, error) {
+		return s.UnpinMessage(c, siteID, req)
+	})
+	natsrouter.Register(r, subject.MsgPinnedListPattern(siteID), s.ListPinnedMessages)
+	natsrouter.Register(r, subject.MsgReactPattern(siteID), func(c *natsrouter.Context, req models.ReactMessageRequest) (*models.ReactMessageResponse, error) {
+		return s.ReactMessage(c, siteID, req)
+	})
 	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
 }
 
 // Compile-time checks.
 var _ MessageRepository = (*cassrepo.Repository)(nil)
+var _ SubscriptionRepository = (*mongorepo.SubscriptionRepo)(nil)
 var _ RoomRepository = (*mongorepo.RoomRepo)(nil)

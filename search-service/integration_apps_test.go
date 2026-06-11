@@ -16,8 +16,9 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errtest"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
 )
@@ -105,8 +106,5 @@ func TestIntegration_SearchApps_EmptyQueryReturnsBadRequest(t *testing.T) {
 	msg, err := f.clientNATS.Request(subject.SearchApps("alice", testSiteID), reqBytes, 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope model.ErrorResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	require.NotEmpty(t, envelope.Error)
-	assert.Equal(t, natsrouter.CodeBadRequest, envelope.Code)
+	errtest.AssertCode(t, msg.Data, errcode.CodeBadRequest)
 }

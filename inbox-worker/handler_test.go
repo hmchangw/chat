@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
 )
@@ -166,6 +168,18 @@ func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, accou
 	return nil // missing-subscription → no-op
 }
 
+func (s *stubInboxStore) UpdateSubscriptionFavorite(_ context.Context, roomID, account string, favorite bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.subscriptions {
+		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
+			s.subscriptions[i].Favorite = favorite
+			return nil
+		}
+	}
+	return nil // missing-subscription → no-op
+}
+
 func (s *stubInboxStore) UpdateSubscriptionRead(_ context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,6 +234,14 @@ func (s *stubInboxStore) UpsertThreadSubscription(_ context.Context, sub *model.
 		}
 	}
 	s.threadSubs = append(s.threadSubs, *sub)
+	return nil
+}
+
+func (s *stubInboxStore) UpdateSubscriptionNamesForRoom(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s *stubInboxStore) ApplySubscriptionVisibility(_ context.Context, _ string, _, _ bool, _ string) error {
 	return nil
 }
 
@@ -764,6 +786,38 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	}
 	if len(store.getRoleUpdates()) != 0 {
 		t.Error("no role update should have been applied")
+	}
+}
+
+// Empty-roles payload is a poison message. Handler returns errcode.Permanent
+// so main.go's consume loop Acks (not Nak) — preventing infinite redelivery.
+// Store is not called.
+func TestHandleEvent_RoleUpdated_EmptyRoles(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+	subEvt := model.SubscriptionUpdateEvent{
+		Subscription: model.Subscription{
+			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "r1",
+			Roles:  nil,
+		},
+	}
+	payload, _ := json.Marshal(subEvt)
+	evt := model.OutboxEvent{Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b", Payload: payload}
+	evtData, _ := json.Marshal(evt)
+
+	err := h.HandleEvent(context.Background(), evtData)
+	if err == nil {
+		t.Fatal("expected errcode.Permanent for empty-roles payload")
+	}
+	if _, ok := errcode.IsPermanent(err); !ok {
+		t.Fatalf("expected errcode.Permanent, got %T: %v", err, err)
+	}
+	if !errors.Is(err, errcode.ErrPermanent) {
+		t.Fatalf("expected errors.Is(err, ErrPermanent), got %v", err)
+	}
+	if len(store.getRoleUpdates()) != 0 {
+		t.Error("store should NOT be called on empty-roles event")
 	}
 }
 
@@ -1336,6 +1390,65 @@ func TestHandler_SubscriptionMuteToggled_MalformedPayload(t *testing.T) {
 
 	evt, err := json.Marshal(model.OutboxEvent{
 		Type:    model.OutboxSubscriptionMuteToggled,
+		Payload: []byte("not-json"),
+	})
+	require.NoError(t, err)
+
+	require.Error(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandler_SubscriptionFavoriteToggled(t *testing.T) {
+	store := &stubInboxStore{
+		subscriptions: []model.Subscription{
+			{
+				ID:     "s1",
+				User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1",
+			},
+		},
+	}
+	h := NewHandler(store)
+
+	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
+		Account: "alice", RoomID: "r1", Favorite: true, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type: model.OutboxSubscriptionFavoriteToggled, SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evt))
+
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.True(t, subs[0].Favorite)
+}
+
+func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
+		Account: "ghost", RoomID: "r1", Favorite: true, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type: model.OutboxSubscriptionFavoriteToggled, SiteID: "site-a", DestSiteID: "site-b",
+		Payload: payload, Timestamp: 12345,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), evt))
+}
+
+func TestHandler_SubscriptionFavoriteToggled_MalformedPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	evt, err := json.Marshal(model.OutboxEvent{
+		Type:    model.OutboxSubscriptionFavoriteToggled,
 		Payload: []byte("not-json"),
 	})
 	require.NoError(t, err)

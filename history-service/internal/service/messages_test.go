@@ -14,9 +14,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/history-service/internal/service/mocks"
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -43,11 +45,9 @@ var defaultRoomLastMsgAt = joinTime.Add(24 * time.Hour)
 var defaultRoomCreatedAt = joinTime.Add(-30 * 24 * time.Hour)
 
 func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository) {
-	svc, msgs, subs, rooms, pub, threadRooms := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, pub, threadRooms, _, _ := newServiceWithRoomMock(t)
 	// Permissive defaults: existing tests don't care about the room reads.
 	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	// MinTimes(0) — tests asserting resolver invocation should override with a
-	// stricter Times(N). See room_times_test.go for examples.
 	rooms.EXPECT().
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
@@ -59,53 +59,77 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 // can set its own GetMinUserLastSeenAt expectations. The mock IS pre-populated
 // with a permissive GetRoomTimes default — every handler invokes the bucket-
 // walk resolver, and almost no test cares about its return. Tests asserting
-// resolver behaviour should override with a stricter Times(N).
-func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockRoomRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository) {
+// resolver behaviour should override with a stricter Times(N). UserStore and
+// CustomEmojiStore mocks are returned without pre-stubs; only reaction tests
+// exercise them.
+func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockRoomRepository, *mocks.MockEventPublisher, *mocks.MockThreadRoomRepository, *mocks.MockUserStore, *mocks.MockCustomEmojiStore) {
 	ctrl := gomock.NewController(t)
 	msgs := mocks.NewMockMessageRepository(ctrl)
 	subs := mocks.NewMockSubscriptionRepository(ctrl)
 	rooms := mocks.NewMockRoomRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	users := mocks.NewMockUserStore(ctrl)
+	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
 	rooms.EXPECT().
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
 		MinTimes(0)
-	// historyFloor: 90 days — long enough that the floor never clips test fixtures.
-	const historyFloor = 90 * 24 * time.Hour
-	return service.New(msgs, subs, rooms, pub, threadRooms, historyFloor), msgs, subs, rooms, pub, threadRooms
+	// Permissive default: only the large-room override path reads userCount.
+	rooms.EXPECT().GetRoomUserCount(gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
+	// Note: no AnyTimes default for GetPinnedMessages — pin tests that reach the
+	// pin-limit check (PinMessage success paths) set their own expectation. An
+	// AnyTimes default here would shadow the explicit expectations set by
+	// TestListPinnedMessages_* and break them.
+	// MessageHistoryFloorDays=90: long enough that the floor never clips test fixtures.
+	// PinEnabled=true: kill-switch on by default; TestPinMessage_KillSwitchDisabled
+	// builds its own service with false.
+	cfg := &config.Config{
+		MessageHistoryFloorDays: 90,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	}
+	return service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg), msgs, subs, rooms, pub, threadRooms, users, customEmojis
 }
 
-func assertInternalErr(t *testing.T, err error, wantMsg string) {
+// assertInternalErr verifies err collapses to the internal category. Internal
+// failures are now propagated as raw wrapped errors (fmt.Errorf("...: %w", err))
+// that errcode.Classify turns into a generic "internal error" envelope at the
+// transport boundary, so the test classifies the error the same way. wantCause
+// is asserted against the (server-only) wrapped chain, never the client message.
+func assertInternalErr(t *testing.T, err error, wantCause string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeInternal, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), wantCause)
+	ec := errcode.Classify(context.Background(), err)
+	require.NotNil(t, ec)
+	assert.Equal(t, errcode.CodeInternal, ec.Code)
+	assert.Equal(t, "internal error", ec.Message)
 }
 
 func assertForbiddenErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeForbidden, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func assertBadRequestErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func assertNotFoundErr(t *testing.T, err error, wantMsg string) {
 	t.Helper()
-	var routeErr *natsrouter.RouteError
-	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
-	assert.Equal(t, wantMsg, routeErr.Message)
+	var ec *errcode.Error
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, errcode.CodeNotFound, ec.Code)
+	assert.Equal(t, wantMsg, ec.Message)
 }
 
 func makePage(msgs []models.Message, hasNext bool) cassrepo.Page[models.Message] {
@@ -147,7 +171,7 @@ func TestHistoryService_LoadHistory_StoreError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load message history")
+	assertInternalErr(t, err, "loading history")
 }
 
 func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
@@ -158,7 +182,7 @@ func TestHistoryService_LoadHistory_SubscriptionError(t *testing.T) {
 
 	_, err := svc.LoadHistory(c, models.LoadHistoryRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadHistory_EmptyResult(t *testing.T) {
@@ -211,7 +235,7 @@ func TestHistoryService_LoadHistory_WithBeforeTimestamp(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_ReturnsMinUserLastSeenAt(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	floor := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -226,7 +250,7 @@ func TestHistoryService_LoadHistory_ReturnsMinUserLastSeenAt(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_NoMinUserLastSeenAt(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
@@ -244,7 +268,7 @@ func TestHistoryService_LoadHistory_NoMinUserLastSeenAt(t *testing.T) {
 }
 
 func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	pageMessages := []models.Message{
@@ -261,7 +285,7 @@ func TestHistoryService_LoadHistory_RoomReadError_DegradesGracefully(t *testing.
 }
 
 func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
@@ -273,7 +297,7 @@ func TestHistoryService_LoadNextMessages_DoesNotReadRoom(t *testing.T) {
 }
 
 func TestHistoryService_LoadSurroundingMessages_DoesNotReadRoom(t *testing.T) {
-	svc, msgs, subs, rooms, _, _ := newServiceWithRoomMock(t)
+	svc, msgs, subs, rooms, _, _, _, _ := newServiceWithRoomMock(t)
 	c := testContext()
 
 	central := models.Message{MessageID: "mC", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)}
@@ -374,7 +398,7 @@ func TestHistoryService_LoadNextMessages_SubscriptionStoreError(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
@@ -387,7 +411,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorAfter(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load messages")
+	assertInternalErr(t, err, "loading next messages")
 }
 
 func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
@@ -400,7 +424,7 @@ func TestHistoryService_LoadNextMessages_StoreErrorLatest(t *testing.T) {
 
 	_, err := svc.LoadNextMessages(c, models.LoadNextMessagesRequest{})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load messages")
+	assertInternalErr(t, err, "loading next messages")
 }
 
 func TestHistoryService_LoadNextMessages_HasNext(t *testing.T) {
@@ -516,7 +540,7 @@ func TestHistoryService_GetMessageByID_StoreError(t *testing.T) {
 
 	_, err := svc.GetMessageByID(c, models.GetMessageByIDRequest{MessageID: "m1"})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to retrieve message")
+	assertInternalErr(t, err, "retrieving message")
 }
 
 func TestHistoryService_GetMessageByID_NoHSS(t *testing.T) {
@@ -661,7 +685,7 @@ func TestHistoryService_LoadSurroundingMessages_SubscriptionError(t *testing.T) 
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "unable to verify room access")
+	assertInternalErr(t, err, "verifying room access")
 }
 
 func TestHistoryService_LoadSurroundingMessages_WrongRoom(t *testing.T) {
@@ -722,7 +746,7 @@ func TestHistoryService_LoadSurroundingMessages_StoreError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to retrieve message")
+	assertInternalErr(t, err, "retrieving message")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
@@ -740,7 +764,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing.T) {
@@ -758,7 +782,7 @@ func TestHistoryService_LoadSurroundingMessages_BeforePageError_NoHSS(t *testing
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
@@ -776,7 +800,7 @@ func TestHistoryService_LoadSurroundingMessages_AfterPageError(t *testing.T) {
 		MessageID: "m5", Limit: 6,
 	})
 	require.Error(t, err)
-	assertInternalErr(t, err, "failed to load surrounding messages")
+	assertInternalErr(t, err, "loading surrounding messages")
 }
 
 func TestHistoryService_LoadSurroundingMessages_Limit1_OnlyCentral(t *testing.T) {
@@ -904,9 +928,9 @@ func TestHistoryService_EditMessage_NotSubscribed(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "not subscribed to room", routeErr.Message)
 }
 
@@ -927,9 +951,9 @@ func TestHistoryService_EditMessage_NotSender(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "only the sender can edit", routeErr.Message)
 }
 
@@ -943,9 +967,9 @@ func TestHistoryService_EditMessage_NotFound(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "missing", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
@@ -965,9 +989,9 @@ func TestHistoryService_EditMessage_WrongRoom(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_AlreadyDeleted(t *testing.T) {
@@ -990,9 +1014,9 @@ func TestHistoryService_EditMessage_AlreadyDeleted(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "x"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
@@ -1011,9 +1035,9 @@ func TestHistoryService_EditMessage_EmptyNewMsg(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "   "})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 	assert.Equal(t, "newMsg must not be empty", routeErr.Message)
 }
 
@@ -1036,9 +1060,9 @@ func TestHistoryService_EditMessage_TooLarge(t *testing.T) {
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: oversize})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeBadRequest, routeErr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 	assert.Equal(t, "newMsg exceeds maximum size", routeErr.Message)
 }
 
@@ -1064,7 +1088,35 @@ func TestHistoryService_EditMessage_UpdateFails(t *testing.T) {
 
 	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-abc", NewMsg: "new content"})
 	assert.Nil(t, resp)
-	assertInternalErr(t, err, "failed to edit message")
+	assertInternalErr(t, err, "editing message")
+}
+
+// TestHistoryService_EditMessage_RaceWithDelete_MapsToNotFound verifies the
+// TOCTOU between findMessage and the LWT-gated UpdateMessageContent doesn't
+// surface as a 5xx. When a concurrent SoftDelete or hard-delete lands
+// between findMessage's read and the CAS edit, the repo returns
+// cassrepo.ErrMessageNotFound; the handler must map it to ErrNotFound so
+// it doesn't pollute 5xx telemetry — it's a benign race, not a server
+// fault.
+func TestHistoryService_EditMessage_RaceWithDelete_MapsToNotFound(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-race",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1"},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-race").Return(hydrated, nil)
+	msgs.EXPECT().
+		UpdateMessageContent(gomock.Any(), hydrated, "new content", gomock.Any()).
+		Return(fmt.Errorf("edit message m-race: %w", cassrepo.ErrMessageNotFound))
+
+	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{MessageID: "m-race", NewMsg: "new content"})
+	assert.Nil(t, resp)
+	assertNotFoundErr(t, err, "message not found")
 }
 
 func TestHistoryService_EditMessage_PublishesCanonicalUpdatedEvent(t *testing.T) {
@@ -1184,13 +1236,85 @@ func TestHistoryService_DeleteMessage_AlreadyDeleted_ShortCircuits(t *testing.T)
 	}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
 
-	// No SoftDeleteMessage call expected. No Publish call expected. gomock will
-	// fail the test if either is invoked unexpectedly.
-
+	// Already-deleted: no parent lookup, no publish. tcount was persisted by
+	// countAndSetParentTcount on the first delete and is durable in Cassandra.
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	require.NoError(t, err)
 	assert.Equal(t, "m-abc", resp.MessageID)
 	assert.Equal(t, priorUpdatedAt.UnixMilli(), resp.DeletedAt, "short-circuit should echo the existing updated_at")
+}
+
+func TestHistoryService_DeleteMessage_AlreadyDeleted_ThreadReply_ShortCircuits(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	priorUpdatedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	hydrated := &models.Message{
+		MessageID:      "reply-abc",
+		RoomID:         "r1",
+		Sender:         models.Participant{Account: "u1", ID: "u1-id"},
+		Deleted:        true,
+		UpdatedAt:      &priorUpdatedAt,
+		ThreadParentID: "parent-xyz",
+		TShow:          false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-abc").Return(hydrated, nil)
+
+	// No parent lookup, no publish: tcount is durable in Cassandra from the first delete.
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "reply-abc", resp.MessageID)
+	assert.Equal(t, priorUpdatedAt.UnixMilli(), resp.DeletedAt)
+}
+
+// TestHistoryService_DeleteMessage_AlreadyDeleted_NilUpdatedAt verifies that a
+// deleted record with nil UpdatedAt returns success with DeletedAt=0.
+func TestHistoryService_DeleteMessage_AlreadyDeleted_NilUpdatedAt(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-legacy",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1", ID: "u1-id"},
+		Deleted:   true,
+		UpdatedAt: nil, // legacy record: no delete timestamp stored
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-legacy").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-legacy"})
+	require.NoError(t, err, "already-deleted with nil UpdatedAt must still return success")
+	assert.Equal(t, "m-legacy", resp.MessageID)
+	assert.Equal(t, int64(0), resp.DeletedAt, "DeletedAt should be 0 when UpdatedAt is nil")
+}
+
+// TestHistoryService_DeleteMessage_AlreadyDeleted_ThreadReply_NilUpdatedAt verifies that a
+// deleted thread reply with nil UpdatedAt returns success with DeletedAt=0, no parent lookup.
+func TestHistoryService_DeleteMessage_AlreadyDeleted_ThreadReply_NilUpdatedAt(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID:      "reply-legacy",
+		RoomID:         "r1",
+		Sender:         models.Participant{Account: "u1", ID: "u1-id"},
+		Deleted:        true,
+		UpdatedAt:      nil, // legacy thread reply with no stored delete timestamp
+		ThreadParentID: "parent-xyz",
+		TShow:          false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-legacy").Return(hydrated, nil)
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-legacy"})
+	require.NoError(t, err, "already-deleted thread reply with nil UpdatedAt must return success")
+	assert.Equal(t, "reply-legacy", resp.MessageID)
+	assert.Equal(t, int64(0), resp.DeletedAt)
 }
 
 func TestHistoryService_DeleteMessage_NotSubscribed(t *testing.T) {
@@ -1202,9 +1326,9 @@ func TestHistoryService_DeleteMessage_NotSubscribed(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "not subscribed to room", routeErr.Message)
 }
 
@@ -1224,9 +1348,9 @@ func TestHistoryService_DeleteMessage_NotSender(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeForbidden, routeErr.Code)
+	assert.Equal(t, errcode.CodeForbidden, routeErr.Code)
 	assert.Equal(t, "only the sender can delete", routeErr.Message)
 }
 
@@ -1240,9 +1364,9 @@ func TestHistoryService_DeleteMessage_NotFound(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "missing"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
@@ -1262,9 +1386,9 @@ func TestHistoryService_DeleteMessage_WrongRoom(t *testing.T) {
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
 
-	var routeErr *natsrouter.RouteError
+	var routeErr *errcode.Error
 	require.ErrorAs(t, err, &routeErr)
-	assert.Equal(t, natsrouter.CodeNotFound, routeErr.Code)
+	assert.Equal(t, errcode.CodeNotFound, routeErr.Code)
 }
 
 func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
@@ -1281,13 +1405,13 @@ func TestHistoryService_DeleteMessage_SoftDeleteFails(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		Return(time.Time{}, false, fmt.Errorf("cassandra timeout"))
+		Return(time.Time{}, false, (*int)(nil), fmt.Errorf("cassandra timeout"))
 
 	// No Publish expected when the UPDATE fails.
 
 	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-abc"})
 	assert.Nil(t, resp)
-	assertInternalErr(t, err, "failed to delete message")
+	assertInternalErr(t, err, "deleting message")
 }
 
 // TestHistoryService_DeleteMessage_ConcurrentDeleteSkipsPublish covers the
@@ -1313,7 +1437,7 @@ func TestHistoryService_DeleteMessage_ConcurrentDeleteSkipsPublish(t *testing.T)
 	winnerWrote := time.Date(2026, 4, 28, 9, 0, 0, 0, time.UTC)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		Return(winnerWrote, false, nil)
+		Return(winnerWrote, false, (*int)(nil), nil)
 
 	// Critically, NO Publish call is expected — gomock will fail the test if
 	// the handler tries to publish on the LWT-not-applied path.
@@ -1341,8 +1465,8 @@ func TestHistoryService_DeleteMessage_PublishFails(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-abc").Return(hydrated, nil)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, error) {
-			return deletedAt, true, nil
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, nil, nil
 		})
 
 	pub.EXPECT().
@@ -1371,8 +1495,8 @@ func TestHistoryService_DeleteMessage_PublishesCanonicalDeletedEvent(t *testing.
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "msg-1").Return(hydrated, nil)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, error) {
-			return deletedAt, true, nil
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, nil, nil
 		})
 
 	pub.EXPECT().
@@ -1394,6 +1518,84 @@ func TestHistoryService_DeleteMessage_PublishesCanonicalDeletedEvent(t *testing.
 	require.NotNil(t, resp)
 }
 
+// Editing a thread reply must carry ThreadParentMessageID and TShow on the
+// canonical event so broadcast-worker can route the edit to thread subscribers
+// (via handleThreadUpdated) and search-sync-worker preserves the thread linkage
+// when re-upserting the search-index doc.
+func TestHistoryService_EditMessage_ThreadReply_CarriesThreadFields(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	hydrated := &models.Message{
+		MessageID:      "reply-1",
+		RoomID:         "r1",
+		Sender:         models.Participant{Account: "u1", ID: "u1-id"},
+		CreatedAt:      time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		Msg:            "original reply",
+		ThreadParentID: "parent-1",
+		TShow:          false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+	msgs.EXPECT().UpdateMessageContent(gomock.Any(), hydrated, "edited reply", gomock.Any()).Return(nil)
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalUpdated("site-test"), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, data []byte, _ string) error {
+			var evt model.MessageEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "parent-1", evt.Message.ThreadParentMessageID, "edit event must carry ThreadParentMessageID for thread routing")
+			assert.False(t, evt.Message.TShow, "edit event must carry TShow")
+			return nil
+		})
+
+	resp, err := svc.EditMessage(c, "site-test", models.EditMessageRequest{
+		MessageID: "reply-1",
+		NewMsg:    "edited reply",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+}
+
+// Deleting a thread reply must carry ThreadParentMessageID and TShow on the
+// canonical event so broadcast-worker can route the delete to thread subscribers
+// (via handleThreadDeleted).
+func TestHistoryService_DeleteMessage_ThreadReply_CarriesThreadFields(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+	hydrated := &models.Message{
+		MessageID:      "reply-1",
+		RoomID:         "r1",
+		Sender:         models.Participant{Account: "u1", ID: "u1-id"},
+		CreatedAt:      time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+		Msg:            "reply",
+		ThreadParentID: "parent-1",
+		TShow:          false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, nil, nil
+		})
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, data []byte, _ string) error {
+			var evt model.MessageEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, "parent-1", evt.Message.ThreadParentMessageID, "delete event must carry ThreadParentMessageID for thread routing")
+			assert.False(t, evt.Message.TShow, "delete event must carry TShow")
+			return nil
+		})
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-1"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+}
+
 // Nats-Msg-Id shape "{messageID}:deleted": distinct from the `.created` key
 // so the JetStream dedup window doesn't collapse a delete against an earlier
 // create.
@@ -1411,8 +1613,8 @@ func TestHistoryService_DeleteMessage_PassesDedupMessageID(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "msg-1").Return(hydrated, nil)
 	msgs.EXPECT().
 		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, error) {
-			return deletedAt, true, nil
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, nil, nil
 		})
 
 	pub.EXPECT().
@@ -1426,6 +1628,126 @@ func TestHistoryService_DeleteMessage_PassesDedupMessageID(t *testing.T) {
 
 	_, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "msg-1"})
 	require.NoError(t, err)
+}
+
+// TestHistoryService_DeleteMessage_ThreadReply_PublishesThreadMetadataEvent verifies
+// that deleting a thread reply sets NewTCount on the canonical deleted event so that
+// broadcast-worker can do DM-aware routing.
+func TestHistoryService_DeleteMessage_ThreadReply_PublishesThreadMetadataEvent(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	parentCreatedAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	hydrated := &models.Message{
+		MessageID:             "reply-1",
+		RoomID:                "r1",
+		Sender:                models.Participant{Account: "u1", ID: "u1-id"},
+		CreatedAt:             time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC),
+		Msg:                   "reply content",
+		ThreadParentID:        "parent-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+		TShow:                 false,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+
+	newTcount := 4
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, &newTcount, nil
+		})
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, data []byte, _ string) error {
+			var evt model.MessageEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, model.EventDeleted, evt.Event)
+			require.NotNil(t, evt.NewTCount)
+			assert.Equal(t, 4, *evt.NewTCount)
+			assert.Equal(t, "reply-1", evt.Message.ID)
+			assert.Equal(t, "r1", evt.Message.RoomID)
+			assert.Equal(t, "parent-1", evt.Message.ThreadParentMessageID)
+			return nil
+		})
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-1"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "reply-1", resp.MessageID)
+}
+
+// TestHistoryService_DeleteMessage_ThreadReply_PublishFailsButDeleteSucceeds verifies
+// the best-effort contract for thread reply deletes: if publishCanonicalBestEffort
+// fails to publish the canonical deleted event (e.g. NATS is disconnected),
+// DeleteMessage still returns success — Cassandra is the source of truth.
+func TestHistoryService_DeleteMessage_ThreadReply_PublishFailsButDeleteSucceeds(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	parentCreatedAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	hydrated := &models.Message{
+		MessageID:             "reply-1",
+		RoomID:                "r1",
+		Sender:                models.Participant{Account: "u1", ID: "u1-id"},
+		CreatedAt:             time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC),
+		Msg:                   "reply content",
+		ThreadParentID:        "parent-1",
+		ThreadParentCreatedAt: &parentCreatedAt,
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+
+	newTcount := 4
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, &newTcount, nil
+		})
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		Return(fmt.Errorf("nats disconnected"))
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-1"})
+	require.NoError(t, err, "best-effort publish: failure must be logged, not returned")
+	require.NotNil(t, resp)
+	assert.Equal(t, "reply-1", resp.MessageID)
+}
+
+// TestHistoryService_DeleteMessage_ThreadReply_NoMetadataEventWhenTCountNil verifies
+// that no ThreadMetadataUpdatedEvent is published when the repository returns nil tcount
+// (CAS was skipped because the parent row was not found or tcount was never written).
+func TestHistoryService_DeleteMessage_ThreadReply_NoMetadataEventWhenTCountNil(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID:      "reply-1",
+		RoomID:         "r1",
+		Sender:         models.Participant{Account: "u1"},
+		CreatedAt:      time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC),
+		ThreadParentID: "parent-1",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "reply-1").Return(hydrated, nil)
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *models.Message, deletedAt time.Time) (time.Time, bool, *int, error) {
+			return deletedAt, true, nil, nil
+		})
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		Return(nil)
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "reply-1"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 }
 
 // ============================================================
@@ -1667,6 +1989,45 @@ func TestHistoryService_TShow_TwoMessagesWithSameParent_BothRedacted(t *testing.
 	require.Len(t, resp.Messages, 2)
 	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[0].QuotedParentMessage.Msg)
 	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[1].QuotedParentMessage.Msg)
+}
+
+// TestHistoryService_DeleteMessage_EventDeletedCarriesContent verifies that the
+// canonical EventDeleted published on delete includes the message body so that
+// broadcast-worker can parse @-mentions for the thread-delete fan-out.
+func TestHistoryService_DeleteMessage_EventDeletedCarriesContent(t *testing.T) {
+	svc, msgs, subs, pub, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, true, nil)
+
+	hydrated := &models.Message{
+		MessageID: "m-content",
+		RoomID:    "r1",
+		Sender:    models.Participant{Account: "u1", ID: "u1-id"},
+		Deleted:   false,
+		Msg:       "hey @dave check this out",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-content").Return(hydrated, nil)
+
+	deletedAt := time.Now().UTC()
+	msgs.EXPECT().
+		SoftDeleteMessage(gomock.Any(), hydrated, gomock.Any()).
+		Return(deletedAt, true, (*int)(nil), nil)
+
+	pub.EXPECT().
+		Publish(gomock.Any(), subject.MsgCanonicalDeleted("site-test"), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, data []byte, _ string) error {
+			var evt model.MessageEvent
+			require.NoError(t, json.Unmarshal(data, &evt))
+			assert.Equal(t, model.EventDeleted, evt.Event)
+			assert.Equal(t, "hey @dave check this out", evt.Message.Content,
+				"EventDeleted must carry Content so broadcast-worker can parse @-mentions for thread-delete fan-out")
+			return nil
+		})
+
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: "m-content"})
+	require.NoError(t, err)
+	assert.Equal(t, "m-content", resp.MessageID)
 }
 
 // TShow message where ThreadParentCreatedAt is nil (message-worker didn't populate it) →

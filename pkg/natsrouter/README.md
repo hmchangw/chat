@@ -68,7 +68,7 @@ Under the unbounded default, callers that hit a timeout receive a generic `{"err
 
 ```go
 if errors.Is(err, context.DeadlineExceeded) {
-    return nil, natsrouter.ErrUnavailable("request timed out")
+    return nil, errcode.Unavailable("request timed out")
 }
 ```
 
@@ -225,10 +225,15 @@ func (c *Context) Abort()
 // Check if the chain was aborted.
 func (c *Context) IsAborted() bool
 
-// Reply helpers.
+// Reply helpers. For errors prefer returning a typed *errcode.Error from
+// the handler — the router calls errnats.Reply automatically. ReplyError is
+// kept for the request-payload-deserialize path.
 func (c *Context) ReplyJSON(v any)
-func (c *Context) ReplyError(msg string)
-func (c *Context) ReplyRouteError(e *RouteError)
+func (c *Context) ReplyError(msg string) // emits {"code":"bad_request","error":msg}
+
+// WithLogValues enriches the ctx logger so the centralized errcode.Classify
+// log line carries the given attrs. Cycle-safe (derives from the inner ctx).
+func (c *Context) WithLogValues(args ...any)
 
 // The raw NATS message (for advanced use cases).
 c.Msg *nats.Msg
@@ -263,40 +268,32 @@ type HandlerFunc func(c *Context)
 type Middleware = HandlerFunc
 ```
 
-### RouteError
+### Error replies — owned by `pkg/errcode`
+
+Client-facing errors live in `pkg/errcode` (not in this package). natsrouter is the transport: when a handler returns any error, the router invokes `errnats.Reply(ctx, msg, err)`, which calls `errcode.Classify` and writes the JSON envelope. The full developer guide is `docs/error-handling.md`; the wire-side reference is `docs/client-api.md` §6.
+
+Quick reference for handler authors:
 
 ```go
-// User-facing error with optional machine-readable code.
-type RouteError struct {
-    Message string `json:"error"`
-    Code    string `json:"code,omitempty"`
+// Typed client-facing errors — named constructor per category.
+return nil, errcode.BadRequest("name is required")
+return nil, errcode.NotFound("room not found")
+return nil, errcode.Forbidden("only owners can update roles")
+return nil, errcode.Conflict("room is at maximum capacity",
+    errcode.WithReason(errcode.RoomMaxSizeReached))
+
+// Dynamic message — format at the call site (no *f variants on purpose).
+return nil, errcode.BadRequest(fmt.Sprintf("batch size %d exceeds limit %d", n, max))
+
+// Infra / DB / third-party — DON'T classify manually; bubble up and let
+// Classify collapse to internal at the boundary (real cause logged once,
+// never sent to the client).
+if err := h.store.Find(ctx, id); err != nil {
+    return nil, fmt.Errorf("loading room: %w", err) // → client sees "internal error"
 }
-
-// Constructors.
-func Err(message string) *RouteError
-func Errf(format string, args ...any) *RouteError
-func ErrWithCode(code, message string) *RouteError
-
-// Convenience constructors with standard codes.
-func ErrBadRequest(message string) *RouteError    // code: "bad_request"
-func ErrNotFound(message string) *RouteError      // code: "not_found"
-func ErrForbidden(message string) *RouteError     // code: "forbidden"
-func ErrConflict(message string) *RouteError      // code: "conflict"
-func ErrInternal(message string) *RouteError      // code: "internal"
-func ErrUnavailable(message string) *RouteError   // code: "unavailable"
-
-// Standard error code constants.
-const (
-    CodeBadRequest  = "bad_request"
-    CodeNotFound    = "not_found"
-    CodeForbidden   = "forbidden"
-    CodeConflict    = "conflict"
-    CodeInternal    = "internal"
-    CodeUnavailable = "unavailable"  // emitted by admission control
-)
 ```
 
-`ErrUnavailable` is the structured reply emitted automatically by the router when the admission semaphore is saturated. Application code can also emit it explicitly to signal a recoverable, retry-worthy condition (e.g. mapping `context.DeadlineExceeded` from a downstream call — see `HandlerTimeout` doc).
+`errcode.Unavailable("service busy")` is also what the router emits automatically when the admission semaphore is saturated. Application code can emit it explicitly to signal a recoverable condition (e.g. mapping `context.DeadlineExceeded` from a downstream call — see `HandlerTimeout`).
 
 ### Built-in Middleware
 
@@ -329,7 +326,7 @@ func Logging() HandlerFunc
 // bound code will run past the deadline. Recommended pattern when a
 // downstream call returns context.DeadlineExceeded:
 //   if errors.Is(err, context.DeadlineExceeded) {
-//       return nil, natsrouter.ErrUnavailable("request timed out")
+//       return nil, errcode.Unavailable("request timed out")
 //   }
 func HandlerTimeout(d time.Duration) HandlerFunc
 ```
@@ -385,7 +382,7 @@ func (s *Service) GetRoom(c *natsrouter.Context, req GetRoomReq) (*Room, error) 
         return nil, fmt.Errorf("finding room: %w", err)
     }
     if room == nil {
-        return nil, natsrouter.ErrNotFound("room not found")
+        return nil, errcode.NotFound("room not found")
     }
     return room, nil
 }
@@ -472,11 +469,11 @@ func (s *Service) CreateRoom(c *natsrouter.Context, req CreateReq) (*Room, error
 ```go
 v, ok := c.Get("user")
 if !ok {
-    return nil, natsrouter.ErrForbidden("authentication required")
+    return nil, errcode.Forbidden("authentication required")
 }
 user, ok := v.(User)
 if !ok {
-    return nil, natsrouter.ErrInternal("user value has unexpected type")
+    return nil, errcode.Internal("user value has unexpected type")
 }
 ```
 
@@ -561,7 +558,7 @@ func (s *Service) GetRoom(c *natsrouter.Context, req GetReq) (*Room, error) {
     }
     if room == nil {
         // User-facing error — client sees: {"error":"room not found","code":"not_found"}
-        return nil, natsrouter.ErrNotFound("room not found")
+        return nil, errcode.NotFound("room not found")
     }
     return room, nil
 }
@@ -570,7 +567,7 @@ func (s *Service) GetRoom(c *natsrouter.Context, req GetReq) (*Room, error) {
 RouteErrors can be wrapped and still detected:
 
 ```go
-return nil, fmt.Errorf("access check: %w", natsrouter.ErrForbidden("denied"))
+return nil, fmt.Errorf("access check: %w", errcode.Forbidden("denied"))
 // Client still receives: {"error":"denied","code":"forbidden"}
 ```
 
@@ -580,7 +577,7 @@ When `HandlerTimeout` (or any other context source) cancels a request mid-flight
 
 ```go
 if errors.Is(err, context.DeadlineExceeded) {
-    return nil, natsrouter.ErrUnavailable("request timed out")
+    return nil, errcode.Unavailable("request timed out")
 }
 ```
 

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
 // roomType filter values accepted on SearchRoomsRequest.RoomType.
@@ -17,9 +17,9 @@ const (
 )
 
 // buildRoomQuery composes the ES `_search` body for a subscription
-// search against the spotlight index. It returns a *natsrouter.RouteError
-// (user-facing) on invalid/unsupported roomType values and a plain error on
-// marshalling failures.
+// search against the spotlight index. It returns a user-facing *errcode.Error
+// on invalid/unsupported roomType values and a plain error on marshalling
+// failures.
 func buildRoomQuery(req model.SearchRoomsRequest, account string) (json.RawMessage, error) {
 	roomTypeFilter, rerr := roomTypeFilterClause(req.RoomType)
 	if rerr != nil {
@@ -69,9 +69,9 @@ func buildRoomQuery(req model.SearchRoomsRequest, account string) (json.RawMessa
 // filter on `roomType`. The filter values match the strings written to the
 // spotlight index by search-sync-worker (the model.RoomType values
 // themselves). Returns (nil, nil) for "" and "all" which need no extra
-// filter; returns ErrBadRequest for "app" (MVP-unsupported) and any unknown
+// filter; returns errcode.BadRequest for "app" (MVP-unsupported) and any unknown
 // value.
-func roomTypeFilterClause(roomType string) (map[string]any, *natsrouter.RouteError) {
+func roomTypeFilterClause(roomType string) (map[string]any, *errcode.Error) {
 	switch roomType {
 	case "", roomTypeAll:
 		return nil, nil
@@ -80,8 +80,8 @@ func roomTypeFilterClause(roomType string) (map[string]any, *natsrouter.RouteErr
 	case roomTypeDM:
 		return map[string]any{"term": map[string]any{"roomType": string(model.RoomTypeDM)}}, nil
 	case roomTypeApp:
-		return nil, natsrouter.ErrBadRequest("invalid roomType: app is not supported")
+		return nil, errcode.BadRequest("invalid roomType: app is not supported")
 	default:
-		return nil, natsrouter.ErrBadRequest(fmt.Sprintf("invalid roomType: %s", roomType))
+		return nil, errcode.BadRequest(fmt.Sprintf("invalid roomType: %s", roomType))
 	}
 }

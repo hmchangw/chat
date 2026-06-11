@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsrouter"
 )
 
 // subscriptionFilters extracts the filter array from the ES bool query.
@@ -69,9 +69,9 @@ func TestBuildSubscriptionQuery_RoomTypeAppRejected(t *testing.T) {
 	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
-	var rerr *natsrouter.RouteError
-	require.True(t, errors.As(err, &rerr), "expected RouteError")
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	var rerr *errcode.Error
+	require.True(t, errors.As(err, &rerr), "expected *errcode.Error")
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 	assert.Contains(t, rerr.Message, "invalid roomType")
 }
 
@@ -80,9 +80,9 @@ func TestBuildSubscriptionQuery_UnknownRoomTypeRejected(t *testing.T) {
 	_, err := buildRoomQuery(req, "alice")
 	require.Error(t, err)
 
-	var rerr *natsrouter.RouteError
+	var rerr *errcode.Error
 	require.True(t, errors.As(err, &rerr))
-	assert.Equal(t, natsrouter.CodeBadRequest, rerr.Code)
+	assert.Equal(t, errcode.CodeBadRequest, rerr.Code)
 	assert.Contains(t, rerr.Message, "invalid roomType")
 }
 

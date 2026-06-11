@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/msgbucket"
@@ -35,6 +36,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		cql(`CREATE TYPE IF NOT EXISTS %s."Card" (template TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."CardAction" (verb TEXT, text TEXT, card_id TEXT, display_text TEXT, hide_exec_log BOOLEAN, card_tmid TEXT, data BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (message_id TEXT, room_id TEXT, sender FROZEN<"Participant">, created_at TIMESTAMP, msg TEXT, mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>, message_link TEXT, thread_parent_id TEXT, thread_parent_created_at TIMESTAMP)`),
+		cql(`CREATE TYPE IF NOT EXISTS %s."EncMeta" (nonce BLOB)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s.reaction_key (emoji TEXT, user_account TEXT)`),
 		cql(`CREATE TYPE IF NOT EXISTS %s.reactor_info (user_id TEXT, eng_name TEXT, chn_name TEXT, account TEXT, reacted_at TIMESTAMP)`),
 	} {
@@ -51,6 +53,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY ((room_id, bucket), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
 
@@ -65,6 +68,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, created_at TIMESTAMP,
 		updated_at TIMESTAMP, pinned_at TIMESTAMP, pinned_by FROZEN<"Participant">,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY (message_id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
 
@@ -79,8 +83,13 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT, sys_msg_data BLOB, site_id TEXT, edited_at TIMESTAMP, updated_at TIMESTAMP,
+		enc_payload BLOB, enc_meta FROZEN<"EncMeta">,
 		PRIMARY KEY ((thread_room_id), created_at, message_id)
 	) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`)).Exec())
+
+	// pinned_messages_by_room isn't needed for the flows exercised here; the
+	// cassrepo integration tests cover that branch directly. Keeping the setup
+	// minimal reduces container-start time.
 
 	cluster := gocql.NewCluster(host)
 	cluster.Consistency = gocql.One
@@ -111,10 +120,15 @@ func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte
 	return nil
 }
 
+// alwaysSubscribedRepo stubs SubscriptionRepository so the subscription gate passes.
 type alwaysSubscribedRepo struct{}
 
 func (alwaysSubscribedRepo) GetHistorySharedSince(_ context.Context, _, _ string) (*time.Time, bool, error) {
 	return nil, true, nil
+}
+
+func (alwaysSubscribedRepo) GetSubscription(_ context.Context, _, _ string) (*model.Subscription, error) {
+	return nil, nil
 }
 
 // stubRoomRepo returns defaults wide enough that edit/delete tests never need a Mongo container.
@@ -129,11 +143,20 @@ func (stubRoomRepo) GetRoomTimes(_ context.Context, _ string) (lastMsgAt, create
 	return now, now.AddDate(-1, 0, 0), nil
 }
 
+func (stubRoomRepo) GetRoomUserCount(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func TestEditMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	pub := &recordingPublisher{}
-	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, nil, &config.Config{
+		MessageHistoryFloorDays: 730,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	})
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-integ"
@@ -190,9 +213,14 @@ func TestEditMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_Integration(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	pub := &recordingPublisher{}
-	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, nil, &config.Config{
+		MessageHistoryFloorDays: 730,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	})
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-del-integ"
@@ -247,9 +275,14 @@ func TestDeleteMessage_Integration(t *testing.T) {
 
 func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 	session := setupCassandra(t)
-	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
 	pub := &recordingPublisher{}
-	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, 730*24*time.Hour)
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, nil, &config.Config{
+		MessageHistoryFloorDays: 730,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	})
 
 	sender := models.Participant{ID: "u1", Account: "alice"}
 	roomID := "r-parent-cascade"
@@ -307,4 +340,72 @@ func TestDeleteMessage_ParentWithReplies_NoCascade(t *testing.T) {
 		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
 	).Scan(&gotTcount))
 	assert.Equal(t, 1, gotTcount, "parent tcount should be unchanged (replies still exist and are counted)")
+}
+
+func TestDeleteMessage_Integration_ThreadReplyPublishesMetadataEvent(t *testing.T) {
+	session := setupCassandra(t)
+	repo := cassrepo.NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
+	pub := &recordingPublisher{}
+	svc := New(repo, alwaysSubscribedRepo{}, stubRoomRepo{}, pub, nil, nil, nil, &config.Config{
+		MessageHistoryFloorDays: 730,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	})
+
+	sender := models.Participant{ID: "u1", Account: "alice"}
+	roomID := "r-thread-meta-event"
+	threadRoomID := "thread-meta-event"
+	parentID := "m-parent-meta"
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyID := "m-reply-meta"
+	replyCreatedAt := parentCreatedAt.Add(10 * time.Second)
+
+	// Seed parent message with tcount = 1 (one existing reply).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, roomID, parentCreatedAt, sender, "parent message", "", 1, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, sender, msg, thread_parent_id, tcount, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID, sender, "parent message", "", 1, false,
+	).Exec())
+
+	// Seed thread reply referencing the parent.
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, room_id, created_at, sender, msg, thread_parent_id, thread_parent_created_at, thread_room_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replyID, roomID, replyCreatedAt, sender, "thread reply", parentID, parentCreatedAt, threadRoomID, false,
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO thread_messages_by_thread (thread_room_id, created_at, message_id, room_id, sender, msg, thread_parent_id, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		threadRoomID, replyCreatedAt, replyID, roomID, sender, "thread reply", parentID, false,
+	).Exec())
+
+	// Delete the thread reply as alice.
+	c := natsrouter.NewContext(map[string]string{"account": "alice", "roomID": roomID})
+	resp, err := svc.DeleteMessage(c, "site-test", models.DeleteMessageRequest{MessageID: replyID})
+	require.NoError(t, err)
+	assert.Equal(t, replyID, resp.MessageID)
+	assert.NotZero(t, resp.DeletedAt)
+
+	// Collect all published messages.
+	pub.mu.Lock()
+	sent := make([]recordedMessage, len(pub.sent))
+	copy(sent, pub.sent)
+	pub.mu.Unlock()
+
+	// Expect exactly one publish: the canonical .deleted event with NewTCount embedded.
+	// Badge routing (ThreadMetadataUpdatedEvent) is now broadcast-worker's responsibility;
+	// history-service no longer publishes directly to subject.RoomEvent.
+	require.Len(t, sent, 1, "expected exactly one canonical delete publish")
+
+	assert.Equal(t, subject.MsgCanonicalDeleted("site-test"), sent[0].Subject)
+
+	var canonicalEvt model.MessageEvent
+	require.NoError(t, json.Unmarshal(sent[0].Data, &canonicalEvt))
+	assert.Equal(t, model.EventDeleted, canonicalEvt.Event)
+	assert.Equal(t, replyID, canonicalEvt.Message.ID)
+	assert.Equal(t, parentID, canonicalEvt.Message.ThreadParentMessageID)
+	require.NotNil(t, canonicalEvt.NewTCount, "canonical delete for a thread reply must carry NewTCount")
+	assert.Equal(t, 0, *canonicalEvt.NewTCount, "tcount seeded at 1 minus one decrement must equal 0")
 }

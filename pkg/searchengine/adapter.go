@@ -152,6 +152,29 @@ func (a *httpAdapter) UpsertTemplate(ctx context.Context, name string, body json
 	return nil
 }
 
+func (a *httpAdapter) PutScript(ctx context.Context, id string, body json.RawMessage) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fmt.Sprintf("/_scripts/%s", id), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create put-script request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.transport.Perform(req)
+	if err != nil {
+		return fmt.Errorf("put script: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("put script: status %d, read body: %w", resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("put script: status %d, body: %s", resp.StatusCode, respBody)
+	}
+	return nil
+}
+
 func (a *httpAdapter) GetIndexMapping(ctx context.Context, index string) (json.RawMessage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("/%s/_mapping", index), nil)
 	if err != nil {

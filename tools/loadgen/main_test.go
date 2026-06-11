@@ -17,6 +17,25 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
+func TestHardPublishErrorCount_ExcludesSelfLimitAndGatekeeper(t *testing.T) {
+	m := NewMetrics()
+	// Real publish-side failures.
+	m.PublishErrors.WithLabelValues("p", "publish").Add(3)
+	m.PublishErrors.WithLabelValues("p", "marshal").Add(2)
+	m.PublishErrors.WithLabelValues("p", "bad_reply").Add(1)
+	// Not hard errors: gatekeeper is reported separately; saturated and underrun
+	// are load-box pacing signals, not publish failures.
+	m.PublishErrors.WithLabelValues("p", "gatekeeper").Add(50)
+	m.PublishErrors.WithLabelValues("p", "saturated").Add(400)
+	m.PublishErrors.WithLabelValues("p", "underrun").Add(900)
+
+	mfs, err := m.Registry.Gather()
+	require.NoError(t, err)
+
+	// Only publish+marshal+bad_reply count: 3+2+1 = 6.
+	assert.Equal(t, 6, hardPublishErrorCount(mfs))
+}
+
 func TestLastToken(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"chat.user.alice.response.abc-123", "abc-123"},
@@ -255,4 +274,15 @@ func TestDispatch_MembersCapacity_RequiresTargetSize(t *testing.T) {
 	cfg := &config{NatsURL: "nats://localhost:1", MongoURI: "mongodb://localhost:1", ValkeyAddrs: []string{"localhost:1"}}
 	code := dispatch(context.Background(), cfg)
 	assert.Equal(t, 2, code)
+}
+
+func TestDispatch_DailySubcommand(t *testing.T) {
+	// dispatch should accept "daily" and return non-zero for unknown preset
+	// (so we don't actually run a daily session — just exercise routing).
+	old := os.Args
+	defer func() { os.Args = old }()
+	os.Args = []string{"loadgen", "daily", "--preset=nope"}
+	cfg := &config{NatsURL: "nats://x", MongoURI: "mongodb://x", ValkeyAddrs: []string{"x"}}
+	rc := dispatch(context.Background(), cfg)
+	require.Equal(t, 2, rc)
 }

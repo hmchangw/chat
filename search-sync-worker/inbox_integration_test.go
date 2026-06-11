@@ -324,6 +324,7 @@ func TestUserRoomSync_Integration(t *testing.T) {
 
 	coll := newUserRoomCollection(indexName)
 	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	registerStoredScripts(t, ctx, engine, coll)
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -446,6 +447,7 @@ func TestUserRoomSync_BulkInvite(t *testing.T) {
 
 	coll := newUserRoomCollection(indexName)
 	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	registerStoredScripts(t, ctx, engine, coll)
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 
@@ -561,6 +563,7 @@ func TestUserRoomSync_LWWGuard(t *testing.T) {
 
 	coll := newUserRoomCollection(indexName)
 	require.NoError(t, engine.UpsertTemplate(ctx, coll.TemplateName(), overrideIndexSettings(userRoomTemplateBody(indexName))))
+	registerStoredScripts(t, ctx, engine, coll)
 	preCreateIndex(t, esURL, indexName)
 	waitForClusterGreen(t, esURL, 120*time.Second)
 

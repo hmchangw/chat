@@ -7,6 +7,7 @@ vi.mock('@/context/NatsContext', () => ({
 }))
 
 import { useNats } from '@/context/NatsContext'
+import { AsyncJobError, ASYNC_JOB_ERROR_KINDS } from '@/api/_transport/asyncJob'
 
 const channelRoom = { id: 'r1', siteId: 'site-A', name: 'general', type: 'channel' }
 const dmRoom = { id: 'r2', siteId: 'site-A', name: 'bob-dm', type: 'dm' }
@@ -55,10 +56,13 @@ describe('LeaveRoomButton', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('alerts the user when the request fails', async () => {
+  it('alerts the user with the humanized reason copy when the request fails (last_owner_cannot_leave)', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
-    const request = vi.fn().mockRejectedValue(new Error('cannot leave: you are the last owner'))
+    const err = new AsyncJobError('cannot leave: you are the last owner', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      reason: 'last_owner_cannot_leave',
+    })
+    const request = vi.fn().mockRejectedValue(err)
     setup(channelRoom, { request })
     fireEvent.click(screen.getByRole('button', { name: /Leave/i }))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))

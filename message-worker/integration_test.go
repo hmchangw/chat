@@ -15,12 +15,33 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/model/cassandra"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/testutil"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
+
+// newTestVaultWrapper constructs an atrest.KeyWrapper backed by the
+// shared dev Vault container (started once per test process) and
+// registers cleanup. Used by tests that need a real atrest.Cipher.
+func newTestVaultWrapper(t *testing.T, ctx context.Context) atrest.KeyWrapper {
+	t.Helper()
+	v := testutil.Vault(t, ctx)
+	w, err := atrest.NewVaultKeyWrapper(ctx, atrest.VaultConfig{
+		Address:      v.Address,
+		TransitMount: v.TransitMount,
+		TransitKey:   v.TransitKey,
+		Token:        v.Token,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Best-effort: tests can't meaningfully act on a Close failure.
+		_ = w.Close()
+	})
+	return w
+}
 
 func setupCassandra(t *testing.T) *gocql.Session {
 	t.Helper()
@@ -34,6 +55,27 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			app_name     TEXT,
 			is_bot       BOOLEAN,
 			account      TEXT
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."EncMeta" (
+			nonce BLOB
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."Card" (
+			template TEXT,
+			data     BLOB
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."CardAction" (
+			verb          TEXT,
+			text          TEXT,
+			card_id       TEXT,
+			display_text  TEXT,
+			hide_exec_log BOOLEAN,
+			card_tmid     TEXT,
+			data          BLOB
+		)`, keyspace),
+		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."File" (
+			id   TEXT,
+			name TEXT,
+			type TEXT
 		)`, keyspace),
 		fmt.Sprintf(`CREATE TYPE IF NOT EXISTS %s."QuotedParentMessage" (
 			message_id               TEXT,
@@ -57,11 +99,17 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id               TEXT,
 			updated_at            TIMESTAMP,
 			mentions              SET<FROZEN<"Participant">>,
+			attachments           LIST<BLOB>,
+			card                  FROZEN<"Card">,
+			card_action           FROZEN<"CardAction">,
+			file                  FROZEN<"File">,
 			tcount                INT,
 			tshow                 BOOLEAN,
 			type                  TEXT,
 			sys_msg_data          BLOB,
 			quoted_parent_message FROZEN<"QuotedParentMessage">,
+			enc_payload           BLOB,
+			enc_meta              FROZEN<"EncMeta">,
 			PRIMARY KEY ((room_id, bucket), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.messages_by_id (
@@ -73,6 +121,10 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id                  TEXT,
 			updated_at               TIMESTAMP,
 			mentions                 SET<FROZEN<"Participant">>,
+			attachments              LIST<BLOB>,
+			card                     FROZEN<"Card">,
+			card_action              FROZEN<"CardAction">,
+			file                     FROZEN<"File">,
 			thread_room_id           TEXT,
 			thread_parent_id         TEXT,
 			thread_parent_created_at TIMESTAMP,
@@ -81,6 +133,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			type                     TEXT,
 			sys_msg_data             BLOB,
 			quoted_parent_message    FROZEN<"QuotedParentMessage">,
+			enc_payload              BLOB,
+			enc_meta                 FROZEN<"EncMeta">,
 			PRIMARY KEY (message_id, created_at)
 		) WITH CLUSTERING ORDER BY (created_at DESC)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_thread (
@@ -94,10 +148,17 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			site_id               TEXT,
 			updated_at            TIMESTAMP,
 			mentions              SET<FROZEN<"Participant">>,
+			attachments           LIST<BLOB>,
+			card                  FROZEN<"Card">,
+			card_action           FROZEN<"CardAction">,
+			file                  FROZEN<"File">,
 			tshow                 BOOLEAN,
 			type                  TEXT,
 			sys_msg_data          BLOB,
 			quoted_parent_message FROZEN<"QuotedParentMessage">,
+			enc_payload           BLOB,
+			enc_meta              FROZEN<"EncMeta">,
+			deleted               BOOLEAN,
 			PRIMARY KEY ((thread_room_id), created_at, message_id)
 		) WITH CLUSTERING ORDER BY (created_at DESC, message_id DESC)`, keyspace),
 	}
@@ -123,7 +184,7 @@ func setupMongo(t *testing.T) *mongo.Database {
 
 func TestCassandraStore_SaveMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -219,7 +280,7 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	cassSession := setupCassandra(t)
 	bucket := msgbucket.New(24 * time.Hour)
-	store := NewCassandraStore(cassSession, bucket)
+	store := NewCassandraStore(cassSession, bucket, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -246,7 +307,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	}
 
 	const threadRoomID = "tr-test-1"
-	err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
+	_, err := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
 	require.NoError(t, err)
 
 	t.Run("thread_messages_by_thread mentions persisted", func(t *testing.T) {
@@ -299,7 +360,7 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 
 func TestCassandraStore_GetMessageSender(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -351,7 +412,7 @@ func TestHandler_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	us := userstore.NewMongoStore(userCol)
 	threadStore := newThreadStoreMongo(mongoDB)
 	h := NewHandler(store, us, threadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
@@ -414,7 +475,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -538,7 +599,7 @@ func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	us := userstore.NewMongoStore(userCol)
 	ts := newThreadStoreMongo(db)
 	require.NoError(t, ts.EnsureIndexes(ctx))
@@ -841,7 +902,7 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 	require.NoError(t, store.CreateThreadRoom(ctx, room))
 
 	later := now.Add(10 * time.Minute)
-	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", "bob", later)
+	err := store.UpdateThreadRoomLastMessage(ctx, "tr-update", "msg-5", []string{"bob"}, later)
 	require.NoError(t, err)
 
 	got, err := store.GetThreadRoomByParentMessageID(ctx, "msg-parent-update")
@@ -853,7 +914,7 @@ func TestThreadStoreMongo_UpdateThreadRoomLastMessage(t *testing.T) {
 
 func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
@@ -880,7 +941,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		ThreadParentMessageID:        "tcount-parent",
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1"))
+	_, err := store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-tcount-1")
+	require.NoError(t, err)
 
 	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
 		var tcount int
@@ -913,7 +975,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		ThreadParentMessageID:        "tcount-parent",
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1"))
+	_, err2 := store.SaveThreadMessage(ctx, replyMsg2, replySender, "site-a", "tr-tcount-1")
+	require.NoError(t, err2)
 
 	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
 		var tcount int
@@ -945,7 +1008,7 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 			ThreadParentMessageID: "tcount-parent",
 			// ThreadParentMessageCreatedAt intentionally nil
 		}
-		err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
+		_, err := store.SaveThreadMessage(ctx, noTsReply, replySender, "site-a", "tr-tcount-1")
 		assert.NoError(t, err)
 
 		// tcount must stay at 2 — nil timestamp skips the increment
@@ -959,9 +1022,68 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	})
 }
 
+func TestCassandraStore_SaveThreadMessage_IdempotentOnRedelivery(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	parentBucket := msgbucket.New(24 * time.Hour).Of(parentCreatedAt)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-idem-parent", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "idem-parent",
+		RoomID:    "idem-room",
+		UserID:    "u-idem-parent",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent message",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-idem-replier", Account: "bob", EngName: "Bob"}
+	replyMsg := &model.Message{
+		ID:                           "idem-reply-1",
+		RoomID:                       "idem-room",
+		UserID:                       "u-idem-replier",
+		Content:                      "reply message",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "idem-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+
+	// First delivery.
+	_, err := store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-idem-1")
+	require.NoError(t, err)
+
+	// JetStream redelivery — same message ID, must not increment tcount again.
+	_, err = store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "tr-idem-1")
+	require.NoError(t, err)
+
+	t.Run("tcount stays at 1 in messages_by_id after redelivery", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"idem-parent", parentCreatedAt,
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
+	})
+
+	t.Run("tcount stays at 1 in messages_by_room after redelivery", func(t *testing.T) {
+		var tcount int
+		err := cassSession.Query(
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"idem-room", parentBucket, parentCreatedAt, "idem-parent",
+		).Scan(&tcount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, tcount)
+	})
+}
+
 func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1034,7 +1156,7 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 
 func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
-	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour))
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1064,7 +1186,7 @@ func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 func TestSaveMessage_BindsBucket(t *testing.T) {
 	cassSession := setupCassandra(t)
 	bucket := msgbucket.New(24 * time.Hour)
-	store := NewCassandraStore(cassSession, bucket)
+	store := NewCassandraStore(cassSession, bucket, nil)
 
 	msg := &model.Message{
 		ID:        "msg-bucket-1",
@@ -1089,7 +1211,7 @@ func TestSaveMessage_BindsBucket(t *testing.T) {
 func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 	cassSession := setupCassandra(t)
 	bucket := msgbucket.New(24 * time.Hour)
-	store := NewCassandraStore(cassSession, bucket)
+	store := NewCassandraStore(cassSession, bucket, nil)
 	ctx := context.Background()
 
 	parentCreatedAt := time.Date(2026, 4, 30, 9, 0, 0, 0, time.UTC)
@@ -1116,7 +1238,8 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 		ThreadParentMessageID:        parentID,
 		ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
-	require.NoError(t, store.SaveThreadMessage(ctx, reply, sender, "site-A", "thread-room-1"))
+	_, errSave := store.SaveThreadMessage(ctx, reply, sender, "site-A", "thread-room-1")
+	require.NoError(t, errSave)
 
 	// 1. The reply must land in the partition keyed by thread_room_id.
 	var gotRoomID string
@@ -1136,10 +1259,76 @@ func TestSaveThreadMessage_PartitionsByThreadRoom(t *testing.T) {
 	assert.Equal(t, 1, tcount)
 }
 
+func TestCassandraStore_SaveThreadMessage_ReturnsTcount(t *testing.T) {
+	cassSession := setupCassandra(t)
+	store := NewCassandraStore(cassSession, msgbucket.New(24*time.Hour), nil)
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-parent-ret", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "ret-parent",
+		RoomID:    "ret-room",
+		UserID:    "u-parent-ret",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent for return-value test",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-replier-ret", Account: "bob", EngName: "Bob"}
+
+	// First reply: returned tcount must be non-nil and equal 1.
+	reply1 := &model.Message{
+		ID:                           "ret-reply-1",
+		RoomID:                       "ret-room",
+		UserID:                       "u-replier-ret",
+		Content:                      "first reply",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "ret-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	tcount1, err := store.SaveThreadMessage(ctx, reply1, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	require.NotNil(t, tcount1, "SaveThreadMessage must return non-nil tcount for a reply with ThreadParentMessageCreatedAt set")
+	assert.Equal(t, 1, *tcount1, "first reply must produce tcount == 1")
+
+	// Second reply: returned tcount must be non-nil and equal 2.
+	reply2CreatedAt := replyCreatedAt.Add(5 * time.Minute)
+	reply2 := &model.Message{
+		ID:                           "ret-reply-2",
+		RoomID:                       "ret-room",
+		UserID:                       "u-replier-ret",
+		Content:                      "second reply",
+		CreatedAt:                    reply2CreatedAt,
+		ThreadParentMessageID:        "ret-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+	tcount2, err := store.SaveThreadMessage(ctx, reply2, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	require.NotNil(t, tcount2, "SaveThreadMessage must return non-nil tcount after second reply")
+	assert.Equal(t, 2, *tcount2, "second reply must produce tcount == 2")
+
+	// Reply with nil ThreadParentMessageCreatedAt: returned tcount must be nil.
+	reply3 := &model.Message{
+		ID:                    "ret-reply-3",
+		RoomID:                "ret-room",
+		UserID:                "u-replier-ret",
+		Content:               "reply without parent timestamp",
+		CreatedAt:             reply2CreatedAt.Add(5 * time.Minute),
+		ThreadParentMessageID: "ret-parent",
+		// ThreadParentMessageCreatedAt intentionally nil
+	}
+	tcount3, err := store.SaveThreadMessage(ctx, reply3, replySender, "site-a", "tr-ret-1")
+	require.NoError(t, err)
+	assert.Nil(t, tcount3, "SaveThreadMessage must return nil tcount when ThreadParentMessageCreatedAt is nil")
+}
+
 func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	cassSession := setupCassandra(t)
 	bucket := msgbucket.New(24 * time.Hour)
-	store := NewCassandraStore(cassSession, bucket)
+	store := NewCassandraStore(cassSession, bucket, nil)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1165,7 +1354,8 @@ func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	}
 
 	const threadRoomID = "tr-quote-1"
-	require.NoError(t, store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID))
+	_, errThread := store.SaveThreadMessage(ctx, msg, sender, "site-a", threadRoomID)
+	require.NoError(t, errThread)
 
 	t.Run("thread_messages_by_thread round-trips QuotedParentMessage", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
@@ -1186,5 +1376,215 @@ func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 		).Scan(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
+	})
+}
+
+func TestSaveMessage_EncryptsBody(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	store := NewCassandraStore(session, msgbucket.New(24*time.Hour), cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sender := &cassParticipant{ID: "u-1", Account: "alice"}
+	msg := &model.Message{
+		ID:          "m-enc-1",
+		RoomID:      "r-enc-1",
+		UserID:      "u-1",
+		UserAccount: "alice",
+		Content:     "secret body",
+		CreatedAt:   now,
+	}
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	// Direct CQL: msg column is NULL (not just empty string), enc_payload
+	// is non-nil. Scanning into *string distinguishes NULL from "" so we
+	// actually prove the encrypted write didn't bind the plaintext column.
+	var (
+		msgCol     *string
+		encPayload []byte
+		encNonce   []byte
+	)
+	require.NoError(t, session.Query(
+		`SELECT msg, enc_payload, enc_meta.nonce FROM messages_by_room WHERE room_id=? AND message_id=? LIMIT 1 ALLOW FILTERING`,
+		"r-enc-1", "m-enc-1",
+	).Scan(&msgCol, &encPayload, &encNonce))
+	assert.Nil(t, msgCol, "msg column must be NULL on encrypted rows, not empty string")
+	require.NotEmpty(t, encPayload)
+	require.Len(t, encNonce, 12)
+
+	// Decrypt confirms the body.
+	plain, err := cipher.Decrypt(ctx, "r-enc-1", encPayload, atrest.EncMeta{Nonce: encNonce})
+	require.NoError(t, err)
+	assert.Equal(t, "secret body", plain.Msg)
+}
+
+// TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns proves
+// the hybrid-row hazard is fixed: a JetStream redelivery (or federation
+// replay) of a pre-rollout legacy message running under cipher-enabled
+// message-worker must NOT leave the row with both plaintext attachments
+// and enc_payload set. Without the explicit `msg = null, attachments =
+// null, ...` clauses in saveMessageEncrypted's INSERT, Cassandra's
+// upsert semantics would preserve the legacy plaintext columns and the
+// next decryptIfNeeded → ApplyDecryptedFields would silently drop them.
+func TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	sizer := msgbucket.New(24 * time.Hour)
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	store := NewCassandraStore(session, sizer, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	roomID := "r-redelivery"
+	msgID := "m-redelivery"
+	originalAttachments := [][]byte{[]byte("legacy-attachment-1"), []byte("legacy-attachment-2")}
+	originalSysMsgData := []byte{0xFA, 0xCE, 0xFE, 0xED}
+	sender := &cassParticipant{ID: "u-1", Account: "alice"}
+
+	// Pre-write a legacy plaintext row with attachments + sys_msg_data set
+	// (simulating a message persisted before the at-rest rollout).
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, msg, attachments, sys_msg_data, site_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, sizer.Of(now), now, msgID, "legacy body", originalAttachments, originalSysMsgData, "site-a",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, msg, attachments, sys_msg_data, site_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msgID, now, roomID, "legacy body", originalAttachments, originalSysMsgData, "site-a",
+	).Exec())
+
+	// Simulate the JetStream redelivery: message-worker (cipher enabled)
+	// receives the same (room_id, created_at, message_id) again from the
+	// canonical stream and runs SaveMessage, which dispatches to the
+	// encrypted path.
+	msg := &model.Message{
+		ID:          msgID,
+		RoomID:      roomID,
+		UserID:      "u-1",
+		UserAccount: "alice",
+		Content:     "legacy body",
+		CreatedAt:   now,
+		SysMsgData:  originalSysMsgData,
+	}
+	require.NoError(t, store.SaveMessage(ctx, msg, sender, "site-a"))
+
+	// The encrypted legacy plaintext columns (msg, attachments) must now be
+	// NULL on both tables; otherwise decryptIfNeeded → ApplyDecryptedFields
+	// will overwrite them with empty values from the new bundle on read,
+	// silently losing the attachments. sys_msg_data is not encrypted, so the
+	// redelivered insert rewrites it as plaintext and it survives.
+	for _, tableQuery := range []struct {
+		name string
+		q    string
+		args []any
+	}{
+		{
+			name: "messages_by_room",
+			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_room WHERE room_id=? AND bucket=? AND created_at=? AND message_id=? LIMIT 1`,
+			args: []any{roomID, sizer.Of(now), now, msgID},
+		},
+		{
+			name: "messages_by_id",
+			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_id WHERE message_id=? AND created_at=? LIMIT 1`,
+			args: []any{msgID, now},
+		},
+	} {
+		var (
+			msgCol      *string
+			attachments [][]byte
+			sysMsgData  []byte
+		)
+		require.NoError(t, session.Query(tableQuery.q, tableQuery.args...).Scan(&msgCol, &attachments, &sysMsgData),
+			"select from %s", tableQuery.name)
+		assert.Nil(t, msgCol, "%s: msg must be NULL after redelivered encrypted insert", tableQuery.name)
+		assert.Nil(t, attachments, "%s: attachments must be NULL after redelivered encrypted insert", tableQuery.name)
+		assert.Equal(t, originalSysMsgData, sysMsgData, "%s: un-encrypted sys_msg_data must be preserved after redelivered encrypted insert", tableQuery.name)
+	}
+}
+
+// TestSaveThreadMessage_EncryptedPath_SkipsTcountOnRedelivery verifies that
+// saveThreadMessageEncrypted uses an IF NOT EXISTS guard on messages_by_id so
+// that a JetStream redelivery of the same reply does not double-increment the
+// parent's tcount. On first delivery the INSERT must be applied and tcount
+// must reach 1; on redelivery the INSERT must be skipped and tcount must stay
+// at 1.
+func TestSaveThreadMessage_EncryptedPath_SkipsTcountOnRedelivery(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	bucket := msgbucket.New(24 * time.Hour)
+	store := NewCassandraStore(session, bucket, cipher)
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	replyCreatedAt := parentCreatedAt.Add(5 * time.Minute)
+
+	parentSender := &cassParticipant{ID: "u-parent", Account: "alice", EngName: "Alice"}
+	parentMsg := &model.Message{
+		ID:        "enc-tcount-parent",
+		RoomID:    "enc-tcount-room",
+		UserID:    "u-parent",
+		CreatedAt: parentCreatedAt,
+		Content:   "parent message",
+	}
+	require.NoError(t, store.SaveMessage(ctx, parentMsg, parentSender, "site-a"))
+
+	replySender := &cassParticipant{ID: "u-replier", Account: "bob", EngName: "Bob"}
+	replyMsg := &model.Message{
+		ID:                           "enc-tcount-reply",
+		RoomID:                       "enc-tcount-room",
+		UserID:                       "u-replier",
+		Content:                      "first reply",
+		CreatedAt:                    replyCreatedAt,
+		ThreadParentMessageID:        "enc-tcount-parent",
+		ThreadParentMessageCreatedAt: &parentCreatedAt,
+	}
+
+	// First delivery — must succeed and increment tcount to 1.
+	_, err := store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "enc-tr-tcount-1")
+	require.NoError(t, err)
+
+	t.Run("tcount 1 after first delivery", func(t *testing.T) {
+		var tcount int
+		require.NoError(t, session.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"enc-tcount-parent", parentCreatedAt,
+		).Scan(&tcount))
+		assert.Equal(t, 1, tcount)
+	})
+
+	// Redelivery — same message, same coordinates.  Must NOT double-increment.
+	_, err = store.SaveThreadMessage(ctx, replyMsg, replySender, "site-a", "enc-tr-tcount-1")
+	require.NoError(t, err)
+
+	t.Run("tcount still 1 after redelivery — no double-increment", func(t *testing.T) {
+		var tcount int
+		require.NoError(t, session.Query(
+			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
+			"enc-tcount-parent", parentCreatedAt,
+		).Scan(&tcount))
+		assert.Equal(t, 1, tcount, "redelivery must not double-increment tcount")
+	})
+
+	t.Run("tcount still 1 in messages_by_room after redelivery", func(t *testing.T) {
+		parentBucket := bucket.Of(parentCreatedAt)
+		var tcount int
+		require.NoError(t, session.Query(
+			`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+			"enc-tcount-room", parentBucket, parentCreatedAt, "enc-tcount-parent",
+		).Scan(&tcount))
+		assert.Equal(t, 1, tcount, "redelivery must not double-increment tcount in messages_by_room")
 	})
 }

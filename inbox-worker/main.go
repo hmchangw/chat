@@ -15,6 +15,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -127,6 +128,18 @@ func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, ac
 	return nil
 }
 
+// UpdateSubscriptionFavorite sets favorite by (roomID, account); missing is a silent no-op.
+func (s *mongoInboxStore) UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error {
+	_, err := s.subCol.UpdateOne(ctx,
+		bson.M{"roomId": roomID, "u.account": account},
+		bson.M{"$set": bson.M{"favorite": favorite}},
+	)
+	if err != nil {
+		return fmt.Errorf("update subscription favorite for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}
+
 func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	filter := bson.M{
 		"roomId":    roomID,
@@ -203,6 +216,42 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 	if _, err := s.threadSubCol.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
 		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
 			sub.ThreadRoomID, sub.UserID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+	if _, err := s.subCol.UpdateMany(ctx,
+		bson.M{"roomId": roomID},
+		bson.M{"$set": bson.M{"name": newName}}); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *mongoInboxStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
+	filter := bson.M{"roomId": roomID}
+	if restricted && ownerAccount != "" {
+		pipeline := mongo.Pipeline{
+			bson.D{{Key: "$set", Value: bson.M{
+				"restricted":     true,
+				"externalAccess": externalAccess,
+				"roles": bson.M{"$cond": bson.M{
+					"if":   bson.M{"$eq": bson.A{"$u.account", ownerAccount}},
+					"then": bson.A{string(model.RoleOwner)},
+					"else": bson.A{string(model.RoleMember)},
+				}},
+			}}},
+		}
+		if _, err := s.subCol.UpdateMany(ctx, filter, pipeline); err != nil {
+			return fmt.Errorf("apply visibility (restrict+rewrite): %w", err)
+		}
+		return nil
+	}
+	if _, err := s.subCol.UpdateMany(ctx, filter, bson.M{
+		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess},
+	}); err != nil {
+		return fmt.Errorf("apply visibility (flags only): %w", err)
 	}
 	return nil
 }
@@ -310,8 +359,17 @@ func main() {
 	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
-		handlerCtx := natsutil.ContextWithRequestIDFromHeaders(m.Context(), m.Headers())
+		handlerCtx, _ := natsutil.StampRequestID(m.Context(), m.Headers(), m.Subject())
 		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
+			// Permanent failures (poison messages) Ack so JetStream stops
+			// redelivering; transient infra errors Nak for redelivery.
+			if _, isPermanent := errcode.IsPermanent(err); isPermanent {
+				slog.Warn("permanent event failure — dropping (Ack)", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
+				if err := m.Ack(); err != nil {
+					slog.Error("failed to ack permanent message", "error", err)
+				}
+				return
+			}
 			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := m.Nak(); err != nil {
 				slog.Error("failed to nak message", "error", err)

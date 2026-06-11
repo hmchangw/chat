@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -24,9 +25,10 @@ func emptyThreadResponse() *models.GetThreadMessagesResponse {
 func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.GetThreadMessagesRequest) (*models.GetThreadMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	if req.ThreadMessageID == "" {
-		return nil, natsrouter.ErrBadRequest("threadMessageId is required")
+		return nil, errcode.BadRequest("threadMessageId is required")
 	}
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
@@ -65,18 +67,18 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}
 
 	if msg.ThreadParentID != "" {
-		return nil, natsrouter.ErrBadRequest("threadMessageId must be a top-level message, not a reply")
+		return nil, errcode.BadRequest("threadMessageId must be a top-level message, not a reply")
 	}
 
 	if accessSince != nil && msg.CreatedAt.Before(*accessSince) {
-		return nil, natsrouter.ErrForbidden("thread is outside access window")
+		return nil, errcode.Forbidden("thread is outside access window", errcode.WithReason(errcode.MessageOutsideAccessWindow))
 	}
 
 	// Empty ThreadRoomID means no replies yet or a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
 		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
 			"request_id", natsutil.RequestIDFromContext(c),
-			"roomID", roomID,
+			"room_id", roomID,
 			"messageID", req.ThreadMessageID,
 			"messageCreatedAt", msg.CreatedAt,
 			"account", account,
@@ -136,8 +138,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 
 	page, err := s.msgReader.GetThreadMessages(c, msg.ThreadRoomID, ceiling, floor, pageReq)
 	if err != nil {
-		slog.Error("loading thread messages", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "threadRoomID", msg.ThreadRoomID)
-		return nil, natsrouter.ErrInternal("failed to load thread messages")
+		return nil, fmt.Errorf("loading thread messages: %w", err)
 	}
 
 	redactUnavailableQuotes(page.Data, accessSince)
@@ -156,7 +157,7 @@ func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, erro
 	case models.ThreadFilterFollowing, models.ThreadFilterUnread:
 		return filter, nil
 	default:
-		return "", natsrouter.ErrBadRequest(fmt.Sprintf("invalid thread filter: %q", filter))
+		return "", errcode.BadRequest(fmt.Sprintf("invalid thread filter: %q", filter))
 	}
 }
 
@@ -164,6 +165,7 @@ func validateThreadFilter(filter models.ThreadFilter) (models.ThreadFilter, erro
 func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req models.GetThreadParentMessagesRequest) (*models.GetThreadParentMessagesResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
 
 	accessSince, err := s.getAccessSince(c, account, roomID)
 	if err != nil {
@@ -186,12 +188,11 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 	case models.ThreadFilterUnread:
 		threadPage, err = s.threadRooms.GetUnreadThreadRooms(c, roomID, account, accessSince, pageReq)
 	default:
-		slog.Error("unhandled thread filter", "filter", filter)
-		return nil, natsrouter.ErrInternal("unhandled thread filter")
+		return nil, errcode.Internal("unhandled thread filter",
+			errcode.WithCause(fmt.Errorf("unhandled thread filter: %q", filter)))
 	}
 	if err != nil {
-		slog.Error("loading thread rooms from MongoDB", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID, "filter", filter)
-		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
+		return nil, fmt.Errorf("loading thread rooms (filter %s): %w", filter, err)
 	}
 
 	if len(threadPage.Data) == 0 {
@@ -211,8 +212,7 @@ func (s *HistoryService) GetThreadParentMessages(c *natsrouter.Context, req mode
 
 	cassMessages, err := s.msgReader.GetMessagesByIDs(c, parentIDs)
 	if err != nil {
-		slog.Error("hydrating thread parent messages from Cassandra", "error", err, "request_id", natsutil.RequestIDFromContext(c), "roomID", roomID)
-		return nil, natsrouter.ErrInternal("failed to load thread parent messages")
+		return nil, fmt.Errorf("hydrating thread parent messages: %w", err)
 	}
 
 	msgByID := make(map[string]models.Message, len(cassMessages))

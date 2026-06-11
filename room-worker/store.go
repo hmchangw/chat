@@ -11,6 +11,12 @@ import (
 // ErrUserNotFound is returned by GetUser when the account does not exist.
 var ErrUserNotFound = errors.New("user not found")
 
+var (
+	ErrRoomNotFound       = errors.New("room not found")
+	ErrNotChannelRoom     = errors.New("not a channel room")
+	ErrOwnerNotSubscribed = errors.New("owner account is no longer subscribed")
+)
+
 //go:generate mockgen -destination=mock_store_test.go -package=main . SubscriptionStore,RoomKeyStore
 
 // UserWithMembership is the result of the GetUserWithMembership aggregation pipeline.
@@ -56,11 +62,10 @@ type SubscriptionStore interface {
 	// membership write path (channel, DM, botDM, add-member); the
 	// re-subscribe semantic for botDM is owned by user-service.
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
-	// ListByRoom returns all subscriptions for roomID across every site.
-	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 	// ReconcileMemberCounts recomputes Room.UserCount (non-bot subs) and
-	// Room.AppCount (bot subs) by scanning the subscriptions collection,
-	// then writes both back to the rooms collection in a single update.
+	// Room.AppCount (bot subs) via index-backed counts on the denormalized
+	// u.isBot flag, then writes both back to the rooms collection in a single
+	// update.
 	ReconcileMemberCounts(ctx context.Context, roomID string) error
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
@@ -71,7 +76,6 @@ type SubscriptionStore interface {
 	// ErrSubscriptionNotFound if the room does not have exactly two
 	// matching subs or if requesterAccount is not among them.
 	FindDMSubscriptionPair(ctx context.Context, roomID, requesterAccount string) (*model.Subscription, *model.Subscription, error)
-	AddRole(ctx context.Context, account, roomID string, role model.Role) error
 	RemoveRole(ctx context.Context, account, roomID string, role model.Role) error
 
 	// --- aggregation pipelines (remove flow) ---
@@ -104,6 +108,21 @@ type SubscriptionStore interface {
 	// passes the requester's account so they aren't materialized as a regular
 	// member in addition to being added separately as the owner.
 	ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error)
+
+	// Rename operations. (Restricted moved to room-service as a sync RPC.)
+
+	// UpdateRoomName sets {name, updatedAt} on the channel-typed room doc.
+	// Returns ErrRoomNotFound; ErrNotChannelRoom is no longer returned since
+	// room-service validates type upstream.
+	UpdateRoomName(ctx context.Context, roomID, newName string) error
+
+	// UpdateSubscriptionNamesForRoom updateMany on subscriptions matching {roomId: roomID}.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+
+	// ListByRoom returns all subscriptions for roomID across every site.
+	// Used by the rename processor to bucket accounts by remote site for
+	// outbox fan-out.
+	ListByRoom(ctx context.Context, roomID string) ([]model.Subscription, error)
 }
 
 // Key store used by room-worker: reads for fan-out, writes for rotation.
@@ -117,4 +136,10 @@ type RoomKeyStore interface {
 	SetWithVersion(ctx context.Context, roomID string, pair roomkeystore.RoomKeyPair, version int) error
 	// Rotate atomically increments version and writes newPair as current.
 	Rotate(ctx context.Context, roomID string, newPair roomkeystore.RoomKeyPair) (int, error)
+}
+
+// DEKProvisioner eagerly provisions a room's at-rest data encryption key at
+// creation time. Satisfied by *atrest.Cipher; nil when ATREST_ENABLED=false.
+type DEKProvisioner interface {
+	EnsureDEK(ctx context.Context, roomID string) error
 }

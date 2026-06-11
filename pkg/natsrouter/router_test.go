@@ -14,8 +14,8 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
-	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
@@ -93,9 +93,9 @@ func TestRegister_InvalidJSON(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "test.123", []byte("not json"), 2*time.Second)
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
+	var errResp errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-	assert.Equal(t, "invalid request payload", errResp.Error)
+	assert.Equal(t, "invalid request payload", errResp.Message)
 }
 
 func TestRegister_HandlerError(t *testing.T) {
@@ -111,9 +111,9 @@ func TestRegister_HandlerError(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
+	var errResp errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-	assert.Equal(t, "internal error", errResp.Error)
+	assert.Equal(t, "internal error", errResp.Message)
 }
 
 func TestRegisterNoBody_Success(t *testing.T) {
@@ -215,9 +215,9 @@ func TestRecovery_CatchesPanic(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
+	var errResp errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-	assert.Equal(t, "internal error", errResp.Error)
+	assert.Equal(t, "internal error", errResp.Message)
 }
 
 func TestRegister_NoParams(t *testing.T) {
@@ -244,17 +244,17 @@ func TestRegister_RouteError(t *testing.T) {
 
 	Register(r, "test.{id}",
 		func(c *Context, req testReq) (*testResp, error) {
-			return nil, ErrWithCode("not_found", "thing not found")
+			return nil, errcode.NotFound("thing not found")
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var result RouteError
+	var result errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "thing not found", result.Message)
-	assert.Equal(t, "not_found", result.Code)
+	assert.Equal(t, "not_found", string(result.Code))
 }
 
 func TestRegister_RouteErrorSimple(t *testing.T) {
@@ -263,17 +263,18 @@ func TestRegister_RouteErrorSimple(t *testing.T) {
 
 	Register(r, "test.{id}",
 		func(c *Context, req testReq) (*testResp, error) {
-			return nil, Errf("user %s not allowed", "alice")
+			return nil, errcode.BadRequest(fmt.Sprintf("user %s not allowed", "alice"))
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var result RouteError
+	var result errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "user alice not allowed", result.Message)
-	assert.Equal(t, "", result.Code)
+	// Err/Errf now map to bad_request (code is always present in the new envelope).
+	assert.Equal(t, "bad_request", string(result.Code))
 }
 
 func TestRegister_InternalErrorNotExposed(t *testing.T) {
@@ -289,9 +290,9 @@ func TestRegister_InternalErrorNotExposed(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
+	var errResp errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-	assert.Equal(t, "internal error", errResp.Error)
+	assert.Equal(t, "internal error", errResp.Message)
 	assert.NotContains(t, string(resp.Data), "database")
 }
 
@@ -333,32 +334,33 @@ func TestRegisterVoid_NoReply(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRouteError_Error(t *testing.T) {
-	e := ErrWithCode("not_found", "room not found")
-	assert.Equal(t, "not_found: room not found", e.Error())
+func TestErrcodeError_Error(t *testing.T) {
+	// errcode.Error.Error() returns the user-safe message only (no "code: " prefix).
+	e := errcode.NotFound("room not found")
+	assert.Equal(t, "room not found", e.Error())
 
-	e2 := Err("simple error")
+	e2 := errcode.BadRequest("simple error")
 	assert.Equal(t, "simple error", e2.Error())
 }
 
-func TestRouteError_WrappedInFmtErrorf(t *testing.T) {
+func TestErrcodeError_WrappedInFmtErrorf(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	// RouteError wrapped with fmt.Errorf should still be detected via errors.As
+	// errcode error wrapped with fmt.Errorf should still be detected via errors.As
 	Register(r, "test.{id}",
 		func(c *Context, req testReq) (*testResp, error) {
-			return nil, fmt.Errorf("context: %w", ErrWithCode("forbidden", "not allowed"))
+			return nil, fmt.Errorf("context: %w", errcode.Forbidden("not allowed"))
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var result RouteError
+	var result errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "not allowed", result.Message)
-	assert.Equal(t, "forbidden", result.Code)
+	assert.Equal(t, "forbidden", string(result.Code))
 }
 
 func TestContext_SetGet(t *testing.T) {
@@ -460,9 +462,9 @@ func TestRegisterNoBody_HandlerError(t *testing.T) {
 	resp, err := nc.Request(context.Background(), "test.123", nil, 2*time.Second)
 	require.NoError(t, err)
 
-	var errResp model.ErrorResponse
+	var errResp errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-	assert.Equal(t, "internal error", errResp.Error)
+	assert.Equal(t, "internal error", errResp.Message)
 }
 
 func TestRegisterNoBody_RouteError(t *testing.T) {
@@ -471,16 +473,16 @@ func TestRegisterNoBody_RouteError(t *testing.T) {
 
 	RegisterNoBody(r, "test.{id}",
 		func(c *Context) (*testResp, error) {
-			return nil, ErrNotFound("item not found")
+			return nil, errcode.NotFound("item not found")
 		})
 
 	resp, err := nc.Request(context.Background(), "test.123", nil, 2*time.Second)
 	require.NoError(t, err)
 
-	var result RouteError
+	var result errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "item not found", result.Message)
-	assert.Equal(t, "not_found", result.Code)
+	assert.Equal(t, "not_found", string(result.Code))
 }
 
 func TestLogging_LogsRequest(t *testing.T) {
@@ -502,67 +504,27 @@ func TestLogging_LogsRequest(t *testing.T) {
 	assert.Equal(t, "ok", result.Greeting)
 }
 
-func TestReplyRouteError(t *testing.T) {
+// TestReplyRouteError and TestErrConstants were removed when the natsrouter
+// shim (Err*/RouteError/ReplyRouteError) was deleted — they tested the shim
+// itself. errcode constructors are covered by pkg/errcode/options_test.go.
+
+func TestRegister_TypedInternalError(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
 
-	r.Use(func(c *Context) {
-		c.ReplyRouteError(ErrForbidden("access denied"))
-		c.Abort()
-	})
-
 	Register(r, "test.{id}",
 		func(c *Context, req testReq) (*testResp, error) {
-			t.Fatal("handler should not be called")
-			return nil, nil
+			return nil, errcode.Internal("failed to load data")
 		})
 
 	data, _ := json.Marshal(testReq{Name: "test"})
 	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
 	require.NoError(t, err)
 
-	var result RouteError
-	require.NoError(t, json.Unmarshal(resp.Data, &result))
-	assert.Equal(t, "access denied", result.Message)
-	assert.Equal(t, "forbidden", result.Code)
-}
-
-func TestErrConstants(t *testing.T) {
-	e := ErrBadRequest("invalid input")
-	assert.Equal(t, "bad_request", e.Code)
-	assert.Equal(t, "invalid input", e.Message)
-
-	e = ErrNotFound("not here")
-	assert.Equal(t, "not_found", e.Code)
-
-	e = ErrForbidden("nope")
-	assert.Equal(t, "forbidden", e.Code)
-
-	e = ErrConflict("already exists")
-	assert.Equal(t, "conflict", e.Code)
-
-	e = ErrInternal("service unavailable")
-	assert.Equal(t, "internal", e.Code)
-	assert.Equal(t, "service unavailable", e.Message)
-}
-
-func TestRegister_ErrInternal(t *testing.T) {
-	nc := startTestNATS(t)
-	r := New(nc, "test-service")
-
-	Register(r, "test.{id}",
-		func(c *Context, req testReq) (*testResp, error) {
-			return nil, ErrInternal("failed to load data")
-		})
-
-	data, _ := json.Marshal(testReq{Name: "test"})
-	resp, err := nc.Request(context.Background(), "test.123", data, 2*time.Second)
-	require.NoError(t, err)
-
-	var result RouteError
+	var result errcode.Error
 	require.NoError(t, json.Unmarshal(resp.Data, &result))
 	assert.Equal(t, "failed to load data", result.Message)
-	assert.Equal(t, "internal", result.Code)
+	assert.Equal(t, "internal", string(result.Code))
 }
 
 func TestContext_SetContext_Propagates(t *testing.T) {

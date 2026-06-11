@@ -15,7 +15,7 @@
 // context.DeadlineExceeded to ErrUnavailable explicitly:
 //
 //	if errors.Is(err, context.DeadlineExceeded) {
-//	    return nil, natsrouter.ErrUnavailable("request timed out")
+//	    return nil, errcode.Unavailable("request timed out")
 //	}
 //
 // Without that mapping there is no structured retry signal in the

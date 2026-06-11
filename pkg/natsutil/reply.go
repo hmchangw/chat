@@ -1,3 +1,8 @@
+// Package natsutil holds the few JSON/reply helpers the chat services share
+// for NATS request/reply. Client-facing errors flow through pkg/errcode
+// (errnats.Reply / errhttp.Write) — this package is success-reply mechanics
+// only; the legacy MarshalError/MarshalErrorWithCode/ReplyError/TryParseError
+// helpers were deleted alongside model.ErrorResponse.
 package natsutil
 
 import (
@@ -5,8 +10,6 @@ import (
 	"log/slog"
 
 	"github.com/nats-io/nats.go"
-
-	"github.com/hmchangw/chat/pkg/model"
 )
 
 // MarshalResponse encodes a value as JSON for NATS responses.
@@ -14,44 +17,20 @@ func MarshalResponse(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
-// MarshalError encodes an error message as a JSON ErrorResponse.
-func MarshalError(errMsg string) []byte {
-	data, _ := json.Marshal(model.ErrorResponse{Error: errMsg})
-	return data
-}
-
-// MarshalErrorWithCode encodes an error message and machine-readable code
-// as a JSON ErrorResponse. The code is omitted from the wire payload when
-// empty (omitempty on the Code field).
-func MarshalErrorWithCode(errMsg, code string) []byte {
-	data, _ := json.Marshal(model.ErrorResponse{Error: errMsg, Code: code})
-	return data
-}
-
-// ReplyJSON sends a JSON-encoded response to a NATS message.
+// ReplyJSON sends a JSON-encoded success response on msg's reply subject.
+// On a marshal failure (an unmarshalable v — typically a programmer error),
+// responds with a generic internal-error errcode envelope so the caller is
+// not left hanging.
 func ReplyJSON(msg *nats.Msg, v any) {
 	data, err := MarshalResponse(v)
 	if err != nil {
-		ReplyError(msg, "marshal error: "+err.Error())
+		slog.Error("marshal response failed", "error", err, "subject", msg.Subject)
+		if rErr := msg.Respond([]byte(`{"code":"internal","error":"internal error"}`)); rErr != nil {
+			slog.Error("reply failed", "error", rErr, "subject", msg.Subject)
+		}
 		return
 	}
 	if err := msg.Respond(data); err != nil {
-		slog.Error("reply failed", "error", err)
+		slog.Error("reply failed", "error", err, "subject", msg.Subject)
 	}
-}
-
-// ReplyError sends a JSON-encoded error response to a NATS message.
-func ReplyError(msg *nats.Msg, errMsg string) {
-	if err := msg.Respond(MarshalError(errMsg)); err != nil {
-		slog.Error("error reply failed", "error", err)
-	}
-}
-
-// TryParseError returns the ErrorResponse iff data decodes cleanly with a non-empty Error.
-func TryParseError(data []byte) (model.ErrorResponse, bool) {
-	var r model.ErrorResponse
-	if err := json.Unmarshal(data, &r); err != nil || r.Error == "" {
-		return model.ErrorResponse{}, false
-	}
-	return r, true
 }

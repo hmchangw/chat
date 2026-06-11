@@ -13,7 +13,8 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
-	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/errcode/errnats"
 )
 
 // Router manages NATS subscriptions with pattern-based routing and middleware.
@@ -119,7 +120,8 @@ func (r *Router) replyBusy(msg *nats.Msg) {
 			"subject", msg.Subject)
 		return
 	}
-	natsutil.ReplyJSON(msg, ErrUnavailable("service busy"))
+	// Admission rejection is operational, not a request failure; ReplyQuiet skips Classify.
+	errnats.ReplyQuiet(msg, errcode.Unavailable("service busy"))
 }
 
 // admit attempts to acquire an admission slot. The returned release
@@ -201,7 +203,8 @@ func (r *Router) addRoute(pattern string, handlers []HandlerFunc) {
 						"panic", rec,
 						"stack", string(debug.Stack()))
 					if m.Msg.Reply != "" {
-						natsutil.ReplyError(m.Msg, "internal error")
+						// Already logged via the Warn above; ReplyQuiet avoids a second line.
+						errnats.ReplyQuiet(m.Msg, errcode.Internal("internal error"))
 					}
 				}
 			}()
