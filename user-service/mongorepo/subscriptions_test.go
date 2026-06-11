@@ -19,9 +19,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.AddDate(0, 0, -100)
 
-	// rooms: local channel + local dm + botDMs + Del- room + missing-room.
-	// Every LOCAL subscription that is expected to survive must have a matching
-	// room doc here; the deleted-filter drops local subs with no room doc.
+	// Seed rooms for every local sub that must survive — deleted-filter drops local subs with no room doc.
 	seed(t, db, "rooms",
 		bson.M{"_id": "r-eng", "name": "Eng", "siteId": "site-a", "userCount": 5,
 			"lastMsgId": "m-eng", "lastMsgAt": now},
@@ -29,9 +27,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": old},
 		bson.M{"_id": "r-dm", "name": "DM-bob", "siteId": "site-a", "userCount": 2,
 			"lastMsgId": "m-dm", "lastMsgAt": now},
-		// botDM rooms — production always creates a room for a botDM; without these
-		// the deleted-filter silently drops sub-bot/sub-bot-off and current/apps
-		// assertions would fail in CI.
+		// botDM rooms — production always pairs a room with a botDM; missing rooms cause the deleted-filter to drop those subs.
 		bson.M{"_id": "r-bot", "name": "helper.bot", "siteId": "site-a", "userCount": 1},
 		bson.M{"_id": "r-bot2", "name": "off.bot", "siteId": "site-a", "userCount": 1},
 		bson.M{"_id": "r-del", "name": "Del-Old", "siteId": "site-a", "userCount": 3},
@@ -168,16 +164,12 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	// Room docs carry distinct createdAt values so we can assert the pipeline
-	// sorts by the ROOM's createdAt (not the subscription's createdAt).
-	// r-1 was created 1 hour AFTER r-2, so it must appear first in DESC order.
+	// r-1 createdAt == now, r-2 == now-1h; sort must use room.createdAt DESC, not subscription.createdAt.
 	seed(t, db, "rooms",
 		bson.M{"_id": "r-1", "name": "Team1", "siteId": "site-a", "userCount": 3, "createdAt": now},
 		bson.M{"_id": "r-2", "name": "Team2", "siteId": "site-a", "userCount": 2, "createdAt": now.Add(-time.Hour)},
 	)
-	// r-1 has alice, carol, dave. r-2 has alice, carol.
-	// Subscription createdAt values are intentionally equal (both "now") so only
-	// the room's createdAt drives the expected ordering.
+	// All subscription createdAt values == now so only room.createdAt drives ordering.
 	seed(t, db, "subscriptions",
 		bson.M{"_id": "a1", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-1",
 			"name": "Team1", "roomType": "channel", "siteId": "site-a", "createdAt": now},
@@ -228,9 +220,7 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("field-path-shaped member is treated as a literal, not a path", func(t *testing.T) {
-		// "$u.account" must be matched as a literal account name (which no member
-		// holds), NOT evaluated as a field path that would make $setIsSubset
-		// trivially satisfied and leak every room. Expect zero matches.
+		// "$u.account" must be a literal (no match), not a field path that makes $setIsSubset trivially true.
 		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"$u.account"}, 100)
 		require.NoError(t, err)
 		assert.Empty(t, subs, "$-prefixed member must not bypass the member filter")
@@ -407,18 +397,14 @@ func TestCountAndGetActiveSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("zero limit does not error (no $limit:0 stage)", func(t *testing.T) {
-		// $limit:0 is rejected by MongoDB ("limit must be positive"); the
-		// defensive guard in GetActiveSubscriptions must drop the stage so the
-		// query succeeds (returning the uncapped active set) rather than erroring.
+		// $limit:0 is rejected by MongoDB; the guard must drop the stage so the query returns the uncapped set.
 		subs, err := r.GetActiveSubscriptions(ctx, "alice", 0)
 		require.NoError(t, err)
 		assert.NotEmpty(t, subs)
 	})
 }
 
-// TestCountUnread_ZeroActive_Integration proves the count-path for an account
-// with no active subs does not error: a user with no subscriptions yields a
-// zero count and an empty (non-erroring) active set.
+// TestCountUnread_ZeroActive_Integration: no active subs yields count=0 and an empty (non-erroring) active set.
 func TestCountUnread_ZeroActive_Integration(t *testing.T) {
 	r, _ := newTestSubscriptionRepo(t)
 	ctx := context.Background()

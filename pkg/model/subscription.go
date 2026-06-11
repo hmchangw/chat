@@ -12,9 +12,7 @@ type Role string
 
 const (
 	RoleOwner Role = "owner"
-	// RoleAdmin is recognized by message-gatekeeper's large-room post bypass,
-	// but is not yet assignable: room-service's role-update RPC still rejects
-	// "admin" via errInvalidRole. Wiring assignment is owned separately.
+	// RoleAdmin is recognized by message-gatekeeper's large-room bypass but not yet assignable via role-update RPC.
 	RoleAdmin  Role = "admin"
 	RoleMember Role = "member"
 )
@@ -42,53 +40,33 @@ type Subscription struct {
 	Alert              bool             `json:"alert" bson:"alert"`
 	Muted              bool             `json:"muted" bson:"muted"`
 	Favorite           bool             `json:"favorite" bson:"favorite"`
-	// Denormalized from Room.{Restricted,ExternalAccess} on the home site —
-	// and the only place remote sites carry the room's restricted state since
-	// the cross-site outbox event mirrors only subscription rows, not the
-	// Room doc. Treat missing as false.
+	// Denormalized from Room.{Restricted,ExternalAccess}; the only place remote sites carry restricted state
+	// (cross-site outbox mirrors subscriptions, not Room docs). Treat missing as false.
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 
-	// Room-level enrichment, populated at read time from the rooms $lookup
-	// ($addFields) for local rows; cross-site rows leave userCount/lastMsgId empty
-	// (the RoomsInfoBatch RPC reply has no such fields). The bson tags are
-	// read-only decode targets — user-service never writes them. They are NOT
-	// bson:"-" because the aggregation $addFields decode depends on them; any
-	// writer persisting a full Subscription doc (ReplaceOne / $set of the whole
-	// struct) must strip these three first to avoid staling them into storage.
+	// Room-level enrichment from the rooms $lookup/$addFields at read time; bson tags are decode-only —
+	// writers persisting a full Subscription doc MUST strip these three fields to avoid staling storage.
 	UserCount int        `json:"userCount,omitempty" bson:"userCount,omitempty"`
 	LastMsgAt *time.Time `json:"lastMsgAt,omitempty" bson:"lastMsgAt,omitempty"`
 	LastMsgID string     `json:"lastMsgId,omitempty" bson:"lastMsgId,omitempty"`
 }
 
-// SubscriptionHRInfo carries the counterpart's HR-directory record on a
-// DM subscription. Used to render the DM-room display label
-// (engName + name) on the sidebar/header. All three fields are always
-// populated when the parent pointer is present.
+// SubscriptionHRInfo carries the counterpart's HR-directory record on a DM subscription for sidebar/header rendering.
 type SubscriptionHRInfo struct {
 	Account string `json:"account" bson:"account"`
 	Name    string `json:"name"    bson:"name"`
 	EngName string `json:"engName" bson:"engName"`
 }
 
-// DMSubscription is the wire/storage shape for DM-type subscriptions:
-// the base Subscription record plus the counterpart's HRInfo. The
-// embedded pointer flattens at JSON marshal time, so a DMSubscription
-// on the wire is a Subscription with one extra top-level `hrInfo` field.
-//
-// Backend emits this wrapper only for `RoomType == RoomTypeDM`
-// subscriptions; channels, botDMs, and discussions ship plain
-// Subscription (no hrInfo). Frontend mirrors this split in
-// chat-frontend/src/api/types.ts.
+// DMSubscription is the wire/storage shape for DM subscriptions: base Subscription plus counterpart HRInfo.
+// The embedded pointer flattens at JSON marshal time; only emitted for RoomTypeDM — channels/botDMs ship plain Subscription.
 type DMSubscription struct {
 	*Subscription `bson:",inline"`
 	HRInfo        *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
 }
 
-// IsRoomMember reports whether sub represents an active membership.
-// Returns false for nil so callers can pass the result of a store lookup
-// that returned (nil, ErrSubscriptionNotFound) — the caller is expected
-// to have already classified the error and set sub to nil on not-found.
+// IsRoomMember reports whether sub represents an active membership; returns false for nil.
 func IsRoomMember(sub *Subscription) bool {
 	return sub != nil
 }

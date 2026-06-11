@@ -9,11 +9,7 @@ type SetAppSubscriptionRequest struct {
 }
 
 // AppListItem is an app plus the requesting user's subscription flag.
-// Embedded App flattens on the wire (one extra top-level isSubscribed field).
-// `bson:",inline"` is REQUIRED: mongorepo.ListApps decodes the apps aggregation
-// ($addFields isSubscribed) directly into []AppListItem, and mongo-driver/v2 does
-// NOT auto-inline anonymous embedded structs (unlike encoding/json) — without it
-// the App fields (id/name/...) decode empty.
+// `bson:",inline"` is REQUIRED: mongo-driver/v2 does NOT auto-inline anonymous structs (unlike encoding/json) — without it App fields decode empty.
 type AppListItem struct {
 	model.App    `bson:",inline"`
 	IsSubscribed bool `json:"isSubscribed" bson:"isSubscribed"`

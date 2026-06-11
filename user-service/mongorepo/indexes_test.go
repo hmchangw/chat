@@ -15,10 +15,8 @@ import (
 	"github.com/hmchangw/chat/pkg/testutil"
 )
 
-// indexKeySpecs returns the set of index key specs on coll, each rendered as a
-// deterministic "field:dir,..." string that preserves key order (bson.D), so
-// tests assert the exact compound index rather than a count that an unrelated
-// index could satisfy.
+// indexKeySpecs returns index key specs rendered as "field:dir,..." strings (preserves bson.D order)
+// so tests assert the exact compound index, not just a count.
 func indexKeySpecs(t *testing.T, coll *mongo.Collection) map[string]struct{} {
 	t.Helper()
 	cur, err := coll.Indexes().List(context.Background())
@@ -53,9 +51,7 @@ func TestEnsureIndexes_Integration(t *testing.T) {
 	require.Contains(t, userKeys, "account:1")
 }
 
-// A user holds at most one subscription per room: (roomId, u.account) is the
-// unique logical key, matching room-service's declaration on the shared
-// collection. A second doc with the same pair must hit the unique index.
+// A user holds at most one subscription per room — (roomId, u.account) is the unique key shared with room-service.
 func TestSubscriptionUniqueIndex_Integration(t *testing.T) {
 	subRepo, _ := newTestSubscriptionRepo(t)
 	ctx := context.Background()
@@ -69,9 +65,7 @@ func TestSubscriptionUniqueIndex_Integration(t *testing.T) {
 	require.True(t, mongo.IsDuplicateKeyError(err), "expected duplicate-key error, got %v", err)
 }
 
-// EnsureIndexes shares the unique account index with room-service. When the
-// collection already carries duplicate accounts, the unique-index build fails
-// E11000 and the operator must be pointed at the one-time dedupe preflight.
+// Duplicate accounts cause E11000 on unique-index creation; error must point the operator at the dedupe preflight.
 func TestUserEnsureIndexes_DuplicateAccounts_Integration(t *testing.T) {
 	db := testutil.MongoDB(t, "user-service")
 	ctx := context.Background()
@@ -84,8 +78,7 @@ func TestUserEnsureIndexes_DuplicateAccounts_Integration(t *testing.T) {
 	require.Contains(t, err.Error(), "dedupe preflight")
 }
 
-// A pre-existing NON-unique account_1 index can't be upgraded in place; the
-// error must tell the operator to drop it (85 IndexOptionsConflict).
+// A pre-existing non-unique account_1 index conflicts (code 85); error must tell the operator to drop it.
 func TestUserEnsureIndexes_NonUniqueAccountConflict_Integration(t *testing.T) {
 	db := testutil.MongoDB(t, "user-service")
 	ctx := context.Background()

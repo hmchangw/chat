@@ -88,9 +88,7 @@ func main() {
 
 	svc.RegisterHandlers(router)
 
-	// /metrics-only listener exposing the default Prometheus registry. Bind
-	// synchronously so a port conflict fails startup loudly; the timeouts guard
-	// against a hung scraper holding a goroutine on this operator-exposed port.
+	// /metrics-only listener; bind synchronously so a port conflict fails startup loudly.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	metricsServer := &http.Server{

@@ -114,12 +114,7 @@ func TestMongoStore_Integration(t *testing.T) {
 	mustInsertSub(t, db, &sub)
 	gotSub, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
-	// Bound the slice access explicitly with require.Len before indexing —
-	// the prior `len(...) == 0 || s[0] != x` short-circuit guarded the read
-	// at runtime, but it sits on operator-evaluation order rather than a
-	// panic-exit, which static analyzers flag as a potential out-of-range
-	// read. require.Len calls t.FailNow on mismatch so the index is provably
-	// in-bounds on every path that reaches it.
+	// require.Len calls t.FailNow so the index below is provably in-bounds on every path.
 	require.Len(t, gotSub.Roles, 1)
 	assert.Equal(t, model.RoleOwner, gotSub.Roles[0])
 
@@ -183,12 +178,8 @@ func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	})
 }
 
-// TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration pins
-// the dept-aware org-membership lookup: a user added via Orgs:["X"] whose
-// deptId is "X" (with no sectId match) must still report HasOrgMembership=true
-// so the remove flow preserves their subscription. Checking only sectId would
-// miss this case and the dual-membership branch wouldn't fire — the sub would
-// be deleted even though the user remains org-attached via the dept.
+// TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration pins the dept-aware
+// org-membership lookup: a user added via deptId only must report HasOrgMembership=true.
 func TestMongoStore_GetSubscriptionWithMembership_DeptOnlyMatch_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -728,19 +719,14 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, bare[0].Member.Type, enriched[0].Member.Type)
 	})
 
-	// Bug 4 regression: when an org overlaps as both dept and sect, the
-	// service-side enrichment used to pick the dept branch unconditionally and
-	// drop the sect names — so a dept row with empty deptName collapsed to the
-	// orgID fallback while the worker's two-pass tiebreak rendered the sect
-	// name. The spec requires byte-identical output across both paths.
+	// Invariant: when dept names are empty, enrichment must fall back to sect names to match
+	// room-worker's two-pass tiebreak byte-for-byte.
 	t.Run("org dept-first tiebreak falls back to sect names when dept names are empty", func(t *testing.T) {
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		base := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
 
-		// One user with deptId="X" + empty deptName; one with sectId="X" +
-		// sectName="Engineering". The worker's dept-first-with-fallback logic
-		// renders "Engineering"; the service must match exactly.
+		// deptId="X" with empty deptName, sectId="X" sectName="Engineering" — worker renders "Engineering", service must match.
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice",
 			DeptID: "X", DeptName: "", DeptTCName: "",
 		})
@@ -760,10 +746,8 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 	})
 }
 
-// TestMongoStore_ListRoomMembers_BotEnrichment_Integration verifies that the
-// subscriptions-fallback path (Path 2 / attachUserDisplayNames) correctly
-// partitions bot vs human accounts: bot accounts are looked up in apps for
-// Name, human accounts are looked up in users for EngName/ChineseName.
+// TestMongoStore_ListRoomMembers_BotEnrichment_Integration verifies the subscriptions-fallback
+// enrichment path: bot accounts → apps Name; human accounts → users EngName/ChineseName.
 func TestMongoStore_ListRoomMembers_BotEnrichment_Integration(t *testing.T) {
 	ctx := context.Background()
 
@@ -967,10 +951,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("returns RoomInvalidOrg reason when neither sectId nor deptId matches", func(t *testing.T) {
-		// Users carry both sectId and deptId, but neither field equals the
-		// queried orgID — guards against an accidental match on the wrong
-		// branch of the $or (e.g. a future query rewrite that collapses to
-		// $or:[{sectId:...},{deptId:...}] with the wrong field).
+		// Both fields present but neither matches orgID — guards against accidental $or field swaps.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SectID: "sect-eng", DeptID: "dept-fe"})
@@ -1003,10 +984,7 @@ func TestMongoStore_ListOrgMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("matches by deptId", func(t *testing.T) {
-		// A dept-scoped org: room_members stores member.id = deptId. The
-		// query must find users by deptId, not sectId alone — symmetric to
-		// the GetUserWithMembership / GetSubscriptionWithMembership fixes
-		// in the dept-aware membership pass.
+		// Dept-scoped org: member.id = deptId, so query must match by deptId not sectId alone.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", EngName: "Alice", SiteID: "site-a", SectID: "sect-eng", DeptID: "dept-fe"})
@@ -1086,9 +1064,7 @@ func TestMongoStore_FindExistingOrgIDs_Integration(t *testing.T) {
 	})
 
 	t.Run("orgId matched by sect on one user and dept on another dedupes", func(t *testing.T) {
-		// Same orgID "foo" lands on both the sectId branch (via alice) and
-		// the deptId branch (via bob). The dedup contract says it shows up
-		// once in the result, not twice.
+		// "foo" matches both sectId (alice) and deptId (bob); dedup must yield one entry.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		insertUser(t, db, model.User{ID: "u-alice", Account: "alice", SiteID: "site-a", SectID: "foo", DeptID: "dept-a"})
@@ -1252,9 +1228,7 @@ func TestAddMembers_SameSiteChannel_RoomMembersPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "accepted", resp.Status)
 
-	// Verify the canonical event was published with the merged-but-unresolved members.
-	// Source channel contributes: bob, carol (individuals) + eng-org (org).
-	// Room-worker expands eng-org → dave at write time via ListNewMembers.
+	// Canonical event carries merged unresolved members; room-worker expands eng-org → dave later.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -1310,9 +1284,7 @@ func TestAddMembers_SameSiteChannel_SubscriptionsFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "accepted", resp.Status)
 
-	// Verify the canonical event was published with the merged-but-unresolved members.
-	// Source channel subscriptions: bob, carol, dave, alice (requester).
-	// Already-subscribed filtering happens in room-worker via ListNewMembers, not here.
+	// Canonical event carries unresolved members; already-subscribed filtering happens in room-worker.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -1352,9 +1324,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	// Two Mongo DBs (distinct prefixes since setupMongo hashes by t.Name()).
-	// Only site-B needs a NATS server — site-A's handler talks straight to site-B
-	// via the cross-site MemberListClient and uses an in-memory publish closure.
+	// Two Mongo DBs (distinct prefixes); only site-B needs NATS — site-A uses an in-memory publish closure.
 	dbA := testutil.MongoDB(t, "room_service_test_a")
 	dbB := testutil.MongoDB(t, "room_service_test_b")
 	natsURLb := setupNATS(t)
@@ -1401,9 +1371,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = routerB.Shutdown(context.Background()) })
 	require.NoError(t, otelNCb.NatsConn().Flush())
 
-	// Site-A's cross-site client: connect a plain nats.Conn directly to site-B's server.
-	// In production NATS gateways handle this routing; for this test we bypass gateways
-	// and connect the client directly — the subject and request/reply wiring is the same.
+	// Connect site-A's client directly to site-B (bypassing NATS gateways); subject/reply wiring is the same.
 	ncBfromA, err := nats.Connect(natsURLb)
 	require.NoError(t, err)
 	t.Cleanup(func() { ncBfromA.Close() })
@@ -1425,9 +1393,7 @@ func TestAddMembers_TwoSiteEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "accepted", resp.Status)
 
-	// Verify the canonical event has site-B members (bob, carol, alice).
-	// Already-subscribed filtering (alice on target) happens in room-worker via
-	// ListNewMembers, not at the room-service stage.
+	// Canonical event has site-B members; already-subscribed filtering (alice on target) happens in room-worker.
 	assert.Equal(t, subject.RoomCanonical("site-a", "member.add"), publishedSubj)
 	var normalized model.AddMembersRequest
 	require.NoError(t, json.Unmarshal(publishedData, &normalized))
@@ -1459,12 +1425,8 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
-	// Sleep just past the 200ms client timeout so the responder doesn't outlive the test
-	// and flag as a goroutine leak under -race/leak detectors.
-	// Subscriber that intentionally never replies — exercises the client-side
-	// timeout path without time.Sleep coordination (CLAUDE.md forbids sleep
-	// for goroutine sync). t.Cleanup unsubscribes so the responder doesn't
-	// outlive the test.
+	// Subscriber that never replies — exercises the client-side timeout path.
+	// t.Cleanup unsubscribes so it doesn't outlive the test.
 	sub, err := nc.Subscribe(subject.MemberList("alice", "source", "site-b"), func(_ *nats.Msg) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -1483,11 +1445,8 @@ func TestAddMembers_CrossSiteTimeout(t *testing.T) {
 	assert.Equal(t, "timeout listing members of channel source@site-b", ee.Message)
 }
 
-// TestRoomsInfoBatchRPC_NoRequestID proves the relaxed posture: the base
-// middleware mints an X-Request-ID when absent (RequestID, not RequireRequestID),
-// so a header-less server-to-server call succeeds instead of being rejected. The
-// RoomsInfoBatch read RPC is the representative deterministic route; the minting
-// middleware applies to every room-service handler.
+// TestRoomsInfoBatchRPC_NoRequestID proves the base middleware mints an X-Request-ID when absent,
+// so a header-less server-to-server call succeeds rather than being rejected.
 func TestRoomsInfoBatchRPC_NoRequestID(t *testing.T) {
 	db := setupMongo(t)
 	keyStore := setupValkey(t)
@@ -1611,10 +1570,8 @@ func TestRoomsInfoBatchRPC(t *testing.T) {
 	assert.Nil(t, resp.Rooms[3].KeyVersion)
 }
 
-// TestIntegration_CreateRoom_PersistsKeyInValkey verifies that createRoom
-// generates and stores a room keypair in Valkey before publishing the canonical
-// event. This ensures room-worker's "key MUST exist" gate will always succeed
-// on the first delivery.
+// TestIntegration_CreateRoom_PersistsKeyInValkey verifies that createRoom stores a keypair in Valkey
+// before publishing the canonical event, satisfying room-worker's "key MUST exist" gate.
 func TestIntegration_CreateRoom_PersistsKeyInValkey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -1660,10 +1617,8 @@ func TestIntegration_CreateRoom_PersistsKeyInValkey(t *testing.T) {
 	assert.Equal(t, 0, pair.Version, "freshly created room key must have version 0")
 }
 
-// TestIntegration_HandleGetRoomKey verifies the client-callable room key get
-// RPC end-to-end against real Mongo + Valkey: a member fetches both the current
-// and an explicit version of the key; a non-member is rejected via the
-// errNotRoomMember sentinel.
+// TestIntegration_HandleGetRoomKey verifies the getRoomKey RPC: member fetches current and versioned key;
+// non-member is rejected via errNotRoomMember.
 func TestIntegration_HandleGetRoomKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -1927,9 +1882,7 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	require.NotNil(t, got)
 	assert.WithinDuration(t, mid, *got, time.Second)
 
-	// Room "one-unread": two members have read, one was invited but has never
-	// opened the room. Under the strict floor a single never-read member forces
-	// nil — "not everyone has read".
+	// Room "one-unread": one member never opened the room → strict floor is nil.
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s3", User: model.SubscriptionUser{ID: "u3", Account: "carol"},
 		RoomID: "one-unread", JoinedAt: earliest, LastSeenAt: &mid,
@@ -1957,9 +1910,7 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	// Room "legacy-zero": a sub carrying the BSON zero-date (a legacy document
-	// whose lastSeenAt was written as the zero time rather than omitted) counts
-	// as unread just like a missing field → nil.
+	// Room "legacy-zero": BSON zero-date counts as "never read" just like a missing field → nil.
 	zeroTime := time.Time{}
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s7", User: model.SubscriptionUser{ID: "u7", Account: "grace"},
@@ -1969,9 +1920,7 @@ func TestMongoStore_MinSubscriptionLastSeenByRoomID_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	// Room "botdm": a human who has read plus a bot that never reads. Bots are
-	// not special-cased — the bot counts as an unread member, so a botDM room
-	// always resolves to nil even though the human is fully caught up.
+	// Room "botdm": bots are not special-cased, so a botDM room always resolves to nil.
 	mustInsertSub(t, db, &model.Subscription{
 		ID: "s8", User: model.SubscriptionUser{ID: "u8", Account: "heidi"},
 		RoomID: "botdm", JoinedAt: earliest, LastSeenAt: &latest,
@@ -2365,10 +2314,8 @@ func TestMongoStore_SetOwnerRole_Integration(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
 }
 
-// TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration verifies that
-// when an org member's id matches both a user's deptId and another user's
-// sectId, the dept branch wins and the combined "name tcName" string is
-// surfaced via Member.OrgName.
+// TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration verifies that when an org id matches
+// both deptId and sectId, the dept branch wins and combined "name tcName" is surfaced.
 func TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -2402,10 +2349,8 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_DeptFirst_Integration(t *testing.
 	assert.Equal(t, "Engineering 工程部", got[0].Member.OrgName, "dept wins on overlap; name+tcName combined")
 }
 
-// TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration verifies
-// that when no users match the org id at all (neither deptId nor sectId), the
-// display string falls back to the raw member.id rather than emitting an empty
-// string — matching displayfmt.CombineWithFallback's third-argument semantics.
+// TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration verifies that when no users
+// match the org id, display falls back to raw member.id (CombineWithFallback third-arg semantics).
 func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -2494,9 +2439,7 @@ func TestMongoStore_ListRoomBotApps(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Subscriptions: roomA has 1 bot (weather, enabled) + 1 disabled bot
-	// (stocks, but assistant.enabled=false should drop it) + 1 human;
-	// roomB has 1 different bot.
+	// roomA: weather.bot (enabled), stocks.bot (disabled — must be dropped), alice (human); roomB: other.bot.
 	_, err = db.Collection("subscriptions").InsertMany(ctx, []any{
 		bson.M{"_id": "s1", "roomId": "roomA",
 			"u": bson.M{"_id": "ub1", "account": "weather.bot", "isBot": true}},
@@ -2667,9 +2610,7 @@ func TestMongoStore_EnsureIndexes_NewCompoundIndexes(t *testing.T) {
 	}
 }
 
-// setupRoomsStream creates the ROOMS_{siteID} JetStream stream and returns a JetStream
-// client. The stream captures all chat.room.canonical.{siteID}.* events published by
-// the handler's publishToStream closure.
+// setupRoomsStream creates the ROOMS_{siteID} JetStream stream to capture canonical events.
 func setupRoomsStream(t *testing.T, nc *nats.Conn, siteID string) jetstream.JetStream {
 	t.Helper()
 	ctx := context.Background()
@@ -2840,9 +2781,7 @@ func TestIntegration_RoomRename(t *testing.T) {
 	})
 }
 
-// TestIntegration_RoomRestricted exercises the room.restricted server-to-server
-// RPC end-to-end through NATS. The handler does all the work synchronously and
-// the reply carries the actual result.
+// TestIntegration_RoomRestricted exercises the room.restricted RPC end-to-end; reply carries the actual result.
 func TestIntegration_RoomRestricted(t *testing.T) {
 	const siteID = "site-restricted"
 
@@ -2860,9 +2799,7 @@ func TestIntegration_RoomRestricted(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = handlerNC.Drain() })
 
-		// Capture publishes via the handler's stream-publish callback so we can
-		// assert the sys message lands without standing up the MESSAGES_CANONICAL
-		// stream just for this test.
+		// Capture via the publish callback to assert the sys message without a real MESSAGES_CANONICAL stream.
 		type captured struct {
 			subj string
 			data []byte
@@ -3083,10 +3020,8 @@ func TestMongoStore_ListMemberStatuses_Integration(t *testing.T) {
 	})
 
 	t.Run("post-join limit returns full result when orphans precede live subs", func(t *testing.T) {
-		// Regression: pre-join $limit would drop orphan-prefix subs *before*
-		// the user join, under-returning when the first K subscriptions in
-		// _id order reference deleted users. Post-join $limit must always
-		// return min(limit, liveCount) rows regardless of orphan position.
+		// Regression: pre-join $limit under-delivers when orphan subs precede live ones.
+		// Post-join $limit must return min(limit, liveCount) regardless of orphan position.
 		db := setupMongo(t)
 		store := NewMongoStore(db)
 		// Insert orphan subs first so they own the earliest _id values
@@ -3239,9 +3174,8 @@ func TestMongoStore_ListMentionableSubscriptions_Integration(t *testing.T) {
 			User:   model.SubscriptionUser{ID: "u-x", Account: "helperxbot"},
 			RoomID: "r1", SiteID: "site-a"})
 
-		// `helper\.bot` is regexp.QuoteMeta("helper.bot") — the escaped form the
-		// handler passes to the store. As a literal it matches only "helper.bot";
-		// if the pipeline treated "." as a wildcard it would also match "helperxbot".
+		// `helper\.bot` is the escaped form (regexp.QuoteMeta); as a literal it matches only "helper.bot",
+		// not "helperxbot" — verifies "." is not treated as a wildcard.
 		got, err := store.ListMentionableSubscriptions(ctx, "r1", "", `helper\.bot`, 10)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
@@ -3344,10 +3278,7 @@ func TestBotAndAdminPredicate_GoAndMongoAgree_Integration(t *testing.T) {
 		mongo[s.Account] = seen{present: true, isApp: s.OptionType == "app"}
 	}
 
-	// Locks Go and Mongo in agreement on bot vs platform-admin vs human:
-	//   `.bot` suffix => present + optionType "app"   (Mongo: botAccountRegex)
-	//   `p_` prefix   => absent                       (Mongo: $not platformAdminRegex)
-	//   otherwise     => present + optionType "user"
+	// Assert Go and Mongo agree: .bot suffix → present/app; p_ prefix → absent; otherwise → present/user.
 	for _, acct := range probes {
 		switch {
 		case strings.HasSuffix(acct, ".bot"):
@@ -3362,9 +3293,7 @@ func TestBotAndAdminPredicate_GoAndMongoAgree_Integration(t *testing.T) {
 	}
 }
 
-// account is a user's identity, so EnsureIndexes makes users.account unique —
-// matching user-service's declaration on the shared collection. A second users
-// doc with the same account must violate the unique index.
+// EnsureIndexes makes users.account unique (matching user-service's declaration); a duplicate must be rejected.
 func TestEnsureIndexes_UsersAccountUnique_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -3378,10 +3307,8 @@ func TestEnsureIndexes_UsersAccountUnique_Integration(t *testing.T) {
 	require.True(t, mongo.IsDuplicateKeyError(err), "expected duplicate-key error, got %v", err)
 }
 
-// Building the users.account unique index against a collection that already holds
-// duplicate accounts (a dirty pre-rollout environment) must fail at startup with
-// an actionable error pointing operators at the dedupe preflight, not a bare
-// driver error.
+// Building the users.account unique index against a collection with pre-existing duplicates must fail with
+// an actionable error pointing operators at the dedupe preflight.
 func TestEnsureIndexes_UsersAccountUnique_PreexistingDuplicates_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -3399,11 +3326,8 @@ func TestEnsureIndexes_UsersAccountUnique_PreexistingDuplicates_Integration(t *t
 	require.Contains(t, err.Error(), "dedupe preflight", "error must direct operators to the dedupe preflight")
 }
 
-// A pre-existing NON-unique account_1 index conflicts with EnsureIndexes'
-// unique account_1 declaration (IndexOptionsConflict 85 / IndexKeySpecsConflict
-// 86 — the latter when the auto-generated name collides). The service must
-// surface an actionable error telling the operator to drop the old index rather
-// than a bare driver error.
+// A pre-existing non-unique account_1 index conflicts with EnsureIndexes' unique declaration
+// (IndexOptionsConflict 85 / IndexKeySpecsConflict 86); must surface an actionable drop-index error.
 func TestEnsureIndexes_UsersAccountIndexOptionsConflict_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
