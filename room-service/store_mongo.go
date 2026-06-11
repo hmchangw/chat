@@ -19,9 +19,7 @@ import (
 )
 
 // botAccountRegex matches bot/app accounts by the ".bot" suffix.
-// Distinct from helper.go::botPattern which also matches "^p_" — that
-// clause is a pre-existing bug (p_ accounts are platform admins, not
-// bots) and is out of scope for this change.
+// helper.go::botPattern also matches "^p_" but p_ accounts are platform admins, not bots.
 const botAccountRegex = `\.bot$`
 
 var botAccountPattern = regexp.MustCompile(botAccountRegex)
@@ -48,21 +46,16 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	}
 }
 
-// EnsureIndexes creates the indexes that back the read paths in this service
-// and the unique constraints required for retry-safe writes by room-worker.
-// Must be invoked once at startup. Mongo treats index creation as idempotent
-// when the key spec and options match.
+// EnsureIndexes creates indexes backing read paths and unique constraints for retry-safe writes.
+// Idempotent when key spec and options match; call once at startup.
 func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "rid", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure room_members (rid) index: %w", err)
 	}
-	// Unique logical key — retries from room-worker generate fresh _id values
-	// (see processAddMembers), so without this constraint a redelivered
-	// member.add would silently insert duplicate room_members. The bulk-insert
-	// path in room-worker already ignores mongo.IsDuplicateKeyError, so this
-	// makes redelivery idempotent.
+	// Unique logical key: without this a redelivered member.add silently inserts duplicates.
+	// room-worker's bulk-insert ignores IsDuplicateKeyError, so this makes redelivery idempotent.
 	if _, err := s.roomMembers.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "rid", Value: 1}, {Key: "member.type", Value: 1}, {Key: "member.id", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -76,10 +69,8 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,u.account) unique index: %w", err)
 	}
-	// Unique: account is a user's identity, so at most one users doc per account.
-	// findUsersForDisplay already folds results into a map keyed by account, and
-	// user-service declares this index unique on the shared collection — both must
-	// agree or the second service's CreateOne hits IndexOptionsConflict.
+	// Unique: account is a user's identity; user-service also declares this unique on the shared
+	// collection — both must agree or the second CreateOne hits IndexOptionsConflict.
 	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "account", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -123,9 +114,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,lastSeenAt) index: %w", err)
 	}
-	// Backs room-worker's ReconcileMemberCounts, which counts bot vs non-bot
-	// subs per room off u.isBot — keeps both CountDocuments index-only instead
-	// of scanning every subscription in the room.
+	// Backs ReconcileMemberCounts (bot vs non-bot counts per room) index-only.
 	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "u.isBot", Value: 1}},
 	}); err != nil {
@@ -187,9 +176,8 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	return &sub, nil
 }
 
-// GetSubscriptionWithMembership loads the target subscription joined with their
-// individual and org membership sources. Used by the remove-member validation
-// flow to decide whether a user can leave or be removed individually.
+// GetSubscriptionWithMembership loads the subscription joined with its individual and org membership
+// sources, used by the remove-member validation flow.
 func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, account string) (*SubscriptionWithMembership, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.account": account}}},
@@ -216,11 +204,8 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 			},
 			"as": "userDoc",
 		}}},
-		// Dept-aware org-membership lookup: a user added via Orgs:["X"] may
-		// match the org by deptId only (no sectId), so the room_members row
-		// has member.id = deptId. Checking only sectId would miss that case
-		// and report HasOrgMembership=false, leading the remove flow to drop
-		// the user's subscription even though they are still org-attached.
+		// Dept-aware lookup: a user added via deptId only has no sectId match, so checking
+		// only sectId would falsely report HasOrgMembership=false and drop the subscription.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "room_members",
 			"let": bson.M{
@@ -275,9 +260,8 @@ func (s *MongoStore) GetSubscriptionWithMembership(ctx context.Context, roomID, 
 	}, nil
 }
 
-// CountMembersAndOwners returns the total and owner-role subscription counts
-// for a room in a single aggregation, driving the last-owner and last-member
-// guards in remove-member validation.
+// CountMembersAndOwners returns total and owner-role counts for a room in one aggregation,
+// driving last-owner and last-member guards.
 func (s *MongoStore) CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
@@ -368,11 +352,8 @@ func (s *MongoStore) CountNewMembers(ctx context.Context, orgIDs, directAccounts
 	return results[0].Count, nil
 }
 
-// ListRoomMembers returns the members of a room. It prefers the room_members
-// collection. When no room_members document exists for roomID, it falls back
-// to synthesizing RoomMember entries from the subscriptions collection so
-// callers always see the same response shape. Sort: orgs first, then
-// individuals, each group by ts ascending with _id tiebreaker.
+// ListRoomMembers returns members from room_members, falling back to subscriptions when no
+// room_members doc exists. Sort: orgs first, then individuals by ts asc with _id tiebreaker.
 func (s *MongoStore) ListRoomMembers(ctx context.Context, roomID string, limit, offset *int, enrich bool) ([]model.RoomMember, error) {
 	// Lightweight existence probe — project only _id to minimize payload.
 	err := s.roomMembers.FindOne(ctx, bson.M{"rid": roomID},
@@ -404,8 +385,7 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 	if offset != nil && *offset > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(*offset)}})
 	}
-	// Mongo rejects {$limit: 0}; the handler guards against <=0 but we
-	// defend here too so the store is robust to direct internal callers.
+	// Mongo rejects {$limit: 0}; guard here too for direct internal callers.
 	if limit != nil && *limit > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$limit", Value: int64(*limit)}})
 	}
@@ -431,10 +411,8 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		return members, nil
 	}
 
-	// Enriched path: decode into a hybrid row type that carries a parallel
-	// `display` sub-document (the aggregation writes values there to sidestep
-	// the bson:"-" tags on RoomMemberEntry's display fields). Then copy the
-	// display values onto Member.* in Go memory, where bson:"-" is irrelevant.
+	// Enriched path: decode into a hybrid row that carries a `display` sub-doc (sidesteps
+	// the bson:"-" tags on RoomMemberEntry display fields), then copy values to Member.*.
 	var rows []roomMemberEnrichedRow
 	if err := cursor.All(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("decode enriched room_members for %q: %w", roomID, err)
@@ -447,20 +425,8 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		rm.Member.ChineseName = d.ChineseName
 		rm.Member.IsOwner = d.IsOwner
 		rm.Member.MemberCount = d.MemberCount
-		// Org rows resolve display Go-side using the two-pass dept-first
-		// tiebreak that mirrors room-worker's processRemoveOrg exactly:
-		//
-		//   1. Prefer dept names when a dept match exists AND has non-empty
-		//      name/tcName.
-		//   2. Otherwise fall back to the sect names (which the aggregation
-		//      now retains alongside the dept names — see the $group stage).
-		//   3. CombineWithFallback handles the both-empty case by emitting
-		//      the member.id, matching the worker's displayOrg/orgID fallback.
-		//
-		// Without the explicit fallback on empty dept names, a row with
-		// IsDept=true but empty deptName + a sibling row with sectName="Eng"
-		// would render the orgID server-side while the worker emits "Eng" —
-		// the spec requires byte-identical output between the two paths.
+		// Two-pass tiebreak: dept names when non-empty, else sect; CombineWithFallback falls back to member.id.
+		// Must be byte-identical to room-worker's processRemoveOrg/displayOrg logic.
 		if rm.Member.Type == model.RoomMemberOrg {
 			var name, tcName string
 			if d.OrgRaw != nil {
@@ -478,13 +444,8 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 	return members, nil
 }
 
-// roomMemberEnrichedRow is the decode target for the enriched aggregation
-// pipeline. It carries the standard RoomMember plus a parallel `display`
-// sub-document populated by enrichment stages. This exists because
-// RoomMemberEntry's display fields are tagged bson:"-" for persistence
-// safety — the pipeline therefore writes enrichment values to a separate
-// field that has normal bson tags, and Go-side post-processing copies
-// them onto RoomMemberEntry.
+// roomMemberEnrichedRow is the decode target for the enriched aggregation pipeline.
+// The `display` sub-doc sidesteps the bson:"-" tags on RoomMemberEntry display fields.
 type roomMemberEnrichedRow struct {
 	model.RoomMember `bson:",inline"`
 	Display          roomMemberEnrichedDisplay `bson:"display"`
@@ -498,12 +459,8 @@ type roomMemberEnrichedDisplay struct {
 	OrgRaw      *orgRawDisplay `bson:"orgRaw,omitempty"`
 }
 
-// orgRawDisplay carries the unresolved org-lookup result (one element of the
-// `_orgMatch` group). It exists so Go-side post-processing can pick the
-// dept-vs-sect branch and run displayfmt.CombineWithFallback — keeping the
-// final display string consistent with the sys-message formatter used by
-// room-worker. A nil pointer means no user matched the org id at all, in
-// which case the loop falls back to the raw member.id.
+// orgRawDisplay carries the raw org-lookup result for Go-side dept-vs-sect decision via
+// displayfmt.CombineWithFallback. Nil means no user matched the org id; loop uses member.id.
 type orgRawDisplay struct {
 	IsDept     bool   `bson:"isDept,omitempty"`
 	DeptName   string `bson:"deptName,omitempty"`
@@ -512,11 +469,8 @@ type orgRawDisplay struct {
 	SectTCName string `bson:"sectTCName,omitempty"`
 }
 
-// enrichRoomMembersStages returns the $lookup + $set stages appended to the
-// room_members aggregation when enrich=true. Each stage matches on
-// member.type via $expr so it only fires for rows of the appropriate kind.
-// All enrichment output is written into a `display` sub-document so it
-// survives the RoomMemberEntry bson:"-" tags on decode.
+// enrichRoomMembersStages returns $lookup+$set stages for enrich=true.
+// Output goes into a `display` sub-doc to survive RoomMemberEntry bson:"-" tags.
 func enrichRoomMembersStages(roomID string) []bson.D {
 	return []bson.D{
 		// Individuals: join users on account → pull engName / chineseName.
@@ -554,12 +508,8 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			},
 			"as": "_subMatch",
 		}}},
-		// Orgs: join users whose deptId OR sectId matches member.id. The
-		// pipeline returns one grouped document carrying raw {isDept, deptName,
-		// deptTCName, sectName, sectTCName, memberCount}. The dept-vs-sect
-		// decision plus the localized + traditional name combine happen
-		// Go-side via displayfmt.CombineWithFallback so the output matches
-		// the sys-message formatter used by room-worker byte-for-byte.
+		// Orgs: join users by deptId OR sectId → one grouped doc with isDept/name fields.
+		// Dept-vs-sect decision and name combine happen Go-side via displayfmt.CombineWithFallback.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "users",
 			"let": bson.M{
@@ -579,11 +529,8 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 					"_name":   bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptName", "$sectName"}},
 					"_tcName": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptTCName", "$sectTCName"}},
 				}},
-				// $max over a bool surfaces "any user matched deptId" — when at
-				// least one dept-match exists it wins regardless of how many
-				// sect-only users join the same group. dept/sect *Name fields
-				// are gated by _isDept so the chosen branch's strings flow
-				// through and the other branch's are null-suppressed.
+				// $max over bool: "any user matched deptId" wins over all sect-only matches.
+				// Name fields are gated by _isDept so only the winning branch's strings flow through.
 				bson.M{"$group": bson.M{
 					"_id":         nil,
 					"isDept":      bson.M{"$max": "$_isDept"},
@@ -596,9 +543,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			},
 			"as": "_orgMatch",
 		}}},
-		// Fold the three matches into a single `display` sub-document.
-		// `orgRaw` surfaces the raw org-lookup pair for Go-side combine —
-		// nil when no users matched, triggering the orgId fallback below.
+		// Fold the three matches into a `display` sub-doc; orgRaw is nil when no users matched.
 		{{Key: "$set", Value: bson.M{
 			"display": bson.M{
 				"engName":     bson.M{"$arrayElemAt": bson.A{"$_userMatch.engName", 0}},
@@ -670,12 +615,8 @@ func (s *MongoStore) getRoomSubscriptions(ctx context.Context, roomID string, li
 	return members, nil
 }
 
-// attachUserDisplayNames batch-loads display fields for all individual
-// members in the slice and copies them onto each member entry in place.
-// Used on the subscriptions-fallback + enrichment path. Accounts are
-// partitioned by the ".bot$" pattern: human accounts are looked up in
-// users for EngName/ChineseName; bot accounts are looked up in apps
-// for Name. Each partition is queried only when non-empty.
+// attachUserDisplayNames batch-loads display fields for individual members in place.
+// Human accounts → users (EngName/ChineseName); bot accounts → apps (Name). Each partition queried only when non-empty.
 func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, members []model.RoomMember) error {
 	var humanAccounts, botAccounts []string
 	for i := range members {
@@ -725,9 +666,7 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 	return nil
 }
 
-// findUsersForDisplay returns engName/chineseName indexed by account
-// for every users document matching one of accounts. The existing
-// users.account index covers the $in filter.
+// findUsersForDisplay returns engName/chineseName indexed by account; users.account index covers the $in filter.
 func (s *MongoStore) findUsersForDisplay(ctx context.Context, accounts []string) (map[string]*model.User, error) {
 	cursor, err := s.users.Find(ctx,
 		bson.M{"account": bson.M{"$in": accounts}},
@@ -749,9 +688,7 @@ func (s *MongoStore) findUsersForDisplay(ctx context.Context, accounts []string)
 	return out, nil
 }
 
-// findAppsForDisplay returns app.name indexed by assistant.name for
-// every apps document whose assistant.name matches one of botAccounts.
-// The existing apps (assistant.name) index covers the $in filter.
+// findAppsForDisplay returns app.name indexed by assistant.name; apps (assistant.name) index covers the $in filter.
 func (s *MongoStore) findAppsForDisplay(ctx context.Context, botAccounts []string) (map[string]string, error) {
 	cursor, err := s.apps.Find(ctx,
 		bson.M{"assistant.name": bson.M{"$in": botAccounts}},
@@ -819,14 +756,8 @@ func (s *MongoStore) FindDMSubscription(ctx context.Context, account, targetName
 	return &sub, nil
 }
 
-// ListOrgMembers returns all users whose sectId OR deptId equals orgID,
-// projected as OrgMember rows sorted by account ascending. The dept branch
-// is symmetric to the membership-lookup pipelines (GetSubscriptionWithMembership,
-// GetUserWithMembership): an org added by a dept-only match stores
-// member.id = deptId in room_members, so the expansion RPC must look up
-// users by deptId too. Both (sectId, account) and (deptId, account) indexes
-// exist (see ensureIndexes) so the $or stays index-backed. Returns a
-// RoomInvalidOrg-reason errcode when neither branch matches any users.
+// ListOrgMembers returns users matching orgID by sectId OR deptId, sorted by account asc.
+// Both compound indexes cover the $or; returns RoomInvalidOrg when no users match.
 func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.OrgMember, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "account", Value: 1}}).
@@ -856,20 +787,8 @@ func (s *MongoStore) ListOrgMembers(ctx context.Context, orgID string) ([]model.
 	return members, nil
 }
 
-// FindExistingOrgIDs returns the subset of orgIDs that match at least one
-// user via sectId or deptId. Two parallel distinct calls — one on each
-// indexed field — keep the query covered by the (sectId, account) and
-// (deptId, account) compound indexes; the result of each distinct is
-// bounded by len(orgIDs) since the filter is an $in on the same field.
-//
-// A single $unionWith aggregation was tried (one round-trip instead of
-// two) and benchmarked ~8.5% faster end-to-end with the same index
-// coverage, but the aggregation form is more complex, ships ~55% more
-// Go-side allocations per call, and shifts behavior onto Mongo's
-// aggregation framework (slightly different optimizations across
-// versions, more surface area in a sharded future). The two-Distinct
-// form is simpler, version-agnostic from at least Mongo 4.4 onward, and
-// the perf delta is not material at this call rate. Keep it simple.
+// FindExistingOrgIDs returns the subset of orgIDs matched by at least one user via sectId or deptId.
+// Two Distinct calls (one per indexed field) beat $unionWith here: simpler, fewer allocations, same index coverage.
 func (s *MongoStore) FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([]string, error) {
 	if len(orgIDs) == 0 {
 		return nil, nil
@@ -899,9 +818,7 @@ func (s *MongoStore) FindExistingOrgIDs(ctx context.Context, orgIDs []string) ([
 	return out, nil
 }
 
-// FindExistingAccounts returns the subset of accounts that have a matching
-// user document. Distinct on the indexed `account` field keeps the result
-// bounded by len(accounts) regardless of how many users share an org.
+// FindExistingAccounts returns the subset of accounts with a matching user document.
 func (s *MongoStore) FindExistingAccounts(ctx context.Context, accounts []string) ([]string, error) {
 	if len(accounts) == 0 {
 		return nil, nil
@@ -913,9 +830,7 @@ func (s *MongoStore) FindExistingAccounts(ctx context.Context, accounts []string
 	return out, nil
 }
 
-// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
-// keyed by (roomID, account). Returns model.ErrSubscriptionNotFound when no
-// subscription matches.
+// UpdateSubscriptionRead sets lastSeenAt and alert; returns ErrSubscriptionNotFound when no row matches.
 func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account string, lastSeenAt time.Time, alert bool) error {
 	res, err := s.subscriptions.UpdateOne(ctx,
 		bson.M{"roomId": roomID, "u.account": account},
@@ -930,11 +845,8 @@ func (s *MongoStore) UpdateSubscriptionRead(ctx context.Context, roomID, account
 	return nil
 }
 
-// ToggleSubscriptionMute atomically flips muted via FindOneAndUpdate.
-// findOneAndUpdateSub applies an aggregation-pipeline $set to the subscription
-// keyed by (roomID, account) and returns the post-update document. op names the
-// operation for error wrapping; mongo.ErrNoDocuments maps to
-// model.ErrSubscriptionNotFound.
+// findOneAndUpdateSub applies a pipeline $set to the subscription keyed by (roomID, account)
+// and returns the post-update document; ErrNoDocuments maps to ErrSubscriptionNotFound.
 func (s *MongoStore) findOneAndUpdateSub(ctx context.Context, roomID, account, op string, set bson.M) (*model.Subscription, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
 	update := mongo.Pipeline{bson.D{{Key: "$set", Value: set}}}
@@ -966,9 +878,8 @@ func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, acc
 	})
 }
 
-// SetOwnerRole atomically grants or revokes the owner role, returning the updated
-// subscription. Promote appends "owner" only when absent; demote filters "owner"
-// out. Any other roles (e.g. "member") are preserved and array order stays stable.
+// SetOwnerRole atomically grants or revokes the owner role; promote appends "owner" only when absent,
+// demote filters it out preserving other roles and stable order.
 func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error) {
 	currentRoles := bson.M{"$ifNull": bson.A{"$roles", bson.A{}}}
 	var rolesExpr bson.M
@@ -979,9 +890,8 @@ func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, m
 			"else": bson.M{"$concatArrays": bson.A{currentRoles, bson.A{model.RoleOwner}}},
 		}}
 	} else {
-		// Remove owner, then ensure member is still present. Mirrors the worker's
-		// old "AddRole(member) before RemoveRole(owner)" guard so a channel creator
-		// (seeded roles ["owner"] only) demotes to ["member"], never an empty array.
+		// Remove owner and ensure member is present: a creator seeded with ["owner"] only demotes
+		// to ["member"], never []. Mirrors the worker's AddRole(member)-before-RemoveRole(owner) guard.
 		withoutOwner := bson.M{"$filter": bson.M{
 			"input": currentRoles,
 			"cond":  bson.M{"$ne": bson.A{"$$this", model.RoleOwner}},
@@ -1012,28 +922,11 @@ func (s *MongoStore) GetUserSiteID(ctx context.Context, account string) (string,
 	return doc.SiteID, nil
 }
 
-// MinSubscriptionLastSeenByRoomID returns the room's strict read floor: the
-// minimum lastSeenAt across ALL of the room's subscriptions, but only when
-// EVERY subscription has a usable lastSeenAt (> zero). If any subscription has
-// no usable lastSeenAt — missing, null, or the BSON zero date, i.e. a member
-// who was invited but has never opened the room — it returns nil, meaning "not
-// everyone has read yet". It also returns nil for a room with no subscriptions.
-// Bots are ordinary subscriptions and are counted: a botDM room (the bot never
-// reads) therefore always resolves to nil. The caller $unsets
-// rooms.minUserLastSeenAt on a nil result.
+// MinSubscriptionLastSeenByRoomID returns the minimum lastSeenAt across all subscriptions,
+// or nil if any sub has a missing/null/zero lastSeenAt or the room has no subscriptions.
 func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID string) (*time.Time, error) {
-	// The whole result is determined by a single document: the room's
-	// subscription with the smallest lastSeenAt. The (roomId, lastSeenAt) index
-	// (non-sparse, so missing fields are indexed as null) returns the room's
-	// subscriptions in ascending lastSeenAt order, and BSON sorts missing/null
-	// before the legacy zero date before real dates. So the first document by
-	// ascending lastSeenAt answers both questions at once:
-	//   - smallest value is missing/null/zero → at least one member has never
-	//     read → strict floor is nil ("not everyone has read yet");
-	//   - smallest value is a real post-zero date → every member has read and
-	//     that value IS the minimum → the floor.
-	// This replaces the prior full-room $group scan with a single (covered)
-	// index seek, which matters because this runs on the message-read hot path.
+	// Single covered index seek: BSON sorts missing/null before zero before real dates, so the
+	// first doc by asc lastSeenAt answers both: missing/null/zero → nil; real date → minimum.
 	var doc struct {
 		LastSeenAt time.Time `bson:"lastSeenAt"`
 	}
@@ -1049,8 +942,7 @@ func (s *MongoStore) MinSubscriptionLastSeenByRoomID(ctx context.Context, roomID
 	if err != nil {
 		return nil, fmt.Errorf("find min lastSeenAt for room %q: %w", roomID, err)
 	}
-	// $gt-zeroTime equivalent: missing/null/zero decodes to the zero time and
-	// counts as "never read", matching the previous aggregation's definition.
+	// missing/null/zero all decode to zero time → "never read".
 	if !doc.LastSeenAt.After(time.Time{}) {
 		return nil, nil
 	}
@@ -1139,9 +1031,8 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// UpdateSubscriptionThreadRead removes threadID from threadUnread using a $pull
-// and returns the resulting state. If threadUnread becomes empty a second update
-// clears alert and removes the field.
+// UpdateSubscriptionThreadRead removes threadID from threadUnread; clears alert and $unsets
+// the field when threadUnread becomes empty.
 func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) ([]string, bool, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
 
@@ -1173,9 +1064,8 @@ func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, a
 	return updated.ThreadUnread, updated.Alert, nil
 }
 
-// ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
-// channelTab.default are both true, sorted by channelTab.name asc.
-// Projection: _id, avatarUrl, assistant, channelTab. Empty result is ([], nil).
+// ListDefaultChannelTabApps returns apps with channelTab.enabled=true AND channelTab.default=true,
+// sorted by channelTab.name asc. Empty result is ([], nil).
 func (s *MongoStore) ListDefaultChannelTabApps(ctx context.Context) ([]model.App, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "channelTab.name", Value: 1}}).
@@ -1200,10 +1090,8 @@ func (s *MongoStore) ListDefaultChannelTabApps(ctx context.Context) ([]model.App
 	return apps, nil
 }
 
-// ListRoomBotApps returns one entry per bot subscribed to roomID, joined with
-// the owning app via assistant.name == u.account. Only apps with
-// assistant.enabled=true are emitted. Empty result is ([], nil); result order
-// is assistantName asc.
+// ListRoomBotApps returns one entry per bot subscribed to roomID, joined to its app
+// by assistant.name; only assistant.enabled=true rows are emitted, sorted by assistantName asc.
 func (s *MongoStore) ListRoomBotApps(ctx context.Context, roomID string) ([]RoomBotAppEntry, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID, "u.isBot": true}}},
@@ -1239,9 +1127,8 @@ func (s *MongoStore) ListRoomBotApps(ctx context.Context, roomID string) ([]Room
 	return entries, nil
 }
 
-// ListActiveCmdMenus returns bot_cmd_menu documents where activeStatus is true
-// AND name IN assistantNames, sorted by name asc. Returns ([], nil) when
-// assistantNames is empty (skips the query).
+// ListActiveCmdMenus returns active bot_cmd_menu docs matching assistantNames, sorted by name asc.
+// Returns ([], nil) when assistantNames is empty.
 func (s *MongoStore) ListActiveCmdMenus(ctx context.Context, assistantNames []string) ([]model.BotCmdMenu, error) {
 	if len(assistantNames) == 0 {
 		return []model.BotCmdMenu{}, nil
@@ -1268,21 +1155,12 @@ func (s *MongoStore) ListActiveCmdMenus(ctx context.Context, assistantNames []st
 	return menus, nil
 }
 
-// ListMemberStatuses returns up to `limit` members of roomID, each projected
-// from the joined users document as MemberStatus. Subscriptions whose user
-// document has been deleted are dropped by the $unwind with
-// preserveNullAndEmptyArrays:false rather than returned half-populated.
-// $limit runs AFTER the join so the wire contract ("up to limit live rows")
-// holds even when the room contains orphan subscriptions whose user document
-// has been hard-deleted. Pre-join $limit would silently under-deliver in that
-// case. Mirrors ListReadReceipts.
+// ListMemberStatuses returns up to limit live members projected from users; orphan subs (deleted user
+// docs) are dropped by $unwind. $limit is post-join so orphan-prefix rows never under-deliver.
 func (s *MongoStore) ListMemberStatuses(ctx context.Context, roomID string, limit int) ([]model.MemberStatus, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"roomId": roomID}}},
-		// Join on u.account → users.account (the account-indexed majority pattern
-		// here, as in GetSubscriptionWithMembership/enrichRoomMembersStages), not
-		// the u._id → users._id join ListReadReceipts uses. account is not a unique
-		// index, so the inner $limit 1 caps a duplicate-account match to one doc.
+		// Join on u.account (not u._id as ListReadReceipts does); $limit 1 caps duplicate-account matches.
 		{{Key: "$lookup", Value: bson.M{
 			"from": "users",
 			"let":  bson.M{"acct": "$u.account"},
@@ -1316,16 +1194,8 @@ func (s *MongoStore) ListMemberStatuses(ctx context.Context, roomID string, limi
 	return members, nil
 }
 
-// ListMentionableSubscriptions returns up to `limit` mentionable members of
-// roomID whose dash-joined keyword (account, engName, chineseName, app.name,
-// app.assistant.name) matches escapedFilter under case-insensitive regex.
-// excludeAccount is dropped at the $match stage so the caller never sees
-// themselves. Platform-admin / webhook accounts (`p_` prefix; see
-// platformAdminRegex) are also dropped — they are not mentionable.
-// `.bot` accounts classify as `app` and emit a non-nil App + empty SiteID;
-// human accounts classify as `user` with a non-nil HRInfo. Orphan rows
-// (bot sub with no apps doc, or human sub with no users doc) return empty
-// strings rather than null leaves so the wire shape is well-typed.
+// ListMentionableSubscriptions returns up to limit members matching escapedFilter (case-insensitive
+// regex on dash-joined keyword). p_ accounts are excluded; .bot accounts emit optionType=app.
 func (s *MongoStore) ListMentionableSubscriptions(
 	ctx context.Context, roomID, excludeAccount, escapedFilter string, limit int,
 ) ([]model.MentionableSubscription, error) {
@@ -1442,9 +1312,7 @@ func (s *MongoStore) UpdateThreadSubscriptionRead(ctx context.Context, threadRoo
 	return nil
 }
 
-// UpdateRoomVisibility sets {restricted, externalAccess, updatedAt} on the
-// room. Room-service callers have already validated type=channel before
-// reaching this layer, so no type filter runs here.
+// UpdateRoomVisibility sets restricted, externalAccess, and updatedAt on the room.
 func (s *MongoStore) UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error {
 	res, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{
 		"$set": bson.M{
@@ -1462,19 +1330,13 @@ func (s *MongoStore) UpdateRoomVisibility(ctx context.Context, roomID string, re
 	return nil
 }
 
-// ApplySubscriptionVisibility writes the {restricted, externalAccess} denorm
-// flags to every subscription of the room. When restricted=true and ownerAccount
-// is non-empty, an aggregation-pipeline $cond also rewrites roles so only
-// ownerAccount holds RoleOwner — atomically, so the restrict transition cannot
-// land in a zero-owner state. Returns ErrOwnerNotSubscribed when ownerAccount
-// has no active subscription in the room.
+// ApplySubscriptionVisibility writes restricted/externalAccess to all subscriptions; when
+// restricted=true+ownerAccount is set, atomically rewrites roles so only ownerAccount holds RoleOwner.
 func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
 	filter := bson.M{"roomId": roomID}
 
 	if restricted && ownerAccount != "" {
-		// TOCTOU: if the owner unsubscribes between this count and the
-		// UpdateMany below, the room is left with zero owners. Acceptable for
-		// an admin RPC (rare, recoverable by retry).
+		// TOCTOU: owner could unsubscribe between this count and UpdateMany → zero owners; acceptable for rare admin RPC.
 		n, err := s.subscriptions.CountDocuments(ctx, bson.M{"roomId": roomID, "u.account": ownerAccount})
 		if err != nil {
 			return fmt.Errorf("count owner subscription: %w", err)

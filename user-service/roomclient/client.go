@@ -16,8 +16,7 @@ import (
 // roomRPCTimeout bounds each room-service request/reply round trip.
 const roomRPCTimeout = 5 * time.Second
 
-// Client implements service.RoomClient by issuing NATS request/reply RPCs to
-// room-service (GetRoomsInfo) and room-worker (CreateDMRoom).
+// Client implements service.RoomClient via NATS request/reply RPCs to room-service and room-worker.
 type Client struct {
 	nc     *otelnats.Conn
 	siteID string
@@ -26,10 +25,7 @@ type Client struct {
 // New returns a Client wired to nc and scoped to siteID.
 func New(nc *otelnats.Conn, siteID string) *Client { return &Client{nc: nc, siteID: siteID} }
 
-// GetRoomsInfo issues a batch room-info RPC to room-service and returns the
-// ordered slice of RoomInfo. A non-OK reply envelope is decoded via
-// errcode.Parse and returned as-is so the caller preserves the remote
-// classification.
+// GetRoomsInfo issues a batch room-info RPC; non-OK reply envelopes are relayed via errcode.Parse to preserve the remote classification.
 func (c *Client) GetRoomsInfo(ctx context.Context, siteID string, roomIDs []string) ([]model.RoomInfo, error) {
 	req, err := json.Marshal(model.RoomsInfoBatchRequest{RoomIDs: roomIDs})
 	if err != nil {
@@ -51,9 +47,7 @@ func (c *Client) GetRoomsInfo(ctx context.Context, siteID string, roomIDs []stri
 	return out.Rooms, nil
 }
 
-// CreateDMRoom issues a synchronous DM-room creation RPC to room-worker and
-// returns the resulting Subscription. A non-OK reply envelope is decoded via
-// errcode.Parse and returned as-is.
+// CreateDMRoom issues a DM-room creation RPC to room-worker; non-OK reply envelopes are relayed via errcode.Parse.
 func (c *Client) CreateDMRoom(ctx context.Context, account, otherAccount string, roomType model.RoomType) (model.Subscription, error) {
 	body, err := json.Marshal(model.SyncCreateDMRequest{
 		RoomType:         roomType,
@@ -76,9 +70,7 @@ func (c *Client) CreateDMRoom(ctx context.Context, account, otherAccount string,
 	if err := json.Unmarshal(msg.Data, &reply); err != nil {
 		return model.Subscription{}, fmt.Errorf("decode create-dm reply: %w", err)
 	}
-	// Defensive backstop: room-worker signals failure via an errcode envelope
-	// (caught above), so a decoded reply with Success=false is not expected in
-	// normal operation — guard it rather than silently return a zero Subscription.
+	// Success=false without an errcode envelope is unexpected; guard rather than return a zero Subscription.
 	if !reply.Success {
 		return model.Subscription{}, errcode.Internal("create-dm reported failure")
 	}

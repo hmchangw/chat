@@ -415,9 +415,7 @@ func TestCountUnread_AllRead(t *testing.T) {
 func TestCountUnread_EmptyActive(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(0, nil)
-	// With zero active subs the unread path must short-circuit to {Count:0} WITHOUT
-	// calling GetActiveSubscriptions (min(0,maxSubs)=0 would build a rejected
-	// $limit:0). gomock fails the test if either store method below is called.
+	// Zero active subs must short-circuit before GetActiveSubscriptions (min(0,maxSubs)=0 → rejected $limit:0).
 	yes := true
 	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{Unread: &yes})
 	require.NoError(t, err)

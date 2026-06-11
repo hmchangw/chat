@@ -20,10 +20,7 @@ import (
 	"github.com/hmchangw/chat/user-service/service"
 )
 
-// Compile-time assertion that *Client satisfies the service-defined RoomClient
-// interface. This is the primary correctness gate when Docker (and thus the
-// integration tests) is unavailable: `go vet -tags integration` fails here if
-// any method signature drifts from the interface.
+// Compile-time assertion: `go vet -tags integration` fails if Client drifts from RoomClient.
 var _ service.RoomClient = (*Client)(nil)
 
 func TestMain(m *testing.M) { testutil.RunTests(m) }
@@ -90,9 +87,7 @@ func TestGetRoomsInfo_Integration(t *testing.T) {
 	t.Run("cross-site siteID routing — uses siteID param not c.siteID", func(t *testing.T) {
 		nc := dial(t)
 
-		// Client is scoped to "site-a" but GetRoomsInfo is called with "site-b".
-		// The responder is on subject.RoomsInfoBatch("site-b") — proves the
-		// method routes on the siteID parameter, not the field c.siteID.
+		// Responder on "site-b" subject proves the method routes on siteID param, not c.siteID.
 		sub, err := nc.Subscribe(subject.RoomsInfoBatch("site-b"), func(m otelnats.Msg) {
 			out, _ := json.Marshal(model.RoomsInfoBatchResponse{
 				Rooms: []model.RoomInfo{{RoomID: "r2", Found: true, Name: "Remote"}},

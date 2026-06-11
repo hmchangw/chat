@@ -23,10 +23,7 @@ type NATSConfig struct {
 
 // Config is the top-level configuration for user-service.
 type Config struct {
-	// SiteID is load-bearing for federation — it is baked into every
-	// subscription subject pattern and into the outbox source/dest on
-	// publishStatus. A missing SITE_ID silently subscribing under a default
-	// would be far harder to diagnose than a fast-fail, so it is required.
+	// SiteID is required: baked into subscription subjects and outbox routing; missing it would silently federate under a wrong ID.
 	SiteID               string        `env:"SITE_ID,notEmpty"`
 	AllSiteIDs           []string      `env:"ALL_SITE_IDS"           envDefault:"" envSeparator:","`
 	MaxSubscriptionLimit int           `env:"MAX_SUBSCRIPTION_LIMIT" envDefault:"1000"`
@@ -36,9 +33,7 @@ type Config struct {
 	NATS                 NATSConfig    `envPrefix:"NATS_"`
 }
 
-// Load parses environment variables into Config; returns an error when required
-// vars are absent or MAX_SUBSCRIPTION_LIMIT is non-positive (a 0/negative limit
-// makes the aggregation $limit stage error at query time — fail fast instead).
+// Load parses environment variables into Config; rejects MAX_SUBSCRIPTION_LIMIT < 1 because $limit:0 errors at query time.
 func Load() (Config, error) {
 	cfg, err := env.ParseAs[Config]()
 	if err != nil {

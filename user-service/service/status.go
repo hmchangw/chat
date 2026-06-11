@@ -52,10 +52,7 @@ func (s *UserService) SetStatus(c *natsrouter.Context, req models.StatusSetReque
 	return s.GetStatusByName(c, models.StatusGetByNameRequest{Name: account})
 }
 
-// publishStatus fire-and-forget broadcasts to every OTHER configured site.
-// Core NATS (no JetStream), broadcast to every configured site except self;
-// status is last-write-wins so no publish dedup is needed.
-// Publish errors are logged, never returned.
+// publishStatus broadcasts via core NATS to every configured site except self; errors are logged, not returned.
 func (s *UserService) publishStatus(c *natsrouter.Context, account, text string, isShow *bool) {
 	evt := model.UserStatusUpdated{
 		Account:      account,
