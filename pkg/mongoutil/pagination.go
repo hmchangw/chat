@@ -15,16 +15,22 @@ func EmptyPage[T any]() OffsetPage[T] {
 	return OffsetPage[T]{Data: []T{}}
 }
 
-// NewOffsetPageRequest validates offset+limit. Default limit 20, max 100, negative offset clamped to 0.
-func NewOffsetPageRequest(offset, limit int) OffsetPageRequest {
+// NewOffsetPageRequestWithBounds validates offset+limit against caller-supplied
+// bounds: limit <= 0 -> defaultLimit, limit > maxLimit -> maxLimit, negative offset -> 0.
+func NewOffsetPageRequestWithBounds(offset, limit, defaultLimit, maxLimit int) OffsetPageRequest {
 	if offset < 0 {
 		offset = 0
 	}
 	if limit <= 0 {
-		limit = 20
+		limit = defaultLimit
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 	return OffsetPageRequest{Offset: int64(offset), Limit: int64(limit)}
+}
+
+// NewOffsetPageRequest validates offset+limit. Default limit 20, max 100, negative offset clamped to 0.
+func NewOffsetPageRequest(offset, limit int) OffsetPageRequest {
+	return NewOffsetPageRequestWithBounds(offset, limit, 20, 100)
 }

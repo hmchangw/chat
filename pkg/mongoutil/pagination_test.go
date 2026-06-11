@@ -39,3 +39,30 @@ func TestEmptyPage(t *testing.T) {
 	assert.Empty(t, page.Data)
 	assert.Equal(t, int64(0), page.Total)
 }
+
+func TestNewOffsetPageRequestWithBounds_DefaultApplied(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(0, 0, 40, 1000)
+	assert.Equal(t, int64(0), p.Offset)
+	assert.Equal(t, int64(40), p.Limit)
+}
+
+func TestNewOffsetPageRequestWithBounds_NegativeLimitDefaulted(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(0, -7, 40, 1000)
+	assert.Equal(t, int64(40), p.Limit)
+}
+
+func TestNewOffsetPageRequestWithBounds_InRangePassThrough(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(80, 25, 40, 1000)
+	assert.Equal(t, int64(80), p.Offset)
+	assert.Equal(t, int64(25), p.Limit)
+}
+
+func TestNewOffsetPageRequestWithBounds_CapApplied(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(0, 5000, 40, 1000)
+	assert.Equal(t, int64(1000), p.Limit)
+}
+
+func TestNewOffsetPageRequestWithBounds_NegativeOffsetClamped(t *testing.T) {
+	p := NewOffsetPageRequestWithBounds(-5, 40, 40, 1000)
+	assert.Equal(t, int64(0), p.Offset)
+}
