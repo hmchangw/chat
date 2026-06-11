@@ -24,6 +24,14 @@ type roleUpdate struct {
 	account string
 	roomID  string
 	roles   []model.Role
+	eventTs int64
+}
+
+type muteUpdate struct {
+	roomID  string
+	account string
+	muted   bool
+	eventTs int64
 }
 
 type subRead struct {
@@ -49,6 +57,7 @@ type stubInboxStore struct {
 	bulkCreateErr      error
 	rooms              []model.Room
 	roleUpdates        []roleUpdate
+	muteUpdates        []muteUpdate
 	users              []model.User
 	subReads           []subRead
 	threadSubs         []model.ThreadSubscription
@@ -112,10 +121,10 @@ func (s *stubInboxStore) getRooms() []model.Room {
 	return cp
 }
 
-func (s *stubInboxStore) UpdateSubscriptionRoles(_ context.Context, account, roomID string, roles []model.Role) error {
+func (s *stubInboxStore) UpdateSubscriptionRoles(_ context.Context, account, roomID string, roles []model.Role, eventTs int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.roleUpdates = append(s.roleUpdates, roleUpdate{account: account, roomID: roomID, roles: roles})
+	s.roleUpdates = append(s.roleUpdates, roleUpdate{account: account, roomID: roomID, roles: roles, eventTs: eventTs})
 	return nil
 }
 
@@ -156,9 +165,10 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 	return nil
 }
 
-func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, muted bool) error {
+func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, muted bool, eventTs int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.muteUpdates = append(s.muteUpdates, muteUpdate{roomID: roomID, account: account, muted: muted, eventTs: eventTs})
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
 			s.subscriptions[i].Muted = muted
@@ -166,6 +176,14 @@ func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, accou
 		}
 	}
 	return nil // missing-subscription → no-op
+}
+
+func (s *stubInboxStore) getMuteUpdates() []muteUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]muteUpdate, len(s.muteUpdates))
+	copy(cp, s.muteUpdates)
+	return cp
 }
 
 func (s *stubInboxStore) UpdateSubscriptionFavorite(_ context.Context, roomID, account string, favorite bool) error {
@@ -769,6 +787,11 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 	if len(updates[0].roles) != 1 || updates[0].roles[0] != model.RoleOwner {
 		t.Errorf("role update roles = %v, want [owner]", updates[0].roles)
 	}
+	// The handler must forward the payload's event timestamp so the store can
+	// guard against out-of-order/stale role_updated events.
+	if updates[0].eventTs != 1735689600000 {
+		t.Errorf("role update eventTs = %d, want 1735689600000", updates[0].eventTs)
+	}
 	// No SubscriptionUpdateEvent publish — room-worker already handles that via NATS supercluster
 }
 
@@ -1365,6 +1388,12 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 	subs := store.getSubscriptions()
 	require.Len(t, subs, 1)
 	assert.True(t, subs[0].Muted)
+
+	// The handler must forward the payload's event timestamp so the store can
+	// guard against out-of-order/stale mute toggles.
+	updates := store.getMuteUpdates()
+	require.Len(t, updates, 1)
+	assert.Equal(t, int64(12345), updates[0].eventTs)
 }
 
 func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {
