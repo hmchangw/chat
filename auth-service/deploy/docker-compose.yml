@@ -5,8 +5,8 @@ services:
     build:
       context: ../..
       dockerfile: auth-service/deploy/Dockerfile
-    ports:
-      - "8080:8080"
+    # No host port: auth-service is internal-only — credentials are issued
+    # exclusively via portal-service (see portal-service spec §2.1).
     env_file:
       - path: ../../docker-local/.env
         required: false

@@ -1,6 +1,6 @@
 // End-to-end smoke against the LIVE stack: auth-service + room-service + room-worker.
 // Verifies that what the unit suite mocks actually happens on the wire:
-//   - POST /auth (dev mode) returns a NATS JWT
+//   - POST /session/nats-jwt (dev mode) returns a NATS JWT
 //   - the frontend's requestWithAsyncResult creates a real channel via
 //     chat.user.{a}.request.room.{site}.create
 //   - room-worker materializes the room and emits AsyncJobResult
@@ -22,7 +22,7 @@ import { requestWithAsyncResult } from '../src/api/_transport/asyncJob.ts'
 import { roomCreate, memberList } from '../src/api/_transport/subjects.ts'
 import { isDMExistsReply } from '../src/lib/constants.js'
 
-const AUTH_URL = process.env.AUTH_URL || 'http://localhost:8080'
+const PORTAL_URL = process.env.PORTAL_URL || 'http://localhost:8080'
 const NATS_WS = process.env.NATS_WS_URL || 'ws://localhost:9222'
 const sc = StringCodec()
 
@@ -37,29 +37,29 @@ function check(label, ok, detail = '') {
 async function devLogin(account) {
   const nkey = createUser()
   const natsPublicKey = nkey.getPublicKey()
-  const resp = await fetch(`${AUTH_URL}/auth`, {
+  const resp = await fetch(`${PORTAL_URL}/session/nats-jwt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ account, natsPublicKey }),
   })
-  if (!resp.ok) throw new Error(`auth failed: ${resp.status} ${await resp.text()}`)
-  const { natsJwt, user } = await resp.json()
-  return { natsJwt, user, seed: nkey.getSeed() }
+  if (!resp.ok) throw new Error(`portal auth failed: ${resp.status} ${await resp.text()}`)
+  const { natsJwt, natsUrl, user } = await resp.json()
+  return { natsJwt, natsUrl, user, seed: nkey.getSeed() }
 }
 
 async function main() {
-  console.log(`Auth: ${AUTH_URL}  |  NATS-ws: ${NATS_WS}`)
+  console.log(`Portal: ${PORTAL_URL}  |  NATS-ws: ${NATS_WS}`)
 
   // ── 1. dev-login as alice ──────────────────────────────────────────────────
   console.log('\n[1] dev-login as alice')
-  const { natsJwt, user, seed } = await devLogin('alice')
+  const { natsJwt, natsUrl, user, seed } = await devLogin('alice')
   check('auth returned a JWT', !!natsJwt && natsJwt.length > 50)
   check('auth returned user.account=alice', user?.account === 'alice', `id=${user?.id}`)
 
   // ── 2. open a NATS WS connection authenticated by the JWT ──────────────────
   console.log('\n[2] connect NATS WebSocket with returned JWT')
   const nc = await connect({
-    servers: NATS_WS,
+    servers: natsUrl || NATS_WS,
     authenticator: jwtAuthenticator(natsJwt, seed),
   })
   check('connected', !!nc, nc.getServer())

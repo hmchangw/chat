@@ -3,7 +3,7 @@
 //
 // Run with `npm run smoke` (uses Node's --experimental-strip-types for the
 // .ts subject builders in api/_transport). Requires a live local stack
-// (auth-service on :8080, NATS WS on :4223).
+// (portal-service on :8080, NATS WS on :4223).
 import { connect, StringCodec, jwtAuthenticator } from 'nats.ws'
 import { createUser } from 'nkeys.js'
 // Reach into `api/_transport/` directly — smoke tests operate at the wire
@@ -12,14 +12,14 @@ import { createUser } from 'nkeys.js'
 import { roomEvent, roomsList, userRoomEvent } from './src/api/_transport/subjects.ts'
 
 const sc = StringCodec()
-const AUTH_URL = 'http://localhost:8080'
+const PORTAL_URL = 'http://localhost:8080'
 const NATS_URL = 'ws://localhost:4223'
 
 async function authenticate(account) {
   const nkey = createUser()
   const natsPublicKey = nkey.getPublicKey()
 
-  const resp = await fetch(`${AUTH_URL}/auth`, {
+  const resp = await fetch(`${PORTAL_URL}/session/nats-jwt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ account, natsPublicKey }),
@@ -27,12 +27,12 @@ async function authenticate(account) {
 
   if (!resp.ok) throw new Error(`Auth failed: ${resp.status}`)
   const data = await resp.json()
-  return { nkey, natsPublicKey, jwt: data.natsJwt, user: data.user }
+  return { nkey, natsPublicKey, jwt: data.natsJwt, natsUrl: data.natsUrl, user: data.user }
 }
 
 async function connectNats(auth) {
   const nc = await connect({
-    servers: NATS_URL,
+    servers: auth.natsUrl || NATS_URL,
     authenticator: jwtAuthenticator(auth.jwt, auth.nkey.getSeed()),
   })
   return nc

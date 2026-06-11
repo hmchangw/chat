@@ -1,38 +1,13 @@
 package main
 
 import (
-	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/hmchangw/chat/pkg/idgen"
-	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// requestIDMiddleware funnels HTTP X-Request-ID through idgen.ResolveRequestID
-// (the same primitive the NATS path uses via natsutil.StampRequestID) so the
-// mint-vs-pass-through policy has a single owner. Missing → silent mint;
-// malformed → mint + Warn preserving the inbound value for traceability.
-func requestIDMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		inbound := c.GetHeader(natsutil.RequestIDHeader)
-		id, replaced := idgen.ResolveRequestID(inbound)
-		c.Set("request_id", id)
-		c.Request = c.Request.WithContext(natsutil.WithRequestID(c.Request.Context(), id))
-		c.Header(natsutil.RequestIDHeader, id)
-		if replaced {
-			slog.WarnContext(c.Request.Context(), "minted request_id (inbound invalid)", "inbound", inbound, "path", c.Request.URL.Path)
-		}
-		c.Next()
-	}
-}
-
-// corsMiddleware allows browser clients from any origin to call the API and
-// short-circuits the preflight OPTIONS request with 204. The wildcard origin
-// is incompatible with credentialed requests (cookies / Authorization), but
-// /auth uses neither — it accepts a JSON body and returns a JWT.
+// corsMiddleware is vestigial: auth-service is internal-only behind portal-service
+// (server-side callers ignore CORS). Kept until the public-exposure teardown lands.
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
@@ -44,22 +19,5 @@ func corsMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Next()
-	}
-}
-
-// accessLogMiddleware logs method, path, status, and latency for each request.
-func accessLogMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-
-		slog.Info("request",
-			"request_id", c.GetString("request_id"),
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"latency_ms", time.Since(start).Milliseconds(),
-			"client_ip", c.ClientIP(),
-		)
 	}
 }

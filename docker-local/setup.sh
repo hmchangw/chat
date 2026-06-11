@@ -101,7 +101,7 @@ AUTH_SIGNING_KEY=${ACCOUNT_SEED}
 NATS_URL=nats://nats:4222
 NATS_CREDS_FILE=/etc/nats/backend.creds
 
-# Bypass OIDC in auth-service; flip to false to test the OIDC flow.
+# Bypass OIDC in portal-service/auth-service; flip to false to test the OIDC flow.
 DEV_MODE=true
 EOF
 chmod 600 "$ENV_FILE"
@@ -110,8 +110,7 @@ chmod 600 "$ENV_FILE"
 # run so devs can edit it (e.g. point at staging) without losing changes.
 if [ ! -f "$FRONTEND_ENV_FILE" ]; then
   cat > "$FRONTEND_ENV_FILE" <<EOF
-VITE_AUTH_URL=http://localhost:8080
-VITE_NATS_URL=ws://localhost:9222
+VITE_PORTAL_URL=http://localhost:8080
 VITE_DEFAULT_SITE_ID=site-local
 EOF
 fi

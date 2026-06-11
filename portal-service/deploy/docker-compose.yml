@@ -1,0 +1,50 @@
+name: portal-service
+
+services:
+  portal-service:
+    build:
+      context: ../..
+      dockerfile: portal-service/deploy/Dockerfile
+    ports:
+      - "8080:8080" # the only public credential entry; auth-service is internal-only
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8080
+      # Bypass OIDC; accept any account name. Flip to false to test OIDC.
+      - DEV_MODE=${DEV_MODE:-true}
+      - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
+      - OIDC_AUDIENCES=nats-chat
+      - TLS_SKIP_VERIFY=false
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
+      - DIRECTORY_COLLECTION=directory
+      - SITE_AUTH_URLS=${SITE_AUTH_URLS:-site-local=http://auth-service:8080}
+      - SITE_NATS_URLS=${SITE_NATS_URLS:-site-local=ws://localhost:9222}
+      - SITE_FRONTEND_URLS=${SITE_FRONTEND_URLS:-site-local=http://localhost:3000} # vite dev server port (vite.config.js)
+      - ADMIN_TOKEN=${PORTAL_ADMIN_TOKEN:-local-dev-admin-token}
+    depends_on:
+      portal-directory-seed:
+        condition: service_completed_successfully
+    networks:
+      - chat-local
+
+  # Dev-only one-shot: seed the directory so dev accounts resolve to site-local.
+  portal-directory-seed:
+    image: mongo:8.2.9
+    entrypoint: ["mongosh", "mongodb://mongodb:27017/chat", "--quiet", "--eval"]
+    command:
+      - >-
+        ['alice','bob','charlie','diana'].forEach(a =>
+          db.directory.replaceOne(
+            { _id: a },
+            { _id: a, employeeId: 'E-' + a, siteId: 'site-local' },
+            { upsert: true }))
+    restart: "no"
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

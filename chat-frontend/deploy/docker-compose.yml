@@ -6,8 +6,7 @@ services:
       context: ../..
       dockerfile: chat-frontend/deploy/Dockerfile
     environment:
-      AUTH_URL: ${AUTH_URL:-http://localhost:8080}
-      NATS_URL: ${NATS_URL:-ws://localhost:9222}
+      PORTAL_URL: ${PORTAL_URL:-http://localhost:8080}
       DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-site-local}
       # OIDC values are only consumed when DEV_MODE=false. The Keycloak
       # realm at OIDC_ISSUER_URL must serve OIDC_CLIENT_ID with a redirect

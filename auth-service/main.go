@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nkeys"
 
+	"github.com/hmchangw/chat/pkg/ginutil"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
@@ -77,8 +78,8 @@ func run() error {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(requestIDMiddleware())
-	r.Use(accessLogMiddleware())
+	r.Use(ginutil.RequestID())
+	r.Use(ginutil.AccessLog())
 	r.Use(corsMiddleware())
 	registerRoutes(r, handler)
 

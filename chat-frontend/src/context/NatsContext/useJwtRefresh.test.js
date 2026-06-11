@@ -8,9 +8,11 @@ vi.mock('@/api/auth/oidcClient', () => ({
   renewSsoToken: vi.fn(),
   redirectToReloginOnTokenInvalid: vi.fn(() => Promise.resolve()),
 }))
+vi.mock('@/lib/portalRedirect', () => ({ followPortalRedirect: vi.fn(() => false) }))
 
 import { jwtAuthenticator } from 'nats.ws'
 import { renewSsoToken, redirectToReloginOnTokenInvalid } from '@/api/auth/oidcClient'
+import { followPortalRedirect } from '@/lib/portalRedirect'
 import { useJwtRefresh } from './useJwtRefresh'
 
 function makeJwt(expSecFromNow) {
@@ -23,7 +25,7 @@ const okResp = (jwt) => ({ ok: true, json: async () => ({ natsJwt: jwt }) })
 const errResp = (status) => ({ ok: false, status, json: async () => ({}) })
 
 function setup({ ncRef = { current: { reconnect: vi.fn() } } } = {}) {
-  const view = renderHook(() => useJwtRefresh({ authUrl: 'http://auth', ncRef }))
+  const view = renderHook(() => useJwtRefresh({ portalUrl: 'http://portal', ncRef }))
   return { ...view, ncRef }
 }
 
@@ -32,6 +34,7 @@ describe('useJwtRefresh', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     renewSsoToken.mockReset()
     redirectToReloginOnTokenInvalid.mockReset().mockResolvedValue()
+    followPortalRedirect.mockReset().mockReturnValue(false)
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     global.fetch = vi.fn()
   })
@@ -64,6 +67,29 @@ describe('useJwtRefresh', () => {
     expect(body).toEqual({ ssoToken: 'fresh-sso', natsPublicKey: 'UPUB' })
     expect(reconnect).toHaveBeenCalledTimes(1)
     expect(redirectToReloginOnTokenInvalid).not.toHaveBeenCalled()
+    expect(global.fetch.mock.calls[0][0]).toBe('http://portal/session/nats-jwt')
+  })
+
+  it('stops the loop when the portal returns redirectTo mid-session (site move)', async () => {
+    renewSsoToken.mockResolvedValue('sso')
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ redirectTo: 'https://chat-home.example.com' }),
+    })
+    followPortalRedirect.mockReturnValueOnce(true)
+    const reconnect = vi.fn()
+    const { result } = setup({ ncRef: { current: { reconnect } } })
+    act(() => {
+      result.current.setCredentials({ jwt: makeJwt(100), seed: new Uint8Array(), natsPublicKey: 'UPUB', refreshable: true })
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(85_000) })
+    expect(followPortalRedirect).toHaveBeenCalledWith(
+      expect.objectContaining({ redirectTo: 'https://chat-home.example.com' }))
+    expect(reconnect).not.toHaveBeenCalled()
+    expect(redirectToReloginOnTokenInvalid).not.toHaveBeenCalled()
+    // Timer cleared: no further refresh attempts fire.
+    await act(async () => { await vi.advanceTimersByTimeAsync(200_000) })
+    expect(renewSsoToken).toHaveBeenCalledTimes(1)
   })
 
   it('redirects immediately when silent renew fails (SSO session ended)', async () => {

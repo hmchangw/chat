@@ -149,10 +149,7 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
-	account := claims.PreferredUsername
-	if account == "" {
-		account = claims.Name
-	}
+	account := claims.Account()
 	if account == "" {
 		// Blank account would mint a JWT with chat.user..> permissions — refuse.
 		errhttp.Write(ctx, c, errcode.Unauthenticated("token missing account claim",

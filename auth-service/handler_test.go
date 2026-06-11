@@ -170,6 +170,24 @@ func TestHandleAuth_InvalidToken(t *testing.T) {
 	errtest.AssertReason(t, w.Body.Bytes(), errcode.AuthInvalidToken)
 }
 
+func TestHandleAuth_MissingAccountClaim(t *testing.T) {
+	signingKP := mustAccountKP(t)
+	validator := &fakeValidator{} // blank preferred_username AND name
+	handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false)
+	router := setupRouter(t, handler)
+
+	userPub := mustUserNKey(t)
+	body := `{"ssoToken":"tok","natsPublicKey":"` + userPub + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeUnauthenticated)
+	errtest.AssertReason(t, w.Body.Bytes(), errcode.AuthInvalidToken)
+}
+
 func TestHandleAuth_InvalidNKey(t *testing.T) {
 	signingKP := mustAccountKP(t)
 	validator := &fakeValidator{account: "alice", subject: "uuid-alice"}

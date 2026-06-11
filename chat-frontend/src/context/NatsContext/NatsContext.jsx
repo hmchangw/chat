@@ -1,7 +1,8 @@
 import { createContext, useContext, useRef, useState, useCallback, useMemo } from 'react'
 import { connect as natsConnect, StringCodec } from 'nats.ws'
 import { createUser } from 'nkeys.js'
-import { AUTH_URL, NATS_URL } from '@/lib/runtimeConfig'
+import { PORTAL_URL } from '@/lib/runtimeConfig'
+import { followPortalRedirect } from '@/lib/portalRedirect'
 import { useJwtRefresh } from './useJwtRefresh'
 import {
   requestWithAsyncResult as asyncJobRequest,
@@ -19,14 +20,13 @@ export function NatsProvider({ children }) {
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
 
-  const authUrl = AUTH_URL
-  const natsUrl = NATS_URL
+  const portalUrl = PORTAL_URL
 
-  const { authenticator, setCredentials, stop } = useJwtRefresh({ authUrl, ncRef })
+  const { authenticator, setCredentials, stop } = useJwtRefresh({ portalUrl, ncRef })
 
   /**
-   * Authenticate against auth-service and open the NATS WebSocket
-   * connection. On success, `user`/`connected` flip true and any
+   * Authenticate via portal-service and open the NATS WebSocket connection to the returned natsUrl.
+   * On success, `user`/`connected` flip true and any
    * subsequent server-initiated close updates `error`.
    *
    * @param {Object} opts
@@ -34,7 +34,7 @@ export function NatsProvider({ children }) {
    * @param {string} [opts.account]   Dev mode: account name to log in as.
    * @param {string} [opts.ssoToken]  Production mode: OIDC access token.
    * @param {string}  opts.siteId
-   * @throws if auth-service rejects or the NATS handshake fails.
+   * @throws if portal-service rejects or the NATS handshake fails.
    */
   const connectToNats = useCallback(async (opts) => {
     setError(null)
@@ -49,16 +49,15 @@ export function NatsProvider({ children }) {
         ? { ssoToken, natsPublicKey }
         : { account, natsPublicKey }
 
-    const authResp = await fetch(`${authUrl}/auth`, {
+    const authResp = await fetch(`${portalUrl}/session/nats-jwt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
 
     if (!authResp.ok) {
-      // auth-service emits the errcode envelope {code, reason?, error, metadata?}
-      // via errhttp.Write. Older auth deployments may return {error} only —
-      // err.code is then undefined and consumers fall back to err.message text.
+      // portal-service relays the errcode envelope {code, reason?, error, metadata?};
+      // consumers branch on reason ?? code and fall back to message text.
       const errBody = await authResp.json().catch(() => ({}))
       throw new AsyncJobError(
         errBody.error || `Auth failed: ${authResp.status}`,
@@ -67,7 +66,10 @@ export function NatsProvider({ children }) {
       )
     }
 
-    const { natsJwt, user: userInfo } = await authResp.json()
+    const data = await authResp.json()
+    if (followPortalRedirect(data)) return
+
+    const { natsJwt, natsUrl, user: userInfo } = data
 
     // Populate the credential refs BEFORE connecting so the dynamic
     // authenticator's getters return the right values during the handshake.
@@ -93,7 +95,7 @@ export function NatsProvider({ children }) {
       }
       setConnected(false)
     })
-  }, [authUrl, natsUrl, authenticator, setCredentials])
+  }, [portalUrl, authenticator, setCredentials])
 
   /**
    * Send a synchronous NATS request/reply. Use this for handlers that

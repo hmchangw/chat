@@ -27,6 +27,16 @@ type Claims struct {
 	Extra             map[string]interface{}
 }
 
+// Account derives the chat account name: preferred_username, else name.
+// Callers must reject a blank result before minting or gating.
+// Pointer receiver: gocritic hugeParam (Claims is >128 bytes); semantics are read-only.
+func (c *Claims) Account() string {
+	if c.PreferredUsername != "" {
+		return c.PreferredUsername
+	}
+	return c.Name
+}
+
 var (
 	ErrTokenExpired       = errors.New("oidc: token has expired")
 	ErrNoAudiences        = errors.New("oidc: at least one allowed audience is required")

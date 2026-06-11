@@ -21,8 +21,8 @@
 This document is the integrator-facing reference for the chat backend.
 It covers every API a client (web, mobile, third-party) can call:
 
-- **HTTP** — the single `POST /auth` endpoint that exchanges an SSO token
-  for a NATS user JWT.
+- **HTTP** — the single `POST /session/nats-jwt` endpoint (portal-service) that exchanges an SSO token
+  for a NATS user JWT and the home-site NATS URL.
 - **NATS request/reply** — RPC-style methods exposed by `room-service`,
   `history-service`, and `search-service`.
 - **NATS publish + async reply** — the message-send flow handled by
@@ -38,7 +38,7 @@ paths.
 1. [Overview](#1-overview)
 2. [Connection & Auth](#2-connection--auth)
    - [2.1 NATS connection](#21-nats-connection)
-   - [2.2 HTTP — POST /auth](#22-http--post-auth)
+   - [2.2 HTTP — POST /session/nats-jwt (portal-service)](#22-http--post-sessionnats-jwt-portal-service)
 3. [Request/Reply Methods](#3-requestreply-methods)
    - [3.0 Shared schemas](#30-shared-schemas)
    - [3.1 room-service](#31-room-service)
@@ -115,7 +115,7 @@ All event payloads carry a top-level `timestamp` field that is **milliseconds si
 
 ### 2.1 NATS connection
 
-A client connects to NATS using a user NKey pair plus a signed JWT obtained from the auth-service (§2.2). The JWT scopes the client's permissions to:
+A client connects to NATS using a user NKey pair plus a signed JWT obtained via portal-service (§2.2). The JWT scopes the client's permissions to:
 
 | Permission | Subject pattern | Why |
 |---|---|---|
@@ -132,12 +132,12 @@ A client connects to NATS using a user NKey pair plus a signed JWT obtained from
 
 The exact event subjects a client may receive as a result of an RPC are listed under each method's "Triggered events" sections in §2.2, §3, and §4.
 
-### 2.2 HTTP — POST /auth
+### 2.2 HTTP — POST /session/nats-jwt (portal-service)
 
-**Endpoint:** `POST /auth`
+**Endpoint:** `POST /session/nats-jwt`
 **Reply:** synchronous HTTP response
 
-Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the client uses to connect to NATS (see §2.1).
+Exchanges an SSO token for a signed NATS user JWT plus the home-site NATS URL. portal-service is the **only public credential entry**: it verifies the SSO token, resolves the account's home site from the user directory (readiness gate), forwards to that site's auth-service to mint the JWT, and relays the result. auth-service `POST /auth` still exists but is internal-only (reachable solely by the portal).
 
 #### Request body
 
@@ -153,13 +153,14 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 }
 ```
 
-#### Success response
+#### Success response — credentials
 
 `HTTP 200`
 
 | Field | Type | Notes |
 |---|---|---|
-| `natsJwt` | string | Signed NATS user JWT. Use as the user JWT when connecting to NATS. |
+| `natsJwt` | string | Signed NATS user JWT (minted by the home site's auth-service). Use when connecting to NATS (§2.1). |
+| `natsUrl` | string | The home-site NATS WebSocket URL to connect to. Replaces any static client-side NATS URL config. |
 | `user.email` | string | OIDC email claim. |
 | `user.account` | string | The `{account}` value used in every NATS subject. Derived from `preferred_username` (falls back to `name`). |
 | `user.employeeId` | string | Parsed from the SSO `description` claim. |
@@ -171,6 +172,7 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 ```json
 {
   "natsJwt": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ...",
+  "natsUrl": "wss://nats-a.example.com:9222",
   "user": {
     "email": "alice@example.com",
     "account": "alice",
@@ -183,27 +185,43 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 }
 ```
 
+#### Success response — cross-site redirect
+
+`HTTP 200` — returned instead of credentials when the request `Origin` is a known chat-frontend that is **not** the account's home site. No JWT is minted.
+
+| Field | Type | Notes |
+|---|---|---|
+| `redirectTo` | string | The home-site frontend origin. Navigate there (`window.location.assign`); the home frontend re-runs this call (the Keycloak session already exists, so login is silent). |
+
+```json
+{ "redirectTo": "https://chat-a.example.com" }
+```
+
 #### Error response
 
 See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 | Status | `code` | `reason` | Example body |
 |---|---|---|---|
-| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "ssoToken and natsPublicKey are required" }` |
-| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "invalid natsPublicKey format" }` |
+| 400 | `bad_request` | `missing_fields` | `{ "code": "bad_request", "reason": "missing_fields", "error": "ssoToken and natsPublicKey are required" }` |
+| 400 | `bad_request` | `invalid_nkey` | `{ "code": "bad_request", "reason": "invalid_nkey", "error": "invalid natsPublicKey format" }` |
 | 401 | `unauthenticated` | `sso_token_expired` | `{ "code": "unauthenticated", "reason": "sso_token_expired", "error": "SSO token has expired, please re-login" }` |
 | 401 | `unauthenticated` | `invalid_sso_token` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid SSO token" }` |
+| 403 | `forbidden` | `account_not_ready` | `{ "code": "forbidden", "reason": "account_not_ready", "error": "account is not ready for chat" }` — terminal until the directory sync provisions the account; show a "contact your administrator" screen, do not retry. |
 | 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — the real cause is logged server-side and never sent to the client. |
 
-The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /auth` to refresh before it expires.
+Upstream auth-service errors are relayed in the same envelope with their original status.
 
-> **Background renewal.** The web client also calls `POST /auth` periodically to
-> renew the NATS user JWT before it expires (at ~80% of the token's lifetime,
-> jittered). It obtains a fresh SSO access token in the background via the OIDC
-> refresh token (silent renew) and re-mints with the **same** `natsPublicKey`,
-> so the request/response schema is identical to the initial login call. When
-> silent renewal fails (the SSO session has ended), the client performs a
-> graceful re-login redirect instead.
+The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /session/nats-jwt` to refresh before it expires.
+
+> **Background renewal.** The web client also calls `POST /session/nats-jwt`
+> periodically to renew the NATS user JWT before it expires (at ~80% of the
+> token's lifetime, jittered). It obtains a fresh SSO access token in the
+> background via the OIDC refresh token (silent renew) and re-mints with the
+> **same** `natsPublicKey`, so the request/response schema is identical to the
+> initial login call. A `redirectTo` reply during renewal means the account
+> moved sites mid-session — navigate to it. When silent renewal fails (the SSO
+> session has ended), the client performs a graceful re-login redirect instead.
 
 #### Triggered events — success path
 
@@ -3502,18 +3520,19 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `pin_disabled` | forbidden | history-service pin/unpin/list (kill-switch `PIN_ENABLED=false`) |
 | `pin_limit_reached` | forbidden | history-service pin (room at `MAX_PINNED_PER_ROOM` hard cap) |
 | `pin_room_too_large` | forbidden | history-service pin/unpin (non-owner/admin/bot in a room above `LARGE_ROOM_THRESHOLD`) |
-| `sso_token_expired` | unauthenticated | auth-service `POST /auth` |
-| `invalid_sso_token` | unauthenticated | auth-service `POST /auth` |
-| `invalid_request` | bad_request | auth-service (body parse / required field missing) |
-| `invalid_nkey` | bad_request | auth-service (natsPublicKey format) |
-| `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing) |
+| `sso_token_expired` | unauthenticated | portal-service `POST /session/nats-jwt` / auth-service (internal) |
+| `invalid_sso_token` | unauthenticated | portal-service `POST /session/nats-jwt` / auth-service (internal) |
+| `invalid_request` | bad_request | reserved; not yet emitted by any handler |
+| `invalid_nkey` | bad_request | portal-service `POST /session/nats-jwt` / auth-service (internal) (natsPublicKey format) |
+| `missing_fields` | bad_request | portal-service `POST /session/nats-jwt` / auth-service (internal) (ssoToken/account/natsPublicKey missing) |
+| `account_not_ready` | forbidden | portal-service `POST /session/nats-jwt` (no ready directory record for the account) |
 
 ### Where envelopes are sent
 
 - **NATS sync replies** — on the reply subject for §3/§4 RPCs.
 - **JetStream async results** — `model.AsyncJobResult` carries the same `code` + `reason` fields when `status == "error"`, so a failed async job is surfaced the same way as a sync error.
-- **HTTP** — auth-service `POST /auth` writes the envelope as the response body with the matching HTTP status from the table above.
+- **HTTP** — portal-service `POST /session/nats-jwt` writes the envelope as the response body with the matching HTTP status from the table above (upstream auth-service envelopes are relayed unchanged).
 
 ### Client branching guidance
 
-Compute the trigger as `reason ?? code` and branch on that. Use `code` for generic copy ("you don't have permission", "service unavailable, try again"), `reason` for endpoint-specific UX (open the "room is full" dialog on `max_room_size_reached`; redirect to re-login on `sso_token_expired`/`invalid_sso_token`; surface "join the room first" on `not_subscribed`). Never branch on the `error` text — message wording can change without notice.
+Compute the trigger as `reason ?? code` and branch on that. Use `code` for generic copy ("you don't have permission", "service unavailable, try again"), `reason` for endpoint-specific UX (open the "room is full" dialog on `max_room_size_reached`; redirect to re-login on `sso_token_expired`/`invalid_sso_token`; surface "join the room first" on `not_subscribed`; show a terminal "account not provisioned" screen on `account_not_ready` (do not retry)). Never branch on the `error` text — message wording can change without notice.

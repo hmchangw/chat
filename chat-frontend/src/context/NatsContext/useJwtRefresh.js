@@ -1,6 +1,7 @@
 import { useRef, useMemo, useCallback, useEffect } from 'react'
 import { jwtAuthenticator } from 'nats.ws'
 import { renewSsoToken, redirectToReloginOnTokenInvalid } from '@/api/auth/oidcClient'
+import { followPortalRedirect } from '@/lib/portalRedirect'
 import { parseNatsJwtExp } from '@/lib/jwtExpiry'
 
 // Refresh at ~80% of the JWT's remaining life, ±5% jitter so a fleet of
@@ -22,11 +23,11 @@ const MAX_REFRESH_ATTEMPTS = RETRY_BACKOFF_MS.length + 1
  *    nats.ws re-invokes its getters on every (re)connect, so the connection
  *    always presents the current JWT/seed — every reconnect self-heals.
  *  - setCredentials({ jwt, seed, natsPublicKey, refreshable }): call after
- *    each /auth, BEFORE connect(), so the getters are populated for the
+ *    each portal mint, BEFORE connect(), so the getters are populated for the
  *    handshake. Schedules the next refresh when refreshable.
  *  - stop(): clear the timer and creds (call on disconnect).
  */
-export function useJwtRefresh({ authUrl, ncRef }) {
+export function useJwtRefresh({ portalUrl, ncRef }) {
   const jwtRef = useRef(null)
   const seedRef = useRef(null)
   const pubKeyRef = useRef(null)
@@ -89,7 +90,7 @@ export function useJwtRefresh({ authUrl, ncRef }) {
     // 2) Re-mint the NATS JWT. Transport failures are transient (retry with
     //    backoff); a 4xx rejection is terminal.
     try {
-      const resp = await fetch(`${authUrl}/auth`, {
+      const resp = await fetch(`${portalUrl}/session/nats-jwt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ssoToken, natsPublicKey: pubKeyRef.current }),
@@ -102,8 +103,14 @@ export function useJwtRefresh({ authUrl, ncRef }) {
         await redirect(`auth rejected (${resp.status})`, { status: resp.status })
         return
       }
-      const { natsJwt } = await resp.json()
+      const data = await resp.json()
       if (stale()) return
+      // Mid-session site move: this account now lives on another frontend.
+      if (followPortalRedirect(data)) {
+        clearTimer()
+        return
+      }
+      const { natsJwt } = data
       jwtRef.current = natsJwt
       // Force a quick reconnect so nats.ws re-reads the ref and presents the
       // fresh JWT. Fire-and-forget; swallow a rejected reconnect so it isn't an
@@ -122,7 +129,7 @@ export function useJwtRefresh({ authUrl, ncRef }) {
       console.warn('NATS JWT re-mint failed; retrying', { attempt, error: err?.message })
       armTimer(RETRY_BACKOFF_MS[attempt - 1], attempt + 1)
     }
-  }, [authUrl, ncRef, scheduleRefresh, redirect, armTimer])
+  }, [portalUrl, ncRef, scheduleRefresh, redirect, armTimer, clearTimer])
 
   // Keep refreshRef current so the timer always calls the latest closure —
   // this breaks the scheduleRefresh <-> refresh dependency cycle.

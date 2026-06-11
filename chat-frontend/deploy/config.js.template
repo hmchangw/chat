@@ -1,7 +1,6 @@
 // Generated at container start — edit template, not output.
 window.__APP_CONFIG__ = {
-  AUTH_URL: "${AUTH_URL}",
-  NATS_URL: "${NATS_URL}",
+  PORTAL_URL: "${PORTAL_URL}",
   DEFAULT_SITE_ID: "${DEFAULT_SITE_ID}",
   DEV_MODE: "${DEV_MODE}",
   OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}",
