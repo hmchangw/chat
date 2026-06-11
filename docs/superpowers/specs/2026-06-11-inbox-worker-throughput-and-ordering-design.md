@@ -69,7 +69,7 @@ inspects each message's subject and routes it to one of two lanes:
 | **Fan-out**     | read receipts, `role_updated`, `room_sync`, mute/favorite toggles, renames, visibility | up to `MAX_WORKERS`   | Handlers are idempotent and order-safe (Mongo `$lt`/`$max`/`$setOnInsert` guards).  |
 | **Membership**  | `member_added`, `member_removed`                | 1 (FIFO)              | No per-document high-water mark; must be applied in arrival order.                   |
 
-```
+```text
                           ┌──────────────► sem (MAX_WORKERS) ──► process()  (fan-out)
 iter.Next() ──► dispatch ─┤
                           └──────────────► membershipCh ──► single worker ──► process()  (FIFO)
