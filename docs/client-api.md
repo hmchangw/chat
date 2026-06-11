@@ -272,8 +272,9 @@ events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
 ID serializes as `id` (not `_id`) and the user under `u` (not `user`). The
 first group is always present; the rest are optional (omitted when empty/unset).
 `userCount` / `lastMsgAt` / `lastMsgId` are **room** properties denormalized
-onto each subscription at read time (rooms `$lookup`) — they arrive as flat
-top-level keys but are not stored on the subscription record.
+onto each subscription at read time via room-service's `GetRoomsInfo`
+enrichment — they arrive as flat top-level keys but are not stored on the
+subscription record.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -295,9 +296,9 @@ top-level keys but are not stored on the subscription record.
 | `threadUnread` | string[] | Optional. Thread room IDs with unread replies. |
 | `restricted` | boolean | Optional. Denormalized room restricted flag. |
 | `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
-| `userCount` | number | Optional. Room-derived: member count. Local rooms only; omitted for cross-site subscriptions. |
+| `userCount` | number | Optional. Room-derived: member count (read-time enrichment). |
 | `lastMsgAt` | RFC3339 timestamp | Optional. Room-derived: time of the room's last message (read-time enrichment). |
-| `lastMsgId` | string | Optional. Room-derived: last message ID. Local rooms only; omitted for cross-site subscriptions. |
+| `lastMsgId` | string | Optional. Room-derived: last message ID (read-time enrichment). |
 
 #### HrInfo
 
@@ -3162,8 +3163,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 `subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
 
 **Enrichment behavior:**
-- `name`, `lastMsgAt`, `alert`, and `hasMention` are overwritten from room-service's `GetRoomsInfo` RPC.
-- `userCount` and `lastMsgId` are populated for local rooms only (subscriptions where `siteId` matches the serving site); cross-site rows omit these fields.
+- `name`, `userCount`, `lastMsgAt`, `lastMsgId`, `alert`, and `hasMention` are overwritten from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too).
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
 - Subscriptions for rooms whose room-info RPC fails (network error or room not found) are returned **unenriched** (original DB values) rather than dropped.
 - Room-info is fetched per site in parallel using `sync.WaitGroup`; a per-site failure degrades that site's rooms but does not cancel other sites.
