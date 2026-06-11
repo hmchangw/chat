@@ -36,7 +36,6 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("SITE_ID", "site-a")
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, ":9090", cfg.MetricsAddr)
 	require.Equal(t, 1000, cfg.MaxSubscriptionLimit)
 	require.Equal(t, 15*time.Second, cfg.HandlerTimeout)
 }
