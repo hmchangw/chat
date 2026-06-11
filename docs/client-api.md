@@ -3165,7 +3165,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 
 `subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
 
-**Pagination:** the reply contains at most `limit` rows starting at `offset` under a stable
+**Pagination:** the reply contains at most `limit` rows starting at `offset` under a deterministic
 `favorite` → `name` → `_id` ordering (the favorite view additionally sorts the caller's
 self-DM first). An `offset` at or past the end yields an empty `subscriptions` array with
 the unchanged full `total`. Clients that need the complete list must page until
