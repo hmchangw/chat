@@ -24,7 +24,7 @@ func TestListSubscriptions_Types(t *testing.T) {
 			rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: typ})
 			require.NoError(t, err)
-			assert.Equal(t, 1, resp.Total)
+			assert.Equal(t, int64(1), resp.Total)
 		})
 	}
 }
@@ -65,7 +65,7 @@ func TestListSubscriptions_TotalIsFullCount(t *testing.T) {
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "rooms"})
 	require.NoError(t, err)
-	assert.Equal(t, 57, resp.Total, "total must be the full filtered count, not the page length")
+	assert.Equal(t, int64(57), resp.Total, "total must be the full filtered count, not the page length")
 	assert.Len(t, resp.Subscriptions, 2)
 }
 
@@ -76,7 +76,8 @@ func TestListSubscriptions_FavoriteForwarded(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"),
 		models.SubscriptionListRequest{Type: "current", Favorite: ptrBool(true)})
 	require.NoError(t, err)
-	assert.Equal(t, 0, resp.Total)
+	assert.Equal(t, int64(0), resp.Total)
+	assert.NotNil(t, resp.Subscriptions, "empty page must marshal to [] not null")
 }
 
 func TestListSubscriptions_FavoriteFalseNotForwarded(t *testing.T) {
@@ -114,12 +115,33 @@ func TestListSubscriptions_BadType(t *testing.T) {
 	}
 }
 
-func TestListSubscriptions_NegativeWithinDays(t *testing.T) {
-	svc, _, _, _, _, _ := newSvc(t)
-	neg := -1
-	_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
-		models.SubscriptionListRequest{Type: "rooms", UpdatedWithinDays: &neg})
-	requireCode(t, err, errcode.CodeBadRequest)
+func TestListSubscriptions_WithinDaysRange(t *testing.T) {
+	cases := []struct {
+		name string
+		days int
+		ok   bool
+	}{
+		{"negative rejected", -1, false},
+		{"zero allowed", 0, true},
+		{"max allowed", 3650, true},
+		{"above max rejected", 3651, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, subs, _, _, _, _ := newSvc(t)
+			if tc.ok {
+				subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "rooms", gomock.Any(), false, gomock.Any()).
+					Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}}, nil)
+			}
+			_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
+				models.SubscriptionListRequest{Type: "rooms", UpdatedWithinDays: &tc.days})
+			if tc.ok {
+				require.NoError(t, err)
+			} else {
+				requireCode(t, err, errcode.CodeBadRequest)
+			}
+		})
+	}
 }
 
 func TestListSubscriptions_StoreError(t *testing.T) {
@@ -166,7 +188,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: names})
 	require.NoError(t, err)
-	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, int64(1), resp.Total)
 }
 
 func TestGetChannels_ByMembersContain(t *testing.T) {
@@ -175,7 +197,7 @@ func TestGetChannels_ByMembersContain(t *testing.T) {
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	require.NoError(t, err)
-	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, int64(1), resp.Total)
 }
 
 func TestGetChannels_ByAccountNames(t *testing.T) {
@@ -184,7 +206,7 @@ func TestGetChannels_ByAccountNames(t *testing.T) {
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: []string{"carol", "dave"}})
 	require.NoError(t, err)
-	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, int64(1), resp.Total)
 }
 
 func TestGetChannels_StoreError(t *testing.T) {
@@ -278,7 +300,7 @@ func TestGetByRoomID_NotFound(t *testing.T) {
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "r1").Return(nil, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	require.NoError(t, err)
-	assert.Equal(t, 0, resp.Total)
+	assert.Equal(t, int64(0), resp.Total)
 	assert.Empty(t, resp.Subscriptions)
 	assert.NotNil(t, resp.Subscriptions, "empty result must be a non-nil slice")
 }
@@ -299,7 +321,7 @@ func TestGetByRoomID_OK_Enriched(t *testing.T) {
 		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Renamed", LastMsgAt: &someMillis}}, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	require.NoError(t, err)
-	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, int64(1), resp.Total)
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "s1", resp.Subscriptions[0].ID)
 	assert.Equal(t, "Renamed", resp.Subscriptions[0].Name, "enriched name must propagate through the 1-elem slice")
@@ -316,7 +338,7 @@ func TestGetChannels_Empty(t *testing.T) {
 			subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return(returned, nil)
 			resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 			require.NoError(t, err)
-			assert.Equal(t, 0, resp.Total)
+			assert.Equal(t, int64(0), resp.Total)
 		})
 	}
 }

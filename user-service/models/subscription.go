@@ -15,7 +15,7 @@ type SubscriptionListRequest struct {
 // SubscriptionListResponse is returned by subscription.list and subscription.getChannels.
 type SubscriptionListResponse struct {
 	Subscriptions []model.Subscription `json:"subscriptions"`
-	Total         int                  `json:"total"`
+	Total         int64                `json:"total"`
 }
 
 // GetChannelsRequest is the body of subscription.getChannels (exactly one of the two set).

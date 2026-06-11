@@ -3148,7 +3148,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 |---------------------|---------|----------|-------|
 | `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
 | `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
-| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose room had a message within the last N days** (whole-room activity, `room.lastMsgAt`). **Ignored for `current`** (always returns the full active set) and for `apps`. Cross-site rooms are kept regardless (their activity isn't known locally). Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose room had a message within the last N days** (whole-room activity, `room.lastMsgAt`). **Ignored for `current`** (always returns the full active set) and for `apps`. Cross-site rooms are kept regardless (their activity isn't known locally). Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be between 0 and 3650; values outside the range are rejected with `bad_request`. |
 | `offset`            | number  | no       | 0-based index of the first row to return. Negative values are clamped to `0`. Default `0`. |
 | `limit`             | number  | no       | Page size. Omitted, `0`, or negative → server default **40**. Values above the server cap (`MAX_SUBSCRIPTION_LIMIT`, default 1000) are clamped to the cap. |
 
@@ -3207,7 +3207,7 @@ the unchanged full `total`. Clients that need the complete list must page until
 | Condition | `code` | Notes |
 |-----------|--------|-------|
 | Unknown `type` value | `bad_request` | `{ "code": "bad_request", "error": "unknown subscription type" }` |
-| Negative `updatedWithinDays` | `bad_request` | `{ "code": "bad_request", "error": "updatedWithinDays must be non-negative" }` |
+| `updatedWithinDays` out of range [0, 3650] | `bad_request` | `{ "code": "bad_request", "error": "updatedWithinDays must be between 0 and 3650" }` |
 | Internal failure | `internal` | — |
 
 ---

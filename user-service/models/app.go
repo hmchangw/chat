@@ -24,7 +24,7 @@ type AppsListRequest struct {
 // AppsListResponse is returned by apps.list. Total is the full catalog count, not the page size.
 type AppsListResponse struct {
 	Apps  []AppListItem `json:"apps"`
-	Total int           `json:"total"`
+	Total int64         `json:"total"`
 }
 
 // OKResponse is the generic success body (subscription.setAppSubscription).

@@ -57,5 +57,5 @@ func (s *UserService) ListApps(c *natsrouter.Context, req models.AppsListRequest
 	if err != nil {
 		return nil, fmt.Errorf("list apps: %w", err)
 	}
-	return &models.AppsListResponse{Apps: page.Data, Total: int(page.Total)}, nil
+	return &models.AppsListResponse{Apps: page.Data, Total: page.Total}, nil
 }

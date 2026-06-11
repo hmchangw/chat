@@ -129,7 +129,7 @@ func TestListApps(t *testing.T) {
 		}, Total: 2}, nil)
 	resp, err := svc.ListApps(ctx("alice", "site-a"), models.AppsListRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, 2, resp.Total)
+	assert.Equal(t, int64(2), resp.Total)
 	assert.True(t, resp.Apps[0].IsSubscribed)
 }
 
@@ -164,7 +164,7 @@ func TestListApps_TotalIsCatalogCountNotPageSize(t *testing.T) {
 	resp, err := svc.ListApps(ctx("alice", "site-a"), models.AppsListRequest{Limit: 2})
 	require.NoError(t, err)
 	assert.Len(t, resp.Apps, 2)
-	assert.Equal(t, 7, resp.Total)
+	assert.Equal(t, int64(7), resp.Total)
 }
 
 func TestListApps_StoreError(t *testing.T) {
@@ -181,6 +181,6 @@ func TestListApps_Empty(t *testing.T) {
 		Return(mongoutil.EmptyPage[models.AppListItem](), nil)
 	resp, err := svc.ListApps(ctx("alice", "site-a"), models.AppsListRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, 0, resp.Total)
+	assert.Equal(t, int64(0), resp.Total)
 	assert.Empty(t, resp.Apps)
 }

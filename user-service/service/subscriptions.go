@@ -37,13 +37,15 @@ const maxAccountNames = 100
 // defaultSubPageSize is subscription.list's page size when the request omits limit.
 const defaultSubPageSize = 40
 
+// maxUpdatedWithinDays caps the activity window — huge values overflow AddDate into a garbage cutoff that silently returns empty.
+const maxUpdatedWithinDays = 3650
+
 func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.SubscriptionListResponse, error) {
 	if !validListTypes[req.Type] {
 		return nil, errcode.BadRequest("unknown subscription type")
 	}
-	if req.UpdatedWithinDays != nil && *req.UpdatedWithinDays < 0 {
-		// A negative window computes a FUTURE cutoff and silently returns empty.
-		return nil, errcode.BadRequest("updatedWithinDays must be non-negative")
+	if req.UpdatedWithinDays != nil && (*req.UpdatedWithinDays < 0 || *req.UpdatedWithinDays > maxUpdatedWithinDays) {
+		return nil, errcode.BadRequest("updatedWithinDays must be between 0 and 3650")
 	}
 	account := c.Param("account")
 	c.WithLogValues("account", account)
@@ -54,7 +56,7 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
 	s.enrichWithRoomInfo(c, result.Data)
-	return &models.SubscriptionListResponse{Subscriptions: result.Data, Total: int(result.Total)}, nil
+	return &models.SubscriptionListResponse{Subscriptions: result.Data, Total: result.Total}, nil
 }
 
 // enrichWithRoomInfo overwrites room-derived fields per site in parallel; a failed
@@ -173,7 +175,7 @@ func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsR
 		return nil, fmt.Errorf("get channels: %w", err)
 	}
 	s.enrichWithRoomInfo(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: subs, Total: len(subs)}, nil
+	return &models.SubscriptionListResponse{Subscriptions: subs, Total: int64(len(subs))}, nil
 }
 
 func (s *UserService) GetDM(c *natsrouter.Context, req models.GetDMRequest) (*models.DMResponse, error) {
