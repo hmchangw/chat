@@ -1682,7 +1682,9 @@ func TestRoomInfoJSON(t *testing.T) {
 			Found:            true,
 			SiteID:           "site-a",
 			Name:             "general",
+			UserCount:        42,
 			LastMsgAt:        &lastMsg,
+			LastMsgID:        "m-100",
 			LastMentionAllAt: &lastMention,
 			PrivateKey:       &pk,
 			KeyVersion:       &kv,
@@ -1733,7 +1735,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 
-		for _, key := range []string{"lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion"} {
+		for _, key := range []string{"userCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted when zero/nil", key)
 		}
