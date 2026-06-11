@@ -108,3 +108,34 @@ Clean. `docs/client-api.md` is modified in the same diff: `offset`/`limit` reque
 Clean areas: error wrapping, naming, struct tags (camelCase), `bson.D` for `$sort` /
 `bson.M` elsewhere (matches the file's pre-existing style), `enrichWithRoomInfo` semaphore
 pattern untouched and correct.
+
+## Test-automation
+
+**Test runs:** `make test SERVICE=user-service` PASS; `make test-integration
+SERVICE=user-service` PASS (real Mongo via testcontainers). Coverage:
+`user-service/service` **96.2%**; `pkg/mongoutil` 32.9% unit-only (structural — collection
+plumbing is integration-covered; the pagination functions themselves are 100% unit-covered).
+
+**TDD heuristic: PASS.** Every new/changed exported function has same-diff tests:
+`NewOffsetPageRequestWithBounds` (7 unit cases), `AggregateSubscriptions` (rewritten
+integration suite incl. 7 pagination-specific subtests), `ListSubscriptions` (8 unit
+scenarios: bounds table, total-is-full-count, favorite forwarding both ways, enrichment,
+store error, types).
+
+**Mock staleness: PASS.** `make generate SERVICE=user-service` produces no diff.
+
+**Structure: PASS.** `TestMain` wired via `testutil.RunTests`; shared seeds are read-only
+across subtests (no cross-subtest mutation); unit tests touch no real infra.
+
+Findings:
+- **[medium]** `user-service/service/subscriptions_test.go:72-89` — no unit-level
+  `assert.NotNil(t, resp.Subscriptions)` for an empty page; if a future repo
+  implementation returned a zero-value `OffsetPage{}` (nil Data), the handler would
+  marshal `null`. The DB boundary pins non-nil (integration), the handler boundary
+  doesn't. One-line addition.
+- **[low]** `pkg/mongoutil/pagination_test.go` — not table-driven (dedup with Go expert
+  nitpick; counted once).
+- **[nitpick]** `user-service/models/subscription_test.go:24-33` — zero-omit test covers
+  only offset/limit, not `favorite`/`updatedWithinDays` omission (pre-existing gap).
+- Micro-gap (informational): the cap test uses 5000→1000 but not `limit == 1000` exactly;
+  the boundary passes through un-capped by trivially correct logic.
