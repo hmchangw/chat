@@ -3149,9 +3149,11 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 | `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
 | `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
 | `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose room had a message within the last N days** (whole-room activity, `room.lastMsgAt`). **Ignored for `current`** (always returns the full active set) and for `apps`. Cross-site rooms are kept regardless (their activity isn't known locally). Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `offset`            | number  | no       | 0-based index of the first row to return. Negative values are clamped to `0`. Default `0`. |
+| `limit`             | number  | no       | Page size. Omitted, `0`, or negative → server default **40**. Values above the server cap (`MAX_SUBSCRIPTION_LIMIT`, default 1000) are clamped to the cap. |
 
 ```json
-{ "type": "current", "favorite": true }
+{ "type": "current", "favorite": true, "offset": 0, "limit": 40 }
 ```
 
 ##### Success response
@@ -3159,9 +3161,15 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 | Field           | Type              | Notes |
 |-----------------|-------------------|-------|
 | `subscriptions` | array<[Subscription](#subscription)> | Room-info-enriched subscription records. |
-| `total`         | number            | Total count (after filtering). |
+| `total`         | number            | Total count of subscriptions matching the filters across **all** pages (not the returned page length). |
 
 `subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
+
+**Pagination:** the reply contains at most `limit` rows starting at `offset` under a stable
+`favorite` → `name` → `_id` ordering (the favorite view additionally sorts the caller's
+self-DM first). An `offset` at or past the end yields an empty `subscriptions` array with
+the unchanged full `total`. Clients that need the complete list must page until
+`offset + len(subscriptions) >= total`.
 
 **Enrichment behavior:**
 - `name`, `userCount`, `lastMsgAt`, `lastMsgId`, `alert`, and `hasMention` are overwritten from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too).
