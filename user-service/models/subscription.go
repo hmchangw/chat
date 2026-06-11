@@ -2,9 +2,8 @@ package models
 
 import "github.com/hmchangw/chat/pkg/model"
 
-// SubscriptionListRequest is the body of subscription.list.
-// Type ∈ {current, rooms, apps}. UpdatedWithinDays nil ⇒ no age filter.
-// Offset/Limit page the result: limit ≤ 0 ⇒ server default 40, capped at MAX_SUBSCRIPTION_LIMIT.
+// SubscriptionListRequest is the body of subscription.list. Type ∈ {current, rooms, apps};
+// UpdatedWithinDays nil ⇒ no age filter; limit ≤ 0 ⇒ default 40, capped at MAX_SUBSCRIPTION_LIMIT.
 type SubscriptionListRequest struct {
 	Type              string `json:"type"`
 	Favorite          *bool  `json:"favorite,omitempty"`

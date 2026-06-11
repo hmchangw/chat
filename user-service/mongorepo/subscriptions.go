@@ -81,11 +81,8 @@ func roomsEnrichStages(localSiteID string, windowCutoff *time.Time) bson.A {
 	)
 }
 
-// AggregateSubscriptions returns one page of account's subscriptions by listType —
-// current (active dm/channel + subscribed botDMs), rooms (dm+channel), apps
-// (subscribed botDMs) — with Total = the full filtered count. favorite narrows to
-// favorited rows and sorts the caller's self-DM first. The trailing _id sort key
-// keeps page boundaries deterministic when (favorite, name) ties.
+// AggregateSubscriptions returns one page of account's listType-filtered subs, Total = full filtered count.
+// favorite narrows to favorited rows, self-DM first; the trailing _id sort key keeps tied page boundaries deterministic.
 func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, favorite bool, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
 	match := bson.M{"u.account": account}
 	var windowCutoff *time.Time

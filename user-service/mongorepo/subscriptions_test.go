@@ -14,8 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 )
 
-// pg builds an explicit page for integration calls (no defaulting — the
-// service-level constructor owns defaults).
+// pg builds an explicit page — no defaulting here; the service-level constructor owns defaults.
 func pg(offset, limit int64) mongoutil.OffsetPageRequest {
 	return mongoutil.OffsetPageRequest{Offset: offset, Limit: limit}
 }
@@ -51,8 +50,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		// local dm (kept, enriched)
 		bson.M{"_id": "sub-dm", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-dm",
 			"name": "bob", "roomType": "dm", "siteId": "site-a", "updatedAt": now, "createdAt": now},
-		// favorited self-DM (name == account): must sort FIRST in the favorite view,
-		// even though "Eng" < "alice" by name.
+		// favorited self-DM (name == account): sorts FIRST in the favorite view though "Eng" < "alice" by name
 		bson.M{"_id": "sub-self", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-self",
 			"name": "alice", "roomType": "dm", "siteId": "site-a", "favorite": true, "updatedAt": now, "createdAt": now},
 		// local subscribed botDM (kept for current/apps)
@@ -179,8 +177,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("pages slice deterministically and total is the full count", func(t *testing.T) {
-		// rooms view, favorite desc then name asc then _id. BOTH favorites lead
-		// (sub-eng "Eng" < sub-self "alice" in BSON binary order), then non-favorites:
+		// Favorites lead (sub-eng "Eng" < sub-self "alice" in BSON binary order), then non-favorites:
 		// [sub-eng(fav), sub-self(fav), sub-old("EngOld"), sub-xsite("Remote"), sub-dm("bob")]
 		first, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, false, pg(0, 2))
 		require.NoError(t, err)
@@ -227,8 +224,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("current favorite pages with self-DM first", func(t *testing.T) {
-		// The frontend sidebar's exact shape: {type: current, favorite: true}, paged.
-		// Favorited current rows: sub-self (dm, name==account) then sub-eng ("Eng").
+		// The frontend sidebar's exact shape ({type: current, favorite: true}), paged one row at a time.
 		page, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, true, pg(0, 1))
 		require.NoError(t, err)
 		require.Len(t, page.Data, 1)
