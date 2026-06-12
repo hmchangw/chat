@@ -144,7 +144,7 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	pub := &fakePublisher{}
-	store := &fakeStore{}
+	store, saved := captureStore(t)
 	w := newWatcher("site1", coll, src, pub, store, 1, time.Hour)
 	w.initialBackoff = time.Millisecond
 
@@ -197,7 +197,7 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 	assert.NotEmpty(t, deleteEvt.PreImage, "delete carries pre-image")
 
 	// A checkpoint was persisted (post-ack) for the published events.
-	assert.NotEmpty(t, store.savedEventIDs())
+	assert.NotEmpty(t, saved.ids())
 }
 
 func TestMongoCheckpointStore_Integration(t *testing.T) {
