@@ -47,6 +47,11 @@ See `docs/superpowers/specs/2026-06-08-oplog-connector-design.md` (design) and
 - **Checkpoints:** one doc per collection in `oplog_checkpoints` (in `CHECKPOINT_DB`
   on the source RS). The resume token is the real checkpoint; saved only after a
   pub-ack (lossless).
+- **Observability:** Prometheus `/metrics` + `/healthz` on `METRICS_ADDR` —
+  `oplog_events_published_total`, `oplog_publish_errors_total`,
+  `oplog_events_skipped_total`, `oplog_replication_lag_ms` (all by `collection`).
+  For a single-replica pump, **alert on lag and sustained publish errors** — that's
+  how a soft stall (retry-forever) is caught before the oplog window closes.
 
 ### Configuration (the interface)
 
@@ -70,6 +75,7 @@ fail-fast at startup.
 | `START_AT_TIME` | | `""` | RFC3339 or unix-ms; used by `START_MODE=time` **and** as an override (see below) |
 | `START_RESUME_TOKEN` | | `""` | `_data` hex; one-off seed override (see below) |
 | `BOOTSTRAP_STREAMS` | | `false` | dev-only stream creation; **keep `false` in prod** (ops/IaC owns the stream) |
+| `METRICS_ADDR` | | `:9090` | bind addr for the Prometheus `/metrics` + `/healthz` listener |
 | `LOG_LEVEL` | | `info` | slog level (`debug`\|`info`\|`warn`\|`error`) |
 
 **Where the change stream starts (per collection, first match wins):**

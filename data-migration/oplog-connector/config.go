@@ -45,6 +45,10 @@ type config struct {
 
 	Bootstrap bootstrapConfig `envPrefix:"BOOTSTRAP_"`
 
+	// MetricsAddr is the bind address for the Prometheus /metrics + /healthz
+	// listener (the k8s probe target).
+	MetricsAddr string `env:"METRICS_ADDR" envDefault:":9090"`
+
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
 }
 

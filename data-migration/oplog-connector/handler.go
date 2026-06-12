@@ -87,6 +87,7 @@ type watcher struct {
 	initialBackoff   time.Duration
 	maxBackoff       time.Duration
 	now              func() int64 // unix ms; injectable for tests
+	metrics          *metrics     // nil-safe; set by start(), nil in unit tests
 	log              *slog.Logger
 }
 
@@ -204,17 +205,20 @@ func (w *watcher) publishWithRetry(ctx context.Context, ev *changeEvent) error {
 	subj, msgID, evt, err := buildEnvelope(ev, w.siteID, w.now())
 	if err != nil {
 		w.log.Error("build envelope failed — skipping event", "eventId", ev.EventID, "error", err)
+		w.metrics.onSkipped(ctx, w.collection)
 		return nil
 	}
 	if msgID == "" {
 		// An empty Nats-Msg-Id disables JetStream dedup, so publishing this would
 		// silently forfeit the at-least-once-deduped guarantee. Skip instead.
 		w.log.Error("change event has empty id — skipping (cannot dedup)", "collection", w.collection, "op", evt.Op)
+		w.metrics.onSkipped(ctx, w.collection)
 		return nil
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {
 		w.log.Error("marshal oplog event failed — skipping event", "eventId", ev.EventID, "error", err)
+		w.metrics.onSkipped(ctx, w.collection)
 		return nil
 	}
 
@@ -224,10 +228,12 @@ func (w *watcher) publishWithRetry(ctx context.Context, ev *changeEvent) error {
 	backoff := w.initialBackoff
 	for {
 		if _, err := w.pub.PublishMsg(ctx, msg); err == nil {
+			w.metrics.onPublished(ctx, w.collection, w.now()-ev.ClusterTimeMs)
 			return nil
 		} else if ctx.Err() != nil {
 			return ctx.Err()
 		} else {
+			w.metrics.onPublishError(ctx, w.collection)
 			w.log.Error("publish failed — retrying", "eventId", msgID, "backoff", backoff.String(), "error", err)
 		}
 		select {

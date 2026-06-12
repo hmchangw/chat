@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
@@ -39,8 +43,34 @@ func main() {
 		slog.Error("init tracer failed", "error", err)
 		os.Exit(1)
 	}
+	meterShutdown, err := otelutil.InitMeter("oplog-connector")
+	if err != nil {
+		slog.Error("init meter failed", "error", err)
+		os.Exit(1)
+	}
+	m, err := newMetrics()
+	if err != nil {
+		slog.Error("init metrics failed", "error", err)
+		os.Exit(1)
+	}
 
-	conn, err := start(ctx, &cfg)
+	// /metrics + /healthz listener (the k8s probe target). Bind synchronously so
+	// a port conflict fails startup loudly rather than running with no
+	// observability — the third leg of losslessness for this single-replica pump.
+	metricsServer := newMetricsServer()
+	ln, err := net.Listen("tcp", cfg.MetricsAddr)
+	if err != nil {
+		slog.Error("metrics listen failed", "addr", cfg.MetricsAddr, "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		slog.Info("metrics+health server listening", "addr", cfg.MetricsAddr)
+		if err := metricsServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server failed", "error", err)
+		}
+	}()
+
+	conn, err := start(ctx, &cfg, m)
 	if err != nil {
 		slog.Error("startup failed", "error", err)
 		os.Exit(1)
@@ -57,6 +87,7 @@ func main() {
 			if err != nil {
 				slog.Error("fatal watcher error — exiting", "error", err)
 				_ = tracerShutdown(context.Background())
+				_ = meterShutdown(context.Background())
 				conn.Close()
 				os.Exit(1)
 			}
@@ -65,14 +96,34 @@ func main() {
 	}()
 
 	// Same shape as the other services: ordered, timeout-bounded cleanup steps.
-	// stop readers → drain watchers → tracer → NATS → Mongo.
+	// stop readers → drain watchers → metrics/health → observability → NATS → Mongo.
 	shutdown.Wait(ctx, 25*time.Second,
 		func(context.Context) error { conn.beginShutdown(); return nil },
 		func(ctx context.Context) error { return conn.awaitWatchers(ctx) },
+		func(ctx context.Context) error { return metricsServer.Shutdown(ctx) },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(ctx context.Context) error { return meterShutdown(ctx) },
 		func(context.Context) error { return conn.nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, conn.client); return nil },
 	)
+}
+
+// newMetricsServer builds the /metrics + /healthz HTTP server (timeouts guard
+// against hung scrapers tying up goroutines on the operator-exposed port).
+func newMetricsServer() *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 // connector owns the running watchers and the connections they share. Close
@@ -91,7 +142,7 @@ type connector struct {
 // start connects to the source Mongo and NATS, bootstraps the stream, and
 // launches one watcher goroutine per watched collection. It returns a running
 // connector; the caller drives lifecycle via Fatal() and Close().
-func start(ctx context.Context, cfg *config) (*connector, error) {
+func start(ctx context.Context, cfg *config, m *metrics) (*connector, error) {
 	if cfg.StartResumeToken != "" || cfg.StartAtTime != "" {
 		// These are one-off seed overrides. Left set in the environment, they
 		// force a reseed (ignoring the stored checkpoint) on EVERY restart — so
@@ -166,6 +217,7 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 		}
 
 		w := newWatcher(cfg.SiteID, coll, src, js, store, cfg.CheckpointEvery, checkpointMaxAge)
+		w.metrics = m
 		c.wg.Add(1)
 		go func(w *watcher) {
 			defer c.wg.Done()

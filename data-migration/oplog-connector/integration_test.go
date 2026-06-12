@@ -88,7 +88,7 @@ func TestConnector_RealPublishEndToEnd(t *testing.T) {
 		Bootstrap:        bootstrapConfig{Enabled: true},
 	}
 
-	conn, err := start(ctx, &cfg)
+	conn, err := start(ctx, &cfg, nil)
 	require.NoError(t, err)
 	defer conn.Close()
 

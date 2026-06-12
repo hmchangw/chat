@@ -282,7 +282,7 @@ stop readers → close change-stream cursors → drain channels / await in-fligh
 
 ### 7.4 Observability
 
-`log/slog` JSON. Correlation field per event = `EventID` (the resume-token data). Metrics: replication lag (now − `ClusterTime`), events/sec per collection, publish errors, in-flight depth, frontier position.
+`log/slog` JSON. Correlation field per event = `EventID` (the resume-token data). OTel tracing + Prometheus metrics via `otelutil` (`InitTracer`/`InitMeter`), exposed on a `/metrics` + `/healthz` listener at `METRICS_ADDR` (the k8s probe target). Metrics, all by `collection`: `oplog_replication_lag_ms` (now − `clusterTime` at publish), `oplog_events_published_total` (throughput), `oplog_publish_errors_total`, `oplog_events_skipped_total` (poison). For this single-replica pump, **alert on lag + sustained publish errors** — the signal that a retry-forever stall is eating the oplog window (§5/§6).
 
 ---
 
