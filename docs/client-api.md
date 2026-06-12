@@ -414,8 +414,8 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `name` | string | Display name per room type (see above). |
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
-| `hasMention` | boolean | Whether the user has an unread mention. Computed at read time (see [Enrichment](#enrichment)). |
-| `alert` | boolean | Whether the room has an unread alert for the user. Computed at read time (see [Enrichment](#enrichment)). |
+| `hasMention` | boolean | Whether the user has an unread mention. Authoritative subscription state maintained by the write path (set when the user is @-mentioned, cleared on read); **not** modified by read enrichment. |
+| `alert` | boolean | Whether the room has an unread alert for the user. Authoritative subscription state maintained by the write path (set on new message, cleared on read receipt); **not** modified by read enrichment. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
 | `isSubscribed` | boolean | Optional. Whether the user is actively subscribed. |
@@ -3344,10 +3344,10 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 <a id="enrichment"></a>
 **Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
 - Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)), populated from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too). The subscription's own fields are never overwritten by room data.
-- `alert` and `hasMention` are **computed** per subscription: `alert` = `room.lastMsgAt` is newer than the user's `lastSeenAt`; `hasMention` = `room.lastMentionAllAt` is newer than `lastSeenAt`.
+- `alert` and `hasMention` are **subscription** state, not room state: they are returned as stored on the subscription (maintained by the write path — `message-worker` sets `hasMention` when the user is @-mentioned, read receipts clear `alert`) and are **never** overwritten or recomputed by enrichment.
 - `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
-- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are still computed from these baseline timestamps, so they remain correct on a degraded site.
+- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
 
 **Per-room-type record shape.** All three kinds returned by `subscription.list` (`channel`, `dm`, `botDM`) use the single [Subscription](#subscription) schema (§3.0) with the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the five below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
 

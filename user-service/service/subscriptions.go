@@ -150,7 +150,7 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 	}
 	// Degraded site or room not found ⇒ baseline room from the Mongo $lookup
 	// values, so the client always receives a room object. alert/hasMention are
-	// computed from the baseline too, for parity with the RPC path above.
+	// left as the stored subscription values (never recomputed from room data).
 	for i := range subs {
 		if subs[i].Room != nil {
 			continue
@@ -162,15 +162,13 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 			LastMsgID:        subs[i].LastMsgID,
 			LastMentionAllAt: subs[i].LastMentionAllAt,
 		}
-		subs[i].Alert = unreadAt(subs[i].LastSeenAt, subs[i].LastMsgAt)
-		subs[i].HasMention = unreadAt(subs[i].LastSeenAt, subs[i].LastMentionAllAt)
 	}
 }
 
 // applyRoomInfo nests all room-derived fields (including the E2E key for initial
-// key bootstrap) under sub.Room and computes alert/hasMention; zero-value info
-// (Found=false) is skipped. The subscription's own name is never overwritten —
-// room-service only supplies the room's canonical name.
+// key bootstrap) under sub.Room; zero-value info (Found=false) is skipped. The
+// subscription's own fields are never overwritten — name, alert, and hasMention
+// are authoritative subscription state; room-service only supplies room data.
 func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	if !info.Found {
 		return
@@ -193,9 +191,6 @@ func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 		room.LastMentionAllAt = &t
 	}
 	sub.Room = room
-	// alert = hasUnread, hasMention = hasGroupMention (legacy wire-name mapping).
-	sub.Alert = unread(sub.LastSeenAt, info.LastMsgAt)
-	sub.HasMention = unread(sub.LastSeenAt, info.LastMentionAllAt)
 }
 
 // unread: a room event at ms (epoch millis) is newer than lastSeen; nil ms ⇒ false, nil lastSeen with ms set ⇒ true.
@@ -207,19 +202,6 @@ func unread(lastSeen *time.Time, ms *int64) bool {
 		return true
 	}
 	return lastSeen.UTC().UnixMilli() < *ms
-}
-
-// unreadAt is unread for *time.Time event timestamps — the $lookup baseline carries
-// time.Time (not epoch millis), used on the degraded path. nil event ⇒ false; nil
-// lastSeen with an event ⇒ true; equal ⇒ read (strict before).
-func unreadAt(lastSeen, event *time.Time) bool {
-	if event == nil {
-		return false
-	}
-	if lastSeen == nil {
-		return true
-	}
-	return lastSeen.UTC().Before(event.UTC())
 }
 
 func filterFavorites(subs []model.Subscription) []model.Subscription {

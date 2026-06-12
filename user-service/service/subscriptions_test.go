@@ -101,7 +101,9 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	lastMention := int64(50)
 	pk := "a2V5LWJhc2U2NA=="
 	kv := 3
-	sub := model.Subscription{Name: "helper.bot", SiteID: "site-a", RoomID: "r1", LastSeenAt: &seen}
+	// Stored alert/hasMention are the opposite of what a room-timestamp compare
+	// would yield — they must survive applyRoomInfo untouched.
+	sub := model.Subscription{Name: "helper.bot", SiteID: "site-a", RoomID: "r1", LastSeenAt: &seen, Alert: false, HasMention: true}
 	info := model.RoomInfo{
 		RoomID: "r1", Found: true, SiteID: "site-a", Name: "Canonical",
 		UserCount: 7, AppCount: 2, LastMsgAt: &lastMsg, LastMsgID: "m9",
@@ -123,8 +125,8 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	assert.Equal(t, pk, *sub.Room.PrivateKey)
 	require.NotNil(t, sub.Room.KeyVersion)
 	assert.Equal(t, 3, *sub.Room.KeyVersion)
-	assert.True(t, sub.Alert, "lastMsg newer than lastSeen")
-	assert.False(t, sub.HasMention, "mention older than lastSeen")
+	assert.False(t, sub.Alert, "stored alert must not be recomputed from room data")
+	assert.True(t, sub.HasMention, "stored hasMention must not be recomputed from room data")
 }
 
 func TestApplyRoomInfo_NotFound_NoRoom(t *testing.T) {

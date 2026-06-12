@@ -17,7 +17,7 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs := []model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-a", Name: "eng-sub", LastSeenAt: &seen, UserCount: 5},
+		{ID: "a", RoomID: "r1", SiteID: "site-a", Name: "eng-sub", LastSeenAt: &seen, UserCount: 5, Alert: true, HasMention: true},
 		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},
 	}
 	mentionAt := int64(200)
@@ -27,15 +27,15 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops", UserCount: 3, LastMsgAt: &newer, LastMsgID: "m-3"}}, nil)
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	assert.Equal(t, "eng-sub", subs[0].Name, "subscription name must survive enrichment")
-	assert.True(t, subs[0].Alert)      // lastMsgAt 200 > lastSeen 100
-	assert.True(t, subs[0].HasMention) // lastMentionAllAt 200 > lastSeen 100
+	assert.True(t, subs[0].Alert, "stored alert preserved")
+	assert.True(t, subs[0].HasMention, "stored hasMention preserved")
 	require.NotNil(t, subs[0].Room)
 	assert.Equal(t, "Eng", subs[0].Room.Name)
 	assert.Equal(t, 7, subs[0].Room.UserCount) // RPC value, not the $lookup baseline (5)
 	assert.Equal(t, "m-7", subs[0].Room.LastMsgID)
 	require.NotNil(t, subs[1].Room)
 	assert.Equal(t, "Ops", subs[1].Room.Name)
-	assert.True(t, subs[1].Alert)
+	assert.False(t, subs[1].Alert, "no stored alert ⇒ stays false; never set from room data")
 	assert.Equal(t, 3, subs[1].Room.UserCount) // cross-site sub now gets room fields via RPC
 	assert.Equal(t, "m-3", subs[1].Room.LastMsgID)
 }
@@ -75,7 +75,7 @@ func TestEnrichWithRoomInfo_RPCFailDegradesSiteKeepsOthers(t *testing.T) {
 	newer := int64(200)
 	subs := []model.Subscription{
 		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen},
-		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},
+		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen, Alert: true},
 	}
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).Return(nil, errors.New("down"))
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
@@ -83,10 +83,10 @@ func TestEnrichWithRoomInfo_RPCFailDegradesSiteKeepsOthers(t *testing.T) {
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	require.NotNil(t, subs[0].Room, "degraded site falls back to the baseline room object")
 	assert.Empty(t, subs[0].Room.Name)
-	assert.False(t, subs[0].Alert)
+	assert.False(t, subs[0].Alert, "no stored alert ⇒ stays false")
 	require.NotNil(t, subs[1].Room)
 	assert.Equal(t, "Ops", subs[1].Room.Name) // site-b still enriched
-	assert.True(t, subs[1].Alert)
+	assert.True(t, subs[1].Alert, "stored alert preserved through enrichment")
 }
 
 func TestEnrichWithRoomInfo_Empty(t *testing.T) {
@@ -96,22 +96,39 @@ func TestEnrichWithRoomInfo_Empty(t *testing.T) {
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), []model.Subscription{})
 }
 
-func TestEnrichWithRoomInfo_DegradedSite_ComputesUnreadFromBaseline(t *testing.T) {
+func TestEnrichWithRoomInfo_DegradedSite_PreservesStoredFlags(t *testing.T) {
 	svc, _, _, _, rooms, _ := newSvc(t)
-	seen := time.UnixMilli(100).UTC()
 	lastMsg := time.UnixMilli(200).UTC()
 	mention := time.UnixMilli(300).UTC()
 	subs := []model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen,
+		{ID: "a", RoomID: "r1", SiteID: "site-a", Alert: true, HasMention: true,
 			UserCount: 4, LastMsgAt: &lastMsg, LastMsgID: "m1", LastMentionAllAt: &mention},
 	}
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).Return(nil, errors.New("down"))
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	require.NotNil(t, subs[0].Room)
-	require.NotNil(t, subs[0].Room.LastMentionAllAt, "baseline mention must surface on the room object")
+	require.NotNil(t, subs[0].Room.LastMentionAllAt, "baseline mention surfaces on the room object")
 	assert.Equal(t, mention.UnixMilli(), subs[0].Room.LastMentionAllAt.UnixMilli())
-	assert.True(t, subs[0].Alert, "alert must be computed from the baseline lastMsgAt on a degraded site")
-	assert.True(t, subs[0].HasMention, "hasMention must be computed from the baseline mention on a degraded site")
+	assert.True(t, subs[0].Alert, "stored alert preserved on a degraded site")
+	assert.True(t, subs[0].HasMention, "stored hasMention preserved on a degraded site")
+}
+
+// TestEnrichWithRoomInfo_NeverRecomputesFlags pins the contract that enrichment
+// leaves alert/hasMention alone even when room timestamps would imply otherwise:
+// the stored values are the opposite of what a lastMsgAt/lastSeenAt compare gives.
+func TestEnrichWithRoomInfo_NeverRecomputesFlags(t *testing.T) {
+	svc, _, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	newer := int64(999)
+	mentionAt := int64(999)
+	subs := []model.Subscription{
+		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, Alert: false, HasMention: false},
+	}
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).
+		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Eng", LastMsgAt: &newer, LastMentionAllAt: &mentionAt}}, nil)
+	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+	assert.False(t, subs[0].Alert, "room lastMsgAt newer than lastSeen must NOT flip stored alert")
+	assert.False(t, subs[0].HasMention, "room lastMentionAllAt newer than lastSeen must NOT flip stored hasMention")
 }
 
 func TestUnread(t *testing.T) {
