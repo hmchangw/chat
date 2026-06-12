@@ -169,7 +169,7 @@ func TestHistoryService_GetThreadMessages_NoHSS(t *testing.T) {
 	assert.Empty(t, resp.Messages)
 }
 
-// TCount == 0 means the parent has never received a reply — short-circuit
+// TCount explicitly 0 means all replies have been deleted — short-circuit
 // without a Cassandra round-trip. Mock will fail if GetThreadMessages is called.
 func TestHistoryService_GetThreadMessages_TCountZeroSkipsCassandra(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
@@ -343,6 +343,35 @@ func TestHistoryService_GetThreadMessages_CeilingIncludesFreshReplies(t *testing
 		"ceiling %v must include replies created moments before the call (%v)", gotCeiling, recentReplyAt)
 	assert.False(t, gotFloor.Before(joinTime), "floor %v must not undercut accessSince %v", gotFloor, joinTime)
 	assert.True(t, gotFloor.Before(recentReplyAt), "floor %v must not clip fresh replies (%v)", gotFloor, recentReplyAt)
+}
+
+// Defensive inverted-range guard: an accessSince beyond the skew-tolerance
+// ceiling (with a parent dated past it, so the access-window check admits the
+// request) must collapse the range to ceiling == floor rather than send
+// Cassandra an inverted slice.
+func TestHistoryService_GetThreadMessages_InvertedRangeCollapsesToFloor(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	now := time.Now().UTC()
+	accessSince := now.Add(2 * time.Hour) // beyond the 1h skew-tolerance ceiling
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: now.Add(3 * time.Hour), ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&accessSince, true, nil)
+
+	var gotCeiling, gotFloor time.Time
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, before, floor time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+			gotCeiling = before
+			gotFloor = floor
+			return makePage(nil, false), nil
+		})
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+	assert.Equal(t, accessSince, gotFloor)
+	assert.True(t, gotCeiling.Equal(gotFloor), "inverted range must collapse: ceiling %v, floor %v", gotCeiling, gotFloor)
 }
 
 // Post bucket-walk era, GetThreadMessages needs nothing from the Mongo rooms

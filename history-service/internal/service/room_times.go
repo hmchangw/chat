@@ -31,8 +31,10 @@ func (s *HistoryService) resolveRoomTimesOrError(
 }
 
 // clockSkewTolerance allows clients with mildly out-of-sync clocks to still
-// have their LastMsgAt hint accepted. Anything further out is treated as
-// suspicious and triggers a Mongo fallback.
+// have their LastMsgAt hint accepted; anything further out is treated as
+// suspicious and triggers a Mongo fallback. It also pads the server-clock
+// ceilings (walkBounds fallback, GetThreadMessages) so rows written by a
+// slightly fast clock are not excluded.
 const clockSkewTolerance = time.Hour
 
 // minPlausibleEpoch rejects clearly-bogus millis (e.g. *ms == 0 → 1970-01-01)

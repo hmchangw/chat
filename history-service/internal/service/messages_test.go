@@ -57,8 +57,9 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 
 // newServiceWithRoomMock returns the same fixtures plus the room mock so a test
 // can set its own GetMinUserLastSeenAt expectations. The mock IS pre-populated
-// with a permissive GetRoomTimes default — every handler invokes the bucket-
-// walk resolver, and almost no test cares about its return. Tests asserting
+// with a permissive GetRoomTimes default — the main-history handlers invoke
+// the bucket-walk resolver (GetThreadMessages no longer does), and almost no
+// test cares about its return. Tests asserting
 // resolver behaviour should override with a stricter Times(N). UserStore and
 // CustomEmojiStore mocks are returned without pre-stubs; only reaction tests
 // exercise them.

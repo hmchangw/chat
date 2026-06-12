@@ -95,7 +95,10 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	if accessSince != nil && accessSince.After(floor) {
 		floor = *accessSince
 	}
-	// Inverted range guard: an accessSince beyond the skew tolerance.
+	// Inverted range guard: defensive only — requires an accessSince beyond
+	// the skew tolerance AND a parent dated past it (the access-window check
+	// above rejects anything earlier). Collapses the range instead of sending
+	// Cassandra an inverted slice.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}
