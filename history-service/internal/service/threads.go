@@ -45,10 +45,10 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// Mongo error from the room-times read.
 	now := time.Now().UTC()
 	var (
-		msg                  *models.Message
-		findErr              error
-		lastMsgAt, createdAt time.Time
-		rtErr                error
+		msg       *models.Message
+		findErr   error
+		createdAt time.Time
+		rtErr     error
 	)
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -58,7 +58,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	}()
 	go func() {
 		defer wg.Done()
-		lastMsgAt, createdAt, rtErr = s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
+		_, createdAt, rtErr = s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
 	}()
 	wg.Wait()
 
@@ -114,13 +114,13 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, rtErr
 	}
 
-	// Ceiling: lastMsgAt+1ms or now+clockSkewTolerance when unknown.
-	ceiling := lastMsgAt
-	if ceiling.IsZero() {
-		ceiling = now.Add(clockSkewTolerance)
-	} else {
-		ceiling = ceiling.Add(time.Millisecond)
-	}
+	// Ceiling: server clock + skew tolerance, deliberately NOT the room's
+	// lastMsgAt. Thread replies never bump rooms.lastMsgAt (broadcast-worker
+	// skips it for thread fan-out), so a lastMsgAt-derived ceiling hides every
+	// reply newer than the room's last main-channel message. The thread table
+	// is one partition per thread — there is no bucket walk for a tight
+	// ceiling to bound — so this only guards against future-dated rows.
+	ceiling := now.Add(clockSkewTolerance)
 
 	// Floor: max(createdAt, accessSince) clamped to historyFloor so an ancient createdAt can't exceed the configured limit.
 	historyFloor := now.Add(-s.historyFloor)

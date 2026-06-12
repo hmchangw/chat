@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -303,6 +304,44 @@ func TestHistoryService_GetThreadMessages_ParentBeforeAccessSinceReturnsForbidde
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.Error(t, err)
 	assertForbiddenErr(t, err, "thread is outside access window")
+}
+
+// Regression: thread replies never bump rooms.lastMsgAt (broadcast-worker
+// intentionally skips it for thread fan-out), so a ceiling derived from it
+// hides every reply newer than the room's last main-channel message. The
+// ceiling passed to the repo must be based on the server clock instead.
+func TestHistoryService_GetThreadMessages_CeilingNotCappedByStaleRoomLastMsgAt(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	now := time.Now().UTC()
+	roomCreatedAt := now.Add(-24 * time.Hour)
+	staleLastMsgAt := now.Add(-2 * time.Hour) // last main-channel message
+	parentCreatedAt := now.Add(-3 * time.Hour)
+	recentReplyAt := now.Add(-time.Minute) // reply sent after the room's lastMsgAt
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: recentReplyAt},
+	}
+	var gotCeiling time.Time
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, before, _ time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+			gotCeiling = before
+			return makePage(replies, false), nil
+		})
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{
+		ThreadMessageID: "m-parent",
+		Meta:            &models.RoomMeta{LastMsgAt: millis(staleLastMsgAt), CreatedAt: millis(roomCreatedAt)},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	assert.True(t, gotCeiling.After(recentReplyAt),
+		"ceiling %v must include replies newer than the room's lastMsgAt %v", gotCeiling, staleLastMsgAt)
 }
 
 // ============================================================
