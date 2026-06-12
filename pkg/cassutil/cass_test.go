@@ -1,6 +1,8 @@
 package cassutil
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBuildCluster_TokenAwareHostPolicy(t *testing.T) {
+	cluster := buildCluster([]string{"cass-a:9042"}, "ks", "", "", 0)
+	policy := cluster.PoolConfig.HostSelectionPolicy
+	require.NotNil(t, policy, "expected a host selection policy to be configured (gocql defaults to nil → round-robin)")
+	assert.Contains(t, strings.ToLower(reflect.TypeOf(policy).String()), "tokenaware",
+		"expected a token-aware host selection policy, got %T", policy)
+}
 
 func TestParseHosts(t *testing.T) {
 	tests := []struct {
