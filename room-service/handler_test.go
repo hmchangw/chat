@@ -1944,7 +1944,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			req:  model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}},
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1", "r2", "r3"}).Return([]model.Room{
-					{ID: "r1", Name: "general", SiteID: "site-a"},
+					{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 42, LastMsgID: "m-100"},
 					{ID: "r2", Name: "random", SiteID: "site-a"},
 					{ID: "r3", Name: "help", SiteID: "site-b"},
 				}, nil)
@@ -1958,10 +1958,12 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
 				require.Len(t, resp.Rooms, 3)
 
-				// r1: found, keyed
+				// r1: found, keyed, room-doc denorm fields forwarded
 				assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 				assert.True(t, resp.Rooms[0].Found)
 				assert.Equal(t, "general", resp.Rooms[0].Name)
+				assert.Equal(t, 42, resp.Rooms[0].UserCount)
+				assert.Equal(t, "m-100", resp.Rooms[0].LastMsgID)
 				require.NotNil(t, resp.Rooms[0].PrivateKey)
 				assert.Equal(t, privB64, *resp.Rooms[0].PrivateKey)
 				require.NotNil(t, resp.Rooms[0].KeyVersion)
@@ -2131,6 +2133,25 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_handleRoomsInfoBatch_ForwardsCounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{
+		{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 5, AppCount: 2},
+	}, nil)
+	keyStore.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxBatchSize: 100}
+
+	resp, err := h.roomsInfoBatch(ctxParams(map[string]string{}), model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}})
+	require.NoError(t, err)
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, 5, resp.Rooms[0].UserCount)
+	assert.Equal(t, 2, resp.Rooms[0].AppCount)
 }
 
 func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {

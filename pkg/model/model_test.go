@@ -593,9 +593,7 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 }
 
 func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
-	// Verify Go's embedded *Subscription serialisation flattens onto the
-	// top-level object — the frontend depends on this in api/types.ts
-	// (DMSubscription extends Subscription).
+	// Embedded *Subscription must flatten onto the top-level JSON object — frontend api/types.ts depends on this.
 	d := model.DMSubscription{
 		Subscription: &model.Subscription{
 			ID:       "s-dm-1",
@@ -634,9 +632,7 @@ func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
 }
 
 func TestDMSubscriptionJSON_HRInfoOmittedWhenNil(t *testing.T) {
-	// `*SubscriptionHRInfo` with `omitempty` should disappear from the
-	// JSON when nil — channels/botDMs that share this wrapper shouldn't
-	// have a phantom hrInfo: null on the wire.
+	// nil *SubscriptionHRInfo with omitempty must not produce a phantom hrInfo:null on the wire.
 	d := model.DMSubscription{
 		Subscription: &model.Subscription{
 			ID:       "s-c-1",
@@ -659,8 +655,6 @@ func TestDMSubscriptionJSON_HRInfoOmittedWhenNil(t *testing.T) {
 }
 
 func TestSubscriptionHRInfoJSON(t *testing.T) {
-	// All three fields are required strings (no omitempty) — when the
-	// HRInfo pointer is non-nil, every field is on the wire.
 	hr := model.SubscriptionHRInfo{
 		Account: "bob",
 		Name:    "鮑勃",
@@ -987,9 +981,6 @@ func TestRoomKeyGetResponseJSON(t *testing.T) {
 	roundTrip(t, &src, &dst)
 }
 
-// TestNotificationEventJSON_Reaction round-trips the reaction notification
-// envelope published on chat.user.{account}.notification when someone reacts
-// to a message.
 func TestNotificationEventJSON_Reaction(t *testing.T) {
 	src := model.NotificationEvent{
 		Type:   "reaction",
@@ -1667,6 +1658,71 @@ func TestListOrgMembersResponseJSON(t *testing.T) {
 	assert.Equal(t, resp, dst)
 }
 
+func TestSubscriptionRoomJSON(t *testing.T) {
+	t.Run("round trip with all fields", func(t *testing.T) {
+		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
+		kv := 7
+		lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		lastMention := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+		r := model.SubscriptionRoom{
+			SiteID:           "site-a",
+			Name:             "general",
+			UserCount:        42,
+			AppCount:         3,
+			LastMsgAt:        &lastMsg,
+			LastMsgID:        "m-100",
+			LastMentionAllAt: &lastMention,
+			PrivateKey:       &pk,
+			KeyVersion:       &kv,
+		}
+		roundTrip(t, &r, &model.SubscriptionRoom{})
+	})
+
+	t.Run("zero value omits all fields", func(t *testing.T) {
+		data, err := json.Marshal(&model.SubscriptionRoom{})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{}`, string(data))
+	})
+}
+
+func TestSubscriptionJSON_NestedRoom(t *testing.T) {
+	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	s := model.Subscription{
+		ID:        "s1",
+		User:      model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		RoomType:  model.RoomTypeChannel,
+		Name:      "general",
+		JoinedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UserCount: 42,
+		LastMsgAt: &lastMsg,
+		LastMsgID: "m-100",
+		Room: &model.SubscriptionRoom{
+			SiteID:    "site-a",
+			Name:      "general-canonical",
+			UserCount: 42,
+			LastMsgID: "m-100",
+		},
+	}
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	// Room-derived fields are nested under "room" — never flattened on the wire.
+	for _, key := range []string{"userCount", "lastMsgAt", "lastMsgId"} {
+		_, present := raw[key]
+		assert.False(t, present, "flattened %q must not serialize at the top level", key)
+	}
+	room, ok := raw["room"].(map[string]any)
+	require.True(t, ok, "room object must be present")
+	assert.Equal(t, "general-canonical", room["name"])
+	assert.Equal(t, float64(42), room["userCount"])
+	assert.Equal(t, "m-100", room["lastMsgId"])
+}
+
 func TestRoomsInfoBatchRequestJSON(t *testing.T) {
 	src := model.RoomsInfoBatchRequest{
 		RoomIDs: []string{"r1", "r2", "r3"},
@@ -1691,7 +1747,10 @@ func TestRoomInfoJSON(t *testing.T) {
 			Found:            true,
 			SiteID:           "site-a",
 			Name:             "general",
+			UserCount:        42,
+			AppCount:         3,
 			LastMsgAt:        &lastMsg,
+			LastMsgID:        "m-100",
 			LastMentionAllAt: &lastMention,
 			PrivateKey:       &pk,
 			KeyVersion:       &kv,
@@ -1723,7 +1782,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		assert.True(t, foundPresent, "found must be present")
 		assert.Equal(t, false, foundVal)
 
-		for _, key := range []string{"siteId", "name", "lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
+		for _, key := range []string{"siteId", "name", "userCount", "appCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted", key)
 		}
@@ -1742,7 +1801,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 
-		for _, key := range []string{"lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion"} {
+		for _, key := range []string{"userCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted when zero/nil", key)
 		}
@@ -2167,11 +2226,6 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 	assert.Equal(t, int64(1740000000000), dst.Timestamp)
 }
 
-// TestErrorResponseRoomIDOmitempty was removed: model.ErrorResponse was deleted
-// alongside the rest of the legacy error machinery (see pkg/errcode for the
-// canonical client-facing error type). The DM-exists path now returns a success
-// reply (model.CreateRoomReply{Status: CreateRoomStatusExists, RoomID}).
-
 func TestAsyncJobResultShape(t *testing.T) {
 	r := model.AsyncJobResult{
 		RequestID: "req-1",
@@ -2229,9 +2283,6 @@ func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "requestId")
 }
-
-// TestErrorResponseJSON was removed alongside model.ErrorResponse. The wire
-// envelope is now owned by pkg/errcode (see pkg/errcode/error_test.go).
 
 func TestReadReceiptRequestJSON(t *testing.T) {
 	r := model.ReadReceiptRequest{MessageID: "m1"}
@@ -3397,4 +3448,65 @@ func TestMessageEvent_NewTCount(t *testing.T) {
 		assert.True(t, present, "zero NewTCount must be present in BSON — bson omitempty must not be used")
 		assert.EqualValues(t, 0, val, "zero BSON value must be 0, not missing")
 	})
+}
+
+func TestUserStatusFields_RoundTrip(t *testing.T) {
+	src := model.User{
+		ID:           "u1",
+		Account:      "alice",
+		SiteID:       "site-a",
+		StatusText:   "busy",
+		StatusIsShow: true,
+	}
+	dst := model.User{}
+	roundTrip(t, &src, &dst)
+}
+
+func TestUserStatusUpdated_RoundTrip(t *testing.T) {
+	show := true
+	src := model.UserStatusUpdated{
+		Account:      "alice",
+		StatusText:   "in a meeting",
+		StatusIsShow: &show,
+		Timestamp:    1735689600000,
+	}
+	dst := model.UserStatusUpdated{}
+	roundTrip(t, &src, &dst)
+}
+
+func TestUserStatusUpdated_StatusIsShowOmittedWhenNil(t *testing.T) {
+	src := model.UserStatusUpdated{
+		Account:    "alice",
+		StatusText: "in a meeting",
+		Timestamp:  1735689600000,
+	}
+	data, err := json.Marshal(&src)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, present := raw["statusIsShow"]
+	assert.False(t, present, "nil StatusIsShow must be omitted from JSON")
+}
+
+func TestSubscriptionEnrichmentFields_RoundTrip(t *testing.T) {
+	// The flattened $lookup baseline fields are internal (json:"-"); the wire
+	// carries room-derived data only via the nested Room object.
+	lastMsg := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	src := model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Room: &model.SubscriptionRoom{
+			SiteID:    "site-a",
+			UserCount: 42,
+			LastMsgAt: &lastMsg,
+			LastMsgID: "msg-abc",
+		},
+	}
+	dst := model.Subscription{}
+	roundTrip(t, &src, &dst)
 }

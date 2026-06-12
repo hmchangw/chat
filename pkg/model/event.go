@@ -17,6 +17,14 @@ const (
 	EventThreadReplyAdded EventType = "thread_reply_added"
 )
 
+// UserStatusUpdated is the cross-site outbox event user-service publishes on status.set; inbox-worker applies it.
+type UserStatusUpdated struct {
+	Account      string `json:"account"                bson:"account"`
+	StatusText   string `json:"statusText"             bson:"statusText"`
+	StatusIsShow *bool  `json:"statusIsShow,omitempty" bson:"statusIsShow,omitempty"`
+	Timestamp    int64  `json:"timestamp"              bson:"timestamp"`
+}
+
 type MessageEvent struct {
 	Event   EventType `json:"event,omitempty" bson:"event,omitempty"`
 	Message Message   `json:"message"`
@@ -24,15 +32,12 @@ type MessageEvent struct {
 	// ReactionDelta is set only when Event == EventReacted.
 	ReactionDelta *ReactionDelta `json:"reactionDelta,omitempty" bson:"reactionDelta,omitempty"`
 	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
-	// NewTCount is the authoritative tcount of the parent message after a thread
-	// reply is added (EventThreadReplyAdded) or deleted (EventDeleted with
-	// ThreadParentMessageID set). Nil for all other event types.
-	// bson tag omits omitempty — zero is a valid count when the last reply is deleted.
+	// NewTCount is the authoritative tcount after a thread reply is added/deleted; nil for all other event types.
+	// bson tag omits omitempty — zero is valid when the last reply is deleted.
 	NewTCount *int `json:"newTcount,omitempty" bson:"newTcount"`
 }
 
-// ReactionAction is the toggle direction on ReactionDelta.Action; defined
-// type (not alias) so constants give compile-time safety vs raw strings.
+// ReactionAction is the toggle direction on ReactionDelta.Action; defined type (not alias) for compile-time safety.
 type ReactionAction string
 
 const (
@@ -40,8 +45,7 @@ const (
 	ReactionActionRemoved ReactionAction = "removed"
 )
 
-// ReactionDelta is the per-toggle reaction payload. Actor produced the toggle;
-// the reacted-to message's author is on the enclosing MessageEvent.Message.
+// ReactionDelta is the per-toggle reaction payload; Actor toggled, reacted-to message's author is on MessageEvent.Message.
 type ReactionDelta struct {
 	Shortcode string         `json:"shortcode" bson:"shortcode"`
 	Action    ReactionAction `json:"action"    bson:"action"`
@@ -77,25 +81,14 @@ type CanonicalMemberEvent struct {
 }
 
 type UpdateRoleRequest struct {
-	RoomID  string `json:"roomId"  bson:"roomId"`
-	Account string `json:"account" bson:"account"`
-	NewRole Role   `json:"newRole" bson:"newRole"`
-	// Set by room-service at acceptance; stable seed for room-worker's Nats-Msg-Id.
-	Timestamp int64 `json:"timestamp" bson:"timestamp"`
+	RoomID    string `json:"roomId"  bson:"roomId"`
+	Account   string `json:"account" bson:"account"`
+	NewRole   Role   `json:"newRole" bson:"newRole"`
+	Timestamp int64  `json:"timestamp" bson:"timestamp"` // set by room-service at acceptance; stable seed for Nats-Msg-Id
 }
 
-// InboxMemberEvent is the payload of an OutboxEvent{Type: "member_added" |
-// "member_removed"} carried on the INBOX stream for local consumers like
-// search-sync-worker. One event represents a bulk add/remove of N Accounts
-// against a single room; downstream consumers fan out per-account.
-//
-// HistorySharedSince == nil means the entire bulk is unrestricted; non-nil
-// means all Accounts in the bulk are restricted from that timestamp. The
-// user-room collection routes these into restrictedRooms{}; the spotlight
-// collection skips non-nil events entirely for MVP. Publishers MUST emit nil
-// for unrestricted rooms — never &0 and never a non-positive timestamp — so
-// the Go↔painless boundary sentinel (hss <= 0 → unrestricted) stays sound.
-// JoinedAt is only meaningful on add events and omitted on removes.
+// InboxMemberEvent is the INBOX stream payload for "member_added"/"member_removed" events; one event covers N Accounts.
+// HistorySharedSince: nil = unrestricted; non-nil = restricted from that timestamp. Emit nil (never &0) — sentinel hss<=0 means unrestricted.
 type InboxMemberEvent struct {
 	RoomID             string   `json:"roomId"`
 	RoomName           string   `json:"roomName"`
@@ -107,10 +100,8 @@ type InboxMemberEvent struct {
 	Timestamp          int64    `json:"timestamp" bson:"timestamp"`
 }
 
-// NotificationEvent is the per-user reaction notification published on
-// chat.user.{account}.notification when someone reacts to a message.
-// Distinct from PushNotificationEvent — push is the batched mobile pipeline;
-// this is the legacy single-user envelope the FE already listens on.
+// NotificationEvent is the single-user reaction notification on chat.user.{account}.notification.
+// Distinct from PushNotificationEvent (batched mobile); this is the legacy envelope the FE listens on.
 type NotificationEvent struct {
 	Type          string         `json:"type"` // "reaction"
 	RoomID        string         `json:"roomId"`
@@ -119,8 +110,7 @@ type NotificationEvent struct {
 	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
 }
 
-// OutboxEventType is the type tag on an OutboxEvent used to route it to the
-// correct handler on the destination site.
+// OutboxEventType is the type tag on an OutboxEvent, used to route it to the correct handler on the destination site.
 type OutboxEventType = string
 
 const (
@@ -133,13 +123,11 @@ const (
 	OutboxThreadRead                  OutboxEventType = "thread_read"
 	OutboxRoomRenamed                 OutboxEventType = "room_renamed"
 	OutboxRoomRestricted              OutboxEventType = "room_restricted"
+	OutboxUserStatusUpdated           OutboxEventType = "user_status_updated"
 )
 
-// SubscriptionReadEvent is the OutboxEvent.Payload for type
-// "subscription_read". Sent from a room's home site to the user's home site
-// when a user marks the room as read; the destination updates its local
-// subscription cache. LastSeenAt is UnixMilli (UTC) for cross-language wire
-// safety; Timestamp is the publish time.
+// SubscriptionReadEvent is the OutboxEvent.Payload for "subscription_read"; sent home→user site on read.
+// LastSeenAt is UnixMilli (UTC) for cross-language wire safety.
 type SubscriptionReadEvent struct {
 	Account    string `json:"account"    bson:"account"`
 	RoomID     string `json:"roomId"     bson:"roomId"`
@@ -148,8 +136,7 @@ type SubscriptionReadEvent struct {
 	Timestamp  int64  `json:"timestamp"  bson:"timestamp"`
 }
 
-// ThreadReadEvent is the OutboxEvent.Payload for type "thread_read". The source site
-// ships the authoritative NewThreadUnread+Alert; the destination applies them as-is.
+// ThreadReadEvent is the OutboxEvent.Payload for "thread_read"; source ships authoritative NewThreadUnread+Alert.
 type ThreadReadEvent struct {
 	Account         string   `json:"account"`
 	RoomID          string   `json:"roomId"`
@@ -183,10 +170,7 @@ type MemberAddEvent struct {
 }
 
 // Participant represents a user with display name info for client rendering.
-// DisplayName is the render-ready composed name (see pkg/displayfmt.CombineWithFallback)
-// and is the field push-service uses to render notifications; it is populated only
-// where pre-composition is meaningful (push event senders), left empty in
-// fan-out shapes that carry raw EngName/ChineseName (mentions, ClientMessage).
+// DisplayName is pre-composed (push-service senders only); raw EngName/ChineseName are used in fan-out shapes.
 type Participant struct {
 	UserID      string `json:"userId,omitempty"      bson:"userId,omitempty"`
 	Account     string `json:"account"               bson:"account"`
@@ -224,10 +208,8 @@ const (
 	ThreadActionReplyDeleted ThreadAction = "reply_deleted"
 )
 
-// RoomEvent is the live fan-out event for a newly created message
-// (RoomEventNewMessage). Edits, deletes, pins, and unpins use the flattened
-// EditRoomEvent / DeleteRoomEvent / PinRoomEvent / UnpinRoomEvent so clients
-// are not handed zero-valued base fields.
+// RoomEvent is the live fan-out event for new messages (RoomEventNewMessage).
+// Edits, deletes, pins, and unpins use flat event types to avoid zero-valued base fields.
 type RoomEvent struct {
 	Type           RoomEventType `json:"type"`
 	RoomID         string        `json:"roomId"`
@@ -250,10 +232,8 @@ type RoomEvent struct {
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
 }
 
-// EditRoomEvent is the live event published when a message is edited. Fields are
-// flat (no zero-valued RoomEvent base fields). For encrypted channel rooms
-// NewContent is empty and EncryptedNewContent carries the ciphertext; otherwise
-// NewContent holds the plaintext edit.
+// EditRoomEvent is the live event for a message edit; flat shape, no zero-valued base fields.
+// EncryptedNewContent carries ciphertext for encrypted rooms; NewContent holds the plaintext otherwise.
 type EditRoomEvent struct {
 	Type                RoomEventType   `json:"type" bson:"type"`
 	RoomID              string          `json:"roomId" bson:"roomId"`
@@ -268,8 +248,7 @@ type EditRoomEvent struct {
 	UpdatedAt           time.Time       `json:"updatedAt" bson:"updatedAt"`
 }
 
-// DeleteRoomEvent is the live event published when a message is deleted. Fields
-// are flat (no zero-valued RoomEvent base fields).
+// DeleteRoomEvent is the live event for a message deletion; flat shape, no zero-valued base fields.
 type DeleteRoomEvent struct {
 	Type           RoomEventType `json:"type" bson:"type"`
 	RoomID         string        `json:"roomId" bson:"roomId"`
@@ -282,9 +261,7 @@ type DeleteRoomEvent struct {
 	UpdatedAt      time.Time     `json:"updatedAt" bson:"updatedAt"`
 }
 
-// PinRoomEvent is the live event published when a message is pinned. Fields
-// are flat (no zero-valued RoomEvent base fields). Mirrors the
-// EditRoomEvent / DeleteRoomEvent pattern.
+// PinRoomEvent is the live event for a message pin; flat shape, mirrors EditRoomEvent/DeleteRoomEvent.
 type PinRoomEvent struct {
 	Type           RoomEventType `json:"type" bson:"type"`
 	RoomID         string        `json:"roomId" bson:"roomId"`
@@ -308,9 +285,8 @@ type UnpinRoomEvent struct {
 	UnpinnedAt     time.Time     `json:"unpinnedAt" bson:"unpinnedAt"`
 }
 
-// ThreadMetadataUpdatedEvent is published on the per-user NATS subject when a
-// thread reply is added or deleted, so clients can update the reply-count badge
-// on the parent message without re-fetching the full message.
+// ThreadMetadataUpdatedEvent is published per-user when a thread reply is added or deleted,
+// letting clients update the reply-count badge without re-fetching the full message.
 type ThreadMetadataUpdatedEvent struct {
 	Type            RoomEventType `json:"type" bson:"type"`
 	RoomID          string        `json:"roomId" bson:"roomId"`
@@ -323,11 +299,8 @@ type ThreadMetadataUpdatedEvent struct {
 	Action          ThreadAction  `json:"action" bson:"action"`
 }
 
-// RoomRenamedRoomEvent is the live event published when a channel is renamed.
-// Flat shape (same convention as EditRoomEvent / DeleteRoomEvent) — no
-// zero-valued RoomEvent base fields shipped to clients. Drives the client's
-// local subscription `name` update; no separate `subscription.update` fan-out
-// fires for renames.
+// RoomRenamedRoomEvent is the live event for a channel rename; flat shape.
+// Drives the client's local subscription `name` update — no separate subscription.update fires.
 type RoomRenamedRoomEvent struct {
 	Type      RoomEventType `json:"type" bson:"type"`
 	RoomID    string        `json:"roomId" bson:"roomId"`
@@ -338,11 +311,8 @@ type RoomRenamedRoomEvent struct {
 	RenamedAt time.Time     `json:"renamedAt" bson:"renamedAt"`
 }
 
-// RoomRestrictedRoomEvent is the live event published when a channel's
-// restricted / externalAccess flags change. Flat shape. `OwnerAccount` is
-// non-empty only on the unrestricted→restricted transition (when an owner is
-// designated). Drives the client's local subscription `restricted` /
-// `externalAccess` / `roles` update.
+// RoomRestrictedRoomEvent is the live event for restricted/externalAccess flag changes; flat shape.
+// OwnerAccount is non-empty only on the unrestricted→restricted transition.
 type RoomRestrictedRoomEvent struct {
 	Type           RoomEventType `json:"type" bson:"type"`
 	RoomID         string        `json:"roomId" bson:"roomId"`
@@ -355,8 +325,7 @@ type RoomRestrictedRoomEvent struct {
 	ChangedAt      time.Time     `json:"changedAt" bson:"changedAt"`
 }
 
-// ReactRoomEvent is the live event published when a reaction is toggled.
-// Actor carries the full Participant so clients can render display names without a side lookup.
+// ReactRoomEvent is the live event for a reaction toggle; Actor carries the full Participant for display-name rendering.
 type ReactRoomEvent struct {
 	Type           RoomEventType  `json:"type" bson:"type"`
 	RoomID         string         `json:"roomId" bson:"roomId"`
@@ -371,21 +340,16 @@ type ReactRoomEvent struct {
 	UpdatedAt      time.Time      `json:"updatedAt" bson:"updatedAt"`
 }
 
-// RemovedSubscriptionRef is the minimal subscription identity carried on a
-// "removed" subscription.update event — only the fields a client needs to drop
-// the room from its sidebar. Used instead of an embedded full Subscription so
-// the wire payload carries no zero-valued fields (roles, name, joinedAt, etc.).
+// RemovedSubscriptionRef is the minimal identity on a "removed" subscription.update event — only fields needed to
+// drop the room from the sidebar; avoids shipping zero-valued full Subscription fields.
 type RemovedSubscriptionRef struct {
 	RoomID   string           `json:"roomId" bson:"roomId"`
 	RoomType RoomType         `json:"roomType" bson:"roomType"`
 	U        SubscriptionUser `json:"u" bson:"u"`
 }
 
-// SubscriptionRemovedEvent is the subscription.update payload published when a
-// member (individual or via org removal) loses a subscription. It mirrors
-// SubscriptionUpdateEvent's envelope (userId / subscription / action /
-// timestamp) but embeds a lean RemovedSubscriptionRef rather than a full
-// Subscription, so removals do not ship zero-valued Subscription fields.
+// SubscriptionRemovedEvent is the subscription.update payload when a member loses a subscription.
+// Embeds RemovedSubscriptionRef instead of full Subscription to avoid zero-valued fields on the wire.
 type SubscriptionRemovedEvent struct {
 	UserID       string                 `json:"userId,omitempty" bson:"userId,omitempty"`
 	Subscription RemovedSubscriptionRef `json:"subscription" bson:"subscription"`
@@ -405,25 +369,19 @@ type RoomKeyEnsureRequest struct {
 	RoomID string `json:"roomId"`
 }
 
-// RoomKeyEnsureResponse is the reply from the room key ensure RPC. It confirms
-// the room has a key pair in Valkey at the given Version. Key bytes are not
-// returned — the caller only needs to know the key exists.
+// RoomKeyEnsureResponse is the reply from the room key ensure RPC; confirms the room has a key at the given Version.
 type RoomKeyEnsureResponse struct {
 	RoomID  string `json:"roomId"`
 	Version int    `json:"version"`
 }
 
-// RoomKeyGetRequest is the payload for the client-callable room key get RPC.
-// Version is optional: when nil the server returns the current key; when set
-// the server returns the historical key at that version (subject to the
-// roomkeystore previous-key grace window).
+// RoomKeyGetRequest is the payload for the room key get RPC; nil Version returns the current key,
+// non-nil returns the historical key at that version (subject to roomkeystore grace window).
 type RoomKeyGetRequest struct {
 	Version *int `json:"version,omitempty"`
 }
 
-// RoomKeyGetResponse is the reply from the room key get RPC. PrivateKey is
-// the 32-byte room secret used directly as the AES-256-GCM key by clients.
-// []byte marshals to standard base64 in JSON (same shape as RoomKeyEvent).
+// RoomKeyGetResponse is the reply from the room key get RPC; PrivateKey is the 32-byte AES-256-GCM secret.
 type RoomKeyGetResponse struct {
 	RoomID     string `json:"roomId"`
 	Version    int    `json:"version"`
@@ -523,8 +481,7 @@ type CreateRoomReply struct {
 // CreateRoomReplyAccepted means validated + queued; persistence happens later in room-worker.
 const CreateRoomReplyAccepted = "accepted"
 
-// CreateRoomStatusExists indicates the requested DM already existed; RoomID is
-// the existing room. Clients treat it as success and open that room.
+// CreateRoomStatusExists indicates the DM already existed; clients treat it as success and open that room.
 const CreateRoomStatusExists = "exists"
 
 // RoomRenamedOutboxPayload is wrapped in OutboxEvent.Payload for OutboxRoomRenamed.
@@ -534,9 +491,8 @@ type RoomRenamedOutboxPayload struct {
 	Timestamp int64  `json:"timestamp" bson:"timestamp"`
 }
 
-// RoomRestrictedOutboxPayload is wrapped in OutboxEvent.Payload for
-// OutboxRoomRestricted. When OwnerAccount is non-empty AND Restricted is
-// true, the destination $cond promotes that account to sole owner.
+// RoomRestrictedOutboxPayload is wrapped in OutboxEvent.Payload for OutboxRoomRestricted.
+// Non-empty OwnerAccount + Restricted=true causes the destination to promote that account to sole owner.
 type RoomRestrictedOutboxPayload struct {
 	RoomID         string `json:"roomId"                 bson:"roomId"`
 	Restricted     bool   `json:"restricted"             bson:"restricted"`
@@ -545,21 +501,18 @@ type RoomRestrictedOutboxPayload struct {
 	Timestamp      int64  `json:"timestamp"              bson:"timestamp"`
 }
 
-// StatusReply is the response for fire-and-forget RPCs that only confirm
-// acceptance. Status is "ok" or "accepted" depending on the endpoint.
+// StatusReply is the response for fire-and-forget RPCs; Status is "ok" or "accepted".
 type StatusReply struct {
 	Status string `json:"status"`
 }
 
-// StatusWithRequestReply is StatusReply plus the echoed request ID, for RPCs
-// whose clients correlate the async result by request ID (rename, restricted).
+// StatusWithRequestReply is StatusReply plus the echoed request ID for async-result correlation (rename, restricted).
 type StatusWithRequestReply struct {
 	Status    string `json:"status"`
 	RequestID string `json:"requestId"`
 }
 
-// RoomRenameRequest is the rename RPC body. NewName-only: roomID is taken from
-// the subject, never the body.
+// RoomRenameRequest is the rename RPC body; roomID comes from the subject, not the body.
 type RoomRenameRequest struct {
 	NewName string `json:"newName"`
 }

@@ -53,6 +53,7 @@ paths.
      - [Get Thread Messages](#get-thread-messages) · [Get Thread Parent Messages](#get-thread-parent-messages)
    - [3.3 search-service](#33-search-service)
      - [`search.messages`](#searchmessages--full-text-message-search) · [Search Rooms](#search-rooms) · [Search Apps](#search-apps) · [Search Users](#search-users)
+   - [3.4 user-service](#34-user-service)
 4. [Message Send](#4-message-send)
 5. [Room Encryption](#5-room-encryption)
 6. [Error envelope reference](#6-error-envelope-reference)
@@ -389,9 +390,19 @@ Room ciphertext envelope (`roomcrypto.EncryptedMessage`). See [§5 Room Encrypti
 #### Subscription
 
 A user's membership record for one room, embedded in `subscription.update`
-events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
-ID serializes as `id` (not `_id`) and the user under `u` (not `user`). The
-first group is always present; the rest are optional (omitted when empty/unset).
+events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled` and
+returned (enriched) by the user-service subscription endpoints. The ID
+serializes as `id` (not `_id`) and the user under `u` (not `user`). The first
+group is always present; the rest are optional (omitted when empty/unset).
+
+`name` is the **subscription's** display name and depends on the room type:
+the channel name for channels, the counterpart's account for DMs, the app's
+display name for botDMs. It is never overwritten by the room's canonical name.
+
+All room-derived properties live under the nested `room` object
+([SubscriptionRoom](#subscriptionroom)), populated at read time by the
+user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
+**not** present on subscriptions embedded in `subscription.update` events.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -400,11 +411,11 @@ first group is always present; the rest are optional (omitted when empty/unset).
 | `roomId` | string | The room. |
 | `siteId` | string | The room's home site. |
 | `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
-| `name` | string | The room's display name. |
+| `name` | string | Display name per room type (see above). |
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
-| `hasMention` | boolean | Whether the user has an unread mention. |
-| `alert` | boolean | Whether the room has an unread alert for the user. |
+| `hasMention` | boolean | Whether the user has an unread mention. Authoritative subscription state maintained by the write path (set when the user is @-mentioned, cleared on read); **not** modified by read enrichment. |
+| `alert` | boolean | Whether the room has an unread alert for the user. Authoritative subscription state maintained by the write path (set on new message, cleared on read receipt); **not** modified by read enrichment. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
 | `isSubscribed` | boolean | Optional. Whether the user is actively subscribed. |
@@ -413,6 +424,27 @@ first group is always present; the rest are optional (omitted when empty/unset).
 | `threadUnread` | string[] | Optional. Thread room IDs with unread replies. |
 | `restricted` | boolean | Optional. Denormalized room restricted flag. |
 | `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
+| `room` | [SubscriptionRoom](#subscriptionroom) | Optional. Room-derived view (read-time enrichment; user-service endpoints only). |
+
+#### SubscriptionRoom
+
+The room-derived view nested on an enriched [Subscription](#subscription).
+Fully populated from room-service's `GetRoomsInfo` RPC; when that RPC fails or
+the room is unknown, a baseline object (`siteId` plus whatever the local DB
+knows: `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no name, no
+key) is returned instead. All fields are optional (omitted when zero/unset).
+
+| Field | Type | Notes |
+|---|---|---|
+| `siteId` | string | The room's home site. |
+| `name` | string | The room's canonical name (may differ from the subscription `name`). |
+| `userCount` | number | Member count. |
+| `appCount` | number | App (bot) count. |
+| `lastMsgAt` | RFC3339 timestamp | Time of the room's last message. |
+| `lastMsgId` | string | Last message ID. |
+| `lastMentionAllAt` | RFC3339 timestamp | Time of the last room-wide mention. |
+| `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Only present when the caller's site holds the key. |
+| `keyVersion` | number | Version of `privateKey`. |
 
 #### HrInfo
 
@@ -423,15 +455,24 @@ HR display names.
 | `engName` | string | English display name. |
 | `chineseName` | string | Chinese display name. |
 
+#### SubscriptionHRInfo
+
+The `hrInfo` field on a [DMSubscription](#subscription) — the DM counterpart's HR record.
+
+| Field | Type | Notes |
+|---|---|---|
+| `account` | string | Counterpart's account. |
+| `name` | string | Counterpart's display name. |
+| `engName` | string | Counterpart's English name. |
+
 #### AppAssistant
 
-An app's assistant (bot) subdocument. Only `name` is always present; the other
-fields appear per endpoint.
+An app's assistant (bot) subdocument. `name` and `enabled` are always present; `settingsUrl` is optional.
 
 | Field | Type | Notes |
 |---|---|---|
 | `name` | string | Assistant/bot name. |
-| `enabled` | boolean | Optional. Whether the assistant is enabled. |
+| `enabled` | boolean | Whether the assistant is enabled. |
 | `settingsUrl` | string | Optional. Assistant settings URL. |
 
 #### AsyncJobResult
@@ -662,7 +703,7 @@ On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
     "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
@@ -770,7 +811,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
   "subscription": {
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" }
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false }
   },
   "action": "removed",
   "timestamp": 1746518483000
@@ -859,7 +900,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
     "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
@@ -2891,7 +2932,7 @@ See [Error envelope](#6-error-envelope-reference).
 | `threadParentMessageId` | string | omitted when not a thread reply |
 | `threadParentMessageCreatedAt` | RFC3339 timestamp (nullable) | omitted when not a thread reply |
 
-Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via the `user-service` lookups (`user.{siteID}.profile.getByName`) or their own subscription cache.
+Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via their own subscription cache, subscription enrichment (HRInfo), or [profile.getByName](#profilegetbyname) (§3.4).
 
 ##### Error response
 
@@ -3135,6 +3176,625 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 |---|---|
 | `bad_request` | `query` is missing, empty, or whitespace-only. |
 | `internal` | Third-party HR endpoint unavailable or returned a non-2xx status. The raw third-party error is never forwarded to the caller. |
+
+---
+
+### 3.4 user-service
+
+`user-service` exposes 10 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
+
+> **Events:** these endpoints emit no client-facing events. (`status.set` triggers a server-side cross-site federation update, which is internal and not delivered to clients.)
+
+#### status.getByName
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.status.getByName`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Fetches the status and display-name fields for a named user. The caller's `{account}` in the subject is the requester; the target user is identified by the request body.
+
+##### Request body
+
+| Field  | Type   | Required | Notes |
+|--------|--------|----------|-------|
+| `name` | string | yes      | Account name of the user whose status to fetch. |
+
+```json
+{ "name": "alice" }
+```
+
+##### Success response
+
+| Field          | Type    | Notes |
+|----------------|---------|-------|
+| `account`      | string  | The user's account. |
+| `statusText`   | string  | Current status message (empty if not set). |
+| `statusIsShow` | boolean | Always present. Whether the status is displayed; `false` when never set. |
+| `chineseName`  | string  | Optional. Display name in Chinese. |
+| `engName`      | string  | Optional. English display name. |
+
+```json
+{
+  "account": "alice",
+  "statusText": "In a meeting",
+  "statusIsShow": true,
+  "chineseName": "愛麗絲",
+  "engName": "Alice"
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| User not found | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### profile.getByName
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.profile.getByName`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It exists as a separate subject so the profile path can later be extended to fetch HR-collection profile data before the status fields (internal-repo implementation); until then both endpoints return the same payload.
+
+##### Request body
+
+| Field  | Type   | Required | Notes |
+|--------|--------|----------|-------|
+| `name` | string | yes      | Account name of the user whose profile to fetch. |
+
+```json
+{ "name": "alice" }
+```
+
+##### Success response
+
+Same shape as `status.getByName`:
+
+```json
+{
+  "account": "alice",
+  "statusText": "In a meeting",
+  "statusIsShow": true,
+  "chineseName": "愛麗絲",
+  "engName": "Alice"
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| User not found | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### status.set
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.status.set`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Sets the calling user's status and returns the updated status view.
+
+##### Request body
+
+| Field    | Type    | Required | Notes |
+|----------|---------|----------|-------|
+| `text`   | string  | yes      | New status text. Must be ≤ 512 bytes (UTF-8). Empty string clears the status. |
+| `isShow` | boolean | no       | Whether the status is displayed. |
+
+```json
+{ "text": "Working from home", "isShow": true }
+```
+
+##### Success response
+
+Same shape as `status.getByName`:
+
+```json
+{
+  "account": "alice",
+  "statusText": "Working from home",
+  "statusIsShow": true,
+  "chineseName": "愛麗絲",
+  "engName": "Alice"
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| `text` > 512 bytes | `bad_request` | — | `{ "code": "bad_request", "error": "status text too long" }` |
+| No active user doc for the caller | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` — nothing is broadcast. |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### subscription.list
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the user's sidebar subscriptions, optionally filtered by type, age, and favorite status. The reply is **room-info-enriched** — see "Enrichment" below.
+
+##### Request body
+
+| Field               | Type    | Required | Notes |
+|---------------------|---------|----------|-------|
+| `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
+| `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
+| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose room had a message within the last N days** (whole-room activity, `room.lastMsgAt`). **Ignored for `current`** (always returns the full active set) and for `apps`. Cross-site rooms are kept regardless (their activity isn't known locally). Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+
+```json
+{ "type": "current", "favorite": true }
+```
+
+##### Success response
+
+| Field           | Type              | Notes |
+|-----------------|-------------------|-------|
+| `subscriptions` | array<[Subscription](#subscription)> | Room-info-enriched subscription records. |
+| `total`         | number            | Total count (after filtering). |
+
+`subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
+
+<a id="enrichment"></a>
+**Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
+- Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)), populated from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too). The subscription's own fields are never overwritten by room data.
+- `alert` and `hasMention` are **subscription** state, not room state: they are returned as stored on the subscription (maintained by the write path — `message-worker` sets `hasMention` when the user is @-mentioned, read receipts clear `alert`) and are **never** overwritten or recomputed by enrichment.
+- `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
+- Rooms with a `Del-` name prefix are filtered out before enrichment.
+- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
+
+**Per-room-type record shape.** All three kinds returned by `subscription.list` (`channel`, `dm`, `botDM`) use the single [Subscription](#subscription) schema (§3.0) with the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the five below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
+
+| Field | `channel` | `dm` | `botDM` |
+|---|---|---|---|
+| `name` | Channel name. | Counterpart's account. | App display name (falls back to the bot account when the app record is unavailable). |
+| `isSubscribed` | absent | absent | `true` — botDM rows are returned only while subscribed. |
+| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — **`subscription.getDM` only**, never present in `subscription.list`. | absent |
+| `room.name` | Canonical channel name. | Server-generated DM room name. | Server-generated botDM room name. |
+| `room.appCount` | Bot/app count in the channel (omitted when 0). | omitted (0). | ≥ 1. |
+
+The example below shows one record of each type in order (`channel`, `dm`, `botDM`):
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "01970a4f8c2d7c9aQ",
+      "siteId": "siteA",
+      "roomType": "channel",
+      "roles": ["member"],
+      "name": "engineering-general",
+      "joinedAt": "2026-05-06T08:01:23Z",
+      "hasMention": false,
+      "alert": true,
+      "muted": false,
+      "favorite": true,
+      "room": {
+        "siteId": "siteA",
+        "name": "engineering-general",
+        "userCount": 42,
+        "appCount": 2,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aBB",
+        "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
+        "keyVersion": 3
+      }
+    },
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "alice_bob",
+      "siteId": "siteA",
+      "roomType": "dm",
+      "roles": ["member"],
+      "name": "bob",
+      "joinedAt": "2026-04-01T09:00:00Z",
+      "hasMention": false,
+      "alert": false,
+      "muted": false,
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_bob",
+        "userCount": 2,
+        "lastMsgAt": "2026-05-20T15:30:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aCC",
+        "privateKey": "cXdlcnR5...base64...dWlvcD09",
+        "keyVersion": 1
+      }
+    },
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9d",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "alice_helper.bot",
+      "siteId": "siteA",
+      "roomType": "botDM",
+      "roles": ["member"],
+      "name": "Helper",
+      "isSubscribed": true,
+      "joinedAt": "2026-03-15T11:00:00Z",
+      "hasMention": false,
+      "alert": false,
+      "muted": false,
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_helper.bot",
+        "userCount": 1,
+        "appCount": 1,
+        "lastMsgAt": "2026-05-01T08:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aDD"
+      }
+    }
+  ],
+  "total": 3
+}
+```
+
+##### Error response
+
+| Condition | `code` | Notes |
+|-----------|--------|-------|
+| Unknown `type` value | `bad_request` | `{ "code": "bad_request", "error": "unknown subscription type" }` |
+| Negative `updatedWithinDays` | `bad_request` | `{ "code": "bad_request", "error": "updatedWithinDays must be non-negative" }` |
+| Internal failure | `internal` | — |
+
+---
+
+#### subscription.getChannels
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.getChannels`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the channel subscriptions for the calling user that share at least one member from the requested set. Exactly one of `membersContain` or `accountNames` must be provided. The reply is **room-info-enriched** (same behavior as `subscription.list`).
+
+##### Request body
+
+Exactly one of the two fields must be set:
+
+| Field            | Type     | Required | Notes |
+|------------------|----------|----------|-------|
+| `membersContain` | string   | one-of   | Return channels that contain this single account as a member. |
+| `accountNames`   | string[] | one-of   | Return channels where ALL of the given accounts are members. |
+
+```json
+{ "membersContain": "bob" }
+```
+
+##### Success response
+
+Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` with [enrichment](#enrichment) applied.
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "01970a4f8c2d7c9aQ",
+      "siteId": "siteA",
+      "roomType": "channel",
+      "roles": ["member"],
+      "name": "engineering-general",
+      "joinedAt": "2026-05-06T08:01:23Z",
+      "hasMention": false,
+      "alert": true,
+      "muted": false,
+      "favorite": true,
+      "room": {
+        "siteId": "siteA",
+        "name": "engineering-general",
+        "userCount": 42,
+        "appCount": 2,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aBB",
+        "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
+        "keyVersion": 3
+      }
+    }
+  ],
+  "total": 1
+}
+```
+
+##### Error response
+
+| Condition | `code` | Notes |
+|-----------|--------|-------|
+| Both or neither field set | `bad_request` | `{ "code": "bad_request", "error": "exactly one of membersContain or accountNames is required" }` |
+| Too many `accountNames` (> 100) | `bad_request` | `{ "code": "bad_request", "error": "too many accountNames" }` |
+| Internal failure | `internal` | — |
+
+---
+
+#### subscription.getDM
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.getDM`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the calling user's DM subscription with the named counterpart. The reply is **room-info-enriched** (same behavior as `subscription.list`). Bots and platform-prefixed accounts are rejected.
+
+##### Request body
+
+| Field         | Type   | Required | Notes |
+|---------------|--------|----------|-------|
+| `accountName` | string | yes      | The counterpart's account. Must not be a bot account (`.bot` suffix) or platform account (`p_` prefix). |
+
+```json
+{ "accountName": "bob" }
+```
+
+##### Success response
+
+| Field          | Type           | Notes |
+|----------------|----------------|-------|
+| `subscription` | [DMSubscription](#subscription) | The enriched DM subscription. |
+
+`DMSubscription` is a [Subscription](#subscription) plus one extra top-level field:
+
+| Field | Type | Notes |
+|---|---|---|
+| `hrInfo` | [SubscriptionHRInfo](#subscriptionhrinfo) | Optional. DM counterpart's HR record. Present when available. |
+
+```json
+{
+  "subscription": {
+    "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+    "roomId": "alice_bob",
+    "siteId": "siteA",
+    "roomType": "dm",
+    "roles": ["member"],
+    "name": "bob",
+    "joinedAt": "2026-04-01T09:00:00Z",
+    "alert": false,
+    "hasMention": false,
+    "muted": false,
+    "favorite": false,
+    "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
+    "room": {
+      "siteId": "siteA",
+      "name": "alice_bob",
+      "userCount": 2,
+      "lastMsgAt": "2026-05-20T15:30:00Z",
+      "lastMsgId": "01970a4f8c2d7c9aCC",
+      "privateKey": "cXdlcnR5...base64...dWlvcD09",
+      "keyVersion": 1
+    }
+  }
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| `accountName` empty | `bad_request` | — | `"accountName required"` |
+| Bot or platform account | `bad_request` | `invalid_dm_target` | `"invalid DM target"` |
+| DM subscription not found | `not_found` | `subscription_not_found` | `"dm not found"` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### subscription.getByRoomID
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.getByRoomID`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the calling user's subscription for a single room (any room type) as a **0-or-1-element list**. When the caller isn't subscribed to that room, the reply is an empty list (`total: 0`) — absence is a normal result, **not** an error. A present subscription is **room-info-enriched** (same behavior as `subscription.list`).
+
+##### Request body
+
+| Field    | Type   | Required | Notes |
+|----------|--------|----------|-------|
+| `roomId` | string | yes      | The room whose subscription to fetch. |
+
+```json
+{ "roomId": "alice_bob" }
+```
+
+##### Success response
+
+Same shape as `subscription.list` — a (here, at most one) list:
+
+| Field           | Type           | Notes |
+|-----------------|----------------|-------|
+| `subscriptions` | [Subscription](#subscription)[] | The matching subscription, or empty when not subscribed. |
+| `total`         | number         | `1` when found, `0` when not subscribed. |
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "alice_bob",
+      "siteId": "siteA",
+      "roomType": "dm",
+      "roles": ["member"],
+      "name": "bob",
+      "joinedAt": "2026-04-01T09:00:00Z",
+      "alert": false,
+      "hasMention": false,
+      "muted": false,
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_bob",
+        "userCount": 2,
+        "lastMsgAt": "2026-05-20T15:30:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aCC",
+        "privateKey": "cXdlcnR5...base64...dWlvcD09",
+        "keyVersion": 1
+      }
+    }
+  ],
+  "total": 1
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| `roomId` empty | `bad_request` | — | `"roomId required"` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### subscription.count
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.count`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns the count of active subscriptions, optionally filtered to unread rooms only.
+
+##### Request body
+
+| Field    | Type    | Required | Notes |
+|----------|---------|----------|-------|
+| `unread` | boolean | no       | When `true`, returns the number of rooms with unread messages (uses room-info enrichment). When `false` or absent, returns the total active-subscription count. |
+
+```json
+{ "unread": true }
+```
+
+##### Success response
+
+| Field   | Type   | Notes |
+|---------|--------|-------|
+| `count` | number | The subscription count (total or unread depending on the request). |
+
+```json
+{ "count": 5 }
+```
+
+**Unread count behavior:** when `unread: true`, the service fetches all active subscriptions and calls `GetRoomsInfo` per site in **parallel** using `errgroup` (fail-fast). If **any** site's RPC fails, the entire unread count falls back to the total active-subscription count (logged as a warning). This is intentionally different from `subscription.list` enrichment, which degrades per-site — a partial unread count would be misleading.
+
+##### Error response
+
+| Condition | `code` | Notes |
+|-----------|--------|-------|
+| Internal failure | `internal` | — |
+
+---
+
+#### subscription.setAppSubscription
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.subscription.setAppSubscription`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+PUT-like idempotent endpoint to subscribe or unsubscribe the calling user from a bot app. The `subscribed` field is the **desired end-state**; calling with `subscribed: true` on an already-subscribed user is safe (re-enables the subscription and clears `muted`). Replaces the former `subscribeApp` / `unsubscribeApp` endpoints.
+
+##### Request body
+
+| Field        | Type    | Required | Notes |
+|--------------|---------|----------|-------|
+| `appId`      | string  | yes      | The ID of the app to subscribe/unsubscribe. |
+| `subscribed` | boolean | yes      | `true` = subscribe; `false` = unsubscribe. |
+
+```json
+{ "appId": "calendar-app", "subscribed": true }
+```
+
+**Subscribe behavior:**
+- If the user has no existing DM room with the bot, a new botDM room is created via room-service.
+- If the user had a previous subscription (muted or deactivated), it is re-enabled and `muted` is cleared.
+
+**Unsubscribe behavior:**
+- Marks the subscription as unsubscribed and muted. The botDM room is not deleted.
+
+##### Success response
+
+| Field     | Type    | Notes |
+|-----------|---------|-------|
+| `success` | boolean | Always `true`. |
+
+```json
+{ "success": true }
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| `appId` missing | `bad_request` | — | `"appId required"` |
+| App not found | `not_found` | `app_not_found` | `"app not found"` |
+| App has no enabled assistant | `bad_request` | `app_disabled` | `"app has no enabled assistant"` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### apps.list
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.apps.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+Returns a page of the apps known to the system, each annotated with whether the calling user is currently subscribed to the app's bot assistant. Sorted by app name.
+
+##### Request body
+
+Optional — an empty body returns the first page with defaults.
+
+| Field    | Type   | Required | Notes |
+|----------|--------|----------|-------|
+| `limit`  | number | no       | Page size. Default `20`, max `100`. |
+| `offset` | number | no       | Number of apps to skip. Default `0`. |
+
+```json
+{ "limit": 20, "offset": 0 }
+```
+
+##### Success response
+
+| Field   | Type           | Notes |
+|---------|----------------|-------|
+| `apps`  | AppListItem[] | The requested page of apps. |
+| `total` | number         | Total catalog count (not the page size). |
+
+`AppListItem` is a flattened [App](#app) record plus `isSubscribed`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | App ID. |
+| `name` | string | App display name. |
+| `description` | string | Optional. App description. |
+| `avatarUrl` | string | Optional. App avatar image URL. |
+| `assistant` | [AppAssistant](#appassistant) | Optional. The app's bot assistant. |
+| `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab configuration. |
+| `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsor list. |
+| `isSubscribed` | boolean | Whether the calling user is subscribed to this app's bot. |
+
+```json
+{
+  "apps": [
+    {
+      "id": "calendar-app",
+      "name": "Calendar",
+      "description": "Meeting and calendar integration",
+      "avatarUrl": "https://example.com/calendar.png",
+      "assistant": { "enabled": true, "name": "calendar.bot" },
+      "isSubscribed": true
+    }
+  ],
+  "total": 1
+}
+```
+
+##### Error response
+
+| Condition | `code` | Notes |
+|-----------|--------|-------|
+| Internal failure | `internal` | — |
 
 ---
 
@@ -3495,7 +4155,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 Removed members keep prior keys for decrypting historical messages but cannot decrypt anything published after the rotation.
 
-**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to will be delivered as part of the `subscription.get*` RPC family (see user-service — to be documented). Until that extension lands, clients receive keys only via live events.
+**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to is delivered by the user-service subscription endpoints as `room.privateKey` / `room.keyVersion` on each enriched subscription (see §3.4 and [SubscriptionRoom](#subscriptionroom)). Live events keep the client current after bootstrap.
 
 ### Requesting a missing key
 
@@ -3629,6 +4289,10 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `invalid_request` | bad_request | auth-service (body parse / required field missing) |
 | `invalid_nkey` | bad_request | auth-service (natsPublicKey format) |
 | `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing) |
+| `app_not_found` | not_found | user-service `subscription.setAppSubscription` (appId does not resolve to any app) |
+| `app_disabled` | bad_request | user-service `subscription.setAppSubscription` (app exists but has no enabled assistant) |
+| `invalid_dm_target` | bad_request | user-service `subscription.getDM` (target is a bot or platform account) |
+| `subscription_not_found` | not_found | user-service `subscription.getDM` (no DM subscription exists for the account pair) |
 
 ### Where envelopes are sent
 
