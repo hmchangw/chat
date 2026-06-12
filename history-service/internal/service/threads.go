@@ -3,7 +3,6 @@ package service
 import (
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
@@ -36,34 +35,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// Parent lookup (Cassandra) and room-times resolve (Mongo) have no
-	// dependency on each other; fan them out so the worst-case pre-fetch
-	// latency is one RTT instead of two. We capture each side's error
-	// separately rather than letting errgroup return whichever-fires-first,
-	// so input-validation 400s derived from the parent (reply ID, empty
-	// ThreadRoomID, TCount explicitly 0) take precedence over a transient
-	// Mongo error from the room-times read.
-	now := time.Now().UTC()
-	var (
-		msg       *models.Message
-		findErr   error
-		createdAt time.Time
-		rtErr     error
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		msg, findErr = s.findMessage(c, roomID, req.ThreadMessageID)
-	}()
-	go func() {
-		defer wg.Done()
-		_, createdAt, rtErr = s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
-	}()
-	wg.Wait()
-
-	if findErr != nil {
-		return nil, findErr
+	msg, err := s.findMessage(c, roomID, req.ThreadMessageID)
+	if err != nil {
+		return nil, err
 	}
 
 	if msg.ThreadParentID != "" {
@@ -108,30 +82,20 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return emptyThreadResponse(), nil
 	}
 
-	// Room-times error only matters once we're committed to the Cassandra
-	// read — short-circuit paths above don't depend on the result.
-	if rtErr != nil {
-		return nil, rtErr
-	}
-
-	// Ceiling: server clock + skew tolerance, deliberately NOT the room's
-	// lastMsgAt. Thread replies never bump rooms.lastMsgAt (broadcast-worker
-	// skips it for thread fan-out), so a lastMsgAt-derived ceiling hides every
-	// reply newer than the room's last main-channel message. The thread table
-	// is one partition per thread — there is no bucket walk for a tight
-	// ceiling to bound — so this only guards against future-dated rows.
+	// Bounds come from the server clock and the access window alone — no room
+	// times. Thread replies never bump rooms.lastMsgAt (broadcast-worker skips
+	// it for thread fan-out), so a lastMsgAt-derived ceiling hides every reply
+	// newer than the room's last main-channel message; and the room's createdAt
+	// cannot bind (no reply predates its room). The thread table is one
+	// partition per thread — no bucket walk to bound — so the ceiling only
+	// guards against future-dated rows.
+	now := time.Now().UTC()
 	ceiling := now.Add(clockSkewTolerance)
-
-	// Floor: max(createdAt, accessSince) clamped to historyFloor so an ancient createdAt can't exceed the configured limit.
-	historyFloor := now.Add(-s.historyFloor)
-	floor := createdAt
+	floor := now.Add(-s.historyFloor)
 	if accessSince != nil && accessSince.After(floor) {
 		floor = *accessSince
 	}
-	if floor.IsZero() || floor.Before(historyFloor) {
-		floor = historyFloor
-	}
-	// Inverted range guard: collapsed thread on a room older than historyFloor.
+	// Inverted range guard: an accessSince beyond the skew tolerance.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}

@@ -125,10 +125,9 @@ type ReactMessageResponse struct {
 }
 
 type GetThreadMessagesRequest struct {
-	ThreadMessageID string    `json:"threadMessageId"` // must be a top-level thread message ID, not a reply
-	Cursor          string    `json:"cursor,omitempty"`
-	Limit           int       `json:"limit"`
-	Meta            *RoomMeta `json:"meta,omitempty"`
+	ThreadMessageID string `json:"threadMessageId"` // must be a top-level thread message ID, not a reply
+	Cursor          string `json:"cursor,omitempty"`
+	Limit           int    `json:"limit"`
 }
 
 type GetThreadMessagesResponse struct {

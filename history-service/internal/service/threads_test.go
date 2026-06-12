@@ -11,8 +11,10 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/history-service/internal/service/mocks"
 	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -307,18 +309,17 @@ func TestHistoryService_GetThreadMessages_ParentBeforeAccessSinceReturnsForbidde
 }
 
 // Regression: thread replies never bump rooms.lastMsgAt (broadcast-worker
-// intentionally skips it for thread fan-out), so a ceiling derived from it
-// hides every reply newer than the room's last main-channel message. The
-// ceiling passed to the repo must be based on the server clock instead.
-func TestHistoryService_GetThreadMessages_CeilingNotCappedByStaleRoomLastMsgAt(t *testing.T) {
+// intentionally skips it for thread fan-out), so a ceiling derived from any
+// room watermark hides replies newer than the room's last main-channel
+// message. The ceiling passed to the repo must track the server clock: a
+// reply created moments before the call must fall inside the queried range.
+func TestHistoryService_GetThreadMessages_CeilingIncludesFreshReplies(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
 	c := testContext()
 
 	now := time.Now().UTC()
-	roomCreatedAt := now.Add(-24 * time.Hour)
-	staleLastMsgAt := now.Add(-2 * time.Hour) // last main-channel message
 	parentCreatedAt := now.Add(-3 * time.Hour)
-	recentReplyAt := now.Add(-time.Minute) // reply sent after the room's lastMsgAt
+	recentReplyAt := now.Add(-time.Minute) // newer than any room activity watermark
 
 	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1", TCount: intPtr(1)}
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
@@ -327,21 +328,52 @@ func TestHistoryService_GetThreadMessages_CeilingNotCappedByStaleRoomLastMsgAt(t
 	replies := []models.Message{
 		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: recentReplyAt},
 	}
-	var gotCeiling time.Time
+	var gotCeiling, gotFloor time.Time
 	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ string, before, _ time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+		DoAndReturn(func(_ context.Context, _ string, before, floor time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
 			gotCeiling = before
+			gotFloor = floor
 			return makePage(replies, false), nil
 		})
 
-	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{
-		ThreadMessageID: "m-parent",
-		Meta:            &models.RoomMeta{LastMsgAt: millis(staleLastMsgAt), CreatedAt: millis(roomCreatedAt)},
-	})
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
 	require.Len(t, resp.Messages, 1)
 	assert.True(t, gotCeiling.After(recentReplyAt),
-		"ceiling %v must include replies newer than the room's lastMsgAt %v", gotCeiling, staleLastMsgAt)
+		"ceiling %v must include replies created moments before the call (%v)", gotCeiling, recentReplyAt)
+	assert.False(t, gotFloor.Before(joinTime), "floor %v must not undercut accessSince %v", gotFloor, joinTime)
+	assert.True(t, gotFloor.Before(recentReplyAt), "floor %v must not clip fresh replies (%v)", gotFloor, recentReplyAt)
+}
+
+// Post bucket-walk era, GetThreadMessages needs nothing from the Mongo rooms
+// collection: the partition slice is bounded by the server clock and the
+// subscription's access window. The room mock is strict — no GetRoomTimes
+// stub — so the test fails if the handler regresses to reading room times.
+func TestHistoryService_GetThreadMessages_NoRoomTimesDependency(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	rooms := mocks.NewMockRoomRepository(ctrl) // strict: any GetRoomTimes call fails
+	pub := mocks.NewMockEventPublisher(ctrl)
+	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	users := mocks.NewMockUserStore(ctrl)
+	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
+	cfg := &config.Config{
+		MessageHistoryFloorDays: 90,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	}
+	svc := service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg)
+	c := testContext()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
 }
 
 // ============================================================
