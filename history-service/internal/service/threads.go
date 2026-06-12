@@ -13,9 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// emptyThreadResponse is the canonical shape for "no replies" — keeps the
-// shared response shape in one place so future fields can't drift between
-// the short-circuit branches.
+// emptyThreadResponse is the shared "no replies" shape for all short-circuit branches.
 func emptyThreadResponse() *models.GetThreadMessagesResponse {
 	return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}
 }
@@ -72,33 +70,22 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// tcount explicitly 0 means all replies have been deleted — skip the
-	// Cassandra round-trip. tcount == nil means the column was never written:
-	// commonly a brand-new parent with no replies yet, but also briefly true
-	// between a successful SaveThreadMessage INSERT and the follow-up
-	// incrementParentTcount LWT. Fall through to Cassandra in the nil case so
-	// the optimisation can't hide replies during that window.
+	// tcount==0 means all replies were deleted — skip Cassandra. nil means never written
+	// (new parent, or mid-write before the tcount LWT) and must fall through or replies could be hidden.
 	if msg.TCount != nil && *msg.TCount == 0 {
 		return emptyThreadResponse(), nil
 	}
 
-	// Bounds come from the server clock and the access window alone — no room
-	// times. Thread replies never bump rooms.lastMsgAt (broadcast-worker skips
-	// it for thread fan-out), so a lastMsgAt-derived ceiling hides every reply
-	// newer than the room's last main-channel message; and the room's createdAt
-	// cannot bind (no reply predates its room). The thread table is one
-	// partition per thread — no bucket walk to bound — so the ceiling only
-	// guards against future-dated rows.
+	// Server-clock bounds only: thread replies never bump rooms.lastMsgAt (fan-out skips it),
+	// and the single-partition slice has no bucket walk — the loose ceiling only guards future-dated rows.
 	now := time.Now().UTC()
 	ceiling := now.Add(clockSkewTolerance)
 	floor := now.Add(-s.historyFloor)
 	if accessSince != nil && accessSince.After(floor) {
 		floor = *accessSince
 	}
-	// Inverted range guard: defensive only — requires an accessSince beyond
-	// the skew tolerance AND a parent dated past it (the access-window check
-	// above rejects anything earlier). Collapses the range instead of sending
-	// Cassandra an inverted slice.
+	// Defensive: reachable only with an accessSince beyond the skew tolerance and a parent
+	// dated past it; collapse rather than hand Cassandra an inverted slice.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}

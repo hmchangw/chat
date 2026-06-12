@@ -154,9 +154,7 @@ func TestGetThreadMessagesRequest_Roundtrip(t *testing.T) {
 	assert.Equal(t, in, got)
 }
 
-// The meta hint was removed from this request (the thread table has no bucket
-// walk for it to bound) — a legacy payload still carrying it must decode
-// cleanly with the field ignored.
+// A legacy payload still carrying the removed meta field must decode cleanly, field ignored.
 func TestGetThreadMessagesRequest_IgnoresLegacyMetaField(t *testing.T) {
 	payload := []byte(`{"threadMessageId":"t-abc","limit":10,"meta":{"lastMsgAt":1234567890123,"createdAt":1234567000000}}`)
 	var got GetThreadMessagesRequest

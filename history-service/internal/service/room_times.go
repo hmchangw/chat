@@ -30,25 +30,15 @@ func (s *HistoryService) resolveRoomTimesOrError(
 	return time.Time{}, time.Time{}, fmt.Errorf("resolving room metadata for %s: %w", roomID, err)
 }
 
-// clockSkewTolerance allows clients with mildly out-of-sync clocks to still
-// have their LastMsgAt hint accepted; anything further out is treated as
-// suspicious and triggers a Mongo fallback. It also pads the server-clock
-// ceilings (walkBounds fallback, GetThreadMessages) so rows written by a
-// slightly fast clock are not excluded.
+// clockSkewTolerance bounds how far in the future a client LastMsgAt hint may sit before the
+// Mongo fallback kicks in; it also pads the server-clock ceilings (walkBounds, GetThreadMessages).
 const clockSkewTolerance = time.Hour
 
-// minPlausibleEpoch rejects clearly-bogus millis (e.g. *ms == 0 → 1970-01-01)
-// without imposing tight bounds on real-world clock skew. time.Time{}.IsZero()
-// does NOT match time.UnixMilli(0) — the latter is unix epoch, a real time.
+// minPlausibleEpoch rejects bogus millis (*ms == 0 → 1970) — time.UnixMilli(0) is a real time IsZero misses.
 var minPlausibleEpoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// walkBounds derives the (ceiling, floor) bucket bounds used by ASC and
-// surrounding-walk handlers from the resolved lastMsgAt/createdAt. Falls back
-// to now+clockSkewTolerance for the ceiling when lastMsgAt is zero. The floor
-// is clamped to be no older than now-historyFloor: a client-supplied or
-// MongoDB-stored createdAt that predates the history-floor cap would otherwise
-// allow a single read to walk further back than configured, amplifying empty-
-// partition queries on year-old rooms.
+// walkBounds derives the bucket-walk (ceiling, floor): ceiling = lastMsgAt, or now+skew when
+// zero; floor = createdAt clamped to now-historyFloor so a stale createdAt can't widen the walk.
 func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceiling, floor time.Time) {
 	ceiling = lastMsgAt
 	if ceiling.IsZero() {
@@ -59,19 +49,16 @@ func (s *HistoryService) walkBounds(lastMsgAt, createdAt, now time.Time) (ceilin
 	if floor.IsZero() || floor.Before(historyFloor) {
 		floor = historyFloor
 	}
-	// Guard against inverted ranges: a room whose lastMsgAt predates the
-	// configured historyFloor cap would otherwise emit ceiling < floor, which
-	// the walker handles silently (empty result, no cursor). Clamp ceiling up
-	// to floor so the range collapses to a single bucket instead of inverted.
+	// A lastMsgAt predating the historyFloor cap would emit ceiling < floor, which the walker
+	// handles silently (empty result); clamp up so the range collapses to a single bucket.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}
 	return ceiling, floor
 }
 
-// resolveRoomTimes returns lastMsgAt and createdAt for roomID. Client-supplied
-// meta are trusted after sanity checks; missing or invalid meta fall back to
-// Mongo via the RoomTimeResolver. now is injected for deterministic testing.
+// resolveRoomTimes returns lastMsgAt/createdAt for roomID: sanitized client hints are trusted,
+// missing or invalid ones fall back to Mongo. now is injected for deterministic testing.
 func (s *HistoryService) resolveRoomTimes(
 	ctx context.Context,
 	roomID string,
@@ -104,13 +91,8 @@ func (s *HistoryService) resolveRoomTimes(
 		}
 	}
 
-	// Mixed sources can produce inconsistent values (e.g. a stale hint LastMsgAt
-	// older than a Mongo-fetched CreatedAt). When the merged pair is internally
-	// inconsistent — created > last — refetch from Mongo IF at least one value
-	// came from a hint, so we get a coherent snapshot. When both already came
-	// from Mongo (no meta in play) the snapshot is by definition coherent
-	// already; an inverted result there means the room is genuinely empty
-	// (lastMsgAt unset), so we just normalise last = created.
+	// A merged hint+Mongo pair can be internally inconsistent (created > last): refetch from
+	// Mongo when a hint was involved; if still inverted the room is genuinely empty — normalise.
 	if created.After(*last) {
 		if metaLast || metaCreated {
 			l, c, gerr := s.rooms.GetRoomTimes(ctx, roomID)
@@ -129,9 +111,7 @@ func (s *HistoryService) resolveRoomTimes(
 	return *last, *created, nil
 }
 
-// sanitizeLastMsgAt allows up to now+clockSkewTolerance because clients with
-// slightly fast clocks may legitimately have a more recent lastMsgAt than the
-// server's "now" — the actual message could already exist on disk.
+// sanitizeLastMsgAt allows up to now+clockSkewTolerance — a fast client clock may know a newer lastMsgAt.
 func sanitizeLastMsgAt(ms *int64, now time.Time) *time.Time {
 	if ms == nil {
 		return nil

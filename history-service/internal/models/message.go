@@ -15,9 +15,8 @@ type Reactions = cassandra.Reactions
 type ReactionKey = cassandra.ReactionKey
 type ReactorInfo = cassandra.ReactorInfo
 
-// RoomMeta carries client-cached room metadata so the server can skip a Mongo
-// lookup. Both fields are optional and individually validated server-side
-// (LastMsgAt > now+1h and CreatedAt > now are ignored, falling back to Mongo).
+// RoomMeta carries client-cached room times so the server can skip a Mongo lookup; both
+// fields are optional and individually validated server-side (bad values fall back to Mongo).
 type RoomMeta struct {
 	LastMsgAt *int64 `json:"lastMsgAt,omitempty"` // UTC millis
 	CreatedAt *int64 `json:"createdAt,omitempty"` // UTC millis
