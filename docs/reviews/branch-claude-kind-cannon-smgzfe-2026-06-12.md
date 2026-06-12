@@ -138,3 +138,27 @@ No critical/high/medium findings. The change is sound.
 **[intact]** `tcount==0` short-circuit, empty `ThreadRoomID`, reply rejection, access-window check — all preserved, now cheaper. **[nitpick]** Removing 2 goroutine spawns + `sync.WaitGroup` per request is a small but real per-call win at scale; remaining bounds math is pure `time.Time` arithmetic, zero heap. **[nitpick]** The per-page recomputed ceiling (`now` moves between cursor pages) is harmless with positional paging state — resume position is below any newly admitted rows on a DESC read.
 
 **Verdict:** strictly faster (fewer round-trips, fewer goroutines), no widened Cassandra scan, no new serialization. No blocking findings.
+
+## Observability
+
+### Findings
+
+**1. [medium] Get Thread Messages can no longer return `not_found "room not found"`, but the shared error table still advertises it.**
+Pre-change, `resolveRoomTimesOrError` (room_times.go:27-29) mapped `mongo.ErrNoDocuments` → `errcode.NotFound("room not found")`. With the room read deleted, a deleted room with a stale subscription proceeds to Cassandra and returns replies (or empty) instead of 404. The shared error table at `docs/client-api.md:1635` (`not_found | "room not found", "message not found"`) covers all four paginated RPCs and is now wrong for this one — same class of per-RPC carve-out the branch already made for `meta` at line 1614. CLAUDE.md §5 requires error-case docs in the same PR. Recommend a one-line carve-out.
+
+**2. [low] Mongo-outage signal on this path is gone, but coverage elsewhere suffices — no new WARN/metric warranted.**
+The dropped `GetRoomTimes` read meant Mongo failures surfaced as `internal` on thread fetches. That signal survives: (a) `getAccessSince` → `GetHistorySharedSince` (utils.go:14-18) is still the first call and hits the Mongo subscriptions collection, so a Mongo outage still fails this handler with a classified internal error; (b) `resolveRoomTimesOrError` remains on the high-traffic LoadHistory/LoadNext/LoadSurrounding paths (messages.go:40, 124, 184).
+
+**3. [low] No tracing impact from the removed goroutine fan-out.**
+The deleted fan-out created no spans — handler code in this service creates no OTel spans at all; tracing exists only at the JetStream publish boundary (`oteljetstream`). Side benefit: removal ends concurrent sharing of `*natsrouter.Context` across goroutines.
+
+### Confirmed clean
+
+- **Request-ID propagation intact**: the `slog.Warn` for empty `ThreadRoomID` (threads.go:52-61) still carries `request_id` via `natsutil.RequestIDFromContext(c)` plus structured fields; `c.WithLogValues` at threads.go:27 still enriches `errcode.Classify` lines; router middleware injects `request_id` for all classified errors.
+- **No double-logging introduced**: every error path returns without a preceding `slog.Error`; Tier-1 discipline holds.
+- **No secret/body leakage**: logged fields are IDs and timestamps only.
+- **slog JSON discipline**: structured key-value pairs throughout.
+
+**nitpick** — threads.go:53-59 mixes `room_id` (snake) with `messageID` (camel) in one log line; threads.go:195 warn lacks `request_id`. Both pre-existing, outside the diff.
+
+**Bottom line:** observability posture is sound; the one actionable item is the stale `"room not found"` row (finding 1).
