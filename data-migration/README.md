@@ -45,6 +45,38 @@ See `docs/superpowers/specs/2026-06-08-oplog-connector-design.md` (design) and
   on the source RS). The resume token is the real checkpoint; saved only after a
   pub-ack (lossless).
 
+### Configuration (the interface)
+
+All configuration is via environment variables. Required vars have no default and
+fail-fast at startup.
+
+| Env | Req | Default | Purpose |
+|-----|-----|---------|---------|
+| `SITE_ID` | ✓ | — | site scope for subjects, stream name, checkpoint `_id` |
+| `SOURCE_MONGO_URI` | ✓ | — | source replica set (change streams + checkpoint writes). **No credentials in the URI — it is logged.** |
+| `SOURCE_MONGO_USERNAME` / `SOURCE_MONGO_PASSWORD` | | `""` | source auth (preferred over creds-in-URI) |
+| `SOURCE_DB` | | `rocketchat` | DB the watched collections live in |
+| `CHECKPOINT_DB` | | `migration` | DB holding `oplog_checkpoints` (on the source RS) |
+| `NATS_URL` | ✓ | — | publish target |
+| `NATS_CREDS_FILE` | | `""` | NATS credentials file |
+| `WATCH_COLLECTIONS` | ✓ | — | comma-list of raw collections to tail (one watcher each; **no duplicates**) |
+| `PREIMAGE_COLLECTIONS` | | `rocketchat_message` | subset that requests delete/update pre-images |
+| `READ_PREFERENCE` | | `secondary` | source read pref (`primary`\|`primaryPreferred`\|`secondary`\|`secondaryPreferred`\|`nearest`) |
+| `CHECKPOINT_EVERY` | | `100` | persist the resume token every N acked events |
+| `CHECKPOINT_MAX_AGE` | | `30` | also persist it at least every N seconds (bounds replay for low-volume collections) |
+| `START_MODE` | | `now` | cold-start when no checkpoint exists: `now`\|`beginning`\|`time` |
+| `START_AT_TIME` | | `""` | RFC3339 or unix-ms; used by `START_MODE=time` **and** as an override (see below) |
+| `START_RESUME_TOKEN` | | `""` | `_data` hex; one-off seed override (see below) |
+| `BOOTSTRAP_STREAMS` | | `false` | dev-only stream creation; **keep `false` in prod** (ops/IaC owns the stream) |
+| `LOG_LEVEL` | | `info` | slog level (`debug`\|`info`\|`warn`\|`error`) |
+
+**Where the change stream starts (per collection, first match wins):**
+
+1. **Env override** — `START_RESUME_TOKEN` (→ `startAfter`) or `START_AT_TIME`
+   (→ `startAtOperationTime`). Forces a reseed; **ignores the stored checkpoint.**
+2. **Stored checkpoint** — `startAfter(resumeToken)` (the normal restart path).
+3. **Cold start** — `START_MODE`: `now` (default) \| `beginning` \| `time`.
+
 ### Source-side prerequisites (ops)
 
 1. **Replica set.** Change streams require the source Mongo to be a replica set.

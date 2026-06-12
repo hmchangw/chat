@@ -26,9 +26,11 @@ type startPoint struct {
 
 // resolveStartPoint applies the precedence in spec §4.2:
 //  1. ENV override — START_RESUME_TOKEN (startAfter) or START_AT_TIME
-//     (startAtOperationTime). Forces a reseed; ignores any stored checkpoint.
+//     (startAtOperationTime). Forces a reseed, ignoring any stored checkpoint —
+//     and it does so on EVERY start, so left set in the environment it reseeds
+//     on every restart. One-off only; prefer a seed checkpoint doc (Tier 2).
 //  2. Persisted checkpoint — startAfter(ResumeToken), or startAtOperationTime
-//     (ClusterTime) if the token is absent.
+//     (ClusterTime) if the token is absent. The normal restart path.
 //  3. Cold start — START_MODE: now (default) | beginning | time(+START_AT_TIME).
 func resolveStartPoint(cfg *config, cp *Checkpoint) (startPoint, error) {
 	// Tier 1: env overrides.

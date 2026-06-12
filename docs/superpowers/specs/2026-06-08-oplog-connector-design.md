@@ -185,8 +185,10 @@ The **resume token is the real checkpoint** (opaque, raw BSON so it round-trips 
 
 ### 4.3 The two operator inputs
 
-- **Init checkpoint (the migration handoff) — "provide a checkpoint".** The `history-migrator` captures the resume token `R` at its consistent cut. Operationally, **pre-insert one seed doc per collection** into `oplog_checkpoints` (`Source:"seed"`, `ResumeToken:R`) before first start — per-collection, no env juggling. For a one-off, the global `START_RESUME_TOKEN` env does the same. The connector then `startAfter(R)` → live sync begins exactly after the migrated cut.
+- **Init checkpoint (the migration handoff) — "provide a checkpoint".** The `history-migrator` captures the resume token `R` at its consistent cut. Operationally, **pre-insert one seed doc per collection** into `oplog_checkpoints` (`Source:"seed"`, `ResumeToken:R`) before first start — per-collection, no env juggling. This is the **preferred** path. For a one-off, the global `START_RESUME_TOKEN` env does the same. The connector then `startAfter(R)` → live sync begins exactly after the migrated cut.
 - **Initial start point — "init start point".** `START_MODE` / `START_AT_TIME` cover cold start when **no** checkpoint exists (e.g. a brand-new collection with no migration handoff).
+
+> ⚠️ **The Tier-1 env overrides (`START_RESUME_TOKEN`, `START_AT_TIME`) are one-off only.** They ignore the stored checkpoint *on every start*, so if either is left set in a long-lived environment (e.g. a k8s Deployment) the connector **reseeds on every restart** — re-streaming from the seed point each time (deduped, never lost, but a large pointless replay, and the checkpoint never effectively sticks). Seed via the pre-inserted checkpoint doc (Tier 2) instead; if you must use an env override, **unset it after first start**. The connector logs a `WARN` at startup when either is set.
 
 ### 4.4 `startAfter`, not `resumeAfter`
 
