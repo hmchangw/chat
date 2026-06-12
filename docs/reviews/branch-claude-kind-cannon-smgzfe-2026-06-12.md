@@ -162,3 +162,15 @@ The deleted fan-out created no spans — handler code in this service creates no
 **nitpick** — threads.go:53-59 mixes `room_id` (snake) with `messageID` (camel) in one log line; threads.go:195 warn lacks `request_id`. Both pre-existing, outside the diff.
 
 **Bottom line:** observability posture is sound; the one actionable item is the stale `"room not found"` row (finding 1).
+
+## Prioritized action list
+
+1. **[medium]** Add a per-RPC carve-out to the shared error table — `docs/client-api.md:1635`. Get Thread Messages can no longer return `not_found "room not found"`; the table claims it can for all four paginated RPCs. Same-PR doc rule (CLAUDE.md §5). One line, zero risk.
+2. **[low]** Test the inverted-range guard — `threads.go:98-101`. The only uncovered statement in `GetThreadMessages` (95.0%). One test with a far-future `accessSince` asserting `gotCeiling.Equal(gotFloor)`; also soften the comment, which overstates reachability (the parent access-window check fires first in most constructions).
+3. **[low]** Fix the stale harness comment — `messages_test.go:60-61`. "every handler invokes the bucket-walk resolver" is no longer true for Get Thread Messages.
+4. **[low]** Update `clockSkewTolerance` doc comment — `room_times.go:33-36`. It now also serves as the thread ceiling guard, not just the meta-hint sanitizer.
+5. **[nitpick]** Tighten the common-fields intro — `docs/client-api.md:1609`. It still lists Get Thread Messages as accepting "these shared optional fields" right before the `meta` row excludes it.
+6. **[nitpick]** Extract a `newServiceStrictRooms(t)` helper — `threads_test.go:352-373`. Removes the duplicated 8-dep wiring + config literal (flagged by two reviewers).
+7. **[nitpick]** Align the tcount comment — `threads_test.go:172-173` ("never received a reply") vs `threads.go:75` ("all replies have been deleted").
+
+Not actioned by design (documented, accepted): the room-NotFound wire-behavior change (disclosed in PR body; three reviewers judged access gating sufficient); the moving historyFloor across pagination pages (pre-existing pattern, not a regression); the external `service_test` package convention (pre-existing service-wide).
