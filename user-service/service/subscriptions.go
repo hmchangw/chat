@@ -131,8 +131,8 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 				return
 			}
 			m := make(map[string]model.RoomInfo, len(infos))
-			for i := range infos {
-				m[infos[i].RoomID] = infos[i]
+			for k := range infos {
+				m[infos[k].RoomID] = infos[k]
 			}
 			infoBySite[i] = m
 		}()
@@ -351,8 +351,8 @@ func (s *UserService) countUnread(ctx context.Context, account string, total int
 				return fmt.Errorf("unread count rooms-info for site %s: %w", site, err)
 			}
 			lastMsg := make(map[string]*int64, len(infos))
-			for i := range infos {
-				lastMsg[infos[i].RoomID] = infos[i].LastMsgAt
+			for k := range infos {
+				lastMsg[infos[k].RoomID] = infos[k].LastMsgAt
 			}
 			n := 0
 			for j := range siteSubs {

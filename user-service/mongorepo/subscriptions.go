@@ -199,6 +199,7 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, target string) (*model.DMSubscription, error) {
 	pipeline := bson.A{
 		bson.M{"$match": bson.M{"u.account": account, "name": target, "roomType": "dm"}},
+		bson.M{"$limit": int64(1)}, // (account, name, roomType=dm) is unique — short-circuit defensively
 	}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
 	pipeline = append(pipeline,
