@@ -19,30 +19,6 @@ const baseColumns = "room_id, created_at, message_id, thread_room_id, sender, " 
 
 const messageByRoomQuery = "SELECT " + baseColumns + " FROM messages_by_room"
 
-// scanMsgsFromIter collects all rows from iter into a slice.
-// structScan ignores columns absent from the struct's cql tags, so this
-// helper is safe to use with any column subset (e.g. messageByIDQuery
-// includes pinned_at/pinned_by which are absent from the base column list).
-//
-// Decryption of enc_payload rows is the caller's responsibility — single-row
-// readers call r.decryptIfNeeded directly; paginated walkers use
-// r.scanMessagesUpTo, which decrypts and propagates errors through fillPage.
-func scanMsgsFromIter(iter *gocql.Iter) ([]models.Message, error) {
-	messages := make([]models.Message, 0)
-	for {
-		var m models.Message
-		ok, err := structScan(iter, &m)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			break
-		}
-		messages = append(messages, m)
-	}
-	return messages, nil
-}
-
 // startBucketFromCursor returns the walk's start bucket and any in-bucket pageState from the cursor.
 // Out-of-range cursor buckets are rejected to prevent tampered cursors from consuming maxBuckets empty reads.
 func startBucketFromCursor(pageReq PageRequest, direction walkDirection, defaultBucket, floorBucket int64) (int64, []byte, error) {

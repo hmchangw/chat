@@ -59,6 +59,9 @@ func buildCluster(hosts []string, keyspace, username, password string, numConns 
 	cluster.Keyspace = keyspace
 	cluster.Consistency = gocql.LocalQuorum
 	cluster.Timeout = 10 * time.Second
+	// Route single-partition queries straight to a replica instead of gocql's
+	// default round-robin coordinator, removing a coordinator-forward hop.
+	cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy())
 	if numConns > 0 {
 		cluster.NumConns = numConns
 	} else {
