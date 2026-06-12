@@ -1606,12 +1606,12 @@ Same envelope and sentinels as Get Room App Tabs.
 
 #### Common request fields (read RPCs)
 
-The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread Messages) share these optional fields; per-row notes call out RPCs that don't accept a field:
+The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread Messages) accept these shared optional fields in addition to their own:
 
 | Field | Type | Notes |
 |---|---|---|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. Load History, Load Next, and Load Surrounding only: Get Thread Messages reads a single per-thread partition with no time-bucket window to pick, so it does not accept `meta` (ignored if sent). |
+| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. |
 
 ###### RoomMeta
 
@@ -1632,7 +1632,7 @@ Common error envelopes across these RPCs (see §6 for the full shape):
 | `code` | When |
 |---|---|
 | `forbidden` | `"not subscribed to room"`, or (for access-restricted readers) `"message is outside access window"` / `"thread is outside access window"`. |
-| `not_found` | `"room not found"` (Load History, Load Next, and Load Surrounding only — Get Thread Messages gates access via the subscription and parent-message lookup instead), `"message not found"`. |
+| `not_found` | `"room not found"`, `"message not found"`. |
 | `bad_request` | `"invalid pagination cursor"` (malformed `cursor` value), other request-validation failures. |
 | `internal` | `"internal error"` — bubbled from store/publisher failures; real cause logged server-side, not sent. |
 
