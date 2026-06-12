@@ -28,8 +28,17 @@ func TestParseConfig_DefaultsAndSlices(t *testing.T) {
 	assert.Equal(t, "rocketchat", cfg.SourceDB)
 	assert.Equal(t, "secondary", cfg.ReadPreference)
 	assert.Equal(t, 100, cfg.CheckpointEvery)
+	assert.Equal(t, 30, cfg.CheckpointMaxAgeSeconds)
 	assert.Equal(t, "now", cfg.StartMode)
 	assert.False(t, cfg.Bootstrap.Enabled)
+}
+
+func TestParseConfig_RejectsDuplicateCollections(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("WATCH_COLLECTIONS", "rocketchat_message,users,rocketchat_message")
+	_, err := parseConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
 }
 
 func TestParseConfig_MissingRequiredFails(t *testing.T) {

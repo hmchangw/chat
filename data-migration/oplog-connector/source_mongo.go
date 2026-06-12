@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -87,15 +88,23 @@ func (d *rawChangeDoc) toChangeEvent(resumeToken bson.Raw) changeEvent {
 	}
 	_ = bson.Unmarshal(d.ID, &idDoc)
 
+	// Every bson.Raw here aliases the change stream's Current buffer, which the
+	// driver documents as "only valid until the next call to Next". We clone all
+	// of them so a changeEvent stays valid if it is buffered or held across a
+	// Next() (e.g. by a downstream filter). bytes.Clone(nil) == nil, so omitempty
+	// envelope fields still work.
 	return changeEvent{
-		EventID:       idDoc.Data,
-		ResumeToken:   append(bson.Raw(nil), resumeToken...), // copy; driver reuses its buffer
-		Op:            d.OperationType,
-		DB:            d.Ns.DB,
-		Collection:    d.Ns.Coll,
-		DocumentKey:   d.DocumentKey,
-		FullDocument:  d.FullDocument,
-		PreImage:      d.FullDocumentBeforeChange,
+		EventID:      idDoc.Data,
+		ResumeToken:  bson.Raw(bytes.Clone(resumeToken)),
+		Op:           d.OperationType,
+		DB:           d.Ns.DB,
+		Collection:   d.Ns.Coll,
+		DocumentKey:  bson.Raw(bytes.Clone(d.DocumentKey)),
+		FullDocument: bson.Raw(bytes.Clone(d.FullDocument)),
+		PreImage:     bson.Raw(bytes.Clone(d.FullDocumentBeforeChange)),
+		// ClusterTime is a BSON timestamp (seconds, ordinal); we keep seconds only,
+		// so events within the same second share this value — fine for the coarse
+		// cross-collection sort, not a strict ordering key.
 		ClusterTimeMs: int64(d.ClusterTime.T) * 1000,
 	}
 }

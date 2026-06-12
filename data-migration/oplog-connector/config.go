@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -33,6 +34,11 @@ type config struct {
 	// Larger = fewer writes but more replay on crash (replays are deduped).
 	CheckpointEvery int `env:"CHECKPOINT_EVERY" envDefault:"100"`
 
+	// CheckpointMaxAgeSeconds bounds replay by wall-clock for low-volume
+	// collections: the latest acked frontier is flushed at least this often even
+	// when event volume stays below CheckpointEvery.
+	CheckpointMaxAgeSeconds int `env:"CHECKPOINT_MAX_AGE" envDefault:"30"`
+
 	// Start-point resolution (see resolveStartPoint / spec §4.2).
 	StartMode        string `env:"START_MODE"         envDefault:"now"` // now | beginning | time
 	StartAtTime      string `env:"START_AT_TIME"      envDefault:""`    // RFC3339 or unix-ms
@@ -60,5 +66,27 @@ func parseConfig() (config, error) {
 	if cfg.CheckpointEvery < 1 {
 		return config{}, fmt.Errorf("CHECKPOINT_EVERY must be >= 1, got %d", cfg.CheckpointEvery)
 	}
+	if cfg.CheckpointMaxAgeSeconds < 1 {
+		return config{}, fmt.Errorf("CHECKPOINT_MAX_AGE must be >= 1, got %d", cfg.CheckpointMaxAgeSeconds)
+	}
+	if dup := firstDuplicate(cfg.WatchCollections); dup != "" {
+		return config{}, fmt.Errorf("WATCH_COLLECTIONS has duplicate entry %q (each collection maps to one watcher and one checkpoint)", dup)
+	}
 	return cfg, nil
+}
+
+// firstDuplicate returns the first repeated (trimmed) entry, or "" if all unique.
+func firstDuplicate(items []string) string {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" {
+			continue
+		}
+		if seen[it] {
+			return it
+		}
+		seen[it] = true
+	}
+	return ""
 }

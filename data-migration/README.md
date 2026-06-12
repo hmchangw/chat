@@ -54,8 +54,17 @@ See `docs/superpowers/specs/2026-06-08-oplog-connector-design.md` (design) and
 3. **Network egress** from the connector to the source RS (read change streams +
    write checkpoints).
 4. **Seed the handoff.** Before first start, pre-insert one seed checkpoint per
-   collection (`Source:"seed"`, `ResumeToken:R`) — or set `START_RESUME_TOKEN` —
-   so live sync begins exactly after the migrated cut.
+   collection (`Source:"seed"`, `ResumeToken:R`) — **preferred** — so live sync
+   begins exactly after the migrated cut.
+
+> ⚠️ **Do not leave `START_RESUME_TOKEN` / `START_AT_TIME` set in the
+> environment.** They are one-off overrides that *ignore the stored checkpoint
+> and reseed on every restart*. Use them for a manual one-off only, then unset;
+> seed via the pre-inserted checkpoint doc instead. The connector logs a `WARN`
+> at startup when either is set.
+>
+> ⚠️ **Do not embed credentials in `SOURCE_MONGO_URI`** — the URI is logged at
+> startup. Use `SOURCE_MONGO_USERNAME` / `SOURCE_MONGO_PASSWORD` instead.
 
 ### Implementation note — synchronous publish
 

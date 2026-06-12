@@ -65,3 +65,6 @@ chat-frontend/junit.xml
 tmp/
 .air.*.toml
 /loadgen
+
+# stray local build of the data-migration service
+/oplog-connector

@@ -43,9 +43,11 @@ func (s *mongoCheckpointStore) Load(ctx context.Context, collection string) (*Ch
 }
 
 func (s *mongoCheckpointStore) Save(ctx context.Context, cp *Checkpoint) error {
-	cp.ID = checkpointID(cp.SiteID, cp.Collection)
-	if _, err := s.col.ReplaceOne(ctx, bson.M{"_id": cp.ID}, cp, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("save checkpoint %q: %w", cp.Collection, err)
+	// Copy so we don't mutate the caller's struct (it sets _id from site+coll).
+	doc := *cp
+	doc.ID = checkpointID(doc.SiteID, doc.Collection)
+	if _, err := s.col.ReplaceOne(ctx, bson.M{"_id": doc.ID}, doc, options.Replace().SetUpsert(true)); err != nil {
+		return fmt.Errorf("save checkpoint %q: %w", doc.Collection, err)
 	}
 	return nil
 }

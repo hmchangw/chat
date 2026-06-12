@@ -145,7 +145,7 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 
 	pub := &fakePublisher{}
 	store := &fakeStore{}
-	w := newWatcher("site1", coll, src, pub, store, 1)
+	w := newWatcher("site1", coll, src, pub, store, 1, time.Hour)
 	w.initialBackoff = time.Millisecond
 
 	runCtx, runCancel := context.WithCancel(ctx)

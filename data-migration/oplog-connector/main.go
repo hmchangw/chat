@@ -41,12 +41,18 @@ func main() {
 	slog.Info("oplog-connector started", "site", cfg.SiteID, "collections", cfg.WatchCollections)
 
 	// A fatal watcher error (e.g. lost resume token) exits non-zero without
-	// waiting for a shutdown signal — recovery is operator-driven (reseed).
+	// waiting for a shutdown signal — recovery is operator-driven (reseed). The
+	// goroutine also terminates on graceful shutdown via Done(), so it never
+	// leaks.
 	go func() {
-		if err := <-conn.Fatal(); err != nil {
-			slog.Error("fatal watcher error — exiting", "error", err)
-			conn.Close()
-			os.Exit(1)
+		select {
+		case err := <-conn.Fatal():
+			if err != nil {
+				slog.Error("fatal watcher error — exiting", "error", err)
+				conn.Close()
+				os.Exit(1)
+			}
+		case <-conn.Done():
 		}
 	}()
 
@@ -65,6 +71,7 @@ type connector struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	fatal  chan error
+	done   chan struct{}
 	once   sync.Once
 }
 
@@ -72,6 +79,14 @@ type connector struct {
 // launches one watcher goroutine per watched collection. It returns a running
 // connector; the caller drives lifecycle via Fatal() and Close().
 func start(ctx context.Context, cfg *config) (*connector, error) {
+	if cfg.StartResumeToken != "" || cfg.StartAtTime != "" {
+		// These are one-off seed overrides. Left set in the environment, they
+		// force a reseed (ignoring the stored checkpoint) on EVERY restart — so
+		// surface it loudly. Prefer seeding via a pre-inserted checkpoint doc.
+		slog.Warn("START_RESUME_TOKEN/START_AT_TIME is set — ignoring any stored checkpoint and reseeding; unset after first start to resume from the checkpoint",
+			"startResumeTokenSet", cfg.StartResumeToken != "", "startAtTime", cfg.StartAtTime)
+	}
+
 	client, err := mongoutil.Connect(ctx, cfg.SourceMongoURI, cfg.SourceUsername, cfg.SourcePassword)
 	if err != nil {
 		return nil, fmt.Errorf("source mongo connect: %w", err)
@@ -111,7 +126,9 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 		nc:     nc,
 		cancel: cancel,
 		fatal:  make(chan error, len(cfg.WatchCollections)),
+		done:   make(chan struct{}),
 	}
+	checkpointMaxAge := time.Duration(cfg.CheckpointMaxAgeSeconds) * time.Second
 
 	for _, raw := range cfg.WatchCollections {
 		coll := strings.TrimSpace(raw)
@@ -136,7 +153,7 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 			return nil, fmt.Errorf("open change stream %q: %w", coll, err)
 		}
 
-		w := newWatcher(cfg.SiteID, coll, src, js, store, cfg.CheckpointEvery)
+		w := newWatcher(cfg.SiteID, coll, src, js, store, cfg.CheckpointEvery, checkpointMaxAge)
 		c.wg.Add(1)
 		go func(w *watcher) {
 			defer c.wg.Done()
@@ -153,10 +170,15 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 // Fatal delivers the first fatal watcher error, if any.
 func (c *connector) Fatal() <-chan error { return c.fatal }
 
+// Done is closed when the connector shuts down, so a watcher of Fatal() can
+// terminate on graceful shutdown instead of blocking forever.
+func (c *connector) Done() <-chan struct{} { return c.done }
+
 // Close stops watchers, awaits their final checkpoints, then drains NATS and
 // disconnects Mongo. Safe to call multiple times.
 func (c *connector) Close() {
 	c.once.Do(func() {
+		close(c.done)
 		c.cancel()
 		waitWithTimeout(&c.wg, 20*time.Second)
 		_ = c.nc.Drain()

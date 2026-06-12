@@ -117,7 +117,9 @@ func mkEvent(id, op string) changeEvent {
 }
 
 func testWatcher(src changeSource, pub publisher, store CheckpointStore, every int) *watcher {
-	w := newWatcher("site1", "rocketchat_message", src, pub, store, every)
+	// Large max-age so the periodic flusher never fires during fast unit tests;
+	// tests that exercise it set checkpointMaxAge explicitly.
+	w := newWatcher("site1", "rocketchat_message", src, pub, store, every, time.Hour)
 	w.initialBackoff = time.Millisecond
 	w.maxBackoff = 2 * time.Millisecond
 	w.now = func() int64 { return 1718100000123 }
@@ -218,6 +220,52 @@ func TestBuildEnvelope_InvalidBSONErrors(t *testing.T) {
 	}
 	_, _, _, err := buildEnvelope(&ev, "site1", 1)
 	require.Error(t, err)
+}
+
+func TestWatcher_PeriodicFlushCheckpointsBelowCount(t *testing.T) {
+	// Few events, count threshold never reached — the time-based flusher must
+	// still persist the frontier (M1: bound replay by wall-clock).
+	src := &fakeSource{events: []changeEvent{mkEvent("E1", "insert"), mkEvent("E2", "insert")}}
+	pub := &fakePublisher{}
+	store := &fakeStore{}
+	w := newWatcher("site1", "rocketchat_message", src, pub, store, 1000, 10*time.Millisecond)
+	w.initialBackoff = time.Millisecond
+	w.now = func() int64 { return 1718100000123 }
+
+	go func() { _ = w.run(t.Context()) }()
+
+	require.Eventually(t, func() bool {
+		ids := store.savedEventIDs()
+		return len(ids) > 0 && ids[len(ids)-1] == "E2"
+	}, 3*time.Second, 10*time.Millisecond, "periodic flusher should persist the frontier without hitting the count threshold")
+}
+
+func TestWatcher_EmptyEventIDSkipped(t *testing.T) {
+	// An event with no _id._data can't be deduped; it must be skipped, never
+	// published, and never recorded as a frontier.
+	ev := mkEvent("", "insert")
+	src := &fakeSource{events: []changeEvent{ev}}
+	pub := &fakePublisher{}
+	store := &fakeStore{}
+	w := testWatcher(src, pub, store, 1)
+
+	require.NoError(t, w.run(context.Background()))
+	assert.Empty(t, pub.msgs, "empty-id event must not be published")
+	assert.Empty(t, store.savedEventIDs(), "empty-id event must not advance the checkpoint")
+}
+
+func TestCheckpointer_FlushDedupes(t *testing.T) {
+	store := &fakeStore{}
+	cps := &checkpointer{store: store}
+
+	cps.record(&Checkpoint{Collection: "c", EventID: "E1"})
+	require.NoError(t, cps.flush(context.Background()))
+	require.NoError(t, cps.flush(context.Background())) // same frontier — no second write
+	assert.Equal(t, []string{"E1"}, store.savedEventIDs())
+
+	cps.record(&Checkpoint{Collection: "c", EventID: "E2"})
+	require.NoError(t, cps.flush(context.Background()))
+	assert.Equal(t, []string{"E1", "E2"}, store.savedEventIDs())
 }
 
 func TestWatcher_HistoryLostIsFatal(t *testing.T) {
