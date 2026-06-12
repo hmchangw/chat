@@ -39,7 +39,8 @@ paths.
 2. [Connection & Auth](#2-connection--auth)
    - [2.1 NATS connection](#21-nats-connection)
    - [2.2 HTTP — POST /auth](#22-http--post-auth)
-   - [2.3 HTTP — Protected image upload/download](#23-http--protected-image-uploaddownload)
+   - [2.3 HTTP — POST /lookup (portal-service)](#23-http--post-lookup-portal-service)
+   - [2.4 HTTP — Protected image upload/download](#24-http--protected-image-uploaddownload)
 3. [Request/Reply Methods](#3-requestreply-methods)
    - [3.0 Shared schemas](#30-shared-schemas)
    - [3.1 room-service](#31-room-service)
@@ -117,7 +118,7 @@ All event payloads carry a top-level `timestamp` field that is **milliseconds si
 
 ### 2.1 NATS connection
 
-A client connects to NATS using a user NKey pair plus a signed JWT obtained from the auth-service (§2.2). The JWT scopes the client's permissions to:
+Login is a three-step sequence: portal lookup (§2.3) resolves the user's home site → auth (§2.2) mints a NATS user JWT → the client connects to the resolved `natsUrl`. The auth-service base URL, the NATS WebSocket URL, and the user's `siteId` are not static client config — they come from the portal lookup. The JWT scopes the client's permissions to:
 
 | Permission | Subject pattern | Why |
 |---|---|---|
@@ -163,7 +164,7 @@ Exchanges an SSO token for a signed NATS user JWT. The returned JWT is what the 
 |---|---|---|
 | `natsJwt` | string | Signed NATS user JWT. Use as the user JWT when connecting to NATS. |
 | `user.email` | string | OIDC email claim. |
-| `user.account` | string | The `{account}` value used in every NATS subject. Derived from `preferred_username` (falls back to `name`). |
+| `user.account` | string | The `{account}` value used in every NATS subject. Derived from the token's `preferred_username` claim. |
 | `user.employeeId` | string | Parsed from the SSO `description` claim. |
 | `user.engName` | string | Parsed from the SSO `description` claim. |
 | `user.chineseName` | string | Parsed from the SSO `description` claim. |
@@ -193,8 +194,10 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 |---|---|---|---|
 | 400 | `bad_request` | — | `{ "code": "bad_request", "error": "ssoToken and natsPublicKey are required" }` |
 | 400 | `bad_request` | — | `{ "code": "bad_request", "error": "invalid natsPublicKey format" }` |
+| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "account must be a single NATS subject token (no '.', '*', '>' or whitespace)" }` — the account becomes a NATS subject token, so separator/wildcard/whitespace characters are refused. |
 | 401 | `unauthenticated` | `sso_token_expired` | `{ "code": "unauthenticated", "reason": "sso_token_expired", "error": "SSO token has expired, please re-login" }` |
 | 401 | `unauthenticated` | `invalid_sso_token` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid SSO token" }` |
+| 403 | `forbidden` | `account_not_provisioned` | `{ "code": "forbidden", "reason": "account_not_provisioned", "error": "account not provisioned for this site" }` — the account is not in this site's user directory (unprovisioned, or homed on a different site). Applies to initial login and background renewal alike. |
 | 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — the real cause is logged server-side and never sent to the client. |
 
 The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /auth` to refresh before it expires.
@@ -215,9 +218,69 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 `None.`
 
+### 2.3 HTTP — POST /lookup (portal-service)
+
+**Endpoint:** `POST /lookup`
+**Reply:** synchronous HTTP response
+
+Site discovery — called once per login, **before** §2.2. Validates the SSO token, derives the account from the token's `preferred_username` claim (tokens without it are refused), looks it up in the portal's in-memory directory (loaded from the HR employee feed at startup and refreshed daily), and returns the home site's connection coordinates. The client then calls `POST {authServiceUrl}/auth` (§2.2) and connects to `natsUrl` (§2.1). JWT renewal does **not** re-query the portal — site assignment is stable within a session.
+
+#### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `ssoToken` | string | yes | OIDC-issued SSO token. |
+
+```json
+{ "ssoToken": "<sso-token>" }
+```
+
+#### Success response
+
+`HTTP 200`
+
+| Field | Type | Notes |
+|---|---|---|
+| `account` | string | The `{account}` used in every NATS subject. |
+| `employeeId` | string | From the portal directory; informational. |
+| `authServiceUrl` | string | Base URL of the home site's auth-service — call `POST {authServiceUrl}/auth` next. |
+| `natsUrl` | string | WebSocket URL of the home site's NATS. |
+| `siteId` | string | The user's home site; scopes site-suffixed NATS subjects. |
+
+```json
+{
+  "account": "alice",
+  "employeeId": "E12345",
+  "authServiceUrl": "https://auth.site-a.example.com",
+  "natsUrl": "wss://nats.site-a.example.com",
+  "siteId": "site-a"
+}
+```
+
+#### Error response
+
+See [Error envelope](#6-error-envelope-reference). HTTP statuses:
+
+| Status | `code` | `reason` | Example body |
+|---|---|---|---|
+| 400 | `bad_request` | `missing_fields` | `{ "code": "bad_request", "reason": "missing_fields", "error": "ssoToken is required" }` |
+| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "account must be a single NATS subject token (no '.', '*', '>' or whitespace)" }` — same account rule as §2.2. |
+| 401 | `unauthenticated` | `sso_token_expired` | `{ "code": "unauthenticated", "reason": "sso_token_expired", "error": "SSO token has expired, please re-login" }` |
+| 401 | `unauthenticated` | `invalid_sso_token` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid SSO token" }` |
+| 403 | `forbidden` | `account_not_ready` | `{ "code": "forbidden", "reason": "account_not_ready", "error": "account not ready for chat" }` — account absent from the portal directory (provisioning is fed by a daily HR sync; a freshly provisioned account appears after the next refresh). |
+| 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` |
+
+#### Triggered events — success path
+
+`None — HTTP-only.`
+
+#### Triggered events — error path
+
+`None.`
+
 ---
 
-### 2.3 HTTP — Protected image upload/download
+### 2.4 HTTP — Protected image upload/download
 
 Two HTTP endpoints on `upload-service` for protected inline images, proxied
 to/from an internal Drive. Both require the `ssoToken` header (validated via
@@ -3628,13 +3691,15 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `invalid_sso_token` | unauthenticated | auth-service `POST /auth` |
 | `invalid_request` | bad_request | auth-service (body parse / required field missing) |
 | `invalid_nkey` | bad_request | auth-service (natsPublicKey format) |
-| `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing) |
+| `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing); portal-service `POST /lookup` (ssoToken missing) |
+| `account_not_provisioned` | forbidden | auth-service `POST /auth` minting gate |
+| `account_not_ready` | forbidden | portal-service `POST /lookup` (account absent from the portal directory cache) |
 
 ### Where envelopes are sent
 
 - **NATS sync replies** — on the reply subject for §3/§4 RPCs.
 - **JetStream async results** — `model.AsyncJobResult` carries the same `code` + `reason` fields when `status == "error"`, so a failed async job is surfaced the same way as a sync error.
-- **HTTP** — auth-service `POST /auth` (§2.2) and upload-service's image endpoints (§2.3) write the envelope as the response body with the matching HTTP status from the table above.
+- **HTTP** — auth-service `POST /auth` (§2.2), portal-service `POST /lookup` (§2.3), and upload-service's image endpoints (§2.4) write the envelope as the response body with the matching HTTP status from the table above.
 
 ### Client branching guidance
 

@@ -1,0 +1,59 @@
+name: portal-service
+
+services:
+  # One-shot directory seed: an hr_employee stand-in for the daily HR cron —
+  # the demo accounts match the ones tools/seed-sample-data creates in the
+  # site DB.
+  portal-seed:
+    image: mongo:8.2.9
+    entrypoint:
+      - mongosh
+      - --host
+      - mongodb
+      - --quiet
+      - --eval
+      - |
+        const p = db.getSiblingDB('portal');
+        [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) =>
+          p.hr_employee.replaceOne(
+            { account: account },
+            { account: account, employeeId: employeeId, siteId: 'site-local', natsUrl: 'ws://localhost:9222' },
+            { upsert: true },
+          ),
+        );
+        print('portal seed: hr_employee=' + p.hr_employee.countDocuments());
+    networks:
+      - chat-local
+
+  portal-service:
+    build:
+      context: ../..
+      dockerfile: portal-service/deploy/Dockerfile
+    pull_policy: build
+    depends_on:
+      portal-seed:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8081
+      # Bypass OIDC; accept any account name. Flip to false to test OIDC.
+      - DEV_MODE=${DEV_MODE:-true}
+      - PORTAL_DEV_FALLBACK_SITE_ID=site-local
+      - PORTAL_DEV_FALLBACK_NATS_URL=ws://localhost:9222
+      # Single-site local: no {siteId} placeholder, used verbatim for all sites.
+      - PORTAL_AUTH_URL_TEMPLATE=http://localhost:8080
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=portal
+      - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
+      - OIDC_AUDIENCES=nats-chat
+      - TLS_SKIP_VERIFY=false
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

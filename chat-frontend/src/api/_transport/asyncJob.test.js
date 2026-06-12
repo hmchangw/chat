@@ -127,10 +127,12 @@ describe('requestWithAsyncResult', () => {
         requestId: 'req-1',
         asyncTimeout: 500,
       })
+      // Catch before advancing timers — the rejection fires mid-advance.
+      const settled = p.catch((e) => e)
       await Promise.resolve()
       await Promise.resolve()
-      vi.advanceTimersByTime(600)
-      const err = await p.catch((e) => e)
+      await vi.advanceTimersByTimeAsync(600)
+      const err = await settled
       expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
       expect(err.message).toMatch(/timeout/i)
     } finally {
@@ -147,9 +149,11 @@ describe('requestWithAsyncResult', () => {
         requestId: 'req-1',
         asyncTimeout: 100,
       })
+      // Catch before advancing timers — the rejection fires mid-advance.
+      const assertion = expect(p).rejects.toThrow()
       await Promise.resolve(); await Promise.resolve()
-      vi.advanceTimersByTime(200)
-      await expect(p).rejects.toThrow()
+      await vi.advanceTimersByTimeAsync(200)
+      await assertion
       expect(unsubSpy).toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
@@ -235,6 +239,14 @@ describe('formatAsyncJobError', () => {
       reason: 'max_room_size_reached',
     })
     expect(formatAsyncJobError(err)).toBe('This room is at capacity.')
+  })
+
+  it('maps account_not_provisioned to the contact-administrator copy', () => {
+    const err = new AsyncJobError('account not provisioned for chat', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      code: 'forbidden',
+      reason: 'account_not_provisioned',
+    })
+    expect(formatAsyncJobError(err)).toBe("Your account isn't set up for chat yet — contact your administrator.")
   })
 
   it('returns the humanized copy for not_room_member', () => {
