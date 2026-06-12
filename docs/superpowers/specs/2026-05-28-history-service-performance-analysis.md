@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-28
 **Author:** session (code-grounded analysis)
-**Status:** Findings #2, #4, #5, and #7 (token-aware) implemented on `claude/history-service-performance-HklKj`. Finding #1 split out to its own PR on `claude/history-service-readcache-HklKj`. See *Implementation status* below. #6 and #8 remain open; #3 deferred.
+**Status:** Findings #2 and #4 implemented on `claude/history-service-performance-HklKj`. Finding #1 split out to its own PR on `claude/history-service-readcache-HklKj`. Findings #5 and #7 (token-aware) split out to `claude/history-service-cass-perf-HklKj`. See *Implementation status* below. #6 and #8 remain open; #3 deferred.
 
 ## Scope
 
@@ -17,10 +17,10 @@ Ranked by effort-adjusted value. Gaps in numbering (`#3`) are intentional — se
 | Rank | # | Finding | Layer | Gain | Effort | Risk | Status |
 |------|---|---------|-------|------|--------|------|--------|
 | 1 | 1 | No caching of per-request Mongo reads | Mongo | High | Med | Med (access-check correctness) | ✅ Done (separate PR: `claude/history-service-readcache-HklKj`) |
-| 2 | 7 | Cassandra client not token-aware / no compression | Driver (shared pkg) | Low–Med per read, repo-wide aggregate | Low | Low, but repo-wide blast radius | ✅ Done (token-aware; compression not pursued) |
+| 2 | 7 | Cassandra client not token-aware / no compression | Driver (shared pkg) | Low–Med per read, repo-wide aggregate | Low | Low, but repo-wide blast radius | ✅ Done (separate PR: `claude/history-service-cass-perf-HklKj`; token-aware only, compression not pursued) |
 | 3 | 4 | Per-row reflection rebuild in `structScan` | Cassandra scan | Low | Low | Low | ✅ Done |
 | 4 | 2 | Access check serialized ahead of the parallel fan-out | Service | Low–Med (shrinks if #1 lands) | Low–Med | Low–Med | ✅ Done (LoadHistory, LoadNextMessages) |
-| 5 | 5 | `GetMessagesByIDs` multi-partition `IN` | Cassandra | Low–Med | Med | Low–Med | ✅ Done |
+| 5 | 5 | `GetMessagesByIDs` multi-partition `IN` | Cassandra | Low–Med | Med | Low–Med | ✅ Done (separate PR: `claude/history-service-cass-perf-HklKj`) |
 | 6 | 6 | Offset pagination (`$skip` + per-page `$count`) | Mongo | Low (deep paging only) | Med (API change) | Low | Open (measure offsets) |
 | 7 | 8 | Wide-row over-fetch (all 25 columns every read) | Cassandra | Low–Med | Low–Med | Low (API-constrained) | Open (API-constrained) |
 
@@ -30,10 +30,10 @@ Implemented on `claude/history-service-performance-HklKj`, TDD throughout; `make
 
 | # | Commit / PR | Notes |
 |---|-------------|-------|
-| 7 | `2542b69` | `cassutil` sets `TokenAwareHostPolicy(RoundRobinHostPolicy())`. Compression deliberately left out of scope. Repo-wide. |
-| 4 | `54f11d0` | Per-type cql-tag→field-index map cached in a `sync.Map`. Benchmark on the full column set: 4813→908 ns/op, 5→2 allocs/op. |
-| 5 | `ef49c85` | `IN` replaced with bounded-concurrency token-aware point reads via a unit-tested `fetchByIDs`; input order preserved, missing omitted. |
-| 2 | `8d27746` | `checkAccessAndRoomTimes` runs the access check and room-times resolve concurrently in LoadHistory/LoadNextMessages; access error keeps precedence. Cassandra-interleaved handlers intentionally keep the access check first. |
+| 4 | `a006d7e` | Per-type cql-tag→field-index map cached in a `sync.Map`. Benchmark on the full column set: 4813→908 ns/op, 5→2 allocs/op. |
+| 2 | `e180d88` | `checkAccessAndRoomTimes` runs the access check and room-times resolve concurrently in LoadHistory/LoadNextMessages; access error keeps precedence. Cassandra-interleaved handlers intentionally keep the access check first. |
+| 7 | separate PR — branch `claude/history-service-cass-perf-HklKj` | `cassutil` sets `TokenAwareHostPolicy(RoundRobinHostPolicy())`. Compression deliberately left out of scope. Repo-wide. |
+| 5 | separate PR — branch `claude/history-service-cass-perf-HklKj` | `IN` replaced with bounded-concurrency token-aware point reads via a unit-tested `fetchByIDs`; input order preserved, missing omitted. |
 | 1 | separate PR — branch `claude/history-service-readcache-HklKj` | New `readcache` (LRU+TTL+singleflight). Subscription cache positives-only, default 2m; room metadata default 10s (lastMsgAt volatility). Env-tunable, `size`/`ttl` 0 disables, `Stats()` exposed. |
 
 **Cross-cutting prerequisite:** the service emits no DB-level performance instrumentation today (per-handler latency comes only from `natsrouter.Logging()`). Several findings can't be prioritized confidently without it — see *Instrument before optimizing*.
@@ -92,7 +92,7 @@ History reads are a high-frequency, user-facing endpoint, so this is steady Mong
 
 **Caveats.** The access check is the only security-sensitive one and dictates the design — get its TTL/invalidation right and the rest is mechanical. This is the single highest-value item.
 
-### #7 — Cassandra client not token-aware / no compression  ·  shared driver pkg  ·  **Low–Med, broad reach**  ·  ✅ Token-aware implemented (`2542b69`); compression not pursued
+### #7 — Cassandra client not token-aware / no compression  ·  shared driver pkg  ·  **Low–Med, broad reach**  ·  ✅ Implemented (separate PR — branch `claude/history-service-cass-perf-HklKj`; token-aware only, compression not pursued)
 
 **Observation.** `cassutil.buildCluster` (`pkg/cassutil/cass.go`) sets keyspace, `LocalQuorum`, a 10 s timeout, and `NumConns`, but **no `HostSelectionPolicy`**. gocql therefore defaults to `RoundRobinHostPolicy` — **not token-aware**. Every query may land on a coordinator that is *not* a replica for the partition, which then forwards to a replica: an extra network hop and avoidable coordinator load on each request. No compressor is set either.
 
@@ -102,7 +102,7 @@ History reads are a high-frequency, user-facing endpoint, so this is steady Mong
 
 **Risk / caveats.** `cassutil` is a **shared package** — changing it touches `message-worker`, `search-sync-worker`, and others. Token-aware round-robin is strictly better for partition-keyed access, so risk is low, but the change should be validated across all consumers and is best owned as a deliberate shared-infra change rather than a history-service-local tweak.
 
-### #4 — Per-row reflection rebuild in `structScan`  ·  Cassandra scan  ·  **Low, cheap**  ·  ✅ Implemented (`54f11d0`)
+### #4 — Per-row reflection rebuild in `structScan`  ·  Cassandra scan  ·  **Low, cheap**  ·  ✅ Implemented (`a006d7e`)
 
 **Observation.** `structScan` (`utils.go:130`) calls `buildScanValues` (`utils.go:99`) **once per row**. `buildScanValues` reflects over all ~25–27 struct fields to rebuild the `cql`-tag → field map every single row. A 100-row page rebuilds that map 100 times.
 
@@ -110,7 +110,7 @@ History reads are a high-frequency, user-facing endpoint, so this is steady Mong
 
 **Risk.** Minimal; localized to one helper, fully covered by `utils_test.go`. A good "while we're in here" cleanup, not a headline.
 
-### #2 — Access check serialized ahead of the parallel fan-out  ·  Service  ·  **Low–Med (conditional)**  ·  ✅ Implemented (`8d27746`)
+### #2 — Access check serialized ahead of the parallel fan-out  ·  Service  ·  **Low–Med (conditional)**  ·  ✅ Implemented (`e180d88`)
 
 **Observation.** In every handler, `getAccessSince` runs and returns *before* any other work (`messages.go:30` precedes the `errgroup` at `:67`). The subscription round-trip is fully serial in front of room-times resolution and the Cassandra page read.
 
@@ -121,7 +121,7 @@ History reads are a high-frequency, user-facing endpoint, so this is steady Mong
 - Con: performs a Cassandra read for callers who turn out unauthorized — wasted cluster work on the rare path, and a theoretical timing side-channel (the data itself is never returned).
 - **Interaction with #1:** if caching lands, a cached access check is nearly free and no longer worth parallelizing. So #2 mainly matters either *instead of* #1 or for cache-miss latency. Don't pursue both for the same goal.
 
-### #5 — `GetMessagesByIDs` multi-partition `IN`  ·  Cassandra  ·  **Low–Med (measure N)**  ·  ✅ Implemented (`ef49c85`)
+### #5 — `GetMessagesByIDs` multi-partition `IN`  ·  Cassandra  ·  **Low–Med (measure N)**  ·  ✅ Implemented (separate PR — branch `claude/history-service-cass-perf-HklKj`)
 
 **Observation.** `GetMessagesByIDs` issues `... WHERE message_id IN ?` (`messages_by_id.go:33`). `message_id` is the partition key, so `IN` is a **scatter-gather across N partitions** funnelled through one coordinator. It's used by `GetThreadParentMessages` to hydrate thread parents (`threads.go:212`); N is the number of distinct thread rooms on the page (deduped), bounded by the thread-list page size (default 20, max 100).
 
@@ -158,8 +158,8 @@ This is cheap, low-risk, and converts several "gut value" ratings into evidence.
 
 1. **Instrument** the DB calls (prerequisite, low effort). — _still open; readcache exposes `Stats()`, but DB-call timing / `buckets_walked` metrics are not yet wired._
 2. ✅ **#1 caching** — done in separate PR (branch `claude/history-service-readcache-HklKj`).
-3. ✅ **#7 token-aware driver** + ✅ **#4 scan-map cache** — done (`2542b69`, `54f11d0`).
-4. ✅ **#2** and ✅ **#5** done (`8d27746`, `ef49c85`); **#6** still gated on offset-depth metrics.
+3. ✅ **#7 token-aware driver** — done in separate PR (branch `claude/history-service-cass-perf-HklKj`). ✅ **#4 scan-map cache** — done (`a006d7e`).
+4. ✅ **#2** done (`e180d88`); ✅ **#5** done in separate PR (branch `claude/history-service-cass-perf-HklKj`); **#6** still gated on offset-depth metrics.
 5. **#8** only if a narrow-projection endpoint appears. — open.
 
 ## Deferred / future investigation
