@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/errcode"
@@ -95,6 +96,36 @@ func TestIntegration_SearchApps_AssistantEnabledFilter(t *testing.T) {
 
 	require.Len(t, resp.Apps, 1)
 	assert.Equal(t, "Weather Alpha", resp.Apps[0].Name)
+}
+
+func TestIntegration_EnsureIndexes_AppsName(t *testing.T) {
+	mongoDB := testutil.MongoDB(t, "search_service_test")
+	ctx := context.Background()
+
+	require.NoError(t, newMongoStore(mongoDB).ensureIndexes(ctx))
+
+	cursor, err := mongoDB.Collection("apps").Indexes().List(ctx)
+	require.NoError(t, err)
+	var idxes []bson.D
+	require.NoError(t, cursor.All(ctx, &idxes))
+
+	want := bson.D{{Key: "name", Value: int32(1)}}
+	found := false
+	for _, idx := range idxes {
+		var gotKeys bson.D
+		for _, elem := range idx {
+			if elem.Key == "key" {
+				if kd, ok := elem.Value.(bson.D); ok {
+					gotKeys = kd
+				}
+			}
+		}
+		if len(gotKeys) == len(want) && gotKeys[0].Key == want[0].Key && gotKeys[0].Value == want[0].Value {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected index on apps with keys %v", want)
 }
 
 func TestIntegration_SearchApps_EmptyQueryReturnsBadRequest(t *testing.T) {

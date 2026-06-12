@@ -2613,6 +2613,20 @@ func TestMongoStore_EnsureIndexes_NewCompoundIndexes(t *testing.T) {
 			{Key: "roomId", Value: int32(1)},
 			{Key: "u.isBot", Value: int32(1)},
 		}},
+		// Backs getRoomSubscriptions: filter roomId, sort {joinedAt, _id} with
+		// skip/limit pagination. Without joinedAt+_id in the index the sort
+		// spills to an in-memory sort that risks the 32MB limit on large rooms.
+		{"subscriptions", bson.D{
+			{Key: "roomId", Value: int32(1)},
+			{Key: "joinedAt", Value: int32(1)},
+			{Key: "_id", Value: int32(1)},
+		}},
+		// Backs CountOwners: filter {roomId, roles} so the count is index-only
+		// instead of scanning every subscription in the room.
+		{"subscriptions", bson.D{
+			{Key: "roomId", Value: int32(1)},
+			{Key: "roles", Value: int32(1)},
+		}},
 		{"bot_cmd_menu", bson.D{
 			{Key: "activeStatus", Value: int32(1)},
 			{Key: "name", Value: int32(1)},

@@ -153,6 +153,14 @@ func main() {
 	store := newESStore(engine, cfg.Search.UserRoomIndex)
 	cache := newValkeyCache(valkey)
 	mongoStore := newMongoStore(mongoDB)
+
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := mongoStore.ensureIndexes(ensureCtx); err != nil {
+		ensureCancel()
+		slog.Error("ensure mongo indexes failed", "error", err)
+		os.Exit(1)
+	}
+	ensureCancel()
 	handler := newHandler(store, mongoStore, usersClient, cache, &handlerConfig{
 		SiteID:                  cfg.SiteID,
 		DocCounts:               cfg.Search.DocCounts,
