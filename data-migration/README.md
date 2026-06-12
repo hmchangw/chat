@@ -35,10 +35,13 @@ See `docs/superpowers/specs/2026-06-08-oplog-connector-design.md` (design) and
 
 ## oplog-connector at a glance
 
-- **Watched collections (8):** `rocketchat_message` (pre-image), `rocketchat_room`,
+- **Watched collections (8):** `rocketchat_message`, `rocketchat_room`,
   `rocketchat_subscription`, `rocketchat_uploads`, `tsmc_room_members`,
   `tsmc_thread_subscriptions`, `tsmc_hr_acct_org`, `users`. All op types
-  (insert/update/replace/delete) are traced for every collection.
+  (insert/update/replace/delete) are traced for every collection, identically.
+- **No lookups.** The connector forwards native oplog content only — `fullDocument`
+  for insert/replace, `updateDescription` (the delta) for update, `documentKey` for
+  delete. No `updateLookup`, no pre-images. All enrichment is the transformer's job.
 - **Subjects:** `chat.oplog.{siteID}.{rawCollection}.{op}`; dedup via
   `Nats-Msg-Id` = change-stream `_id._data`.
 - **Checkpoints:** one doc per collection in `oplog_checkpoints` (in `CHECKPOINT_DB`
@@ -60,7 +63,6 @@ fail-fast at startup.
 | `NATS_URL` | ✓ | — | publish target |
 | `NATS_CREDS_FILE` | | `""` | NATS credentials file |
 | `WATCH_COLLECTIONS` | ✓ | — | comma-list of raw collections to tail (one watcher each; **no duplicates**) |
-| `PREIMAGE_COLLECTIONS` | | `rocketchat_message` | subset that requests delete/update pre-images |
 | `READ_PREFERENCE` | | `secondary` | source read pref (`primary`\|`primaryPreferred`\|`secondary`\|`secondaryPreferred`\|`nearest`) |
 | `CHECKPOINT_EVERY` | | `100` | persist the resume token every N acked events |
 | `CHECKPOINT_MAX_AGE` | | `30` | also persist it at least every N seconds (bounds replay for low-volume collections) |
@@ -80,14 +82,14 @@ fail-fast at startup.
 ### Source-side prerequisites (ops)
 
 1. **Replica set.** Change streams require the source Mongo to be a replica set.
-2. **Pre-images.** Each `PREIMAGE_COLLECTIONS` collection must be created with
-   `changeStreamPreAndPostImages: { enabled: true }` so deletes carry the prior
-   document.
-3. **Network egress** from the connector to the source RS (read change streams +
+2. **Network egress** from the connector to the source RS (read change streams +
    write checkpoints).
-4. **Seed the handoff.** Before first start, pre-insert one seed checkpoint per
+3. **Seed the handoff.** Before first start, pre-insert one seed checkpoint per
    collection (`Source:"seed"`, `ResumeToken:R`) — **preferred** — so live sync
    begins exactly after the migrated cut.
+
+No `changeStreamPreAndPostImages` / pre-image setup is required — the connector
+does no lookups.
 
 > ⚠️ **Do not leave `START_RESUME_TOKEN` / `START_AT_TIME` set in the
 > environment.** They are one-off overrides that *ignore the stored checkpoint
@@ -114,7 +116,7 @@ live-sync volumes. Per-collection parallelism is retained (one goroutine each).
 make up SERVICE=data-migration/oplog-connector
 ```
 
-Stands up a single-node replica set (pre-images enabled), JetStream NATS, and
+Stands up a single-node replica set, JetStream NATS, and
 the connector with `BOOTSTRAP_STREAMS=true`.
 
 ### Tests

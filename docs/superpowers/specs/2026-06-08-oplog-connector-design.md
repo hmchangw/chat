@@ -62,7 +62,7 @@ So the connector's job reduces to: **resume from a given point, and never lose o
 chat.oplog.{siteID}.{rawCollection}.{op}      op ∈ insert | update | replace | delete
 ```
 
-**All ops, every collection.** Every change-stream operation type — `insert`, `update`, `replace`, `delete` — is traced and published for **every** watched collection. There is no per-collection op allow-listing and no op filtering: the connector mirrors the full mutation history of each collection so the transformer can reconstruct exact state. (The only per-collection knob is pre-images — §3.1 — which adds the *before*-image to deletes/updates for a subset; it never removes an op.) Change-stream control events (`invalidate`, `drop`, `rename`) are not data ops and are handled per §7.2, not published.
+**All ops, every collection — identically.** Every change-stream operation type — `insert`, `update`, `replace`, `delete` — is traced and published for **every** watched collection. There is no per-collection op allow-listing, no op filtering, and **no per-collection knobs at all** — collections are pure config, all handled the same way. The connector mirrors the full mutation history of each collection so the transformer can reconstruct exact state. Change-stream control events (`invalidate`, `drop`, `rename`) are not data ops and are handled per §7.2, not published.
 
 `rawCollection` is the **raw source collection name** (e.g. `rocketchat_message`) — the connector does not rename. Built via a new `pkg/subject` builder, never `fmt.Sprintf`.
 
@@ -76,20 +76,22 @@ Typed envelope, but documents stay **opaque** (`json.RawMessage`) so the dumb co
 
 ```go
 type OplogEvent struct {
-    EventID      string          `json:"eventId"`      // change-stream _id._data; also Nats-Msg-Id
-    Op           string          `json:"op"`           // insert | update | replace | delete
-    DB           string          `json:"db"`
-    Collection   string          `json:"coll"`         // raw source name
-    DocumentKey  json.RawMessage `json:"documentKey"`  // { _id: ... }
-    ClusterTime  int64           `json:"clusterTime"`  // source op time, unix ms
-    FullDocument json.RawMessage `json:"fullDocument,omitempty"` // post-image (insert/update/replace)
-    PreImage     json.RawMessage `json:"preImage,omitempty"`     // pre-image; messages deletes only
-    SiteID       string          `json:"siteId"`
-    Timestamp    int64           `json:"timestamp"`    // publish time, unix ms (event-level, per CLAUDE.md)
+    EventID           string          `json:"eventId"`      // change-stream _id._data; also Nats-Msg-Id
+    Op                string          `json:"op"`           // insert | update | replace | delete
+    DB                string          `json:"db"`
+    Collection        string          `json:"coll"`         // raw source name
+    DocumentKey       json.RawMessage `json:"documentKey"`  // { _id: ... }
+    ClusterTime       int64           `json:"clusterTime"`  // source op time, unix ms
+    FullDocument      json.RawMessage `json:"fullDocument,omitempty"`      // native document; insert/replace only (no lookup)
+    UpdateDescription json.RawMessage `json:"updateDescription,omitempty"` // raw delta; update only
+    SiteID            string          `json:"siteId"`
+    Timestamp         int64           `json:"timestamp"`    // publish time, unix ms (event-level, per CLAUDE.md)
 }
 ```
 
 The opaque **resume token** is kept **internally** for checkpointing and is *not* in the payload.
+
+**No lookups — native oplog content only.** The connector never enriches: it forwards exactly what the change stream carries natively. `FullDocument` is the document for `insert`/`replace` (it's in the oplog entry — free); `update` carries only `UpdateDescription` (the raw delta), **not** an `updateLookup` post-image; `delete` carries only the `documentKey`. No `updateLookup` (an extra source read, and it returns the *current* doc, which can be newer than the event) and **no pre-images** (a source-side feature with storage cost). All enrichment — resolving a delete's `_id`, applying a delta, joining to a room/user — is the downstream transformer's job, against the state it is building. This keeps the pump dumb and the `MIGRATION_OPLOG` stream a faithful raw-change record for retention/replay.
 
 ---
 
@@ -132,7 +134,7 @@ One change stream per collection. For each:
                                                                   persist token (post-ack)
 ```
 
-- **Read options:** post-image via `updateLookup`; **pre-image** (`fullDocumentBeforeChange`) only for collections in `PREIMAGE_COLLECTIONS` (default `rocketchat_message`); `majority` read concern; read from **secondary**.
+- **Read options:** **no `updateLookup`, no pre-images** — native oplog content only (§2.4). `majority` read concern; read from **secondary** (configurable). The change stream is opened with no `fullDocument`/`fullDocumentBeforeChange` options, so it performs no extra source reads.
 - **Single active reader per collection** — guaranteed by `replicas=1` (see §7 HA). No leader election.
 
 ### 3.2 Checkpoint store
@@ -211,7 +213,6 @@ Tokens are fed back with **`startAfter`**: it survives invalidate events (collec
 | `CHECKPOINT_DB` | | `migration` | DB on source RS holding `oplog_checkpoints` |
 | `NATS_URL` | ✓ | — | publish target |
 | `WATCH_COLLECTIONS` | ✓ | — | comma-list of raw collections to tail (see §5.3) |
-| `PREIMAGE_COLLECTIONS` | | `rocketchat_message` | subset needing pre-images |
 | `READ_PREFERENCE` | | `secondary` | source read preference |
 | `PUBLISH_CHANNEL_BUFFER` | | `1024` | per-watcher reader→publisher buffer |
 | `MAX_INFLIGHT_PUBLISHES` | | `256` | async pub-ack window before backpressure |
@@ -225,18 +226,18 @@ Tokens are fed back with **`startAfter`**: it survives invalidate events (collec
 
 The connector tails these 8 source collections (`WATCH_COLLECTIONS`):
 
-| Raw source collection | Maps to (new stack, roughly) | Pre-image? |
-|---|---|---|
-| `rocketchat_message` | messages | ✓ (delete pre-image — body needed after delete) |
-| `rocketchat_room` | rooms (channels / DMs) | |
-| `rocketchat_subscription` | subscriptions | |
-| `rocketchat_uploads` | uploads / file metadata | |
-| `tsmc_room_members` | room members | |
-| `tsmc_thread_subscriptions` | thread subscriptions | |
-| `tsmc_hr_acct_org` | HR account / org mapping | |
-| `users` | users | |
+| Raw source collection | Maps to (new stack, roughly) |
+|---|---|
+| `rocketchat_message` | messages |
+| `rocketchat_room` | rooms (channels / DMs) |
+| `rocketchat_subscription` | subscriptions |
+| `rocketchat_uploads` | uploads / file metadata |
+| `tsmc_room_members` | room members |
+| `tsmc_thread_subscriptions` | thread subscriptions |
+| `tsmc_hr_acct_org` | HR account / org mapping |
+| `users` | users |
 
-For each of these, **all four op types** (`insert`/`update`/`replace`/`delete`) are traced — no op filtering (§2.2). Only `rocketchat_message` is in `PREIMAGE_COLLECTIONS` by default (its deletes must carry the pre-delete document); add others only if their deletes need the prior image. The connector stays collection-agnostic — these names are pure config, fed verbatim to `startAfter`/subjects with no per-collection schema logic.
+For each of these, **all four op types** (`insert`/`update`/`replace`/`delete`) are traced — no op filtering, and **every collection is handled identically** (§2.2): no pre-images, no lookups. The connector stays collection-agnostic — these names are pure config, fed verbatim to `startAfter`/subjects with no per-collection schema logic.
 
 > Spellings confirmed against the source (2026-06-11): `rocketchat_message` is **singular** (not the RocketChat-default plural `rocketchat_messages`), and the rooms collection is `rocketchat_room`. The names are otherwise exact — a misspelled entry yields a watcher that silently tails nothing (no error), so the implementer copies this list verbatim.
 
@@ -291,7 +292,7 @@ stop readers → close change-stream cursors → drain channels / await in-fligh
 
 Table-driven over:
 - op types (insert/update/replace/delete) → correct subject + envelope fields,
-- pre-image present only for `PREIMAGE_COLLECTIONS`,
+- `fullDocument` present for insert/replace, `updateDescription` (delta) for update, neither for delete — no lookups,
 - **frontier advances only along the contiguous acked prefix**,
 - **publish failure stalls the frontier** (token not persisted past a gap),
 - **token persisted only after ack**,
@@ -310,6 +311,6 @@ Table-driven over:
 
 ## 9. Open / deferred
 
-- ~~Final `WATCH_COLLECTIONS` / `PREIMAGE_COLLECTIONS` set~~ — **resolved**: the 8 collections are fixed in §5.3; only the exact spelling of `rocketchat_message` / `rocketchat_room` remains to verify against the live source.
+- ~~Final `WATCH_COLLECTIONS` set~~ — **resolved**: the 8 collections are fixed in §5.3 (no `PREIMAGE_COLLECTIONS` — the connector does no lookups/pre-images).
 - Soak retention window sizing — ops/IaC decision.
 - The downstream **`oplog-transformer`** (consumes `MIGRATION_OPLOG_{site}`) is a separate spec / sibling component under `data-migration/`.

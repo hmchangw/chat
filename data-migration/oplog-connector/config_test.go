@@ -23,7 +23,6 @@ func TestParseConfig_DefaultsAndSlices(t *testing.T) {
 
 	assert.Equal(t, "site1", cfg.SiteID)
 	assert.Equal(t, []string{"rocketchat_message", "rocketchat_room", "users"}, cfg.WatchCollections)
-	assert.Equal(t, []string{"rocketchat_message"}, cfg.PreimageCollections)
 	assert.Equal(t, "migration", cfg.CheckpointDB)
 	assert.Equal(t, "rocketchat", cfg.SourceDB)
 	assert.Equal(t, "secondary", cfg.ReadPreference)

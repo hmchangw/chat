@@ -19,10 +19,10 @@ type rawChangeDoc struct {
 		DB   string `bson:"db"`
 		Coll string `bson:"coll"`
 	} `bson:"ns"`
-	DocumentKey              bson.Raw       `bson:"documentKey"`
-	FullDocument             bson.Raw       `bson:"fullDocument"`
-	FullDocumentBeforeChange bson.Raw       `bson:"fullDocumentBeforeChange"`
-	ClusterTime              bson.Timestamp `bson:"clusterTime"`
+	DocumentKey       bson.Raw       `bson:"documentKey"`
+	FullDocument      bson.Raw       `bson:"fullDocument"`
+	UpdateDescription bson.Raw       `bson:"updateDescription"`
+	ClusterTime       bson.Timestamp `bson:"clusterTime"`
 }
 
 // mongoChangeSource is a changeSource backed by a Mongo change stream over one
@@ -31,14 +31,13 @@ type mongoChangeSource struct {
 	cs *mongo.ChangeStream
 }
 
-// openMongoChangeSource opens a change stream on coll starting at sp. preimage
-// requests fullDocumentBeforeChange (requires changeStreamPreAndPostImages on
-// the source collection).
-func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp startPoint, preimage bool) (*mongoChangeSource, error) {
-	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
-	if preimage {
-		opts.SetFullDocumentBeforeChange(options.WhenAvailable)
-	}
+// openMongoChangeSource opens a change stream on coll starting at sp. It does
+// NO lookups: it relies on the native oplog content only — fullDocument for
+// insert/replace, updateDescription (the delta) for update, documentKey for
+// delete. updateLookup and pre-images are deliberately not requested; any
+// enrichment is the downstream transformer's job.
+func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp startPoint) (*mongoChangeSource, error) {
+	opts := options.ChangeStream()
 	switch sp.Kind {
 	case startAfterToken:
 		opts.SetStartAfter(sp.Token)
@@ -94,14 +93,14 @@ func (d *rawChangeDoc) toChangeEvent(resumeToken bson.Raw) changeEvent {
 	// Next() (e.g. by a downstream filter). bytes.Clone(nil) == nil, so omitempty
 	// envelope fields still work.
 	return changeEvent{
-		EventID:      idDoc.Data,
-		ResumeToken:  bson.Raw(bytes.Clone(resumeToken)),
-		Op:           d.OperationType,
-		DB:           d.Ns.DB,
-		Collection:   d.Ns.Coll,
-		DocumentKey:  bson.Raw(bytes.Clone(d.DocumentKey)),
-		FullDocument: bson.Raw(bytes.Clone(d.FullDocument)),
-		PreImage:     bson.Raw(bytes.Clone(d.FullDocumentBeforeChange)),
+		EventID:           idDoc.Data,
+		ResumeToken:       bson.Raw(bytes.Clone(resumeToken)),
+		Op:                d.OperationType,
+		DB:                d.Ns.DB,
+		Collection:        d.Ns.Coll,
+		DocumentKey:       bson.Raw(bytes.Clone(d.DocumentKey)),
+		FullDocument:      bson.Raw(bytes.Clone(d.FullDocument)),
+		UpdateDescription: bson.Raw(bytes.Clone(d.UpdateDescription)),
 		// ClusterTime is a BSON timestamp (seconds, ordinal); we keep seconds only,
 		// so events within the same second share this value — fine for the coarse
 		// cross-collection sort, not a strict ordering key.

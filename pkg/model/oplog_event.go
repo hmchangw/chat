@@ -22,11 +22,14 @@ type OplogEvent struct {
 	DocumentKey json.RawMessage `json:"documentKey" bson:"documentKey"`
 	// ClusterTime is the source op time in unix milliseconds.
 	ClusterTime int64 `json:"clusterTime" bson:"clusterTime"`
-	// FullDocument is the post-image (insert/update/replace); omitted on delete.
+	// FullDocument is the document, present natively for insert and replace
+	// (it's in the oplog entry — no lookup). Absent for update and delete.
 	FullDocument json.RawMessage `json:"fullDocument,omitempty" bson:"fullDocument,omitempty"`
-	// PreImage is the pre-change image; populated only for collections
-	// configured to capture it (message deletes).
-	PreImage json.RawMessage `json:"preImage,omitempty" bson:"preImage,omitempty"`
+	// UpdateDescription is the raw change delta (updatedFields/removedFields/
+	// truncatedArrays) for update ops. Absent otherwise. The connector forwards
+	// it verbatim; the transformer applies it. No updateLookup post-image is
+	// fetched — that is a lookup, which belongs downstream.
+	UpdateDescription json.RawMessage `json:"updateDescription,omitempty" bson:"updateDescription,omitempty"`
 	// SiteID is the site scope.
 	SiteID string `json:"siteId" bson:"siteId"`
 	// Timestamp is the event-level publish time in unix milliseconds.

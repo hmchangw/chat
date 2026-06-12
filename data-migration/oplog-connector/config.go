@@ -24,8 +24,7 @@ type config struct {
 	NatsURL       string `env:"NATS_URL,required"`
 	NatsCredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
 
-	WatchCollections    []string `env:"WATCH_COLLECTIONS,required"`
-	PreimageCollections []string `env:"PREIMAGE_COLLECTIONS" envDefault:"rocketchat_message"`
+	WatchCollections []string `env:"WATCH_COLLECTIONS,required"`
 
 	ReadPreference string `env:"READ_PREFERENCE" envDefault:"secondary"`
 

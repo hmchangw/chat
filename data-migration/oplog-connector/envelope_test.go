@@ -21,16 +21,16 @@ func TestBuildEnvelope_OpsAndSubjects(t *testing.T) {
 	const nowMs = int64(1718100000123)
 
 	tests := []struct {
-		name        string
-		op          string
-		hasFull     bool
-		hasPreImage bool
-		wantSubject string
+		name          string
+		op            string
+		hasFull       bool // native fullDocument (insert/replace)
+		hasUpdateDesc bool // delta (update)
+		wantSubject   string
 	}{
 		{"insert", "insert", true, false, "chat.oplog.site1.rocketchat_message.insert"},
-		{"update", "update", true, false, "chat.oplog.site1.rocketchat_message.update"},
+		{"update", "update", false, true, "chat.oplog.site1.rocketchat_message.update"},
 		{"replace", "replace", true, false, "chat.oplog.site1.rocketchat_message.replace"},
-		{"delete with preimage", "delete", false, true, "chat.oplog.site1.rocketchat_message.delete"},
+		{"delete", "delete", false, false, "chat.oplog.site1.rocketchat_message.delete"},
 	}
 
 	for _, tc := range tests {
@@ -46,8 +46,8 @@ func TestBuildEnvelope_OpsAndSubjects(t *testing.T) {
 			if tc.hasFull {
 				ev.FullDocument = mustRaw(t, bson.M{"_id": "abc", "msg": "hi"})
 			}
-			if tc.hasPreImage {
-				ev.PreImage = mustRaw(t, bson.M{"_id": "abc", "msg": "bye"})
+			if tc.hasUpdateDesc {
+				ev.UpdateDescription = mustRaw(t, bson.M{"updatedFields": bson.M{"msg": "edited"}})
 			}
 
 			subj, msgID, evt, err := buildEnvelope(&ev, site, nowMs)
@@ -67,17 +67,17 @@ func TestBuildEnvelope_OpsAndSubjects(t *testing.T) {
 			assert.True(t, json.Valid(evt.DocumentKey))
 
 			if tc.hasFull {
-				require.NotNil(t, evt.FullDocument)
+				require.NotNil(t, evt.FullDocument, "insert/replace carry the native document")
 				assert.True(t, json.Valid(evt.FullDocument))
 			} else {
-				assert.Nil(t, evt.FullDocument, "delete carries no post-image")
+				assert.Nil(t, evt.FullDocument, "update/delete carry no post-image (no lookup)")
 			}
 
-			if tc.hasPreImage {
-				require.NotNil(t, evt.PreImage)
-				assert.True(t, json.Valid(evt.PreImage))
+			if tc.hasUpdateDesc {
+				require.NotNil(t, evt.UpdateDescription, "update carries the raw delta")
+				assert.True(t, json.Valid(evt.UpdateDescription))
 			} else {
-				assert.Nil(t, evt.PreImage)
+				assert.Nil(t, evt.UpdateDescription)
 			}
 		})
 	}

@@ -14,15 +14,15 @@ import (
 // change-stream event. Documents stay as raw BSON until buildEnvelope converts
 // them to opaque JSON — the connector never interprets their contents.
 type changeEvent struct {
-	EventID       string   // _id._data — also the Nats-Msg-Id dedup key
-	ResumeToken   bson.Raw // full change-stream _id document, fed back verbatim
-	Op            string   // insert | update | replace | delete
-	DB            string
-	Collection    string   // raw source collection name
-	DocumentKey   bson.Raw // { _id: ... }
-	FullDocument  bson.Raw // post-image (insert/update/replace)
-	PreImage      bson.Raw // pre-image (preimage collections only)
-	ClusterTimeMs int64    // source op time, unix ms
+	EventID           string   // _id._data — also the Nats-Msg-Id dedup key
+	ResumeToken       bson.Raw // full change-stream _id document, fed back verbatim
+	Op                string   // insert | update | replace | delete
+	DB                string
+	Collection        string   // raw source collection name
+	DocumentKey       bson.Raw // { _id: ... }
+	FullDocument      bson.Raw // document, native for insert/replace (no lookup)
+	UpdateDescription bson.Raw // change delta, update only
+	ClusterTimeMs     int64    // source op time, unix ms
 }
 
 // buildEnvelope maps a change event to its publish subject, dedup id, and the
@@ -40,22 +40,22 @@ func buildEnvelope(ev *changeEvent, siteID string, nowMs int64) (subj, msgID str
 	if err != nil {
 		return "", "", model.OplogEvent{}, fmt.Errorf("encode fullDocument for %s: %w", msgID, err)
 	}
-	pre, err := rawToJSON(ev.PreImage)
+	updateDesc, err := rawToJSON(ev.UpdateDescription)
 	if err != nil {
-		return "", "", model.OplogEvent{}, fmt.Errorf("encode preImage for %s: %w", msgID, err)
+		return "", "", model.OplogEvent{}, fmt.Errorf("encode updateDescription for %s: %w", msgID, err)
 	}
 
 	evt = model.OplogEvent{
-		EventID:      ev.EventID,
-		Op:           ev.Op,
-		DB:           ev.DB,
-		Collection:   ev.Collection,
-		DocumentKey:  docKey,
-		ClusterTime:  ev.ClusterTimeMs,
-		FullDocument: full,
-		PreImage:     pre,
-		SiteID:       siteID,
-		Timestamp:    nowMs,
+		EventID:           ev.EventID,
+		Op:                ev.Op,
+		DB:                ev.DB,
+		Collection:        ev.Collection,
+		DocumentKey:       docKey,
+		ClusterTime:       ev.ClusterTimeMs,
+		FullDocument:      full,
+		UpdateDescription: updateDesc,
+		SiteID:            siteID,
+		Timestamp:         nowMs,
 	}
 	return subj, msgID, evt, nil
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
@@ -56,12 +55,12 @@ func startReplicaSet(t *testing.T) (*mongo.Client, string) {
 	return client, uri
 }
 
-func createPreimageCollection(t *testing.T, db *mongo.Database, coll string) *mongo.Collection {
+func createSourceCollection(t *testing.T, db *mongo.Database, coll string) *mongo.Collection {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	require.NoError(t, db.CreateCollection(ctx, coll,
-		options.CreateCollection().SetChangeStreamPreAndPostImages(bson.M{"enabled": true})))
+	// No changeStreamPreAndPostImages: the connector does no pre-image/lookup.
+	require.NoError(t, db.CreateCollection(ctx, coll))
 	return db.Collection(coll)
 }
 
@@ -71,23 +70,22 @@ func createPreimageCollection(t *testing.T, db *mongo.Database, coll string) *mo
 func TestConnector_RealPublishEndToEnd(t *testing.T) {
 	const coll = "rocketchat_message"
 	client, uri := startReplicaSet(t)
-	source := createPreimageCollection(t, client.Database("rocketchat"), coll)
+	source := createSourceCollection(t, client.Database("rocketchat"), coll)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	cfg := config{
-		SiteID:              "site1",
-		SourceMongoURI:      uri,
-		SourceDB:            "rocketchat",
-		CheckpointDB:        "migration",
-		NatsURL:             testutil.NATS(t),
-		WatchCollections:    []string{coll},
-		PreimageCollections: []string{coll},
-		ReadPreference:      "primaryPreferred",
-		CheckpointEvery:     1,
-		StartMode:           "now",
-		Bootstrap:           bootstrapConfig{Enabled: true},
+		SiteID:           "site1",
+		SourceMongoURI:   uri,
+		SourceDB:         "rocketchat",
+		CheckpointDB:     "migration",
+		NatsURL:          testutil.NATS(t),
+		WatchCollections: []string{coll},
+		ReadPreference:   "primaryPreferred",
+		CheckpointEvery:  1,
+		StartMode:        "now",
+		Bootstrap:        bootstrapConfig{Enabled: true},
 	}
 
 	conn, err := start(ctx, &cfg)
@@ -134,13 +132,13 @@ func TestConnector_RealPublishEndToEnd(t *testing.T) {
 func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 	const coll = "rocketchat_message"
 	client, _ := startReplicaSet(t)
-	source := createPreimageCollection(t, client.Database("rocketchat"), coll)
+	source := createSourceCollection(t, client.Database("rocketchat"), coll)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Open the change stream BEFORE mutating so "from now" captures everything.
-	src, err := openMongoChangeSource(ctx, source, startPoint{Kind: startFromNow}, true)
+	src, err := openMongoChangeSource(ctx, source, startPoint{Kind: startFromNow})
 	require.NoError(t, err)
 
 	pub := &fakePublisher{}
@@ -178,23 +176,32 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 		assert.NotEmpty(t, m.Header.Get("Nats-Msg-Id"), "every event carries a dedup id")
 	}
 
-	var insertEvt, deleteEvt struct {
-		Op           string          `json:"op"`
-		Collection   string          `json:"coll"`
-		FullDocument json.RawMessage `json:"fullDocument"`
-		PreImage     json.RawMessage `json:"preImage"`
-		ClusterTime  int64           `json:"clusterTime"`
+	var insertEvt, updateEvt, deleteEvt struct {
+		Op                string          `json:"op"`
+		Collection        string          `json:"coll"`
+		FullDocument      json.RawMessage `json:"fullDocument"`
+		UpdateDescription json.RawMessage `json:"updateDescription"`
+		PreImage          json.RawMessage `json:"preImage"`
+		ClusterTime       int64           `json:"clusterTime"`
 	}
 	require.NoError(t, json.Unmarshal(msgs[0].Data, &insertEvt))
 	assert.Equal(t, "insert", insertEvt.Op)
 	assert.Equal(t, "rocketchat_message", insertEvt.Collection)
-	assert.NotEmpty(t, insertEvt.FullDocument, "insert carries post-image")
+	assert.NotEmpty(t, insertEvt.FullDocument, "insert carries the native document")
 	assert.Greater(t, insertEvt.ClusterTime, int64(0))
 
+	// Update carries the raw delta, NOT a looked-up post-image.
+	require.NoError(t, json.Unmarshal(msgs[1].Data, &updateEvt))
+	assert.Equal(t, "update", updateEvt.Op)
+	assert.Empty(t, updateEvt.FullDocument, "update carries no post-image (no updateLookup)")
+	assert.NotEmpty(t, updateEvt.UpdateDescription, "update carries the change delta")
+	assert.Contains(t, string(updateEvt.UpdateDescription), "edited")
+
+	// Delete carries only the documentKey — no post-image, no pre-image.
 	require.NoError(t, json.Unmarshal(msgs[2].Data, &deleteEvt))
 	assert.Equal(t, "delete", deleteEvt.Op)
 	assert.Empty(t, deleteEvt.FullDocument, "delete carries no post-image")
-	assert.NotEmpty(t, deleteEvt.PreImage, "delete carries pre-image")
+	assert.Empty(t, deleteEvt.PreImage, "delete carries no pre-image (connector does no lookups)")
 
 	// A checkpoint was persisted (post-ack) for the published events.
 	assert.NotEmpty(t, saved.ids())

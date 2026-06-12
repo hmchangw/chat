@@ -130,7 +130,6 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 	}
 
 	store := NewMongoCheckpointStore(client.Database(cfg.CheckpointDB).Collection(checkpointCollection), cfg.SiteID)
-	preimage := toSet(cfg.PreimageCollections)
 	sourceDB := client.Database(cfg.SourceDB)
 
 	watchCtx, cancel := context.WithCancel(context.Background())
@@ -160,7 +159,7 @@ func start(ctx context.Context, cfg *config) (*connector, error) {
 		}
 		mongoColl := sourceDB.Collection(coll,
 			options.Collection().SetReadPreference(rp).SetReadConcern(readconcern.Majority()))
-		src, err := openMongoChangeSource(watchCtx, mongoColl, sp, preimage[coll])
+		src, err := openMongoChangeSource(watchCtx, mongoColl, sp)
 		if err != nil {
 			c.Close()
 			return nil, fmt.Errorf("open change stream %q: %w", coll, err)
@@ -221,14 +220,6 @@ func (c *connector) Close() {
 	}
 	_ = c.nc.Drain()
 	mongoutil.Disconnect(context.Background(), c.client)
-}
-
-func toSet(items []string) map[string]bool {
-	m := make(map[string]bool, len(items))
-	for _, it := range items {
-		m[strings.TrimSpace(it)] = true
-	}
-	return m
 }
 
 func readPreference(s string) (*readpref.ReadPref, error) {

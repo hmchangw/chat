@@ -50,11 +50,3 @@ func TestParseLevel(t *testing.T) {
 	assert.Equal(t, slog.LevelInfo, parseLevel("info"))
 	assert.Equal(t, slog.LevelInfo, parseLevel("bogus")) // default
 }
-
-func TestToSet(t *testing.T) {
-	got := toSet([]string{"rocketchat_message", " users ", ""})
-	assert.True(t, got["rocketchat_message"])
-	assert.True(t, got["users"], "entries are trimmed")
-	assert.True(t, got[""])
-	assert.False(t, got["absent"])
-}
