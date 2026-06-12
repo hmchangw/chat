@@ -19,6 +19,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
@@ -33,6 +34,12 @@ func main() {
 
 	ctx := context.Background()
 
+	tracerShutdown, err := otelutil.InitTracer(ctx, "oplog-connector")
+	if err != nil {
+		slog.Error("init tracer failed", "error", err)
+		os.Exit(1)
+	}
+
 	conn, err := start(ctx, &cfg)
 	if err != nil {
 		slog.Error("startup failed", "error", err)
@@ -43,12 +50,13 @@ func main() {
 	// A fatal watcher error (e.g. lost resume token) exits non-zero without
 	// waiting for a shutdown signal — recovery is operator-driven (reseed). The
 	// goroutine also terminates on graceful shutdown via Done(), so it never
-	// leaks.
+	// leaks. (No consumer-style worker has this path; it is unique to the pump.)
 	go func() {
 		select {
 		case err := <-conn.Fatal():
 			if err != nil {
 				slog.Error("fatal watcher error — exiting", "error", err)
+				_ = tracerShutdown(context.Background())
 				conn.Close()
 				os.Exit(1)
 			}
@@ -56,10 +64,15 @@ func main() {
 		}
 	}()
 
-	shutdown.Wait(ctx, 25*time.Second, func(context.Context) error {
-		conn.Close()
-		return nil
-	})
+	// Same shape as the other services: ordered, timeout-bounded cleanup steps.
+	// stop readers → drain watchers → tracer → NATS → Mongo.
+	shutdown.Wait(ctx, 25*time.Second,
+		func(context.Context) error { conn.beginShutdown(); return nil },
+		func(ctx context.Context) error { return conn.awaitWatchers(ctx) },
+		func(ctx context.Context) error { return tracerShutdown(ctx) },
+		func(context.Context) error { return conn.nc.Drain() },
+		func(ctx context.Context) error { mongoutil.Disconnect(ctx, conn.client); return nil },
+	)
 }
 
 // connector owns the running watchers and the connections they share. Close
@@ -174,27 +187,40 @@ func (c *connector) Fatal() <-chan error { return c.fatal }
 // terminate on graceful shutdown instead of blocking forever.
 func (c *connector) Done() <-chan struct{} { return c.done }
 
-// Close stops watchers, awaits their final checkpoints, then drains NATS and
-// disconnects Mongo. Safe to call multiple times.
-func (c *connector) Close() {
+// beginShutdown signals every watcher to stop (idempotent). Each persists its
+// final checkpoint as it exits.
+func (c *connector) beginShutdown() {
 	c.once.Do(func() {
 		close(c.done)
 		c.cancel()
-		waitWithTimeout(&c.wg, 20*time.Second)
-		_ = c.nc.Drain()
-		mongoutil.Disconnect(context.Background(), c.client)
 	})
 }
 
-// waitWithTimeout blocks until wg is done or the timeout elapses.
-func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) {
+// awaitWatchers blocks until every watcher has exited (and flushed its final
+// checkpoint), or ctx is done.
+func (c *connector) awaitWatchers(ctx context.Context) error {
 	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	go func() { c.wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(timeout):
-		slog.Warn("watchers did not stop within timeout", "timeout", timeout.String())
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("watcher drain timed out: %w", ctx.Err())
 	}
+}
+
+// Close runs the full teardown in order — used by the fatal-exit path and by
+// integration tests. main()'s signal path runs the same steps individually via
+// shutdown.Wait so the sequence matches the other services.
+func (c *connector) Close() {
+	c.beginShutdown()
+	wctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := c.awaitWatchers(wctx); err != nil {
+		slog.Warn("watcher drain incomplete", "error", err)
+	}
+	_ = c.nc.Drain()
+	mongoutil.Disconnect(context.Background(), c.client)
 }
 
 func toSet(items []string) map[string]bool {
