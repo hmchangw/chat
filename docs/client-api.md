@@ -1732,7 +1732,7 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 | Field | Type | Notes |
 |---|---|---|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. |
+| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. Not accepted by Get Thread Messages. |
 
 ###### RoomMeta
 
