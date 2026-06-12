@@ -94,3 +94,25 @@ No critical or high findings.
 **Structure** — table-driven used where variation exists (`_Limits`); single-scenario tests appropriately not tabled. Test names descriptive. No shared mutable state; test independence holds.
 
 **Overall: approve from a test-automation standpoint.**
+
+## Bug & security
+
+Verified the new bounds in `threads.go:85-101` against the actual CQL in `cassrepo/thread_messages.go:29` (`created_at < ? AND created_at >= ?`), the access gates in `utils.go`, and the removed room-times path. Tests pass (`go test -race`, all green); **`make sast` passes: gosec=PASS, govulncheck=PASS, semgrep=PASS, 0 findings** — no SAST issues introduced (blocking CI gate satisfied).
+
+### Findings
+
+**low — Room-existence NotFound silently dropped** (`threads.go:38-41` vs removed `resolveRoomTimesOrError`, `room_times.go:27-29`). Previously a subscribed caller with a valid parent in a room whose Mongo doc is missing got `NotFound("room not found")`; now the read succeeds. Access is still correctly gated: `getAccessSince` (utils.go:14-25) returns Forbidden for non-subscribers before anything else, and `findMessage` (utils.go:55-57) rejects a parent whose `msg.RoomID != roomID` with NotFound — so cross-room reads remain blocked, and `ThreadRoomID` is only ever taken from that verified parent. No room-delete flow exists in room-service, so the orphaned-room state is theoretical. Acceptable; disclosed in the PR description.
+
+**low — Inverted-range guard is now effectively dead** (`threads.go:98-101`). `ceiling = now+1h < floor` requires `accessSince > now+1h`; but any past-dated parent then fails `msg.CreatedAt.Before(*accessSince)` at threads.go:47 and returns Forbidden first. The guard only fires for a parent itself future-dated beyond skew. Harmless defensive code; the comment slightly overstates reachability.
+
+**nitpick — Moving floor across pagination pages** (`threads.go:92-94`). `floor = now - historyFloor` is recomputed per page while the cursor is a gocql PageState resumed against fresh bind values. No duplicates/skips in the DESC direction; the only effect is the floor creeping forward by inter-page latency, which can clip rows sitting exactly at the historyFloor boundary mid-pagination. Pre-existing pattern in the bucket-walk handlers too; not a regression.
+
+### Verified-sound (no findings)
+
+- **Boundary inclusivity:** a reply created exactly at `accessSince` is included (`created_at >= floor`), consistent with the parent gate. A reply at exactly `ceiling` (`now+1h`) is excluded by `<` — irrelevant in practice. Zero-time handling is gone by construction: both bounds derive from `now`; `accessSince` nil means full access and correctly leaves `floor = now - historyFloor`.
+- **Dropped `createdAt` floor:** cannot change results — no reply predates its room; the historyFloor clamp is preserved (parity with `walkBounds`).
+- **Core bug fix is correct:** the old `lastMsgAt+1ms` ceiling did hide fresh replies since thread fan-out never bumps `rooms.lastMsgAt`; the regression test pins the new behavior.
+- **Meta removal:** `pkg/natsrouter/register.go:21,68` uses plain `json.Unmarshal` — no `DisallowUnknownFields` — so legacy payloads carrying `meta` decode cleanly (covered by test). No remaining Go references to the removed field; chat-frontend's `fetchThreadMessages` never sent `meta`; `docs/client-api.md` updated in-PR per the client-facing-handler rule.
+- **Concurrency:** the `sync.WaitGroup` fan-out is fully removed, calls now sequential — no shared-state issues remain; error precedence (validation 400s before infra errors) preserved trivially by ordering.
+
+No critical/high/medium findings. The change is sound.
