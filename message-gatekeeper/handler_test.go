@@ -1421,17 +1421,17 @@ func TestHandleJetStreamMsg_InvalidSubject_Acks(t *testing.T) {
 	assert.False(t, msg.naked)
 }
 
-// TestHandler_processMessage_AlsoSendToChannelMapsToTShow verifies the
-// request→canonical mapping for the alsoSendToChannel option: a thread reply
+// TestHandler_processMessage_RequestTShowMapsToTShow verifies the
+// request→canonical mapping for the tshow ("Also send to channel") option: a thread reply
 // carrying it publishes a canonical Message with TShow=true; on a non-thread
 // send the option is normalized to false (ignored, not rejected).
-func TestHandler_processMessage_AlsoSendToChannelMapsToTShow(t *testing.T) {
+func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 	const reqUUID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	parentID := idgen.GenerateMessageID()
 	parentTs := time.Now().UTC().Add(-time.Hour).UnixMilli()
 	replyFn := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	t.Run("thread reply with alsoSendToChannel=true → TShow=true", func(t *testing.T) {
+	t.Run("thread reply with tshow=true → TShow=true", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
@@ -1447,7 +1447,7 @@ func TestHandler_processMessage_AlsoSendToChannelMapsToTShow(t *testing.T) {
 			RequestID:                    reqUUID,
 			ThreadParentMessageID:        parentID,
 			ThreadParentMessageCreatedAt: &ts,
-			AlsoSendToChannel:            true,
+			TShow:                        true,
 		}
 		data, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 		require.NoError(t, err)
@@ -1464,7 +1464,7 @@ func TestHandler_processMessage_AlsoSendToChannelMapsToTShow(t *testing.T) {
 		assert.True(t, replyMsg.TShow)
 	})
 
-	t.Run("thread reply without alsoSendToChannel → TShow=false", func(t *testing.T) {
+	t.Run("thread reply without tshow → TShow=false", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
@@ -1490,7 +1490,7 @@ func TestHandler_processMessage_AlsoSendToChannelMapsToTShow(t *testing.T) {
 		assert.False(t, evt.Message.TShow)
 	})
 
-	t.Run("non-thread send with alsoSendToChannel=true → normalized to TShow=false", func(t *testing.T) {
+	t.Run("non-thread send with tshow=true → normalized to TShow=false", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
@@ -1502,18 +1502,18 @@ func TestHandler_processMessage_AlsoSendToChannelMapsToTShow(t *testing.T) {
 		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500)
 
 		req := model.SendMessageRequest{
-			ID:                idgen.GenerateMessageID(),
-			Content:           "top-level",
-			RequestID:         reqUUID,
-			AlsoSendToChannel: true,
+			ID:        idgen.GenerateMessageID(),
+			Content:   "top-level",
+			RequestID: reqUUID,
+			TShow:     true,
 		}
 		data, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
-		require.NoError(t, err, "non-thread alsoSendToChannel must be ignored, not rejected")
+		require.NoError(t, err, "non-thread tshow must be ignored, not rejected")
 
 		require.Len(t, published, 1)
 		var evt model.MessageEvent
 		require.NoError(t, json.Unmarshal(published[0].data, &evt))
-		assert.False(t, evt.Message.TShow, "alsoSendToChannel on a non-thread send must normalize to TShow=false")
+		assert.False(t, evt.Message.TShow, "tshow on a non-thread send must normalize to TShow=false")
 
 		var replyMsg model.Message
 		require.NoError(t, json.Unmarshal(data, &replyMsg))

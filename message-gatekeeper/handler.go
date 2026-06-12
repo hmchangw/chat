@@ -276,11 +276,11 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		}
 	}
 
-	// alsoSendToChannel is only meaningful on a thread reply: it asks for the
+	// tshow ("Also send to channel") is only meaningful on a thread reply: it asks for the
 	// reply to also appear in the parent room's channel timeline. On a
 	// non-thread send it is normalized to false (ignored, not rejected) — see
 	// docs/client-api.md §msg.send.
-	tshow := req.AlsoSendToChannel && req.ThreadParentMessageID != ""
+	tshow := req.TShow && req.ThreadParentMessageID != ""
 
 	msg := model.Message{
 		ID:                           req.ID,
