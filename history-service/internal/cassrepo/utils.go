@@ -114,8 +114,8 @@ func cqlFieldIndex(rt reflect.Type) map[string]int {
 		}
 		m[tag] = i
 	}
-	cqlIndexCache.Store(rt, m)
-	return m
+	actual, _ := cqlIndexCache.LoadOrStore(rt, m)
+	return actual.(map[string]int)
 }
 
 // buildScanValues maps colNames to addressable field pointers via cql struct tags, returning the slice for iter.Scan.
