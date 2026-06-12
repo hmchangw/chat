@@ -116,3 +116,25 @@ Verified the new bounds in `threads.go:85-101` against the actual CQL in `cassre
 - **Concurrency:** the `sync.WaitGroup` fan-out is fully removed, calls now sequential — no shared-state issues remain; error precedence (validation 400s before infra errors) preserved trivially by ordering.
 
 No critical/high/medium findings. The change is sound.
+
+## Performance
+
+### Request-path latency
+
+**[improvement, verified]** `threads.go:38-41,92-101` — the old path ran `getAccessSince` (Mongo subs) serially, then fanned out `findMessage` (Cassandra) ∥ `resolveRoomTimesOrError` (Mongo rooms). The new path is `getAccessSince` → `findMessage` → thread page: the Mongo rooms leg is deleted outright, not serialized. Pre-fetch latency goes from `max(cass, mongo_rooms)` to `cass` alone. p99: clear win — the old worst case was *two* Mongo round-trips (consistency refetch, room_times.go:112-120) hiding behind the slower leg. No remaining call was serialized that was previously parallel.
+
+**[improvement]** Old code launched the rooms read unconditionally before the short-circuit checks, so the reply-rejection, access-window, empty-`ThreadRoomID`, and `tcount==0` fast paths each paid a wasted concurrent Mongo read. All four paths now do zero rooms I/O — confirmed by the strict-mock test.
+
+### Ceiling now+1h vs lastMsgAt+1ms
+
+**[low — no scan cost, verified against schema]** `cassrepo/thread_messages.go:27-31` is a single-partition clustering slice; the DDL (`docker-local/cassandra/init/11-table-thread_messages_by_thread.cql:23-24`) confirms `PRIMARY KEY ((thread_room_id), created_at, message_id)` with native DESC clustering — one partition per thread, no bucket walk. A looser ceiling just moves the slice's seek point above the newest row; the engine lands on the partition head and reads down at most `PageSize` rows. Cost delta: zero.
+
+### Floor: dropping createdAt
+
+**[low — no widening cost in any real scenario]** The new floor can be older than the old one (room created last week → old floor = createdAt, new floor = now-90d), but since no reply can predate its room, the partition contains no rows (and no tombstones — deletes are soft via the `deleted` column) below createdAt anyway. The read terminates at partition end either way; identical rows touched.
+
+### Fast paths & allocations
+
+**[intact]** `tcount==0` short-circuit, empty `ThreadRoomID`, reply rejection, access-window check — all preserved, now cheaper. **[nitpick]** Removing 2 goroutine spawns + `sync.WaitGroup` per request is a small but real per-call win at scale; remaining bounds math is pure `time.Time` arithmetic, zero heap. **[nitpick]** The per-page recomputed ceiling (`now` moves between cursor pages) is harmless with positional paging state — resume position is below any newly admitted rows on a DESC read.
+
+**Verdict:** strictly faster (fewer round-trips, fewer goroutines), no widened Cassandra scan, no new serialization. No blocking findings.
