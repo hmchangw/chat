@@ -2354,7 +2354,7 @@ Pin and unpin share the same flat `PinStateRoomEvent` payload; `type` discrimina
 | `siteId` | string | Originating site. |
 | `messageId` | string | The pinned message's ID. |
 | `pinned` | boolean | Resulting pin state. Always `true` for `message_pinned`. |
-| `by` | [Participant](#participant) | The actor who pinned. `chineseName` / `engName` are omitted when unset. |
+| `by` | [Participant](#participant) | Optional — omitted if no actor was recorded. The actor who pinned. `chineseName` / `engName` are omitted when unset. |
 | `at` | string | RFC 3339. Domain time of the pin. |
 
 ```json
@@ -2462,7 +2462,7 @@ Same flat `PinStateRoomEvent` payload as [Pin Message](#pin-message); `type` dis
 | `siteId` | string | Originating site. |
 | `messageId` | string | The unpinned message's ID. |
 | `pinned` | boolean | Resulting pin state. Always `false` for `message_unpinned`. |
-| `by` | [Participant](#participant) | The actor recorded on the pin. `chineseName` / `engName` are omitted when unset. |
+| `by` | [Participant](#participant) | Optional — omitted if no actor was recorded. The actor recorded on the pin. `chineseName` / `engName` are omitted when unset. |
 | `at` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
