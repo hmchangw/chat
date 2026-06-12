@@ -66,3 +66,31 @@ No critical or high findings.
 - **Section 3 compliance**: error wrapping describes the current operation, `errcode` constructors at the boundary, `time.Now().UTC()`, camelCase `json` tags, no log-and-return.
 - **Wire compatibility**: server-side struct-field removal is non-breaking (unknown JSON fields ignored), pinned by `TestGetThreadMessagesRequest_IgnoresLegacyMetaField`. `docs/client-api.md` updated in the same PR per Section 5.
 - **Tests pass**: `make test SERVICE=history-service` green with `-race`. The regression test asserts the actual queried bounds via `DoAndReturn` capture — exactly the right shape for this bug.
+
+## Test-automation
+
+### Verification results
+
+- **Tests**: `go test -race ./history-service/...` — all PASS.
+- **Coverage**: `history-service/internal/service` total **92.3%** (above the 80% floor, meets the 90% target for handlers). `GetThreadMessages` 95.0%, `GetThreadParentMessages` 93.6%, `emptyThreadResponse`/`validateThreadFilter` 100%.
+- **Mock staleness**: the diff touches no `store.go` or service-layer repository interfaces — `make generate` not needed; tree stayed clean.
+- **Test deletions**: `threads_test.go` is purely additive (0 removed lines). The only removed test is `TestGetThreadMessagesRequest_WithMeta_Roundtrip` (models/message_test.go:148), replaced by two tests that together cover more (round-trip + legacy-payload decode).
+
+### Findings
+
+**TDD heuristic — all three behavior changes have matching tests in the same diff (pass)**
+1. Ceiling no longer lastMsgAt-derived → `TestHistoryService_GetThreadMessages_CeilingIncludesFreshReplies` (threads_test.go:316) asserts via `DoAndReturn` capture that the ceiling passed to the repo is after a reply created 1 minute ago — this would fail under the old watermark-derived ceiling, so it's a genuine regression test, not a tautology.
+2. No room-times dependency → `TestHistoryService_GetThreadMessages_NoRoomTimesDependency` (threads_test.go:352) wires strict mocks bypassing `newService`'s permissive `GetRoomTimes(...)` default (messages_test.go:52), so any regression to room-times reads fails the mock controller. Correctly constructed.
+3. `Meta` field removed → `TestGetThreadMessagesRequest_IgnoresLegacyMetaField` (message_test.go:159) verifies legacy payloads carrying `meta` still decode, matching the docs "ignored if sent" claim. Good wire-compat coverage.
+
+**Existing error/edge coverage intact (pass)** — accessSince clipping (threads_test.go:145, 297, floor assertions at 344-345), invalid cursor (:223), repo error (:239), tcount==0 short-circuit (:174) and tcount==nil fall-through (:193), empty ThreadRoomID (:209), not-subscribed/sub-store-error (:123, :134), reply-ID 400 (:283), limits table (:253). Nothing weakened.
+
+**low — inverted-range guard untested.** threads.go:99-101 (`if ceiling.Before(floor) { ceiling = floor }`) — now reachable only when `accessSince > now+clockSkewTolerance`. It's the uncovered statement keeping `GetThreadMessages` at 95%. A one-case test with a far-future `accessSince` asserting `gotCeiling.Equal(gotFloor)` would close it.
+
+**nitpick — strict-mock wiring duplicated inline.** threads_test.go:353-367 hand-builds the full `service.New(...)` call with all 8 deps and a config literal; extracting a `newServiceStrictRooms(t)` helper next to `newService`/`newServiceWithRoomMock` would keep wiring in one place. Not blocking.
+
+**nitpick — comment drift.** threads_test.go:172-173 says "TCount == 0 means the parent has never received a reply" while the implementation comment (threads.go:75) says it means "all replies have been deleted". Cosmetic inconsistency only.
+
+**Structure** — table-driven used where variation exists (`_Limits`); single-scenario tests appropriately not tabled. Test names descriptive. No shared mutable state; test independence holds.
+
+**Overall: approve from a test-automation standpoint.**
