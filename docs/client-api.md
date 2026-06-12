@@ -353,8 +353,8 @@ Actor / sender identity embedded in room and message events.
 | `userId` | string | Optional. Internal user ID. |
 | `account` | string | The user's account name. |
 | `siteId` | string | Optional. The user's home site. |
-| `chineseName` | string | Chinese display name (always present; may be empty). |
-| `engName` | string | English display name (always present; may be empty). |
+| `chineseName` | string | Optional. Chinese display name — omitted when unset. |
+| `engName` | string | Optional. English display name — omitted when unset. |
 | `displayName` | string | Optional. Server-composed render-ready name. |
 
 #### SubscriptionUser
@@ -2354,7 +2354,7 @@ Pin and unpin share the same flat `PinStateRoomEvent` payload; `type` discrimina
 | `siteId` | string | Originating site. |
 | `messageId` | string | The pinned message's ID. |
 | `pinned` | boolean | Resulting pin state. Always `true` for `message_pinned`. |
-| `by` | [Participant](#participant) | The actor who pinned. `chineseName` / `engName` serialize as empty strings when unset. |
+| `by` | [Participant](#participant) | The actor who pinned. `chineseName` / `engName` are omitted when unset. |
 | `at` | string | RFC 3339. Domain time of the pin. |
 
 ```json
@@ -2366,7 +2366,7 @@ Pin and unpin share the same flat `PinStateRoomEvent` payload; `type` discrimina
   "siteId": "site1",
   "messageId": "01970a4f8c2d7c9aQRST",
   "pinned": true,
-  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "chineseName": "", "engName": "" },
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
   "at": "2026-05-06T08:01:40Z"
 }
 ```
@@ -2462,7 +2462,7 @@ Same flat `PinStateRoomEvent` payload as [Pin Message](#pin-message); `type` dis
 | `siteId` | string | Originating site. |
 | `messageId` | string | The unpinned message's ID. |
 | `pinned` | boolean | Resulting pin state. Always `false` for `message_unpinned`. |
-| `by` | [Participant](#participant) | The actor recorded on the pin. `chineseName` / `engName` serialize as empty strings when unset. |
+| `by` | [Participant](#participant) | The actor recorded on the pin. `chineseName` / `engName` are omitted when unset. |
 | `at` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
@@ -2474,7 +2474,7 @@ Same flat `PinStateRoomEvent` payload as [Pin Message](#pin-message); `type` dis
   "siteId": "site1",
   "messageId": "01970a4f8c2d7c9aQRST",
   "pinned": false,
-  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "chineseName": "", "engName": "" },
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
   "at": "2026-05-06T08:02:30Z"
 }
 ```
