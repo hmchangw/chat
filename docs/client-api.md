@@ -2338,32 +2338,36 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Triggered events — success path
 
-**Channel rooms:** `chat.room.{roomID}.event` — `MessagePinnedEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessagePinnedEvent`. Recipients: each non-bot DM participant.
+**Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-pinned message (idempotent short-circuit).
+
+Pin and unpin share the same flat `PinStateRoomEvent` payload; `type` discriminates and `pinned` carries the resulting state.
 
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_pinned"`. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `eventTimestamp` | number | Epoch ms (UTC). Canonical event time. Omitted when zero. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
-| `messagePinned.messageId` | string | The pinned message's ID. |
-| `messagePinned.pinnedBy` | [Participant](#participant) | The actor who pinned (`userId`, `account`). |
-| `messagePinned.pinnedAt` | string | RFC 3339. Domain time of the pin. |
+| `messageId` | string | The pinned message's ID. |
+| `pinned` | boolean | Resulting pin state. Always `true` for `message_pinned`. |
+| `by` | [Participant](#participant) | The actor who pinned. `chineseName` / `engName` serialize as empty strings when unset. |
+| `at` | string | RFC 3339. Domain time of the pin. |
 
 ```json
 {
   "type": "message_pinned",
   "timestamp": 1746518900123,
+  "eventTimestamp": 1746518900100,
   "roomId": "01970a4f8c2d7c9aQ",
   "siteId": "site1",
-  "messagePinned": {
-    "messageId": "01970a4f8c2d7c9aQRST",
-    "pinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
-    "pinnedAt": "2026-05-06T08:01:40Z"
-  }
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "pinned": true,
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "chineseName": "", "engName": "" },
+  "at": "2026-05-06T08:01:40Z"
 }
 ```
 
@@ -2442,32 +2446,36 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Triggered events — success path
 
-**Channel rooms:** `chat.room.{roomID}.event` — `MessageUnpinnedEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessageUnpinnedEvent`. Recipients: each non-bot DM participant.
+**Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-unpinned message (idempotent short-circuit).
+
+Same flat `PinStateRoomEvent` payload as [Pin Message](#pin-message); `type` discriminates and `pinned` carries the resulting state.
 
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_unpinned"`. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `eventTimestamp` | number | Epoch ms (UTC). Canonical event time. Omitted when zero. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
-| `messageUnpinned.messageId` | string | The unpinned message's ID. |
-| `messageUnpinned.unpinnedBy` | [Participant](#participant) | The actor who unpinned (`userId`, `account`). |
-| `messageUnpinned.unpinnedAt` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
+| `messageId` | string | The unpinned message's ID. |
+| `pinned` | boolean | Resulting pin state. Always `false` for `message_unpinned`. |
+| `by` | [Participant](#participant) | The actor recorded on the pin. `chineseName` / `engName` serialize as empty strings when unset. |
+| `at` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
 {
   "type": "message_unpinned",
   "timestamp": 1746518950123,
+  "eventTimestamp": 1746518950100,
   "roomId": "01970a4f8c2d7c9aQ",
   "siteId": "site1",
-  "messageUnpinned": {
-    "messageId": "01970a4f8c2d7c9aQRST",
-    "unpinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
-    "unpinnedAt": "2026-05-06T08:02:30Z"
-  }
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "pinned": false,
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "chineseName": "", "engName": "" },
+  "at": "2026-05-06T08:02:30Z"
 }
 ```
 

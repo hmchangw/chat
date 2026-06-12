@@ -3071,32 +3071,54 @@ func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
 	}
 }
 
-func TestPinRoomEventJSON(t *testing.T) {
+func TestPinStateRoomEventJSON_Pinned(t *testing.T) {
 	pinnedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
-	evt := model.PinRoomEvent{
+	evt := model.PinStateRoomEvent{
 		Type:      model.RoomEventMessagePinned,
 		RoomID:    "r1",
 		SiteID:    "site-a",
 		Timestamp: pinnedAt.UnixMilli(),
 		MessageID: "msg-uuid",
-		PinnedBy:  &model.Participant{UserID: "u1", Account: "alice"},
-		PinnedAt:  pinnedAt,
+		Pinned:    true,
+		By:        &model.Participant{UserID: "u1", Account: "alice"},
+		At:        pinnedAt,
 	}
-	roundTrip(t, &evt, &model.PinRoomEvent{})
+	roundTrip(t, &evt, &model.PinStateRoomEvent{})
 }
 
-func TestUnpinRoomEventJSON(t *testing.T) {
+func TestPinStateRoomEventJSON_Unpinned(t *testing.T) {
 	unpinnedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
-	evt := model.UnpinRoomEvent{
-		Type:       model.RoomEventMessageUnpinned,
-		RoomID:     "r1",
-		SiteID:     "site-a",
-		Timestamp:  unpinnedAt.UnixMilli(),
-		MessageID:  "msg-uuid",
-		UnpinnedBy: &model.Participant{UserID: "u1", Account: "alice"},
-		UnpinnedAt: unpinnedAt,
+	evt := model.PinStateRoomEvent{
+		Type:      model.RoomEventMessageUnpinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: unpinnedAt.UnixMilli(),
+		MessageID: "msg-uuid",
+		Pinned:    false,
+		By:        &model.Participant{UserID: "u1", Account: "alice"},
+		At:        unpinnedAt,
 	}
-	roundTrip(t, &evt, &model.UnpinRoomEvent{})
+	roundTrip(t, &evt, &model.PinStateRoomEvent{})
+}
+
+func TestPinStateRoomEventJSON_PinnedFieldAlwaysPresent(t *testing.T) {
+	// pinned has no omitempty: the false (unpinned) state must serialize
+	// explicitly so clients never infer state from field absence.
+	evt := model.PinStateRoomEvent{
+		Type:      model.RoomEventMessageUnpinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1747224000000,
+		MessageID: "msg-uuid",
+		Pinned:    false,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	pinned, present := raw["pinned"]
+	require.True(t, present, "pinned must serialize even when false")
+	assert.Equal(t, "false", string(pinned))
 }
 
 // --- User.Roles ---

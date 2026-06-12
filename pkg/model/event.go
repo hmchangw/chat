@@ -226,8 +226,8 @@ const (
 
 // RoomEvent is the live fan-out event for a newly created message
 // (RoomEventNewMessage). Edits, deletes, pins, and unpins use the flattened
-// EditRoomEvent / DeleteRoomEvent / PinRoomEvent / UnpinRoomEvent so clients
-// are not handed zero-valued base fields.
+// EditRoomEvent / DeleteRoomEvent / PinStateRoomEvent so clients are not
+// handed zero-valued base fields.
 type RoomEvent struct {
 	Type           RoomEventType `json:"type"`
 	RoomID         string        `json:"roomId"`
@@ -282,30 +282,21 @@ type DeleteRoomEvent struct {
 	UpdatedAt      time.Time     `json:"updatedAt" bson:"updatedAt"`
 }
 
-// PinRoomEvent is the live event published when a message is pinned. Fields
-// are flat (no zero-valued RoomEvent base fields). Mirrors the
-// EditRoomEvent / DeleteRoomEvent pattern.
-type PinRoomEvent struct {
+// PinStateRoomEvent is the live event published when a message is pinned or
+// unpinned. Fields are flat (no zero-valued RoomEvent base fields). Mirrors
+// the EditRoomEvent / DeleteRoomEvent pattern. Pinned carries the resulting
+// pin state; By and At name the actor and domain time of the change. Type
+// stays the discriminator (RoomEventMessagePinned / RoomEventMessageUnpinned).
+type PinStateRoomEvent struct {
 	Type           RoomEventType `json:"type" bson:"type"`
 	RoomID         string        `json:"roomId" bson:"roomId"`
 	SiteID         string        `json:"siteId" bson:"siteId"`
 	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
 	EventTimestamp int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
 	MessageID      string        `json:"messageId" bson:"messageId"`
-	PinnedBy       *Participant  `json:"pinnedBy,omitempty" bson:"pinnedBy,omitempty"`
-	PinnedAt       time.Time     `json:"pinnedAt" bson:"pinnedAt"`
-}
-
-// UnpinRoomEvent is the live event published when a message is unpinned.
-type UnpinRoomEvent struct {
-	Type           RoomEventType `json:"type" bson:"type"`
-	RoomID         string        `json:"roomId" bson:"roomId"`
-	SiteID         string        `json:"siteId" bson:"siteId"`
-	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
-	EventTimestamp int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
-	MessageID      string        `json:"messageId" bson:"messageId"`
-	UnpinnedBy     *Participant  `json:"unpinnedBy,omitempty" bson:"unpinnedBy,omitempty"`
-	UnpinnedAt     time.Time     `json:"unpinnedAt" bson:"unpinnedAt"`
+	Pinned         bool          `json:"pinned" bson:"pinned"`
+	By             *Participant  `json:"by,omitempty" bson:"by,omitempty"`
+	At             time.Time     `json:"at" bson:"at"`
 }
 
 // ThreadMetadataUpdatedEvent is published on the per-user NATS subject when a
