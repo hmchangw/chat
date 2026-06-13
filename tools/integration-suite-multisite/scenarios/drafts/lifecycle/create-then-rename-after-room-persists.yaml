@@ -26,6 +26,7 @@ sites:
     seed:
       users:
         alice_flow: { verified: true }
+        roommate_flow: { verified: true }
 
 input:
   - id: create
@@ -34,6 +35,11 @@ input:
     subject: chat.user.${alice_flow.account}.request.room.site-a.create
     payload:
       name: FlowEngineering
+      # Channel create requires >=1 other member (room-service
+      # handleCreateRoomChannel → errEmptyCreateRequest otherwise).
+      # Verified by gatekeeper-validation/gatekeeper-create-room-then-
+      # send-races-subscription.yaml which carries the same shape.
+      users: ["${roommate_flow.account}"]
     credential: ${alice_flow.credential}
 
   - id: rename
