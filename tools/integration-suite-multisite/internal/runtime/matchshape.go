@@ -67,6 +67,47 @@ const taskSelectorKey = "task"
 //	    Should(MatchShape(expected, reg))      // wait for arrival
 //	g.Consistently(poller.PollFn(tp), timeout, polling).
 //	    ShouldNot(MatchShape(expected, reg))   // assert never
+//
+// ReplyScope is the flow-driven reply-scoping hint passed to
+// MatchShapeScoped. Empty InputID = no filter (today's behavior).
+// When set, Match pre-filters the polled event slice to
+// Event.Task == InputID before the existing subset-match runs — the
+// same mechanical operation match.task: does in the legacy shape,
+// driven by the executor (via expected[].of or position-default)
+// instead of a directive inside match:.
+type ReplyScope struct {
+	InputID string
+}
+
+// MatchShapeScoped is MatchShape with an explicit ReplyScope. Used by
+// the flow executor; legacy code keeps calling MatchShape, which is
+// equivalent to MatchShapeScoped(expected, reg, ReplyScope{}).
+func MatchShapeScoped(expected map[string]any, reg *matchers.Registry, scope ReplyScope) types.GomegaMatcher {
+	if reg == nil {
+		reg = matchers.NewRegistry()
+	}
+	taskFilter := scope.InputID
+	if raw, ok := expected[taskSelectorKey]; ok {
+		// Legacy directive path: extract `task:` from the shape. The
+		// flow scenarios never reach here with the directive (loader
+		// rejects it); legacy scenarios pass through this branch as
+		// before. If both are set (shouldn't happen), the directive
+		// wins to preserve today's behavior.
+		if s, ok := raw.(string); ok && s != "" {
+			taskFilter = s
+		}
+		stripped := make(map[string]any, len(expected)-1)
+		for k, v := range expected {
+			if k == taskSelectorKey {
+				continue
+			}
+			stripped[k] = v
+		}
+		expected = stripped
+	}
+	return &shapeMatcher{expected: expected, reg: reg, taskFilter: taskFilter}
+}
+
 func MatchShape(expected map[string]any, reg *matchers.Registry) types.GomegaMatcher {
 	if reg == nil {
 		reg = matchers.NewRegistry()

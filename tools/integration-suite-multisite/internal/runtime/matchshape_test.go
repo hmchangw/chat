@@ -400,3 +400,43 @@ func TestMatchShape_TaskInsideOutboxPayload_Rejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "task")
 	assert.Contains(t, err.Error(), "outbox_payload")
 }
+
+// --- ReplyScope: flow-driven reply scoping (Task 6) ---
+
+func TestMatchShape_ReplyScope_FilterPass(t *testing.T) {
+	reg := matchers.NewRegistry()
+	m := MatchShapeScoped(map[string]any{"body_json": map[string]any{"status": "accepted"}}, reg,
+		ReplyScope{InputID: "create"})
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.True(t, ok, "scope=create filters to the create-tagged event; its accepted reply matches")
+}
+
+func TestMatchShape_ReplyScope_FilterMismatch(t *testing.T) {
+	reg := matchers.NewRegistry()
+	m := MatchShapeScoped(map[string]any{"body_json": map[string]any{"status": "accepted"}}, reg,
+		ReplyScope{InputID: "join"})
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.False(t, ok, "scope=join filters to join's reply (rejected); the accepted create-reply must not leak")
+}
+
+func TestMatchShape_ReplyScope_Empty_AcceptsAny(t *testing.T) {
+	reg := matchers.NewRegistry()
+	m := MatchShapeScoped(map[string]any{"body_json": map[string]any{"status": "accepted"}}, reg,
+		ReplyScope{}) // empty scope = no filter
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.True(t, ok, "empty ReplyScope behaves like today's MatchShape — accepts any matching event")
+}
+
+func TestMatchShape_LegacyTaskDirective_StillWorks(t *testing.T) {
+	// Regression: the legacy match.task: directive on the legacy path
+	// continues to work — same behavior as before Task 6.
+	reg := matchers.NewRegistry()
+	m := MatchShape(map[string]any{"task": "create",
+		"body_json": map[string]any{"status": "accepted"}}, reg)
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
