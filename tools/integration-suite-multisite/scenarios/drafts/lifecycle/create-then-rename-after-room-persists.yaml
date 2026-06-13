@@ -100,9 +100,14 @@ expected:
     args:
       stream: ROOMS_site-a
       filter_subject: chat.room.canonical.site-a.>
+    # Canonical event on ROOMS_site-a carries just the rename payload
+    # (newName + roomId). The `type: room_renamed` envelope field lives
+    # on the OUTBOX/INBOX cross-site shape, NOT on the canonical itself —
+    # see cross-site-room-rename-federation.yaml Surface 3 for the
+    # verbatim shape. Asserting type: here would fail because the
+    # canonical has no such field.
     match:
       body_json:
-        type: room_renamed
         roomId: ${create.reply.body_json.roomId}
         newName: FlowEngineeringRenamed
 
