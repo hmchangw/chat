@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -133,6 +135,11 @@ func (h *Handler) publishAsyncJobResult(ctx context.Context, requesterAccount, o
 	if err := h.publish(ctx, subject.UserResponse(requesterAccount, requestID), data, ""); err != nil {
 		slog.WarnContext(ctx, "publish async job result failed", "error", err, "request_id", requestID)
 	}
+	// flow: the two-phase async terminal — the job finished and the requester was
+	// told the outcome. status is ok/error; the cause (on error) is in the
+	// Classify line from fillAsyncError, never here.
+	slog.Log(ctx, logctx.LevelFlow, "room-worker async result", "phase", "result",
+		"request_id", requestID, "operation", operation, "room_id", roomID, "status", result.Status)
 }
 
 // permanent wraps an *errcode.Error as a non-retryable job failure. Thin local
@@ -174,6 +181,15 @@ func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.R
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
+	// flow: hop entry — the room-mutation operation and stream-wait latency.
+	streamWaitMs := int64(-1)
+	if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
+		streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+	}
+	slog.Log(ctx, logctx.LevelFlow, "room-worker received", "phase", "received",
+		"request_id", natsutil.RequestIDFromContext(ctx), "subject", subj,
+		"bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
+
 	var err error
 	switch {
 	case strings.HasSuffix(subj, ".member.add"):
@@ -1772,7 +1788,15 @@ func (h *Handler) publishSubscriptionUpdates(ctx context.Context, subs []*model.
 			continue
 		}
 		h.publishSubscriptionUpdate(ctx, sub.User.Account, data)
+		// trace: per-subscriber delivery — the "did user X get the sub update?" detail.
+		slog.Log(ctx, logctx.LevelTrace, "room-worker subscription delivered",
+			"request_id", requestID, "account", sub.User.Account)
 	}
+	// flow: subscription fan-out outcome. recipients = attempted; these publishes
+	// are best-effort (publishSubscriptionUpdate logs and continues on failure),
+	// so no per-recipient failure count is tracked here.
+	slog.Log(ctx, logctx.LevelFlow, "room-worker subscription fan-out",
+		"phase", "fanout", "request_id", requestID, "recipients", len(subs))
 }
 
 // findRemoteSitesForAccounts looks up the home site of each account and returns
@@ -2017,6 +2041,7 @@ func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []strin
 	}
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	var failed atomic.Int64
 	for _, account := range accounts {
 		sem <- struct{}{}
 		wg.Add(1)
@@ -2028,8 +2053,17 @@ func (h *Handler) fanOutKey(ctx context.Context, roomID string, accounts []strin
 			if err := h.keySender.SendData(acct, data); err != nil {
 				slog.ErrorContext(ctx, "send room key", "error", err, "account", acct, "roomId", roomID)
 				roomkeymetrics.FanoutErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("roomId", roomID)))
+				failed.Add(1)
+				return
 			}
+			// trace: per-recipient room-key delivery.
+			slog.Log(ctx, logctx.LevelTrace, "room-worker key delivered",
+				"request_id", natsutil.RequestIDFromContext(ctx), "account", acct, "room_id", roomID)
 		}(account)
 	}
 	wg.Wait()
+	// flow: room-key fan-out outcome. recipients = attempted, failed = errored.
+	slog.Log(ctx, logctx.LevelFlow, "room-worker key fan-out", "phase", "fanout",
+		"request_id", natsutil.RequestIDFromContext(ctx), "room_id", roomID,
+		"recipients", len(accounts), "failed", failed.Load())
 }
