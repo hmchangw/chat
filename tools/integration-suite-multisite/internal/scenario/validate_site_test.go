@@ -17,18 +17,18 @@ import (
 func TestValidateSiteFields_InputMissingSite(t *testing.T) {
 	s := &Scenario{
 		Name:     "x",
-		Input:    Input{Verb: "nats_request"}, // no Site
+		Input:    TaskList{{Verb: "nats_request"}}, // no Site
 		Expected: []Expected{},
 	}
 	err := ValidateSiteFields(s)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "input.site")
+	assert.Contains(t, err.Error(), "input[0].site")
 }
 
 func TestValidateSiteFields_InputBadSite(t *testing.T) {
 	s := &Scenario{
 		Name:  "x",
-		Input: Input{Site: "site-c", Verb: "nats_request"},
+		Input: TaskList{{Site: "site-c", Verb: "nats_request"}},
 	}
 	err := ValidateSiteFields(s)
 	require.Error(t, err)
@@ -38,7 +38,7 @@ func TestValidateSiteFields_InputBadSite(t *testing.T) {
 func TestValidateSiteFields_ExpectedMongoFindMissingSite(t *testing.T) {
 	s := &Scenario{
 		Name:  "x",
-		Input: Input{Site: "site-a", Verb: "nats_request"},
+		Input: TaskList{{Site: "site-a", Verb: "nats_request"}},
 		Expected: []Expected{
 			{Location: "mongo_find"}, // no Site
 		},
@@ -52,7 +52,7 @@ func TestValidateSiteFields_ExpectedMongoFindMissingSite(t *testing.T) {
 func TestValidateSiteFields_ExpectedReplyHasSite(t *testing.T) {
 	s := &Scenario{
 		Name:  "x",
-		Input: Input{Site: "site-a", Verb: "nats_request"},
+		Input: TaskList{{Site: "site-a", Verb: "nats_request"}},
 		Expected: []Expected{
 			{Location: "reply", Site: "site-a"}, // forbidden
 		},
@@ -65,7 +65,7 @@ func TestValidateSiteFields_ExpectedReplyHasSite(t *testing.T) {
 func TestValidateSiteFields_ExpectedCassandraSelectHasSite(t *testing.T) {
 	s := &Scenario{
 		Name:  "x",
-		Input: Input{Site: "site-a", Verb: "nats_request"},
+		Input: TaskList{{Site: "site-a", Verb: "nats_request"}},
 		Expected: []Expected{
 			{Location: "cassandra_select", Site: "site-b"}, // forbidden
 		},
@@ -78,7 +78,7 @@ func TestValidateSiteFields_ExpectedCassandraSelectHasSite(t *testing.T) {
 func TestValidateSiteFields_HappyPath(t *testing.T) {
 	s := &Scenario{
 		Name:  "x",
-		Input: Input{Site: "site-a", Verb: "nats_request"},
+		Input: TaskList{{Site: "site-a", Verb: "nats_request"}},
 		Expected: []Expected{
 			{Location: "reply"},                      // no site, allowed
 			{Location: "mongo_find", Site: "site-a"}, // site required, present

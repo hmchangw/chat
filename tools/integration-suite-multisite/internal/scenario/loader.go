@@ -93,16 +93,19 @@ func rejectDeprecatedTokens(s *Scenario) error {
 		return nil
 	}
 
-	if err := check("input.subject", s.Input.Subject); err != nil {
-		return err
-	}
-	if err := check("input.credential", s.Input.Credential); err != nil {
-		return err
-	}
-	for k, v := range s.Input.Payload {
-		if vs, ok := v.(string); ok {
-			if err := check(fmt.Sprintf("input.payload.%s", k), vs); err != nil {
-				return err
+	for ti := range s.Input {
+		t := &s.Input[ti]
+		if err := check(fmt.Sprintf("input[%d].subject", ti), t.Subject); err != nil {
+			return err
+		}
+		if err := check(fmt.Sprintf("input[%d].credential", ti), t.Credential); err != nil {
+			return err
+		}
+		for k, v := range t.Payload {
+			if vs, ok := v.(string); ok {
+				if err := check(fmt.Sprintf("input[%d].payload.%s", ti, k), vs); err != nil {
+					return err
+				}
 			}
 		}
 	}

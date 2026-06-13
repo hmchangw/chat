@@ -19,7 +19,7 @@ type Scenario struct {
 	CassandraData  []SeedCassandraTable  `yaml:"cassandra_data,omitempty"`
 	MongoData      []SeedMongoCollection `yaml:"mongo_data,omitempty"`
 	PreFireScripts []string              `yaml:"pre_fire_scripts,omitempty"`
-	Input          Input                 `yaml:"input"`
+	Input          TaskList              `yaml:"input"`
 	Expected       []Expected            `yaml:"expected"`
 
 	// SourcePath is the absolute path of the YAML file this Scenario
@@ -164,13 +164,48 @@ const (
 	RoleMember = "member"
 )
 
-// Input is the scenario's single fire.
-type Input struct {
+// Task is one verb fire within a scenario. A scenario's `input:` is a
+// list of tasks fired in declaration order. `id` is required in the
+// list shape (it names the task for ${id.reply.*} substitution and
+// `match.task: id` assertion scoping); the legacy single-fire map
+// shape decodes to a one-task list with an empty id.
+type Task struct {
+	ID         string         `yaml:"id"`
 	Site       string         `yaml:"site"`
 	Verb       string         `yaml:"verb"`
 	Subject    string         `yaml:"subject"`
 	Payload    map[string]any `yaml:"payload"`
 	Credential string         `yaml:"credential,omitempty"`
+}
+
+// TaskList is the scenario's `input:`. It accepts EITHER a single
+// mapping (legacy single-fire shape) OR a sequence of tasks. The
+// dual-shape decode is a direct analog of SeedMembership.UnmarshalYAML
+// above — existing single-fire scenarios decode unchanged.
+type TaskList []Task
+
+func (tl *TaskList) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.MappingNode:
+		var t Task
+		if err := node.Decode(&t); err != nil {
+			return fmt.Errorf("scenario: parse single-fire input: %w", err)
+		}
+		*tl = TaskList{t}
+		return nil
+	case yaml.SequenceNode:
+		if len(node.Content) == 0 {
+			return fmt.Errorf("scenario: input list must have at least one task")
+		}
+		var tasks []Task
+		if err := node.Decode(&tasks); err != nil {
+			return fmt.Errorf("scenario: parse input task list: %w", err)
+		}
+		*tl = TaskList(tasks)
+		return nil
+	default:
+		return fmt.Errorf("scenario: input must be a single fire (map) or a list of tasks, got yaml kind=%d", node.Kind)
+	}
 }
 
 // Expected is one assertion.

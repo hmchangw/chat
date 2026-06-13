@@ -61,9 +61,11 @@ expected:
 	assert.True(t, s.Sites["site-a"].Seed.Users["alice"]["verified"])
 	assert.True(t, s.Sites["site-b"].Seed.Users["bob"]["verified"])
 
-	assert.Equal(t, "site-a", s.Input.Site)
-	assert.Equal(t, "nats_request", s.Input.Verb)
-	assert.Equal(t, "${alice.credential}", s.Input.Credential)
+	require.Len(t, s.Input, 1, "single-fire map shape decodes to a one-task list")
+	assert.Equal(t, "site-a", s.Input[0].Site)
+	assert.Equal(t, "nats_request", s.Input[0].Verb)
+	assert.Equal(t, "${alice.credential}", s.Input[0].Credential)
+	assert.Empty(t, s.Input[0].ID, "single-fire map shape needs no id")
 
 	require.Len(t, s.Expected, 3)
 	assert.Equal(t, "reply", s.Expected[0].Location)
@@ -71,6 +73,60 @@ expected:
 	assert.Equal(t, "mongo_find", s.Expected[1].Location)
 	assert.Equal(t, "site-a", s.Expected[1].Site)
 	assert.Equal(t, "site-b", s.Expected[2].Site)
+}
+
+func TestTaskList_UnmarshalYAML_LegacyMap(t *testing.T) {
+	src := `
+site: site-a
+verb: nats_request
+subject: chat.user.${alice.account}.request.room.site-a.create
+payload: { name: Engineering }
+credential: ${alice.credential}
+`
+	var tl TaskList
+	require.NoError(t, yaml.Unmarshal([]byte(src), &tl))
+	require.Len(t, tl, 1)
+	assert.Empty(t, tl[0].ID)
+	assert.Equal(t, "site-a", tl[0].Site)
+	assert.Equal(t, "nats_request", tl[0].Verb)
+	assert.Equal(t, "Engineering", tl[0].Payload["name"])
+}
+
+func TestTaskList_UnmarshalYAML_List(t *testing.T) {
+	src := `
+- id: create
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload: { name: Engineering }
+  credential: ${alice.credential}
+- id: join
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${bob.account}.request.room.site-a.join
+  payload: { roomId: "${create.reply.body_json.roomId}" }
+  credential: ${bob.credential}
+`
+	var tl TaskList
+	require.NoError(t, yaml.Unmarshal([]byte(src), &tl))
+	require.Len(t, tl, 2)
+	assert.Equal(t, "create", tl[0].ID)
+	assert.Equal(t, "join", tl[1].ID)
+	assert.Equal(t, "${create.reply.body_json.roomId}", tl[1].Payload["roomId"])
+}
+
+func TestTaskList_UnmarshalYAML_NeitherMapNorList(t *testing.T) {
+	var tl TaskList
+	err := yaml.Unmarshal([]byte(`foo`), &tl)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "single fire (map) or a list")
+}
+
+func TestTaskList_UnmarshalYAML_EmptyList(t *testing.T) {
+	var tl TaskList
+	err := yaml.Unmarshal([]byte(`[]`), &tl)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one task")
 }
 
 func TestScenario_HasNoCasesNoBaseInput(t *testing.T) {

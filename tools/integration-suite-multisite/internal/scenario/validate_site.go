@@ -36,11 +36,17 @@ func forbidsSite(location string) bool {
 //     forbidden when location is reply or cassandra_select, and
 //     when present must be one of knownSites.
 func ValidateSiteFields(s *Scenario) error {
-	if s.Input.Site == "" {
-		return fmt.Errorf("scenario %q: input.site is required (one of site-a, site-b)", s.Name)
+	if len(s.Input) == 0 {
+		return fmt.Errorf("scenario %q: input requires at least one task", s.Name)
 	}
-	if _, ok := knownSites[s.Input.Site]; !ok {
-		return fmt.Errorf("scenario %q: input.site = %q; must be site-a or site-b", s.Name, s.Input.Site)
+	for ti := range s.Input {
+		t := &s.Input[ti]
+		if t.Site == "" {
+			return fmt.Errorf("scenario %q: input[%d].site is required (one of site-a, site-b)", s.Name, ti)
+		}
+		if _, ok := knownSites[t.Site]; !ok {
+			return fmt.Errorf("scenario %q: input[%d].site = %q; must be site-a or site-b", s.Name, ti, t.Site)
+		}
 	}
 	for i, e := range s.Expected {
 		switch {
