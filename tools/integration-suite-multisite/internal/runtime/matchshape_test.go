@@ -347,3 +347,56 @@ func TestMatchShape_OutboxPayload_FirstEventMissesSecondHits(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok, "matcher must scan past the first envelope mismatch to find the second event")
 }
+
+// --- match.task: selector (multi-input, reply-only) ---
+
+// taskScopeEvents: two reply events from different tasks. create's
+// reply is accepted; join's is rejected. Without a task filter, the
+// shape {body_json:{status:accepted}} would match create's event
+// regardless of which task an assertion is about — the filter is what
+// scopes the assertion to one task's reply.
+func taskScopeEvents() []readers.Event {
+	return []readers.Event{
+		{Location: "reply", Task: "create", Payload: map[string]any{"body_json": map[string]any{"status": "accepted", "roomId": "r1"}}},
+		{Location: "reply", Task: "join", Payload: map[string]any{"body_json": map[string]any{"status": "rejected"}}},
+	}
+}
+
+func TestMatchShape_TaskSelector_FilterPass(t *testing.T) {
+	reg := matchers.NewRegistry()
+	m := MatchShape(map[string]any{"task": "create", "body_json": map[string]any{"status": "accepted"}}, reg)
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.True(t, ok, "create's reply is accepted and matches the create-scoped shape")
+}
+
+func TestMatchShape_TaskSelector_FilterMismatch(t *testing.T) {
+	reg := matchers.NewRegistry()
+	// Scoped to join, whose reply is rejected — must NOT match, even
+	// though create's accepted reply would match the same shape
+	// unscoped. This proves the filter excludes other tasks' events.
+	m := MatchShape(map[string]any{"task": "join", "body_json": map[string]any{"status": "accepted"}}, reg)
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.False(t, ok, "join's reply is rejected; the create reply must not leak through the join-scoped filter")
+}
+
+func TestMatchShape_UnscopedReply_StillMatches(t *testing.T) {
+	reg := matchers.NewRegistry()
+	// No task: key — accepts any reply (backward-compatible).
+	m := MatchShape(map[string]any{"body_json": map[string]any{"status": "accepted"}}, reg)
+	ok, err := m.Match(taskScopeEvents())
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestMatchShape_TaskInsideOutboxPayload_Rejected(t *testing.T) {
+	reg := matchers.NewRegistry()
+	m := MatchShape(map[string]any{
+		"outbox_payload": map[string]any{"task": "t1", "roomId": "r-shared"},
+	}, reg)
+	_, err := m.Match([]readers.Event{{Location: "reply", Payload: map[string]any{}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task")
+	assert.Contains(t, err.Error(), "outbox_payload")
+}

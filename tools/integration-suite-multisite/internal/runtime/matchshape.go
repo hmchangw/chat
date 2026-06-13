@@ -43,6 +43,14 @@ import (
 // `from:` path) is the natural extension.
 const outboxPayloadKey = "outbox_payload"
 
+// taskSelectorKey is the multi-input match-shape key that scopes a
+// reply assertion to a single task's reply event (filtering by
+// Event.Task) before the subset match runs. Reply-only; the loader
+// rejects it on non-reply locations, and the matcher rejects it nested
+// inside outbox_payload (task scoping is about the reply event, not the
+// decoded inner payload).
+const taskSelectorKey = "task"
+
 // MatchShape returns a Gomega matcher that succeeds iff at least one
 // Event in the polled slice has a Payload satisfying `expected` under
 // the existing internal/matchers `matches_shape` semantic (subset deep
@@ -63,7 +71,23 @@ func MatchShape(expected map[string]any, reg *matchers.Registry) types.GomegaMat
 	if reg == nil {
 		reg = matchers.NewRegistry()
 	}
-	return &shapeMatcher{expected: expected, reg: reg}
+	// Split off the multi-input task: selector (reply-only; the loader
+	// guarantees it appears only on reply assertions). It scopes the
+	// event slice to one task's reply before the subset match; it is
+	// NOT a shape field, so strip it from the expected map.
+	taskFilter := ""
+	if raw, ok := expected[taskSelectorKey]; ok {
+		taskFilter, _ = raw.(string)
+		stripped := make(map[string]any, len(expected)-1)
+		for k, v := range expected {
+			if k == taskSelectorKey {
+				continue
+			}
+			stripped[k] = v
+		}
+		expected = stripped
+	}
+	return &shapeMatcher{expected: expected, reg: reg, taskFilter: taskFilter}
 }
 
 // shapeMatcher is the GomegaMatcher implementation. The "best
@@ -71,8 +95,9 @@ func MatchShape(expected map[string]any, reg *matchers.Registry) types.GomegaMat
 // the operator sees the closest-event diff (mirrors the triage value
 // of the v2 MissingPositives output).
 type shapeMatcher struct {
-	expected map[string]any
-	reg      *matchers.Registry
+	expected   map[string]any
+	reg        *matchers.Registry
+	taskFilter string // multi-input: scope to events with Event.Task == taskFilter; "" = no filter
 
 	// State captured by the most recent Match call. Gomega calls
 	// FailureMessage / NegatedFailureMessage with the same `actual`
@@ -89,6 +114,19 @@ func (m *shapeMatcher) Match(actual any) (bool, error) {
 	events, ok := actual.([]readers.Event)
 	if !ok {
 		return false, fmt.Errorf("MatchShape: expected []readers.Event, got %T", actual)
+	}
+	// Multi-input: scope to the named task's reply events before
+	// matching. Non-reply events carry an empty Task and the loader
+	// forbids task: off reply assertions, so this only ever narrows a
+	// reply slice.
+	if m.taskFilter != "" {
+		scoped := make([]readers.Event, 0, len(events))
+		for _, ev := range events {
+			if ev.Task == m.taskFilter {
+				scoped = append(scoped, ev)
+			}
+		}
+		events = scoped
 	}
 	m.lastEventCount = len(events)
 	m.bestReason = ""
@@ -150,6 +188,9 @@ func splitOutboxPayloadDirective(expected map[string]any) (envelope map[string]a
 	dir, ok := raw.(map[string]any)
 	if !ok {
 		return nil, nil, false, fmt.Errorf("MatchShape: %q expected value must be a map (subset shape against the decoded payload), got %T", outboxPayloadKey, raw)
+	}
+	if _, bad := dir[taskSelectorKey]; bad {
+		return nil, nil, false, fmt.Errorf("MatchShape: %q is not allowed inside %q — task scoping applies to the reply event, not the decoded inner payload", taskSelectorKey, outboxPayloadKey)
 	}
 	envelope = make(map[string]any, len(expected)-1)
 	for k, v := range expected {
