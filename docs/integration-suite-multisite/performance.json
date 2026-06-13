@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-13T21:07:22Z",
+  "lastRunAt": "2026-06-13T21:12:39Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -82,6 +82,21 @@
       "worst": {
         "verdict": "fail",
         "ranAt": "2026-06-13T20:22:43Z"
+      }
+    },
+    "gatekeeper-duplicate-message-id-cross-sender-deduped/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T21:12:39Z",
+        "verdict": "pass",
+        "durationMs": 5112
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:12:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:12:39Z"
       }
     },
     "gatekeeper-empty-content-rejected/stub": {
@@ -423,9 +438,9 @@
     },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-13T21:07:22Z",
+        "ranAt": "2026-06-13T21:12:39Z",
         "verdict": "pass",
-        "durationMs": 216
+        "durationMs": 215
       },
       "best": {
         "verdict": "pass",

@@ -586,3 +586,49 @@ row before replying, or have readers tolerate the in-flight entity), vs.
 which legitimately require the client to await a readiness signal before
 the follow-up operation. Today the `accepted`/canonical-published replies
 imply a usability they don't yet provide.
+
+## F-014 — client-supplied message-id dedup is sender-agnostic (a colliding second send is acked-but-discarded)
+
+**Layer:** chat-app code (gatekeeper canonical-publish dedup key ↔ worker blind-upsert persist).
+
+**Status:** observed — low severity / likely intentional idempotency with a
+sharp edge; chat-app team ruling requested.
+
+The gatekeeper publishes the canonical message with
+`jetstream.WithMsgID(natsutil.CanonicalDedupID(&evt))`
+(message-gatekeeper/handler.go:301), and for a `created` event
+`CanonicalDedupID` is **`evt.Message.ID` alone** — no sender, content, or
+requestId (pkg/natsutil/canonical_dedup.go, default case). The
+MESSAGES_CANONICAL stream therefore suppresses any second publish carrying
+a message id it has seen within the dedup window (JetStream default ~2m),
+**regardless of who sent it or what it contains.** The worker's persist is
+a blind `INSERT` (Cassandra upsert, no `IF NOT EXISTS`,
+message-worker/store_cassandra.go SaveMessage).
+
+This is correct, desirable idempotency for one client retrying its **own**
+send. The sharp edge: message ids are **client-supplied**, so:
+- **Success ack ≠ persisted.** A second sender (or a buggy client) that
+  reuses an existing id gets a successful *duplicate* PubAck — the
+  gatekeeper sees no error and acks the send — but nothing new is
+  persisted. The distinct message is silently lost.
+- **Cross-sender, sender-agnostic.** The dedup ignores the sender, so the
+  collision is resolved purely on id. Demonstrated by
+  `scenarios/drafts/gatekeeper-validation/gatekeeper-duplicate-message-id-cross-sender-deduped.yaml`
+  (run d195, green): alice sends id=COLLIDE first (wins); bob sends the
+  same id with different content back-to-back → bob's content never
+  reaches the canonical stream, and the persisted `messages_by_id` row is
+  alice's. bob's send was nonetheless accepted.
+- **Theoretical outside-window overwrite.** Past the dedup window (~2m),
+  a second send with a colliding id is NOT suppressed → the worker's blind
+  upsert overwrites `messages_by_id[id]` with the second sender's
+  content/sender. `GetMessageByID(id)` (quote-resolution, edit, delete
+  lookups) would then resolve to the second writer's version. Not
+  reproduced here (the window exceeds a practical test), noted as the
+  integrity ceiling of the current design.
+
+For honest clients with random 20-char base62 ids, collision is
+negligible — practical impact is near-zero. The ruling the team owns:
+is global (sender-agnostic) id dedup acceptable, or should the dedup key /
+persist be namespaced by sender (and/or the worker guard the first write
+with `IF NOT EXISTS`) so a colliding id can't shadow or overwrite another
+sender's message?

@@ -1,7 +1,7 @@
 # Integration tests — total   (latest merge: d225aa9f)
 
-Run:        2026-06-13T21:07:22Z   (runID f11e)
-Duration:   675ms
+Run:        2026-06-13T21:12:39Z   (runID d195)
+Duration:   5.694s
 Total:      2 test cases
 
 ## Confusion matrix
@@ -25,6 +25,8 @@ DRAFT         2       0
 | cross-site-seed-visibility/stub | pass | pass | pass | — | 0 | 104ms |
 | dm-create-idempotency-multi-input/stub | pass | pass | pass | — | 0 | 104ms |
 | gatekeeper-create-room-then-send-races-subscription/stub | pass | pass | fail | — | 0 | 5.1s |
+| gatekeeper-duplicate-message-id-cross-sender-deduped/stub | pass | pass | pass | — | 0 | 5.1s |
+| gatekeeper-duplicate-message-id-cross-sender-deduped[c=0 p=- x=-] | pass | pass | pass | — | 0 | 5.1s |
 | gatekeeper-empty-content-rejected/stub | pass | pass | pass | — | 0 | 5.2s |
 | gatekeeper-invalid-message-id-rejected/stub | pass | pass | pass | — | 0 | 5.2s |
 | gatekeeper-large-room-bot-bypass/stub | pass | pass | pass | — | 0 | 102ms |
@@ -47,9 +49,8 @@ DRAFT         2       0
 | logs-tail-regression-guard-not-must-fail-when-line-present/stub | fail | fail | fail | — | 0 | 111ms |
 | message-edit-just-sent-races-persistence/stub | pass | pass | fail | — | 0 | 210ms |
 | message-edit-to-whitespace-rejected/stub | pass | pass | pass | — | 0 | 107ms |
-| message-edit-to-whitespace-rejected[c=0 p=- x=-] | pass | pass | pass | — | 0 | 107ms |
-| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 216ms |
-| message-pipeline-send-and-persist[c=0 p=- x=-] | pass | pass | pass | — | 0 | 216ms |
+| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 215ms |
+| message-pipeline-send-and-persist[c=0 p=- x=-] | pass | pass | pass | — | 0 | 215ms |
 | message-worker-at-all-mention-persisted/stub | pass | pass | pass | — | 0 | 105ms |
 | message-worker-mentions-persisted/stub | pass | pass | pass | — | 0 | 104ms |
 | message-worker-subsequent-thread-reply-multi-input/stub | fail | fail | fail | — | 0 | 10.1s |
