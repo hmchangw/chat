@@ -363,3 +363,43 @@ the discipline is a footgun, not a fix. The structural fix is
 in chat-app code.
 
 ---
+
+## F-010 — `upload-service` Dockerfile pins `golang:1.25.10` — toolchain mismatch breaks the image build
+
+**Layer:** chat-app local-dev tooling (Dockerfile).
+
+**Status:** observed — chat-app team action pending. Low severity (one-line fix), but it blocks fresh-image suite runs.
+
+`upload-service/deploy/Dockerfile` uses `FROM golang:1.25.10-alpine`.
+It is the **only** service that does — the other 13 service
+Dockerfiles all use `golang:1.25.11-alpine`, matching the root
+`go.mod` directive `go 1.25.11` and the CLAUDE.md Docker rule
+(builder must be `golang:1.25.11-alpine`).
+
+With the default `GOTOOLCHAIN=auto`, a `1.25.10` toolchain building
+a module that declares `go 1.25.11` attempts to **download** the
+`1.25.11` toolchain. In the sealed Docker builder that download
+fails, so `RUN go mod download` exits non-zero — the observed
+"`go mod download` exit 1".
+
+**Blast radius (why the suite team is reporting it):** `make
+build-test-images` (root Makefile) runs `docker compose build` over
+`docker-local/compose.services.yaml`, which `include:`s all 13
+services. `docker compose build` is all-or-nothing across its set,
+so this one Dockerfile aborts the whole target before the 9 images
+the suite actually needs are (re)built. The suite then runs against
+**stale pre-merge images** — a green run validates suite plumbing,
+not current chat-app behavior.
+
+**Fix:** one line — bump `upload-service/deploy/Dockerfile` to
+`FROM golang:1.25.11-alpine`, matching every other service and the
+root `go.mod`. (Pinning is correct; only the version is stale.)
+
+**Suite-side note (no chat-app dependency):** the suite team can
+add a `tools/integration-suite-multisite/` make target that builds
+only the 9 `defaultServices` images, bypassing `upload-service` /
+`user-presence-service` entirely — those two are not in the suite's
+service set. That unblocks fresh-image runs independently of this
+fix; it does not replace it (the Dockerfile is wrong regardless).
+
+---
