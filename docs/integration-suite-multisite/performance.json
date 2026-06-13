@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-13T21:52:19Z",
+  "lastRunAt": "2026-06-13T21:58:38Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -453,9 +453,9 @@
     },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-13T21:52:19Z",
+        "ranAt": "2026-06-13T21:58:38Z",
         "verdict": "pass",
-        "durationMs": 219
+        "durationMs": 218
       },
       "best": {
         "verdict": "pass",
@@ -479,6 +479,21 @@
       "worst": {
         "verdict": "pass",
         "ranAt": "2026-06-08T19:30:06Z"
+      }
+    },
+    "message-worker-cross-room-thread-reply-pollutes-foreign-parent/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T21:58:38Z",
+        "verdict": "pass",
+        "durationMs": 106
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:58:38Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:58:38Z"
       }
     },
     "message-worker-mentions-persisted/stub": {

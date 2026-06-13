@@ -725,3 +725,46 @@ subscription/replyAccounts side-effects) should be scoped to room members —
 filter `mention.Resolve` results by membership, or guard
 `markThreadMentions` so a non-member mention is recorded as content but
 does not create a subscription / follower relationship.
+
+## F-017 — a thread reply can attach to a parent in another room and pollute its tcount
+
+**Layer:** chat-app code (gatekeeper thread-parent non-validation + worker tcount write).
+
+**Status:** observed — integrity / missing validation; chat-app team action requested.
+**Reachability:** any member of a room they control, who knows a target
+message's `(id, createdAt)` — both are broadcast on canonical events and
+present in history/search reads. No special timing.
+
+The gatekeeper validates a thread reply's `threadParentMessageId` only for
+**format** (`IsValidMessageID`) and **pairing**
+(`threadParentMessageCreatedAt` must be present) — handler.go:191-210. Unlike
+quotes (which fetch the parent via `resolveQuoteSnapshot`), it **never
+fetches the parent**, so it cannot tell the parent lives in a different room
+(or doesn't exist — the old, untracked F-004 orphan-thread root). The worker
+then builds the thread room with `RoomID: msg.RoomID` — the **reply's** room
+— and a client-supplied `ParentMessageID`, with no parent-room check
+(handler.go:89-92, `handleThreadRoomAndSubscriptions`). The fatal detail is
+in `setParentTcount` (store_cassandra.go): the `messages_by_id` tcount write
+is `UPDATE … SET tcount = ? WHERE message_id = ? AND created_at = ?` —
+**room-agnostic** — so it lands on the parent wherever it lives; the parallel
+`messages_by_room` write uses `msg.RoomID` (the reply's room), upserting a
+**phantom** parent row in the wrong room's partition.
+
+Net: a member of room Y can send a thread reply naming a parent M that lives
+in room X (a room they are not in), and M's `tcount` in X is bumped — a
+reply count injected onto a foreign room's message by a non-member of that
+room. The thread room created for M is also mislabeled with `RoomID = Y`, so
+X's members see M's tcount increment but the thread itself is associated with
+a room they cannot see.
+
+Demonstrated by
+`scenarios/drafts/threads/message-worker-cross-room-thread-reply-pollutes-foreign-parent.yaml`
+(run 987c, green): alice (member of `r-mine` only) threads off `M` seeded in
+`r-other`; afterward `messages_by_id[M]` shows `room_id: r-other, tcount: 1`,
+and `thread_rooms[parentMessageId=M]` has `roomId: r-mine`.
+
+The decision the team owns: the gatekeeper (or worker) should verify the
+thread parent exists **and belongs to the reply's room** before creating the
+thread room / writing tcount — reject the reply otherwise. This is the same
+non-validation root the old F-004 flagged; the cross-room facet turns it from
+a harmless orphan thread into cross-room integrity pollution.

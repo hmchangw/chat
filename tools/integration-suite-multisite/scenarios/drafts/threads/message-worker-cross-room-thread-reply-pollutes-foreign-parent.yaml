@@ -1,0 +1,100 @@
+scenario: message-worker-cross-room-thread-reply-pollutes-foreign-parent
+source: >
+  message-gatekeeper/handler.go:191-210 (the gatekeeper validates the thread
+  parent ID FORMAT and PAIRING only — it never FETCHES the parent to confirm it
+  exists or which room it lives in, unlike quotes which go through
+  resolveQuoteSnapshot), message-worker/handler.go:89-92 +
+  handleThreadRoomAndSubscriptions (the thread room is keyed to msg.RoomID — the
+  REPLY's room — with a client-supplied ParentMessageID, no parent-room check),
+  message-worker/store_cassandra.go setParentTcount (the messages_by_id tcount
+  UPDATE is `WHERE message_id = ? AND created_at = ?` — ROOM-AGNOSTIC — so it
+  lands on the parent wherever it lives; the messages_by_room UPDATE uses
+  msg.RoomID, the reply's room, upserting a phantom row).
+status: draft
+tag: negative
+
+# INTEGRITY / MISSING-VALIDATION BUG (shares the no-parent-validation root
+# with the old F-004 orphan-thread observation, but with a concrete new
+# harm): a thread reply may name a parent that lives in a DIFFERENT room,
+# and the worker happily bumps that foreign parent's tcount. The gatekeeper
+# only checks the parent id's format + that createdAt is paired — it does
+# not fetch the parent, so it cannot tell the parent belongs to another
+# room. The worker's tcount write on messages_by_id is keyed by
+# (message_id, created_at) alone, so it pollutes the foreign parent.
+#
+# alice is a member of r-mine ONLY. M is a message in r-other (alice is NOT
+# a member there). alice sends a thread reply in r-mine naming M as the
+# thread parent. Result: M's tcount (in r-other) is bumped to 1 by a reply
+# from someone who isn't even in r-other — and a thread_room is created
+# mislabeled with RoomID=r-mine for a parent that lives in r-other.
+#
+# Synchronous outcome (parent pre-seeded, single reply) — deterministic,
+# not a race. Unique rooms to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-mine
+          name: Alice's Room
+          type: channel
+      memberships:
+        alice:
+          - room: r-mine
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      # The parent lives in r-other — a room alice is NOT a member of.
+      - message_id: m0otherroomthread001
+        created_at: 1748736000000
+        room_id: r-other
+        site_id: site-a
+        msg: "a message in a room alice is not in"
+        sender:
+          id: u-someone
+          account: someone
+          eng_name: someone
+          company_name: someone
+
+input:
+  # alice replies in r-mine (where she IS a member) but threads off M (in r-other).
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-mine.site-a.msg.send
+  payload:
+    id: m1crossroomreply0001
+    content: "threading off a message in another room"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567925
+    threadParentMessageId: m0otherroomthread001
+    threadParentMessageCreatedAt: 1748736000000
+  credential: ${alice.credential}
+
+expected:
+  # THE BUG — the foreign parent M (in r-other) had its tcount bumped to 1
+  # by a reply from alice, who is only a member of r-mine.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0otherroomthread001]
+    match:
+      message_id: m0otherroomthread001
+      room_id: r-other
+      tcount: 1
+    timeout: 10s
+
+  # Corroboration — the thread_room created for M is mislabeled with the
+  # reply's room (r-mine), not the parent's actual room (r-other).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0otherroomthread001
+    match:
+      parentMessageId: m0otherroomthread001
+      roomId: r-mine
+    timeout: 10s
