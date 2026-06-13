@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="integration-suite" tests="7" skipped="0" failures="3" errors="0" time="0.013916739">
+  <testsuite name="History service — thread messages request validation" tests="2" skipped="0" failures="1" errors="0" time="0.004728746">
+    <testcase name="Requesting a thread with no thread message id is rejected as invalid" status="passed" time="0.001947774"></testcase>
+    <testcase name="Requesting a thread in a room the caller is not subscribed to" status="failed" time="0.002032257">
+      <failure message="Step the response is a Auth error: after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: error-class: want Auth, got HandlerError (transport=nats status=0 errText=&#34;not subscribed to room&#34; trace=1be265c558aede7a229d453e9c544f8a)"></failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="Messaging pipeline — message submission validation" tests="2" skipped="0" failures="2" errors="0" time="0.003055991">
+    <testcase name="Submitting a message with an empty body is rejected" status="failed" time="0.002081449">
+      <failure message="Step &#34;alice&#34; submits a message with an empty body: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: messaging: cannot submit &#34;an empty body&#34; — message-gatekeeper is reached via a fire-and-forget JetStream publish with a decoupled reply; Part-1 has no JetStream/peek primitive (see blindspots.md::message-submit-needs-jetstream-primitive)"></failure>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+    <testcase name="Submitting a message with an invalid message id is rejected" status="failed" time="0.000742014">
+      <failure message="Step &#34;alice&#34; submits a message with an invalid message id: after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: messaging: cannot submit &#34;an invalid message id&#34; — message-gatekeeper is reached via a fire-and-forget JetStream publish with a decoupled reply; Part-1 has no JetStream/peek primitive (see blindspots.md::message-submit-needs-jetstream-primitive)"></failure>
+      <error message="Step the response is a Validation error" type="skipped"></error>
+    </testcase>
+  </testsuite>
+  <testsuite name="Room service — channel creation" tests="2" skipped="0" failures="0" errors="0" time="0.003579928">
+    <testcase name="Authenticated user creates a channel room" status="passed" time="0.00179946"></testcase>
+    <testcase name="Authenticated user creating a channel room (draft demo)" status="passed" time="0.001629643"></testcase>
+  </testsuite>
+  <testsuite name="Room service — member role update validation" tests="1" skipped="0" failures="0" errors="0" time="0.001429757">
+    <testcase name="Updating a member to an unknown role is rejected as invalid" status="passed" time="0.001429757"></testcase>
+  </testsuite>
+</testsuites>

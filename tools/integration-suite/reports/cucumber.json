@@ -1,0 +1,593 @@
+[
+    {
+        "uri": "features/service/history-thread.feature",
+        "id": "history-service-—-thread-messages-request-validation",
+        "keyword": "Feature",
+        "name": "History service — thread messages request validation",
+        "description": "",
+        "line": 1,
+        "comments": [
+            {
+                "value": "# Source: docs/superpowers/specs/2026-04-21-history-get-thread-messages-design.md",
+                "line": 2
+            },
+            {
+                "value": "#   § \"Error Matrix\":",
+                "line": 3
+            },
+            {
+                "value": "#     | ThreadMessageID empty | ErrBadRequest | bad_request |",
+                "line": 4
+            },
+            {
+                "value": "#     | Caller not subscribed to parent's room | ErrForbidden(\"not subscribed to room\") | forbidden |",
+                "line": 5
+            },
+            {
+                "value": "# Transport: NATS request/reply on",
+                "line": 6
+            },
+            {
+                "value": "#   chat.user.\u003caccount\u003e.request.room.\u003croomID\u003e.\u003csite\u003e.msg.thread",
+                "line": 7
+            },
+            {
+                "value": "# The empty-ID check runs before the room-access check, so it is",
+                "line": 8
+            },
+            {
+                "value": "# observable without a pre-existing room or subscription.",
+                "line": 9
+            },
+            {
+                "value": "# Design says ErrForbidden(\"not subscribed to room\"). The suite's",
+                "line": 19
+            },
+            {
+                "value": "# NATS classifier is substring-based; the sanitized message contains",
+                "line": 20
+            },
+            {
+                "value": "# no \"forbidden\"/\"unauthorized\"/\"permission\" token, so it cannot be",
+                "line": 21
+            },
+            {
+                "value": "# confirmed as an Auth-class rejection. See blindspots register.",
+                "line": 22
+            }
+        ],
+        "elements": [
+            {
+                "id": "history-service-—-thread-messages-request-validation;requesting-a-thread-with-no-thread-message-id-is-rejected-as-invalid",
+                "keyword": "Scenario",
+                "name": "Requesting a thread with no thread message id is rejected as invalid",
+                "description": "",
+                "line": 12,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@smoke",
+                        "line": 11
+                    },
+                    {
+                        "name": "@covers:history-thread-empty-id",
+                        "line": 11
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 13,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 566769
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" requests thread messages with no thread message id in room \"general\"",
+                        "line": 14,
+                        "match": {
+                            "location": "history_steps_test.go:24"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 1338924
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is a Validation error",
+                        "line": 15,
+                        "match": {
+                            "location": "error_steps_test.go:13"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 42081
+                        }
+                    }
+                ]
+            },
+            {
+                "id": "history-service-—-thread-messages-request-validation;requesting-a-thread-in-a-room-the-caller-is-not-subscribed-to",
+                "keyword": "Scenario",
+                "name": "Requesting a thread in a room the caller is not subscribed to",
+                "description": "",
+                "line": 18,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@blindspot:history-forbidden-class-unverifiable",
+                        "line": 17
+                    },
+                    {
+                        "name": "@covers:history-thread-not-subscribed",
+                        "line": 17
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 23,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 660952
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" requests thread messages for an unknown message in room \"general\"",
+                        "line": 24,
+                        "match": {
+                            "location": "history_steps_test.go:25"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 1320993
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is a Auth error",
+                        "line": 25,
+                        "match": {
+                            "location": "error_steps_test.go:13"
+                        },
+                        "result": {
+                            "status": "failed",
+                            "error_message": "after scenario hook failed: undocumented behavior: history-forbidden-class-unverifiable, step error: error-class: want Auth, got HandlerError (transport=nats status=0 errText=\"not subscribed to room\" trace=1be265c558aede7a229d453e9c544f8a)",
+                            "duration": 50312
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "uri": "features/pipeline/message-submission.feature",
+        "id": "messaging-pipeline-—-message-submission-validation",
+        "keyword": "Feature",
+        "name": "Messaging pipeline — message submission validation",
+        "description": "",
+        "line": 1,
+        "comments": [
+            {
+                "value": "# Source: docs/superpowers/specs/2026-03-27-message-gatekeeper-design.md",
+                "line": 2
+            },
+            {
+                "value": "#   § \"Error Handling\" / § \"Processing Flow\":",
+                "line": 3
+            },
+            {
+                "value": "#     - invalid message ID  -\u003e reply error, ack",
+                "line": 4
+            },
+            {
+                "value": "#     - empty content       -\u003e reply error, ack",
+                "line": 5
+            },
+            {
+                "value": "# Source: tools/integration-suite/README.md § \"Status \u0026 maturity\"",
+                "line": 6
+            },
+            {
+                "value": "#   (Part 2 will add JetStream consumer/peek primitives).",
+                "line": 7
+            },
+            {
+                "value": "#",
+                "line": 8
+            },
+            {
+                "value": "# message-gatekeeper consumes a fire-and-forget JetStream publish on",
+                "line": 9
+            },
+            {
+                "value": "# MESSAGES_\u003csite\u003e and replies on a *decoupled* subject",
+                "line": 10
+            },
+            {
+                "value": "# chat.user.\u003caccount\u003e.response.\u003crequestId\u003e (no request/reply",
+                "line": 11
+            },
+            {
+                "value": "# correlation). The Part-1 suite has only HTTP and NATS request/reply",
+                "line": 12
+            },
+            {
+                "value": "# primitives, so the gatekeeper's documented validation contract is not",
+                "line": 13
+            },
+            {
+                "value": "# observable yet. These scenarios capture the documented expected",
+                "line": 14
+            },
+            {
+                "value": "# behavior and are tagged @blindspot until the Part-2 JetStream",
+                "line": 15
+            },
+            {
+                "value": "# primitive exists; they fail by design (blindspots-as-failures).",
+                "line": 16
+            }
+        ],
+        "elements": [
+            {
+                "id": "messaging-pipeline-—-message-submission-validation;submitting-a-message-with-an-empty-body-is-rejected",
+                "keyword": "Scenario",
+                "name": "Submitting a message with an empty body is rejected",
+                "description": "",
+                "line": 19,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@blindspot:message-submit-needs-jetstream-primitive",
+                        "line": 18
+                    },
+                    {
+                        "name": "@covers:messaging-submit-empty-content",
+                        "line": 18
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 20,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 1994556
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" submits a message with an empty body",
+                        "line": 21,
+                        "match": {
+                            "location": "messaging_steps_test.go:11"
+                        },
+                        "result": {
+                            "status": "failed",
+                            "error_message": "after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: messaging: cannot submit \"an empty body\" — message-gatekeeper is reached via a fire-and-forget JetStream publish with a decoupled reply; Part-1 has no JetStream/peek primitive (see blindspots.md::message-submit-needs-jetstream-primitive)",
+                            "duration": 67882
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is a Validation error",
+                        "line": 22,
+                        "match": {
+                            "location": "error_steps_test.go:13"
+                        },
+                        "result": {
+                            "status": "skipped"
+                        }
+                    }
+                ]
+            },
+            {
+                "id": "messaging-pipeline-—-message-submission-validation;submitting-a-message-with-an-invalid-message-id-is-rejected",
+                "keyword": "Scenario",
+                "name": "Submitting a message with an invalid message id is rejected",
+                "description": "",
+                "line": 25,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@blindspot:message-submit-needs-jetstream-primitive",
+                        "line": 24
+                    },
+                    {
+                        "name": "@covers:messaging-submit-invalid-id",
+                        "line": 24
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 26,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 664002
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" submits a message with an invalid message id",
+                        "line": 27,
+                        "match": {
+                            "location": "messaging_steps_test.go:11"
+                        },
+                        "result": {
+                            "status": "failed",
+                            "error_message": "after scenario hook failed: undocumented behavior: message-submit-needs-jetstream-primitive, step error: messaging: cannot submit \"an invalid message id\" — message-gatekeeper is reached via a fire-and-forget JetStream publish with a decoupled reply; Part-1 has no JetStream/peek primitive (see blindspots.md::message-submit-needs-jetstream-primitive)",
+                            "duration": 55082
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is a Validation error",
+                        "line": 28,
+                        "match": {
+                            "location": "error_steps_test.go:13"
+                        },
+                        "result": {
+                            "status": "skipped"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "uri": "features/service/room.feature",
+        "id": "room-service-—-channel-creation",
+        "keyword": "Feature",
+        "name": "Room service — channel creation",
+        "description": "",
+        "line": 1,
+        "comments": [
+            {
+                "value": "# Source: room-service/handler.go::handleCreateRoom (NATS subject chat.user.\u003caccount\u003e.request.rooms.create)",
+                "line": 2
+            },
+            {
+                "value": "# The system exposes channel room creation as a NATS request/reply on the",
+                "line": 3
+            },
+            {
+                "value": "# requester's chat.user.\u003caccount\u003e.request.rooms.create subject. The reply",
+                "line": 4
+            },
+            {
+                "value": "# is the created Room JSON on success, or {\"error\":\"...\"} on failure.",
+                "line": 5
+            }
+        ],
+        "elements": [
+            {
+                "id": "room-service-—-channel-creation;authenticated-user-creates-a-channel-room",
+                "keyword": "Scenario",
+                "name": "Authenticated user creates a channel room",
+                "description": "",
+                "line": 8,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@status:approved",
+                        "line": 7
+                    },
+                    {
+                        "name": "@smoke",
+                        "line": 7
+                    },
+                    {
+                        "name": "@covers:room-create-channel",
+                        "line": 7
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 9,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 498366
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" creates channel room \"general\"",
+                        "line": 10,
+                        "match": {
+                            "location": "room_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 1271243
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is successful",
+                        "line": 11,
+                        "match": {
+                            "location": "error_steps_test.go:14"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 29851
+                        }
+                    }
+                ]
+            },
+            {
+                "id": "room-service-—-channel-creation;authenticated-user-creating-a-channel-room-(draft-demo)",
+                "keyword": "Scenario",
+                "name": "Authenticated user creating a channel room (draft demo)",
+                "description": "",
+                "line": 13,
+                "type": "scenario",
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"bob\" is authenticated",
+                        "line": 14,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 485836
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"bob\" creates channel room \"draft-room\"",
+                        "line": 15,
+                        "match": {
+                            "location": "room_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 1114986
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is successful",
+                        "line": 16,
+                        "match": {
+                            "location": "error_steps_test.go:14"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 28821
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "uri": "features/service/room-role-update.feature",
+        "id": "room-service-—-member-role-update-validation",
+        "keyword": "Feature",
+        "name": "Room service — member role update validation",
+        "description": "",
+        "line": 1,
+        "comments": [
+            {
+                "value": "# Source: docs/superpowers/specs/2026-04-13-role-update-design.md",
+                "line": 2
+            },
+            {
+                "value": "#   § \"Validation Rules (room-service)\", rule #3:",
+                "line": 3
+            },
+            {
+                "value": "#   \"newRole must be RoleOwner or RoleMember | \\\"invalid role: must be owner or member\\\"\"",
+                "line": 4
+            },
+            {
+                "value": "# Transport: NATS request/reply on",
+                "line": 5
+            },
+            {
+                "value": "#   chat.user.\u003caccount\u003e.request.room.\u003croomID\u003e.\u003csite\u003e.member.role-update",
+                "line": 6
+            },
+            {
+                "value": "# The reply is {\"status\":\"accepted\"} on success, or {\"error\":\"...\"} on",
+                "line": 7
+            },
+            {
+                "value": "# failure. Rule #3 is checked before the room-existence/ownership checks,",
+                "line": 8
+            },
+            {
+                "value": "# so it is observable without a pre-existing room or membership.",
+                "line": 9
+            }
+        ],
+        "elements": [
+            {
+                "id": "room-service-—-member-role-update-validation;updating-a-member-to-an-unknown-role-is-rejected-as-invalid",
+                "keyword": "Scenario",
+                "name": "Updating a member to an unknown role is rejected as invalid",
+                "description": "",
+                "line": 12,
+                "type": "scenario",
+                "tags": [
+                    {
+                        "name": "@smoke",
+                        "line": 11
+                    },
+                    {
+                        "name": "@covers:room-roleupdate-invalid-role",
+                        "line": 11
+                    }
+                ],
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "user \"alice\" is authenticated",
+                        "line": 13,
+                        "match": {
+                            "location": "auth_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 470896
+                        }
+                    },
+                    {
+                        "keyword": "When ",
+                        "name": "\"alice\" requests role \"supervisor\" for member \"bob\" in room \"general\"",
+                        "line": 14,
+                        "match": {
+                            "location": "role_steps_test.go:15"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 924520
+                        }
+                    },
+                    {
+                        "keyword": "Then ",
+                        "name": "the response is a Validation error",
+                        "line": 15,
+                        "match": {
+                            "location": "error_steps_test.go:13"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 34341
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+]

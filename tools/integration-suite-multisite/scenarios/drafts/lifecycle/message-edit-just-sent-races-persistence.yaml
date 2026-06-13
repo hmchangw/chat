@@ -1,0 +1,78 @@
+scenario: message-edit-just-sent-races-persistence
+source: >
+  message-worker persists the canonical message to Cassandra ASYNC (behind the gatekeeper
+  publish), history-service/internal/service/messages.go:283-320 (EditMessage → findMessage;
+  returns errcode.NotFound when the message row isn't present yet), subject.MsgEditPattern
+  (chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit); multi-input per
+  2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: negative
+
+# WORKER-PERSISTENCE-LAG BLINDSPOT, edit path (same root as the F-006
+# fresh-quote facet and F-012, now in the edit RPC): editing a message you
+# JUST sent fails not_found. task1 sends M; task2 immediately edits M.
+# message-worker persists M async (~100ms behind the canonical publish);
+# v1 multi-input fires back-to-back with no wait, so the edit's findMessage
+# runs before M is persisted → NotFound.
+#
+# Consistently ordered (the edit-fetch precedes the worker's write), so it
+# reproduces reliably. Documents the current behavior — a fast send-then-
+# edit can't find the message it just sent. Logged as F-013 (third facet
+# of the worker-persistence-lag blindspot, with F-006-fresh-quote + F-012).
+#
+# Confirmed by run 1a61 (green): edit reply code:not_found AND the original
+# send's canonical event present (the send itself succeeded).
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  - id: send
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m0editsent0000000001
+      content: original content
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567916
+    credential: ${alice.credential}
+
+  - id: edit
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.r-general.site-a.msg.edit
+    payload:
+      messageId: m0editsent0000000001
+      newMsg: edited content
+    credential: ${alice.credential}
+
+expected:
+  # The edit of the just-sent message is rejected not_found (raced the
+  # async persistence). Synchronous reply scoped to the edit task.
+  - location: reply
+    match:
+      task: edit
+      body_json:
+        code: not_found
+
+  # The original send did go through the canonical pipeline.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0editsent0000000001

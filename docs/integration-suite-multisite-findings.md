@@ -530,3 +530,45 @@ guarantee usability (e.g. sync-write the creator's own subscription before
 replying, or have the gatekeeper tolerate a just-created room the sender
 owns), or is the client expected to wait for a readiness signal
 (subscription.update) before sending? Today "accepted" over-promises.
+
+## F-013 — editing a just-sent message fails `not_found` (edit RPC races the async Cassandra persist)
+
+**Layer:** chat-app code (history-service edit RPC ↔ message-worker async persist).
+
+**Status:** observed — chat-app team action pending.
+
+A `msg.send` publishes through the gatekeeper to MESSAGES_CANONICAL
+synchronously, but `message-worker` persists the row to Cassandra
+**async**, behind the canonical publish. The `msg.edit` RPC
+(`chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit`) resolves
+the target via `EditMessage → findMessage`
+(history-service/internal/service/messages.go:283-320), which returns a
+typed `NotFound` when the row isn't present yet. So a client that sends a
+message and immediately edits it gets `not_found` for a message it just
+successfully sent (and whose canonical event *did* publish).
+
+Demonstrated by
+`scenarios/drafts/lifecycle/message-edit-just-sent-races-persistence.yaml`
+(multi-input, run 1a61, green): task1 sends M, task2 immediately edits M
+→ the edit reply is `code: not_found`, **and** M's canonical event is
+present on MESSAGES_CANONICAL (the send itself succeeded). The
+edit-fetch is consistently ordered before the worker's write, so it
+reproduces reliably under back-to-back fire.
+
+**This is the third confirmed facet of one root cause — the
+worker-persistence-lag blindspot.** An operation on a just-async-written
+entity races the worker write and fails, across three independent code
+paths:
+- **F-006 (fresh-quote facet)** — quote a just-sent message → the
+  quoting message is *dropped* (gatekeeper quote-resolution NotFound).
+- **F-012** — send to a just-created room → the send is *dropped*
+  (`not_subscribed`; room-worker hasn't written the subscription).
+- **F-013 (this)** — edit a just-sent message → `not_found` (history
+  edit RPC; worker hasn't persisted the row).
+
+The shared decision the chat-app team owns: which write-then-read APIs
+should guarantee read-your-write on the success reply (sync the critical
+row before replying, or have readers tolerate the in-flight entity), vs.
+which legitimately require the client to await a readiness signal before
+the follow-up operation. Today the `accepted`/canonical-published replies
+imply a usability they don't yet provide.
