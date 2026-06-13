@@ -89,7 +89,10 @@ cassandra_data:
           company_name: remotebob
 
 pre_fire_scripts:
-  - prep-outbox.sh
+  # prep-outbox.sh stays at drafts/ root: its $BASH_SOURCE/../../cmd/createoutbox
+  # only resolves from that canonical depth. Referenced up one level from this
+  # nested folder (pre_fire paths are relative to this scenario's dir).
+  - ../prep-outbox.sh
 
 input:
   site: site-a
