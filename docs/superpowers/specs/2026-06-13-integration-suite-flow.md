@@ -24,7 +24,7 @@ at the tail is a cumulative end-state check. The model unifies what
 were previously three concepts — task ordering, per-task assertion
 scoping (`match.task:`), and event-window waits — into one.
 
-**Decisions baked in (from the brainstorm critique):**
+**Decisions baked in (from the brainstorm critique + tester review):**
 - **`[]` is homogeneous-only.** Mixed-type groups (fire + observe) are
   rejected at load time; the semantics are too ambiguous to be safe.
 - **Parallel-fire groups are reserved-rejected in v1.** `[fire_a,
@@ -40,9 +40,24 @@ scoping (`match.task:`), and event-window waits — into one.
   reads a fire step's captured reply; `${<obs-id>.body_json.x}` reads
   an observation step's matched event. No `events[i]` indexing — the
   observation step IS the index.
-- **`match.task:` is removed** in the new shape. Position scopes the
-  reply assertion; the directive is obsolete here (still valid in
-  the legacy shape for backward compat).
+- **`match.task:` directive is gone from the flow shape.** Position
+  is the default scope for reply observations (most-recent preceding
+  fire). For the unusual shape where multiple fires sit between
+  reply observations, an `observe: reply` step gets an explicit
+  step-level **`of: <fire-id>`** field — scoping lives at the step
+  level alongside `site:`, never inside the `match:` shape. The
+  legacy directive remains valid in the legacy shape only.
+- **Adjacent fires retain zero added inter-fire latency.** The flow
+  executor must not introduce scheduling delay between two adjacent
+  fire-barriers beyond what the legacy multi-input path has, or
+  every existing race-finding repro (F-006, F-011, F-012, F-013)
+  silently weakens. Asserted as a Phase F benchmark gate.
+- **Negative observe steps are window-scoped, not whole-scenario.**
+  This is a deliberate change from today's `Consistently().ShouldNot()`
+  against the full accumulated buffer — and a soundness trap if an
+  author places `not: true` mid-flow expecting whole-window absence.
+  The loader warns (not rejects) on `not: true` outside the final
+  barrier; AUTHORING.md leads with the rule.
 
 **Out of scope (separate specs):**
 - Parallel **fires** (`[fire_a, fire_b]`) — grammar reserved here,
@@ -112,6 +127,8 @@ steps:                                        # NEW — declarative step bodies
 
   rename_accepted:
     observe: reply
+    # No of: needed — position-default scopes to the immediately
+    # preceding fire (rename). Explicit `of: rename` would be equivalent.
     match: { body_json: { status: accepted } }
 
   federation_landed:
@@ -176,10 +193,11 @@ steps:
 | `payload` | fire | map | JSON payload. Substitution resolved. |
 | `credential` | fire | string | `${<alias>.credential}`. |
 | `args` | observe | map | Per-poller args (mirrors today's `expected[].args`). |
-| `match` | observe | map | Subset shape; the existing `MatchShape` semantics. |
-| `timeout` | observe | duration | Default 5s; how long Eventually polls before the observe step fails the scenario. |
+| `match` | observe | map | Subset shape; the existing `MatchShape` semantics. Purely shape; no scoping directives in the flow shape. |
+| `of` | observe: reply only | string | Explicit fire-id whose reply this observation matches against. Defaults to the immediately-preceding fire step in the linearized flow. Required by the loader only when there is ambiguity (multiple fires between two reply observations); rejected on any non-reply observe step. |
+| `timeout` | observe | duration | Default 5s; how long the gate waits for a match before failing the scenario. For `not: true`, also the window over which absence is checked. |
 | `polling` | observe | duration | Default 100ms. |
-| `not` | observe | bool | `true` ⇒ `Consistently().ShouldNot()` for the full `timeout`. The step succeeds iff the match is absent throughout. |
+| `not` | observe | bool | `true` ⇒ `Consistently().ShouldNot()` for the full `timeout` window. **Window-scoped**: the step proves absence only during its execution window, not whole-scenario. End-state absence checks belong in the final barrier — the loader warns on `not: true` steps placed elsewhere (see §5.3, §10). |
 
 Step ids are `[a-z][a-z0-9_-]*`, unique within the scenario.
 
@@ -245,7 +263,7 @@ Per-step substitution, available in fire-step `subject` / `payload` /
 
 | Token | Resolves to |
 |---|---|
-| `${<fire-id>.reply.body_json.<field>}` | The fire's decoded JSON reply field. Available only after the fire step has executed AND been followed by either an explicit `observe: reply` step OR an implicit reply capture (every `nats_request` fire captures its reply automatically). |
+| `${<fire-id>.reply.body_json.<field>}` | The fire's decoded JSON reply field. Available immediately after the fire executes (every `nats_request` fire captures its reply automatically; `jetstream_publish` is fire-and-forget — no reply, substitution hard-fails). |
 | `${<fire-id>.reply.status}` | Sugar for `body_json.status`. |
 | `${<observe-id>.body_json.<field>}` | The matched event's decoded body field. Available only after the observe step has matched. |
 | `${<observe-id>.<payload-field>}` | Other event payload fields per the poller's emitted shape (e.g. `_id`, `name`, `traceparent`). |
@@ -302,6 +320,21 @@ Pipeline:
    - mixed-type group: rejected
    - `${<id>.*}` references in step bodies point at earlier steps,
      and don't reference siblings inside the same parallel group
+   - **`of:` validation** — on an observe-reply step, `of:` must
+     name a declared fire step that fires earlier in the flow.
+     Rejected on any non-reply observe step. The loader REQUIRES
+     `of:` whenever a reply observation has more than one
+     preceding-but-unobserved fire (i.e., ambiguity); otherwise the
+     default scope (most-recent preceding fire) applies and `of:` is
+     optional.
+   - **negative-step placement warning** — for every `not: true`
+     observe step NOT in the final barrier of the flow, emit a
+     loader warning (not error): `step %q: not: true observe steps
+     prove absence only during their own window; place end-state
+     absence checks in the final barrier for whole-scenario
+     coverage (see AUTHORING.md §Negative-observe semantics)`. Warn,
+     don't reject — mid-flow absence is sometimes legitimate (proving
+     X did NOT happen during a specific phase).
 6. Existing `rejectDeprecatedTokens` runs against step bodies too.
 
 Precise error messages, all scenario-located, fire **before** any
@@ -316,6 +349,15 @@ scenario %q: flow references unknown step %q
 scenario %q: step %q references ${%s.body_json.x} but %q is positioned after %q in the flow
 scenario %q: step %q references ${%s.…} from inside the same parallel group [%s, %s]
 scenario %q: nested brackets not supported
+scenario %q: step %q: of: is valid only on observe: reply steps
+scenario %q: step %q: of: %q is unknown / positioned after this step
+scenario %q: step %q: ambiguous reply scope — multiple fires precede without an intervening reply observation; declare of: <fire-id> explicitly
+```
+
+Warnings (printed by the validator, not failure):
+
+```
+scenario %q: step %q: not: true observe steps prove absence only during their own window; place end-state absence checks in the final barrier
 ```
 
 ---
@@ -430,8 +472,33 @@ func executeObserve(step Step, ctx *FlowContext) error {
 waits its full `timeout` to be confident the event didn't arrive.
 Documented; authors set `timeout` to the smallest plausible window.
 
+**Negative steps are WINDOW-scoped, not whole-scenario** — soundness
+trap. Today's flat `expected[]` runs `Consistently().ShouldNot()`
+against the accumulated buffer AFTER all fires complete, proving
+absence across the entire scenario. In the flow shape, a `not: true`
+observe step proves absence ONLY during its own `timeout` window:
+events arriving after the step completes are not its concern.
+
+Concrete failure mode: an early `not: true` step proving "no
+canonical for this message" passes if the dropped-then-delivered
+message's canonical arrives during a LATER barrier. The author got a
+false-negative finding. The F-006-class drops (gatekeeper-empty-
+content-rejected, quote-nonexistent-parent-drops-message) all
+depend on whole-scenario absence and must sit in the final barrier
+to retain semantic parity with the legacy shape.
+
+The loader warns on `not: true` steps placed anywhere other than the
+final barrier (§4). AUTHORING.md leads with the rule.
+
 **Per-step timeout.** Default 5s (matches today's `expected[].timeout`
 default). Override per step in `steps:`.
+
+**Zero added inter-fire latency** — performance gate. Two adjacent
+fire-barriers in the flow must execute back-to-back with no added
+scheduling delay beyond what the legacy multi-input path has, or
+every existing race-finding repro silently weakens (F-006-fresh,
+F-011 worker-pool concurrency, F-012 create-room race, F-013 edit
+race). Phase F includes an explicit benchmark gate (§9 Phase F).
 
 ### 5.4 Substitution context shape
 
@@ -469,22 +536,36 @@ the buffer at execution time — no per-step poller spin-up.
 ## 6. Matcher contract
 
 File: `internal/runtime/matchshape.go` — **no change for the flow
-shape**. `match.task:` directive is removed in the flow grammar
-(position scopes the assertion; the directive is obsolete). It stays
-valid in the legacy shape for backward compat. The matcher itself is
-unchanged; the flow executor calls it once per observe step with the
-poller's accumulated event slice as the actual.
+shape**. The `match.task:` directive is gone from the flow grammar;
+`match:` is purely shape. Scoping lives at the step level. The
+matcher itself is called once per observe step against the poller's
+accumulated event slice and is otherwise identical to today.
 
-**Reply scoping in the flow model.** Each fire's reply event is
-tagged with the fire's step id (`Event.Task` — same field
-multi-input added, now used here too). An `observe: reply` step in
-the flow has an implicit task scope: it matches against the
-immediately-preceding-fire-step's reply unless multiple fires sit
-between the observation and the previous reply observation, in which
-case the loader requires an explicit `match.task: <fire-id>` for
-disambiguation. (This single legacy-directive reuse is the only
-match-time concession to position-ambiguity. Documented in §3.3
-backward-compat.)
+**Reply scoping in the flow model — step-level, not match-level.**
+Each fire's reply event is tagged with the fire's step id
+(`Event.Task` — the field multi-input added, reused here). An
+`observe: reply` step resolves its target fire as follows:
+
+1. If the step body has `of: <fire-id>`, scope to that fire's
+   tagged reply event. (Loader has already validated the reference
+   points at an earlier fire.)
+2. Otherwise, scope to the **most-recent preceding fire** in the
+   linearized flow (the position-default).
+3. The loader rejects the ambiguous shape at load time (§4: "ambiguous
+   reply scope — multiple fires precede without an intervening reply
+   observation"), so the executor never encounters an undeclared
+   ambiguity at runtime.
+
+The flow executor passes the resolved fire-id into a
+`flow-scoped MatchShape` constructor that filters the event slice by
+`Event.Task == fireID` before the subset-match runs — the same
+mechanical operation `match.task:` does in the legacy shape, just
+driven by a step field instead of a match-key directive. One
+machinery; cleaner grammar at the YAML surface.
+
+**`match.task:` in the legacy shape stays valid** for backward compat.
+Loader routes by scenario shape (§3.4); the directive only fires on
+legacy scenarios.
 
 ---
 
@@ -594,8 +675,18 @@ ships first.
 **Phase F — flow executor.**
 - RED: mock-poller + mock-dispatcher tests for sequential barriers,
   parallel-observation barriers, fire-anyway, halt-on-unresolved-
-  substitution, halt-on-observe-timeout, negative-step pass + fail.
+  substitution, halt-on-observe-timeout, negative-step pass + fail,
+  `of:` scope override, position-default reply scope.
 - GREEN: `flow_executor.go` + `runner_scenario.go` shape-routing.
+- **Race-repro soundness gate** (required, blocking): a benchmark
+  test fires N adjacent fire-only steps (`fire_a >> fire_b`, no
+  intervening observe) and compares wall-clock latency to the legacy
+  multi-input path executing the same N tasks back-to-back.
+  Tolerance: the flow path adds no more than 1ms per inter-fire gap
+  (essentially measurement noise). A regression here silently weakens
+  every existing race-finding repro across the suite — the F-006,
+  F-011, F-012, F-013 reproducers all depend on tight fire spacing.
+  Phase F does NOT merge until this benchmark is green.
 
 **Phase G — reporter rewrite.**
 - RED: reporter tests for per-step verdict rows; halted-upstream
@@ -608,11 +699,21 @@ ships first.
 
 **Phase I — docs.**
 - `SCENARIO-REFERENCE.md` — new §N "Flow shape" (steps + flow + EBNF
-  + substitution + dual-shape note).
-- `AUTHORING.md` — when to choose flow vs legacy; the gate pattern;
-  the negative-step cost gotcha.
-- `FLOW.md` cookbook with the cross-site, read-after-write, and
-  dedup-precision patterns.
+  + substitution + `of:` scoping + dual-shape note).
+- `AUTHORING.md` — when to choose flow vs legacy (one-line guideline:
+  "use flow if you need a gate between fires; legacy is fine for
+  simple 1-fire/N-assert validation scenarios"). MUST include a
+  prominent `## Negative-observe semantics` section with the
+  window-vs-whole-scenario distinction and the **end-state negatives
+  belong in the final barrier** rule. Without this section authors
+  will silently weaken absence findings; this is the highest-leverage
+  doc requirement in the spec.
+- `FLOW.md` cookbook. The first pattern documented MUST be the
+  **tail parallel-observe barrier** for cumulative end-state checks
+  (`>> [neg_a, neg_b, pos_c]`), not a serial chain — both for speed
+  (one window vs N) and for parity with legacy `expected[]`
+  semantics. Subsequent patterns: cross-site federation gate,
+  read-after-write chain, value-propagation via `${obs.body_json.x}`.
 
 No calendar estimate — phases are the unit of progress. Proof-of-life
 at end of Phase F; authoring unblocked end of Phase H.
@@ -623,13 +724,16 @@ at end of Phase F; authoring unblocked end of Phase H.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
+| **Negative observe is window-scoped (semantic change vs legacy)** — authors place `not: true` mid-flow expecting whole-scenario absence and get false-negative findings | ⚠️ Critical | Loader warns on `not: true` outside the final barrier (§4). AUTHORING.md leads with the rule (Phase I doc gate). The F-006-class drop assertions are the worst-case consumer; their migrations must keep absence in the tail barrier. |
+| **Race-repro soundness — added inter-fire latency in the flow executor** silently weakens every existing race finding | ⚠️ Critical | Phase F benchmark gate: adjacent fires through the flow path match legacy multi-input wall-clock within 1ms tolerance. Blocking; Phase F does not merge without it. |
 | `>>` / `[]` parser bugs ship subtle scenario-meaning errors | High | Hand-rolled parser with exhaustive Phase C tests; ambiguous shapes rejected loudly (`nested brackets`, `mixed-type group`, `parallel-fire`). Reject is cheap; quiet wrong-meaning is not. |
-| Negative observe steps balloon wall-clock time | Medium | Document the trade-off; per-step `timeout` is tunable; CI budget review after Phase H. |
+| Negative observe steps balloon wall-clock time when serialized | Medium | Document the trade-off; tail parallel-observe barrier is the cookbook default (§9 Phase I) — one 5s window covers all tail checks, not N×5s serial. Per-step `timeout` tunable. |
 | Parallel-observation barrier sees one obs match and one timeout — what verdict? | Medium | Spec'd: barrier fails if **any** member step fails. Timed-out observation = step fail = scenario fail with that step named. Same loudness as sequential. |
+| `of:`-required ambiguity surfaces only when an author writes the rare multi-fire-batched-reply shape; the error must be clear | Low | Loader error names the specific shape, the candidate fire ids, and points at the field: "ambiguous reply scope — fires [A, B] precede without intervening reply observation; add of: A or of: B to step X" (§4). |
 | Forward-reference substitution slips past load validation | Medium | Phase D tests enumerate every reference path (subject, payload deep, credential, args, match deep). |
 | Reporter rewrite breaks existing `performance.json` consumers | Low | Legacy `(scenario, case)` rows continue; new `(scenario, step-id)` rows added; consumers key on the union. Documented in the multi-site RUNBOOK. |
 | Migration appetite — authors might convert scenarios sub-optimally | Low | Migration is optional; no pressure. A flow shape that mechanically mirrors a legacy `expected[]` is fine; the gate-pattern is only added when the author wants the new capability. |
-| Author confusion about which shape to use | Medium | Single guideline in AUTHORING.md: "use flow if you need a gate between fires; legacy is fine otherwise." Examples in FLOW.md. |
+| Author confusion about which shape to use | Medium | Single guideline in AUTHORING.md: "use flow if you need a gate between fires; legacy is fine for simple validation scenarios." Examples in FLOW.md. |
 | Substitution forward-error UX (resolution fails inside a deep payload) | Low | Existing substitute error format already names the offending token + the resolution context; reuse. |
 
 ---
