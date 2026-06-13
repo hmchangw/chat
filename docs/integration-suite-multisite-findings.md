@@ -497,3 +497,36 @@ concurrency-safe again — e.g. restore the LWT/CAS increment, derive
 the badge from a COUNT at read time instead of a stored column, or
 serialize per-thread tcount writes? This is a regression in
 concurrency-safety from the pre-#245 CAS path.
+
+## F-012 — `room.create` replies "accepted" before the room is usable (creator's first send races the async subscription write)
+
+**Layer:** chat-app code (room-service async-job contract ↔ gatekeeper gate).
+
+**Status:** observed — chat-app team action pending.
+
+`room.create` is an async job: room-service publishes ROOMS_CANONICAL.create
+and replies `{status: accepted, roomId}` (room-service/handler.go:287-321),
+while `room-worker` writes the creator's subscription afterward
+(BulkCreateSubscriptions). So the `accepted` reply — which carries the
+roomId, implying the room exists — precedes the room being *usable*. A
+client that treats `accepted` as ready and immediately sends to the
+returned roomId hits the gatekeeper's subscription gate
+(message-gatekeeper/handler.go:213-222) before the creator's subscription
+exists → `forbidden`/`not_subscribed` → the first message is dropped.
+
+Demonstrated by
+`scenarios/drafts/gatekeeper-validation/gatekeeper-create-room-then-send-races-subscription.yaml`
+(multi-input, run 22bb, green): task1 creates a channel (reply accepted +
+roomId), task2 sends to `${create.reply.body_json.roomId}` immediately →
+the send's reply is `not_subscribed` and no canonical event is produced.
+The race is consistently ordered (the gatekeeper check precedes
+room-worker's subscription write), so it reproduces reliably under the
+back-to-back fire; for a human typing it is timing-dependent (the write
+lands in ~100ms), but a fast client/bot or an auto-first-message flow can
+lose the message.
+
+The decision the chat-app team owns: should `create`'s `accepted` reply
+guarantee usability (e.g. sync-write the creator's own subscription before
+replying, or have the gatekeeper tolerate a just-created room the sender
+owns), or is the client expected to wait for a readiness signal
+(subscription.update) before sending? Today "accepted" over-promises.

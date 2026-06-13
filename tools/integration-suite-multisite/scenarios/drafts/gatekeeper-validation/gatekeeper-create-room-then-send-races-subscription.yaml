@@ -1,0 +1,90 @@
+scenario: gatekeeper-create-room-then-send-races-subscription
+source: >
+  room-service/handler.go:287-321 (publishCreateRoom: create is an async job — replies
+  "accepted" + roomId after publishing ROOMS_CANONICAL.create; the actual subscription rows are
+  written by room-worker afterward via BulkCreateSubscriptions, room-worker/handler.go:154),
+  message-gatekeeper/handler.go:213-222 (GetSubscription gate — a sender with no subscription is
+  rejected errNotSubscribed and the message is dropped, F-005/store.go:errNotSubscribed),
+  pkg/model CreateRoomReply{status,roomId,roomType}; multi-input + reply substitution per
+  2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: negative
+
+# BLINDSPOT PROBE (multi-input, reply substitution): create a room, then
+# immediately send to it. room.create is an ASYNC job — it replies
+# "accepted" with a roomId, but room-worker writes the creator's
+# subscription afterward. v1 multi-input fires back-to-back with no wait,
+# so the send's gatekeeper subscription check races (and reliably loses
+# to) the async subscription write → the send is rejected not_subscribed
+# and dropped.
+#
+# This is the first scenario to chain via REPLY SUBSTITUTION:
+# task2's subject embeds ${create.reply.body_json.roomId}. It documents
+# the gap the dm-create-idempotency proof flagged but never demonstrated:
+# create returns "accepted" before the room is actually usable, so an
+# immediate first message is silently lost.
+#
+# Documents CURRENT behavior; whether create should be readable/usable on
+# reply (sync the creator subscription, or have the gatekeeper tolerate a
+# just-created room) is the chat-app team's call.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        roommate: { verified: true }
+
+input:
+  - id: create
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload:
+      name: Engineering
+      # a channel create requires >=1 other member (room-service
+      # handleCreateRoomChannel → errEmptyCreateRequest otherwise)
+      users: ["${roommate.account}"]
+    credential: ${alice.credential}
+
+  - id: send
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.${create.reply.body_json.roomId}.site-a.msg.send
+    payload:
+      id: m0createsend00000001
+      content: first message, fired right after create
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567914
+    credential: ${alice.credential}
+
+expected:
+  # The create RPC was accepted (and carries the roomId the send chains on).
+  - location: reply
+    match:
+      task: create
+      body_json:
+        status: accepted
+
+  # Warmer (first) — the send is rejected not_subscribed because the
+  # creator's subscription to the just-created room isn't written yet.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e01234567914
+    match:
+      received:
+        - body_json:
+            code: forbidden
+            reason: not_subscribed
+
+  # The send produced no canonical event — it was dropped.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m0createsend00000001
