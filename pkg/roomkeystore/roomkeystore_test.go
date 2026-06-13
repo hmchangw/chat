@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestInitialKeyDoc(t *testing.T) {
+	priv := bytes.Repeat([]byte{0x07}, 32)
+	doc := InitialKeyDoc(RoomKeyPair{PrivateKey: priv})
+
+	assert.Equal(t, priv, doc["priv"], "priv must carry the raw secret bytes")
+	assert.Equal(t, 0, doc["ver"], "a freshly provisioned key is version 0")
+	_, hasPrev := doc["prevPriv"]
+	assert.False(t, hasPrev, "previous-key slot must be unset until the first Rotate")
+}
+
 func TestKeyDoc_versioned(t *testing.T) {
 	priv := bytes.Repeat([]byte{0xAB}, 32)
 

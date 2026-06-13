@@ -35,6 +35,15 @@ func newMongoStore(col *mongo.Collection, gracePeriod time.Duration) *mongoStore
 
 var encKeyProjection = bson.M{"encKey": 1}
 
+// InitialKeyDoc returns the encKey sub-document for a freshly provisioned room
+// key at version 0. Callers that persist the key inline with the room document
+// at creation time (rather than via a follow-up Set) use this so the encKey BSON
+// schema stays owned by this package. The previous-key slot is left unset until
+// the first Rotate.
+func InitialKeyDoc(pair RoomKeyPair) bson.M {
+	return bson.M{"priv": pair.PrivateKey, "ver": 0}
+}
+
 // setCurrent overwrites the current key slot with priv stamped at version,
 // without touching the previous-key slot. Returns ErrRoomNotFound (unwrapped)
 // if no room document matched, leaving the caller to add op-specific context.
