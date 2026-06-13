@@ -271,6 +271,32 @@ fields.
 | `${now + 1h}` | relative offset (positive direction) |
 | `${bucket(<col>)}` | auto-computed message-bucket value |
 | `$auto` | runtime-unique random string |
+| `${<id>.reply.body_json.<field>}` | a field of task `<id>`'s captured reply (multi-fire only) |
+| `${<id>.reply.status}` | sugar for `${<id>.reply.body_json.status}` |
+
+---
+
+## Multi-fire scenarios
+
+`input:` can be a **list of tasks** (each with an `id:`) fired in
+declaration order, instead of a single map. A later task reads an
+earlier task's reply via `${<id>.reply.body_json.*}`, and a `reply`
+assertion scopes to one task with `match: { task: <id>, … }`. Full
+grammar in SCENARIO-REFERENCE.md §5–§6. Two authoring notes:
+
+- **Reply substitution chains room-lifecycle flows by ID, not by side
+  effect.** A `nats_request` reply carries data (e.g. a created room's
+  `roomId`) you can thread into a later task. But Create Room / Add
+  Members are async-jobs with **no inter-task wait** in v1, so a task
+  that acts on the just-created room races the worker that writes it
+  (member.add 403s; a msg.send is dropped). Chain reply data that is
+  valid immediately (a deterministic DM `roomId`); don't assume the
+  created room is queryable by the next fire.
+- **Message chains chain via known ids + seeded parents, not replies.**
+  `msg.send` is `jetstream_publish` — fire-and-forget, no reply to
+  substitute from. To build a multi-message flow (subsequent thread
+  reply, dedup, tcount), set the message `id:` yourself in each task's
+  payload and/or seed the parent message, then assert on those ids.
 
 ---
 

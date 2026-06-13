@@ -471,6 +471,11 @@ role is purely to execute it and surface the result.
 
 ## 5. `input` shape
 
+`input:` accepts EITHER a single fire (a map) OR a list of tasks fired
+in declaration order. Both decode to the same internal task list.
+
+**Single fire (map):**
+
 ```yaml
 input:
   site: site-a        # required; "site-a" or "site-b"
@@ -480,13 +485,62 @@ input:
   credential: <ref>   # required; ${<alias>.credential}
 ```
 
+**Multi-fire (list of tasks):**
+
+```yaml
+input:
+  - id: create        # required in list shape; unique; [a-z][a-z0-9_-]*
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload: { name: Engineering }
+    credential: ${alice.credential}
+  - id: rename
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.${create.reply.body_json.roomId}.site-a.rename
+    payload: { name: Renamed }
+    credential: ${alice.credential}
+```
+
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
+| `id` | string | list shape only | Unique within the scenario. Names the task for `${id.reply.*}` substitution and `match.task: id` scoping. The single-fire map shape needs no id. |
 | `site` | string | yes | `site-a` or `site-b`. Routes the fire to that site's NATS connection. |
 | `verb` | string | yes | Must be in `catalogs/verbs/`. Today: `nats_request`, `jetstream_publish`. |
 | `subject` | string | yes | NATS subject template. Tokens resolved before dispatch. |
 | `payload` | map | yes | JSON payload. Tokens resolved. |
 | `credential` | string | yes | `${<alias>.credential}`. The alias must be declared in `sites.<input.site>.seed.users`. |
+
+Tasks fire **sequentially in declaration order**. There is no parallel
+/ ordering grammar — that is a separate, deferred feature.
+
+### 5.1 Reply substitution — `${<id>.reply.*}`
+
+A later task (or any `expected[]` assertion) can reference an earlier
+task's captured reply:
+
+| Token | Resolves to |
+|-------|-------------|
+| `${<id>.reply.body_json.<field>}` | A field of the decoded JSON reply body (dot-walk for nesting). |
+| `${<id>.reply.status}` | Sugar for `body_json.status`. |
+
+Reply-only. Rules enforced at load time:
+
+- The referenced `<id>` must be a task declared **earlier** in
+  declaration order (forward / unknown references are rejected).
+- Only `nats_request` tasks produce a reply. A `${<id>.reply.*}`
+  reference to a `jetstream_publish` task (fire-and-forget, no reply)
+  fails at fire time.
+
+> **Async-job caveat.** Several RPCs (Create Room, Add Members, …) are
+> async-job: the synchronous reply only confirms acceptance; the
+> durable effect (room, subscriptions) is written later by a worker.
+> Because tasks fire back-to-back with **no inter-task wait**, a task
+> that acts on a resource another task just created may race the async
+> write. Chain reply *data* that is valid immediately (e.g. a
+> deterministic DM roomId); do not assume a created room is queryable
+> by the next fire.
 
 ---
 
@@ -499,12 +553,35 @@ Each element in the `expected` list is one assertion.
 | `location` | string | yes | — | One of the six registered poller locations (see §7). |
 | `site` | string | see §7 | — | Required or forbidden depending on `location`. |
 | `args` | map | location-specific | — | Per-primitive args (see §7). |
-| `match` | map | yes | — | Subset shape against the event payload. |
+| `match` | map | yes | — | Subset shape against the event payload. May carry the `task:` selector (reply only — see below). |
 | `timeout` | duration | no | `5s` | Gomega `Eventually` timeout. Go duration strings. |
 | `polling` | duration | no | `100ms` | How often the poller is re-invoked. |
 | `not` | bool | no | `false` | `true` uses `Consistently(…).ShouldNot(…)`. |
 
 The runner short-circuits on the first failing assertion.
+
+### 6.1 `match.task:` selector (reply assertions only)
+
+In a multi-fire scenario each `nats_request` task produces its own
+reply event. To scope a `reply` assertion to one task, add a reserved
+`task:` key inside `match:`:
+
+```yaml
+expected:
+  - location: reply
+    match: { task: create, body_json: { status: accepted } }
+  - location: reply
+    match: { task: rename, body_json: { status: accepted } }
+```
+
+- Valid **only** on `location: reply` — rejected at load time on any
+  other location. A reply is captured synchronously while its task is
+  firing, so it can be tagged unambiguously; background pollers observe
+  state with no "active task", so DB/stream assertions disambiguate by
+  **content** (the fields that already identify the row) instead.
+- Unscoped reply `match:` (no `task:`) accepts any reply — the
+  single-fire default.
+- Forbidden nested inside `outbox_payload:`.
 
 ---
 
