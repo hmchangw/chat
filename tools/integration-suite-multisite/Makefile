@@ -4,11 +4,12 @@ REPORT_PATH := $(REPO_ROOT)/docs/integration-suite-multisite/last-run.md
 
 NATS_CONTAINER := chat-local-nats
 
-.PHONY: help validate local run preflight preflight-containers merge-performance
+.PHONY: help validate build-images local run preflight preflight-containers merge-performance
 
 help:
 	@echo "make -C tools/integration-suite-multisite <target>"
 	@echo "  validate                          — run the catalog validator (no live infra needed)"
+	@echo "  build-images                      — build ONLY the 9 service images the suite boots (skips upload/presence; see F-010)"
 	@echo "  local                             — boot the full stack and run scenarios (assumes USE_INFRA=true)"
 	@echo "  USE_INFRA=true make local         — boot the full stack programmatically"
 	@echo "  run                               — alias for local"
@@ -38,7 +39,6 @@ local: $(LOCAL_DEPS)
 		NATS_CREDS_FILE=$(REPO_ROOT)/docker-local/backend.creds \
 		MONGO_URI=mongodb://localhost:27017 \
 		MONGO_DB=chat \
-		VALKEY_ADDR=localhost:6379 \
 		SITE_ID=site-local \
 		OUTPUT_PATH=$(REPORT_PATH) \
 		APPROVED_OUTPUT_PATH=$(REPO_ROOT)/docs/integration-suite-multisite/last-run-approved.md \
@@ -48,6 +48,24 @@ local: $(LOCAL_DEPS)
 		go run ./cmd/runner
 
 run: local
+
+# build-images builds ONLY the 9 service images the suite actually boots
+# (internal/infra/config.go defaultServices), tagged chat-local-services-<svc>:latest.
+# The root `make build-test-images` runs `docker compose build` over all 13
+# included services, which is all-or-nothing — one broken Dockerfile (e.g.
+# upload-service's stale golang pin, findings F-010) aborts the whole build
+# and the suite then runs against stale images. This target names the 9
+# services explicitly so upload-service / user-presence-service (neither in
+# the suite's set) can't block a fresh build. Tag is :latest only — the
+# runner's default; use the root target for a custom TAG.
+SUITE_SERVICES := auth-service broadcast-worker history-service inbox-worker \
+                  message-gatekeeper message-worker notification-worker \
+                  room-service room-worker
+build-images:
+	@cd $(REPO_ROOT) && docker compose \
+		-f docker-local/compose.services.yaml \
+		-f docker-local/compose.services.overrides.yaml \
+		build $(SUITE_SERVICES)
 
 # merge-performance: invoke the perfmerge subcommand to deterministically
 # merge two performance.json files (§5.4). Used as a git custom merge
