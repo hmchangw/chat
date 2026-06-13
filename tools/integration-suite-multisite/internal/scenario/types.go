@@ -29,7 +29,15 @@ type Scenario struct {
 	// Used by runScenario to resolve PreFireScripts paths relative to
 	// the scenario file and to set the script working directory.
 	SourcePath string `yaml:"-"`
+
+	// flowPlan is the parsed + validated FlowPlan (set by loader when
+	// Flow != nil). Internal; the runner reads it to route execution.
+	flowPlan *FlowPlan `yaml:"-"`
 }
+
+// FlowPlanForExec returns the pre-parsed plan (set by LoadFile when
+// the scenario has a flow:). nil for legacy scenarios.
+func (s *Scenario) FlowPlanForExec() *FlowPlan { return s.flowPlan }
 
 // SiteBlock is the per-site seed data — exactly the single-site
 // SeedBlock, but nested under sites.<site>.

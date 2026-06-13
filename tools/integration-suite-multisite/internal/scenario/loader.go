@@ -65,6 +65,23 @@ func loadScenarioBody(path string, data []byte) (*Scenario, error) {
 		return nil, err
 	}
 
+	// Flow shape (opt-in). When present, parse + validate; legacy
+	// scenarios with no flow: skip this entirely.
+	if s.Flow != nil {
+		plan, err := ParseFlow(s.Flow)
+		if err != nil {
+			return nil, fmt.Errorf("scenario %s: %w", path, err)
+		}
+		warnings, err := ValidateFlow(&s, plan)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range warnings {
+			fmt.Fprintln(os.Stderr, "WARNING (flow):", w)
+		}
+		s.flowPlan = plan
+	}
+
 	s.SourcePath = path
 	return &s, nil
 }
