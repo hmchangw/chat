@@ -31,6 +31,7 @@ type Event struct {
 	Timestamp   time.Time // when the event happened, per the location's timestamp_source
 	Traceparent string    // empty if the change carries no trace
 	OwnerSvc    string    // which service is attributed as the writer (from catalog ownership)
+	Task        string    // for reply events: the id of the firing task (multi-input scoping); empty otherwise
 	Payload     any       // typed shape per the location (mongo doc, NATS msg, log line, ...)
 	Type        EventType // classification per catalog rule (§4.6.0); default EventCascade
 }

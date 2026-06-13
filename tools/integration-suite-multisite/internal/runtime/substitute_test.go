@@ -37,6 +37,55 @@ func newTestCtx() Context {
 	}
 }
 
+func TestSubstitute_TaskReplyBodyJSON(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Replies = map[string]ReplyData{
+		"create": {BodyJSON: map[string]any{"roomId": "r-123", "status": "accepted"}},
+	}
+	got, err := Substitute("${create.reply.body_json.roomId}", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "r-123", got)
+}
+
+func TestSubstitute_TaskReplyStatus(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Replies = map[string]ReplyData{
+		"create": {BodyJSON: map[string]any{"status": "accepted"}},
+	}
+	got, err := Substitute("${create.reply.status}", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got)
+}
+
+func TestSubstitute_TaskReplyNestedInPayload(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Replies = map[string]ReplyData{
+		"create": {BodyJSON: map[string]any{"roomId": "r-123"}},
+	}
+	got, err := Substitute(map[string]any{"roomId": "${create.reply.body_json.roomId}"}, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"roomId": "r-123"}, got)
+}
+
+func TestSubstitute_TaskReplyUnknownField(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Replies = map[string]ReplyData{
+		"create": {BodyJSON: map[string]any{"status": "rejected"}}, // no roomId
+	}
+	_, err := Substitute("${create.reply.body_json.roomId}", ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create")
+	assert.Contains(t, err.Error(), "create.reply.body_json.roomId")
+}
+
+func TestSubstitute_TaskReplyUnknownTask(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Replies = map[string]ReplyData{} // t99 never fired
+	_, err := Substitute("${t99.reply.body_json.x}", ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "t99")
+}
+
 func TestSubstitute_SiteToken(t *testing.T) {
 	got, err := Substitute("${site}", newTestCtx())
 	require.NoError(t, err)

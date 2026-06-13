@@ -17,6 +17,18 @@ type Context struct {
 	Placeholders map[string]map[string]any
 	Services     map[string]Credential // service-level credentials keyed by service name (e.g. "backend")
 	Input        InputSnapshot
+	// Replies holds each completed task's captured reply, keyed by task
+	// id. Populated by Dispatcher.Fire after each task. Feeds
+	// ${<id>.reply.body_json.*} and ${<id>.reply.status} substitution
+	// in downstream tasks.
+	Replies map[string]ReplyData
+}
+
+// ReplyData is a completed task's reply, captured for substitution.
+// Only the decoded JSON body is retained — ${<id>.reply.status} is
+// sugar for body_json.status (spec §3.3).
+type ReplyData struct {
+	BodyJSON map[string]any
 }
 
 // Credential is the local mirror of verbs.Credential used for service-
@@ -140,6 +152,12 @@ func resolveToken(token string, ctx Context) (any, error) {
 		}
 		return v, nil
 	default:
+		// Reply context: ${<taskID>.reply.body_json.<path>} or
+		// ${<taskID>.reply.status}. Disambiguated from placeholder
+		// tokens by the literal "reply" second segment.
+		if len(parts) >= 2 && parts[1] == "reply" {
+			return resolveReplyToken(parts[0], parts[2:], ctx, token)
+		}
 		ph, ok := ctx.Placeholders[parts[0]]
 		if !ok {
 			return nil, fmt.Errorf("unknown path %q: no placeholder %q resolved (resolved placeholders: %v)",
@@ -155,6 +173,43 @@ func resolveToken(token string, ctx Context) (any, error) {
 				token, parts[0], strings.Join(parts[1:], "."), mapKeys(ph))
 		}
 		return v, nil
+	}
+}
+
+// resolveReplyToken resolves the tail of a ${<id>.reply.…} token
+// against a captured task reply. rest is the path AFTER "reply" (e.g.
+// ["body_json","roomId"] or ["status"]). Only body_json.<path> and
+// status are supported (spec §3.3).
+func resolveReplyToken(id string, rest []string, ctx Context, token string) (any, error) {
+	rd, ok := ctx.Replies[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown path %q: no reply captured for task %q (did it fire and produce a reply? jetstream_publish tasks have no reply)",
+			token, id)
+	}
+	if len(rest) == 0 {
+		return nil, fmt.Errorf("unknown path %q: ${%s.reply} needs .body_json.<field> or .status", token, id)
+	}
+	switch rest[0] {
+	case "status":
+		if len(rest) > 1 {
+			return nil, fmt.Errorf("unknown path %q: 'status' has no subfields", token)
+		}
+		v, ok := rd.BodyJSON["status"]
+		if !ok {
+			return nil, fmt.Errorf("unknown path %q: task %q reply has no status field (body_json keys: %v)",
+				token, id, mapKeys(rd.BodyJSON))
+		}
+		return v, nil
+	case "body_json":
+		v, ok := walkPath(rd.BodyJSON, rest[1:])
+		if !ok {
+			return nil, fmt.Errorf("unknown path %q: task %q reply body_json has no field .%s (available: %v)",
+				token, id, strings.Join(rest[1:], "."), mapKeys(rd.BodyJSON))
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("unknown path %q: ${%s.reply.*} supports only .body_json.<field> and .status (got .%s)",
+			token, id, rest[0])
 	}
 }
 

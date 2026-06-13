@@ -150,13 +150,6 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 	// Build the substitution context.
 	subCtx := buildSubContext(sb)
 
-	// TODO(task3-rewire): replace this single-task shim with the task
-	// executor loop over all of s.Input.
-	firstTask := s.Input[0]
-
-	// Resolve the scenario credential + fire the verb.
-	cred := resolveCredential(firstTask.Credential, sb.Users, sb.Deps.Services)
-
 	// Warm any pollers that need pre-fire initialization (nats_subscribe).
 	if sb.PollerReg != nil {
 		for i := range s.Expected {
@@ -188,13 +181,10 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 		}
 	}
 
-	inSpec := &InputSpec{
-		Site:    firstTask.Site,
-		Verb:    firstTask.Verb,
-		Subject: firstTask.Subject,
-		Payload: firstTask.Payload,
-	}
-	if err := sb.Deps.Dispatcher.Fire(ctx, inSpec, &subCtx, cred, ""); err != nil {
+	// Fire every task in declaration order, threading the substitution
+	// context so each task's reply feeds later tasks' ${<id>.reply.*}
+	// references (spec §5).
+	if err := fireTasks(ctx, s.Input, sb.Deps.Dispatcher, &subCtx, sb.Users, sb.Deps.Services); err != nil {
 		dur := time.Since(start)
 		recordScenario(deps.Perf, deps.Report, s,
 			scenarioVerdict{Outcome: "fail", Reason: fmt.Sprintf("dispatcher.Fire: %v", err)},

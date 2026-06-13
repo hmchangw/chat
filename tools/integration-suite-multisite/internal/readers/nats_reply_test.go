@@ -68,7 +68,7 @@ func TestNewReplyPayload_TransportError(t *testing.T) {
 func TestNATSReplyReader_InjectDropsLoudlyWhenBufferFull(t *testing.T) {
 	r := NewNATSReplyReader() // in-buffer depth 4, no Watch draining it
 	inject := func() {
-		r.Inject(&verbs.Outcome{Reply: []byte(`{}`)}, time.Millisecond, "", time.Now(), "")
+		r.Inject(&verbs.Outcome{Reply: []byte(`{}`)}, time.Millisecond, "", time.Now(), "", "")
 	}
 	for i := 0; i < 4; i++ {
 		inject()
@@ -94,12 +94,14 @@ func TestNATSReplyReader_InjectEmitsEvent(t *testing.T) {
 		"00-trace-span-01",
 		time.Now(),
 		"",
+		"create",
 	)
 
 	select {
 	case ev := <-ch:
 		assert.Equal(t, "reply", ev.Location)
 		assert.Equal(t, "00-trace-span-01", ev.Traceparent)
+		assert.Equal(t, "create", ev.Task, "reply event carries the firing task id")
 		payload, ok := ev.Payload.(ReplyPayload)
 		require.True(t, ok, "Event.Payload should be ReplyPayload, got %T", ev.Payload)
 		assert.Equal(t, "v", payload.BodyJSON["k"])

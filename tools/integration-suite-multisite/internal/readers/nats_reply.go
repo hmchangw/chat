@@ -51,13 +51,14 @@ func (r *NATSReplyReader) Watch(ctx context.Context, _ string, _ time.Time) (<-c
 // latency; this method records them along with the full reply outcome
 // as a structured ReplyPayload. The matcher does the interpretation —
 // see internal/matchers/matches_shape.go's struct fall-through path.
-func (r *NATSReplyReader) Inject(out *verbs.Outcome, latency time.Duration, traceparent string, ts time.Time, ownerSvc string) {
+func (r *NATSReplyReader) Inject(out *verbs.Outcome, latency time.Duration, traceparent string, ts time.Time, ownerSvc, task string) {
 	select {
 	case r.in <- Event{
 		Location:    "reply",
 		Timestamp:   ts,
 		Traceparent: traceparent,
 		OwnerSvc:    ownerSvc,
+		Task:        task,
 		Payload:     NewReplyPayload(out, latency),
 		Type:        EventCascade,
 	}:

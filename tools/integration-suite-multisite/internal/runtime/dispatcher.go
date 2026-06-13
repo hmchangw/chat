@@ -27,6 +27,11 @@ type InputSpec struct {
 	Verb    string
 	Subject string
 	Payload map[string]any
+	// TaskID names the firing task (multi-input). Used to tag the reply
+	// event (for match.task: scoping) and to key the captured reply in
+	// subCtx.Replies (for ${<id>.reply.*} substitution by later tasks).
+	// Empty for the legacy single-fire shape.
+	TaskID string
 }
 
 // Fire executes the verb under the supplied credential + traceparent.
@@ -78,11 +83,19 @@ func (d *Dispatcher) Fire(ctx context.Context, in *InputSpec, subCtx *Context, c
 		RequestID: out.RequestID,
 	}
 
-	// Only inject into the reply reader for verbs with a synchronous
+	// Only capture/inject a reply for verbs with a synchronous
 	// request/reply shape. JetStream publishes return an ack — not a
-	// "reply" the assertion mechanism cares about.
-	if d.ReplyRdr != nil && verbProducesReply(in.Verb) {
-		d.ReplyRdr.Inject(&out, latency, traceparent, time.Now(), "")
+	// "reply" the assertion mechanism cares about, and not a value a
+	// later task can substitute from.
+	if verbProducesReply(in.Verb) {
+		rp := readers.NewReplyPayload(&out, latency)
+		if subCtx.Replies == nil {
+			subCtx.Replies = map[string]ReplyData{}
+		}
+		subCtx.Replies[in.TaskID] = ReplyData{BodyJSON: rp.BodyJSON}
+		if d.ReplyRdr != nil {
+			d.ReplyRdr.Inject(&out, latency, traceparent, time.Now(), "", in.TaskID)
+		}
 	}
 	return nil
 }
