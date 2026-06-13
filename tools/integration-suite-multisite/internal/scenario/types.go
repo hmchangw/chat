@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,7 @@ type Scenario struct {
 	PreFireScripts []string              `yaml:"pre_fire_scripts,omitempty"`
 	Input          TaskList              `yaml:"input"`
 	Expected       []Expected            `yaml:"expected"`
+	Flow           *FlowExpression       `yaml:"flow,omitempty"`
 
 	// SourcePath is the absolute path of the YAML file this Scenario
 	// was loaded from. Populated by LoadFile; not in the YAML itself.
@@ -208,15 +210,64 @@ func (tl *TaskList) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
-// Expected is one assertion.
+// Expected is one assertion. ID and Of are present only in flow
+// scenarios; legacy scenarios leave both empty.
 type Expected struct {
+	ID       string         `yaml:"id,omitempty"` // flow shape: addressable id; required when Scenario.Flow is set
 	Location string         `yaml:"location"`
 	Site     string         `yaml:"site,omitempty"` // required for site-scoped pollers, forbidden for reply/cassandra_select
+	Of       string         `yaml:"of,omitempty"`   // flow shape: explicit reply scope; valid only on location: reply
 	Args     map[string]any `yaml:"args,omitempty"`
 	Match    map[string]any `yaml:"match"`
 	Timeout  Duration       `yaml:"timeout,omitempty"`
 	Polling  Duration       `yaml:"polling,omitempty"`
 	Not      bool           `yaml:"not,omitempty"`
+}
+
+// FlowExpression carries the raw ordering string from a scenario's
+// `flow:` field. Both the compact form (`a >> b >> [c, d]`) and the
+// YAML list form decode into the same normalized compact string in
+// Raw; the parser (flow_parse.go) tokenizes Raw.
+type FlowExpression struct {
+	Raw string
+}
+
+func (f *FlowExpression) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		f.Raw = strings.TrimSpace(node.Value)
+		if f.Raw == "" {
+			return fmt.Errorf("scenario: flow: must not be empty")
+		}
+		return nil
+	case yaml.SequenceNode:
+		parts := make([]string, 0, len(node.Content))
+		for _, child := range node.Content {
+			switch child.Kind {
+			case yaml.ScalarNode:
+				parts = append(parts, child.Value)
+			case yaml.SequenceNode:
+				// Parallel group encoded as a nested list.
+				inner := make([]string, 0, len(child.Content))
+				for _, gc := range child.Content {
+					if gc.Kind != yaml.ScalarNode {
+						return fmt.Errorf("scenario: flow: parallel group must contain scalar ids, got kind=%d", gc.Kind)
+					}
+					inner = append(inner, gc.Value)
+				}
+				parts = append(parts, "["+strings.Join(inner, ", ")+"]")
+			default:
+				return fmt.Errorf("scenario: flow: list element must be a scalar id or a parallel group, got kind=%d", child.Kind)
+			}
+		}
+		if len(parts) == 0 {
+			return fmt.Errorf("scenario: flow: must not be empty")
+		}
+		f.Raw = strings.Join(parts, " >> ")
+		return nil
+	default:
+		return fmt.Errorf("scenario: flow: must be a string or a list, got yaml kind=%d", node.Kind)
+	}
 }
 
 // Duration unchanged from single-site.

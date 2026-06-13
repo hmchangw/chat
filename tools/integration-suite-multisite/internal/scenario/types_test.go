@@ -141,3 +141,111 @@ func TestScenario_HasNoCasesNoBaseInput(t *testing.T) {
 	// _ = s.BaseInput  // expected compile error
 	// _ = s.Cases      // expected compile error
 }
+
+// --- Flow shape (additive; flow: scenario design) ---
+
+func TestScenario_DecodesFlow_AbsentByDefault(t *testing.T) {
+	// A legacy multi-input scenario with no flow: field decodes with
+	// Scenario.Flow == nil — the flow executor is opt-in.
+	src := `
+scenario: x
+source: y
+tag: positive
+sites: { site-a: { seed: { users: { alice: { verified: true } } } } }
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.x
+  payload: {}
+  credential: ${alice.credential}
+expected:
+  - location: reply
+    match: { body_json: { status: accepted } }
+`
+	var s Scenario
+	require.NoError(t, yaml.Unmarshal([]byte(src), &s))
+	assert.Nil(t, s.Flow, "scenario without flow: must produce Flow == nil")
+}
+
+func TestScenario_DecodesFlow_CompactString(t *testing.T) {
+	src := `
+scenario: x
+source: y
+tag: positive
+sites: { site-a: { seed: { users: { alice: { verified: true } } } } }
+input:
+  - id: a
+    site: site-a
+    verb: nats_request
+    subject: chat.x
+    payload: {}
+    credential: ${alice.credential}
+expected:
+  - id: a_reply
+    location: reply
+    match: { body_json: { status: accepted } }
+flow: a >> a_reply
+`
+	var s Scenario
+	require.NoError(t, yaml.Unmarshal([]byte(src), &s))
+	require.NotNil(t, s.Flow)
+	assert.Equal(t, "a >> a_reply", s.Flow.Raw)
+}
+
+func TestScenario_DecodesFlow_YAMLList(t *testing.T) {
+	src := `
+scenario: x
+source: y
+tag: positive
+sites: { site-a: { seed: { users: { alice: { verified: true } } } } }
+input:
+  - id: a
+    site: site-a
+    verb: nats_request
+    subject: chat.x
+    payload: {}
+    credential: ${alice.credential}
+expected:
+  - id: a_reply
+    location: reply
+    match: {}
+flow:
+  - a
+  - a_reply
+`
+	var s Scenario
+	require.NoError(t, yaml.Unmarshal([]byte(src), &s))
+	require.NotNil(t, s.Flow)
+	// List form normalizes to compact ">>" string for downstream parsing.
+	assert.Equal(t, "a >> a_reply", s.Flow.Raw)
+}
+
+func TestExpected_DecodesOptionalID(t *testing.T) {
+	src := `
+- id: foo
+  location: reply
+  match: {}
+- location: mongo_find
+  site: site-a
+  args: { collection: rooms }
+  match: { name: X }
+`
+	var es []Expected
+	require.NoError(t, yaml.Unmarshal([]byte(src), &es))
+	require.Len(t, es, 2)
+	assert.Equal(t, "foo", es[0].ID)
+	assert.Empty(t, es[1].ID, "id is optional in legacy scenarios")
+}
+
+func TestExpected_DecodesOptionalOf(t *testing.T) {
+	src := `
+- id: a_reply
+  location: reply
+  of: a
+  match: { body_json: { status: accepted } }
+`
+	var es []Expected
+	require.NoError(t, yaml.Unmarshal([]byte(src), &es))
+	require.Len(t, es, 1)
+	assert.Equal(t, "a", es[0].Of)
+}
