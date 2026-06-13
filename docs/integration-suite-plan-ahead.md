@@ -1,12 +1,15 @@
 # Integration suite — plan ahead
 
 **Status:** research / scoping note. Captured 2026-06 during a deep
-discussion of the tool's design and where it should evolve.
+discussion of the tool's design and where it should evolve. **Checkpoint
+2026-06-13:** the multi-input slice of the envelope+DAG+chaos model
+shipped (see §4 + §4.1). The doc remains a research note, not a spec.
 
 **Purpose:** snapshot the current state and the directions we've
 identified, so a future maintainer can ground a real spec on this
-without rediscovering the analysis. **This is not itself a spec.** Two
-follow-on specs are anticipated (§4).
+without rediscovering the analysis. **This is not itself a spec.** The
+multi-input spec (`docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md`)
+is the first concrete spec spawned from this doc; more follow.
 
 ---
 
@@ -732,7 +735,8 @@ Two separate specs were anticipated, each non-trivial:
 | Spec | Scope | Status |
 |---|---|---|
 | **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Implemented** as `tools/integration-suite-multisite/`. See `docs/integration-suite-multisite-findings.md` for the chat-app-team-facing findings (F-001 OUTBOX owner, F-002 federation topology). Single-site archived at `tools/archived/integration-suite/`. |
-| **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
+| **Multi-input** (slice of envelope+DAG+chaos) | `input:` as a list of tasks fired in declaration order; `${<id>.reply.body_json.*}` / `.status` substitution; `match.task: <id>` selector on **reply** assertions only; dual-shape `UnmarshalYAML` keeps the 23 existing scenarios untouched | **Shipped 2026-06-13** — spec at `docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md`; plan at `docs/superpowers/plans/2026-06-13-plan-multi-input.md`. Proved its value on day one by surfacing **F-011** (tcount lost update under concurrent thread replies — `docs/integration-suite-multisite-findings.md`). |
+| **Envelope + DAG + chaos engine** (residual) | After multi-input: envelope (positive/negative → UNDEFINED), `${task.events.*}` event substitution + inter-task event-window wait, named orderings + Airflow `>>`, sibling concurrency, chaos engine + mishaps + per-iteration `fresh_state` | **Partially shipped** — multi-input row above. The forward slices are ranked by tool-leverage in §4.1. Each is a separate spec; envelope and event-sub do not depend on chaos. Chaos remains gated on F-009 (service-cache flush hook). |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
 | **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Shipped.** Recursive discovery + `scenario:`-field uniqueness check (validate + runner startup) + path in `last-run.md` failure detail + path column in interactive menu. Path-prefix filtering is the named follow-up; ship on demand. |
 | **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six primitives; convert silent failures to loud `slog.Warn` (or hard errors). | **Shipped — all six done.** logs_tail, cassandra_select, mongo_find, jetstream_consume, reply (drop counter) loudened; nats_subscribe already loud. See §2.9 detail table. |
@@ -755,44 +759,114 @@ multi-site shape rather than competing with it. Original intuition
 
 ---
 
+## 4.1 Forward agenda — what shipped, what's next, and why
+
+**Framing.** The tool team's job is to make the suite **better at finding
+bugs and blindspots**. Authoring scenarios is human work; the tool team
+doesn't compete with that. Every slice below is a tool-capability
+expansion that a user can't do by writing more YAML.
+
+**Multi-input shipped and proved the model.** Two `msg.send` tasks to one
+pre-seeded thread parent in a single scenario — impossible to express
+under single-fire — surfaced **F-011** (a non-atomic count-and-set in
+`message-worker/store_cassandra.go` that loses one of two concurrent
+`tcount` increments). This is the deep-test class the envelope+DAG
+trajectory was promised to unlock; the first slice delivered on it.
+
+**The discriminatory ceiling multi-input hit.** The F-011 reproducer's own
+comment names the limitation in plain text:
+
+> *"v1 multi-input fires back-to-back with no inter-task wait, so the
+> two replies race each other in the worker — but the assertions are
+> cumulative end-state (Eventually): tcount converges to 2 and both
+> subscriptions exist regardless of which reply the worker processes
+> first."*
+
+Every multi-input deep test today must be designed *around* this race —
+cumulative-end-state assertions, deterministic ids, pre-seeded parents.
+Bug classes the tool can't yet express:
+- **Ordering-dependent**: "task 2 must observe task 1's persisted
+  side-effect before firing"
+- **Sequential durability**: "second fire after a crash sees first
+  fire's committed state"
+- **Redelivery sequences**: "duplicate publish lands on the same dedup
+  window as the first"
+- **Recovery after partial failure**: "task 3 reads what task 1 wrote
+  even though task 2 errored mid-window"
+
+### Slices, ranked by tool-leverage
+
+| # | Slice | What it unlocks | Effort | Depends on |
+|---|---|---|---|---|
+| **1** | `${task.events.*}` substitution + per-task event-window wait | Removes the F-011-noted limitation. Inter-task wait on a specific observed event lets the tool express ordering-dependent + sequential-durability + dedup-window bug classes. Largest single jump in tool discriminatory power. | Spec + ~1-2 weeks impl. Touches executor (event collectors per task), substitution context (event slice), grammar (`${<id>.events.<loc>[i].<f>}`), validation. No chat-app coupling. | nothing |
+| **2** | Envelope (`expected: {positive, negative}`) + UNDEFINED verdict | Surfaces "system did something neither documented success nor documented refusal" as an explicit bug signal instead of a generic mismatch. Catches the "weird third outcome" class current scenarios silently treat as failure noise. | Spec + ~1 week impl. Restructures `expected[]`, adds an Or matcher, reporter UNDEFINED row. Migration: dual-shape `UnmarshalYAML` (same pattern as multi-input) keeps the 23+ scenarios untouched. | nothing |
+| **3** | Matcher rigor audit | False-pass / false-fail audit of `MatchShape` and the 6 pollers. Subset-matching silently accepts "system also did X extra wrong"; absence assertions under polling-window edges can falsely-green. Find these classes, document, harden where the fix doesn't bloat grammar. | ~3-5 days. Reading + targeted unit tests + a "matcher discrimination" findings doc. | nothing |
+| **4** | Named orderings + Airflow `>>` | Stress different orderings of the same task set in one scenario. Adds the input-order grammar from §2.6 and a per-ordering loop. Catches "system breaks if join arrives before create observes the canonical" class. | Spec + ~1 week impl. Same executor with an outer loop. | (1) for ordering-dependent assertions to be meaningful |
+| **5** | Sibling concurrency (`[a, b]` parallel groups) | True race testing — concurrent fires, not sequential. Catches CAS races (F-011-style at the request level), socket-level dedup, fan-out distribution. | Spec + ~1 week impl. Goroutine fan-out + join. Nondeterminism reintroduced; needs `CHAOS_SEED`-style repro hook. | (4) for the bracket grammar |
+| **6** | Chaos engine + mishap revival | Fault injection (crash, partition) across N iterations per ordering. Catches recovery / retry / poison-handling regressions. The largest bug-class jump but **gated by F-009** — without per-iteration service-cache flush, every chaos verdict is silently contaminated. | Spec exists in `2026-06-13-integration-suite-envelope-dag-chaos.md` §0. Implementation gated on F-009 chat-app fix or 25s-per-iteration container restart. | F-009 chat-app fix; (4) for the loop shape |
+
+**Recommended next slice: #1 (event substitution + inter-task wait).**
+Direct removal of the limitation the F-011 scenario named in its own
+comment. Unlocks the bug classes most adjacent to what multi-input just
+proved valuable for. No dependencies. Same spec → plan → TDD cycle as
+multi-input.
+
+**Things the tool team explicitly does NOT do:**
+- Author scenarios (human work — the F-011 reproducer was author-side).
+- Reorganize the `scenarios/drafts/` tree (file moves are human work).
+- Maintain the findings doc (human work; the tool surfaces, the human
+  triages and classifies).
+- Run the live USE_INFRA suite (human verification step; this
+  environment has no Docker).
+
+---
+
 ## 5. Open questions — status as of 2026-06 discussion
 
 Most are now answered; remaining ones flagged `[DEFERRED]` need a
 focused conversation when the spec gets written. **Legend:**
-✅ decided · ⏸ deferred · 🟡 tentative (proposed default, needs final confirmation)
+✅ decided · 🚢 shipped · ⏸ deferred · 🟡 tentative · ❌ superseded
 
 ### Model
-1. ✅ **DAG semantics under task failure** — **fire anyway.** If `t1`'s
-   reply is an error, `t2` still fires. Pollers keep collecting
-   throughout the timeout; the envelope is evaluated against the full
-   accumulated observation set. *Rationale: tasks are user actions,
-   not procedural dependents; the runner doesn't second-guess.*
-2. ✅ **DAG semantics under mishap** — **same as #1, fire anyway.**
-   Tasks are independent operations from the user's perspective; a
-   mishap-induced timeout on `t1` doesn't skip `t2`.
-3. ✅ **Per-task assertions.** Matcher grammar adds a `task: <id>`
-   selector inside `match:` shapes — `match: { task: create,
-   body_json: { status: accepted } }` filters to that task's events.
-4. 🟡 **Substitution from upstream** — **reply-only.** `${<task>.reply.…}`
-   pulls from the task's synchronous reply. Reading from emitted
-   events (`${t1.events.MESSAGES_CANONICAL_site-a[0].body}`) was
-   considered and rejected; no scenario today needs it. *Pending
-   final confirmation if a future scenario does need it.*
-5. ✅ **No shorthand for `input_order`** — always required, even for
-   single-task scenarios. Grammar stays simple and consistent.
+1. 🚢 **DAG semantics under task failure** — **fire anyway.** SHIPPED in
+   multi-input executor (`task_executor.go`): a task whose reply is
+   rejected/error does NOT halt the chain; only an unresolved `${...}`
+   substitution halts. *Rationale: tasks are user actions, not
+   procedural dependents; the runner doesn't second-guess.*
+2. ✅ **DAG semantics under mishap** — same as #1, fire anyway. Lands
+   with chaos (slice #6). Multi-input has no mishaps to ignore yet.
+3. 🚢 **Per-task assertions.** SHIPPED with a narrowing: `match.task: <id>`
+   is **reply-only** (loader rejects it on non-reply locations). A reply
+   is captured synchronously by `NATSReplyReader.Inject` while its task
+   is firing, so it tags unambiguously; background pollers have no
+   "active task" at observation time and use **content matching**
+   instead (the row identifiers that already disambiguate). This is
+   narrower than the original Q3 and deletes a latent false-pass class.
+4. 🟡→⏸ **Substitution from upstream** — **reply-only shipped**;
+   events deferred. `${<task>.reply.body_json.*}` and `.status` are in
+   the substitution context (`runtime.Context.Replies`). Body-raw /
+   header / error paths are still YAGNI (add on demand).
+   `${task.events.*}` + the per-task event-window wait it requires is
+   the **next slice (§4.1 #1)**, motivated by the F-011 reproducer's
+   noted limitation.
+5. ❌ **No shorthand for `input_order`** — **superseded.** Multi-input
+   shipped WITHOUT an `input_order:` block at all (declaration order
+   IS the ordering). Named orderings are a separate future slice
+   (§4.1 #4); Q5 reopens only when that lands.
 
 ### Input order (§2.6)
-6. ✅ **Notation parser.** Tokenize on `>>`; recognise `[...]` groups.
-   Reject malformed (nested brackets, undefined task ids).
-7. ✅ **Data-dep inference.** Runner walks every task's
-   payload + subject + credential for `${<task>.reply.…}` tokens to
-   derive hard data-dep edges. Each entry in `input_order` is checked
-   against these at scenario-load.
-8. ✅ **`input_order:` is mandatory.** No implicit/default ordering;
-   loader rejects scenarios missing the block.
-9. ✅ **No `input_order: auto`** flag. Authors always list orderings
-   explicitly; orderings should be deliberate stress choices, not
-   exhaustive permutations of seed data.
+6. ⏸ **Notation parser.** Deferred to slice #4 (named orderings). Not
+   built; the tokenizer / `[...]` parser will land with the
+   `input_order:` block.
+7. ⏸ **Data-dep inference for ordering validation.** Deferred to slice
+   #4 — only meaningful with named orderings. Multi-input already
+   does the lighter check it needs: `${<task>.reply.*}` references
+   must name an EARLIER task in declaration order
+   (`scenario/multi_input_validate.go`), which suffices for the linear
+   case.
+8. ⏸ **`input_order:` is mandatory** — deferred to slice #4. Multi-input
+   has no `input_order:` block.
+9. ✅ **No `input_order: auto`** flag. Still holds; reaffirmed.
 10. 🟡 **No per-ordering chaos override.** Common `chaos:` at scenario
     level applies to all orderings uniformly. *Pending final
     confirmation; YAGNI for v1.*
@@ -844,12 +918,19 @@ focused conversation when the spec gets written. **Legend:**
     smart targeting; needs focused conversation.*
 
 ### Migration
-21. ✅ **Rewrite the 11 existing scenarios from scratch.** No
-    mechanical migration; the model has changed enough that
-    re-authoring per the new grammar is cleaner than translation.
-22. ✅ **No special handling for single-fire scenarios** — covered by
-    Q5/Q8. Author writes `input: [<one-task>]` + explicit
-    `input_order: { case_a: t1 }`.
+21. ❌ **Rewrite existing scenarios from scratch** — **superseded.**
+    Multi-input shipped with a dual-shape `TaskList.UnmarshalYAML`
+    (direct analog of `SeedMembership.UnmarshalYAML` at
+    `internal/scenario/types.go:136`) that accepts either the legacy
+    single-map shape OR a sequence of tasks. **All 23 existing
+    scenarios stayed untouched and still decode green** — the rewrite
+    cost was zero. Future slices (envelope, named orderings) should
+    follow the same dual-shape pattern by default unless a
+    grammar conflict makes it impossible.
+22. ❌ **Single-fire scenarios write `input: [<one-task>]` +
+    `input_order: { case_a: t1 }`** — **superseded** by the dual-shape
+    decode. Legacy single-fire shape is still valid; new multi-fire
+    scenarios opt into the list shape.
 
 ---
 
