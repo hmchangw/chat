@@ -259,3 +259,48 @@ func TestSubstitute_ScalarsPassThrough(t *testing.T) {
 		assert.Equal(t, tc, got)
 	}
 }
+
+// --- ${<expected-id>.body_json.*} for flow scenarios ---
+
+func TestSubstitute_ExpectedEventBodyJSON(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Events = map[string]EventData{
+		"obs_a": {BodyJSON: map[string]any{"roomId": "r-1"}},
+	}
+	got, err := Substitute("${obs_a.body_json.roomId}", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "r-1", got)
+}
+
+func TestSubstitute_ExpectedEventNestedField(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Events = map[string]EventData{
+		"obs_a": {BodyJSON: map[string]any{
+			"outer": map[string]any{"inner": "value-x"},
+		}},
+	}
+	got, err := Substitute("${obs_a.body_json.outer.inner}", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "value-x", got)
+}
+
+func TestSubstitute_ExpectedEventUnknownField(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.Events = map[string]EventData{
+		"obs_a": {BodyJSON: map[string]any{"status": "x"}},
+	}
+	_, err := Substitute("${obs_a.body_json.nope}", ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "obs_a")
+	assert.Contains(t, err.Error(), "nope")
+}
+
+func TestSubstitute_ExpectedEventUnknownID(t *testing.T) {
+	ctx := newTestCtx()
+	// obs_a not in either Events or Replies, but the resolver hits the
+	// placeholder lookup last and errors there. As long as the error
+	// names obs_a, the author has enough to diagnose.
+	_, err := Substitute("${obs_a.body_json.x}", ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "obs_a")
+}

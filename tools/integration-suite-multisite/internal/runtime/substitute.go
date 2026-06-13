@@ -22,12 +22,24 @@ type Context struct {
 	// ${<id>.reply.body_json.*} and ${<id>.reply.status} substitution
 	// in downstream tasks.
 	Replies map[string]ReplyData
+	// Events holds each completed observation step's matched event,
+	// keyed by expected[].id. Populated by the flow executor when an
+	// observation step's Eventually matches. Feeds
+	// ${<expected-id>.body_json.*} substitution in downstream tasks/
+	// observations (flow scenarios only — legacy scenarios leave it nil).
+	Events map[string]EventData
 }
 
 // ReplyData is a completed task's reply, captured for substitution.
 // Only the decoded JSON body is retained — ${<id>.reply.status} is
 // sugar for body_json.status (spec §3.3).
 type ReplyData struct {
+	BodyJSON map[string]any
+}
+
+// EventData is a matched event's body, captured for substitution in
+// downstream flow steps. ${<id>.body_json.<field>} walks BodyJSON.
+type EventData struct {
 	BodyJSON map[string]any
 }
 
@@ -158,6 +170,13 @@ func resolveToken(token string, ctx Context) (any, error) {
 		if len(parts) >= 2 && parts[1] == "reply" {
 			return resolveReplyToken(parts[0], parts[2:], ctx, token)
 		}
+		// Event context: ${<expected-id>.body_json.<path>}. Available
+		// only in flow scenarios where the executor populates
+		// ctx.Events. Disambiguated from placeholders by the presence
+		// of the id in ctx.Events.
+		if ev, ok := ctx.Events[parts[0]]; ok && len(parts) >= 2 && parts[1] == "body_json" {
+			return resolveEventToken(parts[0], parts[2:], ev, token)
+		}
 		ph, ok := ctx.Placeholders[parts[0]]
 		if !ok {
 			return nil, fmt.Errorf("unknown path %q: no placeholder %q resolved (resolved placeholders: %v)",
@@ -211,6 +230,21 @@ func resolveReplyToken(id string, rest []string, ctx Context, token string) (any
 		return nil, fmt.Errorf("unknown path %q: ${%s.reply.*} supports only .body_json.<field> and .status (got .%s)",
 			token, id, rest[0])
 	}
+}
+
+// resolveEventToken resolves the tail of a ${<expected-id>.body_json.…}
+// token against a captured observation's body. rest is the path
+// AFTER "body_json".
+func resolveEventToken(id string, rest []string, ev EventData, token string) (any, error) {
+	if len(rest) == 0 {
+		return nil, fmt.Errorf("unknown path %q: ${%s.body_json} needs a .<field> subpath", token, id)
+	}
+	v, ok := walkPath(ev.BodyJSON, rest)
+	if !ok {
+		return nil, fmt.Errorf("unknown path %q: observation %q has no body_json field .%s (available: %v)",
+			token, id, strings.Join(rest, "."), mapKeys(ev.BodyJSON))
+	}
+	return v, nil
 }
 
 func walkPath(m map[string]any, path []string) (any, bool) {
