@@ -758,6 +758,70 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, "Engineering", got[0].Member.OrgName,
 			"empty dept names must fall through to sect names; spec requires room-service output to match room-worker's two-pass tiebreak")
 	})
+
+	t.Run("org dept match with a non-empty dept name wins over sect", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+
+		// member.id="X" matches one user by deptId (deptName non-empty) and one
+		// by sectId. The dept branch must win, and memberCount counts both.
+		insertUser(t, db, model.User{ID: "u-fe", Account: "fe", DeptID: "X", DeptName: "Frontend"})
+		insertUser(t, db, model.User{ID: "u-eng", Account: "eng", SectID: "X", SectName: "Engineering"})
+		insertRM(t, db, model.RoomMember{
+			ID: "rm-org-X", RoomID: "r1", Ts: base,
+			Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+		})
+
+		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Frontend", got[0].Member.OrgName)
+		assert.Equal(t, 2, got[0].Member.MemberCount)
+	})
+
+	t.Run("org with no matching users falls back to orgID and zero count", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+
+		insertRM(t, db, model.RoomMember{
+			ID: "rm-org-ghost", RoomID: "r1", Ts: base,
+			Member: model.RoomMemberEntry{ID: "ghost-org", Type: model.RoomMemberOrg},
+		})
+
+		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "ghost-org", got[0].Member.OrgName)
+		assert.Zero(t, got[0].Member.MemberCount)
+	})
+
+	t.Run("multiple org rows resolved in one batch", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		base := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+		insertUser(t, db, model.User{ID: "u-1", Account: "1", SectID: "sect-eng", SectName: "Engineering"})
+		insertUser(t, db, model.User{ID: "u-2", Account: "2", SectID: "sect-eng", SectName: "Engineering"})
+		insertUser(t, db, model.User{ID: "u-3", Account: "3", DeptID: "dept-ops", DeptName: "Operations"})
+		insertRM(t, db, model.RoomMember{ID: "rm-eng", RoomID: "r1", Ts: base.Add(time.Second),
+			Member: model.RoomMemberEntry{ID: "sect-eng", Type: model.RoomMemberOrg}})
+		insertRM(t, db, model.RoomMember{ID: "rm-ops", RoomID: "r1", Ts: base.Add(2 * time.Second),
+			Member: model.RoomMemberEntry{ID: "dept-ops", Type: model.RoomMemberOrg}})
+
+		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		byID := map[string]model.RoomMemberEntry{
+			got[0].Member.ID: got[0].Member,
+			got[1].Member.ID: got[1].Member,
+		}
+		assert.Equal(t, "Engineering", byID["sect-eng"].OrgName)
+		assert.Equal(t, 2, byID["sect-eng"].MemberCount)
+		assert.Equal(t, "Operations", byID["dept-ops"].OrgName)
+		assert.Equal(t, 1, byID["dept-ops"].MemberCount)
+	})
 }
 
 // TestMongoStore_ListRoomMembers_BotEnrichment_Integration verifies that the

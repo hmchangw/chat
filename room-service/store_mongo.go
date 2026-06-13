@@ -12,7 +12,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/hmchangw/chat/pkg/displayfmt"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/pipelines"
@@ -429,50 +428,91 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 	}
 
 	// Enriched path: decode into a hybrid row type that carries a parallel
-	// `display` sub-document (the aggregation writes values there to sidestep
-	// the bson:"-" tags on RoomMemberEntry's display fields). Then copy the
-	// display values onto Member.* in Go memory, where bson:"-" is irrelevant.
+	// `display` sub-document (the aggregation writes individual-member values
+	// there to sidestep the bson:"-" tags on RoomMemberEntry's display fields).
+	// Org-member display (sectName, memberCount) is resolved separately in a
+	// single index-backed batch below — see attachOrgDisplay — rather than via a
+	// per-row correlated $lookup that would force a users collection scan per row.
 	var rows []roomMemberEnrichedRow
 	if err := cursor.All(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("decode enriched room_members for %q: %w", roomID, err)
 	}
-	members := make([]model.RoomMember, 0, len(rows))
+	members := make([]model.RoomMember, len(rows))
+	var orgIDs []string
 	for i := range rows {
 		rm := rows[i].RoomMember
 		d := rows[i].Display
 		rm.Member.EngName = d.EngName
 		rm.Member.ChineseName = d.ChineseName
 		rm.Member.IsOwner = d.IsOwner
-		rm.Member.MemberCount = d.MemberCount
-		// Org rows resolve display Go-side using the two-pass dept-first
-		// tiebreak that mirrors room-worker's processRemoveOrg exactly:
-		//
-		//   1. Prefer dept names when a dept match exists AND has non-empty
-		//      name/tcName.
-		//   2. Otherwise fall back to the sect names (which the aggregation
-		//      now retains alongside the dept names — see the $group stage).
-		//   3. CombineWithFallback handles the both-empty case by emitting
-		//      the member.id, matching the worker's displayOrg/orgID fallback.
-		//
-		// Without the explicit fallback on empty dept names, a row with
-		// IsDept=true but empty deptName + a sibling row with sectName="Eng"
-		// would render the orgID server-side while the worker emits "Eng" —
-		// the spec requires byte-identical output between the two paths.
 		if rm.Member.Type == model.RoomMemberOrg {
-			var name, tcName string
-			if d.OrgRaw != nil {
-				if d.OrgRaw.IsDept && (d.OrgRaw.DeptName != "" || d.OrgRaw.DeptTCName != "") {
-					name, tcName = d.OrgRaw.DeptName, d.OrgRaw.DeptTCName
-				}
-				if name == "" && tcName == "" {
-					name, tcName = d.OrgRaw.SectName, d.OrgRaw.SectTCName
-				}
-			}
-			rm.Member.OrgName = displayfmt.CombineWithFallback(name, tcName, rm.Member.ID)
+			orgIDs = append(orgIDs, rm.Member.ID)
 		}
-		members = append(members, rm)
+		members[i] = rm
+	}
+	if len(orgIDs) > 0 {
+		if err := s.attachOrgDisplay(ctx, roomID, members, orgIDs); err != nil {
+			return nil, err
+		}
 	}
 	return members, nil
+}
+
+// attachOrgDisplay resolves org-member display names and member counts for the
+// org rows in members, then fills SectName (dept-first tiebreak) and MemberCount
+// in place. It mirrors attachUserDisplayNames but for the org dimension: a
+// single index-backed batch query feeds a Go-side rollup, replacing the prior
+// per-row correlated $lookup whose $expr $or could not use an index.
+func (s *MongoStore) attachOrgDisplay(ctx context.Context, roomID string, members []model.RoomMember, orgIDs []string) error {
+	users, err := s.fetchOrgDisplayUsers(ctx, orgIDs)
+	if err != nil {
+		return fmt.Errorf("attach org display for %q: %w", roomID, err)
+	}
+	agg := buildOrgDisplay(orgIDs, users)
+	for i := range members {
+		if members[i].Member.Type != model.RoomMemberOrg {
+			continue
+		}
+		id := members[i].Member.ID
+		if a := agg[id]; a != nil {
+			members[i].Member.MemberCount = a.memberCount
+		}
+		members[i].Member.OrgName = orgDisplaySectName(agg[id], id)
+	}
+	return nil
+}
+
+// fetchOrgDisplayUsers returns the dept/sect identity and name fields for every
+// user whose deptId or sectId is one of orgIDs. The top-level $or with $in is
+// index-backed by the (deptId, account) and (sectId, account) indexes — unlike
+// the prior $expr-based correlated $lookup, which forced a users collection
+// scan for each org row.
+func (s *MongoStore) fetchOrgDisplayUsers(ctx context.Context, orgIDs []string) ([]orgDisplayUser, error) {
+	cursor, err := s.users.Find(ctx,
+		bson.M{"$or": []bson.M{
+			{"deptId": bson.M{"$in": orgIDs}},
+			{"sectId": bson.M{"$in": orgIDs}},
+		}},
+		options.Find().SetProjection(bson.M{
+			"_id":        0,
+			"deptId":     1,
+			"sectId":     1,
+			"deptName":   1,
+			"deptTCName": 1,
+			"sectName":   1,
+			"sectTCName": 1,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find org display users: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var users []orgDisplayUser
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode org display users: %w", err)
+	}
+	return users, nil
 }
 
 // roomMemberEnrichedRow is the decode target for the enriched aggregation
@@ -488,32 +528,17 @@ type roomMemberEnrichedRow struct {
 }
 
 type roomMemberEnrichedDisplay struct {
-	EngName     string         `bson:"engName,omitempty"`
-	ChineseName string         `bson:"chineseName,omitempty"`
-	IsOwner     bool           `bson:"isOwner,omitempty"`
-	MemberCount int            `bson:"memberCount,omitempty"`
-	OrgRaw      *orgRawDisplay `bson:"orgRaw,omitempty"`
-}
-
-// orgRawDisplay carries the unresolved org-lookup result (one element of the
-// `_orgMatch` group). It exists so Go-side post-processing can pick the
-// dept-vs-sect branch and run displayfmt.CombineWithFallback — keeping the
-// final display string consistent with the sys-message formatter used by
-// room-worker. A nil pointer means no user matched the org id at all, in
-// which case the loop falls back to the raw member.id.
-type orgRawDisplay struct {
-	IsDept     bool   `bson:"isDept,omitempty"`
-	DeptName   string `bson:"deptName,omitempty"`
-	DeptTCName string `bson:"deptTCName,omitempty"`
-	SectName   string `bson:"sectName,omitempty"`
-	SectTCName string `bson:"sectTCName,omitempty"`
+	EngName     string `bson:"engName,omitempty"`
+	ChineseName string `bson:"chineseName,omitempty"`
+	IsOwner     bool   `bson:"isOwner,omitempty"`
 }
 
 // enrichRoomMembersStages returns the $lookup + $set stages appended to the
-// room_members aggregation when enrich=true. Each stage matches on
-// member.type via $expr so it only fires for rows of the appropriate kind.
-// All enrichment output is written into a `display` sub-document so it
-// survives the RoomMemberEntry bson:"-" tags on decode.
+// room_members aggregation when enrich=true. These enrich INDIVIDUAL members
+// only (engName/chineseName/isOwner) via account-keyed, index-backed lookups.
+// Org-member display is resolved separately by attachOrgDisplay — see there for
+// why it is not a pipeline $lookup. Enrichment output is written into a
+// `display` sub-document so it survives the RoomMemberEntry bson:"-" tags.
 func enrichRoomMembersStages(roomID string) []bson.D {
 	return []bson.D{
 		// Individuals: join users on account → pull engName / chineseName.
@@ -551,51 +576,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			},
 			"as": "_subMatch",
 		}}},
-		// Orgs: join users whose deptId OR sectId matches member.id. The
-		// pipeline returns one grouped document carrying raw {isDept, deptName,
-		// deptTCName, sectName, sectTCName, memberCount}. The dept-vs-sect
-		// decision plus the localized + traditional name combine happen
-		// Go-side via displayfmt.CombineWithFallback so the output matches
-		// the sys-message formatter used by room-worker byte-for-byte.
-		{{Key: "$lookup", Value: bson.M{
-			"from": "users",
-			"let": bson.M{
-				"orgId": "$member.id",
-				"mtyp":  "$member.type",
-			},
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
-					bson.M{"$eq": bson.A{"$$mtyp", "org"}},
-					bson.M{"$or": bson.A{
-						bson.M{"$eq": bson.A{"$deptId", "$$orgId"}},
-						bson.M{"$eq": bson.A{"$sectId", "$$orgId"}},
-					}},
-				}}}},
-				bson.M{"$addFields": bson.M{
-					"_isDept": bson.M{"$eq": bson.A{"$deptId", "$$orgId"}},
-					"_name":   bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptName", "$sectName"}},
-					"_tcName": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptTCName", "$sectTCName"}},
-				}},
-				// $max over a bool surfaces "any user matched deptId" — when at
-				// least one dept-match exists it wins regardless of how many
-				// sect-only users join the same group. dept/sect *Name fields
-				// are gated by _isDept so the chosen branch's strings flow
-				// through and the other branch's are null-suppressed.
-				bson.M{"$group": bson.M{
-					"_id":         nil,
-					"isDept":      bson.M{"$max": "$_isDept"},
-					"deptName":    bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", "$_name", nil}}},
-					"deptTCName":  bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", "$_tcName", nil}}},
-					"sectName":    bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", nil, "$_name"}}},
-					"sectTCName":  bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", nil, "$_tcName"}}},
-					"memberCount": bson.M{"$sum": 1},
-				}},
-			},
-			"as": "_orgMatch",
-		}}},
-		// Fold the three matches into a single `display` sub-document.
-		// `orgRaw` surfaces the raw org-lookup pair for Go-side combine —
-		// nil when no users matched, triggering the orgId fallback below.
+		// Fold the individual matches into a single `display` sub-document.
 		{{Key: "$set", Value: bson.M{
 			"display": bson.M{
 				"engName":     bson.M{"$arrayElemAt": bson.A{"$_userMatch.engName", 0}},
@@ -607,12 +588,10 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 						bson.A{},
 					}},
 				}},
-				"orgRaw":      bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
-				"memberCount": bson.M{"$arrayElemAt": bson.A{"$_orgMatch.memberCount", 0}},
 			},
 		}}},
 		// Drop the temporary join arrays.
-		{{Key: "$project", Value: bson.M{"_userMatch": 0, "_subMatch": 0, "_orgMatch": 0}}},
+		{{Key: "$project", Value: bson.M{"_userMatch": 0, "_subMatch": 0}}},
 	}
 }
 
