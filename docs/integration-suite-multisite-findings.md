@@ -684,3 +684,44 @@ hard-delete the content; (2) `GetMessageByID` / the quote-resolver should
 treat `deleted` rows as not-found or surface a redacted "message
 unavailable" snapshot (the latter already exists for out-of-window quotes,
 `UnavailableQuoteMsg`), rather than returning live content.
+
+## F-016 — mentioning a non-member in a thread reply auto-subscribes them to the thread
+
+**Layer:** chat-app code (worker mention resolution + thread-mention handling).
+
+**Status:** observed — access-control; chat-app team action requested.
+**Reachability:** any room member, **no special timing** — `@mention` of any
+valid account in a thread reply.
+
+`mention.Resolve` (message-worker/handler.go:63-67) resolves `@account`
+mentions via `FindUsersByAccounts` — a **global** user lookup with **no
+room-membership scoping** (pkg/mention/mention.go `ResolveFromParsed`
+resolves any account the lookup returns). For thread replies, every reply
+runs `markThreadMentions` (handler.go:89-98, 359-392), which for **every**
+resolved mentionee calls `MarkThreadSubscriptionMention` —
+an upsert (`SetUpsert(true)` + `$setOnInsert`, store_mongo.go) that
+**creates** a `thread_subscription` if absent — and adds them to
+`thread_rooms.replyAccounts`. There is no check that the mentionee belongs
+to the room.
+
+Net: `@bob`, where bob is a real user who is **not a member** of the room,
+gives bob a durable thread subscription and makes him a thread follower
+(notification fan-out + the "following threads" feed) for a thread inside a
+room he cannot otherwise access. This is broader than the already-known
+main-room phantom-mention (the `message-worker-mentions-persisted` scenario
+shows a non-member merely landing in the persisted `mentions` set, tagged
+positive); here the non-member gains a **subscription** — an access /
+notification relationship to room-scoped content.
+
+Demonstrated by
+`scenarios/drafts/mentions/message-worker-thread-mention-nonmember-auto-subscribes.yaml`
+(run e683, green): alice (a member) replies in a thread mentioning `@bob`
+(seeded as a profile only, no membership); afterward `thread_subscriptions`
+holds a row for bob (parentMessageId = the thread parent, userAccount=bob)
+and `thread_rooms.replyAccounts` contains bob.
+
+The decision the team owns: mention resolution (and at minimum the thread
+subscription/replyAccounts side-effects) should be scoped to room members —
+filter `mention.Resolve` results by membership, or guard
+`markThreadMentions` so a non-member mention is recorded as content but
+does not create a subscription / follower relationship.

@@ -1,7 +1,7 @@
 # Integration tests — approved   (latest merge: d225aa9f)
 
-Run:        2026-06-13T21:43:42Z   (runID 3c00)
-Duration:   693ms
+Run:        2026-06-13T21:52:19Z   (runID e683)
+Duration:   677ms
 Total:      0 test cases
 
 ## Confusion matrix
@@ -49,10 +49,11 @@ DRAFT         0       0
 | logs-tail-regression-guard-not-must-fail-when-line-present/stub | fail | fail | fail | — | 0 | 111ms |
 | message-edit-just-sent-races-persistence/stub | pass | pass | fail | — | 0 | 210ms |
 | message-edit-to-whitespace-rejected/stub | pass | pass | pass | — | 0 | 107ms |
-| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 214ms |
+| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 219ms |
 | message-worker-at-all-mention-persisted/stub | pass | pass | pass | — | 0 | 105ms |
 | message-worker-mentions-persisted/stub | pass | pass | pass | — | 0 | 104ms |
 | message-worker-subsequent-thread-reply-multi-input/stub | fail | fail | fail | — | 0 | 10.1s |
+| message-worker-thread-mention-nonmember-auto-subscribes/stub | pass | pass | pass | — | 0 | 102ms |
 | message-worker-thread-reply-publishes-tcount-badge/stub | pass | pass | fail | — | 0 | 202ms |
 | message-worker-thread-reply-with-mention/stub | pass | pass | pass | — | 0 | 102ms |
 | message-worker-two-repliers-merge-replyaccounts/stub | pass | pass | pass | — | 0 | 103ms |

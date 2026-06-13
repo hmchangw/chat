@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-13T21:43:42Z",
+  "lastRunAt": "2026-06-13T21:52:19Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -453,9 +453,9 @@
     },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-13T21:43:42Z",
+        "ranAt": "2026-06-13T21:52:19Z",
         "verdict": "pass",
-        "durationMs": 214
+        "durationMs": 219
       },
       "best": {
         "verdict": "pass",
@@ -516,6 +516,21 @@
       "worst": {
         "verdict": "fail",
         "ranAt": "2026-06-13T19:20:33Z"
+      }
+    },
+    "message-worker-thread-mention-nonmember-auto-subscribes/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T21:52:19Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:52:19Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:52:19Z"
       }
     },
     "message-worker-thread-reply-publishes-tcount-badge/stub": {
