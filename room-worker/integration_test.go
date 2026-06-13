@@ -1328,6 +1328,13 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, h.processCreateRoom(ctx, body))
 
+	// The key must have been persisted inline with the room document (a single
+	// CreateRoom write), readable back through the key store.
+	persisted, err := keyStore.Get(ctx, roomID)
+	require.NoError(t, err)
+	require.NotNil(t, persisted, "room key must be persisted in the room document on create")
+	require.Len(t, persisted.KeyPair.PrivateKey, 32)
+
 	// Allow a brief window for async NATS delivery.
 	require.Eventually(t, func() bool {
 		mu.Lock()

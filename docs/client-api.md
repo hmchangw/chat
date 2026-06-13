@@ -442,7 +442,7 @@ The creator (from the subject) plus any members supplied via `users` / `orgs` / 
 
 **2. `chat.user.{account}.event.subscription.update`** — one per enrolled member (including the owner), `action: "added"`. See the [subscription.update schema](#subscriptionupdate-event) under Add Members.
 
-**3. `chat.user.{account}.event.room.key`** — one `RoomKeyEvent` per enrolled local member. See [§5 Room Encryption](#5-room-encryption).
+**3. `chat.user.{account}.event.room.key`** — **channel rooms only:** one `RoomKeyEvent` per enrolled local member. DM/botDM rooms are not encrypted and emit no key event. See [§5 Room Encryption](#5-room-encryption).
 
 For **channel** rooms, the first messages (`type: "room_created"`, then `type: "members_added"` when initial members were enrolled) flow through the normal message pipeline and arrive as `new_message` room events (see [§4](#4-message-send)).
 
@@ -3323,7 +3323,7 @@ Apply `newTcount` directly to the parent message's badge — do not compute a de
 
 Channel messages can be end-to-end encrypted. The key material reaches clients as `RoomKeyEvent`s, which are triggered by the Create Room / Add Members / Remove Member RPCs (see their "Triggered events" sections). This section describes the event payload and how a client uses it to decrypt.
 
-Each room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+Each **channel** room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms are **not** encrypted: their messages fan out to per-user subjects that only the recipient can subscribe to, so they carry no room key, emit no `RoomKeyEvent`, and always broadcast plaintext `message` (no `encryptedMessage`).
 
 #### Subject
 
