@@ -124,6 +124,12 @@ func (s *PerformanceStore) RecordSkipped(caseID, reason, ranAt string) {
 	}
 }
 
+// HasCase reports whether the store contains a row for caseID.
+func (s *PerformanceStore) HasCase(caseID string) bool {
+	_, ok := s.Cases[caseID]
+	return ok
+}
+
 // IDs returns case IDs in a stable sorted order (for deterministic reports).
 func (s *PerformanceStore) IDs() []string {
 	out := make([]string, 0, len(s.Cases))

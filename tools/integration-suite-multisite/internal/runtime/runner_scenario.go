@@ -194,13 +194,15 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 		}
 		v, _ := RunFlow(ctx, s, plan, flowDeps, subCtx)
 		dur := time.Since(start)
-		if v.Pass {
-			recordScenario(deps.Perf, deps.Report, s, scenarioVerdict{Outcome: "pass"}, dur)
-		} else {
-			recordScenario(deps.Perf, deps.Report, s,
-				scenarioVerdict{Outcome: "fail", Reason: flowFailureReason(v)},
-				dur)
+		outcome := "pass"
+		reason := ""
+		if !v.Pass {
+			outcome = "fail"
+			reason = flowFailureReason(v)
 		}
+		recordScenario(deps.Perf, deps.Report, s,
+			scenarioVerdict{Outcome: outcome, Reason: reason, FlowVerdicts: v.StepVerdicts},
+			dur)
 		return nil
 	}
 
