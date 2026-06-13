@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-13T21:12:39Z",
+  "lastRunAt": "2026-06-13T21:43:42Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -294,6 +294,21 @@
         "ranAt": "2026-06-08T17:21:30Z"
       }
     },
+    "gatekeeper-quote-soft-deleted-message-resurrects-content/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T21:43:42Z",
+        "verdict": "pass",
+        "durationMs": 140
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:43:42Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:43:42Z"
+      }
+    },
     "gatekeeper-thread-reply-missing-parent-createdat-rejected/stub": {
       "latest": {
         "ranAt": "2026-06-13T19:31:30Z",
@@ -438,9 +453,9 @@
     },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-13T21:12:39Z",
+        "ranAt": "2026-06-13T21:43:42Z",
         "verdict": "pass",
-        "durationMs": 215
+        "durationMs": 214
       },
       "best": {
         "verdict": "pass",

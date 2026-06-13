@@ -1,7 +1,7 @@
 # Integration tests — approved   (latest merge: d225aa9f)
 
-Run:        2026-06-13T21:12:39Z   (runID d195)
-Duration:   5.694s
+Run:        2026-06-13T21:43:42Z   (runID 3c00)
+Duration:   693ms
 Total:      0 test cases
 
 ## Confusion matrix
@@ -39,6 +39,7 @@ DRAFT         0       0
 | gatekeeper-quote-happy-path-embeds-snapshot/stub | pass | pass | pass | — | 0 | 103ms |
 | gatekeeper-quote-just-sent-message/stub | pass | pass | fail | — | 0 | 5.2s |
 | gatekeeper-quote-nonexistent-parent-drops-message/stub | pass | pass | pass | — | 0 | 10.1s |
+| gatekeeper-quote-soft-deleted-message-resurrects-content/stub | pass | pass | pass | — | 0 | 140ms |
 | gatekeeper-thread-reply-missing-parent-createdat-rejected/stub | pass | pass | pass | — | 0 | 5.2s |
 | gatekeeper-whitespace-only-content-accepted/stub | pass | pass | pass | — | 0 | 107ms |
 | history-service-get-message-by-id/stub | pass | pass | pass | — | 0 | 106ms |
@@ -48,7 +49,7 @@ DRAFT         0       0
 | logs-tail-regression-guard-not-must-fail-when-line-present/stub | fail | fail | fail | — | 0 | 111ms |
 | message-edit-just-sent-races-persistence/stub | pass | pass | fail | — | 0 | 210ms |
 | message-edit-to-whitespace-rejected/stub | pass | pass | pass | — | 0 | 107ms |
-| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 215ms |
+| message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 214ms |
 | message-worker-at-all-mention-persisted/stub | pass | pass | pass | — | 0 | 105ms |
 | message-worker-mentions-persisted/stub | pass | pass | pass | — | 0 | 104ms |
 | message-worker-subsequent-thread-reply-multi-input/stub | fail | fail | fail | — | 0 | 10.1s |

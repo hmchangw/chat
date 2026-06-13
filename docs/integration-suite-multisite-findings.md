@@ -632,3 +632,55 @@ is global (sender-agnostic) id dedup acceptable, or should the dedup key /
 persist be namespaced by sender (and/or the worker guard the first write
 with `IF NOT EXISTS`) so a colliding id can't shadow or overwrite another
 sender's message?
+
+## F-015 — soft-deleted message content is recoverable (delete leaves plaintext `msg`; reads/quotes ignore `deleted`)
+
+**Layer:** chat-app code (history delete CQL + GetMessageByID + gatekeeper quote-resolver).
+
+**Status:** observed — privacy/correctness; chat-app team action requested.
+**Reachability:** any room member, **no special timing** (deterministic logic
+bug — not a fast-path/bot edge). Message ids are broadcast on the canonical
+event and rendered client-side, so a member always knows the id to read or
+quote.
+
+Soft-delete does not actually remove the message content, and two read
+paths return it. **Two independent defects compose:**
+
+1. **Soft-delete retains the plaintext `msg` column.** The delete CQL is
+   `UPDATE messages_by_id SET deleted = true, enc_payload = null,
+   enc_meta = null, updated_at = ? … IF deleted != true`
+   (history-service/internal/cassrepo/write.go:38, and the parallel
+   `messages_by_room` / `thread_messages_by_thread` / pinned variants). It
+   nulls only the **encrypted** columns; the plaintext `msg` column is left
+   intact. In any **unencrypted** deployment (the suite stack runs no
+   roomcrypto/cipher container, so this is the live path) the deleted
+   content persists verbatim in Cassandra.
+
+2. **Reads ignore `deleted`.** `GetMessageByID`
+   (history-service/internal/service/messages.go:258-279) has no `deleted`
+   filter — `findMessage` (utils.go:76-91) returns the row regardless of
+   `deleted`, and the handler only redacts the message's *own*
+   quoted-parent for the access window, never the message itself. So
+   `msg.get` on a deleted id returns the retained content directly. The
+   gatekeeper's quote-resolver compounds it: `FetchQuotedParent`
+   (message-gatekeeper/fetcher_history.go:71-81) projects `parent.Msg` into
+   the quote snapshot with no `deleted` check, so quoting a deleted message
+   **embeds its content into a new message** that is persisted and
+   broadcast to the room. Defect 2 is config-independent: even with
+   encryption, a deleted message should not be silently quotable.
+
+Demonstrated by
+`scenarios/drafts/delete/gatekeeper-quote-soft-deleted-message-resurrects-content.yaml`
+(multi-input, run 3c00, green): alice sends+owns M and deletes it
+(succeeds); the row is then `deleted: true` **with `msg` still equal to the
+original content**; bob (a different member) quotes M and the canonical
+event for bob's message carries `quotedParentMessage.msg` = alice's deleted
+content. The delete (synchronous RPC) completes before the quote fires, so
+the resurrection is deterministic, not a race.
+
+The decisions the team owns: (1) soft-delete should null `msg` (and any
+other plaintext content columns) alongside the encrypted ones, or
+hard-delete the content; (2) `GetMessageByID` / the quote-resolver should
+treat `deleted` rows as not-found or surface a redacted "message
+unavailable" snapshot (the latter already exists for out-of-window quotes,
+`UnavailableQuoteMsg`), rather than returning live content.

@@ -1,0 +1,131 @@
+scenario: gatekeeper-quote-soft-deleted-message-resurrects-content
+source: >
+  history-service/internal/cassrepo/write.go:38 (deleteMsgByIDCAS soft-deletes
+  with `SET deleted = true, enc_payload = null, enc_meta = null` — it nulls the
+  ENCRYPTED columns but NOT the plaintext `msg` column),
+  history-service/internal/service/messages.go:258-279 (GetMessageByID has NO
+  Deleted filter — findMessage/utils.go:76-91 returns the row regardless of
+  deleted, and the handler only redacts the message's OWN quoted-parent for the
+  access window, never the message itself), message-gatekeeper/fetcher_history.go:71-81
+  (FetchQuotedParent projects parent.Msg into the snapshot with no Deleted check),
+  message-gatekeeper/handler.go resolveQuoteSnapshot (embeds the snapshot, no
+  Deleted check). Suite stack runs unencrypted (no roomcrypto/cipher container),
+  so the plaintext `msg` path is the live path.
+status: draft
+tag: negative
+
+# PRIVACY / CORRECTNESS BUG: quoting a SOFT-DELETED message resurrects its
+# content. Soft-delete nulls only the encrypted columns (enc_payload,
+# enc_meta) and leaves the plaintext `msg` column intact; GetMessageByID
+# never filters deleted rows; and the gatekeeper's quote-resolver projects
+# parent.Msg without checking Deleted. So a member who quotes a message
+# that was already deleted gets the deleted content embedded into their new
+# message's quotedParentMessage, persisted to Cassandra AND broadcast to the
+# room — defeating the delete.
+#
+# Two independent defects compose here, both worth fixing:
+#   1. soft-delete retains plaintext `msg` (only enc_* nulled) — in any
+#      unencrypted deployment the deleted content persists in Cassandra.
+#   2. GetMessageByID + the quote-resolver ignore `deleted` — config-
+#      independent: even encrypted, a deleted message should not be
+#      quotable at all (should drop or surface "message unavailable").
+#
+# alice sends+owns M, deletes it (sender-only, succeeds); bob (a different
+# member) then quotes M and alice's deleted content reappears in bob's
+# message. Multi-input: delete (nats_request, synchronous) completes before
+# the quote fires — no race; the resurrection is deterministic. Unique room
+# r-deltest to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }
+      rooms:
+        - id: r-deltest
+          name: Delete Test
+          type: channel
+      memberships:
+        alice:
+          - room: r-deltest
+            roles: [member]
+        bob:
+          - room: r-deltest
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      # alice's message, seeded recent so it's inside bob's access window.
+      - message_id: m0deletedmsg00000001
+        created_at: ${now - 1h}
+        room_id: r-deltest
+        site_id: site-a
+        msg: "secret content alice will delete"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+
+input:
+  # task1 — alice (the sender) soft-deletes M. Synchronous RPC; completes
+  # before the quote fires.
+  - id: delete
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.r-deltest.site-a.msg.delete
+    payload:
+      messageId: m0deletedmsg00000001
+    credential: ${alice.credential}
+
+  # task2 — bob quotes the now-deleted M.
+  - id: quote_deleted
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${bob.account}.room.r-deltest.site-a.msg.send
+    payload:
+      id: m1quotedeleted000001
+      content: quoting alice's deleted message
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567922
+      quotedParentMessageId: m0deletedmsg00000001
+    credential: ${bob.credential}
+
+expected:
+  # The delete succeeded (sender-only authorization passed).
+  - location: reply
+    match:
+      task: delete
+      body_json:
+        messageId: m0deletedmsg00000001
+
+  # DEFECT 1 — after soft-delete the row is deleted=true but the plaintext
+  # `msg` column still holds the original content (only enc_* were nulled).
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0deletedmsg00000001]
+    match:
+      message_id: m0deletedmsg00000001
+      deleted: true
+      msg: "secret content alice will delete"
+    timeout: 10s
+
+  # DEFECT 2 (the leak) — bob's quoting message embeds alice's deleted
+  # content: the quote-resolver fetched the deleted message and projected
+  # its msg into the snapshot, ignoring deleted. The deleted content is
+  # resurrected onto the canonical event (and broadcast to the room).
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m1quotedeleted000001
+          quotedParentMessage:
+            messageId: m0deletedmsg00000001
+            msg: "secret content alice will delete"
