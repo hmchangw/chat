@@ -16,8 +16,12 @@ demo
 *.test
 
 # Code coverage profiles and other test artifacts
+# (note: `coverage.*` would wrongly ignore the integration-suite's
+# coverage.go source and its archived reports/coverage.md register)
 *.out
-coverage.*
+coverage.html
+coverage.txt
+coverage.xml
 *.coverprofile
 profile.cov
 
@@ -50,6 +54,17 @@ bin/
 # Frontend
 node_modules/
 chat-frontend/dist/
+
+# Machine-local integration-suite env wiring (per-developer; never commit)
+tools/archived/integration-suite/.env.local
+
+# Per-run reports written by the archived single-site suite — kept local
+# only; only performance.json is tracked as the durable latency baseline.
+tools/archived/integration-suite/reports/last-run*.md
+tools/archived/integration-suite/reports/coverage.md
+
+# Claude Code harness lock artifact
+.claude/scheduled_tasks.lock
 
 # Vitest cache (created when vitest is run from a non-package directory)
 .vite/

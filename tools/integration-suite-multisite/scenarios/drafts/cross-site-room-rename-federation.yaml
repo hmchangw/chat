@@ -1,0 +1,180 @@
+scenario: cross-site-room-rename-federation
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §1 row 1 + room-service/handler.go (room.rename) + room-worker outbox emits + inbox-worker/handler.go:52 (metadata-only federation)
+status: draft
+tag: positive
+
+# Cross-site federation tail — alice (site-a, owner) renames a room
+# whose subscribers include bob on site-b. room-worker-site-a iterates
+# the room's site-a subscriptions, looks up each subscriber's user
+# record on site-a's `users` collection to find their `siteId`, and
+# publishes outbox.site-a.to.site-b.room_renamed for any remote
+# subscriber. Federation Sources land that event in INBOX_site-b.
+#
+# This scenario exercises three multi-site grammar features:
+#   1. per-site seed.users (alice on site-a, bob on site-b)
+#   2. per-site seed.rooms + seed.memberships (r-shared on both)
+#   3. seed.remote_users — bob is projected into site-a's `users`
+#      collection with siteId=site-b so production code on site-a
+#      can classify him as a remote subscriber.
+#
+# Authors writing future cross-site federation tests follow the
+# same pattern: project the cross-site identities they need on the
+# acting site, list them in that site's memberships, fire the verb.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      remote_users:
+        bob:
+          home_site: site-b
+      rooms:
+        - id: r-shared
+          name: SharedChannel
+          type: channel
+      memberships:
+        alice:
+          - room: r-shared
+            roles: [owner]
+        bob:
+          - room: r-shared
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
+      rooms:
+        - id: r-shared
+          name: SharedChannel
+          type: channel
+      memberships:
+        bob: [r-shared]
+
+pre_fire_scripts:
+  - prep-outbox.sh
+
+input:
+  site: site-a
+  verb: nats_request
+  # Rename subject pattern from pkg/subject —
+  # chat.user.<account>.request.room.<roomID>.<siteID>.room.rename
+  subject: chat.user.${alice.account}.request.room.r-shared.site-a.room.rename
+  payload:
+    # Body shape from room-service handleRoomRename — only newName is
+    # in the wire body; roomID and account come from the subject (the
+    # authoritative identity).
+    newName: SharedChannelRenamed
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — synchronous reply confirms room-service-site-a accepted.
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+
+  # Surface 2 — rooms doc on site-a updated with the new name.
+  # Localises "rename request was honored locally" before we check
+  # any cross-site state.
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        _id: r-shared
+    match:
+      name: SharedChannelRenamed
+
+  # Surface 3 — local canonical event on ROOMS_site-a. room-service-
+  # site-a publishes here so room-worker can consume. The canonical
+  # event carries the new name under `newName` (not `name`); the
+  # production payload shape — verified verbatim from a failing run's
+  # `reply from system:` line — is
+  #   { account, roomId, newName, timestamp, ... }
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: ROOMS_site-a
+      filter_subject: chat.room.canonical.site-a.>
+    match:
+      body_json:
+        newName: SharedChannelRenamed
+        roomId: r-shared
+
+  # Surface 4 — the OUTBOX publish on site-a. room-worker-site-a
+  # detects bob as a remote subscriber (via the remote_users stub
+  # in site-a's `users` collection) and publishes
+  # outbox.site-a.to.site-b.room_renamed locally.
+  #
+  # Production wraps every cross-site event in pkg/model.OutboxEvent:
+  #   { type, siteId, destSiteId, payload (base64-encoded JSON), timestamp }
+  # The Surface assertion targets the envelope fields — they prove
+  # cross-site ROUTING is correct (right type, right destination
+  # site). The inner payload duplicates what Surface 3 already
+  # asserts on the canonical event; asserting it again here would
+  # require a base64-decode matcher primitive that doesn't exist
+  # yet (would be a generic grammar extension, not a one-off).
+  #
+  # Localisation: if it passes but Surface 5 fails, the federation
+  # Source isn't delivering; if it fails, the publish itself never
+  # happened (or the OUTBOX stream is missing — see ARCHITECTURE.md
+  # §0 "the tool's limits").
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: OUTBOX_site-a
+      filter_subject: outbox.site-a.to.site-b.room_renamed
+    match:
+      body_json:
+        type: room_renamed
+        siteId: site-a
+        destSiteId: site-b
+    timeout: 10s
+
+  # Surface 5 — federation tail on site-b. The Source on INBOX_site-b
+  # sources OUTBOX_site-a with filter outbox.site-a.to.site-b.> AND a
+  # SubjectTransform that rewrites the inbound subject to
+  # chat.inbox.site-b.aggregate.> before storing — matching
+  # pkg/stream.Inbox()'s declared schema and inbox-worker's consumer
+  # bind. So the same envelope as Surface 4 arrives here under the
+  # post-transform subject, not the raw outbox.* form.
+  - location: jetstream_consume
+    site: site-b
+    args:
+      stream: INBOX_site-b
+      filter_subject: chat.inbox.site-b.aggregate.room_renamed
+    match:
+      body_json:
+        type: room_renamed
+        siteId: site-a
+        destSiteId: site-b
+    timeout: 15s
+
+  # Surface 6 — federation effect applied on site-b. inbox-worker-site-b
+  # consumes the aggregate event and runs UpdateSubscriptionNamesForRoom
+  # (inbox-worker/handler.go:296 → main.go:209 UpdateMany on the
+  # subscriptions collection with $set: {name: <newName>}). bob's
+  # subscription mirror on site-b ends up with the renamed name.
+  #
+  # This is the user-visible point of federating a rename. Surfaces 1-5
+  # prove the event was published, routed, and received; Surface 6
+  # proves it was applied. A regression that drops the Mongo update
+  # while keeping the consume would pass Surfaces 1-5 and silently
+  # ship broken — Surface 6 is what stops that.
+  #
+  # `createdAt: {$exists: false}` opts out of the mongo_find poller's
+  # default createdAt >= startTime auto-merge — subscriptions use
+  # joinedAt, not createdAt, so without the opt-out the filter
+  # matches zero docs (see pollers/mongo.go:buildMongoFilter).
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: subscriptions
+      filter:
+        roomId: r-shared
+        u.account: ${bob.account}
+        createdAt: { $exists: false }
+    match:
+      name: SharedChannelRenamed
+      roomId: r-shared
+    timeout: 15s
