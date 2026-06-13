@@ -61,6 +61,9 @@ func loadScenarioBody(path string, data []byte) (*Scenario, error) {
 	if err := ValidateSiteFields(&s); err != nil {
 		return nil, err
 	}
+	if err := ValidateMultiInput(&s); err != nil {
+		return nil, err
+	}
 
 	s.SourcePath = path
 	return &s, nil
