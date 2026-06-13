@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-13T20:58:55Z",
+  "lastRunAt": "2026-06-13T21:07:22Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -406,9 +406,24 @@
         "ranAt": "2026-06-13T20:53:41Z"
       }
     },
+    "message-edit-to-whitespace-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T21:07:22Z",
+        "verdict": "pass",
+        "durationMs": 107
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:07:22Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:07:22Z"
+      }
+    },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-13T20:58:55Z",
+        "ranAt": "2026-06-13T21:07:22Z",
         "verdict": "pass",
         "durationMs": 216
       },

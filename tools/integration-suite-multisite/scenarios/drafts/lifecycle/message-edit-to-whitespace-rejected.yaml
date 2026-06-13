@@ -1,0 +1,73 @@
+scenario: message-edit-to-whitespace-rejected
+source: >
+  history-service/internal/service/messages.go:306-308 (EditMessage rejects
+  newMsg when strings.TrimSpace(req.NewMsg) == "" — a TRIMMED empty check),
+  contrasted with message-gatekeeper/handler.go:196-198 (msg.send rejects
+  content ONLY when req.Content == "" — an exact, UN-trimmed check, F-007).
+  canModify (utils.go:159-169) is sender-only; findMessage (utils.go:76-91)
+  reads messages_by_id by message_id then checks RoomID==roomID.
+status: draft
+tag: negative
+
+# VALIDATION ASYMMETRY between the two write paths (corroborates F-007):
+# the SAME logical operation — set a message's content to whitespace-only
+# ("   ") — is ACCEPTED by msg.send (gatekeeper uses `== ""`, no trim) but
+# REJECTED by msg.edit (history uses `strings.TrimSpace(...) == ""`). So a
+# user can POST a blank-looking message but cannot EDIT a message into the
+# same blank-looking state.
+#
+# This is direct evidence that the chat-app's own edit path treats
+# whitespace-only as empty — i.e. F-007 (send accepting it) is a genuine
+# inconsistency, not an intentional design choice. One of the two checks is
+# wrong; they must agree.
+#
+# Seeds a real persisted message (alice sender, no async race — this is NOT
+# a worker-persistence-lag probe; the message exists before the edit) and
+# edits it to whitespace. Unique room r-editws to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-editws
+          name: Edit Whitespace
+          type: channel
+      memberships:
+        alice:
+          - room: r-editws
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0editwsmsg000000001
+        created_at: 1748736000000
+        room_id: r-editws
+        site_id: site-a
+        msg: "original non-empty content"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+
+input:
+  - id: edit_ws
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.r-editws.site-a.msg.edit
+    payload:
+      messageId: m0editwsmsg000000001
+      newMsg: "   "
+    credential: ${alice.credential}
+
+expected:
+  # The edit is rejected bad_request — history trims before the empty check,
+  # so whitespace-only is "empty" here (unlike send, F-007).
+  - location: reply
+    match:
+      task: edit_ws
+      body_json:
+        code: bad_request

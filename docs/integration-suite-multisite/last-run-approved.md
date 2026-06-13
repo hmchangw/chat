@@ -1,7 +1,7 @@
 # Integration tests — approved   (latest merge: d225aa9f)
 
-Run:        2026-06-13T20:58:55Z   (runID 1a61)
-Duration:   779ms
+Run:        2026-06-13T21:07:22Z   (runID f11e)
+Duration:   675ms
 Total:      0 test cases
 
 ## Confusion matrix
@@ -46,6 +46,7 @@ DRAFT         0       0
 | logs-tail-positive-captures-request-failed/stub | pass | pass | pass | — | 0 | 122ms |
 | logs-tail-regression-guard-not-must-fail-when-line-present/stub | fail | fail | fail | — | 0 | 111ms |
 | message-edit-just-sent-races-persistence/stub | pass | pass | fail | — | 0 | 210ms |
+| message-edit-to-whitespace-rejected/stub | pass | pass | pass | — | 0 | 107ms |
 | message-pipeline-send-and-persist/stub | pass | pass | pass | — | 0 | 216ms |
 | message-worker-at-all-mention-persisted/stub | pass | pass | pass | — | 0 | 105ms |
 | message-worker-mentions-persisted/stub | pass | pass | pass | — | 0 | 104ms |

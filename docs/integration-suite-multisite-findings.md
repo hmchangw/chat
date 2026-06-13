@@ -246,12 +246,26 @@ published, and persisted verbatim. The only other content gate is the
 20KB size cap. A user can post blank-looking messages at will.
 
 Demonstrated by
-`scenarios/drafts/gatekeeper-whitespace-only-content-accepted.yaml`
+`scenarios/drafts/gatekeeper-validation/gatekeeper-whitespace-only-content-accepted.yaml`
 (green): a "   " send produces a canonical event and a persisted row
 with msg="   ".
 
-Decision the team owns: trim before the non-empty check (reject
-whitespace-only), or is it intentionally allowed?
+**Corroborated by the edit path — the asymmetry is the smoking gun.**
+`msg.edit` (history-service) rejects the SAME whitespace-only content:
+`if strings.TrimSpace(req.NewMsg) == ""` → `bad_request`
+(messages.go:306-308). So the chat-app's own edit path treats
+whitespace-only as empty, while send (gatekeeper) does not. The same
+logical operation — set a message's content to "   " — is accepted by
+send but rejected by edit. This proves the two write paths disagree on
+the empty-content rule, so the no-trim send check is an inconsistency,
+not an intentional allowance. Demonstrated by
+`scenarios/drafts/lifecycle/message-edit-to-whitespace-rejected.yaml`
+(green, run f11e): editing a seeded message to "   " replies
+`code: bad_request`.
+
+Decision the team owns: align the two paths. Either trim before the
+non-empty check in the gatekeeper (reject whitespace-only on send too —
+matches edit), or relax edit to allow it. Today they contradict.
 ---
 
 ## F-008 — `publishThreadSubOutboxIfRemote` has three observationally-indistinguishable exit paths
