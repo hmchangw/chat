@@ -70,13 +70,24 @@ tools/archived/integration-suite/
   stays in `docs/`. It's a chat-app-team-facing report from the
   multi-site work, nothing to do with this archive.
 
+## Separate module — out of the root `./...`
+
+This tree has its own `go.mod` (module
+`github.com/hmchangw/chat/tools/archived/integration-suite`), so it is
+**not** part of the root module's package set. Root `make lint`,
+`make test`, and `go build ./...` no longer descend here. That's
+deliberate: the tool imports live `github.com/hmchangw/chat/pkg`
+packages that drift as main evolves (e.g. the room-key Valkey→Mongo
+move, #285), and while it lived in the root module every such drift
+broke repo-wide CI for a frozen reference nobody runs. The boundary
+stops that.
+
 ## Can I still run it?
 
-Yes. The Makefile output paths have been updated to write reports
-to `tools/archived/integration-suite/reports/` instead of
-`docs/integration-suite/` (the old location no longer exists). Go
-import paths have been rewritten under
-`github.com/hmchangw/chat/tools/archived/integration-suite/`. The
-tool builds clean and the historical scenarios validate, so a
-diagnostic run is possible if you ever need one. The expectation
-is you won't.
+Not as shipped, and that's expected. The `go.mod` is intentionally
+minimal (no require graph / go.sum), so it does not build standalone —
+and it currently references APIs main has since changed (#285 removed
+the Valkey room-key store its seeder used). If you ever genuinely need
+a diagnostic run, add `replace github.com/hmchangw/chat => ../../..`,
+run `go mod tidy`, and fix whatever API drift surfaces. The
+expectation is you won't — use `tools/integration-suite-multisite/`.
