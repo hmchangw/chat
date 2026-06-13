@@ -123,6 +123,33 @@ message-bucket partition key from the resolved `created_at` column.
 
 ---
 
+## `mongo_data:` at scenario top level
+
+For pre-conditions the first-class `seed.{users,rooms,memberships}`
+shapes don't cover (e.g. thread rooms, thread subscriptions), seed raw
+Mongo docs at the top level. Unlike `cassandra_data`, Mongo is
+per-site, so each entry names its `site`:
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: t-1
+        parentRoomId: r-eng
+        parentMessageId: m-1
+```
+
+`collection` must be one of the sandbox-owned collections the harness
+drops between scenarios — the closed set is `users`, `rooms`,
+`subscriptions`, `room_members`, `thread_rooms`, `thread_subscriptions`.
+Docs are inserted verbatim (BSON), so use the on-disk `bson` field
+names (`_id`, `parentRoomId`), not JSON tags. `${...}` substitution
+tokens (e.g. `${alice.account}`) resolve inside doc values. See
+SCENARIO-REFERENCE §4 for the full field reference.
+
+---
+
 ## Authoring discipline — assert at every observable layer
 
 A scenario fires one verb and observes its effects. When the verb

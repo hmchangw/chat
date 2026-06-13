@@ -45,13 +45,70 @@ import (
 //
 // Returns one error per detected conflict. Empty slice = clean.
 //
-// Filenames in the error messages are base names only (no leading
-// path) for readability; the operator already knows the directory.
+// Filenames in the error messages are shown relative to the common
+// directory prefix of all loaded scenarios — compact, but still
+// disambiguating two same-basename files in different subdirectories
+// (legal since §2.8). A plain basename would collide, e.g.
+// messages/room-creates.yaml vs rooms/room-creates.yaml.
 func CrossScenarioCheck(scenarios []*Scenario) []error {
+	labels := scenarioLabels(scenarios)
 	var out []error
-	out = append(out, checkAliasRoomRoleConflicts(scenarios)...)
-	out = append(out, checkAliasHomeSiteConflicts(scenarios)...)
+	out = append(out, checkAliasRoomRoleConflicts(scenarios, labels)...)
+	out = append(out, checkAliasHomeSiteConflicts(scenarios, labels)...)
 	return out
+}
+
+// scenarioLabels maps each scenario's SourcePath to a compact,
+// disambiguating display label: the path relative to the longest
+// common directory prefix shared by all loaded scenarios. Falls back
+// to the basename when a path isn't under the common prefix (or the
+// set has a single file).
+func scenarioLabels(scenarios []*Scenario) map[string]string {
+	paths := make([]string, 0, len(scenarios))
+	for _, s := range scenarios {
+		if s != nil && s.SourcePath != "" {
+			paths = append(paths, s.SourcePath)
+		}
+	}
+	prefix := commonDirPrefix(paths)
+	out := make(map[string]string, len(paths))
+	for _, p := range paths {
+		rel := strings.TrimPrefix(strings.TrimPrefix(p, prefix), "/")
+		if rel == "" {
+			rel = filepath.Base(p)
+		}
+		out[p] = rel
+	}
+	return out
+}
+
+// commonDirPrefix returns the longest directory path that is a prefix
+// of every input path. Returns "" for zero/one inputs (so the label
+// falls back to basename — no point trimming a single file).
+func commonDirPrefix(paths []string) string {
+	if len(paths) < 2 {
+		return ""
+	}
+	prefix := filepath.Dir(paths[0])
+	for _, p := range paths[1:] {
+		dir := filepath.Dir(p)
+		for prefix != "" && !strings.HasPrefix(dir+"/", prefix+"/") {
+			prefix = filepath.Dir(prefix)
+			if prefix == "/" || prefix == "." {
+				return ""
+			}
+		}
+	}
+	return prefix
+}
+
+// labelFor returns the display label for a scenario, defaulting to the
+// basename when the path isn't in the precomputed map (defensive).
+func labelFor(labels map[string]string, sourcePath string) string {
+	if l, ok := labels[sourcePath]; ok && l != "" {
+		return l
+	}
+	return filepath.Base(sourcePath)
 }
 
 // aliasRoomKey is a cache-key fingerprint for the sub-cache class.
@@ -64,11 +121,11 @@ type aliasRoomKey struct {
 // collects per (alias, room) the set of distinct roles-fingerprints,
 // and flags any (alias, room) seen with two or more distinct
 // fingerprints across scenarios.
-func checkAliasRoomRoleConflicts(scenarios []*Scenario) []error {
+func checkAliasRoomRoleConflicts(scenarios []*Scenario, labels map[string]string) []error {
 	// (alias, room) → set of (roles-fingerprint → list of scenarios)
 	seen := map[aliasRoomKey]map[string][]string{}
 	for _, s := range scenarios {
-		short := filepath.Base(s.SourcePath)
+		short := labelFor(labels, s.SourcePath)
 		for siteName, site := range s.Sites {
 			_ = siteName // reserved for future per-site cache scoping
 			for alias, memberships := range site.Seed.Memberships {
@@ -132,11 +189,11 @@ func checkAliasRoomRoleConflicts(scenarios []*Scenario) []error {
 // users are alias-based for repeatability), so the same alias in
 // two scenarios → same userID → same cache slot → the first
 // scenario's home-site projection wins for the rest of the run.
-func checkAliasHomeSiteConflicts(scenarios []*Scenario) []error {
+func checkAliasHomeSiteConflicts(scenarios []*Scenario, labels map[string]string) []error {
 	// alias → home_site → list of scenarios
 	seen := map[string]map[string][]string{}
 	for _, s := range scenarios {
-		short := filepath.Base(s.SourcePath)
+		short := labelFor(labels, s.SourcePath)
 		for siteName, site := range s.Sites {
 			for alias := range site.Seed.Users {
 				if seen[alias] == nil {

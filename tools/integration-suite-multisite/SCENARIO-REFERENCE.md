@@ -161,11 +161,15 @@ seed:
       type: channel        # "channel" or "dm"
       name: Engineering    # required for channel; omit for dm
       user_count: 501      # optional; overrides the auto-derived count
+      created_at: ${now - 1h}  # optional; defaults to now if omitted
 ```
 
 Rooms are inserted into the site's Mongo `rooms` collection before the
 fire. Closed enum for `type`. DM rooms are limited to two members (see
-`docs/spec-room-subscription-seed.md`).
+`docs/spec-room-subscription-seed.md`). `created_at` must be a
+`${now ± duration}` token (same grammar as `cassandra_data`
+timestamps — see §4); omitted → the room's `createdAt` is stamped at
+seed time (sandbox open).
 
 `user_count` defaults to the number of seeded memberships for the
 room (mirrors what `room-worker` writes at create-room time). Set

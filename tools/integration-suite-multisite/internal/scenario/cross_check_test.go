@@ -321,3 +321,51 @@ expected:
 	assert.Contains(t, crossErrs[0].Error(), `alias="alice"`)
 	assert.Contains(t, crossErrs[0].Error(), "r-shared")
 }
+
+// TestCommonDirPrefix covers the longest-common-directory computation
+// the warning labels rely on.
+func TestCommonDirPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty", nil, ""},
+		{"single-file-no-trim", []string{"/d/drafts/a.yaml"}, ""},
+		{"same-dir", []string{"/d/drafts/a.yaml", "/d/drafts/b.yaml"}, "/d/drafts"},
+		{"nested-subdirs", []string{"/d/drafts/msg/a.yaml", "/d/drafts/rooms/b.yaml"}, "/d/drafts"},
+		{"mixed-depth", []string{"/d/drafts/a.yaml", "/d/drafts/msg/b.yaml"}, "/d/drafts"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, commonDirPrefix(c.in))
+		})
+	}
+}
+
+// TestScenarioLabels_DisambiguatesSameBasenameInSubdirs is the §2.8
+// regression guard: two scenarios with the same filename in different
+// subdirectories must render distinctly in F-009 warnings (a plain
+// basename would collide).
+func TestScenarioLabels_DisambiguatesSameBasenameInSubdirs(t *testing.T) {
+	scs := []*Scenario{
+		{Name: "x", SourcePath: "/d/drafts/messages/room-creates.yaml"},
+		{Name: "y", SourcePath: "/d/drafts/rooms/room-creates.yaml"},
+	}
+	labels := scenarioLabels(scs)
+	assert.Equal(t, "messages/room-creates.yaml", labels["/d/drafts/messages/room-creates.yaml"])
+	assert.Equal(t, "rooms/room-creates.yaml", labels["/d/drafts/rooms/room-creates.yaml"])
+}
+
+// TestScenarioLabels_SameDirCollapsesToBasename keeps the flat-layout
+// output compact: when every scenario shares one directory, labels are
+// bare basenames (backward-compatible with the pre-§2.8 reports).
+func TestScenarioLabels_SameDirCollapsesToBasename(t *testing.T) {
+	scs := []*Scenario{
+		{Name: "a", SourcePath: "/d/drafts/a.yaml"},
+		{Name: "b", SourcePath: "/d/drafts/b.yaml"},
+	}
+	labels := scenarioLabels(scs)
+	assert.Equal(t, "a.yaml", labels["/d/drafts/a.yaml"])
+	assert.Equal(t, "b.yaml", labels["/d/drafts/b.yaml"])
+}
