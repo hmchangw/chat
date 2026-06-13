@@ -2,6 +2,8 @@ package readers
 
 import (
 	"context"
+	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/hmchangw/chat/tools/integration-suite-multisite/internal/verbs"
@@ -13,6 +15,13 @@ import (
 // reply is point-in-time.
 type NATSReplyReader struct {
 	in chan Event
+
+	// dropped counts replies discarded because the inject buffer was
+	// full (§2.9 substrate-loudness). Expected to stay 0 — one reply
+	// per scenario into a depth-4 buffer — but a non-zero value means
+	// the matcher never saw a reply that the system did send, so it's
+	// surfaced via slog.Warn on every drop rather than vanishing.
+	dropped atomic.Uint64
 }
 
 // NewNATSReplyReader returns a NATSReplyReader ready to receive injected replies.
@@ -53,6 +62,13 @@ func (r *NATSReplyReader) Inject(out *verbs.Outcome, latency time.Duration, trac
 		Type:        EventCascade,
 	}:
 	default:
-		// drop if buffer full — should not happen with 4-deep buffer and 1 reply per scenario
+		// Buffer full — should not happen (depth-4 buffer, one reply per
+		// scenario). If it ever does, the reply is gone before the matcher
+		// can see it: a positive `reply` assertion will time out with a
+		// misleading "no reply" reason, and an absence assertion will
+		// falsely-green. Never silent — count + warn loudly (§2.9).
+		n := r.dropped.Add(1)
+		slog.Warn("reply reader: inject buffer full — reply DROPPED before matcher could see it; a positive reply assertion will misleadingly time out and an absence assertion may falsely pass",
+			"location", "reply", "owner_svc", ownerSvc, "dropped_total", n, "buffer_cap", cap(r.in))
 	}
 }

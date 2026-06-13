@@ -59,6 +59,25 @@ func TestNewReplyPayload_TransportError(t *testing.T) {
 	assert.Equal(t, int64(5000), p.LatencyMs)
 }
 
+// TestNATSReplyReader_InjectDropsLoudlyWhenBufferFull covers the §2.9
+// substrate-loudness guard. With no Watch draining r.in, the depth-4
+// buffer fills after four injects; the fifth has nowhere to go. A
+// silently-dropped reply would make a positive `reply` assertion time
+// out with a misleading "no reply" reason, or falsely-green an absence
+// assertion — so the drop must be counted (and logged), not vanish.
+func TestNATSReplyReader_InjectDropsLoudlyWhenBufferFull(t *testing.T) {
+	r := NewNATSReplyReader() // in-buffer depth 4, no Watch draining it
+	inject := func() {
+		r.Inject(&verbs.Outcome{Reply: []byte(`{}`)}, time.Millisecond, "", time.Now(), "")
+	}
+	for i := 0; i < 4; i++ {
+		inject()
+	}
+	require.Equal(t, uint64(0), r.dropped.Load(), "first 4 injects fit the depth-4 buffer")
+	inject() // 5th — buffer full
+	assert.Equal(t, uint64(1), r.dropped.Load(), "5th inject into a full buffer must increment the drop counter")
+}
+
 // TestNATSReplyReader_InjectEmitsEvent confirms the reader plumbs the
 // typed payload through Watch.
 func TestNATSReplyReader_InjectEmitsEvent(t *testing.T) {

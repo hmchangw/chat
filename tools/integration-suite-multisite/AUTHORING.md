@@ -82,9 +82,9 @@ sites:
           type: channel
           name: Engineering
       memberships:
-        - room: r-eng
-          user: alice
-          role: owner
+        alice:                # user alias (must be in seed.users)
+          - room: r-eng       # must reference a room in seed.rooms
+            roles: [owner]    # list; defaults to [member] if omitted
   site-b:
     seed:
       users:
@@ -114,7 +114,7 @@ cassandra_data:
         created_at: ${now - 2m}
         bucket: ${bucket(created_at)}
         message_id: m-1
-        body_text: "hello"
+        msg: "hello"          # CQL column is `msg`, NOT body_text
 ```
 
 `${now - 2m}` resolves to a Unix millisecond timestamp two minutes
