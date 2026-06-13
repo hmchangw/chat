@@ -207,7 +207,9 @@ func ValidateFlow(s *Scenario, plan *FlowPlan) (warnings []string, err error) {
 }
 
 // checkRef validates a single ${<id>.…} reference against the flow
-// position table.
+// position table. Refs that don't match any declared step id are
+// treated as placeholder/seed references and pass through (the
+// runtime resolver handles them).
 func checkRef(scenarioName, fromID, refID string, idPosition map[string]int, plan *FlowPlan) error {
 	fromPos, ok := idPosition[fromID]
 	if !ok {
@@ -215,10 +217,10 @@ func checkRef(scenarioName, fromID, refID string, idPosition map[string]int, pla
 	}
 	refPos, ok := idPosition[refID]
 	if !ok {
-		// Unknown id reference — handled later by substitution at runtime
-		// in the legacy path; in flow scenarios we hard-reject up-front.
-		return fmt.Errorf("scenario %q: id %q references ${%s.…} but no input/expected with id %q is declared",
-			scenarioName, fromID, refID, refID)
+		// Not a declared step id — this is a placeholder / seed-user
+		// reference (${alice.account}, ${now}, etc.). Runtime resolver
+		// validates it later; the loader doesn't second-guess.
+		return nil
 	}
 	if refPos > fromPos {
 		return fmt.Errorf("scenario %q: id %q references ${%s.…} but %q is positioned after %q in the flow",

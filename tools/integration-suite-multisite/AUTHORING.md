@@ -254,6 +254,66 @@ genuinely no seed-grammar way to set up the precondition.
 
 ---
 
+## When to use `flow:` (and when not to)
+
+**Default: don't use `flow:`.** Most scenarios are 1-fire/N-assert
+validations; the legacy shape (sequential fires, flat `expected[]`
+evaluated after) is fine and shorter. Adding `flow:` for these is
+just verbosity.
+
+**Use `flow:` when you need a gate between fires** — wait for X to
+land before firing Y. Authorable bug classes that need it:
+- read-after-write (the second fire reads what the first wrote)
+- contract pairing with a known race (F-012, F-013) — prove the
+  contract holds **after** the precondition is observable
+- cross-site federation timing (wait for an event to federate to
+  site-b before firing the next user action on site-b)
+- dedup-window precision (fire the second publish deterministically
+  inside the first's observed dedup window)
+
+If your scenario doesn't need a gate, skip `flow:`.
+
+---
+
+## Negative-observe semantics
+
+> ⚠️ **Soundness gotcha — read this before adding `flow:` to a
+> scenario with `not: true` assertions.**
+
+The legacy shape evaluates `not: true` assertions against the
+**whole accumulated buffer** at scenario tail —
+`Consistently().ShouldNot()` proves absence across the entire run.
+
+The flow shape changes this: a `not: true` observation in `flow:`
+proves absence **only during its own `timeout` window**. Events
+arriving outside the window are not its concern.
+
+**The trap:** an early `not: true` step proving "no canonical for
+this message" silently passes if the dropped-then-delivered message's
+canonical arrives during a LATER barrier. The author got a
+false-negative finding.
+
+**The rule (loader-enforced as a warning):**
+> **End-state negative checks belong in the final barrier of
+> `flow:`.** The loader emits a warning when a `not: true` observe
+> step sits anywhere else.
+
+Concrete impact on existing F-006-class drop assertions
+(`gatekeeper-empty-content-rejected`,
+`quote-nonexistent-parent-drops-message`,
+`gatekeeper-thread-reply-missing-parent-createdat-rejected`): if
+ever migrated to `flow:`, their `not: true` observations MUST stay
+in the final barrier. Mid-flow placement silently weakens the
+finding. The legacy shape protects these assertions today — there
+is no urgency to migrate them.
+
+**Tail parallel-observe barrier is the cookbook pattern** for tail
+checks. `[neg_a, neg_b, pos_c]` shares one 5s window instead of
+serializing three separate 5s waits, and exactly matches today's
+flat `expected[]` semantics. See `FLOW.md` for examples.
+
+---
+
 ## Substitution token vocabulary
 
 Available in `subject`, `payload`, `credential`, `match`, and `args`
@@ -273,6 +333,7 @@ fields.
 | `$auto` | runtime-unique random string |
 | `${<id>.reply.body_json.<field>}` | a field of task `<id>`'s captured reply (multi-fire only) |
 | `${<id>.reply.status}` | sugar for `${<id>.reply.body_json.status}` |
+| `${<id>.body_json.<field>}` | a field of expected[].id `<id>`'s matched event body (flow scenarios only) |
 
 ---
 

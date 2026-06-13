@@ -585,6 +585,124 @@ expected:
 
 ---
 
+## 6.2 `flow:` shape (optional, opt-in)
+
+When a scenario needs **a gate between fires** — wait for an
+observation before firing the next task — add a top-level `flow:`
+field that orders existing `input:` and `expected:` entries by id.
+Without `flow:`, scenarios run as today (fires sequentially, then
+flat `expected[]` evaluated against the accumulated buffer). With
+`flow:`, the flow executor walks the ordering barrier-by-barrier;
+observations positioned between fires are gates.
+
+**When to add `flow:`:** you need to wait for X to land before
+firing Y, or test a read-after-write contract. Otherwise leave it
+out — legacy is fine for simple 1-fire/N-assert validation.
+
+**Grammar:**
+
+```
+flow ::= group ( ">>" group )*
+group ::= id | "[" id ( "," id )* "]"
+```
+
+- `>>` = sequential.
+- `[a, b]` = parallel observation group (homogeneous; mixed
+  fire+observe rejected; parallel-fire `[fire_a, fire_b]` reserved
+  but rejected in v1 with "deferred to the concurrency slice").
+- Nested brackets rejected.
+- Compact (`a >> [b, c] >> d`) and YAML list (`- a / - [b, c] / - d`)
+  forms both accepted; they normalize identically.
+
+**Required when `flow:` is present:**
+- Every `input[].id` and `expected[].id` must appear in `flow:`
+  exactly once. Un-referenced entries are a hard error — flow is
+  the single source of truth.
+- Every input and every expected gets an `id:` (multi-input already
+  required ids on inputs; in flow scenarios expecteds need them too).
+
+**Field additions on `expected[]`:**
+
+| Field | When | Type | Notes |
+|---|---|---|---|
+| `id` | required when `flow:` is set | string | `[a-z][a-z0-9_-]*`, unique. Names the observation for `${id.body_json.x}` substitution and flow ordering. |
+| `of` | optional, reply observations only | string | Names an `input[].id` whose tagged reply this observation matches against. Defaults to the immediately-preceding fire in the linearized flow. Required only when ambiguity exists (multiple fires precede without an intervening reply observation). |
+
+`match.task:` directive is **rejected** in flow scenarios; use
+`expected[].of` instead. The legacy multi-input shape (no `flow:`)
+continues to accept `match.task:`.
+
+**Reply scoping (auto, no field for the common case):**
+- One preceding fire before a reply observation → position-default;
+  no `of:` needed.
+- Multiple fires precede with no intervening reply observation →
+  loader rejects as ambiguous; add `of: <input-id>`.
+
+**New substitution form:**
+
+| Token | Resolves to |
+|---|---|
+| `${<expected-id>.body_json.<field>}` | A field of the matched event's `body_json` map (mongo doc, JetStream event body, reply payload, …). Walks dotted paths. |
+
+Continues to work in flow scenarios: `${<input-id>.reply.body_json.x}`,
+`${<input-id>.reply.status}`, and all existing placeholder /
+`${now}` / `$auto` forms.
+
+**Worked example:**
+
+```yaml
+input:
+  - id: create
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload: { name: Engineering }
+    credential: ${alice.credential}
+
+  - id: rename
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.${create.reply.body_json.roomId}.site-a.room.rename
+    payload: { newName: Renamed }
+    credential: ${alice.credential}
+
+expected:
+  - id: create_accepted
+    location: reply
+    match: { body_json: { status: accepted } }
+
+  - id: room_persisted
+    location: mongo_find
+    site: site-a
+    args: { collection: rooms, filter: { _id: ${create.reply.body_json.roomId} } }
+    match: { _id: ${create.reply.body_json.roomId}, name: Engineering, type: channel }
+    timeout: 10s
+
+  - id: rename_accepted
+    location: reply
+    match: { body_json: { status: accepted } }
+
+  - id: room_renamed_in_mongo
+    location: mongo_find
+    site: site-a
+    args: { collection: rooms, filter: { _id: ${create.reply.body_json.roomId} } }
+    match: { _id: ${create.reply.body_json.roomId}, name: Renamed }
+
+  - id: rename_canonical
+    location: jetstream_consume
+    site: site-a
+    args: { stream: ROOMS_site-a, filter_subject: chat.room.canonical.site-a.> }
+    match: { body_json: { type: room_renamed, newName: Renamed } }
+
+flow: create >> create_accepted >> room_persisted >> rename >> rename_accepted >> [room_renamed_in_mongo, rename_canonical]
+```
+
+See `AUTHORING.md` for the `## Negative-observe semantics` rule
+(critical when migrating scenarios with `not: true`), and `FLOW.md`
+for the cookbook patterns.
+
+---
+
 ## 7. Universal primitives — `location` + `site` rules
 
 ### 7.1 Site presence/absence

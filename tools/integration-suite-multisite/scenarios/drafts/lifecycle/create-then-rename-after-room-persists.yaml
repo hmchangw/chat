@@ -1,0 +1,103 @@
+scenario: create-then-rename-after-room-persists
+source: >
+  room-service/handler.go (create + rename),
+  room-worker/handler.go (canonical apply that materializes the room in Mongo);
+  flow: shape integration proof per
+  docs/superpowers/specs/2026-06-13-integration-suite-flow.md
+status: draft
+tag: positive
+
+# FLOW: shape integration proof — the contract pair to F-012
+# (docs/integration-suite-multisite-findings.md).
+#
+# F-012 demonstrated the RACE side: creating a room returns
+# {status: accepted} synchronously but room-worker has not yet
+# materialized the doc in Mongo, so an immediate rename races and
+# fails. This scenario authors the CONTRACT side, currently
+# unauthorable without flow: — prove that ONCE the room observably
+# exists, rename works correctly.
+#
+# The Mongo observation step (room_persisted) IS the precondition.
+# The flow gates the second fire (rename) on its match. Without the
+# gate, rename would race room-worker as F-012 demonstrated.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice_flow: { verified: true }
+
+input:
+  - id: create
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice_flow.account}.request.room.site-a.create
+    payload:
+      name: FlowEngineering
+    credential: ${alice_flow.credential}
+
+  - id: rename
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice_flow.account}.request.room.${create.reply.body_json.roomId}.site-a.room.rename
+    payload:
+      newName: FlowEngineeringRenamed
+    credential: ${alice_flow.credential}
+
+expected:
+  - id: create_accepted
+    location: reply
+    match:
+      body_json:
+        status: accepted
+        roomType: channel
+
+  # THE GATE — room is materialized in Mongo by room-worker. The flow
+  # waits here before firing rename, converting the F-012 race into a
+  # deterministic ordering.
+  - id: room_persisted
+    location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        _id: ${create.reply.body_json.roomId}
+    match:
+      _id: ${create.reply.body_json.roomId}
+      name: FlowEngineering
+      type: channel
+      siteId: site-a
+    timeout: 10s
+
+  - id: rename_accepted
+    location: reply
+    match:
+      body_json:
+        status: accepted
+
+  # Tail parallel-observe barrier (the cookbook default) — one window
+  # covers all end-state checks instead of N×timeout serialization.
+  - id: room_renamed_in_mongo
+    location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        _id: ${create.reply.body_json.roomId}
+    match:
+      _id: ${create.reply.body_json.roomId}
+      name: FlowEngineeringRenamed
+
+  - id: rename_canonical
+    location: jetstream_consume
+    site: site-a
+    args:
+      stream: ROOMS_site-a
+      filter_subject: chat.room.canonical.site-a.>
+    match:
+      body_json:
+        type: room_renamed
+        roomId: ${create.reply.body_json.roomId}
+        newName: FlowEngineeringRenamed
+
+flow: create >> create_accepted >> room_persisted >> rename >> rename_accepted >> [room_renamed_in_mongo, rename_canonical]
