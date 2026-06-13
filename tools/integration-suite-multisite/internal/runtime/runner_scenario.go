@@ -181,6 +181,29 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 		}
 	}
 
+	// Route by shape: scenarios with a flow: section go through the
+	// flow executor; legacy scenarios use today's fireTasks + flat
+	// expected[] loop.
+	if plan := s.FlowPlanForExec(); plan != nil {
+		flowDeps := &flowDeps{
+			firer:      sb.Deps.Dispatcher,
+			pollerFor:  func(loc string) flowPoller { p, _ := sb.PollerReg.Get(loc); return p },
+			matcherReg: sb.Deps.MatcherReg,
+			users:      sb.Users,
+			services:   sb.Deps.Services,
+		}
+		v, _ := RunFlow(ctx, s, plan, flowDeps, subCtx)
+		dur := time.Since(start)
+		if v.Pass {
+			recordScenario(deps.Perf, deps.Report, s, scenarioVerdict{Outcome: "pass"}, dur)
+		} else {
+			recordScenario(deps.Perf, deps.Report, s,
+				scenarioVerdict{Outcome: "fail", Reason: flowFailureReason(v)},
+				dur)
+		}
+		return nil
+	}
+
 	// Fire every task in declaration order, threading the substitution
 	// context so each task's reply feeds later tasks' ${<id>.reply.*}
 	// references (spec §5).

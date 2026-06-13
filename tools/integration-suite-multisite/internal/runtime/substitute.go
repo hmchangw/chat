@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -28,6 +29,28 @@ type Context struct {
 	// ${<expected-id>.body_json.*} substitution in downstream tasks/
 	// observations (flow scenarios only — legacy scenarios leave it nil).
 	Events map[string]EventData
+
+	// captureMu serializes parallel-observation goroutines writing to
+	// Events / Replies. Set by the flow executor for the lifetime of
+	// each parallel barrier; nil for sequential barriers and for the
+	// legacy multi-input path (which writes only from the main goroutine).
+	captureMu *sync.Mutex
+}
+
+// CaptureLock locks the per-barrier capture mutex when the flow
+// executor is inside a parallel observation barrier; no-op otherwise.
+// Read in resolveReplyToken / resolveEventToken? No — those are pure
+// reads on map values; the read happens on the field BEFORE the
+// goroutine's write, ordered by the executor.
+func (c *Context) CaptureLock() {
+	if c.captureMu != nil {
+		c.captureMu.Lock()
+	}
+}
+func (c *Context) CaptureUnlock() {
+	if c.captureMu != nil {
+		c.captureMu.Unlock()
+	}
 }
 
 // ReplyData is a completed task's reply, captured for substitution.
