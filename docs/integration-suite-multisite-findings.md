@@ -211,9 +211,25 @@ Demonstrated by
 (Positive counterpart `gatekeeper-quote-happy-path-embeds-snapshot.yaml`
 confirms the success path embeds + persists the snapshot.)
 
+**Severity escalation — it also drops LEGITIMATE quotes (timing race).**
+"Missing" includes "exists but not yet persisted." `message-worker`
+persists to Cassandra asynchronously, behind the gatekeeper publish, so a
+message quoted shortly after it was sent is not yet readable by
+history-service's `GetMessageByID` → the quote fetch NotFounds → the
+quoting message is dropped, even though the parent is a real, valid
+message. Demonstrated by
+`scenarios/drafts/quote/gatekeeper-quote-just-sent-message.yaml`
+(multi-input, run 144c): task1 sends M, task2 immediately quotes M; only
+M's canonical appears — the quoting message produced no canonical at all
+(dropped). Unlike F-011 this race is consistently ordered (quote-fetch
+always precedes the worker's write), so it reproduces reliably. So F-006
+is not just bad-input handling — a normal "reply-with-quote" issued
+quickly after the original silently loses the user's message.
+
 Decision the team owns: should a bad quote target drop the whole message
-(current behavior) or soft-fail as the doc describes? This is a
-code-vs-contract mismatch.
+(current behavior) or soft-fail as the doc describes (ship without the
+quote)? This is a code-vs-contract mismatch, and the timing facet makes
+it a real message-loss path, not just a malformed-input edge.
 
 ---
 
@@ -465,12 +481,14 @@ replies*.
 
 Reproduced by
 `tools/integration-suite-multisite/scenarios/drafts/message-worker-subsequent-thread-reply-multi-input.yaml`
-(two msg.send fires to one pre-seeded parent): run 2465 showed the
-parent row with `tcount: 1` after both replies, stable for the full
-10s poll window. The scenario additionally asserts both reply rows
-persisted (ordered before the tcount check) so a `got 1` there is a
-confirmed lost update, not a dropped reply. (The race is timing-
-dependent; back-to-back firing maximizes it.)
+(two msg.send fires to one pre-seeded parent). **Confirmed lost update,
+run 8088:** the scenario asserts both reply rows persisted
+(`m1subseqreply…` + `m2subseqreply…` in `messages_by_id`) *before* the
+tcount check; the run PASSED both row assertions, then failed `tcount: 2`
+with `got 1`, stable for the full 10s poll. So two reply rows exist
+(true count = 2) yet the parent's stored `tcount` is 1 — a lost update,
+not a dropped reply. (First seen run 2465; the race is timing-dependent,
+back-to-back firing maximizes it.)
 
 The decision the chat-app team owns: is a concurrency-induced
 `tcount` undercount acceptable (it self-heals on the next reply, and

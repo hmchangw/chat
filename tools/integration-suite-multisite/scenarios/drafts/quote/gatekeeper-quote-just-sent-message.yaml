@@ -1,0 +1,97 @@
+scenario: gatekeeper-quote-just-sent-message
+source: >
+  message-gatekeeper/handler.go:257-340 (resolveQuoteSnapshot synchronously fetches the quoted
+  parent from history-service; a NotFound propagates and drops the whole message — F-006),
+  message-worker persists the canonical message to Cassandra ASYNC (behind the gatekeeper
+  publish), so a just-sent message is not yet readable by history GetMessageByID; multi-input
+  per 2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: negative
+
+# BLINDSPOT (F-006 timing facet, multi-input): quoting a message you JUST
+# sent drops the quoting message. task1 sends M; task2 immediately quotes
+# M by its (client-set) id. The gatekeeper resolves the quote via a
+# synchronous history fetch, but M is persisted ASYNC by message-worker
+# (~100ms behind the canonical publish), and v1 multi-input fires
+# back-to-back with no wait — so task2's quote-fetch reliably precedes M's
+# persistence → NotFound → the whole quoting message is dropped (F-006).
+#
+# Unlike F-011's tcount race, this is consistently ordered (the fetch
+# always precedes the worker's Cassandra write), so it reproduces
+# reliably. This scenario documents the CURRENT (drop) behavior; whether
+# it SHOULD soft-fail (ship without the quote) is the F-006 decision.
+#
+# Confirmed by run 144c: only M's canonical appeared; the quoting message
+# produced no canonical at all.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  - id: send_original
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m0origmsg00000000001
+      content: the original message
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567912
+    credential: ${alice.credential}
+
+  - id: send_quote
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m1quotingmsg00000001
+      content: quoting the message I just sent
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567913
+      quotedParentMessageId: m0origmsg00000000001
+    credential: ${alice.credential}
+
+expected:
+  # Warmer (first) — the quoting message is rejected with not_found because
+  # its quote target (the just-sent M) isn't persisted yet. requestId is a
+  # valid UUID so the reply IS routable.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e01234567913
+    match:
+      received:
+        - body_json:
+            code: not_found
+
+  # The ORIGINAL send succeeded — its canonical event is published.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0origmsg00000000001
+
+  # The quoting message was DROPPED — no canonical event for it.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m1quotingmsg00000001
