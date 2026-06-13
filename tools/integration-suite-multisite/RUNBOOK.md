@@ -32,11 +32,22 @@ cd docker-local && ./setup.sh && cd ..
 ## Build the service images (once, and after any service code change)
 
 ```sh
-make build-test-images        # ~8 min cold; faster on incremental rebuilds
+make -C tools/integration-suite-multisite build-images
 ```
 
-This tags `chat-local-services-<svc>:latest`, which the multisite
-infra package consumes when booting the 18 service containers.
+Builds ONLY the 9 services the suite actually boots
+(`auth-service`, `broadcast-worker`, `history-service`,
+`inbox-worker`, `message-gatekeeper`, `message-worker`,
+`notification-worker`, `room-service`, `room-worker`) and tags them
+`chat-local-services-<svc>:latest`, which the multisite infra
+package consumes when booting the 18 service containers.
+
+Do NOT run the root `make build-test-images` here: it's all-or-
+nothing across all 13 services in `docker-local/compose.services.yaml`,
+which currently aborts on `upload-service`'s stale Dockerfile pin
+(see `docs/integration-suite-multisite-findings.md` F-010). The
+suite doesn't need `upload-service` or `user-presence-service`, so
+the scoped target sidesteps the gap entirely.
 
 ---
 
