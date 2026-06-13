@@ -345,6 +345,28 @@ could falsely-green a negative scenario without anyone noticing.
 The suite's "byte-identical state per scenario" guarantee turns
 out to be DB-level only.
 
+**Cache inventory (scope for whichever fix you choose).** A suite-side
+audit found **13 in-process caches across 5 services**. Both
+mitigations below need to touch each one, so the inventory is the
+work surface either way:
+
+| Service | Caches | Implementation |
+|---|---|---|
+| `message-gatekeeper` | sub-cache `(roomID, account)`, room-meta-cache `roomID`, user-cache | all `hashicorp/golang-lru` (expirable) |
+| `broadcast-worker` | room-meta-cache, user-cache, room-cipher cache | 2× golang-lru; `pkg/roomcrypto.Encoder` is a raw `map + sync.RWMutex` |
+| `message-worker` | user-cache, DEK cache | golang-lru; `pkg/atrest` 2Q LRU |
+| `history-service` | emoji, subscription, room-times, min-last-seen | 4× golang-lru (`pkg/emoji`, `internal/readcache`) |
+| `notification-worker` | room-meta-cache | golang-lru (`pkg/roommetacache`) |
+
+**12 of the 13 are `hashicorp/golang-lru`** — each already has a
+built-in `.Purge()`, so a flush hook is a one-liner per cache. The
+lone outlier is `pkg/roomcrypto.Encoder` (raw map), which needs a
+~10-line hand-written `Purge()`. Most caches are owned by shared
+`pkg/` packages (`userstore`, `roommetacache`, `atrest`, `emoji`,
+`roomcrypto`), so a flush is implemented once per package and reused.
+The Valkey-backed caches (`pkg/roomsubcache`, search restricted-rooms)
+are out of scope — the sandbox already resets Valkey.
+
 **Mitigation options for the chat-app team:**
 
 1. **Env-driven cache TTL override.** Services accept e.g.

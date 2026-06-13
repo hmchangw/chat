@@ -446,18 +446,19 @@ done for the other five:
 
 | Poller | Substrate | Audit state |
 |---|---|---|
-| `reply` | dispatcher's reply buffer | wrong verb (reply only fires for nats_request) — covered in §7.2 pitfall |
+| `reply` | dispatcher's reply buffer | **audited + loudened.** The full-inject-buffer `default:` drop was silent; added an `atomic.Uint64` drop counter + `slog.Warn` naming the substrate so a dropped reply can't masquerade as "no reply" (positive assertion times out misleadingly) or falsely-green an absence assertion. The verb-mismatch footgun (reply only fires for nats_request) is the separate §7.2 pitfall. |
 | `mongo_find` | Mongo driver query | **audited + loudened.** Dropped `//nolint:errcheck` on `cur.Close(ctx)`; replaced the stringy `strings.Contains(err.Error(), "context")` guard with `errors.Is(err, context.Canceled\|DeadlineExceeded)`; pre-cursor `Find` failure, mid-stream `Close` failure, decode failure, and cursor-iteration failure each carry a distinct warning naming collection+filter and the likely substrate cause. |
 | `cassandra_select` | gocql iter | **audited + loudened.** `iter.Close()` was already checked; warnings rewritten to name the query/params/decoded row prefix so substrate breakage (down node, missing keyspace, schema drift, bad CQL) is unmistakable in the log — "zero events" warnings explicitly say `NOT 'absent', they are 'never observed'`. |
 | `jetstream_consume` | js.Stream subscribe | **audited + loudened.** Reader: misleading `"jetstream.rooms-canonical:"` error prefix retired (reader is generic across streams); observer-buffer drop now slog.Warn on first + every 100th + on teardown (previously silent — the worst §2.9 shape for a `not: true` assertion since the message arrived but the matcher never saw it); `DeleteConsumer` teardown failure warns (was `_ = `; ErrConsumerNotFound suppressed since InactiveThreshold may have reaped first). Poller: `getOrOpen` and missing-conn warnings rewritten with the "substrate not exercised" / "zero events are NOT 'absent'" idiom, available-site list added on missing-conn. |
 | `nats_subscribe` | core NATS subscribe | subscribe error returned by Warm — already loud, modulo same disciplines as logs_tail |
 | `logs_tail` | docker logs subprocess | **fixed** in 5ee1a74; see commit body for the trail |
 
-**§2.9 audit complete.** All six pollers either loudened in this
-sweep (logs_tail / cassandra_select / mongo_find / jetstream_consume)
-or judged already loud (reply / nats_subscribe). The matcher-vs-
-system test-placement corollary above remains the durable rule
-for new pollers.
+**§2.9 audit complete.** All six primitives loudened: logs_tail,
+cassandra_select, mongo_find, jetstream_consume, and reply (drop
+counter) hardened across the sweep; nats_subscribe was already loud
+(subscribe error hard-fails through Warm; buffer drop logged). The
+matcher-vs-system test-placement corollary below remains the durable
+rule for new pollers.
 
 **Test-placement corollary.** When verifying *poller behavior*
 (does the matcher behave correctly with present-vs-absent events
@@ -734,8 +735,8 @@ Two separate specs were anticipated, each non-trivial:
 | **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
 | **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Shipped.** Recursive discovery + `scenario:`-field uniqueness check (validate + runner startup) + path in `last-run.md` failure detail + path column in interactive menu. Path-prefix filtering is the named follow-up; ship on demand. |
-| **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six pollers; convert silent failures to loud `slog.Warn` (or hard errors). `logs_tail` done; five more to audit. | **One done; rest pending.** 1-2 hours per remaining poller. Independent of any spec direction. |
-| **Cross-scenario cache isolation (§2.10)** | Tool-side mitigation discipline (unique cache keys per scenario) + optional loader check for duplicate `(account, roomID)` pairs. Pairs with chat-app finding F-009 for the structural fix. | **Discipline named; check not built.** ~15 min for the AUTHORING.md note; ~1 hour for the loader check. Ship when a scenario can't easily route around the discipline. |
+| **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six primitives; convert silent failures to loud `slog.Warn` (or hard errors). | **Shipped — all six done.** logs_tail, cassandra_select, mongo_find, jetstream_consume, reply (drop counter) loudened; nats_subscribe already loud. See §2.9 detail table. |
+| **Cross-scenario cache isolation (§2.10)** | Tool-side mitigation discipline (unique cache keys per scenario) + loader check for conflicting cache keys. Pairs with chat-app finding F-009 for the structural fix. | **Shipped (warn-only).** AUTHORING.md note + `CrossScenarioCheck` wired into `make validate` (fires 3 warnings on the current set). Promotion to hard error pending the coordinated scenario cleanup. |
 
 **Sequencing — the original "which spec first" question
 is partially answered.** Multi-site shipped first (case-based world

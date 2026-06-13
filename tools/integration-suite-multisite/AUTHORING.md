@@ -509,11 +509,15 @@ reviewer understands the dependency.
 
 ### Loader-time enforcement
 
-`make validate` does not yet check this discipline — it's
-documented but unenforced. If you trip it, the failure mode is
-silent (wrong verdict, runs alphabetically after a scenario that
-cached the wrong state). The loader check is plan-ahead §2.10's
-next concrete deliverable.
+`make validate` checks this discipline (warn-only today):
+`CrossScenarioCheck` flags both conflict shapes — `(alias, room)`
+declared with different role sets, and an alias declared with
+different home sites — and prints `WARNING (F-009): …` per conflict.
+It does NOT fail the run yet; promotion to a hard error is gated on
+the coordinated cleanup of the existing conflicts (plan-ahead §2.10).
+Until then, treat any F-009 warning as a real bug: untreated, the
+failure mode is silent (wrong verdict, order-dependent on whichever
+scenario cached the conflicting state first).
 
 ---
 
