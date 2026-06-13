@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastRunAt": "2026-06-08T22:29:02Z",
+  "lastRunAt": "2026-06-13T19:31:30Z",
   "cases": {
     "cross-site-message-federation/stub": {
       "latest": {
@@ -26,9 +26,9 @@
     },
     "cross-site-room-rename-federation/stub": {
       "latest": {
-        "ranAt": "2026-06-08T21:31:38Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 12045
+        "durationMs": 12222
       },
       "best": {
         "verdict": "pass",
@@ -41,7 +41,7 @@
     },
     "cross-site-seed-visibility/stub": {
       "latest": {
-        "ranAt": "2026-06-08T21:31:38Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 104
       },
@@ -54,11 +54,26 @@
         "ranAt": "2026-06-06T22:38:32Z"
       }
     },
+    "dm-create-idempotency-multi-input/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T19:31:30Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T19:09:31Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T19:09:31Z"
+      }
+    },
     "gatekeeper-empty-content-rejected/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 5213
+        "durationMs": 5225
       },
       "best": {
         "verdict": "pass",
@@ -69,9 +84,24 @@
         "ranAt": "2026-06-08T18:32:03Z"
       }
     },
+    "gatekeeper-invalid-message-id-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T19:31:30Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      }
+    },
     "gatekeeper-large-room-bot-bypass/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 102
       },
@@ -86,7 +116,7 @@
     },
     "gatekeeper-large-room-member-blocked/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 5213
       },
@@ -101,9 +131,9 @@
     },
     "gatekeeper-large-room-owner-bypass/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 108
+        "durationMs": 104
       },
       "best": {
         "verdict": "pass",
@@ -116,7 +146,7 @@
     },
     "gatekeeper-large-room-thread-reply-exempt/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 102
       },
@@ -131,7 +161,7 @@
     },
     "gatekeeper-malformed-requestid-silent-drop/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 10113
       },
@@ -146,9 +176,9 @@
     },
     "gatekeeper-not-subscribed-rejected/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 5213
+        "durationMs": 5214
       },
       "best": {
         "verdict": "pass",
@@ -161,7 +191,7 @@
     },
     "gatekeeper-quote-cross-context-mismatch-rejected/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 5213
       },
@@ -176,9 +206,9 @@
     },
     "gatekeeper-quote-happy-path-embeds-snapshot/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 104
+        "durationMs": 103
       },
       "best": {
         "verdict": "pass",
@@ -191,9 +221,9 @@
     },
     "gatekeeper-quote-nonexistent-parent-drops-message/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 10103
+        "durationMs": 10102
       },
       "best": {
         "verdict": "pass",
@@ -206,7 +236,7 @@
     },
     "gatekeeper-thread-reply-missing-parent-createdat-rejected/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 5213
       },
@@ -221,9 +251,9 @@
     },
     "gatekeeper-whitespace-only-content-accepted/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 104
+        "durationMs": 107
       },
       "best": {
         "verdict": "pass",
@@ -236,9 +266,9 @@
     },
     "history-service-get-message-by-id/stub": {
       "latest": {
-        "ranAt": "2026-06-08T21:31:38Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 103
+        "durationMs": 106
       },
       "best": {
         "verdict": "pass",
@@ -251,9 +281,9 @@
     },
     "infra-sanity-rooms-pipeline-site-a/stub": {
       "latest": {
-        "ranAt": "2026-06-08T21:31:38Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 205
+        "durationMs": 204
       },
       "best": {
         "verdict": "pass",
@@ -266,9 +296,9 @@
     },
     "infra-sanity-rooms-pipeline-site-b/stub": {
       "latest": {
-        "ranAt": "2026-06-08T21:31:38Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 205
+        "durationMs": 206
       },
       "best": {
         "verdict": "pass",
@@ -318,9 +348,9 @@
     },
     "message-pipeline-send-and-persist/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 211
+        "durationMs": 212
       },
       "best": {
         "verdict": "pass",
@@ -333,9 +363,9 @@
     },
     "message-worker-at-all-mention-persisted/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 104
+        "durationMs": 105
       },
       "best": {
         "verdict": "pass",
@@ -348,7 +378,7 @@
     },
     "message-worker-mentions-persisted/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 104
       },
@@ -359,6 +389,58 @@
       "worst": {
         "verdict": "pass",
         "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "message-worker-subsequent-thread-reply-multi-input/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T19:31:30Z",
+        "verdict": "fail",
+        "durationMs": 10106,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 10.000s.\nMatchShape failed.\n  expected:          {\"message_id\":\"m0subseqparent000001\",\"tcount\":2}\n  reply from system: {\"attachments\":null,\"card\":null,\"card_action\":null,\"created_at\":\"2025-06-01 00:00:00.000Z\",\"deleted\":null,\"edited_at\":null,\"enc_meta\":null,\"enc_payload\":null,\"file\":null,\"mentions\":null,\"message_id\":\"m0subseqparent000001\",\"msg\":\"parent message for the subsequent-reply test\",\"pinned_at\":null,\"pinned_by\":null,\"quoted_parent_message\":null,\"reactions\":null,\"room_id\":\"r-general\",\"sender\":{\"account\":\"threadauthor\",\"app_id\":null,\"app_name\":null,\"company_name\":\"threadauthor\",\"eng_name\":\"threadauthor\",\"id\":\"u-threadauthor\",\"is_bot\":null},\"site_id\":\"site-a\",\"sys_msg_data\":null,\"tcount\":1,\"thread_parent_created_at\":null,\"thread_parent_id\":null,\"thread_room_id\":\"019ec278950376029f6ac437ca9b0813\",\"tshow\":null,\"type\":null,\"updated_at\":null,\"visible_to\":null}\n  mismatch reason:   matches_shape: field \"tcount\": got 1 want 2\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T19:20:33Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T19:20:33Z"
+      }
+    },
+    "message-worker-thread-reply-publishes-tcount-badge/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T16:09:26Z",
+        "verdict": "pass",
+        "durationMs": 202
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:09:26Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T16:07:16Z"
+      }
+    },
+    "message-worker-thread-reply-with-mention/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T19:31:30Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
       }
     },
     "room-create-federates-cross-site/stub": {
@@ -422,7 +504,7 @@
     },
     "thread-first-reply-happy-path/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
         "durationMs": 106
       },
@@ -437,9 +519,9 @@
     },
     "thread-first-reply-remote-parent-federates-subscription/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 224
+        "durationMs": 293
       },
       "best": {
         "verdict": "pass",
@@ -452,9 +534,9 @@
     },
     "thread-reply-to-nonexistent-parent-creates-orphan/stub": {
       "latest": {
-        "ranAt": "2026-06-08T22:29:02Z",
+        "ranAt": "2026-06-13T19:31:30Z",
         "verdict": "pass",
-        "durationMs": 5105
+        "durationMs": 5104
       },
       "best": {
         "verdict": "pass",

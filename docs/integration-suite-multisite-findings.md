@@ -425,3 +425,57 @@ service set. That unblocks fresh-image runs independently of this
 fix; it does not replace it (the Dockerfile is wrong regardless).
 
 ---
+
+## F-011 — `tcount` lost update under concurrent thread replies (non-atomic count-and-set)
+
+**Layer:** chat-app code (message-worker concurrency).
+
+**Status:** observed — chat-app team action pending.
+
+PR #245 (`ab1cafdc`) replaced the parent reply-count (`tcount`) update
+in `message-worker/store_cassandra.go` with a **non-atomic
+count-and-set**: `SaveThreadMessage` → `countAndSetParentTcount`
+(store_cassandra.go:327-344) does `countThreadReplies()` (SELECT/COUNT
+the thread partition, :287-303) then `setParentTcount(n)` (blind
+`UPDATE ... SET tcount = ?`, **no `IF`/CAS**, :305-325). The prior
+implementation (`incrementParentTcount`) used a Cassandra LWT
+(`IF tcount = ?`) retry loop and was lost-update-safe.
+
+`message-worker` consumes MESSAGES_CANONICAL with a concurrent
+worker pool (MAX_WORKERS goroutines), so two replies to the same
+thread are processed in parallel. The count-and-set then has a
+classic lost-update window:
+
+```
+reply1: INSERT its thread row            (1 row)
+reply1: countThreadReplies → 1           (reply2's row not yet visible)
+reply2: INSERT its thread row            (2 rows)
+reply2: countThreadReplies → 2
+reply2: setParentTcount(2)               tcount = 2
+reply1: setParentTcount(1)  ← runs LAST  tcount = 1   (overwrites)
+```
+
+Result: `tcount` is left at 1 though two replies exist. It is NOT
+self-correcting until the *next* reply (or a redelivery) triggers a
+recount — a thread that goes quiet keeps a permanently-wrong
+reply-count badge. The code comment ("idempotent on redelivery,
+avoiding the 2PC window of the old CAS increment") is accurate for
+*sequential* redelivery but does not address *concurrent distinct
+replies*.
+
+Reproduced by
+`tools/integration-suite-multisite/scenarios/drafts/message-worker-subsequent-thread-reply-multi-input.yaml`
+(two msg.send fires to one pre-seeded parent): run 2465 showed the
+parent row with `tcount: 1` after both replies, stable for the full
+10s poll window. The scenario additionally asserts both reply rows
+persisted (ordered before the tcount check) so a `got 1` there is a
+confirmed lost update, not a dropped reply. (The race is timing-
+dependent; back-to-back firing maximizes it.)
+
+The decision the chat-app team owns: is a concurrency-induced
+`tcount` undercount acceptable (it self-heals on the next reply, and
+the badge is best-effort), or should the count be made
+concurrency-safe again — e.g. restore the LWT/CAS increment, derive
+the badge from a COUNT at read time instead of a stored column, or
+serialize per-thread tcount writes? This is a regression in
+concurrency-safety from the pre-#245 CAS path.
