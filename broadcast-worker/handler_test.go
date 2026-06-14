@@ -1339,15 +1339,16 @@ func TestHandlePinned_ChannelRoomScopedPublish(t *testing.T) {
 	require.Len(t, pub.records, 1)
 	c := pub.records[0]
 	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
-	var roomEvt model.PinRoomEvent
+	var roomEvt model.PinStateRoomEvent
 	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 	assert.Equal(t, model.RoomEventMessagePinned, roomEvt.Type)
 	assert.Equal(t, roomID, roomEvt.RoomID)
 	assert.Equal(t, "site-a", roomEvt.SiteID)
 	assert.Equal(t, "msg-1", roomEvt.MessageID)
-	require.NotNil(t, roomEvt.PinnedBy)
-	assert.Equal(t, "alice", roomEvt.PinnedBy.Account)
-	assert.True(t, roomEvt.PinnedAt.Equal(pinnedAt))
+	assert.True(t, roomEvt.Pinned)
+	require.NotNil(t, roomEvt.By)
+	assert.Equal(t, "alice", roomEvt.By.Account)
+	assert.True(t, roomEvt.At.Equal(pinnedAt))
 }
 
 func TestHandlePinned_DMRoom_FansOutToBothMembers(t *testing.T) {
@@ -1388,10 +1389,11 @@ func TestHandlePinned_DMRoom_FansOutToBothMembers(t *testing.T) {
 	subjects := map[string]bool{}
 	for _, c := range pub.records {
 		subjects[c.subject] = true
-		var roomEvt model.PinRoomEvent
+		var roomEvt model.PinStateRoomEvent
 		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessagePinned, roomEvt.Type)
 		assert.Equal(t, "msg-1", roomEvt.MessageID)
+		assert.True(t, roomEvt.Pinned)
 	}
 	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])
@@ -1452,13 +1454,14 @@ func TestHandleUnpinned_ChannelRoomScopedPublish(t *testing.T) {
 	require.Len(t, pub.records, 1)
 	c := pub.records[0]
 	assert.Equal(t, subject.RoomEvent(roomID), c.subject)
-	var roomEvt model.UnpinRoomEvent
+	var roomEvt model.PinStateRoomEvent
 	require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 	assert.Equal(t, model.RoomEventMessageUnpinned, roomEvt.Type)
 	assert.Equal(t, "msg-1", roomEvt.MessageID)
-	require.NotNil(t, roomEvt.UnpinnedBy)
-	assert.Equal(t, "alice", roomEvt.UnpinnedBy.Account)
-	assert.Equal(t, unpinnedAtMs, roomEvt.UnpinnedAt.UnixMilli())
+	assert.False(t, roomEvt.Pinned)
+	require.NotNil(t, roomEvt.By)
+	assert.Equal(t, "alice", roomEvt.By.Account)
+	assert.Equal(t, unpinnedAtMs, roomEvt.At.UnixMilli())
 }
 
 func TestHandleUnpinned_DMRoom_FansOutToBothMembers(t *testing.T) {
@@ -1498,9 +1501,10 @@ func TestHandleUnpinned_DMRoom_FansOutToBothMembers(t *testing.T) {
 	subjects := map[string]bool{}
 	for _, c := range pub.records {
 		subjects[c.subject] = true
-		var roomEvt model.UnpinRoomEvent
+		var roomEvt model.PinStateRoomEvent
 		require.NoError(t, json.Unmarshal(c.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessageUnpinned, roomEvt.Type)
+		assert.False(t, roomEvt.Pinned)
 	}
 	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])

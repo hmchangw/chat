@@ -497,22 +497,23 @@ func (h *Handler) handlePinned(ctx context.Context, evt *model.MessageEvent) err
 		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
 	}
 
-	pin := model.PinRoomEvent{
+	pin := model.PinStateRoomEvent{
 		Type:           model.RoomEventMessagePinned,
 		RoomID:         room.ID,
 		SiteID:         room.SiteID,
 		Timestamp:      time.Now().UTC().UnixMilli(),
 		EventTimestamp: evt.Timestamp,
 		MessageID:      msg.ID,
-		PinnedBy:       msg.PinnedBy,
-		PinnedAt:       *msg.PinnedAt,
+		Pinned:         true,
+		By:             msg.PinnedBy,
+		At:             *msg.PinnedAt,
 	}
 	return h.publishMutation(ctx, room, model.RoomEventMessagePinned, msg.ID, &pin)
 }
 
 func (h *Handler) handleUnpinned(ctx context.Context, evt *model.MessageEvent) error {
 	msg := evt.Message
-	// UnpinnedAt comes from evt.Timestamp (set at publish): the canonical unpin
+	// At comes from evt.Timestamp (set at publish): the canonical unpin
 	// payload from history-service clears PinnedAt, so the message itself
 	// carries no unpin timestamp.
 
@@ -521,15 +522,16 @@ func (h *Handler) handleUnpinned(ctx context.Context, evt *model.MessageEvent) e
 		return fmt.Errorf("fetch room %s: %w", msg.RoomID, err)
 	}
 
-	unpin := model.UnpinRoomEvent{
+	unpin := model.PinStateRoomEvent{
 		Type:           model.RoomEventMessageUnpinned,
 		RoomID:         room.ID,
 		SiteID:         room.SiteID,
 		Timestamp:      time.Now().UTC().UnixMilli(),
 		EventTimestamp: evt.Timestamp,
 		MessageID:      msg.ID,
-		UnpinnedBy:     msg.PinnedBy,
-		UnpinnedAt:     time.UnixMilli(evt.Timestamp).UTC(),
+		Pinned:         false,
+		By:             msg.PinnedBy,
+		At:             time.UnixMilli(evt.Timestamp).UTC(),
 	}
 	return h.publishMutation(ctx, room, model.RoomEventMessageUnpinned, msg.ID, &unpin)
 }
