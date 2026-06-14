@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- RenderLastRunMD: the new per-case rendering ------------------------
@@ -203,4 +204,79 @@ func TestRender_FailureDetailsSkippedCasesIncluded(t *testing.T) {
 	assert.Contains(t, out, "## Failure Details")
 	assert.Contains(t, out, "### Mongo Partition")
 	assert.Contains(t, out, "chaos engine reset failed")
+}
+
+// --- Canary scenario bucketing (F-019 follow-up) ---
+// Scenarios under scenarios/drafts/_canary/ document unverified gaps
+// and are EXPECTED to fail until the gap is resolved. They must:
+//   1. NOT pollute the draft pass/fail headline.
+//   2. Be surfaced loudly when they FLIP (start passing → the gap
+//      may be resolved, prompting promotion out of _canary/).
+
+func TestRender_CanaryFailingDoesNotPolluteDraftFailCount(t *testing.T) {
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Cases: []ScenarioReport{
+			{ScenarioName: "real-test", SourcePath: "scenarios/drafts/foo.yaml",
+				Status: "draft", Kind: "positive",
+				Verdict: Verdict{Outcome: "pass"}},
+			{ScenarioName: "canary-x", SourcePath: "scenarios/drafts/_canary/canary-x.yaml",
+				Status: "draft", Kind: "negative",
+				Verdict: Verdict{Outcome: "fail", Reason: "intentional"}},
+		},
+	}
+	out := render(r, false)
+	// Real test should appear in DRAFT pass; canary's fail should NOT.
+	require.Contains(t, out, "DRAFT")
+	assert.NotContains(t, out, "DRAFT         1       1", "canary fail must not raise draft fail count")
+	// Canary section MUST be present.
+	assert.Contains(t, out, "Canaries", "report must surface a canary section")
+	assert.Contains(t, out, "canary-x", "canary scenario must be listed in its section")
+	assert.Contains(t, out, "expected-fail", "expected-fail canary must be labeled")
+}
+
+func TestRender_CanaryPassingSurfacesAsFlipped(t *testing.T) {
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Cases: []ScenarioReport{
+			{ScenarioName: "canary-fixed", SourcePath: "scenarios/drafts/_canary/canary-fixed.yaml",
+				Status: "draft", Kind: "negative",
+				Verdict: Verdict{Outcome: "pass"}},
+		},
+	}
+	out := render(r, false)
+	// Flipped canary must be loud.
+	assert.Contains(t, out, "FLIPPED", "passing canary must emit a FLIPPED warning")
+	assert.Contains(t, out, "canary-fixed", "flipped canary must be named")
+	assert.Contains(t, out, "promote", "flipped warning must tell author to promote it out of _canary/")
+}
+
+func TestRender_CanaryNotInPosNegConfusionMatrix(t *testing.T) {
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Cases: []ScenarioReport{
+			{ScenarioName: "canary-x", SourcePath: "scenarios/drafts/_canary/x.yaml",
+				Status: "draft", Kind: "negative",
+				Verdict: Verdict{Outcome: "fail"}},
+		},
+	}
+	out := render(r, false)
+	// Confusion matrix shows 0 across the board for non-canary cases.
+	// -ve fail row should be 0, not 1.
+	assert.Contains(t, out, "-ve (error/warning)   0             0",
+		"canary fail must not enter the -ve fail bucket")
+}
+
+func TestRender_NonCanaryNegativeStillCountsInConfusionMatrix(t *testing.T) {
+	// Regression guard: ordinary negative scenarios still bucket normally.
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Cases: []ScenarioReport{
+			{ScenarioName: "real-neg", SourcePath: "scenarios/drafts/foo.yaml",
+				Status: "draft", Kind: "negative",
+				Verdict: Verdict{Outcome: "pass"}},
+		},
+	}
+	out := render(r, false)
+	assert.Contains(t, out, "-ve (error/warning)   1             0")
 }

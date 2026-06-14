@@ -314,6 +314,95 @@ flat `expected[]` semantics. See `FLOW.md` for examples.
 
 ---
 
+## Canary scenarios — documenting unverified gaps
+
+> ⚠️ **Use sparingly.** A canary is a scenario that **intentionally
+> fails** because it documents a gap the suite cannot fix from here
+> (e.g. F-019 — publish-time authorization not enforced). Most
+> scenarios are not canaries. If you can fix the underlying issue,
+> fix it; don't paper over it with a canary.
+
+### What a canary is
+
+A scenario placed under `scenarios/drafts/_canary/` whose assertions
+fail today because of a documented gap. Two consumers:
+
+1. **The reporter buckets it separately.** Canaries are excluded from
+   the DRAFT pass/fail headline and from the confusion matrix.
+   They get their own `## Canaries` section showing them as
+   `expected-fail`. A regular new regression does not get drowned in
+   canary noise — the "failures are loud" guarantee stays intact.
+2. **Flip detection.** If a canary starts passing, the reporter
+   surfaces a loud `## ⚠️  FLIPPED CANARIES` section telling the
+   reader the gap may be resolved and the scenario should be
+   promoted out of `_canary/`. Silent fix → silent canary rot →
+   convention erodes.
+
+### When to author one
+
+- The suite cannot fix the underlying issue (it lives in
+  production NATS config / ops-IaC / chat-app code outside this team)
+  AND a failing scenario documents the gap precisely.
+- A formal **F-NNN finding** exists in
+  `docs/integration-suite-multisite-findings.md` describing the gap,
+  the runtime-verification check (if any), and the expected
+  resolution path.
+
+If either is missing, **don't author a canary** — file the finding
+first, or fix the underlying issue.
+
+### Required shape
+
+```yaml
+# ⚠️ CANARY — INTENTIONALLY FAILS UNTIL F-NNN IS RESOLVED ⚠️
+#
+# (Header banner explaining: what this scenario asserts, why it
+# currently fails, what the canary becomes once the gap is fixed,
+# pointer to the F-NNN finding.)
+#
+# DO NOT delete this file because it "fails." See F-NNN.
+
+scenario: <name>
+status: draft
+tag: negative   # or positive, depending on what's being asserted
+…
+```
+
+Place the file under `tools/integration-suite-multisite/scenarios/drafts/_canary/<name>.yaml`.
+
+### Lifecycle
+
+1. **Create failing.** Author writes the scenario + header banner
+   + adds the F-NNN finding entry in the findings doc cross-referring
+   to the canary path. Loader parses it like any other scenario; the
+   tool buckets it as `expected-fail` in the report.
+2. **Run.** Every run shows it under `## Canaries` as `expected-fail`.
+   It does not affect DRAFT pass/fail counts.
+3. **Flips green.** The underlying gap gets resolved (suite-side fix,
+   ops/IaC change, or chat-app code). The next run surfaces the
+   canary in `## ⚠️  FLIPPED CANARIES` with a "promote" instruction.
+4. **Promote.** Author runs the finding's runtime-verification check
+   (named in the F-NNN entry) to confirm the gap is genuinely
+   resolved, moves the scenario out of `_canary/` into its real
+   topic subdirectory (e.g. `gatekeeper-validation/`), removes the
+   canary header banner, and closes the F-NNN finding with a
+   resolution note.
+
+### Anti-patterns
+
+- **Canary as a TODO marker** — if you can fix it, fix it. A canary
+  is for issues genuinely outside this team's reach.
+- **Canary without a F-NNN finding** — the finding is the durable
+  record; the canary is the executable witness. One without the
+  other is half a contract.
+- **Renaming a flipped canary in place** — the report's flip-detection
+  message is the trigger to verify the underlying gap is actually
+  resolved (not just a CI flake or assertion drift). Skip that
+  verification and a "fixed" canary may quietly re-fail on the next
+  infra change.
+
+---
+
 ## Substitution token vocabulary
 
 Available in `subject`, `payload`, `credential`, `match`, and `args`
