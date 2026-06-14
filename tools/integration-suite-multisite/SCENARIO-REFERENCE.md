@@ -923,6 +923,25 @@ key          ::= [a-zA-Z_][a-zA-Z0-9_.]*
 `it-<runID>-room-auto-<N>`. Useful for room names and IDs that must
 not collide across parallel or repeated runs.
 
+### Where `${now ± d}` arithmetic actually resolves
+
+`${now}` (with no offset) resolves **everywhere** — payloads,
+subjects, match, args, `mongo_data`, `cassandra_data` rows — returning
+`int64` millis.
+
+`${now - 1h}` / `${now + 5m}` arithmetic-only resolves inside
+**`cassandra_data` row values and `cassandra_select` args** today.
+Outside those two contexts (payloads, subjects, match shapes,
+`mongo_data`, `nats_subscribe` args, etc.) the bare arithmetic form
+errors with `unknown path "now-1h": no placeholder "now-1h" resolved`
+because the general substitute resolver doesn't recognize the offset
+without the `date:` cast prefix.
+
+The uniform-everywhere form is `${date:now ± d}` (next subsection),
+which returns `time.Time` and resolves wherever any other token does.
+The split exists for backward-compat: the Cassandra path predates the
+cast wrapper and keeps the bare arithmetic for its int64 timestamps.
+
 ### Type cast: `${date:<now-expr>}` → `time.Time`
 
 `${now}` returns an `int64` (unix millis) because that's what subjects

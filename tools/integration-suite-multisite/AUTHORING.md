@@ -406,10 +406,9 @@ fields.
 | `${<alias>.jwt}` | minted NATS JWT |
 | `${<alias>.nkey}` | nkey seed |
 | `${<alias>.credential}` | user-level credential shorthand |
-| `${now}` | `time.Now().UTC().UnixMilli()` (int64) |
-| `${now - 2m}` | relative offset, int64 millis (Cassandra seed rows) |
-| `${now + 1h}` | relative offset, int64 millis (positive direction) |
-| `${date:now}` / `${date:now-1h}` / `${date:now+5m}` | same expr, returns `time.Time` — use for BSON Date fields in `mongo_data` and anywhere a real `time.Time` is required |
+| `${now}` | `time.Now().UTC().UnixMilli()` (int64). Works everywhere. |
+| `${now - 2m}` / `${now + 1h}` | int64 millis offset. **Resolves only inside `cassandra_data` rows and `cassandra_select` args.** Elsewhere (payloads / subjects / match / `mongo_data` / `nats_subscribe` args), the bare arithmetic form errors with `unknown path` — use `${date:now-1h}` instead. |
+| `${date:now}` / `${date:now-1h}` / `${date:now+5m}` | same now-expression grammar, returns `time.Time` (UTC). **Works everywhere.** Use this for BSON Date fields in `mongo_data`, CQL timestamp params, and anywhere a real `time.Time` is required. |
 | `${bucket(<col>)}` | auto-computed message-bucket value |
 | `$auto` | runtime-unique random string |
 | `${<id>.reply.body_json.<field>}` | a field of task `<id>`'s captured reply (multi-fire only) |
