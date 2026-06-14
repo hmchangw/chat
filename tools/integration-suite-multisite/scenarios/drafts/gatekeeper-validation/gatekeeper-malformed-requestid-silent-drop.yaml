@@ -58,18 +58,21 @@ input:
 
   credential: ${alice.credential}
 
+# OPEN FINDING F-005 (silent drop) — EXPECTED TO FAIL until a rejected send
+# reaches the client. -ve scenario (we expect an error reply to fire); the
+# failure IS the bug (draft + fail = open finding). Per AUTHORING.md
+# §Pass/fail semantics.
 expected:
-  # Surface A (Warmer — declared first) — the BadRequest the gatekeeper
-  # computed is NEVER delivered to the client. We subscribe to ALL of
-  # alice's response subjects (a buggy reply would land on
-  # chat.user.<alice>.response.abc123, caught by the `>` wildcard) and
-  # assert via Consistently().ShouldNot() that no error envelope arrives.
-  # Source: message-gatekeeper/handler.go:136-145 (sendReply early return).
+  # CORRECT — the BadRequest the gatekeeper computed must be DELIVERED to the
+  # client. We subscribe to all of alice's response subjects (the reply would
+  # land on chat.user.<alice>.response.abc123, caught by `>`). EXPECTED: an
+  # error envelope arrives. FAILS today because sendReply early-returns on the
+  # non-UUID requestId (handler.go:136-145), so nothing is published — the
+  # client gets neither success nor error.
   - location: nats_subscribe
     site: site-a
     args:
       subject: chat.user.${alice.account}.response.>
-    not: true
     match:
       received:
         - body_json:
