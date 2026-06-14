@@ -40,6 +40,11 @@ services:
       - "8090:8090"
     environment:
       PORT: "8090"
+      # Uncomment to authenticate against creds-protected NATS servers. The
+      # mounted file is applied to all three connections (source/dest/request).
+      # NATS_CREDS_FILE: /etc/nats/backend.creds
+    # volumes:
+    #   - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     depends_on:
       - nats-source
       - nats-dest
