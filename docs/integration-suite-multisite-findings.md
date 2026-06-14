@@ -247,8 +247,10 @@ published, and persisted verbatim. The only other content gate is the
 
 Demonstrated by
 `scenarios/drafts/gatekeeper-validation/gatekeeper-whitespace-only-content-accepted.yaml`
-(green): a "   " send produces a canonical event and a persisted row
-with msg="   ".
+(−ve scenario, **fails at run 0c6a — the failure is the bug**): it asserts the
+correct behavior (a "   " send is rejected — no canonical, no persisted row)
+and fails because the send is accepted, producing a canonical with content
+"   " and a persisted row.
 
 **Corroborated by the edit path — the asymmetry is the smoking gun.**
 `msg.edit` (history-service) rejects the SAME whitespace-only content:
@@ -563,11 +565,14 @@ successfully sent (and whose canonical event *did* publish).
 
 Demonstrated by
 `scenarios/drafts/lifecycle/message-edit-just-sent-races-persistence.yaml`
-(multi-input, run 1a61, green): task1 sends M, task2 immediately edits M
-→ the edit reply is `code: not_found`, **and** M's canonical event is
-present on MESSAGES_CANONICAL (the send itself succeeded). The
-edit-fetch is consistently ordered before the worker's write, so it
-reproduces reliably under back-to-back fire.
+(multi-input, +ve scenario, **fails at run 0c6a — the failure is the bug**):
+it asserts the correct behavior (the edit succeeds — reply carries the
+messageId) and fails because task2's edit of the just-sent M returns
+`code: not_found`, while M's canonical event IS present (the send succeeded,
+asserted as a passing control). The edit-fetch is consistently ordered
+before the worker's write, so it reproduces reliably under back-to-back fire.
+(Contract complement that passes: `lifecycle/edit-after-persist-succeeds.yaml`
+— the same edit gated on persistence.)
 
 **This is the third confirmed facet of one root cause — the
 worker-persistence-lag blindspot.** An operation on a just-async-written

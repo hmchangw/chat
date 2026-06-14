@@ -57,16 +57,23 @@ input:
       newMsg: edited content
     credential: ${alice.credential}
 
+# OPEN FINDING F-013 (read-your-write) — EXPECTED TO FAIL until a just-sent
+# message is editable immediately. +ve scenario asserting the CORRECT
+# behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics. (Contract complement that DOES pass:
+# lifecycle/edit-after-persist-succeeds.yaml — same edit, gated on persistence.)
 expected:
-  # The edit of the just-sent message is rejected not_found (raced the
-  # async persistence). Synchronous reply scoped to the edit task.
+  # CORRECT — editing a message you just sent should succeed (read-your-write):
+  # the reply carries the messageId. FAILS today because the edit's findMessage
+  # races the async persist and returns not_found instead.
   - location: reply
     match:
       task: edit
       body_json:
-        code: not_found
+        messageId: m0editsent0000000001
 
-  # The original send did go through the canonical pipeline.
+  # Control (+ve, passes) — the original send DID go through the canonical
+  # pipeline, so the failure above is the edit race, not a broken send.
   - location: jetstream_consume
     site: site-a
     args:
