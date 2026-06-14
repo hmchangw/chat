@@ -782,17 +782,20 @@ the cross-site −ve confirms it federates and is applied on **site-b** too
 to end). The membership-scoping fix above must therefore apply before the
 outbox publish, or the leak crosses the federation boundary.
 
-**Blast radius — bounded (no push-notification leak).** Code analysis of
-`notification-worker/handler.go:131-201` shows the push fan-out iterates
-**only current room members** (`Members.GetMembers` from the roomsubcache);
-`followers`/`mentioned` merely filter *within* that member set, and the
-member cache is invalidated on member add/remove. So a mentioned non-member
-is never iterated and receives **no push**. The F-016 impact is therefore
-confined to follower state — the `thread_subscriptions` row, the "following
-threads" feed, and `thread_rooms.replyAccounts` — not push delivery.
-(Not assertable in the suite: push payloads are gzipped+batched and the
-pollers don't decompress — see the suite team's note; this bound is from
-code reading, not a green scenario.)
+**Blast radius — PUSH is bounded, but real-time BROADCAST is NOT (see F-022).**
+The **push** fan-out (`notification-worker/handler.go:131-201`) iterates
+**only current room members** (`Members.GetMembers` from the roomsubcache,
+invalidated on member add/remove); `followers`/`mentioned` merely filter
+*within* that member set, so a mentioned non-member is never iterated and
+receives **no push**. (Not assertable in the suite — push payloads are
+gzipped+batched; bound from code reading.) **However, the real-time
+broadcast fan-out is a different path and is NOT membership-gated:**
+`broadcast-worker.channelThreadFanOut` reads `thread_rooms.replyAccounts`
+directly and delivers the thread reply to every follower's
+`chat.user.{account}.event.room` with no membership check — so a non-member
+follower **does** receive thread-reply broadcasts in real time. See **F-022**
+(demonstrated, run 9c01). The F-016 follower-state corruption therefore
+*does* leak to delivery, just via broadcast rather than push.
 
 ## F-017 — a thread reply can attach to a parent in another room and pollute its tcount
 
@@ -879,13 +882,16 @@ The decision the team owns: member removal should also delete the user's
 `thread_rooms.replyAccounts` — in both the local removal and the federated
 `handleMemberRemoved` apply, so revocation holds across sites too.
 
-**Blast radius — bounded (no push-notification leak).** As with F-016, the
-push fan-out (`notification-worker/handler.go:131-201`) iterates only current
-room members and invalidates its member cache on `MemberRemoved`, so a
-removed member stops receiving pushes immediately. The lingering
-`thread_subscription` keeps them a thread *follower* (following-threads feed,
-`replyAccounts`) but does not deliver pushes. Impact is follower-state
-integrity, not notification delivery.
+**Blast radius — PUSH bounded, real-time BROADCAST is NOT (see F-022).**
+The push fan-out (`notification-worker/handler.go:131-201`) iterates only
+current room members and invalidates its cache on `MemberRemoved`, so a
+removed member stops receiving **pushes** immediately. **But** the removed
+member stays on `thread_rooms.replyAccounts` (this finding), and the
+real-time broadcast fan-out (`broadcast-worker.channelThreadFanOut`) reads
+`replyAccounts` with no membership check — so the removed member **keeps
+receiving thread-reply broadcasts** on `chat.user.{account}.event.room`. See
+**F-022**. So the lingering follower state is not merely cosmetic: it leaks
+live thread content to a removed member via broadcast.
 
 ---
 
@@ -1111,3 +1117,53 @@ Today, confidentiality and removal-revocation for channels are single-point
 (encryption + key rotation) with no delivery-layer fallback; in any
 unencrypted deployment, channel messages are readable by any authenticated
 user via topic subscription.
+
+---
+
+## F-022 — thread-reply real-time broadcast delivers to non-member (and removed-member) followers
+
+**Layer:** chat-app code (broadcast-worker thread fan-out).
+
+**Status:** observed — access / delivery; chat-app team action requested.
+**Reachability:** any non-member or removed member who is on a thread's
+`replyAccounts` (which F-016 grants via an `@`-mention, and F-018 leaves in
+place after removal). No special timing — deterministic.
+
+Thread-reply real-time delivery is **not** membership-scoped.
+`broadcast-worker.channelThreadFanOut` calls `GetThreadFollowers(parentMsgID)`
+— a direct read of `thread_rooms.replyAccounts` — and `threadFanOutAccounts`
+excludes only the sender and bots (no membership check). It then
+`publishToThreadAccounts` → `Publish(subject.UserRoomEvent(account))` =
+`chat.user.{account}.event.room` for **every** follower. So anyone on
+`replyAccounts` who is not a current room member is delivered the thread
+reply (in the unencrypted stack, in full plaintext).
+
+This is the **delivery counterpart** to F-016 / F-018 and **corrects their
+"push is bounded" notes**: the *push* fan-out (notification-worker) is
+membership-gated, but this *broadcast* fan-out is a separate path that is
+not. So:
+- **F-016** (non-member mentioned → added to `replyAccounts`) → that
+  non-member receives every subsequent thread reply, live.
+- **F-018** (removed member's `thread_subscription`/`replyAccounts` not
+  cleaned up) → the removed member keeps receiving thread replies, live.
+
+Demonstrated by
+`scenarios/drafts/threads/thread-reply-broadcast-delivers-to-nonmember-follower.yaml`
+(−ve scenario, **fails at run 9c01 — the failure is the bug**): bob, a
+non-member of `r-bthread` pre-seeded onto `replyAccounts` (the F-016 state),
+receives a member's thread reply on `chat.user.bob.event.room` with the full
+plaintext `message.content` — the `not:true` "bob is not delivered to" guard
+fails because the event arrives.
+
+Note: per-account targeting (`chat.user.{account}.event.room`) makes this a
+faithful demonstration that the *non-member specifically* is a delivery
+target — unlike the channel topic broadcast in F-021 (open topic). It is
+also config-independent at the targeting layer: even if the payload were
+encrypted, a non-member is still selected as a recipient and would receive
+the event (metadata + ciphertext) on their own subject.
+
+The decision the team owns: scope thread-reply fan-out to current room
+members — intersect `replyAccounts` with room membership in
+`channelThreadFanOut` — and/or fix the upstream `replyAccounts` hygiene
+(F-016 grant scoping, F-018 removal cleanup) so non-members never appear in
+the follower set.
