@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -139,4 +140,38 @@ func TestHeaderForContext_DebugRoundTrip(t *testing.T) {
 		h := natsutil.HeaderForContext(ctx)
 		assert.Equal(t, l, natsutil.ParseDebugLevel(h.Get(natsutil.DebugHeader)))
 	}
+}
+
+func TestDebugPayloadHeader_Constant(t *testing.T) {
+	assert.Equal(t, "X-Debug-Payload", natsutil.DebugPayloadHeader)
+}
+
+func TestPayloadCaptureFromHeader(t *testing.T) {
+	truthy := []string{"1", "true", "on", "TRUE", "  On  "}
+	for _, v := range truthy {
+		assert.True(t, natsutil.PayloadCaptureFromHeader(nats.Header{natsutil.DebugPayloadHeader: []string{v}}), v)
+	}
+	falsey := []string{"", "0", "false", "off", "garbage"}
+	for _, v := range falsey {
+		assert.False(t, natsutil.PayloadCaptureFromHeader(nats.Header{natsutil.DebugPayloadHeader: []string{v}}), v)
+	}
+	assert.False(t, natsutil.PayloadCaptureFromHeader(nil), "nil header")
+}
+
+func TestWithPayloadCapture_RoundTrip(t *testing.T) {
+	assert.False(t, natsutil.PayloadCaptureFromContext(context.Background()))
+	ctx := natsutil.WithPayloadCapture(context.Background())
+	assert.True(t, natsutil.PayloadCaptureFromContext(ctx))
+}
+
+func TestHeaderForContext_EmitsPayloadCapture(t *testing.T) {
+	ctx := natsutil.WithPayloadCapture(natsutil.WithRequestID(context.Background(), "req-1"))
+	h := natsutil.HeaderForContext(ctx)
+	assert.Equal(t, "1", h.Get(natsutil.DebugPayloadHeader))
+	assert.Equal(t, "req-1", h.Get(natsutil.RequestIDHeader))
+
+	// absent → not emitted
+	plain := natsutil.HeaderForContext(natsutil.WithRequestID(context.Background(), "req-1"))
+	_, present := plain[natsutil.DebugPayloadHeader]
+	assert.False(t, present)
 }

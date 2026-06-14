@@ -248,6 +248,88 @@ func TestHandler_WithAttrsAndGroupPreserveGating(t *testing.T) {
 	assert.Equal(t, []slog.Level{LevelFlow}, base.levels())
 }
 
+// --- payload capture --------------------------------------------------------
+
+func TestAdmit_StampsPayloadRequestFromHeader(t *testing.T) {
+	setLimiter(t, allowAll{})
+	ctx := Admit(context.Background(), nats.Header{natsutil.DebugPayloadHeader: []string{"1"}})
+	assert.True(t, natsutil.PayloadCaptureFromContext(ctx), "X-Debug-Payload stamps the ctx")
+
+	// payload capture works even with no X-Debug rung present
+	assert.True(t, natsutil.PayloadCaptureFromContext(
+		Admit(context.Background(), nats.Header{natsutil.DebugPayloadHeader: []string{"true"}})))
+
+	// absent → not stamped
+	assert.False(t, natsutil.PayloadCaptureFromContext(Admit(context.Background(), headerFor("trace"))))
+}
+
+func capturedPayloads(rec *capture) []string {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var out []string
+	for i := range rec.records {
+		if rec.records[i].Message != "debug payload" {
+			continue
+		}
+		rec.records[i].Attrs(func(a slog.Attr) bool {
+			if a.Key == "payload" {
+				out = append(out, a.Value.String())
+			}
+			return true
+		})
+	}
+	return out
+}
+
+func TestCapturePayload_GatedByConfigAndRequest(t *testing.T) {
+	requested := natsutil.WithPayloadCapture(context.Background())
+	body := []byte(`{"q":"LoadHistory"}`)
+
+	install := func() *capture {
+		rec := &capture{}
+		prev := slog.Default()
+		slog.SetDefault(slog.New(rec))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+		return rec
+	}
+	restorePayloads := func() { capturePayloads = false }
+
+	t.Run("flag OFF + requested → silent (prod invariant)", func(t *testing.T) {
+		rec := install()
+		Configure(Config{Rate: 1e6, Burst: 1 << 20, Payloads: false})
+		t.Cleanup(restorePayloads)
+		CapturePayload(requested, "request", "chat.x", body)
+		assert.Empty(t, capturedPayloads(rec), "no body when DEBUG_LOG_PAYLOADS is off, even with the header")
+	})
+
+	t.Run("flag ON + requested → body emitted", func(t *testing.T) {
+		rec := install()
+		Configure(Config{Rate: 1e6, Burst: 1 << 20, Payloads: true})
+		t.Cleanup(restorePayloads)
+		CapturePayload(requested, "request", "chat.x", body)
+		assert.Equal(t, []string{string(body)}, capturedPayloads(rec))
+	})
+
+	t.Run("flag ON + NOT requested → silent", func(t *testing.T) {
+		rec := install()
+		Configure(Config{Rate: 1e6, Burst: 1 << 20, Payloads: true})
+		t.Cleanup(restorePayloads)
+		CapturePayload(context.Background(), "request", "chat.x", body)
+		assert.Empty(t, capturedPayloads(rec))
+	})
+}
+
+func TestShouldCapture(t *testing.T) {
+	requested := natsutil.WithPayloadCapture(context.Background())
+	t.Cleanup(func() { capturePayloads = false })
+
+	capturePayloads = false
+	assert.False(t, ShouldCapture(requested))
+	capturePayloads = true
+	assert.True(t, ShouldCapture(requested))
+	assert.False(t, ShouldCapture(context.Background()), "not requested → false even when enabled")
+}
+
 // Handle is part of the public slog.Handler contract and may be invoked directly
 // (handler fan-out, slog.NewLogLogger, a wrapping handler). It must mirror
 // Enabled's sub-INFO gate so a FLOW/TRACE record never reaches the base handler

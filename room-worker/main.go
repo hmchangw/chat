@@ -276,6 +276,7 @@ func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstr
 	}
 	handlerCtx := natsutil.WithRequestID(msgCtx, id)
 	handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+	logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 

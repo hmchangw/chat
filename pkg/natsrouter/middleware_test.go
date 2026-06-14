@@ -48,6 +48,25 @@ func (h *flowRecorder) hasFlow(msg string) bool {
 	return false
 }
 
+// payloads returns the `payload` field of every "debug payload" record.
+func (h *flowRecorder) payloads() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for i := range h.recs {
+		if h.recs[i].Message != "debug payload" {
+			continue
+		}
+		h.recs[i].Attrs(func(a slog.Attr) bool {
+			if a.Key == "payload" {
+				out = append(out, a.Value.String())
+			}
+			return true
+		})
+	}
+	return out
+}
+
 func runLoggingChain(ctx context.Context) *flowRecorder {
 	rec := &flowRecorder{}
 	prev := slog.Default()

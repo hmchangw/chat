@@ -190,6 +190,7 @@ func main() {
 				}()
 				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+				logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}

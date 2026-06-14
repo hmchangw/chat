@@ -162,6 +162,7 @@ func main() {
 		func(msg otelnats.Msg) {
 			broadcastCtx, _ := natsutil.StampRequestID(context.Background(), msg.Msg.Header, msg.Msg.Subject)
 			broadcastCtx = logctx.Admit(broadcastCtx, msg.Msg.Header)
+			logctx.CapturePayload(broadcastCtx, "consumed", msg.Msg.Subject, msg.Msg.Data)
 			handler.HandleServerBroadcast(broadcastCtx, msg.Msg.Data)
 		})
 	if err != nil {
@@ -193,6 +194,7 @@ func main() {
 				}()
 				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
 				handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+				logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 				// flow: hop entry with the stream-wait latency time-diffing can't see.
 				streamWaitMs := int64(-1)
 				if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {

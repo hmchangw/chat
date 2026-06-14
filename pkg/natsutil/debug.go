@@ -9,10 +9,45 @@ package natsutil
 import (
 	"context"
 	"strings"
+
+	"github.com/nats-io/nats.go"
 )
 
 // DebugHeader carries the requested verbose-logging rung for this request.
 const DebugHeader = "X-Debug"
+
+// DebugPayloadHeader requests full request/reply payload logging for this
+// request. It is a SEPARATE capability from the X-Debug metadata ladder: a
+// service only honors it when its own config enables payload logging
+// (DEBUG_LOG_PAYLOADS), so it is inert in production regardless of the header.
+const DebugPayloadHeader = "X-Debug-Payload"
+
+type payloadKey int
+
+const payloadCaptureKey payloadKey = 0
+
+// WithPayloadCapture marks ctx as payload-capture-requested; propagated onto
+// outbound messages so the intent flows cross-service like the rung.
+func WithPayloadCapture(ctx context.Context) context.Context {
+	return context.WithValue(ctx, payloadCaptureKey, true)
+}
+
+// PayloadCaptureFromContext reports whether ctx requested payload capture.
+func PayloadCaptureFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(payloadCaptureKey).(bool)
+	return v
+}
+
+// PayloadCaptureFromHeader reports whether headers carry a truthy
+// X-Debug-Payload (1/true/on, case-insensitive).
+func PayloadCaptureFromHeader(headers nats.Header) bool {
+	switch strings.ToLower(strings.TrimSpace(headers.Get(DebugPayloadHeader))) {
+	case "1", "true", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // DebugLevel is the requested verbosity rung. Off is the zero value; the ladder
 // is cumulative (each rung includes the ones below it):

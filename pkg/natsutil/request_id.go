@@ -43,7 +43,8 @@ func RequestIDFromContext(ctx context.Context) string {
 func HeaderForContext(ctx context.Context) nats.Header {
 	id := RequestIDFromContext(ctx)
 	debug := DebugLevelFromContext(ctx)
-	if id == "" && debug == DebugOff {
+	payload := PayloadCaptureFromContext(ctx)
+	if id == "" && debug == DebugOff && !payload {
 		return nil
 	}
 	h := nats.Header{}
@@ -52,6 +53,9 @@ func HeaderForContext(ctx context.Context) nats.Header {
 	}
 	if debug != DebugOff {
 		h[DebugHeader] = []string{debug.String()}
+	}
+	if payload {
+		h[DebugPayloadHeader] = []string{"1"}
 	}
 	return h
 }
