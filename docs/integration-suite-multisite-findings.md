@@ -995,3 +995,45 @@ meant to enforce decentralized user pub permissions. If yes → run the
 runtime check, then fix. If "deliberate local simplification" → document
 the constraint in `AUTHORING.md` so authors stop attempting auth-boundary
 scenarios in the suite, and verify production separately.
+
+---
+
+## F-020 — editing a message does not re-resolve its persisted mentions (stored mentions diverge from content)
+
+**Layer:** chat-app code (history edit write + worker create-only mention resolution).
+
+**Status:** observed — consistency; chat-app team action requested.
+**Reachability:** any sender editing their own message to add or remove an
+`@mention` — no special timing.
+
+`@mention` resolution runs **only on the create path** — `message-worker`
+calls `mention.Resolve` and persists the resolved participant set
+(handler.go:63-67), and its JetStream consumer is filtered to
+`MsgCanonicalCreated` (.created only — main.go:225). Edits never reach it:
+history publishes `.updated` to the same stream but the worker skips it, and
+the edit is applied directly by history-service's `UpdateMessageContent`,
+whose CQL (`editMsgByID`, cassrepo/write.go:23) updates only
+`msg / enc_payload / enc_meta / edited_at / updated_at` — it **never touches
+the `mentions` column**. So after an edit the persisted `mentions` set is
+frozen at send time and no longer matches the content:
+
+- edit "plain" → "@bob …" → content mentions bob, but `mentions` stays empty.
+- edit "@bob hi" → "bye" → content has no mention, but `mentions` still lists bob.
+
+(broadcast-worker re-resolves mentions from the edited content for the *push*
+delivery, so the live notification is correct — but the **stored** set is not
+updated, so any reader/feature that uses the persisted `mentions` — search,
+mention lists, notify-on-read — sees the stale set.)
+
+Demonstrated by
+`scenarios/drafts/lifecycle/message-edit-does-not-update-persisted-mentions.yaml`
+(flow shape, **fails at run b470 — the failure is the bug**): alice sends a
+plain message (gated on its persistence), edits it to `@bob you are now
+mentioned`; the persisted row's `msg` updates to the new content but its
+`mentions` column is **null** — the `mentions_updated` guard fails ("expected
+array [bob], got nil").
+
+The decision the team owns: editing content should re-resolve and rewrite the
+persisted `mentions` set (and the `messages_by_room` / `thread_messages_by_thread`
+mirrors) so stored mentions track the content — either by routing edits
+through a mention-resolving path or by re-resolving in `UpdateMessageContent`.
