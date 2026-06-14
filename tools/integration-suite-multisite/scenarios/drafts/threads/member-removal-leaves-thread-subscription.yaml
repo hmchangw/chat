@@ -10,20 +10,23 @@ source: >
 status: draft
 tag: negative
 
-# ACCESS-REVOCATION GAP (the revoke side of F-016): removing a member from a
-# room deletes their ROOM subscription but leaves their THREAD subscriptions
-# intact. A removed member therefore remains a thread follower (in
-# thread_subscriptions and thread_rooms.replyAccounts) for threads in a room
-# they no longer belong to — keeping a notification/access relationship to
-# room-scoped content. Together with F-016 (thread subs improperly GRANTED to
-# non-members), thread subscriptions are neither properly granted nor revoked.
+# OPEN FINDING F-018 (access, revoke side of F-016) — EXPECTED TO FAIL until
+# member removal also deletes thread subscriptions. -ve scenario asserting the
+# CORRECT behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
+#
+# CORRECT behavior asserted: removing a member from a room must revoke their
+# THREAD subscriptions too, not just the room subscription. The bug: removal
+# deletes only the room subscription, leaving thread_subscriptions (and
+# replyAccounts) intact, so a removed member stays a thread follower.
 #
 # Uses flow: gates so the sequence is deterministic, not racy:
 #   bob (a member) replies in a thread  -> his thread_subscription is created
 #   [gate] wait until that thread_subscription exists
 #   alice (owner) removes bob           -> room subscription deleted (async)
 #   [gate] wait for the member_removed event (removal processed)
-#   tail: bob's ROOM sub is gone, but his THREAD sub SURVIVES (the bug)
+#   tail: bob's ROOM sub is gone (passes), but his THREAD sub should ALSO be
+#         gone — it isn't, so the -ve thread_sub_removed check fails = the bug
 #
 # Single-site (local removal) — no OUTBOX/federation needed. Unique room
 # r-rmthread to avoid F-009 cache bleed.
@@ -145,8 +148,10 @@ expected:
     match:
       roomId: r-rmthread
 
-  # ... but his THREAD subscription SURVIVES — the access-revocation gap.
-  - id: thread_sub_survives
+  # CORRECT — after bob is removed, his thread_subscription must ALSO be gone.
+  # EXPECTED: absent. FAILS today because removal deletes only the room
+  # subscription, never thread_subscriptions (open finding F-018).
+  - id: thread_sub_removed
     location: mongo_find
     site: site-a
     args:
@@ -154,7 +159,8 @@ expected:
       filter:
         parentMessageId: m0rmthrparent0000001
         userAccount: ${bob.account}
+    not: true
     match:
       userAccount: ${bob.account}
 
-flow: bob_reply >> bob_thread_sub >> remove >> remove_accepted >> remove_processed >> [room_sub_gone, thread_sub_survives]
+flow: bob_reply >> bob_thread_sub >> remove >> remove_accepted >> remove_processed >> [room_sub_gone, thread_sub_removed]

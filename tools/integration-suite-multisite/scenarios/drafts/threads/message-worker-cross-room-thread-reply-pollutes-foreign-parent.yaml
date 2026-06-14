@@ -73,28 +73,35 @@ input:
     threadParentMessageCreatedAt: 1748736000000
   credential: ${alice.credential}
 
+# OPEN FINDING F-017 (integrity) — EXPECTED TO FAIL until the gatekeeper/worker
+# validate that a thread reply's parent belongs to the reply's room. -ve
+# scenario asserting CORRECT behavior; the failure IS the bug (draft + fail =
+# open finding). Per AUTHORING.md §Pass/fail semantics.
 expected:
-  # THE BUG — the foreign parent M (in r-other) had its tcount bumped to 1
-  # by a reply from alice, who is only a member of r-mine.
+  # CORRECT — a reply in r-mine must NOT bump the tcount of a parent that
+  # lives in r-other. EXPECTED: no row where M's tcount is 1. FAILS today
+  # because setParentTcount writes by (message_id, created_at), room-agnostic.
   - location: cassandra_select
     args:
       query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
       params: [m0otherroomthread001]
+    not: true
     match:
       message_id: m0otherroomthread001
-      room_id: r-other
       tcount: 1
     timeout: 10s
 
-  # Corroboration — the thread_room created for M is mislabeled with the
-  # reply's room (r-mine), not the parent's actual room (r-other).
+  # CORRECT — no thread_room should be created for the foreign parent under
+  # the reply's room. EXPECTED: absent. FAILS today (one is created with
+  # roomId=r-mine for a parent that lives in r-other).
   - location: mongo_find
     site: site-a
     args:
       collection: thread_rooms
       filter:
         parentMessageId: m0otherroomthread001
+        roomId: r-mine
+    not: true
     match:
       parentMessageId: m0otherroomthread001
-      roomId: r-mine
     timeout: 10s

@@ -671,10 +671,11 @@ paths return it. **Two independent defects compose:**
 
 Demonstrated by
 `scenarios/drafts/delete/gatekeeper-quote-soft-deleted-message-resurrects-content.yaml`
-(multi-input, run 3c00, green): alice sends+owns M and deletes it
-(succeeds); the row is then `deleted: true` **with `msg` still equal to the
-original content**; bob (a different member) quotes M and the canonical
-event for bob's message carries `quotedParentMessage.msg` = alice's deleted
+(multi-input, −ve scenario, **fails at run 6c8d — the failure is the bug**):
+it asserts the *correct* behavior (the `msg` column cleared on delete; the
+quote not carrying live content) and both guards fail — after delete the row
+is `deleted: true` **with `msg` still equal to the original content**, and
+bob's quoting message carries `quotedParentMessage.msg` = alice's deleted
 content. The delete (synchronous RPC) completes before the quote fires, so
 the resurrection is deterministic, not a race.
 
@@ -715,10 +716,12 @@ notification relationship to room-scoped content.
 
 Demonstrated by
 `scenarios/drafts/mentions/message-worker-thread-mention-nonmember-auto-subscribes.yaml`
-(run e683, green): alice (a member) replies in a thread mentioning `@bob`
-(seeded as a profile only, no membership); afterward `thread_subscriptions`
-holds a row for bob (parentMessageId = the thread parent, userAccount=bob)
-and `thread_rooms.replyAccounts` contains bob.
+(−ve scenario, **fails at run 6c8d — the failure is the bug**): it asserts
+the *correct* behavior (a non-member gets **no** thread_subscription and is
+**not** added to replyAccounts) and both guards fail — alice (a member)
+replies mentioning `@bob` (seeded as a profile only, no membership), and
+afterward `thread_subscriptions` holds a row for bob (parentMessageId = the
+thread parent, userAccount=bob) and `thread_rooms.replyAccounts` contains bob.
 
 The decision the team owns: mention resolution (and at minimum the thread
 subscription/replyAccounts side-effects) should be scoped to room members —
@@ -793,9 +796,12 @@ a room they cannot see.
 
 Demonstrated by
 `scenarios/drafts/threads/message-worker-cross-room-thread-reply-pollutes-foreign-parent.yaml`
-(run 987c, green): alice (member of `r-mine` only) threads off `M` seeded in
-`r-other`; afterward `messages_by_id[M]` shows `room_id: r-other, tcount: 1`,
-and `thread_rooms[parentMessageId=M]` has `roomId: r-mine`.
+(−ve scenario, **fails at run 6c8d — the failure is the bug**): it asserts
+the *correct* behavior (a reply in `r-mine` does **not** bump the tcount of a
+parent in `r-other`, and no mislabeled thread_room is created) and both
+guards fail — alice (member of `r-mine` only) threads off `M` seeded in
+`r-other`, and afterward `messages_by_id[M]` shows `room_id: r-other,
+tcount: 1` and `thread_rooms[parentMessageId=M]` has `roomId: r-mine`.
 
 The decision the team owns: the gatekeeper (or worker) should verify the
 thread parent exists **and belongs to the reply's room** before creating the
@@ -829,11 +835,13 @@ access surface guarded on neither end.
 
 Demonstrated by
 `scenarios/drafts/threads/member-removal-leaves-thread-subscription.yaml`
-(flow shape, run e7d6, green): bob (a member) replies in a thread → his
+(flow shape, −ve scenario, **fails at run 6c8d — the failure is the bug**):
+it asserts the *correct* behavior (after removal bob's thread_subscription is
+**also** gone). The setup gates pass — bob (a member) replies → his
 `thread_subscription` is created (gated on); alice (owner) removes bob;
-after the `member_removed` event is observed (removal processed), bob's
-`subscriptions` row is gone (`room_sub_gone`) **but his
-`thread_subscriptions` row survives** (`thread_sub_survives`).
+`member_removed` is observed; bob's `subscriptions` row is gone
+(`room_sub_gone`) — but the final `thread_sub_removed` guard fails because
+his `thread_subscriptions` row **survives**. That failure is the bug.
 
 The decision the team owns: member removal should also delete the user's
 `thread_subscriptions` for the room and drop them from affected

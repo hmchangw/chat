@@ -83,9 +83,14 @@ input:
     threadParentMessageCreatedAt: 1748736000000
   credential: ${alice.credential}
 
+# OPEN FINDING F-016 (access) — EXPECTED TO FAIL until mention resolution is
+# scoped to room members. -ve scenario asserting the CORRECT behavior; the
+# failure IS the bug (draft + fail = open finding). Per AUTHORING.md
+# §Pass/fail semantics.
 expected:
-  # THE BUG — a thread_subscription was created for bob, who is NOT a member
-  # of r-mthread. He was pulled into the thread purely by being @-mentioned.
+  # CORRECT — bob, a NON-member, must NOT get a thread_subscription from being
+  # @-mentioned. EXPECTED: no such row. FAILS today because markThreadMentions
+  # upserts a thread_subscription for every mentionee with no membership check.
   - location: mongo_find
     site: site-a
     args:
@@ -93,12 +98,13 @@ expected:
       filter:
         parentMessageId: m0mthrparent00000001
         userAccount: bob
+    not: true
     match:
       userAccount: bob
     timeout: 10s
 
-  # Corroboration — bob is also now a thread follower (replyAccounts),
-  # surfacing him in notification fan-out and the "following threads" feed.
+  # CORRECT — bob must NOT become a thread follower (replyAccounts). EXPECTED:
+  # absent. FAILS today (he is added to replyAccounts via the same path).
   - location: mongo_find
     site: site-a
     args:
@@ -106,6 +112,7 @@ expected:
       filter:
         parentMessageId: m0mthrparent00000001
         replyAccounts: bob
+    not: true
     match:
       parentMessageId: m0mthrparent00000001
     timeout: 10s
