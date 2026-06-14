@@ -213,21 +213,23 @@ published, row persisted) and fails because the whole message is dropped.
 (Positive counterpart `gatekeeper-quote-happy-path-embeds-snapshot.yaml`
 confirms a valid quote embeds + persists the snapshot, and passes.)
 
-**Fresh-quote timing facet — LATENT race, NOT currently reproducing.**
+**Fresh-quote timing facet — LOAD-DEPENDENT race (reproduces under load).**
 "Missing" can also mean "exists but not yet persisted": `message-worker`
 persists asynchronously behind the gatekeeper publish, so a message quoted
-shortly after it was sent *could* race the persist and be dropped even
-though the parent is real. The code path still has this window (the
-gatekeeper does a synchronous `GetMessageByID` that can miss). **However,
-the suite cannot currently reproduce it:**
+shortly after it was sent races the persist and is dropped even though the
+parent is real (the gatekeeper does a synchronous `GetMessageByID` that
+misses). Demonstrated by
 `scenarios/drafts/quote/gatekeeper-quote-just-sent-message.yaml` — a +ve
-scenario asserting the quoting message ships — **passes 5/5** (runs
-3e7d, cfb4, ddd9, 1092, c20b); the async persist reliably wins the race in
-this environment. (It dropped in earlier sessions, so the outcome is
-environment/timing-dependent.) The scenario is kept GREEN as a
-read-your-write contract: if the race ever re-appears (heavier load, slower
-persist) it will flip red and catch the regression. Tracked here as a
-latent risk, not an actively-reproducing bug.
+scenario asserting the quoting message ships. **The outcome is
+load-dependent:** under the **full 42-scenario suite it FAILS** (run 94b5 —
+only the original's canonical appeared; the quoting message was dropped), but
+under a **light isolated sweep it passed 5/5** (runs 3e7d/cfb4/ddd9/1092/c20b)
+because the async persist wins the race when the stack is unloaded. Since the
+full suite is the authoritative run, this is treated as a **reproducing**
+finding (standing red), with the caveat that a light/isolated re-run may show
+it green. (This is the inherent nature of a race scenario — see the
+methodology note: flakiness must be judged under full-suite load, not in
+isolation.)
 
 Decision the team owns: should a bad quote target drop the whole message
 (current behavior) or soft-fail as the doc describes (ship without the
@@ -582,9 +584,9 @@ worker-persistence-lag blindspot.** An operation on a just-async-written
 entity races the worker write and fails, across three independent code
 paths:
 - **F-006 (fresh-quote facet)** — quote a just-sent message → the
-  quoting message *can be dropped* (gatekeeper quote-resolution NotFound).
-  **Latent / not currently reproducing** — the persist reliably wins the
-  race in the suite today (scenario passes 5/5); see F-006 above.
+  quoting message is *dropped* (gatekeeper quote-resolution NotFound).
+  **Load-dependent** — fails under the full suite (run 94b5), passes under a
+  light isolated sweep; see F-006 above.
 - **F-012** — send to a just-created room → the send is *dropped*
   (`not_subscribed`; room-worker hasn't written the subscription).
   Reproduces deterministically (fails 5/5).

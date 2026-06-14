@@ -8,18 +8,17 @@ source: >
 status: draft
 tag: positive
 
-# READ-YOUR-WRITE CONTRACT (F-006 fresh-quote facet) — currently PASSES.
+# OPEN FINDING F-006 (fresh-quote facet) — LOAD-DEPENDENT race.
 # task1 sends M; task2 immediately quotes M by its client-set id. The
 # gatekeeper resolves the quote via a synchronous history fetch while
-# message-worker persists M asynchronously — a latent race. +ve: the
-# quoting message should ship.
+# message-worker persists M asynchronously. +ve: the quoting message should
+# ship (read-your-write).
 #
-# In earlier sessions this dropped (fetch beat the persist). As of runs
-# 3e7d/cfb4/ddd9/1092/c20b it PASSES 5/5 — the persist reliably wins in
-# this environment, so the fresh-quote race no longer reproduces. The code
-# window still exists (latent), so this scenario is kept GREEN as a
-# regression guard: if the race re-appears (heavier load / slower persist)
-# it flips red and catches it. See F-006 in the findings doc.
+# Outcome is load-dependent: under the FULL suite it FAILS (run 94b5 — the
+# quote-fetch beats the persist, M not found, quoting message dropped); under
+# a light isolated sweep it passed 5/5 (the persist wins when unloaded). The
+# full suite is authoritative, so this is a reproducing finding (red); a
+# light/isolated re-run may show it green. See F-006 in the findings doc.
 
 sites:
   site-a:
