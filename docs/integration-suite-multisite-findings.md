@@ -206,25 +206,28 @@ message without the quote." The implementation hard-fails the entire
 send on NotFound. Code and stated contract diverge — one side is wrong.
 
 Demonstrated by
-`scenarios/drafts/gatekeeper-quote-nonexistent-parent-drops-message.yaml`
-(green): reply `not_found`, no canonical, no `messages_by_id` row.
+`scenarios/drafts/quote/gatekeeper-quote-nonexistent-parent-drops-message.yaml`
+(+ve scenario, **fails at run 48df — the failure is the bug**): it asserts the
+correct behavior (per the soft-fail contract the message ships — canonical
+published, row persisted) and fails because the whole message is dropped.
 (Positive counterpart `gatekeeper-quote-happy-path-embeds-snapshot.yaml`
-confirms the success path embeds + persists the snapshot.)
+confirms a valid quote embeds + persists the snapshot, and passes.)
 
-**Severity escalation — it also drops LEGITIMATE quotes (timing race).**
-"Missing" includes "exists but not yet persisted." `message-worker`
-persists to Cassandra asynchronously, behind the gatekeeper publish, so a
-message quoted shortly after it was sent is not yet readable by
-history-service's `GetMessageByID` → the quote fetch NotFounds → the
-quoting message is dropped, even though the parent is a real, valid
-message. Demonstrated by
-`scenarios/drafts/quote/gatekeeper-quote-just-sent-message.yaml`
-(multi-input, run 144c): task1 sends M, task2 immediately quotes M; only
-M's canonical appears — the quoting message produced no canonical at all
-(dropped). Unlike F-011 this race is consistently ordered (quote-fetch
-always precedes the worker's write), so it reproduces reliably. So F-006
-is not just bad-input handling — a normal "reply-with-quote" issued
-quickly after the original silently loses the user's message.
+**Fresh-quote timing facet — LATENT race, NOT currently reproducing.**
+"Missing" can also mean "exists but not yet persisted": `message-worker`
+persists asynchronously behind the gatekeeper publish, so a message quoted
+shortly after it was sent *could* race the persist and be dropped even
+though the parent is real. The code path still has this window (the
+gatekeeper does a synchronous `GetMessageByID` that can miss). **However,
+the suite cannot currently reproduce it:**
+`scenarios/drafts/quote/gatekeeper-quote-just-sent-message.yaml` — a +ve
+scenario asserting the quoting message ships — **passes 5/5** (runs
+3e7d, cfb4, ddd9, 1092, c20b); the async persist reliably wins the race in
+this environment. (It dropped in earlier sessions, so the outcome is
+environment/timing-dependent.) The scenario is kept GREEN as a
+read-your-write contract: if the race ever re-appears (heavier load, slower
+persist) it will flip red and catch the regression. Tracked here as a
+latent risk, not an actively-reproducing bug.
 
 Decision the team owns: should a bad quote target drop the whole message
 (current behavior) or soft-fail as the doc describes (ship without the
@@ -579,11 +582,15 @@ worker-persistence-lag blindspot.** An operation on a just-async-written
 entity races the worker write and fails, across three independent code
 paths:
 - **F-006 (fresh-quote facet)** — quote a just-sent message → the
-  quoting message is *dropped* (gatekeeper quote-resolution NotFound).
+  quoting message *can be dropped* (gatekeeper quote-resolution NotFound).
+  **Latent / not currently reproducing** — the persist reliably wins the
+  race in the suite today (scenario passes 5/5); see F-006 above.
 - **F-012** — send to a just-created room → the send is *dropped*
   (`not_subscribed`; room-worker hasn't written the subscription).
+  Reproduces deterministically (fails 5/5).
 - **F-013 (this)** — edit a just-sent message → `not_found` (history
-  edit RPC; worker hasn't persisted the row).
+  edit RPC; worker hasn't persisted the row). Reproduces deterministically
+  (fails 5/5).
 
 The shared decision the chat-app team owns: which write-then-read APIs
 should guarantee read-your-write on the success reply (sync the critical
