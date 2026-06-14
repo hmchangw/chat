@@ -726,6 +726,28 @@ filter `mention.Resolve` results by membership, or guard
 `markThreadMentions` so a non-member mention is recorded as content but
 does not create a subscription / follower relationship.
 
+**Cross-site escalation (the blast radius is multi-site).** When the
+mentioned non-member is a **remote** user, the subscription federates to
+their home site. `markThreadMentions` calls `publishThreadSubOutboxIfRemote`
+for every mentionee whose home site differs from the local site
+(handler.go:381), emitting `outbox.{local}.to.{ownerSite}.thread_subscription_upserted`;
+the federation Source delivers it to the remote site's INBOX, where
+`inbox-worker` applies it via `handleThreadSubscriptionUpserted →
+UpsertThreadSubscription` (inbox-worker/handler.go:96-97,274-279). So a
+remote user who is a member of nothing — not on the acting site, not in the
+room on their own site — ends up with a durable `thread_subscription` **on
+their home site** purely by being `@`-mentioned from another site.
+
+Demonstrated end-to-end by
+`scenarios/drafts/federation/thread-mention-remote-nonmember-federates-subscription.yaml`
+(runs 6c59 + 4c72, green twice): alice (site-a) thread-replies mentioning
+`@remotebob` (a site-b user, member of nothing). The chain lands on every
+surface — local thread_subscription on site-a, `OUTBOX_site-a →
+thread_subscription_upserted (destSiteId site-b)`, `INBOX_site-b` aggregate
+event, and finally a `thread_subscription` for remotebob applied on
+**site-b**. The membership-scoping fix above must therefore apply before the
+outbox publish, or the leak crosses the federation boundary.
+
 ## F-017 — a thread reply can attach to a parent in another room and pollute its tcount
 
 **Layer:** chat-app code (gatekeeper thread-parent non-validation + worker tcount write).

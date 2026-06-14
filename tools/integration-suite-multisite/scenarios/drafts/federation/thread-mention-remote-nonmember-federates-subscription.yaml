@@ -1,0 +1,163 @@
+scenario: thread-mention-remote-nonmember-federates-subscription
+source: >
+  message-worker/handler.go:63-67 (mention.Resolve — global user lookup, no membership
+  scoping), handler.go:366-392 (markThreadMentions auto-creates a thread_subscription for
+  every mentionee AND calls publishThreadSubOutboxIfRemote with the mentionee's home site),
+  handler.go:394-435 (publishThreadSubOutboxIfRemote → outbox.{local}.to.{ownerSite}.thread_subscription_upserted
+  when the mentionee's site differs from local), inbox-worker/handler.go:96-97,274-279
+  (handleThreadSubscriptionUpserted → UpsertThreadSubscription applies it on the dest site).
+  Federation tail mechanics per cross-site-room-rename-federation.yaml.
+status: draft
+tag: negative
+
+# F-016 CROSS-SITE ESCALATION (federation): F-016 showed that @-mentioning a
+# non-member in a thread reply auto-subscribes them locally. This proves the
+# escalation crosses sites: mentioning a REMOTE non-member federates a
+# thread_subscription all the way to that user's HOME site, where inbox-worker
+# applies it — so a user who is a member of NOTHING on the acting site, and
+# not a member of the room on their own site, ends up with a durable thread
+# subscription on their home site purely by being @-mentioned from another site.
+#
+# The parent message is authored by alice (LOCAL) so the ONLY cross-site
+# federation here comes from the MENTION (not the remote-parent path that
+# thread-first-reply-remote-parent-federates-subscription already covers).
+# remotebob is projected into site-a via remote_users (home_site site-b) so
+# mention.Resolve classifies him as remote; he is seeded on site-b as a real
+# user but is NOT a member of any room.
+#
+# Surfaces (localising the federation chain end-to-end):
+#   1  canonical reply published on site-a
+#   2  remotebob thread_subscription inserted LOCALLY on site-a (F-016, local)
+#   3  OUTBOX_site-a → thread_subscription_upserted, destSiteId site-b (worker output)
+#   4  INBOX_site-b receives the aggregate event (federation Source)
+#   5  remotebob thread_subscription APPLIED on site-b (inbox-worker) — the escalation
+#
+# Requires OUTBOX_site-a (ops-owned, F-001) — stood up via prep-outbox.sh.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      remote_users:
+        remotebob:
+          home_site: site-b
+      rooms:
+        - id: r-fedment
+          name: Fed Mention
+          type: channel
+      memberships:
+        alice:
+          - room: r-fedment
+            roles: [member]
+  site-b:
+    seed:
+      users:
+        remotebob: { verified: true }   # real user on site-b, member of nothing
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0fedmentparent00001
+        created_at: 1748736000000
+        room_id: r-fedment
+        site_id: site-a
+        msg: "thread parent authored locally by alice"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+  - table: messages_by_room
+    rows:
+      - room_id: r-fedment
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0fedmentparent00001
+        site_id: site-a
+        msg: "thread parent authored locally by alice"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+
+pre_fire_scripts:
+  - ../prep-outbox.sh
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-fedment.site-a.msg.send
+  payload:
+    id: m1fedmentreply000001
+    content: "@remotebob take a look at this thread"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567929
+    threadParentMessageId: m0fedmentparent00001
+    threadParentMessageCreatedAt: 1748736000000
+  credential: ${alice.credential}
+
+expected:
+  # 1 — the thread reply was validated + published on site-a.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m1fedmentreply000001
+
+  # 2 — remotebob (a non-member) got a thread_subscription LOCALLY on site-a (F-016).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0fedmentparent00001
+        userAccount: remotebob
+    match:
+      userAccount: remotebob
+    timeout: 10s
+
+  # 3 — the worker federated the subscription: OUTBOX_site-a carries
+  # thread_subscription_upserted routed to remotebob's home site (site-b).
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: OUTBOX_site-a
+      filter_subject: outbox.site-a.to.site-b.thread_subscription_upserted
+    match:
+      body_json:
+        type: thread_subscription_upserted
+        siteId: site-a
+        destSiteId: site-b
+    timeout: 10s
+
+  # 4 — the federation Source delivered it to INBOX_site-b (post-transform subject).
+  - location: jetstream_consume
+    site: site-b
+    args:
+      stream: INBOX_site-b
+      filter_subject: chat.inbox.site-b.aggregate.thread_subscription_upserted
+    match:
+      body_json:
+        type: thread_subscription_upserted
+        siteId: site-a
+        destSiteId: site-b
+    timeout: 15s
+
+  # 5 — THE ESCALATION: inbox-worker on site-b applied it — remotebob, a member
+  # of nothing, now has a thread_subscription on his HOME site via a mention.
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0fedmentparent00001
+        userAccount: remotebob
+    match:
+      userAccount: remotebob
+    timeout: 15s
