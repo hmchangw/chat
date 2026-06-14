@@ -1037,3 +1037,77 @@ The decision the team owns: editing content should re-resolve and rewrite the
 persisted `mentions` set (and the `messages_by_room` / `thread_messages_by_thread`
 mirrors) so stored mentions track the content — either by routing edits
 through a mention-resolving path or by re-resolving in `UpdateMessageContent`.
+
+---
+
+## F-021 — channel real-time delivery has no membership enforcement (confidentiality depends entirely on encryption)
+
+**Layer:** chat-app architecture (broadcast-worker delivery model ↔ auth callout subscribe grant).
+
+**Status:** observed — architectural / config-dependent; chat-app team action requested.
+**Reachability:** any authenticated user (member, non-member, or *removed*
+member) who subscribes to a room's delivery topic. No special timing.
+
+### What the delivery model is
+Channel messages are delivered as a **single topic broadcast**:
+`broadcast-worker.publishChannelEvent` does one
+`Publish(subject.RoomEvent(roomID))` = `chat.room.{roomID}.event`, carrying a
+`RoomEvent{… Message *ClientMessage}` — **no per-recipient or membership
+filter** at the delivery layer. (DMs differ: `publishDMEvents` fans out
+per-account to `chat.user.{account}…`, so DM delivery *is* recipient-scoped;
+only channels use the open topic.)
+
+Membership is enforced on **send** (gatekeeper `GetSubscription`) and on
+**history read** (`getAccessSince`), but **not on real-time delivery**.
+
+### Why that matters — confidentiality is a single point of failure
+Two facets, one root (no delivery-layer membership check):
+
+1. **Eavesdropping.** The auth callout grants `Sub.Allow = chat.room.>` to
+   **every** minted user (`auth-service/handler.go:239`). So any
+   authenticated user is *permitted* to subscribe to any room's
+   `chat.room.{roomID}.event` and receive its messages — without being a
+   member.
+2. **Removed members keep receiving.** Removal deletes the subscription row
+   (and, per F-018, leaves thread subs), but nothing stops the topic
+   broadcast or the client's `chat.room.>` subscription. A removed member
+   keeps getting live channel messages.
+
+The **only** thing standing between a non-member subscriber and the message
+content is `broadcast-worker`'s `encryptRoomEvent` (room-key encryption). So
+channel confidentiality rests entirely on two assumptions holding at all
+times: (a) encryption is always on, and (b) the room key is rotated on every
+membership removal (otherwise a removed member still decrypts). There is **no
+defense-in-depth** at the delivery layer if either fails.
+
+### Demonstrated (and the suite's limits)
+- **Demonstrated** (run 790c): in the unencrypted stack a subscriber to
+  `chat.room.r-eaves.event` received a channel message in **plaintext**
+  (`message.content` verbatim) — confirming the broadcast is an unfiltered,
+  cleartext topic publish.
+- **Not faithfully testable in the suite** (so no standing scenario is kept —
+  a pass/fail here would track the dev config, not chat-app behavior):
+  - The suite runs **unencrypted** (no roomcrypto container), so plaintext on
+    the topic is expected-by-config; an encrypted production deployment would
+    broadcast ciphertext.
+  - `nats_subscribe` uses the **admin connection**, so the suite can't
+    subscribe *as a scoped non-member JWT* to prove the per-user
+    eavesdrop (same limitation noted in F-019). The callout grant
+    (`chat.room.>` to all) is the code evidence that a non-member is
+    permitted to subscribe.
+  - Room-key rotation on removal is roomcrypto-scoped and not exercised here.
+
+### Decisions the team owns
+1. Are channel events **always** encrypted in production (is plaintext
+   broadcast strictly a dev-only artifact)?
+2. Does member **removal rotate the room key**, so a removed member cannot
+   decrypt subsequent channel messages?
+3. Should membership be enforced at the **delivery layer** (subscribe-time
+   room-membership check, or per-recipient fan-out as DMs already do), or is
+   "open subscribe + encryption-for-confidentiality" the accepted model with
+   key rotation as the sole removal control?
+
+Today, confidentiality and removal-revocation for channels are single-point
+(encryption + key rotation) with no delivery-layer fallback; in any
+unencrypted deployment, channel messages are readable by any authenticated
+user via topic subscription.
