@@ -12,6 +12,7 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -181,6 +182,9 @@ func main() {
 	// from here on; Shutdown() closes it.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", metricsHandler())
+	health.Register(metricsMux, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
 	metricsServer := &http.Server{
 		Handler:           metricsMux,
 		ReadHeaderTimeout: 5 * time.Second,
