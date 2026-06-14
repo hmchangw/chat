@@ -748,6 +748,18 @@ event, and finally a `thread_subscription` for remotebob applied on
 **site-b**. The membership-scoping fix above must therefore apply before the
 outbox publish, or the leak crosses the federation boundary.
 
+**Blast radius — bounded (no push-notification leak).** Code analysis of
+`notification-worker/handler.go:131-201` shows the push fan-out iterates
+**only current room members** (`Members.GetMembers` from the roomsubcache);
+`followers`/`mentioned` merely filter *within* that member set, and the
+member cache is invalidated on member add/remove. So a mentioned non-member
+is never iterated and receives **no push**. The F-016 impact is therefore
+confined to follower state — the `thread_subscriptions` row, the "following
+threads" feed, and `thread_rooms.replyAccounts` — not push delivery.
+(Not assertable in the suite: push payloads are gzipped+batched and the
+pollers don't decompress — see the suite team's note; this bound is from
+code reading, not a green scenario.)
+
 ## F-017 — a thread reply can attach to a parent in another room and pollute its tcount
 
 **Layer:** chat-app code (gatekeeper thread-parent non-validation + worker tcount write).
@@ -827,3 +839,11 @@ The decision the team owns: member removal should also delete the user's
 `thread_subscriptions` for the room and drop them from affected
 `thread_rooms.replyAccounts` — in both the local removal and the federated
 `handleMemberRemoved` apply, so revocation holds across sites too.
+
+**Blast radius — bounded (no push-notification leak).** As with F-016, the
+push fan-out (`notification-worker/handler.go:131-201`) iterates only current
+room members and invalidates its member cache on `MemberRemoved`, so a
+removed member stops receiving pushes immediately. The lingering
+`thread_subscription` keeps them a thread *follower* (following-threads feed,
+`replyAccounts`) but does not deliver pushes. Impact is follower-state
+integrity, not notification delivery.
