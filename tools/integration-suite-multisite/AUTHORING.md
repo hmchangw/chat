@@ -29,6 +29,85 @@ For the YAML grammar field-by-field reference see
 
 ---
 
+## Pass/fail semantics and open findings
+
+> **Read this before you decide whether a failing scenario is a
+> regression or a finding.** The suite uses two independent axes:
+
+**Axis 1 — polarity (what the author expects):**
+- **+ve** — we expect something to **happen** (a result, behavior:
+  canonical event lands, row persists, success reply arrives).
+- **−ve** — we expect something **prevented** (an error, warning, or
+  rejection — a guard against a bad case).
+
+**Axis 2 — outcome (whether the expectation held):**
+
+| Polarity (what we expect) | Outcome | Means |
+|---|---|---|
+| +ve (a result should happen) | true — it happened | **PASS** — no issue |
+| +ve | false — didn't happen, or something else did | **FAIL** — bug |
+| −ve (an error/warning/rejection should fire) | true — it fired | **PASS** — no issue (correctly guarded) |
+| −ve | false — the expected error/warning did not happen | **FAIL** — bug (bad case slipped through) |
+
+**PASS = true = no issue. FAIL = false = bug → findings doc.** Same
+verdict logic for both polarities; independent of whether the
+expectation is asserted via a positive `match:` or `not: true`.
+
+### Authoring a scenario for a found bug
+
+The bug **is the failure**, not the expectation. If you observe a
+bug, the scenario's expectation should describe the **correct**
+behavior (whatever the system is supposed to do), so the bug shows up
+as a failure:
+
+- **System leaks deleted content into a quote** — author a −ve
+  scenario expecting "deleted content NOT embedded in the quote." It
+  fails because the content leaks. The fail = the bug.
+- **System allows sender impersonation** — author a −ve scenario
+  expecting "cross-namespace publish rejected." It fails because the
+  guard doesn't fire. The fail = the bug.
+
+**Anti-pattern:** authoring +ve "the bug happens" — e.g. "expect the
+quote to embed deleted content, and it does → pass." This makes the
+suite green with the bug open; pass/fail carries no signal. If you
+catch yourself doing this, re-polarize: assert the correct behavior
+and let the failure be the bug.
+
+### Steady-state reads — `draft + fail = open finding`
+
+The suite combines two orthogonal axes that authors already use:
+
+| Status | Outcome | What it means |
+|---|---|---|
+| `draft` | pass | scenario passes today; not yet promoted to CI gate |
+| `draft` | fail | **open finding** — a documented bug from `docs/integration-suite-multisite-findings.md`; informational, no CI gate |
+| `approved` | pass | fixed + regression-guarded (CI-gating) |
+| `approved` | fail | **CI regression** — fix it immediately |
+
+In steady state, the draft report shows N red scenarios where N =
+open findings count. **The reds are not regressions — they are
+standing records of bugs documented in the findings doc.** The suite
+goes fully green only when the chat-app team has fixed those bugs.
+
+**Lifecycle of a finding:**
+1. Author observes a bug → writes a `draft` + `−ve` (or `+ve`,
+   whichever fits the correct-behavior shape) scenario that fails.
+2. Author files an `F-NNN` entry in `docs/integration-suite-multisite-findings.md`
+   describing the bug, citing the scenario.
+3. The scenario sits as a standing red in DRAFT reports — chat-app
+   team picks it up.
+4. Chat-app team ships the fix → scenario goes green.
+5. Author promotes the scenario to `status: approved` so any future
+   regression turns the APPROVED row red and the CI gate trips.
+
+**Don't:** invent special folders, "expected-fail" buckets, or other
+mechanisms for findings. `draft + fail` already says everything that
+needs to be said; the findings doc carries the durable narrative;
+the report headline already separates DRAFT (informational) from
+APPROVED (CI-gating).
+
+---
+
 ## Mental model
 
 A multi-site scenario is one hypothesis about the assembled two-site
@@ -314,94 +393,6 @@ flat `expected[]` semantics. See `FLOW.md` for examples.
 
 ---
 
-## Canary scenarios — documenting unverified gaps
-
-> ⚠️ **Use sparingly.** A canary is a scenario that **intentionally
-> fails** because it documents a gap the suite cannot fix from here
-> (e.g. F-019 — publish-time authorization not enforced). Most
-> scenarios are not canaries. If you can fix the underlying issue,
-> fix it; don't paper over it with a canary.
-
-### What a canary is
-
-A scenario placed under `scenarios/drafts/_canary/` whose assertions
-fail today because of a documented gap. Two consumers:
-
-1. **The reporter buckets it separately.** Canaries are excluded from
-   the DRAFT pass/fail headline and from the confusion matrix.
-   They get their own `## Canaries` section showing them as
-   `expected-fail`. A regular new regression does not get drowned in
-   canary noise — the "failures are loud" guarantee stays intact.
-2. **Flip detection.** If a canary starts passing, the reporter
-   surfaces a loud `## ⚠️  FLIPPED CANARIES` section telling the
-   reader the gap may be resolved and the scenario should be
-   promoted out of `_canary/`. Silent fix → silent canary rot →
-   convention erodes.
-
-### When to author one
-
-- The suite cannot fix the underlying issue (it lives in
-  production NATS config / ops-IaC / chat-app code outside this team)
-  AND a failing scenario documents the gap precisely.
-- A formal **F-NNN finding** exists in
-  `docs/integration-suite-multisite-findings.md` describing the gap,
-  the runtime-verification check (if any), and the expected
-  resolution path.
-
-If either is missing, **don't author a canary** — file the finding
-first, or fix the underlying issue.
-
-### Required shape
-
-```yaml
-# ⚠️ CANARY — INTENTIONALLY FAILS UNTIL F-NNN IS RESOLVED ⚠️
-#
-# (Header banner explaining: what this scenario asserts, why it
-# currently fails, what the canary becomes once the gap is fixed,
-# pointer to the F-NNN finding.)
-#
-# DO NOT delete this file because it "fails." See F-NNN.
-
-scenario: <name>
-status: draft
-tag: negative   # or positive, depending on what's being asserted
-…
-```
-
-Place the file under `tools/integration-suite-multisite/scenarios/drafts/_canary/<name>.yaml`.
-
-### Lifecycle
-
-1. **Create failing.** Author writes the scenario + header banner
-   + adds the F-NNN finding entry in the findings doc cross-referring
-   to the canary path. Loader parses it like any other scenario; the
-   tool buckets it as `expected-fail` in the report.
-2. **Run.** Every run shows it under `## Canaries` as `expected-fail`.
-   It does not affect DRAFT pass/fail counts.
-3. **Flips green.** The underlying gap gets resolved (suite-side fix,
-   ops/IaC change, or chat-app code). The next run surfaces the
-   canary in `## ⚠️  FLIPPED CANARIES` with a "promote" instruction.
-4. **Promote.** Author runs the finding's runtime-verification check
-   (named in the F-NNN entry) to confirm the gap is genuinely
-   resolved, moves the scenario out of `_canary/` into its real
-   topic subdirectory (e.g. `gatekeeper-validation/`), removes the
-   canary header banner, and closes the F-NNN finding with a
-   resolution note.
-
-### Anti-patterns
-
-- **Canary as a TODO marker** — if you can fix it, fix it. A canary
-  is for issues genuinely outside this team's reach.
-- **Canary without a F-NNN finding** — the finding is the durable
-  record; the canary is the executable witness. One without the
-  other is half a contract.
-- **Renaming a flipped canary in place** — the report's flip-detection
-  message is the trigger to verify the underlying gap is actually
-  resolved (not just a CI flake or assertion drift). Skip that
-  verification and a "fixed" canary may quietly re-fail on the next
-  infra change.
-
----
 
 ## Substitution token vocabulary
 

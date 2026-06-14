@@ -56,21 +56,6 @@ type RunReport struct {
 	Perf  *PerformanceStore
 }
 
-// isCanary reports whether a scenario lives under
-// scenarios/drafts/_canary/ — the convention for intentionally-
-// failing scenarios that document an unverified gap (e.g. F-019).
-// Path-based (not metadata-based) because the directory placement
-// itself is the marker an author makes and a reader can see.
-func isCanary(c *ScenarioReport) bool {
-	if c == nil || c.SourcePath == "" {
-		return false
-	}
-	// Match path separator agnostic of OS; we run on linux but match
-	// both forms defensively.
-	return strings.Contains(c.SourcePath, "/_canary/") ||
-		strings.Contains(c.SourcePath, "\\_canary\\")
-}
-
 // Render produces the markdown body of the per-run report. Renders
 // all cases regardless of status; the approved-only filter is applied
 // by the caller via RenderApproved.
@@ -110,27 +95,13 @@ func render(r *RunReport, approvedOnly bool) string {
 		r.StartISO, r.RunID, r.Duration, len(r.Cases))
 
 	// Confusion matrix + status breakdown — kept for run-summary value.
-	// Canary scenarios (under scenarios/drafts/_canary/) are excluded
-	// from all the pos/neg/approved/draft buckets — they intentionally
-	// fail until a documented gap is resolved, and would otherwise
-	// pollute the run headline (defeating "failures are loud"). They
-	// get their own section + flip detection below.
 	posTrue, posFalse := 0, 0
 	negTrue, negFalse := 0, 0
 	approvedPass, approvedFail := 0, 0
 	draftPass, draftFail := 0, 0
-	var canariesExpectedFail, canariesFlipped []*ScenarioReport
 	for i := range r.Cases {
 		c := &r.Cases[i]
 		pass := c.Verdict.Outcome == "pass"
-		if isCanary(c) {
-			if pass {
-				canariesFlipped = append(canariesFlipped, c)
-			} else {
-				canariesExpectedFail = append(canariesExpectedFail, c)
-			}
-			continue
-		}
 		negative := c.Kind == "negative"
 		switch {
 		case negative && pass:
@@ -162,43 +133,6 @@ func render(r *RunReport, approvedOnly bool) string {
 	b.WriteString("              pass    fail\n")
 	fmt.Fprintf(&b, "APPROVED      %-7d %-7d\n", approvedPass, approvedFail)
 	fmt.Fprintf(&b, "DRAFT         %-7d %-7d\n\n", draftPass, draftFail)
-
-	// Canary section — bucketed out of the headline counts above.
-	// Canaries document unverified gaps under scenarios/drafts/_canary/
-	// and are EXPECTED to fail until the gap is resolved. A canary that
-	// FLIPS green is a signal the gap may be resolved → promote it out
-	// of _canary/. See AUTHORING.md §Canary scenarios.
-	if len(canariesExpectedFail) > 0 || len(canariesFlipped) > 0 {
-		// Loud first: any flipped canary is a signal that warrants action.
-		if len(canariesFlipped) > 0 {
-			fmt.Fprintf(&b, "## ⚠️  FLIPPED CANARIES (%d) — gap may be resolved, action required\n\n",
-				len(canariesFlipped))
-			b.WriteString("These scenarios live under `scenarios/drafts/_canary/` and were\n")
-			b.WriteString("EXPECTED to fail. They PASSED this run, suggesting the documented\n")
-			b.WriteString("gap may be resolved. **Run the finding's runtime-verification\n")
-			b.WriteString("check, then promote each to a normal scenario directory and close\n")
-			b.WriteString("the linked finding.** Leaving them under _canary/ silently rots\n")
-			b.WriteString("a passing-but-misfiled scenario.\n\n")
-			for _, c := range canariesFlipped {
-				fmt.Fprintf(&b, "  - %s   (%s)\n", c.ScenarioName, c.SourcePath)
-			}
-			b.WriteString("\n")
-		}
-		fmt.Fprintf(&b, "## Canaries\n\n")
-		fmt.Fprintf(&b, "%d expected-fail (intentional; not counted in DRAFT fail)\n",
-			len(canariesExpectedFail))
-		if len(canariesFlipped) > 0 {
-			fmt.Fprintf(&b, "%d FLIPPED to passing — see warning above\n", len(canariesFlipped))
-		}
-		b.WriteString("\n")
-		for _, c := range canariesExpectedFail {
-			fmt.Fprintf(&b, "  - %s   (%s)   expected-fail\n", c.ScenarioName, c.SourcePath)
-		}
-		for _, c := range canariesFlipped {
-			fmt.Fprintf(&b, "  - %s   (%s)   FLIPPED to pass\n", c.ScenarioName, c.SourcePath)
-		}
-		b.WriteString("\n")
-	}
 
 	// Build a temporary PerformanceStore from the current run's cases,
 	// merging in any pre-loaded best/worst history from r.Perf so the

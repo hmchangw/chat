@@ -1,23 +1,16 @@
-# ⚠️ CANARY — INTENTIONALLY FAILS UNTIL F-019 IS RESOLVED ⚠️
+# Draft scenario tied to F-019 — currently failing because the
+# documented gap is not yet resolved. This is the steady-state shape
+# of an open finding in the suite: a -ve scenario whose negative
+# assertion (NATS rejects the cross-namespace publish) does not hold
+# yet, so the scenario is `draft + fail`. See AUTHORING.md
+# §Pass/fail semantics and open findings, and
+# docs/integration-suite-multisite-findings.md F-019 for the gap, the
+# trust-chain trace, and the 5-minute runtime-verification check that
+# pins suite-config-gap vs production vulnerability.
 #
-# This scenario asserts publish-time authorization: a user
-# authenticated with their own JWT must NOT be able to publish to
-# another user's namespace. Under the current suite NATS setup, the
-# impersonation publish goes through and the gatekeeper attributes
-# the message to the impersonated user — the not:true assertion below
-# catches it (failure = the symptom).
-#
-# DO NOT delete this file because it "fails." It is a CANARY: it
-# documents an unverified enforcement gap (see docs/integration-suite-
-# multisite-findings.md F-019) and becomes a passing regression guard
-# once the gap is resolved.
-#
-# The root cause requires runtime verification (decode a minted user
-# JWT + try the same impersonation with the bare `nats` CLI against
-# the suite NATS) — neither static code reading nor scenario re-runs
-# can distinguish the three candidate causes (silently-blank JWT,
-# NATS misconfiguration, subject-translation in transit). See F-019
-# §Recommended next steps.
+# Once F-019 is resolved this scenario flips to pass; the author then
+# promotes it to status: approved so it becomes a CI-gated regression
+# guard.
 
 scenario: gatekeeper-sender-impersonation-blocked
 source: >
@@ -58,7 +51,7 @@ sites:
         alice_imp: { verified: true }
         bob_imp:   { verified: true }
       rooms:
-        - { id: r-imp, name: ImpersonationCanary, type: channel }
+        - { id: r-imp, name: ImpersonationRoom, type: channel }
       memberships:
         alice_imp: [{ room: r-imp, roles: [owner] }]
         bob_imp:   [{ room: r-imp, roles: [member] }]

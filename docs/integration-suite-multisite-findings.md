@@ -920,10 +920,13 @@ Only the production NATS config (owned by ops/IaC, outside the suite's
 reach) settles which interpretation holds.
 
 **Demonstrated by**
-`scenarios/drafts/_canary/gatekeeper-sender-impersonation-blocked.yaml`
-— intentionally failing canary. The `_canary/` subdir flags scenarios
-that document unverified gaps and become passing regression guards once
-the gap is resolved.
+`scenarios/drafts/security/gatekeeper-sender-impersonation-blocked.yaml`
+— a `draft + −ve` scenario whose negative assertion (NATS rejects the
+cross-namespace publish) does not hold yet, so the scenario is `draft
++ fail` per the steady-state `draft + fail = open finding` shape
+documented in `AUTHORING.md` §Pass/fail semantics and open findings.
+Once F-019 is resolved the scenario flips to pass and is promoted to
+`status: approved` to act as a CI-gated regression guard.
 
 **Recommended next steps:**
 
