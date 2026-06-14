@@ -18,6 +18,9 @@ services:
       # Room keys live in the MongoDB rooms collection (read when ENCRYPTION_ENABLED=true);
       # this grace window keeps a rotated-out previous key valid for decrypt.
       - ROOM_KEY_GRACE_PERIOD=24h
+      # Valkey backs the room-meta L2 cache.
+      - VALKEY_ADDRS=valkey:6379
+      - ROOM_META_L2_TTL=15m
       - BOOTSTRAP_STREAMS=true
       - ENCRYPTION_ENABLED=${ENCRYPTION_ENABLED:-false}
     volumes:

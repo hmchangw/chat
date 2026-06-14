@@ -30,6 +30,15 @@ import (
 // Negative results (nil, nil — meaning the room has no provisioned key)
 // are deliberately not cached, so a freshly-provisioned key is picked up
 // on the next call rather than being shadowed for up to TTL.
+//
+// No Valkey L2 is layered beneath this cache (unlike pkg/roommetacache).
+// Two reasons: the key is the single source of truth in the room's Mongo
+// document (#285), so a second key store would reintroduce the cross-store
+// drift that migration removed; and a stale key is not cosmetic like stale
+// room metadata — it fails decryption, so the fail-open, best-effort
+// invalidation an L2 tier relies on is unsafe for key material. Cold-start
+// repopulation is cheap regardless: keys load lazily as rooms are first
+// seen, each a singleflight-coalesced _id point-read of a ~40-byte field.
 type CachedKeyProvider struct {
 	inner RoomKeyProvider
 	lru   *lru.LRU[string, *roomkeystore.VersionedKeyPair]

@@ -24,6 +24,7 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type config struct {
@@ -41,6 +42,11 @@ type config struct {
 
 	// Grace window during which a rotated-out previous key remains valid for decrypt.
 	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD" envDefault:"24h"`
+
+	// Valkey backs best-effort room-meta L2 cache invalidation. Optional: when
+	// VALKEY_ADDRS is empty the bust is a no-op (the L2 TTL reconciles).
+	ValkeyAddrs    []string `env:"VALKEY_ADDRS"    envSeparator:","`
+	ValkeyPassword string   `env:"VALKEY_PASSWORD" envDefault:""`
 
 	// Atrest/Vault drive eager at-rest DEK provisioning for synchronously-created
 	// DM rooms. When Atrest.Enabled is false the DEK is created lazily by message-worker.
@@ -100,6 +106,17 @@ func main() {
 	}
 
 	keyStore := roomkeystore.NewMongoStore(mongoClient.Database(cfg.MongoDB).Collection("rooms"), cfg.RoomKeyGracePeriod)
+
+	var metaValkey valkeyutil.Client
+	if len(cfg.ValkeyAddrs) > 0 {
+		metaValkey, err = valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+		if err != nil {
+			slog.Error("valkey connect (room-meta L2 invalidation) failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("room-meta L2 invalidation enabled")
+	}
+
 	keySender := roomkeysender.NewSender(nc.NatsConn())
 
 	// Eager at-rest DEK provisioning for synchronously-created DM rooms (the
@@ -138,6 +155,7 @@ func main() {
 	}, keyStore, keySender)
 	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
 	handler.dekProvisioner = dekProvisioner
+	handler.valkey = metaValkey
 
 	router := natsrouter.New(nc, "room-worker")
 	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
@@ -204,6 +222,7 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(_ context.Context) error { valkeyutil.Disconnect(metaValkey); return nil },
 		func(context.Context) error {
 			if vaultWrapper != nil {
 				return vaultWrapper.Close()
