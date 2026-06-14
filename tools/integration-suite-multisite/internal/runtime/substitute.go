@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hmchangw/chat/tools/integration-suite-multisite/internal/scenario"
 )
 
 // Context carries everything substitution can resolve against. Built
@@ -156,6 +158,25 @@ func substituteString(s string, ctx Context) (any, error) {
 }
 
 func resolveToken(token string, ctx Context) (any, error) {
+	// ${date:<expr>} cast wrapper — resolves the inner expression
+	// through the now-expression grammar and returns a time.Time
+	// (not int64). Used wherever the downstream consumer needs a real
+	// Go time value: BSON Date in mongo_data seeds, CQL timestamp
+	// columns via Cassandra, anywhere else a time.Time matters. The
+	// "date:" prefix is namespaced for future siblings (objectid:,
+	// binary:, etc.) — keep them all in this shape if more land.
+	if strings.HasPrefix(token, "date:") {
+		expr := strings.TrimSpace(token[len("date:"):])
+		if expr == "" {
+			return nil, fmt.Errorf("unknown path %q: ${date:<expr>} requires a non-empty expression (e.g. ${date:now}, ${date:now-1h})", token)
+		}
+		tt, err := scenario.ResolveNowExpr(expr, time.Now().UTC())
+		if err != nil {
+			return nil, fmt.Errorf("unknown path %q: ${date:%s} expression: %w", token, expr, err)
+		}
+		return tt.UTC(), nil
+	}
+
 	parts := strings.Split(token, ".")
 	switch parts[0] {
 	case "site":

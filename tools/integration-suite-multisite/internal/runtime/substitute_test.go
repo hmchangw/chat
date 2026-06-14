@@ -304,3 +304,71 @@ func TestSubstitute_ExpectedEventUnknownID(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "obs_a")
 }
+
+// --- ${date:<expr>} cast wrapper (P2(a)) ---
+// BSON Date typed seeding for mongo_data + anywhere a downstream
+// consumer needs an actual time.Time. The inner expression follows
+// the existing ${now ± duration} grammar. Decision: namespaced
+// ${date:...} prefix, future-proof for ${objectid:...} / ${binary:...}.
+
+func TestSubstitute_Date_NowReturnsTime(t *testing.T) {
+	got, err := Substitute("${date:now}", newTestCtx())
+	require.NoError(t, err)
+	tt, ok := got.(time.Time)
+	require.True(t, ok, "${date:now} must return time.Time, got %T", got)
+	assert.WithinDuration(t, time.Now().UTC(), tt, time.Second)
+}
+
+func TestSubstitute_Date_NowMinusReturnsRelativePast(t *testing.T) {
+	got, err := Substitute("${date:now-1h}", newTestCtx())
+	require.NoError(t, err)
+	tt, ok := got.(time.Time)
+	require.True(t, ok, "${date:now-1h} must return time.Time, got %T", got)
+	expected := time.Now().UTC().Add(-1 * time.Hour)
+	assert.WithinDuration(t, expected, tt, 5*time.Second)
+}
+
+func TestSubstitute_Date_NowPlusReturnsRelativeFuture(t *testing.T) {
+	got, err := Substitute("${date:now+5m}", newTestCtx())
+	require.NoError(t, err)
+	tt, ok := got.(time.Time)
+	require.True(t, ok)
+	expected := time.Now().UTC().Add(5 * time.Minute)
+	assert.WithinDuration(t, expected, tt, 5*time.Second)
+}
+
+func TestSubstitute_Date_MalformedExprErrors(t *testing.T) {
+	_, err := Substitute("${date:not-a-time-expr}", newTestCtx())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "date:")
+}
+
+func TestSubstitute_Date_EmptyExprErrors(t *testing.T) {
+	_, err := Substitute("${date:}", newTestCtx())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "date:")
+}
+
+func TestSubstitute_Date_NestedInMongoDoc(t *testing.T) {
+	// A ${date:...} inside a map value (Mongo doc shape) resolves to
+	// time.Time, which BSON Marshals to Date.
+	in := map[string]any{
+		"historySharedSince": "${date:now-1h}",
+		"name":               "alice",
+	}
+	got, err := Substitute(in, newTestCtx())
+	require.NoError(t, err)
+	out := got.(map[string]any)
+	_, ok := out["historySharedSince"].(time.Time)
+	assert.True(t, ok, "nested ${date:...} should resolve to time.Time, got %T", out["historySharedSince"])
+	assert.Equal(t, "alice", out["name"], "non-date fields unchanged")
+}
+
+func TestSubstitute_Date_NowLiteral_StillReturnsInt64(t *testing.T) {
+	// Regression guard: the existing ${now} (no date: prefix) still
+	// returns int64 millis. The date: cast is purely additive.
+	got, err := Substitute("${now}", newTestCtx())
+	require.NoError(t, err)
+	_, ok := got.(int64)
+	assert.True(t, ok, "${now} must continue to return int64 millis, got %T", got)
+}

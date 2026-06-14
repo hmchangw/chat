@@ -406,9 +406,10 @@ fields.
 | `${<alias>.jwt}` | minted NATS JWT |
 | `${<alias>.nkey}` | nkey seed |
 | `${<alias>.credential}` | user-level credential shorthand |
-| `${now}` | `time.Now().UTC().UnixMilli()` |
-| `${now - 2m}` | relative offset (Cassandra seed rows) |
-| `${now + 1h}` | relative offset (positive direction) |
+| `${now}` | `time.Now().UTC().UnixMilli()` (int64) |
+| `${now - 2m}` | relative offset, int64 millis (Cassandra seed rows) |
+| `${now + 1h}` | relative offset, int64 millis (positive direction) |
+| `${date:now}` / `${date:now-1h}` / `${date:now+5m}` | same expr, returns `time.Time` — use for BSON Date fields in `mongo_data` and anywhere a real `time.Time` is required |
 | `${bucket(<col>)}` | auto-computed message-bucket value |
 | `$auto` | runtime-unique random string |
 | `${<id>.reply.body_json.<field>}` | a field of task `<id>`'s captured reply (multi-fire only) |

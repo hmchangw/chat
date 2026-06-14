@@ -900,8 +900,11 @@ token ::= "${" expr "}" | "$auto"
 expr  ::= alias-field
         | "now"
         | "now" ws op ws duration
+        | "date:" now-expr
         | "bucket(" col ")"
         | "input." input-field
+
+now-expr ::= "now" | "now" ws op ws duration
 
 alias-field  ::= alias "." field
 alias        ::= [a-zA-Z_][a-zA-Z0-9_]*    (declared in sites.*.seed.users)
@@ -919,6 +922,36 @@ key          ::= [a-zA-Z_][a-zA-Z0-9_.]*
 `$auto` resolves to a runtime-generated unique string of the form
 `it-<runID>-room-auto-<N>`. Useful for room names and IDs that must
 not collide across parallel or repeated runs.
+
+### Type cast: `${date:<now-expr>}` → `time.Time`
+
+`${now}` returns an `int64` (unix millis) because that's what subjects
+and payloads want. Some downstream consumers need a real Go
+`time.Time` — most commonly **BSON Date** fields in `mongo_data`
+seeds, where unmarshalling a `*time.Time` field from an int silently
+fails. The `${date:<expr>}` wrapper casts a now-expression to
+`time.Time`. Examples:
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: rooms
+    docs:
+      - _id: r-eng
+        name: Engineering
+        historySharedSince: ${date:now-1h}   # ← BSON Date, not int64
+        retentionUntil:     ${date:now+30d}  # ← future Date
+        createdAt:          ${date:now}      # ← current Date
+```
+
+- The inner `<expr>` is the same grammar as the standalone `${now ± d}`
+  form (`now`, `now-1h`, `now+5m`, etc.).
+- Result type is `time.Time` (UTC). BSON encodes it as Date; JSON
+  payloads serialize it as ISO-8601 string; CQL bind sites accept it
+  as `timestamp`.
+- Malformed expression → hard error naming the bad token.
+- The `date:` prefix is namespaced for future casts (`${objectid:...}`,
+  `${binary:...}`) — same wrapper shape if more types ever land.
 
 ---
 
