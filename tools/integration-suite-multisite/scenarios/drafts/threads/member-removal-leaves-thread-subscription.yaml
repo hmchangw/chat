@@ -1,0 +1,160 @@
+scenario: member-removal-leaves-thread-subscription
+source: >
+  room-worker/handler.go:302-333 (processRemoveIndividual → DeleteSubscription deletes ONLY
+  the room subscription), room-worker/store_mongo.go:333 (DeleteSubscription touches the
+  subscriptions collection only — no thread_subscriptions cleanup anywhere in the removal
+  path), inbox-worker/handler.go handleMemberRemoved → DeleteSubscriptionsByAccounts (same,
+  federated path also room-sub only), message-worker/handler.go:359-392 (thread_subscriptions
+  are created by markThreadMentions / thread participation). flow: gates per
+  docs/superpowers/specs/2026-06-13-integration-suite-flow.md.
+status: draft
+tag: negative
+
+# ACCESS-REVOCATION GAP (the revoke side of F-016): removing a member from a
+# room deletes their ROOM subscription but leaves their THREAD subscriptions
+# intact. A removed member therefore remains a thread follower (in
+# thread_subscriptions and thread_rooms.replyAccounts) for threads in a room
+# they no longer belong to — keeping a notification/access relationship to
+# room-scoped content. Together with F-016 (thread subs improperly GRANTED to
+# non-members), thread subscriptions are neither properly granted nor revoked.
+#
+# Uses flow: gates so the sequence is deterministic, not racy:
+#   bob (a member) replies in a thread  -> his thread_subscription is created
+#   [gate] wait until that thread_subscription exists
+#   alice (owner) removes bob           -> room subscription deleted (async)
+#   [gate] wait for the member_removed event (removal processed)
+#   tail: bob's ROOM sub is gone, but his THREAD sub SURVIVES (the bug)
+#
+# Single-site (local removal) — no OUTBOX/federation needed. Unique room
+# r-rmthread to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }
+      rooms:
+        - id: r-rmthread
+          name: Removal Thread
+          type: channel
+      memberships:
+        alice:
+          - room: r-rmthread
+            roles: [owner]
+        bob:
+          - room: r-rmthread
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0rmthrparent0000001
+        created_at: 1748736000000
+        room_id: r-rmthread
+        site_id: site-a
+        msg: "thread parent"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+  - table: messages_by_room
+    rows:
+      - room_id: r-rmthread
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0rmthrparent0000001
+        site_id: site-a
+        msg: "thread parent"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+
+input:
+  - id: bob_reply
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${bob.account}.room.r-rmthread.site-a.msg.send
+    payload:
+      id: m1rmthrreply00000001
+      content: bob participates in the thread
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567930
+      threadParentMessageId: m0rmthrparent0000001
+      threadParentMessageCreatedAt: 1748736000000
+    credential: ${bob.credential}
+
+  - id: remove
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.r-rmthread.site-a.member.remove
+    payload:
+      roomId: r-rmthread
+      account: ${bob.account}
+    credential: ${alice.credential}
+
+expected:
+  # GATE — bob's thread_subscription exists (his reply was processed) before
+  # we remove him. Without this gate the removal would race the thread-sub write.
+  - id: bob_thread_sub
+    location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0rmthrparent0000001
+        userAccount: ${bob.account}
+    match:
+      userAccount: ${bob.account}
+    timeout: 10s
+
+  # remove accepted (async job acknowledged).
+  - id: remove_accepted
+    location: reply
+    of: remove
+    match:
+      body_json:
+        status: accepted
+
+  # GATE — removal was actually processed by room-worker (member_removed event
+  # is published AFTER DeleteSubscription), so the tail window is post-deletion.
+  - id: remove_processed
+    location: jetstream_consume
+    site: site-a
+    args:
+      stream: INBOX_site-a
+      filter_subject: chat.inbox.site-a.member_removed
+    match:
+      body_json:
+        type: member_removed
+    timeout: 15s
+
+  # Tail — bob's ROOM subscription is gone (removal worked) ...
+  - id: room_sub_gone
+    location: mongo_find
+    site: site-a
+    args:
+      collection: subscriptions
+      filter:
+        roomId: r-rmthread
+        u.account: ${bob.account}
+        createdAt: { $exists: false }
+    not: true
+    match:
+      roomId: r-rmthread
+
+  # ... but his THREAD subscription SURVIVES — the access-revocation gap.
+  - id: thread_sub_survives
+    location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0rmthrparent0000001
+        userAccount: ${bob.account}
+    match:
+      userAccount: ${bob.account}
+
+flow: bob_reply >> bob_thread_sub >> remove >> remove_accepted >> remove_processed >> [room_sub_gone, thread_sub_survives]

@@ -790,3 +790,40 @@ thread parent exists **and belongs to the reply's room** before creating the
 thread room / writing tcount — reject the reply otherwise. This is the same
 non-validation root the old F-004 flagged; the cross-room facet turns it from
 a harmless orphan thread into cross-room integrity pollution.
+
+## F-018 — removing a member leaves their thread subscriptions behind (access not revoked)
+
+**Layer:** chat-app code (room-worker / inbox-worker member-removal paths).
+
+**Status:** observed — access-revocation gap; chat-app team action requested.
+**Reachability:** any removed member who had participated in (or been mentioned
+in) a thread — standard operation, no special timing.
+
+Member removal deletes only the **room** subscription. The local path
+(`room-worker/handler.go:302-333` `processRemoveIndividual → DeleteSubscription`)
+and the federated path (`inbox-worker` `handleMemberRemoved →
+DeleteSubscriptionsByAccounts`) both touch the `subscriptions` collection
+only — there is **no `thread_subscriptions` cleanup anywhere in the removal
+path**. So a removed member keeps every `thread_subscription` they held for
+that room (and stays in `thread_rooms.replyAccounts`), remaining a thread
+follower for notification fan-out and the "following threads" feed — a
+durable access/notification relationship to room-scoped content they have
+been removed from.
+
+This is the **revoke-side counterpart to F-016**: F-016 shows thread
+subscriptions are improperly *granted* (to non-members, even cross-site);
+F-018 shows they are not *revoked* on removal. Thread subscriptions are an
+access surface guarded on neither end.
+
+Demonstrated by
+`scenarios/drafts/threads/member-removal-leaves-thread-subscription.yaml`
+(flow shape, run e7d6, green): bob (a member) replies in a thread → his
+`thread_subscription` is created (gated on); alice (owner) removes bob;
+after the `member_removed` event is observed (removal processed), bob's
+`subscriptions` row is gone (`room_sub_gone`) **but his
+`thread_subscriptions` row survives** (`thread_sub_survives`).
+
+The decision the team owns: member removal should also delete the user's
+`thread_subscriptions` for the room and drop them from affected
+`thread_rooms.replyAccounts` — in both the local removal and the federated
+`handleMemberRemoved` apply, so revocation holds across sites too.
