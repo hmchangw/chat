@@ -1,11 +1,15 @@
 package readers
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -191,14 +195,27 @@ func buildJetStreamPayload(msg jetstream.Msg) JetStreamSubjectPayload {
 	}
 	data := msg.Data()
 	if len(data) > 0 {
-		var m map[string]any
-		if err := json.Unmarshal(data, &m); err == nil {
-			p.BodyJSON = m
-		} else {
-			p.BodyRaw = string(data)
+		// Headers feed Content-Encoding detection. Copy them into a
+		// plain map[string][]string for both the payload and the
+		// helper — nats.Header alias is map[string][]string under the
+		// hood, so this is just a flatten + decouple.
+		var hdr map[string][]string
+		if h := msg.Headers(); len(h) > 0 {
+			hdr = make(map[string][]string, len(h))
+			for k, v := range h {
+				out := make([]string, len(v))
+				copy(out, v)
+				hdr[k] = out
+			}
 		}
-	}
-	if hdr := msg.Headers(); len(hdr) > 0 {
+		p.BodyJSON, p.BodyRaw = decodeJetStreamBody(data, hdr)
+		// Header capture for the matcher mirrors what we already
+		// gathered above. Stash it unconditionally when present so
+		// authors can assert on headers regardless of body shape.
+		if len(hdr) > 0 {
+			p.Header = hdr
+		}
+	} else if hdr := msg.Headers(); len(hdr) > 0 {
 		cp := make(map[string][]string, len(hdr))
 		for k, v := range hdr {
 			out := make([]string, len(v))
@@ -208,4 +225,56 @@ func buildJetStreamPayload(msg jetstream.Msg) JetStreamSubjectPayload {
 		p.Header = cp
 	}
 	return p
+}
+
+// decodeJetStreamBody normalises a JetStream message payload into
+// (BodyJSON, BodyRaw). Gzip-compressed bodies are detected by either:
+//   - Content-Encoding: gzip header (case-insensitive), OR
+//   - gzip magic bytes (0x1f 0x8b) at the start of the payload.
+//
+// Detection is tolerant of producers that omit the header (push-
+// notification fan-out is the motivating consumer — F-016/F-018 push
+// behavior was previously code-bounded only).
+//
+// Decompression failures fall through to the raw bytes so the matcher
+// can still assert on body_raw or surface the diagnostic.
+func decodeJetStreamBody(data []byte, hdr map[string][]string) (bodyJSON map[string]any, bodyRaw string) {
+	payload := data
+	if isGzipped(payload, hdr) {
+		if decoded, err := gunzip(payload); err == nil {
+			payload = decoded
+		}
+	}
+	if len(payload) == 0 {
+		return nil, ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err == nil {
+		return m, ""
+	}
+	return nil, string(payload)
+}
+
+// isGzipped reports whether data looks gzipped — by header OR by the
+// gzip magic bytes (0x1f 0x8b). Header lookup is case-insensitive.
+func isGzipped(data []byte, hdr map[string][]string) bool {
+	for k, vs := range hdr {
+		if strings.EqualFold(k, "Content-Encoding") {
+			for _, v := range vs {
+				if strings.EqualFold(strings.TrimSpace(v), "gzip") {
+					return true
+				}
+			}
+		}
+	}
+	return len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b
+}
+
+func gunzip(data []byte) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }

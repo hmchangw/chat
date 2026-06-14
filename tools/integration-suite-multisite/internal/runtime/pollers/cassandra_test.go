@@ -110,3 +110,50 @@ func TestTruncateForLog_TruncatesWithMoreSuffix(t *testing.T) {
 	assert.True(t, strings.HasPrefix(got, strings.Repeat("x", 200)))
 	assert.Contains(t, got, "50 more bytes")
 }
+
+// --- P5: timestamp-typed param binding ---
+// CQL `timestamp` columns need a Go time.Time bound at the ? — an
+// int64 millis lands as a bigint and the comparison silently fails.
+// Authors can opt in by writing a "ts:<unix-millis>" string in args.params,
+// and buildCassandraParams converts it to time.Time before binding.
+
+func TestBuildCassandraParams_TimestampStringConvertsToTime(t *testing.T) {
+	// Unix millis 1748736000000 = 2025-06-01T00:00:00Z
+	got := buildCassandraParams(
+		map[string]any{"params": []any{"ts:1748736000000", "m-1"}},
+		time.Now(),
+		"SELECT * FROM messages_by_id WHERE created_at = ? AND message_id = ?",
+	)
+	require.Len(t, got, 2)
+	tt, ok := got[0].(time.Time)
+	require.True(t, ok, "ts:<millis> must convert to time.Time, got %T", got[0])
+	assert.Equal(t, int64(1748736000000), tt.UnixMilli())
+	assert.Equal(t, "m-1", got[1], "non-ts: params pass through unchanged")
+}
+
+func TestBuildCassandraParams_TimestampStringRejectsMalformed(t *testing.T) {
+	// "ts:" with non-numeric body falls through as the raw string —
+	// gocql will error at bind time with a precise type-mismatch.
+	// We don't try to "rescue" it; that would mask the typo.
+	got := buildCassandraParams(
+		map[string]any{"params": []any{"ts:not-a-number"}},
+		time.Now(),
+		"SELECT 1",
+	)
+	require.Len(t, got, 1)
+	assert.Equal(t, "ts:not-a-number", got[0], "malformed ts: stays a string so gocql surfaces the error loudly")
+}
+
+func TestBuildCassandraParams_NonTSPrefixedParams_Unchanged(t *testing.T) {
+	// Regression guard: pure strings without ts: prefix continue to bind
+	// as today (no implicit conversion magic).
+	got := buildCassandraParams(
+		map[string]any{"params": []any{"r-1", "01970a4f", int64(42)}},
+		time.Now(),
+		"SELECT * FROM t WHERE room_id = ? AND id = ? AND n = ?",
+	)
+	require.Len(t, got, 3)
+	assert.Equal(t, "r-1", got[0])
+	assert.Equal(t, "01970a4f", got[1])
+	assert.Equal(t, int64(42), got[2])
+}

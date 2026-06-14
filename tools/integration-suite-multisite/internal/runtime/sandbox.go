@@ -62,6 +62,7 @@ var sandboxOwnedCollections = []string{
 	"room_members",
 	"thread_rooms",
 	"thread_subscriptions",
+	"custom_emojis", // mirrors mongoDataAllowedCollections so seeded rows are reset between scenarios
 }
 
 // Sandbox is the per-scenario shared state. One Sandbox per

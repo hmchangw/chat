@@ -31,6 +31,7 @@ var mongoDataAllowedCollections = map[string]struct{}{
 	"room_members":         {},
 	"thread_rooms":         {},
 	"thread_subscriptions": {},
+	"custom_emojis":        {}, // per-tenant emoji shortcode table; react/pin gate validates against this
 }
 
 // insertSeededMongoData materializes sb.Scenario.MongoData into the

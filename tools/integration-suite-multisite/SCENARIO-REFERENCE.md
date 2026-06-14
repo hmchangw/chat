@@ -266,8 +266,9 @@ by primary key from the verb fire.
 a collection from the sandbox-owned set. Today:
 
 ```
-users  rooms  subscriptions  room_members
-thread_rooms  thread_subscriptions
+users          rooms                 subscriptions
+room_members   thread_rooms          thread_subscriptions
+custom_emojis
 ```
 
 If a scenario needs a collection that isn't here yet, extend the
@@ -794,6 +795,26 @@ struct.
 | `query` | yes | CQL query string. `?` placeholders bound in order. |
 | `params` | no | List of bind values. `StartTime` is bound to the first `?` when `params` is absent. |
 
+**Timestamp-typed params.** A CQL `timestamp` column needs a Go
+`time.Time` bound at the `?` — an `int64` lands as `bigint` and the
+comparison silently fails. Opt in with the `ts:<unix-millis>` string
+prefix on the param value; the poller converts it to `time.Time`
+before binding. Example:
+
+```yaml
+- location: cassandra_select
+  args:
+    query: "SELECT JSON * FROM messages_by_id WHERE message_id = ? AND created_at = ?"
+    params: ["m0parentmsg000000001", "ts:1748736000000"]
+  match:
+    message_id: "m0parentmsg000000001"
+    tcount: 2
+```
+
+Malformed `ts:` bodies (non-numeric) pass through as the raw string so
+`gocql` surfaces a precise type-mismatch error rather than silently
+masking the typo.
+
 ### 7.5 `jetstream_consume`
 
 ```yaml
@@ -815,6 +836,15 @@ domain.
 |-----|----------|-------|
 | `stream` | yes | JetStream stream name. |
 | `filter_subject` | yes | Subject filter for the ephemeral consumer. |
+
+**Gzipped payloads** (push-notification fan-out, etc.) are
+decompressed automatically before JSON decoding. Detection is by the
+`Content-Encoding: gzip` header (case-insensitive) OR by the gzip
+magic bytes `0x1f 0x8b` at the start of the payload — producers that
+omit the header still get transparent decoding. `match.body_json:`
+sees the decoded shape. If decompression fails, the raw (still-
+compressed) bytes fall through to `body_raw` so the matcher / failure
+detail surface what arrived.
 
 ### 7.6 `nats_subscribe`
 

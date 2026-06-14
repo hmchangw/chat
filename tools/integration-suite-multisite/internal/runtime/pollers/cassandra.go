@@ -126,14 +126,41 @@ func truncateForLog(s string, max int) string {
 // query. Explicit args.params wins; if absent AND the query has
 // exactly one `?` placeholder, we bind [startTime] (the common
 // "rows since T_open" pattern). Otherwise no parameters are bound.
+//
+// CQL timestamp typing: an author binding a `timestamp` column needs
+// a Go time.Time at the placeholder (an int64 lands as bigint and the
+// comparison silently fails). The "ts:<unix-millis>" string prefix
+// opts in: any string param starting with "ts:" is parsed as
+// milliseconds-since-epoch and converted to time.Time before binding.
+// Malformed bodies pass through as the raw string so gocql surfaces a
+// precise type-mismatch error rather than us masking the typo.
 func buildCassandraParams(args map[string]any, startTime time.Time, query string) []any {
 	if raw, ok := args["params"].([]any); ok {
-		return raw
+		out := make([]any, len(raw))
+		for i, v := range raw {
+			out[i] = coerceCassandraParam(v)
+		}
+		return out
 	}
 	if strings.Count(query, "?") == 1 {
 		return []any{startTime}
 	}
 	return nil
+}
+
+// coerceCassandraParam converts the documented type-prefixed string
+// forms ("ts:<unix-millis>") to their native Go types. Everything else
+// passes through unchanged so author intent is preserved.
+func coerceCassandraParam(v any) any {
+	s, ok := v.(string)
+	if !ok || !strings.HasPrefix(s, "ts:") {
+		return v
+	}
+	ms, err := strconv.ParseInt(s[len("ts:"):], 10, 64)
+	if err != nil {
+		return v // malformed → pass through so gocql errors loudly
+	}
+	return time.UnixMilli(ms).UTC()
 }
 
 // BucketAt exposes the configured Sizer so future scenario

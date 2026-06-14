@@ -231,3 +231,27 @@ func TestCopyMongoDoc_IsShallow(t *testing.T) {
 	assert.Equal(t, "${now - 5m}", original["createdAt"],
 		"copy must not share top-level entries with the source")
 }
+
+// --- P2(b): custom_emojis is seedable ---
+// custom_emojis is the per-tenant emoji shortcode table that
+// react / pin gate validate against. Authors writing scenarios for
+// access-window / react flows need to register a shortcode at seed
+// time so ReactMessage's shortcode-existence check passes.
+
+func TestMongoDataAllowed_IncludesCustomEmojis(t *testing.T) {
+	_, ok := mongoDataAllowedCollections["custom_emojis"]
+	assert.True(t, ok, "custom_emojis must be seedable via mongo_data so react/pin gate scenarios are authorable")
+}
+
+func TestSandboxOwned_IncludesCustomEmojis(t *testing.T) {
+	// Drop list must mirror allow list — otherwise seeded rows would
+	// leak across scenarios.
+	found := false
+	for _, c := range sandboxOwnedCollections {
+		if c == "custom_emojis" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "custom_emojis must be in sandboxOwnedCollections so seeded rows are dropped between scenarios")
+}
