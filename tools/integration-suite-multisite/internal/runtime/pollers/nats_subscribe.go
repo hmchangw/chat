@@ -39,9 +39,34 @@ import (
 type NATSSubscribePoller struct {
 	conn *nats.Conn
 
+	// openConn is the per-credential conn opener wired by the runner
+	// at construction (RegisterBuiltinPollers). nil-tolerant: scenarios
+	// without args.credential still use the shared admin conn above.
+	// When args.credential IS set but openConn is nil, Warm returns an
+	// explicit error rather than silently falling back to the admin
+	// conn (which would invalidate the auth-boundary test the author
+	// is trying to write).
+	openConn ConnOpener
+
 	mu    sync.Mutex
 	cache map[string]*natsSubEntry
+	// perCredConns holds connections opened by openConn, keyed
+	// site|account so the same credential reused across subjects shares
+	// one conn. Closed at Close().
+	perCredConns map[string]*nats.Conn
 }
+
+// ConnOpener opens a NATS connection authenticated as the given
+// (account, jwt, nkeySeed) against the named site's NATS URL. Used by
+// the per-credential nats_subscribe path so a scenario's
+// args.credential: ${bob.credential} resolves to a real bob-authed
+// subscription, not the shared admin connection.
+//
+// site identifies which NATS endpoint to connect to (e.g. "site-a").
+// Implementations may pool / cache connections by (site, account); the
+// poller treats every call as opening a fresh logical connection but
+// caches the returned *nats.Conn so a re-Warm is idempotent.
+type ConnOpener func(site, account, jwt, nkeySeed string) (*nats.Conn, error)
 
 // natsSubEntry is one cached subscription's state. The reader owns
 // the live nats.Subscription and the synchronised queue; the
@@ -61,9 +86,48 @@ type natsSubEntry struct {
 // a clear "no admin NATS connection" reason at assertion time.
 func NewNATSSubscribePoller(conn *nats.Conn) *NATSSubscribePoller {
 	return &NATSSubscribePoller{
-		conn:  conn,
-		cache: map[string]*natsSubEntry{},
+		conn:         conn,
+		cache:        map[string]*natsSubEntry{},
+		perCredConns: map[string]*nats.Conn{},
 	}
+}
+
+// SetConnOpener wires the per-credential connection opener used when
+// a scenario's nats_subscribe args carry a credential: map. Called by
+// RegisterBuiltinPollers at runner startup. Tests inject a fake to
+// verify the dispatch + cache behavior without spinning per-user
+// in-process NATS auth.
+func (p *NATSSubscribePoller) SetConnOpener(o ConnOpener) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openConn = o
+}
+
+// extractCredential parses an args.credential map[string]any into the
+// (account, jwt, nkey) tuple the opener needs. Returns ok=false when
+// the field is absent OR not a map shape (signal: use the shared
+// admin conn). Returns an error only when the map IS present but
+// missing required fields — that's an author bug worth surfacing.
+func extractCredential(args map[string]any) (account, jwt, nkey string, ok bool, err error) {
+	raw, present := args["credential"]
+	if !present {
+		return "", "", "", false, nil
+	}
+	m, isMap := raw.(map[string]any)
+	if !isMap {
+		// A credential value that's not a map (e.g. unsubstituted
+		// "${bob.credential}" string still sitting there) is an author
+		// or substitution-time bug. Surface it.
+		return "", "", "", false, fmt.Errorf("nats_subscribe: args.credential must resolve to a map with {account, jwt, nkey}, got %T", raw)
+	}
+	account, _ = m["account"].(string)
+	jwt, _ = m["jwt"].(string)
+	nkey, _ = m["nkey"].(string)
+	if account == "" || jwt == "" || nkey == "" {
+		return "", "", "", false, fmt.Errorf("nats_subscribe: args.credential missing required fields (need account, jwt, nkey; got account=%q jwt-set=%t nkey-set=%t)",
+			account, jwt != "", nkey != "")
+	}
+	return account, jwt, nkey, true, nil
 }
 
 // natsSubKey returns the cache key for (site, subject). Warm calls
@@ -89,6 +153,49 @@ func (p *NATSSubscribePoller) Warm(args map[string]any) error {
 	if subject == "" {
 		return fmt.Errorf("nats_subscribe: args.subject is required and must be a string")
 	}
+
+	// Per-credential path: open / reuse a credential-scoped connection
+	// instead of the shared admin. The cache key includes the account
+	// so two scenarios subscribing to the same subject under different
+	// credentials get logically separate subscriptions (the whole
+	// point: testing publish-time auth boundaries faithfully).
+	account, jwt, nkey, haveCred, err := extractCredential(args)
+	if err != nil {
+		return err
+	}
+	if haveCred {
+		if p.openConn == nil {
+			return fmt.Errorf("nats_subscribe: args.credential set but poller has no ConnOpener — runner did not wire per-credential auth (NATSURLBySite missing?)")
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		key := natsSubKey(account, subject)
+		if _, ok := p.cache[key]; ok {
+			return nil
+		}
+		conn, ok := p.perCredConns[account]
+		if !ok {
+			// site = "" passes through to the opener — caller decides
+			// the per-site routing (default site-a). A future
+			// args.credential-bound site arg could refine this; for v1
+			// the same Core NATS supercluster routing applies as for
+			// the shared admin conn.
+			var openErr error
+			conn, openErr = p.openConn("", account, jwt, nkey)
+			if openErr != nil {
+				return fmt.Errorf("nats_subscribe: open per-credential conn for %q: %w", account, openErr)
+			}
+			p.perCredConns[account] = conn
+		}
+		rdr := readers.NewNATSSubscribeReader(conn, subject)
+		if subErr := rdr.Open(); subErr != nil {
+			return fmt.Errorf("nats_subscribe: open subscription on %q (cred=%q): %w", subject, account, subErr)
+		}
+		p.cache[key] = &natsSubEntry{reader: rdr}
+		return nil
+	}
+
+	// Shared-admin path (today's default behavior, preserved).
 	if p.conn == nil {
 		slog.Warn("nats_subscribe: no admin NATS connection (NATS_CREDS_FILE unset?); subscription not opened",
 			"subject", subject)
@@ -103,8 +210,8 @@ func (p *NATSSubscribePoller) Warm(args map[string]any) error {
 	}
 
 	rdr := readers.NewNATSSubscribeReader(p.conn, subject)
-	if err := rdr.Open(); err != nil {
-		return fmt.Errorf("nats_subscribe: open subscription on %q: %w", subject, err)
+	if subErr := rdr.Open(); subErr != nil {
+		return fmt.Errorf("nats_subscribe: open subscription on %q: %w", subject, subErr)
 	}
 	p.cache[key] = &natsSubEntry{reader: rdr}
 	return nil
@@ -142,10 +249,24 @@ func (p *NATSSubscribePoller) PollFn(site string, args map[string]any, _ string)
 		}
 	}
 
+	// If the assertion args carry a credential, look it up in the
+	// account-keyed cache. Otherwise fall through to the site or
+	// shared-admin entries.
+	credAccount, _, _, _, _ := extractCredential(args)
+
 	return func() []readers.Event {
 		p.mu.Lock()
-		// Prefer site-specific key; fall back to the Warm-created "" entry.
-		entry, ok := p.cache[natsSubKey(site, subject)]
+		var (
+			entry *natsSubEntry
+			ok    bool
+		)
+		if credAccount != "" {
+			entry, ok = p.cache[natsSubKey(credAccount, subject)]
+		}
+		if !ok {
+			// Prefer site-specific key; fall back to the Warm-created "" entry.
+			entry, ok = p.cache[natsSubKey(site, subject)]
+		}
 		if !ok {
 			entry, ok = p.cache[natsSubKey("", subject)]
 		}
@@ -188,6 +309,14 @@ func (p *NATSSubscribePoller) Close() {
 		}
 	}
 	p.cache = map[string]*natsSubEntry{}
+	// Drain per-credential connections opened by openConn. The shared
+	// admin conn (p.conn) is owned by the session and closed elsewhere.
+	for account, conn := range p.perCredConns {
+		if conn != nil {
+			conn.Close()
+		}
+		delete(p.perCredConns, account)
+	}
 }
 
 // cloneReceived deep-copies the accumulator slice so MatchShape's

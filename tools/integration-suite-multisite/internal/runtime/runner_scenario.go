@@ -45,6 +45,7 @@ type runnerDeps struct {
 	AuthURLBySite  map[string]string
 	Cassandra      *gocql.Session        // nil disables cassandra_select; shared across sites
 	AdminConns     map[string]*nats.Conn // per-site; empty disables jetstream_consume
+	NATSURLBySite  map[string]string     // per-site; empty disables nats_subscribe per-credential auth
 	Dispatcher     *Dispatcher
 	SeedEffectReg  *seedeffect.Registry
 	MatcherReg     *matchers.Registry
@@ -86,6 +87,7 @@ func (d *runnerDeps) toSandboxDeps() *SandboxDeps {
 		Cassandra:           d.Cassandra,
 		CassandraKeyspace:   d.Cfg.CassandraKeyspace,
 		AdminConns:          d.AdminConns,
+		NATSURLBySite:       d.NATSURLBySite,
 		MessageBucketWindow: d.MessageBucketWindow,
 		Chaos:               d.ChaosEngine,
 		Dispatcher:          d.Dispatcher,

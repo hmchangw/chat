@@ -46,6 +46,13 @@ type BuiltinDeps struct {
 	// warn at PollFn time.
 	AdminConns map[string]*nats.Conn
 
+	// NATSURLBySite is the per-site URL nats_subscribe's per-credential
+	// opener uses when args.credential is set. Empty / nil disables
+	// per-credential subscribe; scenarios with args.credential fail
+	// loudly rather than silently degrading to the admin conn. Keys
+	// match AdminConns site names.
+	NATSURLBySite map[string]string
+
 	// ReplyReader is the dispatcher-fed singleton that backs `reply`.
 	// The dispatcher injects per-fire outcomes into this reader; the
 	// poller hands them to assertions.
@@ -76,6 +83,29 @@ func RegisterBuiltinPollers(reg *Registry, deps *BuiltinDeps) (cleanup func(), e
 	// the gateway so site-a's admin conn observes site-b publishes too.
 	// Pick site-a by convention; any non-nil conn works.
 	natsSubPoller := NewNATSSubscribePoller(deps.AdminConns["site-a"])
+	// Per-credential opener — only wired when site URLs are available.
+	// Fans out to whichever site the caller names; today's poller
+	// passes site="" which the opener resolves to site-a by default
+	// (Core NATS supercluster routing means a connection on either
+	// site sees publishes from both).
+	if len(deps.NATSURLBySite) > 0 {
+		natsSubPoller.SetConnOpener(func(site, account, jwt, nkeySeed string) (*nats.Conn, error) {
+			url := deps.NATSURLBySite[site]
+			if url == "" {
+				// default-site fallback: site-a, else any
+				if url = deps.NATSURLBySite["site-a"]; url == "" {
+					for _, u := range deps.NATSURLBySite {
+						url = u
+						break
+					}
+				}
+			}
+			return nats.Connect(url,
+				nats.UserJWTAndSeed(jwt, nkeySeed),
+				nats.Name("integration-suite/"+account),
+			)
+		})
+	}
 
 	cleanup = func() {
 		jsPoller.Close()

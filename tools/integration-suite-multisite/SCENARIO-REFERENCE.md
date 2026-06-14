@@ -864,6 +864,40 @@ replay; if the fire races ahead of `Warm`, events may be missed.
 | Arg | Required | Notes |
 |-----|----------|-------|
 | `subject` | yes | NATS subject with optional `*`/`>` wildcards. |
+| `credential` | no | When set, opens the subscription as that specific user instead of the shared admin connection. Use `${<alias>.credential}` — substitution resolves it to the `{account, jwt, nkey}` map the poller's per-credential opener consumes. |
+
+**Per-credential subscribe.** By default `nats_subscribe` uses the
+runner's shared admin connection, which has broad permissions and can
+see everything published. That's fine when the assertion is "did this
+message reach the bus at all?" but it cannot distinguish "a scoped
+non-member's client receives this" from "an admin sees it." For
+publish-time / subscribe-time auth-boundary scenarios — F-019 sender
+impersonation, F-021 channel eavesdrop, F-022 thread-reply broadcast
+to non-member followers — write `args.credential: ${<alias>.credential}`:
+
+```yaml
+expected:
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.room.r-shared.event
+      credential: ${bob.credential}   # ← subscribes AS bob, not as admin
+    match:
+      received:
+        - { body_json: { event: "message.created" } }
+```
+
+The poller opens a per-credential NATS connection authenticated as the
+named user (via `nats.UserJWTAndSeed`), uses that connection for the
+subscription, and caches it per `(subject, account)`. Different
+credentials get separate cache entries — a `bob` assertion and an
+`alice` assertion on the same subject do not cross-contaminate.
+
+**Auth failures surface as scenario verdicts.** If the per-credential
+connection fails to authenticate, `Warm` returns an error and the
+scenario fails with the auth message. Assertions that EXPECT auth
+failure should target it via `not: true` on a positive receive — the
+authenticated subscribe simply never sees the message.
 
 ### 7.7 `logs_tail`
 

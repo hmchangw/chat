@@ -425,3 +425,134 @@ func TestNATSSubscribe_ImplementsWarmer(t *testing.T) {
 	// Compile-time only; no runtime assertion needed.
 	_ = sync.Mutex{}
 }
+
+// --- P1: per-credential subscribe ---
+// nats_subscribe with args.credential: {jwt, nkey, account} opens a
+// new NATS connection authenticated as that user, instead of the
+// shared admin connection. Different credentials get separate cache
+// entries so subscriptions don't cross-contaminate.
+
+// fakeConnOpener captures the credential each call asked for and
+// returns the same in-process conn (we're testing the cache + dispatch
+// logic, not real-NATS auth which the suite verifies end-to-end).
+type fakeConnOpener struct {
+	mu          sync.Mutex
+	calls       []credCall
+	returnConn  *nats.Conn
+	returnError error
+}
+
+type credCall struct {
+	Site, Account, JWT, NkeySeed string
+}
+
+func (f *fakeConnOpener) Open(site, account, jwt, nkeySeed string) (*nats.Conn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, credCall{site, account, jwt, nkeySeed})
+	if f.returnError != nil {
+		return nil, f.returnError
+	}
+	return f.returnConn, nil
+}
+
+func TestNATSSubscribe_NoCredentialInArgs_UsesSharedAdminConn(t *testing.T) {
+	// Regression: existing scenarios that don't carry args.credential
+	// continue to use the shared admin conn. No call to the opener.
+	nc := startInProcessNATS(t)
+	opener := &fakeConnOpener{returnConn: nc}
+
+	p := NewNATSSubscribePoller(nc)
+	p.SetConnOpener(opener.Open)
+	require.NoError(t, p.Warm(map[string]any{"subject": "test.x"}))
+
+	assert.Empty(t, opener.calls, "no credential ⇒ no per-cred opener call; shared conn reused")
+}
+
+func TestNATSSubscribe_WithCredentialInArgs_OpensPerCredConn(t *testing.T) {
+	nc := startInProcessNATS(t)
+	opener := &fakeConnOpener{returnConn: nc}
+
+	p := NewNATSSubscribePoller(nc)
+	p.SetConnOpener(opener.Open)
+	cred := map[string]any{
+		"account": "bob",
+		"jwt":     "eyJ.bob",
+		"nkey":    "SUAH.bob",
+	}
+	require.NoError(t, p.Warm(map[string]any{
+		"subject":    "chat.user.bob.event.room",
+		"credential": cred,
+	}))
+
+	require.Len(t, opener.calls, 1)
+	assert.Equal(t, "bob", opener.calls[0].Account)
+	assert.Equal(t, "eyJ.bob", opener.calls[0].JWT)
+	assert.Equal(t, "SUAH.bob", opener.calls[0].NkeySeed)
+}
+
+func TestNATSSubscribe_DifferentCredentialsGetSeparateConns(t *testing.T) {
+	nc := startInProcessNATS(t)
+	opener := &fakeConnOpener{returnConn: nc}
+
+	p := NewNATSSubscribePoller(nc)
+	p.SetConnOpener(opener.Open)
+	bob := map[string]any{"account": "bob", "jwt": "j-bob", "nkey": "n-bob"}
+	alice := map[string]any{"account": "alice", "jwt": "j-alice", "nkey": "n-alice"}
+
+	require.NoError(t, p.Warm(map[string]any{"subject": "chat.x", "credential": bob}))
+	require.NoError(t, p.Warm(map[string]any{"subject": "chat.x", "credential": alice}))
+
+	require.Len(t, opener.calls, 2, "same subject + different creds ⇒ two opener calls")
+	assert.Equal(t, "bob", opener.calls[0].Account)
+	assert.Equal(t, "alice", opener.calls[1].Account)
+}
+
+func TestNATSSubscribe_SameCredentialRepeatedWarm_OpensOnce(t *testing.T) {
+	// Idempotency: warming the same (subject, credential) twice opens
+	// the per-cred conn exactly once — matches the no-credential idempotency.
+	nc := startInProcessNATS(t)
+	opener := &fakeConnOpener{returnConn: nc}
+
+	p := NewNATSSubscribePoller(nc)
+	p.SetConnOpener(opener.Open)
+	cred := map[string]any{"account": "bob", "jwt": "j", "nkey": "n"}
+	require.NoError(t, p.Warm(map[string]any{"subject": "chat.x", "credential": cred}))
+	require.NoError(t, p.Warm(map[string]any{"subject": "chat.x", "credential": cred}))
+
+	assert.Len(t, opener.calls, 1, "repeat Warm with same (subject, cred) ⇒ single opener call")
+}
+
+func TestNATSSubscribe_CredentialAuthFailure_SurfacesError(t *testing.T) {
+	// A failing conn open propagates so the scenario sees the auth
+	// failure as a verdict (it might be ASSERTING auth fails).
+	nc := startInProcessNATS(t)
+	opener := &fakeConnOpener{returnError: assertErr("auth failure: not authorized")}
+
+	p := NewNATSSubscribePoller(nc)
+	p.SetConnOpener(opener.Open)
+	cred := map[string]any{"account": "evil", "jwt": "bad", "nkey": "bad"}
+	err := p.Warm(map[string]any{"subject": "chat.x", "credential": cred})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auth failure")
+}
+
+func TestNATSSubscribe_NoConnOpenerSet_CredentialInArgsErrors(t *testing.T) {
+	// Defense: if the poller was built without a ConnOpener (legacy
+	// path) but args.credential is set, Warm returns an explicit error
+	// instead of silently falling back to the admin conn (which would
+	// invalidate the auth-boundary test the author was trying to write).
+	nc := startInProcessNATS(t)
+	p := NewNATSSubscribePoller(nc) // no SetConnOpener
+	cred := map[string]any{"account": "bob", "jwt": "j", "nkey": "n"}
+	err := p.Warm(map[string]any{"subject": "chat.x", "credential": cred})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential")
+}
+
+// assertErr is a tiny error type for tests where errors.New / fmt.Errorf
+// would add an import without value.
+type assertErrString string
+
+func (e assertErrString) Error() string { return string(e) }
+func assertErr(s string) error           { return assertErrString(s) }

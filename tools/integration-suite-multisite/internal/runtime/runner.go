@@ -322,11 +322,15 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 	// container handles are gone.
 	messageBucketWindow := time.Duration(cfg.MessageBucketHours) * time.Hour
 	deps := &runnerDeps{
-		Cfg:                 cfg,
-		MongoBySite:         mongoBySite,
-		AuthURLBySite:       authURLBySite,
-		Cassandra:           cassSess,
-		AdminConns:          adminConns,
+		Cfg:           cfg,
+		MongoBySite:   mongoBySite,
+		AuthURLBySite: authURLBySite,
+		Cassandra:     cassSess,
+		AdminConns:    adminConns,
+		NATSURLBySite: map[string]string{
+			"site-a": cfg.SiteA.NATSURL,
+			"site-b": cfg.SiteB.NATSURL,
+		},
 		MessageBucketWindow: messageBucketWindow,
 		Dispatcher:          dispatcher,
 		SeedEffectReg:       seedEffectReg,

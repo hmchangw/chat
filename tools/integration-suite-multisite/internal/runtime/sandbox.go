@@ -134,6 +134,13 @@ type SandboxDeps struct {
 	// still run; ones that do get a slog warning + assertion timeout.
 	AdminConns map[string]*nats.Conn
 
+	// NATSURLBySite is the per-site NATS URL nats_subscribe's
+	// per-credential opener uses when an assertion's args carry a
+	// credential: ${<alias>.credential}. Empty / nil disables the
+	// per-credential path; assertions that try to use it fail loudly
+	// rather than silently degrading to the shared admin conn.
+	NATSURLBySite map[string]string
+
 	// MatcherReg is the matchers registry MatchShape inherits when
 	// runScenario wraps each expected[].match into a Gomega matcher. Nil
 	// is tolerated: MatchShape falls back to matchers.NewRegistry().
@@ -360,6 +367,16 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 			"id":      u.ID,
 			"jwt":     u.JWT,
 			"nkey":    u.NkeySeed,
+			// credential: aggregate form consumed by nats_subscribe's
+			// args.credential path. Substitute returns this map verbatim
+			// when an author writes ${<alias>.credential} in args; the
+			// poller then opens a per-credential NATS conn via the
+			// runner-wired ConnOpener.
+			"credential": map[string]any{
+				"account": u.Account,
+				"jwt":     u.JWT,
+				"nkey":    u.NkeySeed,
+			},
 		}
 	}
 
@@ -394,6 +411,7 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 		Cassandra:           sb.Deps.Cassandra,
 		MessageBucketWindow: sb.Deps.MessageBucketWindow,
 		AdminConns:          sb.Deps.AdminConns,
+		NATSURLBySite:       sb.Deps.NATSURLBySite,
 		ReplyReader:         sb.Deps.ReplyReader,
 		StartTime:           sb.StartTime,
 	})
