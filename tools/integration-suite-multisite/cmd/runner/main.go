@@ -54,12 +54,17 @@ func run() int {
 		InteractiveOutputPath: env("INTERACTIVE_OUTPUT_PATH", "last-run-interactive.md"),
 		PerformancePath:       env("PERFORMANCE_PATH", ""),
 		RepoRoot:              env("REPO_ROOT", ""),
-		// CanonicalScenariosDir feeds the report's Scope: stamp. Default
-		// to scenarios/drafts so a SCENARIOS_DIR-narrowed iteration run
-		// is compared against the full set and stamped PARTIAL. Override
-		// (or set to "") for non-standard layouts; unset / unreadable ⇒
-		// the report stamps Scope: UNKNOWN.
-		CanonicalScenariosDir: env("CANONICAL_SCENARIOS_DIR", "scenarios/drafts"),
+		// CanonicalScenariosDir feeds the report's Scope: stamp.
+		// Defaults to `scenarios` (the project root scenario tree, not
+		// just drafts/) so the count stays correct even if approval
+		// ever moves from the per-scenario `status:` field to a
+		// separate scenarios/approved/ subdir — a `scenarios/drafts`
+		// default would then under-count and stamp a false PARTIAL.
+		// Under today's convention both walks find the same files, so
+		// this is a no-op for current runs and a guard for the future
+		// shape. Override (or set to "") for non-standard layouts;
+		// unset / unreadable ⇒ Scope: UNKNOWN.
+		CanonicalScenariosDir: env("CANONICAL_SCENARIOS_DIR", "scenarios"),
 		// INTERACTIVE — Phase 4.6 dev-mode opt-in. Default false
 		// preserves today's batch sweep (CI flow untouched). Set to
 		// "true" to open the stdin-driven menu loop. See
