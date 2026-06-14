@@ -1,0 +1,58 @@
+scenario: push-bound-nonmember-not-notified
+source: >
+  notification-worker/handler.go:131-201 (push fan-out iterates ONLY current room
+  members from the roomsubcache; mentions/followers filter WITHIN that set). Verifies
+  the F-016/F-018 "push is membership-gated" bound with a real assertion (was
+  code-reading only — push payloads are gzipped, now decodable via the P4 gunzip
+  reader). PushNotificationEvent shape pkg/model/push.go.
+status: draft
+tag: positive
+sites:
+  site-a:
+    seed:
+      users:
+        alice:   { verified: true }
+        charlie: { verified: true }
+        bob:     { verified: true }   # resolvable, but NOT a member
+      rooms:
+        - { id: r-push, name: Push Bound, type: channel }
+      memberships:
+        alice:
+          - { room: r-push, roles: [member] }
+        charlie:
+          - { room: r-push, roles: [member] }
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-push.site-a.msg.send
+  payload:
+    id: m0pushbound000000001
+    content: "@charlie @bob announcement"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567950
+  credential: ${alice.credential}
+expected:
+  # charlie (member, mentioned) IS pushed — proves the pipeline fires AND the
+  # P4 gunzip reader decodes the batched push payload.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: PUSH_NOTIFICATIONS_site-a
+      filter_subject: chat.server.notification.push.site-a.>
+    match:
+      body_json:
+        roomId: r-push
+        accounts: [charlie]
+        data:
+          messageId: m0pushbound000000001
+    timeout: 10s
+  # bob (NON-member, mentioned) must NOT be pushed — the membership bound.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: PUSH_NOTIFICATIONS_site-a
+      filter_subject: chat.server.notification.push.site-a.>
+    not: true
+    match:
+      body_json:
+        accounts: [bob]
+    timeout: 5s

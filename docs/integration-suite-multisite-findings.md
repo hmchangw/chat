@@ -787,8 +787,11 @@ The **push** fan-out (`notification-worker/handler.go:131-201`) iterates
 **only current room members** (`Members.GetMembers` from the roomsubcache,
 invalidated on member add/remove); `followers`/`mentioned` merely filter
 *within* that member set, so a mentioned non-member is never iterated and
-receives **no push**. (Not assertable in the suite — push payloads are
-gzipped+batched; bound from code reading.) **However, the real-time
+receives **no push**. (Now **demonstrated** —
+`scenarios/drafts/notification/push-bound-nonmember-not-notified.yaml`, run
+3738: a member-mentioned recipient is pushed, a non-member-mentioned one is
+absent from every push event. Assertable since the suite's jetstream reader
+gained transparent gunzip.) **However, the real-time
 broadcast fan-out is a different path and is NOT membership-gated:**
 `broadcast-worker.channelThreadFanOut` reads `thread_rooms.replyAccounts`
 directly and delivers the thread reply to every follower's
