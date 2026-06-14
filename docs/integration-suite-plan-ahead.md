@@ -2,14 +2,21 @@
 
 **Status:** research / scoping note. Captured 2026-06 during a deep
 discussion of the tool's design and where it should evolve. **Checkpoint
-2026-06-13:** the multi-input slice of the envelope+DAG+chaos model
-shipped (see §4 + §4.1). The doc remains a research note, not a spec.
+2026-06-14:** flow shape shipped (§4); five reader/grammar capabilities
+shipped from a tester-driven P-list (gunzip, ts-CQL params,
+custom_emojis, `${date:<expr>}` cast, `nats_subscribe` per-credential);
+stack-profiles design spec drafted and awaiting implementation
+greenlight (§4.1). The doc remains a research note, not a spec.
 
 **Purpose:** snapshot the current state and the directions we've
 identified, so a future maintainer can ground a real spec on this
-without rediscovering the analysis. **This is not itself a spec.** The
-multi-input spec (`docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md`)
-is the first concrete spec spawned from this doc; more follow.
+without rediscovering the analysis. **This is not itself a spec.** Five
+concrete specs have spawned from this doc so far:
+- `docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md` (shipped)
+- `docs/superpowers/specs/2026-06-13-integration-suite-flow.md` (shipped)
+- `docs/superpowers/specs/2026-06-13-integration-suite-envelope-dag-chaos.md` (residual; chaos gated on F-009)
+- `docs/superpowers/specs/2026-06-14-integration-suite-stack-profiles.md` (drafted; not yet implemented)
+- (more follow.)
 
 ---
 
@@ -735,8 +742,11 @@ Two separate specs were anticipated, each non-trivial:
 | Spec | Scope | Status |
 |---|---|---|
 | **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Implemented** as `tools/integration-suite-multisite/`. See `docs/integration-suite-multisite-findings.md` for the chat-app-team-facing findings (F-001 OUTBOX owner, F-002 federation topology). Single-site archived at `tools/archived/integration-suite/`. |
-| **Multi-input** (slice of envelope+DAG+chaos) | `input:` as a list of tasks fired in declaration order; `${<id>.reply.body_json.*}` / `.status` substitution; `match.task: <id>` selector on **reply** assertions only; dual-shape `UnmarshalYAML` keeps the 23 existing scenarios untouched | **Shipped 2026-06-13** — spec at `docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md`; plan at `docs/superpowers/plans/2026-06-13-plan-multi-input.md`. Proved its value on day one by surfacing **F-011** (tcount lost update under concurrent thread replies — `docs/integration-suite-multisite-findings.md`). |
-| **Envelope + DAG + chaos engine** (residual) | After multi-input: envelope (positive/negative → UNDEFINED), `${task.events.*}` event substitution + inter-task event-window wait, named orderings + Airflow `>>`, sibling concurrency, chaos engine + mishaps + per-iteration `fresh_state` | **Partially shipped** — multi-input row above. The forward slices are ranked by tool-leverage in §4.1. Each is a separate spec; envelope and event-sub do not depend on chaos. Chaos remains gated on F-009 (service-cache flush hook). |
+| **Multi-input** (slice of envelope+DAG+chaos) | `input:` as a list of tasks fired in declaration order; `${<id>.reply.body_json.*}` / `.status` substitution; `match.task: <id>` selector on **reply** assertions only; dual-shape `UnmarshalYAML` keeps the 23 existing scenarios untouched | **Shipped 2026-06-13** — spec at `docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md`; plan at `docs/superpowers/plans/2026-06-13-plan-multi-input.md`. Proved its value on day one by surfacing **F-011** (tcount lost update under concurrent thread replies). |
+| **Flow shape** (slice of envelope+DAG+chaos) | `flow:` ordering expression with `>>` (sequential) and `[]` (parallel observation groups) referencing existing `input:` + `expected:` items by id. Per-step substitution `${<id>.body_json.x}`; `match.task` retired in flow shape via positional scoping + `of:` override; race-repro soundness benchmark gate (≤1ms/gap inter-fire latency). | **Shipped 2026-06-13** — spec at `docs/superpowers/specs/2026-06-13-integration-suite-flow.md`. Subsumed slice #1 (event substitution + inter-task wait) from §4.1: a gate (`fire >> observe >> fire`) IS the inter-task wait. Unlocked F-012, F-013, F-014, F-015, F-016, F-017, F-018 across days following. |
+| **Reader / grammar capabilities (P-list)** | Five tester-driven additions, each well-bounded by a finding: `jetstream_consume` transparent gunzip (P4), `cassandra_select` `ts:<unix-millis>` param typing (P5), `custom_emojis` mongo_data allowed (P2b), `${date:<now-expr>}` cast to time.Time (P2a), `nats_subscribe` per-credential auth via `args.credential` (P1). | **Shipped 2026-06-14** — bundled into 3 focused commits. P4 demonstrated end-to-end (first push-notification assertion); P5 unblocks F-017 createdAt facet; P2a unblocks react/pin window scenarios; P1 unblocks F-019/F-021/F-022 auth-boundary scenarios. No design risk on any of them. |
+| **Stack profiles** (P3 + P6) | Scenarios declare a `profile:` referencing `catalogs/profiles/*.yaml`; runner groups scenarios by profile, boots one stack per profile (default first), runs each profile's scenarios against its stack. Unlocks encryption-on confidentiality testing (F-015 / F-021 / F-022 encrypted path) and faithful threshold testing (large-room cap with 3 members, not 501 fudge). | **Spec drafted 2026-06-14** at `docs/superpowers/specs/2026-06-14-integration-suite-stack-profiles.md`. Tester-verified as implementation-ready; Phase A awaits explicit greenlight. Default behavior unchanged at every phase boundary; first observable change is Phase H (small-large-room env-only proof). |
+| **Envelope + DAG + chaos engine** (residual) | After multi-input + flow: envelope (positive/negative → UNDEFINED), named orderings + Airflow `>>` (note: `>>` shipped in flow, NOT as input ordering yet), sibling concurrency (`[a, b]` parallel fires — reserved-rejected by flow loader today), chaos engine + mishaps + per-iteration `fresh_state` | **Partially shipped** — multi-input + flow rows above subsumed the largest pieces. Remaining: named orderings (low demand), sibling concurrency (reserved in flow grammar), envelope (low priority post-flow), chaos (still F-009-gated). Each is a separate spec when demand surfaces. |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
 | **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Shipped.** Recursive discovery + `scenario:`-field uniqueness check (validate + runner startup) + path in `last-run.md` failure detail + path column in interactive menu. Path-prefix filtering is the named follow-up; ship on demand. |
 | **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six primitives; convert silent failures to loud `slog.Warn` (or hard errors). | **Shipped — all six done.** logs_tail, cassandra_select, mongo_find, jetstream_consume, reply (drop counter) loudened; nats_subscribe already loud. See §2.9 detail table. |
@@ -764,60 +774,48 @@ multi-site shape rather than competing with it. Original intuition
 **Framing.** The tool team's job is to make the suite **better at finding
 bugs and blindspots**. Authoring scenarios is human work; the tool team
 doesn't compete with that. Every slice below is a tool-capability
-expansion that a user can't do by writing more YAML.
+expansion that an author can't do by writing more YAML.
 
-**Multi-input shipped and proved the model.** Two `msg.send` tasks to one
-pre-seeded thread parent in a single scenario — impossible to express
-under single-fire — surfaced **F-011** (a non-atomic count-and-set in
-`message-worker/store_cassandra.go` that loses one of two concurrent
-`tcount` increments). This is the deep-test class the envelope+DAG
-trajectory was promised to unlock; the first slice delivered on it.
+### What shipped (chronological, with the bug classes each unlocked)
 
-**The discriminatory ceiling multi-input hit.** The F-011 reproducer's own
-comment names the limitation in plain text:
+| Slice | Shipped | Unlocked |
+|---|---|---|
+| Multi-input | 2026-06-13 | Sequential multi-fire scenarios → **F-011** (tcount lost update on day one). |
+| Flow shape | 2026-06-13 | Gates (`fire >> observe >> fire`) → read-after-write, cross-site federation, contract-pair scenarios. **Subsumed the originally-planned `${task.events.*}` + per-task event-window slice** — a gate IS the inter-task wait. Days following: F-012, F-013, F-014, F-015, F-016, F-017, F-018. |
+| Scope stamp + pass/fail semantics framing | 2026-06-13/14 | Authors read DRAFT reds as open findings (intentional, informational) without inventing process tooling around them. |
+| Reader / grammar P-list (P1, P2a, P2b, P4, P5) | 2026-06-14 | Push-notification fan-out assertable (P4 gunzip); F-017 createdAt facet targetable (P5 ts-CQL); react/pin access-window scenarios authorable (P2a date-cast + P2b custom_emojis allowed); F-019 / F-021 / F-022 auth-boundary scenarios authorable (P1 per-credential subscribe). |
 
-> *"v1 multi-input fires back-to-back with no inter-task wait, so the
-> two replies race each other in the worker — but the assertions are
-> cumulative end-state (Eventually): tcount converges to 2 and both
-> subscriptions exist regardless of which reply the worker processes
-> first."*
+### What's in design
 
-Every multi-input deep test today must be designed *around* this race —
-cumulative-end-state assertions, deterministic ids, pre-seeded parents.
-Bug classes the tool can't yet express:
-- **Ordering-dependent**: "task 2 must observe task 1's persisted
-  side-effect before firing"
-- **Sequential durability**: "second fire after a crash sees first
-  fire's committed state"
-- **Redelivery sequences**: "duplicate publish lands on the same dedup
-  window as the first"
-- **Recovery after partial failure**: "task 3 reads what task 1 wrote
-  even though task 2 errored mid-window"
+| Slice | Status |
+|---|---|
+| **Stack profiles** (P3 encryption-on + P6 per-scenario service-env override) | Spec drafted `docs/superpowers/specs/2026-06-14-integration-suite-stack-profiles.md`; tester-verified as implementation-ready; awaiting explicit greenlight for Phase A. Architecture choice (B): multiple stacks per profile, scenarios routed by required profile, default first. Default behavior unchanged at every phase boundary; first observable change is Phase H (small-large-room env-only profile as the proof). Phase I (encryption-on profile + first encrypted scenario) is tester-authored, not tool-team work — explicitly recognized in the spec. |
 
-### Slices, ranked by tool-leverage
+### Still open (no current demand, ranked by latent leverage)
 
-| # | Slice | What it unlocks | Effort | Depends on |
-|---|---|---|---|---|
-| **1** | `${task.events.*}` substitution + per-task event-window wait | Removes the F-011-noted limitation. Inter-task wait on a specific observed event lets the tool express ordering-dependent + sequential-durability + dedup-window bug classes. Largest single jump in tool discriminatory power. | Spec + ~1-2 weeks impl. Touches executor (event collectors per task), substitution context (event slice), grammar (`${<id>.events.<loc>[i].<f>}`), validation. No chat-app coupling. | nothing |
-| **2** | Envelope (`expected: {positive, negative}`) + UNDEFINED verdict | Surfaces "system did something neither documented success nor documented refusal" as an explicit bug signal instead of a generic mismatch. Catches the "weird third outcome" class current scenarios silently treat as failure noise. | Spec + ~1 week impl. Restructures `expected[]`, adds an Or matcher, reporter UNDEFINED row. Migration: dual-shape `UnmarshalYAML` (same pattern as multi-input) keeps the 23+ scenarios untouched. | nothing |
-| **3** | Matcher rigor audit | False-pass / false-fail audit of `MatchShape` and the 6 pollers. Subset-matching silently accepts "system also did X extra wrong"; absence assertions under polling-window edges can falsely-green. Find these classes, document, harden where the fix doesn't bloat grammar. | ~3-5 days. Reading + targeted unit tests + a "matcher discrimination" findings doc. | nothing |
-| **4** | Named orderings + Airflow `>>` | Stress different orderings of the same task set in one scenario. Adds the input-order grammar from §2.6 and a per-ordering loop. Catches "system breaks if join arrives before create observes the canonical" class. | Spec + ~1 week impl. Same executor with an outer loop. | (1) for ordering-dependent assertions to be meaningful |
-| **5** | Sibling concurrency (`[a, b]` parallel groups) | True race testing — concurrent fires, not sequential. Catches CAS races (F-011-style at the request level), socket-level dedup, fan-out distribution. | Spec + ~1 week impl. Goroutine fan-out + join. Nondeterminism reintroduced; needs `CHAOS_SEED`-style repro hook. | (4) for the bracket grammar |
-| **6** | Chaos engine + mishap revival | Fault injection (crash, partition) across N iterations per ordering. Catches recovery / retry / poison-handling regressions. The largest bug-class jump but **gated by F-009** — without per-iteration service-cache flush, every chaos verdict is silently contaminated. | Spec exists in `2026-06-13-integration-suite-envelope-dag-chaos.md` §0. Implementation gated on F-009 chat-app fix or 25s-per-iteration container restart. | F-009 chat-app fix; (4) for the loop shape |
+| # | Slice | Effort | Depends on |
+|---|---|---|---|
+| **1** | Named orderings (multiple `flow:` blocks per scenario, stress-test different topologies of the same step set) | Spec + ~1 week impl. Same executor with an outer loop. Bracket grammar already reserved in flow. | Demand signal — no scenario has hit this gap. |
+| **2** | Sibling concurrency (`[fire_a, fire_b]` parallel-fire groups inside a `flow:`) | Spec + ~1 week impl. Goroutine fan-out + join. Nondeterminism reintroduced; needs `CHAOS_SEED`-style repro hook. Bracket grammar reserved by flow loader (currently rejects with "deferred to concurrency slice"). | Named orderings (#1) for the bracket grammar. |
+| **3** | Envelope (`expected: {positive, negative}`) + UNDEFINED verdict | Spec + ~1 week impl. Restructures `expected[]`, adds an Or matcher, reporter UNDEFINED row. Migration: dual-shape `UnmarshalYAML`. | Low priority post-flow — the pass/fail-semantics framing handles the "what does a red mean" question via authoring discipline. Genuine UNDEFINED bug class is still real (chaos territory). |
+| **4** | Matcher rigor audit | ~3-5 days. Reading + targeted unit tests + a "matcher discrimination" findings doc. Catches subset-match false-pass classes and absence-assertion polling-window edges. | nothing |
+| **5** | Chaos engine + mishap revival | Spec exists in `2026-06-13-integration-suite-envelope-dag-chaos.md` §0. Per-iteration `fresh_state`, mishap kinds (crash, partition), confusion matrix. | F-009 chat-app fix (cache-flush hook) + #1 for the loop shape. Without F-009, every chaos verdict is silently cache-contaminated. |
 
-**Recommended next slice: #1 (event substitution + inter-task wait).**
-Direct removal of the limitation the F-011 scenario named in its own
-comment. Unlocks the bug classes most adjacent to what multi-input just
-proved valuable for. No dependencies. Same spec → plan → TDD cycle as
-multi-input.
+### Lessons captured (load-bearing for future design)
 
-**Things the tool team explicitly does NOT do:**
-- Author scenarios (human work — the F-011 reproducer was author-side).
-- Reorganize the `scenarios/drafts/` tree (file moves are human work).
-- Maintain the findings doc (human work; the tool surfaces, the human
-  triages and classifies).
-- Run the live USE_INFRA suite (human verification step; this
-  environment has no Docker).
+These are not optional principles; they were each tested against in real reverts during the multi-input / flow / P-list ships.
+
+- **Capability work vs annotation work.** The check before drafting any tool-side feature: *does it find or pin new bugs, or does it annotate state we already have?* Capability passes; annotation fails. Two reverts (`_canary/` machinery, findings-doc → report linkage) crossed this line and were unwound within hours each. The stack-profiles spec §9 Risks row carrying this rule means the principle now sits in design artifacts, not session memory.
+- **Coupling-creep is harder to see in your own design than it is to see in a reviewer's.** Both reverts were caught fast because the tester pushed back loudly the same day. The discipline is "pause before drafting tooling around something that lives in a downstream artifact" — the runner does not know findings exist; the reporter does not parse the findings doc.
+- **Spec before code on multi-file features.** All five shipped specs (multi-input, flow, the P-list trio, stack profiles) followed the same Red→Green→Refactor→Commit phasing pattern. The phasing is now load-bearing — Phase H integration proof gates Phase A-G.
+
+### Things the tool team explicitly does NOT do
+
+- Author scenarios. F-011 / F-012 / F-013-class reproducers, profile-specific scenarios, demos — all tester-side. The tool team builds the capability that makes the scenario expressible; the author writes it.
+- Reorganize the `scenarios/drafts/` tree. File moves and topic-subdir organization are authoring work.
+- Maintain the findings doc. The runner does not parse it; the reporter does not annotate it. Linking reds to F-NNN is a human/process step over a consumer artifact.
+- Fix chat-app bugs. The chat-app team's queue exists separately; tool ships add capability, not closures.
+- Run the live USE_INFRA suite from this environment (no Docker). Tester runs USE_INFRA verifies and surfaces results.
 
 ---
 
