@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -53,16 +54,21 @@ type config struct {
 	Consumer             stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap            bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Encryption           encryptionConfig        `envPrefix:"ENCRYPTION_"`
+	DebugLog             logctx.Config           `envPrefix:"DEBUG_LOG_"`
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// Wrap the base JSON handler so per-request X-Debug rungs surface
+	// flow/debug/trace edges above the INFO floor; RenderLevelNames names FLOW/TRACE.
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: logctx.RenderLevelNames})
+	slog.SetDefault(slog.New(logctx.NewHandler(base)))
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	ctx := context.Background()
 
@@ -181,6 +187,8 @@ func main() {
 	broadcastSub, err := nc.QueueSubscribe(subject.ServerBroadcastWildcard(cfg.SiteID), "broadcast-worker",
 		func(msg otelnats.Msg) {
 			broadcastCtx, _ := natsutil.StampRequestID(context.Background(), msg.Msg.Header, msg.Msg.Subject)
+			broadcastCtx = logctx.Admit(broadcastCtx, msg.Msg.Header)
+			logctx.CapturePayload(broadcastCtx, "consumed", msg.Msg.Subject, msg.Msg.Data)
 			handler.HandleServerBroadcast(broadcastCtx, msg.Msg.Data)
 		})
 	if err != nil {
@@ -211,6 +219,16 @@ func main() {
 					wg.Done()
 				}()
 				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+				handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+				logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
+				// flow: hop entry with the stream-wait latency time-diffing can't see.
+				streamWaitMs := int64(-1)
+				if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
+					streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+				}
+				slog.Log(handlerCtx, logctx.LevelFlow, "broadcast received",
+					"phase", "received", "request_id", natsutil.RequestIDFromContext(handlerCtx),
+					"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 					if err := msg.Nak(); err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errnats"
+	"github.com/hmchangw/chat/pkg/logctx"
 )
 
 // Register subscribes a typed handler to a subject pattern.
@@ -17,6 +18,9 @@ func Register[Req, Resp any](
 	fn func(c *Context, req Req) (*Resp, error),
 ) {
 	handler := HandlerFunc(func(c *Context) {
+		// dev-only full-request-payload capture (no-op unless DEBUG_LOG_PAYLOADS
+		// + X-Debug-Payload); runs after the admitting middleware chain.
+		logctx.CapturePayload(c, "request", c.Msg.Subject, c.Msg.Data)
 		var req Req
 		if err := json.Unmarshal(c.Msg.Data, &req); err != nil {
 			// Cause preserves the parse-error chain for the Classify server log
@@ -45,6 +49,7 @@ func RegisterNoBody[Resp any](
 	fn func(c *Context) (*Resp, error),
 ) {
 	handler := HandlerFunc(func(c *Context) {
+		logctx.CapturePayload(c, "request", c.Msg.Subject, c.Msg.Data)
 		resp, err := fn(c)
 		if err != nil {
 			replyErr(c, err)
@@ -64,6 +69,7 @@ func RegisterVoid[Req any](
 	fn func(c *Context, req Req) error,
 ) {
 	handler := HandlerFunc(func(c *Context) {
+		logctx.CapturePayload(c, "request", c.Msg.Subject, c.Msg.Data)
 		var req Req
 		if err := json.Unmarshal(c.Msg.Data, &req); err != nil {
 			slog.Error("invalid payload in void handler", "error", err, "subject", c.Msg.Subject)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -39,6 +40,7 @@ type config struct {
 	KeyFanoutWorkers int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
 	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	DebugLog         logctx.Config           `envPrefix:"DEBUG_LOG_"`
 
 	// Grace window during which a rotated-out previous key remains valid for decrypt.
 	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD" envDefault:"24h"`
@@ -55,13 +57,17 @@ type config struct {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// Wrap the base JSON handler so per-request X-Debug rungs surface
+	// flow/debug/trace edges above the INFO floor; RenderLevelNames names FLOW/TRACE.
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: logctx.RenderLevelNames})
+	slog.SetDefault(slog.New(logctx.NewHandler(base)))
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	if cfg.RoomKeyGracePeriod <= 0 {
 		slog.Error("ROOM_KEY_GRACE_PERIOD must be a positive duration",
@@ -277,6 +283,8 @@ func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstr
 			"inbound", inbound, "subject", msg.Subject())
 	}
 	handlerCtx := natsutil.WithRequestID(msgCtx, id)
+	handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+	logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 

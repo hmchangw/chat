@@ -17,6 +17,7 @@ import (
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/emoji"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -49,13 +50,17 @@ func checkConfig(cfg *config.Config) {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// Wrap the base JSON handler so per-request X-Debug rungs surface
+	// flow/debug/trace edges above the INFO floor; RenderLevelNames names FLOW/TRACE.
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: logctx.RenderLevelNames})
+	slog.SetDefault(slog.New(logctx.NewHandler(base)))
 
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	checkConfig(&cfg)
 	slog.Info("message bucket configured",
