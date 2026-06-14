@@ -15,6 +15,10 @@ import (
 
 type config struct {
 	Port int `env:"PORT" envDefault:"8090"`
+	// CredsFile is an optional NATS user credentials file (JWT + NKey). When
+	// set, it authenticates every NATS connection the tool opens. Empty means
+	// connect without credentials.
+	CredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
 }
 
 func main() {
@@ -26,7 +30,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	hub := newNATSHub()
+	if cfg.CredsFile != "" {
+		if _, err := os.Stat(cfg.CredsFile); err != nil {
+			slog.Error("nats creds file not accessible", "path", cfg.CredsFile, "error", err)
+			os.Exit(1)
+		}
+	}
+
+	hub := newNATSHub(cfg.CredsFile)
 	h := newHandler(hub)
 
 	mux := http.NewServeMux()

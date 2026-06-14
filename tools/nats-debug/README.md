@@ -100,6 +100,9 @@ Use the sidebar buttons to pre-fill common patterns:
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `PORT`  | `8090`  | HTTP port the UI listens on |
+| `NATS_CREDS_FILE` | `""` | Optional NATS user credentials file (JWT + NKey). When set, it authenticates every NATS connection the tool opens (source, dest, and request). Empty means connect without credentials. The file is checked for existence at startup — a missing path fails fast. |
+
+> **Auth:** Point `NATS_CREDS_FILE` at a mounted creds file (e.g. the shared `docker-local/backend.creds`) when the target servers require authentication. The same credentials are applied to all three connections.
 
 ## Architecture
 
