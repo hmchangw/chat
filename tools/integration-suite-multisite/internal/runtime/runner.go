@@ -55,6 +55,13 @@ type Config struct {
 	InteractiveOutputPath string
 	PerformancePath       string // optional; persistent per-test latest/best/worst pass history across runs
 	RepoRoot              string // optional; passed to git for HEAD + latest-merge commit lookup
+	// FindingsDocPath is an optional path to the chat-app-team-facing
+	// findings doc (docs/integration-suite-multisite-findings.md). When
+	// set + readable, the per-run report appends an "Open findings"
+	// section linking each DRAFT fail to its F-NNN, and an "Untriaged
+	// DRAFT fails" section for unlinked reds. Missing/unreadable file
+	// silently disables the linkage section.
+	FindingsDocPath string
 
 	// Interactive, when true, drops into a stdin-driven menu loop AFTER
 	// connections are opened and scenarios are discovered, INSTEAD of
@@ -425,7 +432,7 @@ func runSweep(ctx context.Context, sess *session, scenarioFiles []string) error 
 // writeInteractiveReports.
 func writeReports(sess *session) error {
 	if sess.Cfg.OutputPath != "" {
-		if err := Write(sess.Cfg.OutputPath, sess.Report); err != nil {
+		if err := Write(sess.Cfg.OutputPath, sess.Report, sess.Cfg.FindingsDocPath); err != nil {
 			return fmt.Errorf("write report: %w", err)
 		}
 	}
@@ -449,7 +456,7 @@ func writeInteractiveReports(sess *session) error {
 	if sess.Cfg.InteractiveOutputPath == "" {
 		return nil
 	}
-	if err := Write(sess.Cfg.InteractiveOutputPath, sess.Report); err != nil {
+	if err := Write(sess.Cfg.InteractiveOutputPath, sess.Report, sess.Cfg.FindingsDocPath); err != nil {
 		return fmt.Errorf("write interactive report: %w", err)
 	}
 	return nil
