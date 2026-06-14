@@ -286,27 +286,15 @@ func verdictString(outcome string) string {
 	return "fail"
 }
 
-// Write persists Render to a file path, creating parent dirs. If
-// findingsDocPath is non-empty and the file exists, the report is
-// rendered with the DRAFT↔finding linkage section appended (see
-// RenderWithFindings + ParseFindings). Missing/unreadable findings
-// doc is silently treated as "no linkage" — no error.
-func Write(path string, r *RunReport, findingsDocPath ...string) error {
+// Write persists Render to a file path, creating parent dirs.
+func Write(path string, r *RunReport) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	body := Render(r)
-	if len(findingsDocPath) > 0 && findingsDocPath[0] != "" {
-		if data, err := os.ReadFile(findingsDocPath[0]); err == nil {
-			body = RenderWithFindings(r, false, ParseFindings(string(data)))
-		}
-	}
-	return os.WriteFile(path, []byte(body), 0o644)
+	return os.WriteFile(path, []byte(Render(r)), 0o644)
 }
 
-// WriteApproved persists RenderApproved to a file path. The approved
-// report is the CI gate — findings-linkage section is omitted (it
-// only makes sense for the DRAFT view).
+// WriteApproved persists RenderApproved to a file path.
 func WriteApproved(path string, r *RunReport) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

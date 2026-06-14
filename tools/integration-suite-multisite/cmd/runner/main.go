@@ -54,7 +54,6 @@ func run() int {
 		InteractiveOutputPath: env("INTERACTIVE_OUTPUT_PATH", "last-run-interactive.md"),
 		PerformancePath:       env("PERFORMANCE_PATH", ""),
 		RepoRoot:              env("REPO_ROOT", ""),
-		FindingsDocPath:       env("FINDINGS_DOC_PATH", "../../docs/integration-suite-multisite-findings.md"),
 		// INTERACTIVE — Phase 4.6 dev-mode opt-in. Default false
 		// preserves today's batch sweep (CI flow untouched). Set to
 		// "true" to open the stdin-driven menu loop. See
