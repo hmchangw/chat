@@ -67,8 +67,13 @@ input:
       requestId: 01970a4f-8c2d-7c9a-abcd-e01234567921
     credential: ${bob.credential}
 
+# OPEN FINDING F-014 (integrity) — EXPECTED TO FAIL until the gatekeeper
+# enforces global message-id uniqueness. -ve scenario asserting the CORRECT
+# behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
 expected:
-  # alice's send wins the dedup race (fired first) — its canonical is published.
+  # Control (+ve, passes) — alice (first) is the message stored: her canonical
+  # is published and her row persisted under the shared global id.
   - location: jetstream_consume
     site: site-a
     args:
@@ -79,21 +84,6 @@ expected:
         message:
           id: m0collideid000000001
           content: alice's original message
-
-  # bob's distinct content NEVER reaches the canonical stream — it was
-  # deduped purely on the colliding id, despite a different sender/content.
-  - location: jetstream_consume
-    site: site-a
-    args:
-      stream: MESSAGES_CANONICAL_site-a
-      filter_subject: chat.msg.canonical.site-a.created
-    not: true
-    match:
-      body_json:
-        message:
-          content: bob's colliding message
-
-  # The persisted row is alice's — bob did not overwrite it.
   - location: cassandra_select
     args:
       query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
@@ -102,3 +92,21 @@ expected:
       message_id: m0collideid000000001
       msg: alice's original message
     timeout: 10s
+
+  # CORRECT (the invariant) — message_id is a GLOBAL partition key in the
+  # shared multi-tenant Cassandra (all rooms, all users, all 15-20 sites), so
+  # a second sender reusing an existing id must be REJECTED with an error, not
+  # silently accepted. EXPECTED: bob receives a conflict error. FAILS today
+  # because the gatekeeper ignores the duplicate PubAck — bob's distinct
+  # message is silently deduped and bob is told nothing (or "success"). The
+  # exact error code is the team's choice; the invariant is "bob must be
+  # rejected, not silently dropped" — low probability with random ids, but a
+  # fatal cross-tenant integrity breach if it ever lands.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${bob.account}.response.01970a4f-8c2d-7c9a-abcd-e01234567921
+    match:
+      received:
+        - body_json:
+            code: conflict

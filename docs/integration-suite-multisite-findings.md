@@ -599,51 +599,66 @@ which legitimately require the client to await a readiness signal before
 the follow-up operation. Today the `accepted`/canonical-published replies
 imply a usability they don't yet provide.
 
-## F-014 — client-supplied message-id dedup is sender-agnostic (a colliding second send is acked-but-discarded)
+## F-014 — global message-id uniqueness is not enforced server-side (a colliding send from another tenant is silently handled)
 
-**Layer:** chat-app code (gatekeeper canonical-publish dedup key ↔ worker blind-upsert persist).
+**Layer:** chat-app code (gatekeeper canonical-publish dedup ↔ worker blind-upsert persist).
 
-**Status:** observed — low severity / likely intentional idempotency with a
-sharp edge; chat-app team ruling requested.
+**Status:** observed — **low probability, catastrophic blast radius; keep.**
+`message_id` is the **global partition key** of `messages_by_id`
+(PRIMARY KEY `(message_id, created_at)`) in a Cassandra that is **shared
+across every room, every user, and all 15-20 sites**. Its global uniqueness
+is therefore a correctness invariant for the entire multi-tenant store — and
+nothing enforces it server-side.
 
-The gatekeeper publishes the canonical message with
+The only guard is the canonical-publish dedup:
 `jetstream.WithMsgID(natsutil.CanonicalDedupID(&evt))`
-(message-gatekeeper/handler.go:301), and for a `created` event
-`CanonicalDedupID` is **`evt.Message.ID` alone** — no sender, content, or
-requestId (pkg/natsutil/canonical_dedup.go, default case). The
-MESSAGES_CANONICAL stream therefore suppresses any second publish carrying
-a message id it has seen within the dedup window (JetStream default ~2m),
-**regardless of who sent it or what it contains.** The worker's persist is
-a blind `INSERT` (Cassandra upsert, no `IF NOT EXISTS`,
-message-worker/store_cassandra.go SaveMessage).
+(handler.go:301), where `CanonicalDedupID` for a `created` event is
+**`evt.Message.ID` alone** (pkg/natsutil/canonical_dedup.go). That dedup is
+architecturally *correct* (the namespace is global, so dedup must be global —
+NOT per-sender), but it is **partial**: it lives on the **per-site**
+`MESSAGES_CANONICAL_{site}` stream with a **~2-min window**, so it covers
+neither cross-site collisions nor collisions beyond the window. The worker's
+persist is a blind `INSERT` (no `IF NOT EXISTS`,
+message-worker/store_cassandra.go SaveMessage), and `created_at` is
+server-set (gatekeeper handler.go:249), so a collision does not silently
+overwrite content — instead:
 
-This is correct, desirable idempotency for one client retrying its **own**
-send. The sharp edge: message ids are **client-supplied**, so:
-- **Success ack ≠ persisted.** A second sender (or a buggy client) that
-  reuses an existing id gets a successful *duplicate* PubAck — the
-  gatekeeper sees no error and acks the send — but nothing new is
-  persisted. The distinct message is silently lost.
-- **Cross-sender, sender-agnostic.** The dedup ignores the sender, so the
-  collision is resolved purely on id. Demonstrated by
-  `scenarios/drafts/gatekeeper-validation/gatekeeper-duplicate-message-id-cross-sender-deduped.yaml`
-  (run d195, green): alice sends id=COLLIDE first (wins); bob sends the
-  same id with different content back-to-back → bob's content never
-  reaches the canonical stream, and the persisted `messages_by_id` row is
-  alice's. bob's send was nonetheless accepted.
-- **Theoretical outside-window overwrite.** Past the dedup window (~2m),
-  a second send with a colliding id is NOT suppressed → the worker's blind
-  upsert overwrites `messages_by_id[id]` with the second sender's
-  content/sender. `GetMessageByID(id)` (quote-resolution, edit, delete
-  lookups) would then resolve to the second writer's version. Not
-  reproduced here (the window exceeds a practical test), noted as the
-  integrity ceiling of the current design.
+- **Same-site, within ~2 min:** the second sender's distinct message is
+  silently **deduped away** — the gatekeeper sees a duplicate PubAck (no
+  error) and tells the sender nothing-or-"success." A different user's
+  message vanishes with no rejection. **This is the testable, reproducing
+  facet.**
+- **Cross-site, or after the window:** both are processed → **two rows under
+  one `message_id` partition** (different `created_at`). `GetMessageByID(id)`
+  — used by quote-resolution, edit, delete — returns the most-recent, which
+  may belong to a **different room/user/site**. (The read-path room-check
+  `RoomID != roomID → NotFound` mitigates cross-room edit/delete/quote, but
+  the global namespace is still ambiguous.)
 
-For honest clients with random 20-char base62 ids, collision is
-negligible — practical impact is near-zero. The ruling the team owns:
-is global (sender-agnostic) id dedup acceptable, or should the dedup key /
-persist be namespaced by sender (and/or the worker guard the first write
-with `IF NOT EXISTS`) so a colliding id can't shadow or overwrite another
-sender's message?
+The system trusts **client-supplied** ids to be globally unique with no
+server-side enforcement. With random 20-char base62 ids honest collisions
+are astronomically unlikely — but across 15-20 sites on one shared store the
+exposure is non-zero, a buggy/non-random/malicious client can force it, and
+the consequence is **cross-tenant message-store corruption** (a message
+silently lost, or one id resolving to another tenant's message). Low
+probability, fatal impact → tracked, not dismissed.
+
+Demonstrated by
+`scenarios/drafts/gatekeeper-validation/gatekeeper-duplicate-message-id-cross-sender-deduped.yaml`
+(−ve scenario, **fails at run 4e77 — the failure is the bug**): alice sends
+id=COLLIDE (stored, asserted as a passing control); bob sends the same id with
+different content; the scenario asserts the correct behavior — **bob's
+colliding send is rejected with a conflict error** — and fails because bob
+instead receives a **success-shaped reply echoing his own message**
+(`content: "bob's colliding message", userId: u-bob`) while the actually-stored
+message under that id is alice's. bob's client believes his message sent; the
+shared store holds a different tenant's message under the same id.
+
+The decision the team owns: enforce global message-id uniqueness server-side
+— reject a send whose id already exists (a conflict error, so the sender
+knows), and/or guard the persist with `IF NOT EXISTS` so a colliding id can
+never shadow or duplicate another tenant's message. **Not** a per-sender
+dedup — that would break the global-key invariant.
 
 ## F-015 — soft-deleted message content is recoverable (delete leaves plaintext `msg`; reads/quotes ignore `deleted`)
 
