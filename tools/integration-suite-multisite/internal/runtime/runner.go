@@ -55,6 +55,12 @@ type Config struct {
 	InteractiveOutputPath string
 	PerformancePath       string // optional; persistent per-test latest/best/worst pass history across runs
 	RepoRoot              string // optional; passed to git for HEAD + latest-merge commit lookup
+	// CanonicalScenariosDir is the path the report's Scope: stamp
+	// counts as "available" — distinct from ScenariosDir so a
+	// filtered iteration run (SCENARIOS_DIR=/tmp/subset) is still
+	// compared against the full canonical set. When empty / unreadable,
+	// the runner stamps Scope: UNKNOWN instead of FULL/PARTIAL.
+	CanonicalScenariosDir string
 
 	// Interactive, when true, drops into a stdin-driven menu loop AFTER
 	// connections are opened and scenarios are discovered, INSTEAD of
@@ -403,6 +409,16 @@ func runSweep(ctx context.Context, sess *session, scenarioFiles []string) error 
 
 	sess.Report.Duration = time.Since(startTime).Round(time.Millisecond).String()
 
+	// Scope stamp (partial-commit footgun guard). Counts scenarios
+	// the canonical drafts dir holds vs. how many this run ran.
+	// Reads cfg.CanonicalScenariosDir (default "scenarios/drafts" set
+	// by cmd/runner). When the canonical dir can't be walked, leaves
+	// ScenariosAvailable=0 → render stamps UNKNOWN.
+	sess.Report.Scope = &ScopeInfo{
+		ScenariosRan:       len(scenarioFiles),
+		ScenariosAvailable: countCanonicalScenarios(sess.Cfg.CanonicalScenariosDir),
+	}
+
 	// Git info for the report heading.
 	if sess.Cfg.RepoRoot != "" {
 		sess.Report.Git = CollectGitInfo(sess.Cfg.RepoRoot)
@@ -510,6 +526,20 @@ func loadAndCheckUniqueness(files []string) []error {
 		}
 	}
 	return scenario.CheckScenarioNameUniqueness(parsed)
+}
+
+// countCanonicalScenarios returns the number of YAML scenarios in
+// the canonical drafts dir. 0 when the dir is empty / unreadable /
+// unset — the renderer treats 0 as UNKNOWN scope.
+func countCanonicalScenarios(canonicalDir string) int {
+	if canonicalDir == "" {
+		return 0
+	}
+	files, err := findScenarios(canonicalDir)
+	if err != nil {
+		return 0
+	}
+	return len(files)
 }
 
 func findScenarios(root string) ([]string, error) {

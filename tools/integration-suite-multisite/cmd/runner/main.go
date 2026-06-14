@@ -54,6 +54,12 @@ func run() int {
 		InteractiveOutputPath: env("INTERACTIVE_OUTPUT_PATH", "last-run-interactive.md"),
 		PerformancePath:       env("PERFORMANCE_PATH", ""),
 		RepoRoot:              env("REPO_ROOT", ""),
+		// CanonicalScenariosDir feeds the report's Scope: stamp. Default
+		// to scenarios/drafts so a SCENARIOS_DIR-narrowed iteration run
+		// is compared against the full set and stamped PARTIAL. Override
+		// (or set to "") for non-standard layouts; unset / unreadable ⇒
+		// the report stamps Scope: UNKNOWN.
+		CanonicalScenariosDir: env("CANONICAL_SCENARIOS_DIR", "scenarios/drafts"),
 		// INTERACTIVE — Phase 4.6 dev-mode opt-in. Default false
 		// preserves today's batch sweep (CI flow untouched). Set to
 		// "true" to open the stdin-driven menu loop. See

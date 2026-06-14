@@ -54,6 +54,25 @@ type RunReport struct {
 	Cases []ScenarioReport
 	Git   GitInfo // captured at the start of the run
 	Perf  *PerformanceStore
+	// Scope, when set, drives the "Scope: FULL/PARTIAL/UNKNOWN" header
+	// line. nil ⇒ no Scope line rendered (back-compat with tests +
+	// callers that don't populate it).
+	Scope *ScopeInfo
+}
+
+// ScopeInfo describes whether a run covered the whole canonical
+// scenario set or just a subset. Populated by the runner before
+// rendering; consumed by render() to stamp the report header so a
+// partial-set run committed by mistake can't masquerade as full.
+//
+//   - ScenariosRan == ScenariosAvailable > 0 ⇒ FULL
+//   - ScenariosRan < ScenariosAvailable      ⇒ PARTIAL
+//   - ScenariosAvailable == 0                ⇒ UNKNOWN (the runner
+//     couldn't determine the canonical count — e.g. wrong CWD,
+//     canonical dir absent)
+type ScopeInfo struct {
+	ScenariosRan       int
+	ScenariosAvailable int
 }
 
 // Render produces the markdown body of the per-run report. Renders
@@ -76,6 +95,21 @@ func RenderApproved(r *RunReport) string {
 	return render(&filtered, true)
 }
 
+// formatScope renders the Scope: header line per ScopeInfo's three
+// states. The runner populates ScopeInfo by counting scenarios in
+// the canonical drafts dir and comparing to the run's actual case
+// count; this function only formats, not detects.
+func formatScope(s *ScopeInfo) string {
+	switch {
+	case s.ScenariosAvailable == 0:
+		return fmt.Sprintf("UNKNOWN (%d scenarios in this run; canonical scenario count not determined)", s.ScenariosRan)
+	case s.ScenariosRan == s.ScenariosAvailable:
+		return fmt.Sprintf("FULL (%d scenarios)", s.ScenariosRan)
+	default:
+		return fmt.Sprintf("PARTIAL (%d of %d scenarios) — last-run.md may not be representative; do not commit", s.ScenariosRan, s.ScenariosAvailable)
+	}
+}
+
 // render bridges Part-1 CaseReports into a PerformanceStore and
 // delegates to RenderLastRunMD. Each Part-1 scenario becomes a
 // happy-case row keyed `<scenario>[c=0 p=- x=-]`.
@@ -91,8 +125,15 @@ func render(r *RunReport, approvedOnly bool) string {
 		scope = "approved"
 	}
 	fmt.Fprintf(&b, "# Integration tests — %s   (latest merge: %s)\n\n", scope, mergeHash)
-	fmt.Fprintf(&b, "Run:        %s   (runID %s)\nDuration:   %s\nTotal:      %d test cases\n\n",
+	fmt.Fprintf(&b, "Run:        %s   (runID %s)\nDuration:   %s\nTotal:      %d test cases\n",
 		r.StartISO, r.RunID, r.Duration, len(r.Cases))
+	// Scope line — when populated, makes "this is a filtered run"
+	// self-evident at the top of the report. Absent ScopeInfo ⇒ omit
+	// the line (back-compat for tests + callers that don't populate it).
+	if r.Scope != nil {
+		fmt.Fprintf(&b, "Scope:      %s\n", formatScope(r.Scope))
+	}
+	b.WriteString("\n")
 
 	// Confusion matrix + status breakdown — kept for run-summary value.
 	posTrue, posFalse := 0, 0

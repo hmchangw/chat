@@ -205,3 +205,63 @@ func TestRender_FailureDetailsSkippedCasesIncluded(t *testing.T) {
 	assert.Contains(t, out, "chaos engine reset failed")
 }
 
+
+// --- Scope stamp (partial-commit footgun guard) ---
+// A run with cfg.ScenariosDir narrowed to a subset overwrites
+// last-run.md with a tiny matrix. A reader can't tell at a glance
+// whether the report covers everything or a few cherry-picks. Stamp
+// the header so a committed partial report is obviously partial.
+
+func TestRender_ScopeFull_WhenRanEqualsAvailable(t *testing.T) {
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Scope:    &ScopeInfo{ScenariosRan: 42, ScenariosAvailable: 42},
+		Cases: []ScenarioReport{
+			{ScenarioName: "x", Status: "draft", Verdict: Verdict{Outcome: "pass"}},
+		},
+	}
+	out := Render(r)
+	assert.Contains(t, out, "Scope:")
+	assert.Contains(t, out, "FULL (42 scenarios)")
+	assert.NotContains(t, out, "PARTIAL")
+}
+
+func TestRender_ScopePartial_WhenRanLessThanAvailable(t *testing.T) {
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Scope:    &ScopeInfo{ScenariosRan: 3, ScenariosAvailable: 42},
+		Cases: []ScenarioReport{
+			{ScenarioName: "x", Status: "draft", Verdict: Verdict{Outcome: "pass"}},
+		},
+	}
+	out := Render(r)
+	assert.Contains(t, out, "Scope:")
+	assert.Contains(t, out, "PARTIAL (3 of 42 scenarios)")
+	assert.NotContains(t, out, "FULL")
+}
+
+func TestRender_ScopeUnknown_WhenAvailableIsZero(t *testing.T) {
+	// Available == 0 means the runner tried to detect canonical scope
+	// and couldn't (e.g. wrong CWD; canonical dir missing). Be honest:
+	// label it UNKNOWN rather than silently hide the failure.
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Scope:    &ScopeInfo{ScenariosRan: 5, ScenariosAvailable: 0},
+	}
+	out := Render(r)
+	assert.Contains(t, out, "Scope:")
+	assert.Contains(t, out, "UNKNOWN")
+	assert.Contains(t, out, "5 scenarios in this run")
+}
+
+func TestRender_NoScope_NoStamp_BackCompat(t *testing.T) {
+	// Tests / callers that don't populate Scope get the legacy header.
+	r := &RunReport{
+		StartISO: "2026-06-14T00:00:00Z",
+		Cases: []ScenarioReport{
+			{ScenarioName: "x", Status: "draft", Verdict: Verdict{Outcome: "pass"}},
+		},
+	}
+	out := Render(r)
+	assert.NotContains(t, out, "Scope:", "absent Scope ⇒ no line, back-compat with existing tests + callers")
+}

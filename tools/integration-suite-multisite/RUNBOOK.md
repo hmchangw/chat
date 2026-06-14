@@ -99,12 +99,31 @@ Report contents:
 
 - **Confusion matrix** — positive (through) vs negative (rejection),
   pass/fail breakdown.
+- **Scope stamp** — `Scope: FULL (N scenarios)` if the run covered the
+  whole `scenarios/drafts/` tree; `Scope: PARTIAL (N of M scenarios)` if
+  the run was narrowed via `SCENARIOS_DIR=…` to a subset (the line
+  itself says *"do not commit"*); `Scope: UNKNOWN` if the runner
+  couldn't determine the canonical count.
 - **Scenarios table** — per-scenario duration.
 - **Failure Details** — exact Gomega mismatch per failing scenario.
 - **performance.json** — latest/best/worst across runs.
 
 `@status:approved` scenarios form the CI-gating score. Drafts are
 informational.
+
+### Committing reports — full runs only
+
+`last-run.md` and `last-run-approved.md` are **overwrite-per-run**:
+each run rebuilds them from scratch over only the scenarios in that
+run's `SCENARIOS_DIR`. A filtered iteration run (e.g.
+`SCENARIOS_DIR=/tmp/subset`) writes a tiny report with only those few
+scenarios — the matrix shrinks to match. Committing such a report
+would mislead anyone reading the repo.
+
+**Rule:** only commit `last-run*.md` after a full-suite run. The
+report's `Scope:` line makes this self-enforcing — a PARTIAL header
+shouts itself before anyone reads further. `performance.json` is
+cumulative across runs and is safe to commit any time.
 
 ---
 
