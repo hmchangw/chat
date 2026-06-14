@@ -746,14 +746,16 @@ remote user who is a member of nothing — not on the acting site, not in the
 room on their own site — ends up with a durable `thread_subscription` **on
 their home site** purely by being `@`-mentioned from another site.
 
-Demonstrated end-to-end by
+Demonstrated by
 `scenarios/drafts/federation/thread-mention-remote-nonmember-federates-subscription.yaml`
-(runs 6c59 + 4c72, green twice): alice (site-a) thread-replies mentioning
-`@remotebob` (a site-b user, member of nothing). The chain lands on every
-surface — local thread_subscription on site-a, `OUTBOX_site-a →
-thread_subscription_upserted (destSiteId site-b)`, `INBOX_site-b` aggregate
-event, and finally a `thread_subscription` for remotebob applied on
-**site-b**. The membership-scoping fix above must therefore apply before the
+(−ve scenario, **fails at run d69b — the failure is the bug**): it asserts the
+correct behavior (a non-member mention creates **no** thread_subscription,
+locally or on the remote home site) and fails. alice (site-a) thread-replies
+mentioning `@remotebob` (a site-b user, member of nothing); the local-grant
+−ve fails first (a thread_subscription for remotebob exists on site-a), and
+the cross-site −ve confirms it federates and is applied on **site-b** too
+(earlier runs 6c59 + 4c72 traced the full OUTBOX → INBOX → applied chain end
+to end). The membership-scoping fix above must therefore apply before the
 outbox publish, or the leak crosses the federation boundary.
 
 **Blast radius — bounded (no push-notification leak).** Code analysis of

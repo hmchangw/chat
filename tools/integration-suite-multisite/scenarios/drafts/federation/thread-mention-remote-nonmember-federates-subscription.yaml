@@ -97,8 +97,12 @@ input:
     threadParentMessageCreatedAt: 1748736000000
   credential: ${alice.credential}
 
+# OPEN FINDING F-016 (cross-site escalation) — EXPECTED TO FAIL until mention
+# resolution is scoped to room members. -ve scenario asserting the CORRECT
+# behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
 expected:
-  # 1 — the thread reply was validated + published on site-a.
+  # Setup (+ve, passes) — the thread reply itself is a valid send and publishes.
   - location: jetstream_consume
     site: site-a
     args:
@@ -110,7 +114,10 @@ expected:
         message:
           id: m1fedmentreply000001
 
-  # 2 — remotebob (a non-member) got a thread_subscription LOCALLY on site-a (F-016).
+  # CORRECT (reliable anchor) — a non-member (@remotebob) must NOT get a
+  # thread_subscription, even locally. EXPECTED: absent. FAILS today (the
+  # local grant happens in ms — this anchors the scenario as a reliable fail
+  # regardless of federation timing).
   - location: mongo_find
     site: site-a
     args:
@@ -118,39 +125,16 @@ expected:
       filter:
         parentMessageId: m0fedmentparent00001
         userAccount: remotebob
+    not: true
     match:
       userAccount: remotebob
     timeout: 10s
 
-  # 3 — the worker federated the subscription: OUTBOX_site-a carries
-  # thread_subscription_upserted routed to remotebob's home site (site-b).
-  - location: jetstream_consume
-    site: site-a
-    args:
-      stream: OUTBOX_site-a
-      filter_subject: outbox.site-a.to.site-b.thread_subscription_upserted
-    match:
-      body_json:
-        type: thread_subscription_upserted
-        siteId: site-a
-        destSiteId: site-b
-    timeout: 10s
-
-  # 4 — the federation Source delivered it to INBOX_site-b (post-transform subject).
-  - location: jetstream_consume
-    site: site-b
-    args:
-      stream: INBOX_site-b
-      filter_subject: chat.inbox.site-b.aggregate.thread_subscription_upserted
-    match:
-      body_json:
-        type: thread_subscription_upserted
-        siteId: site-a
-        destSiteId: site-b
-    timeout: 15s
-
-  # 5 — THE ESCALATION: inbox-worker on site-b applied it — remotebob, a member
-  # of nothing, now has a thread_subscription on his HOME site via a mention.
+  # CORRECT (the cross-site escalation) — the non-member's sub must NOT reach
+  # remotebob's home site. EXPECTED: no thread_subscription for remotebob on
+  # site-b. FAILS today: inbox-worker applies the federated thread_sub.
+  # Generous window — the federated apply lands within ~seconds (runs 6c59,
+  # 4c72) but a -ve on a laggy outcome needs margin so it reliably catches it.
   - location: mongo_find
     site: site-b
     args:
@@ -158,6 +142,7 @@ expected:
       filter:
         parentMessageId: m0fedmentparent00001
         userAccount: remotebob
+    not: true
     match:
       userAccount: remotebob
-    timeout: 15s
+    timeout: 20s
