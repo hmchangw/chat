@@ -52,22 +52,19 @@ func (r *SubscriptionRepo) EnsureIndexes(ctx context.Context) error {
 }
 
 // roomsEnrichStages builds the shared rooms-join + deleted-filter + optional
-// activity window (local rows need room.lastMsgAt >= cutoff; cross-site kept).
-func roomsEnrichStages(localSiteID string, windowCutoff *time.Time) bson.A {
+// activity window. The deleted-filter is now room.name-based: a missing/cross-site
+// room has no room.name so $not-regex passes (kept); a local Del- room is dropped.
+func roomsEnrichStages(windowCutoff *time.Time) bson.A {
 	stages := bson.A{
 		bson.M{"$lookup": bson.M{"from": roomsCollection, "localField": "roomId", "foreignField": "_id", "as": "room"}},
 		bson.M{"$unwind": bson.M{"path": "$room", "preserveNullAndEmptyArrays": true}},
-		bson.M{"$match": bson.M{"$or": bson.A{
-			bson.M{"siteId": bson.M{"$ne": localSiteID}}, // cross-site: keep regardless
-			bson.M{"$and": bson.A{ // local: room must exist AND not be Del-prefixed
-				bson.M{"room": bson.M{"$ne": nil}},
-				bson.M{"room.name": bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}}},
-			}},
-		}}},
+		// Deleted-filter: a missing/cross-site room has no room.name → $not regex matches → kept.
+		// A local Del- room.name matches the regex → inverted by $not → dropped.
+		bson.M{"$match": bson.M{"room.name": bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}}}},
 	}
 	if windowCutoff != nil {
 		stages = append(stages, bson.M{"$match": bson.M{"$or": bson.A{
-			bson.M{"siteId": bson.M{"$ne": localSiteID}},            // cross-site: keep regardless
+			bson.M{"room": bson.M{"$eq": nil}},                      // no local room doc: keep
 			bson.M{"room.lastMsgAt": bson.M{"$gte": *windowCutoff}}, // local: room active within N days
 		}}})
 	}
@@ -77,6 +74,8 @@ func roomsEnrichStages(localSiteID string, windowCutoff *time.Time) bson.A {
 			"lastMsgAt":        "$room.lastMsgAt",
 			"lastMsgId":        "$room.lastMsgId",
 			"lastMentionAllAt": "$room.lastMentionAllAt",
+			"appCount":         "$room.appCount",
+			"roomName":         "$room.name",
 		}},
 		bson.M{"$project": bson.M{"room": 0}},
 	)
@@ -103,7 +102,7 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 		match["isSubscribed"] = true
 	}
 	pipeline := bson.A{bson.M{"$match": match}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, windowCutoff)...)
+	pipeline = append(pipeline, roomsEnrichStages(windowCutoff)...)
 	pipeline = append(pipeline,
 		bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}}},
 		bson.M{"$limit": int64(limit)},
@@ -118,7 +117,7 @@ func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string,
 		bson.M{"roomType": "botDM", "isSubscribed": true},
 	}}
 	pipeline := bson.A{bson.M{"$match": match}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, roomsEnrichStages(nil)...)
 	sortStage := bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}}}
 	limitStage := bson.M{"$limit": int64(limit)}
 	pipeline = append(pipeline,
@@ -146,7 +145,6 @@ func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string,
 // FindChannelsByMembers returns the requester's channel subs whose room contains ALL given members (bots excluded), room.createdAt desc.
 // Inlines roomsEnrichStages so that sort runs while "room" is still present.
 func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account string, members []string, limit int) ([]model.Subscription, error) {
-	localSiteID := r.siteID
 	pipeline := bson.A{
 		bson.M{"$match": bson.M{"u.account": account, "roomType": "channel"}},
 		// Co-member join — NOT siteId-filtered (any local/federated sub counts), projected
@@ -173,14 +171,8 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 		// Join local rooms for the deleted-filter and the createdAt sort below.
 		bson.M{"$lookup": bson.M{"from": roomsCollection, "localField": "roomId", "foreignField": "_id", "as": "room"}},
 		bson.M{"$unwind": bson.M{"path": "$room", "preserveNullAndEmptyArrays": true}},
-		// Deleted-filter: drop local subs with missing/soft-deleted rooms; keep cross-site.
-		bson.M{"$match": bson.M{"$or": bson.A{
-			bson.M{"siteId": bson.M{"$ne": localSiteID}},
-			bson.M{"$and": bson.A{
-				bson.M{"room": bson.M{"$ne": nil}},
-				bson.M{"room.name": bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}}},
-			}},
-		}}},
+		// Deleted-filter: room.name-based — missing/cross-site room has no name → kept; Del- room → dropped.
+		bson.M{"$match": bson.M{"room.name": bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}}}},
 		// Sort by the room's createdAt DESC while "room" is still available.
 		bson.M{"$sort": bson.D{{Key: "room.createdAt", Value: -1}}},
 		bson.M{"$addFields": bson.M{
@@ -188,6 +180,8 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 			"lastMsgAt":        "$room.lastMsgAt",
 			"lastMsgId":        "$room.lastMsgId",
 			"lastMentionAllAt": "$room.lastMentionAllAt",
+			"appCount":         "$room.appCount",
+			"roomName":         "$room.name",
 		}},
 		bson.M{"$project": bson.M{"room": 0}},
 		bson.M{"$limit": int64(limit)},
@@ -201,7 +195,7 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 		bson.M{"$match": bson.M{"u.account": account, "name": target, "roomType": "dm"}},
 		bson.M{"$limit": int64(1)}, // (account, name, roomType=dm) is unique — short-circuit defensively
 	}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, roomsEnrichStages(nil)...)
 	pipeline = append(pipeline,
 		bson.M{"$lookup": bson.M{"from": usersCollection, "localField": "name", "foreignField": "account", "as": "hrUser"}},
 		bson.M{"$unwind": bson.M{"path": "$hrUser", "preserveNullAndEmptyArrays": true}},
@@ -235,7 +229,7 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 // GetSubscriptionByRoomID returns the requester's deleted-filtered sub for roomID, or (nil, nil); (account, roomId) is unique in practice.
 func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	pipeline := bson.A{bson.M{"$match": bson.M{"u.account": account, "roomId": roomID}}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, roomsEnrichStages(nil)...)
 	pipeline = append(pipeline, bson.M{"$limit": int64(1)}) // (roomId, u.account) is unique — short-circuit defensively
 	out, err := r.subscriptions.Aggregate(ctx, pipeline)
 	if err != nil {
@@ -260,7 +254,7 @@ func activeSubscriptionFilter(account string) bson.M {
 // CountActiveSubscriptions counts the deleted-filtered active set via $count over the enriched pipeline (CountDocuments cannot see the join).
 func (r *SubscriptionRepo) CountActiveSubscriptions(ctx context.Context, account string) (int, error) {
 	pipeline := bson.A{bson.M{"$match": activeSubscriptionFilter(account)}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, roomsEnrichStages(nil)...)
 	pipeline = append(pipeline, bson.M{"$count": "n"})
 	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline)
 	if err != nil {
@@ -281,7 +275,7 @@ func (r *SubscriptionRepo) CountActiveSubscriptions(ctx context.Context, account
 // GetActiveSubscriptions returns the deleted-filtered active set used by the unread count, capped by limit.
 func (r *SubscriptionRepo) GetActiveSubscriptions(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
 	pipeline := bson.A{bson.M{"$match": activeSubscriptionFilter(account)}}
-	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, roomsEnrichStages(nil)...)
 	// MongoDB rejects $limit:0 — callers short-circuit zero; stay defensive here.
 	if limit > 0 {
 		pipeline = append(pipeline, bson.M{"$limit": int64(limit)})

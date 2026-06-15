@@ -45,12 +45,15 @@ type Subscription struct {
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 
-	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), surfaced to
-	// clients via Room. Writers persisting a full Subscription doc MUST strip these four fields.
+	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), used to build
+	// sub.Room for LOCAL subs (cross-site subs carry zero values). Writers persisting a full Subscription
+	// doc MUST strip these fields.
 	UserCount        int        `json:"-" bson:"userCount,omitempty"`
 	LastMsgAt        *time.Time `json:"-" bson:"lastMsgAt,omitempty"`
 	LastMsgID        string     `json:"-" bson:"lastMsgId,omitempty"`
 	LastMentionAllAt *time.Time `json:"-" bson:"lastMentionAllAt,omitempty"`
+	AppCount         int        `json:"-" bson:"appCount,omitempty"`
+	RoomName         string     `json:"-" bson:"roomName,omitempty"` // room canonical name (distinct from the sub's display Name)
 
 	// Room carries all room-derived fields, populated at read time from room-service's
 	// RoomsInfoBatch RPC (baseline $lookup values when the RPC degrades). Never persisted.
