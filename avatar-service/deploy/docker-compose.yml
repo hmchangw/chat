@@ -1,4 +1,4 @@
-name: avatar-service
+version: "3.8"
 
 services:
   avatar-service:
