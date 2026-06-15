@@ -181,6 +181,26 @@ func TestListSubscriptions_BotDM_AppDisplayName(t *testing.T) {
 	assert.Equal(t, "general", resp.Subscriptions[1].Name, "channel name must stay the subscription name")
 }
 
+// Two botDM subs sharing a bot account must dedup to a single GetAppNamesByAssistants
+// argument, and both rows get the resolved display name.
+func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+		{ID: "a2", RoomID: "rb2", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	// Exactly ["helper.bot"], not duplicated — gomock fails the call on arg mismatch.
+	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.Any()).Return(nil, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 2)
+	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name)
+	assert.Equal(t, "Helper App", resp.Subscriptions[1].Name)
+}
+
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 	svc, subs, _, apps, rooms, _ := newSvc(t)
 	storeSubs := []model.Subscription{
