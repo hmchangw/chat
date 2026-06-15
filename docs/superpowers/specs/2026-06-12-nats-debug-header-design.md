@@ -113,10 +113,10 @@ func ParseDebugLevel(v string) DebugLevel
 // String renders a rung to its canonical header token ("flow"/"debug"/"trace"/"").
 func (l DebugLevel) String() string
 
-// Threshold maps a rung to the minimum slog level it admits — the ONLY place the
+// threshold maps a rung to the minimum slog level it admits — the ONLY place the
 // ascending-rung → descending-slog inversion lives (off→INFO, flow→LevelFlow,
-// debug→LevelDebug, trace→LevelTrace). Defined in pkg/logctx (it needs the
-// custom levels); shown here for the full picture.
+// debug→LevelDebug, trace→LevelTrace). Unexported in pkg/logctx (it needs the
+// custom levels and has no caller outside the package); shown here for the full picture.
 
 type debugKey int
 const debugLevelKey debugKey = 0
@@ -148,9 +148,9 @@ const (
     LevelTrace = slog.Level(-8) // per-item / per-recipient edges
 )
 
-// Threshold is the single bridge from the ascending wire rung to the descending
+// threshold is the single bridge from the ascending wire rung to the descending
 // slog threshold. Nothing else open-codes the inversion.
-func Threshold(l natsutil.DebugLevel) slog.Level {
+func threshold(l natsutil.DebugLevel) slog.Level {
     switch l {
     case natsutil.DebugFlow:  return LevelFlow
     case natsutil.DebugBasic: return slog.LevelDebug
@@ -170,7 +170,7 @@ The base JSON handler's `HandlerOptions.ReplaceAttr` (`RenderLevelNames`) prints
 //   1. parses X-Debug into a natsutil.DebugLevel; if != Off, stores it on ctx
 //      (natsutil.WithDebugLevel) so the requested rung propagates downstream;
 //   2. if a rung was requested AND the package rate limiter allows, stores the
-//      honored slog threshold on ctx (= Threshold(rung)).
+//      honored slog threshold on ctx (= threshold(rung)).
 // The honor decision is made once here so a message's verbose lines are
 // all-or-nothing — never a half-emitted trace. Over budget: the requested rung
 // still propagates, but nothing below INFO is emitted on this instance.
@@ -331,9 +331,9 @@ Rejected on principle: a `tap`/`mirror` token (copy the payload somewhere inspec
 Unit:
 - `natsutil.ParseDebugLevel`: table-driven over `""`/`0`/`false`/`off`/`flow`/`1`/`true`/`on`/`debug`/`trace`/`garbage`/mixed-case/whitespace → expected rung; unknown → `DebugOff` (the no-footgun guarantee).
 - `natsutil`: rung round-trips header→ctx→`NewMsg`/`HeaderForContext` (flow, debug, trace); `DebugOff` ctx → no `X-Debug` emitted.
-- `logctx.Threshold`: exhaustive over the four rungs → INFO/LevelFlow/LevelDebug/LevelTrace (locks the inversion in one place).
+- `logctx.threshold` (unexported): exhaustive over the four rungs → INFO/LevelFlow/LevelDebug/LevelTrace (locks the inversion in one place).
 - `logctx.Handler`: FLOW/DEBUG/TRACE records emitted only when the record level ≥ honored threshold; `flow`-threshold passes FLOW but suppresses DEBUG/TRACE; `debug`-threshold passes FLOW+DEBUG, suppresses TRACE; INFO+ always delegates to base; `WithAttrs`/`WithGroup` preserve wrapping; `RenderLevelNames` prints `"FLOW"`/`"TRACE"`.
-- `logctx.Admit` + limiter: honors up to burst then suppresses (table-driven over a fake clock / injected limiter); over-budget still stores requested rung but threshold stays INFO; missing/off header → neither set; each rung → its `Threshold` when allowed.
+- `logctx.Admit` + limiter: honors up to burst then suppresses (table-driven over a fake clock / injected limiter); over-budget still stores requested rung but threshold stays INFO; missing/off header → neither set; each rung → its `threshold` when allowed.
 - natsrouter `RequestID()` middleware: admits the rung from `c.Headers()`; downstream ctx carries requested rung + honored threshold.
 
 Integration (`//go:build integration`, `testutil.NATS`):

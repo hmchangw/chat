@@ -68,13 +68,13 @@ func headerFor(rung string) nats.Header {
 	return nats.Header{natsutil.DebugHeader: []string{rung}}
 }
 
-// --- Threshold ---------------------------------------------------------------
+// --- threshold ---------------------------------------------------------------
 
 func TestThreshold_ExhaustiveMapping(t *testing.T) {
-	assert.Equal(t, slog.LevelInfo, Threshold(natsutil.DebugOff))
-	assert.Equal(t, LevelFlow, Threshold(natsutil.DebugFlow))
-	assert.Equal(t, slog.LevelDebug, Threshold(natsutil.DebugBasic))
-	assert.Equal(t, LevelTrace, Threshold(natsutil.DebugTrace))
+	assert.Equal(t, slog.LevelInfo, threshold(natsutil.DebugOff))
+	assert.Equal(t, LevelFlow, threshold(natsutil.DebugFlow))
+	assert.Equal(t, slog.LevelDebug, threshold(natsutil.DebugBasic))
+	assert.Equal(t, LevelTrace, threshold(natsutil.DebugTrace))
 }
 
 // The custom levels must straddle the stdlib ones so the cumulative ladder

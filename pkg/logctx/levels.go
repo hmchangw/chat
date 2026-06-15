@@ -18,9 +18,9 @@ const (
 	LevelTrace = slog.Level(-8) // per-item / per-recipient edges
 )
 
-// Threshold is the single bridge from the ascending wire rung to the descending
+// threshold is the single bridge from the ascending wire rung to the descending
 // slog threshold. Nothing else open-codes this inversion.
-func Threshold(l natsutil.DebugLevel) slog.Level {
+func threshold(l natsutil.DebugLevel) slog.Level {
 	switch l {
 	case natsutil.DebugFlow:
 		return LevelFlow

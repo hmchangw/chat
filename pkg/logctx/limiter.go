@@ -65,7 +65,7 @@ func Admit(ctx context.Context, headers nats.Header) context.Context {
 	}
 	ctx = natsutil.WithDebugLevel(ctx, rung)
 	if limiter.Allow() {
-		ctx = withHonoredThreshold(ctx, Threshold(rung))
+		ctx = withHonoredThreshold(ctx, threshold(rung))
 	}
 	return ctx
 }
