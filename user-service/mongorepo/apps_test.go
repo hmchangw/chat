@@ -27,9 +27,7 @@ func seedApps(t *testing.T, db *mongo.Database) {
 			"roomType": "botDM", "siteId": "site-a", "isSubscribed": true},
 		bson.M{"_id": "sub-other", "u": bson.M{"_id": "u-alice", "account": "alice"}, "name": "other.bot", "roomId": "r-other",
 			"roomType": "botDM", "siteId": "site-a", "isSubscribed": false},
-		// Collision: same name as other.bot but a non-botDM roomType, and
-		// subscribed. The lookup must NOT count this toward Other's
-		// isSubscribed flag (it only has an unsubscribed botDM).
+		// Collision: same name as other.bot but channel roomType — lookup must NOT count this toward Other's isSubscribed.
 		bson.M{"_id": "sub-collision", "u": bson.M{"_id": "u-alice", "account": "alice"}, "name": "other.bot", "roomId": "r-collision",
 			"roomType": "channel", "siteId": "site-a", "isSubscribed": true},
 	)
@@ -117,10 +115,7 @@ func TestListApps_FieldPathAccountTreatedAsLiteral_Integration(t *testing.T) {
 	ctx := context.Background()
 	seedApps(t, db)
 
-	// Without $literal, "$u.account" would be evaluated as a field path —
-	// $eq:["$u.account","$u.account"] holds for every subscription doc, so
-	// helper.bot's subscribed botDM would flip isSubscribed despite the
-	// account matching nothing. As a literal string it matches no account.
+	// Without $literal, "$u.account" is a field path and $eq:["$u.account","$u.account"] holds for every doc, flipping isSubscribed incorrectly.
 	page, err := r.ListApps(ctx, "$u.account", mongoutil.NewOffsetPageRequest(0, 0))
 	require.NoError(t, err)
 	require.Len(t, page.Data, 2)

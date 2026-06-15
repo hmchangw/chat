@@ -43,10 +43,8 @@ type RoomClient interface {
 	CreateDMRoom(ctx context.Context, account, otherAccount string, roomType model.RoomType) (model.Subscription, error)
 }
 
-// EventPublisher is the consumer-defined interface for fire-and-forget outbox
-// publishing. Unlike history-service's publisher it takes no msgID / Nats-Msg-Id:
-// user-service uses core NATS (no JetStream) and status events are last-write-wins,
-// so no publish-dedup is needed. Do not add a msgID without cause.
+// EventPublisher is the consumer-defined interface for fire-and-forget outbox publishing.
+// Core NATS only (no JetStream); status is last-write-wins so no msgID/dedup is needed.
 type EventPublisher interface {
 	Publish(ctx context.Context, subject string, data []byte) error
 }
@@ -78,8 +76,7 @@ func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, 
 }
 
 // RegisterHandlers wires all UserService endpoints onto the router.
-// s.siteID is baked into each pattern as a literal token — site isolation is
-// structural (this instance only subscribes to its own siteID subjects).
+// siteID is a literal token in each pattern — this instance only subscribes to its own siteID subjects.
 func (s *UserService) RegisterHandlers(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.UserStatusGetByNamePattern(s.siteID), s.GetStatusByName)
 	natsrouter.Register(r, subject.UserStatusSetPattern(s.siteID), s.SetStatus)

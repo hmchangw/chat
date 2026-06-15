@@ -70,8 +70,7 @@ func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A, opts ...
 	return results, nil
 }
 
-// AggregatePaged appends a $facet stage. Watch the 16 MB BSON limit on the facet
-// output; pass WithAllowDiskUse for pipelines whose pre-facet stages may spill.
+// AggregatePaged appends a $facet stage; pass WithAllowDiskUse for pipelines that may exceed the 16 MB limit.
 func (c *Collection[T]) AggregatePaged(ctx context.Context, pipeline bson.A, req OffsetPageRequest, opts ...QueryOption) (OffsetPage[T], error) {
 	facet := bson.D{{Key: "$facet", Value: bson.M{
 		"data": bson.A{

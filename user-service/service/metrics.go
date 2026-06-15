@@ -5,12 +5,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Counters for the silent-partial-failure paths. These register with the
-// default Prometheus registry via promauto, so main.go's plain promhttp.Handler()
-// exposes them on /metrics. Each path currently only emits a log line; a counter
-// makes the degradation observable in aggregate (alertable), not just via log
-// scraping. Label cardinality is bounded by the finite set of site IDs in
-// ALL_SITE_IDS, so site/dest labels are safe.
+// Counters for silent-partial-failure paths; site/dest label cardinality is bounded by ALL_SITE_IDS.
 var (
 	metricEnrichmentDegraded = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "user_service_room_enrichment_degraded_total",

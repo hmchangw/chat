@@ -75,9 +75,7 @@ func TestSetStatus_PublishError_StillSucceeds(t *testing.T) {
 
 func TestSetStatus_UnknownAccount_NotFound_NoPublish(t *testing.T) {
 	svc, _, users, _, _, _ := newSvc(t)
-	// MatchedCount==0 ⇒ matched=false. Handler must return NotFound and must NOT
-	// publish a status nobody owns. pub has no Publish expectation, so gomock
-	// fails if it is called; GetUserStatus must not run either.
+	// matched=false ⇒ NotFound; pub has no Publish expectation so gomock fails if Publish is called.
 	users.EXPECT().SetUserStatus(gomock.Any(), "ghost", "busy", gomock.Any()).Return(false, nil)
 	_, err := svc.SetStatus(ctx("ghost", "site-a"), models.StatusSetRequest{Text: "busy"})
 	requireCode(t, err, errcode.CodeNotFound)

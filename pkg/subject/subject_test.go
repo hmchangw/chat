@@ -466,7 +466,6 @@ func TestParseRoomCreateSubject(t *testing.T) {
 		{"wrong suffix", "chat.user.alice.request.room.site-A.member", "", false},
 		{"wrong prefix", "foo.user.alice.request.room.site-A.create", "", false},
 		{"empty", "", "", false},
-		// Wildcard guard: NATS '*' / '>' must never leak into the parsed account.
 		{"account is wildcard star", "chat.user.*.request.room.site-A.create", "", false},
 		{"account is wildcard tail", "chat.user.>.request.room.site-A.create", "", false},
 		{"account contains star", "chat.user.al*ce.request.room.site-A.create", "", false},
@@ -608,7 +607,6 @@ func TestParseAppsSubject(t *testing.T) {
 
 func TestParseRoomSubject(t *testing.T) {
 	t.Run("parses valid 10-token room subject", func(t *testing.T) {
-		// Use a raw subject since UserRoomSubscriptionGet was removed.
 		subj := "chat.user.alice.request.user.s1.room.r1.subscription.get"
 		account, roomID, action, ok := subject.ParseRoomSubject(subj)
 		assert.True(t, ok)
