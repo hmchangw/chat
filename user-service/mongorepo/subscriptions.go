@@ -81,6 +81,60 @@ func roomsEnrichStages(windowCutoff *time.Time) bson.A {
 	)
 }
 
+// matchedRoomField is the scratch array the member-match pipeline joins the local
+// room into; stripped by subscriptionProjection before the result decodes.
+const matchedRoomField = "__matchedRoom"
+
+// roomMatchStages joins the local rooms collection into the matchedRoomField array
+// — excluding soft-deleted (^Del-) rooms inside the $lookup — then drops any sub
+// whose room is missing/deleted (empty array, via $ne: []). It runs BEFORE the
+// heavier co-member self-join so the cheap room filter shrinks the candidate set
+// first. Unlike roomsEnrichStages this DROPS missing/cross-site rooms (no local
+// room doc ⇒ empty array): member matching is inherently local.
+func roomMatchStages() []bson.D {
+	return []bson.D{
+		{{Key: "$lookup", Value: bson.M{
+			"from": roomsCollection,
+			"let":  bson.M{"rid": "$roomId"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{
+					"$expr": bson.M{"$eq": bson.A{"$_id", "$$rid"}},
+					"name":  bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}},
+				}},
+			},
+			"as": matchedRoomField,
+		}}},
+		{{Key: "$match", Value: bson.M{matchedRoomField: bson.M{"$ne": bson.A{}}}}},
+	}
+}
+
+// subscriptionProjection is the terminal $project for the member-match pipeline:
+// it strips the pipeline's scratch fields (the joined room array and the
+// member-matching arrays) so the result decodes cleanly into model.Subscription,
+// while preserving any room baseline copied to the top level. extra drops
+// additional caller-named fields.
+func subscriptionProjection(extra bson.M) bson.M {
+	proj := bson.M{matchedRoomField: 0, "members": 0, "memberAccounts": 0}
+	for k, v := range extra {
+		proj[k] = v
+	}
+	return proj
+}
+
+// dedupeStrings returns in with duplicates removed, preserving first-seen order.
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
 // AggregateSubscriptions lists account's subscriptions by listType: rooms (dm+channel), apps (subscribed botDMs), or current (merged $facet set).
 func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, limit int) ([]model.Subscription, error) {
 	if listType == "current" {
@@ -143,12 +197,19 @@ func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string,
 }
 
 // FindChannelsByMembers returns the requester's channel subs whose room contains ALL given members (bots excluded), room.createdAt desc.
-// Inlines roomsEnrichStages so that sort runs while "room" is still present.
+// The room match (roomMatchStages) runs first so the deleted/missing filter shrinks the set before the co-member self-join.
 func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account string, members []string, limit int) ([]model.Subscription, error) {
+	members = dedupeStrings(members)
 	pipeline := bson.A{
 		bson.M{"$match": bson.M{"u.account": account, "roomType": "channel"}},
-		// Co-member join — NOT siteId-filtered (any local/federated sub counts), projected
-		// to u.account only. members is $literal-wrapped: $-values read as literals, not field paths.
+	}
+	for _, st := range roomMatchStages() {
+		pipeline = append(pipeline, st)
+	}
+	pipeline = append(pipeline,
+		// Co-member self-join — NOT siteId-filtered (any local/federated sub counts),
+		// projected to u.account only. members is $literal-wrapped: $-values read as
+		// literals, not field paths.
 		bson.M{"$lookup": bson.M{
 			"from": subscriptionsCollection,
 			"let":  bson.M{"rid": "$roomId"},
@@ -162,30 +223,25 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 			},
 			"as": "members",
 		}},
-		// Require every requested member present; members $literal-wrapped as above.
-		bson.M{"$match": bson.M{"$expr": bson.M{"$setIsSubset": bson.A{
-			bson.M{"$literal": members},
+		// Require every requested member present: $all (subset) + $size (exact count)
+		// over the distinct matched accounts.
+		bson.M{"$addFields": bson.M{"memberAccounts": bson.M{"$setUnion": bson.A{
 			bson.M{"$map": bson.M{"input": "$members", "as": "m", "in": "$$m.u.account"}},
 		}}}},
-		bson.M{"$project": bson.M{"members": 0}},
-		// Join local rooms for the deleted-filter and the createdAt sort below.
-		bson.M{"$lookup": bson.M{"from": roomsCollection, "localField": "roomId", "foreignField": "_id", "as": "room"}},
-		bson.M{"$unwind": bson.M{"path": "$room", "preserveNullAndEmptyArrays": true}},
-		// Deleted-filter: room.name-based — missing/cross-site room has no name → kept; Del- room → dropped.
-		bson.M{"$match": bson.M{"room.name": bson.M{"$not": bson.M{"$regex": deletedRoomNameRegex}}}},
-		// Sort by the room's createdAt DESC while "room" is still available.
-		bson.M{"$sort": bson.D{{Key: "room.createdAt", Value: -1}}},
+		bson.M{"$match": bson.M{"memberAccounts": bson.M{"$all": members, "$size": len(members)}}},
+		// Copy the matched room's baseline to the top level (consumed by local enrichment).
 		bson.M{"$addFields": bson.M{
-			"userCount":        "$room.userCount",
-			"lastMsgAt":        "$room.lastMsgAt",
-			"lastMsgId":        "$room.lastMsgId",
-			"lastMentionAllAt": "$room.lastMentionAllAt",
-			"appCount":         "$room.appCount",
-			"roomName":         "$room.name",
+			"userCount":        bson.M{"$first": "$" + matchedRoomField + ".userCount"},
+			"lastMsgAt":        bson.M{"$first": "$" + matchedRoomField + ".lastMsgAt"},
+			"lastMsgId":        bson.M{"$first": "$" + matchedRoomField + ".lastMsgId"},
+			"lastMentionAllAt": bson.M{"$first": "$" + matchedRoomField + ".lastMentionAllAt"},
+			"appCount":         bson.M{"$first": "$" + matchedRoomField + ".appCount"},
+			"roomName":         bson.M{"$first": "$" + matchedRoomField + ".name"},
 		}},
-		bson.M{"$project": bson.M{"room": 0}},
+		bson.M{"$sort": bson.D{{Key: matchedRoomField + ".createdAt", Value: -1}}},
 		bson.M{"$limit": int64(limit)},
-	}
+		bson.D{{Key: "$project", Value: subscriptionProjection(nil)}},
+	)
 	return r.subscriptions.Aggregate(ctx, pipeline)
 }
 

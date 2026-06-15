@@ -229,10 +229,34 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("field-path-shaped member is treated as a literal, not a path", func(t *testing.T) {
-		// "$u.account" must be a literal (no match), not a field path that makes $setIsSubset trivially true.
+		// "$u.account" must be a literal (no match), not a field path that makes the $all match trivially true.
 		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"$u.account"}, 100)
 		require.NoError(t, err)
 		assert.Empty(t, subs, "$-prefixed member must not bypass the member filter")
+	})
+
+	t.Run("soft-deleted and missing-room channels are dropped", func(t *testing.T) {
+		// roomMatchStages drops subs whose local room is ^Del- or absent (empty __matchedRoom, $ne: []).
+		seed(t, db, "rooms",
+			bson.M{"_id": "r-del", "name": "Del-Team", "siteId": "site-a", "userCount": 2, "createdAt": now},
+		)
+		seed(t, db, "subscriptions",
+			// alice+carol both members of a Del- room and of a room with no local doc.
+			bson.M{"_id": "a-del", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-del",
+				"name": "Del-Team", "roomType": "channel", "siteId": "site-a", "createdAt": now},
+			bson.M{"_id": "c-del", "u": bson.M{"_id": "u-carol", "account": "carol"}, "roomId": "r-del",
+				"name": "Del-Team", "roomType": "channel", "siteId": "site-a", "createdAt": now},
+			bson.M{"_id": "a-miss", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-missing",
+				"name": "Gone", "roomType": "channel", "siteId": "site-a", "createdAt": now},
+			bson.M{"_id": "c-miss", "u": bson.M{"_id": "u-carol", "account": "carol"}, "roomId": "r-missing",
+				"name": "Gone", "roomType": "channel", "siteId": "site-a", "createdAt": now},
+		)
+		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 100)
+		require.NoError(t, err)
+		for _, sub := range subs {
+			assert.NotEqual(t, "r-del", sub.RoomID, "Del- room channel must be dropped")
+			assert.NotEqual(t, "r-missing", sub.RoomID, "missing-room channel must be dropped")
+		}
 	})
 }
 
