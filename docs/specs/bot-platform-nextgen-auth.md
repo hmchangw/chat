@@ -120,7 +120,11 @@ Bots can't fill a form, so this is **operator-time**: a provisioned account has 
 Sessions do **not** have a fixed TTL. On each (throttled) use-bump, `ExpiresAt` is pushed to `now + idleWindow` (recommend `idleWindow` ≈ 180d), so an actively-used token never expires — infinite for any real bot. Only a token left unused past the window is reaped by the partial TTL index, bounding collection growth and limiting the blast radius of a leaked-then-abandoned token. Revocation (operator action, or rotate-password revoking all of an account's sessions) remains the immediate kill switch. Pure literally-never mode = leave `ExpiresAt` null; then revocation is the only cleanup and the collection grows unbounded.
 
 ### 5.6 "Resume" / session reuse
-There is **no bot-facing resume verb**. A REST bot logs in once (username + password) and reuses its `X-Auth-Token` on every subsequent call — the header *is* session reuse. The only resume primitive is internal (§5.2): a native client or the gateway exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
+**Legacy REST bots:** no resume verb — a bot logs in once (username + password) and reuses its `X-Auth-Token` header on every call; the header *is* session reuse.
+
+**Internal primitive:** §5.2 — a native client or the REST edge exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
+
+**New native bot SDK (re-architecture) — recommended (Q1b):** surface that internal primitive as an explicit **`session.refresh` resume RPC** so a re-architected bot can reconnect / re-mint a JWT from its stored session token after a restart, without storing the password. This is the §5.2 exchange exposed to native clients — cheap (already designed), and it gives new bots a first-class resume path while legacy REST bots are untouched. *Decision pending: expose it now vs. defer to the native-SDK milestone.*
 
 ---
 
@@ -129,10 +133,10 @@ There is **no bot-facing resume verb**. A REST bot logs in once (username + pass
 ### 6.1 Credential import
 For each legacy `users` doc that is an admin or bot account **with a local password** (`services.password.bcrypt`):
 - Ensure the nextgen `users` identity row exists (existing identity-sync path, not owned here) — it carries the **same 17-char `_id`**.
-- Insert `credentials` with `_id = legacy users._id` (verbatim, 17-char Meteor ID): `services.password.bcrypt` → `PasswordHash`, `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
+- Insert `credentials` with `_id = legacy users._id` (verbatim, 17-char Meteor ID): **copy `services.password.bcrypt` → `PasswordHash` byte-for-byte — do NOT rehash or recompute** (we don't have the plaintext, and the verify path already matches RC's `bcrypt(sha256_hex(pw))`). `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
 
 ### 6.2 Live-session import (no-reauth cutover)
-For each entry in `services.resume.loginTokens[]` (bots have only password-issued resume tokens — **no PAT entries to handle**, §2.2): insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `UserID = legacy _id`, `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` ignored since sessions are effectively infinite). Because we reuse RC's hash form **and** the same `_id`, an in-flight bot's existing `X-Auth-Token`+`X-User-Id` validate against the imported row unchanged. The next login issues a native `v1` token.
+Import **only regular login tokens** from `services.resume.loginTokens[]` — i.e. entries where **`type` is empty/absent**. **Explicitly skip `type:"personalAccessToken"`** (human PATs, out of scope, §2.2). For each imported entry: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `UserID = legacy _id`, `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` ignored since sessions are effectively infinite). Because we reuse RC's hash form **and** the same `_id`, an in-flight bot's existing `X-Auth-Token`+`X-User-Id` validate against the imported row unchanged. The next login issues a native `v1` token.
 
 ### 6.3 Cutover source-of-truth — freeze legacy, one-time import (decided)
 At canary start, make legacy credentials **read-only** (disable password change / admin user-mgmt on the old stack) and run the one-time `credentials` import; nextgen is authoritative from that moment. Frozen-and-matched credentials mean a request landing on either stack authenticates identically (§10.3). A legacy→nextgen credential sync is the fallback **only** if a multi-week dual-run with live password changes is required.
@@ -252,6 +256,25 @@ Operator UI / native ──NATS (per-user scoped JWT)─────────
 ### 9.4 Build vs. buy
 Build a **thin Go/Gin gateway**, consistent with the repo (auth-service is already Gin; reuse `errcode`, `idgen`, `pkg/subject`, the userstore cache pattern). Off-the-shelf options don't fit: Envoy/Istio have no NATS request/reply transport; NATS's own HTTP tools are config proxies, not RPC bridges. A purpose-built Go edge gives pooled NATS, typed envelopes, and exact RC-shape fidelity with minimal code.
 
+### 9.5 Performance targets (SLA) & load criteria
+
+**SLA targets**
+
+| Path | Target |
+|---|---|
+| Login latency (`POST /api/v1/login`) | **P99 < 200 ms** |
+| Token validation — hot path (Valkey cache hit) | **< 5 ms** |
+| Token validation — cold path (Mongo miss) | **< 50 ms** |
+| Concurrent sessions per account | **unlimited**, O(1) lookup (hash `_id`) |
+| Session cache hit ratio | **> 95%** |
+
+**Load criteria (must sustain)**
+- **10,000 logins / minute** sustained.
+- **100,000 active sessions**.
+- **1,000,000 token validations / minute**.
+
+These drive the design choices in §9.3 (pooled service-account connection, cache-fronted validation, throttled `LastUsedAt`) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `gw_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
+
 ---
 
 ## 10. Zero-downtime cutover (Istio, same URL, new namespace)
@@ -287,15 +310,16 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 > "Recommended" entries are the proposed answer with rationale, not yet locked. "Confirmed" entries were verified against the internal codebase. The one **decision still pending sign-off** is the architecture (Q5).
 
-### Decision pending sign-off
+### Decisions pending sign-off
 - **Q5 — Architecture (A vs B).** Two options fully laid out in §7. **Recommended: Option A** (extend `auth-service` — fastest, reuses JWT minting, single owner; human-auth risk contained by file/test isolation). Option B (dedicated `bot-gateway`) is the alternative if independent scaling or ownership split is wanted. *Awaiting your pick.*
+- **Q1b — Resume RPC for the new native bot SDK.** Recommend **exposing the §5.2 session→JWT exchange as a `session.refresh` RPC** for re-architected native bots (lets them reconnect from a stored token, no password). Legacy REST bots unaffected. *Decision: expose now or defer to the native-SDK milestone (§5.6).*
 
 ### Recommended — pending infra confirmation
 - **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3). *Confirm:* dual-run window length; whether live password changes must keep working on legacy.
-- **Q6 — Cache layer.** In-pod LRU + **Valkey from day one** for the session-validation hot path (§9.3). *Confirm:* Valkey cluster available in prod to the host service.
 
 ### Confirmed — closed
-- **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. **No bot-facing `resume` verb** (§5.6). *(Q1a folded in: path is `/api/v1/login`.)*
+- **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
+- **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
 - **Q2 — Session lifetime.** ✅ **Sliding idle expiry**, effectively infinite at **180-day idle** — matches current v2 Go repo behavior (§5.5). Refreshed on the throttled use-bump; revocation is the kill switch.
 - **Q4 — `LastUsedAt` throttle.** ✅ **5-minute window (300s)** — prevents write amplification while keeping reasonable activity tracking; doubles as the sliding-expiry refresh (§5.5).
 - **Q7 — `idleWindow`.** ✅ **180 days** (`SESSION_IDLE_WINDOW=4320h`, §16).
@@ -427,8 +451,9 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 ---
 
 ## 18. Test plan (TDD, ≥80% / 90% core)
-- **Golden hash fixture** (first test): a known `(rawToken → base64(sha256))` pair proving parity with Meteor — gate before any store code.
-- **Password verify** (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
+- **Golden hash fixture** — `TestHashAuthToken`: a known `(rawToken → base64(sha256))` pair proving parity with Meteor `Accounts._hashLoginToken`. **First test; gates all store code.**
+- **Password verify** — `TestVerifyPassword` (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
+- **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries; assert only the regular tokens become `sessions` rows.
 - **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
 - **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
 - **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
@@ -444,8 +469,9 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 4. Migration script (credential + non-PAT live-token import) with `--dry-run` + verify mode.
 5. REST↔NATS edge (principal injection, error mapping, pooled conn, load-shed) — middleware+handlers in auth-service (A) or standalone bot-gateway (B).
 6. Operator provisioning NATS handlers + admin authz + `docs/client-api.md`.
-7. Istio routing + canary runbook (separate from app PRs).
-8. Operator UI frontend (likely a separate repo/track).
+7. **Load test** against the §9.5 SLAs/criteria (10k logins/min, 100k sessions, 1M validations/min) — gate cutover on pass.
+8. Istio routing + canary runbook (separate from app PRs).
+9. Operator UI frontend (likely a separate repo/track).
 
 ---
 
@@ -483,10 +509,10 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] `model.IsBotAccount` covers every real bot naming pattern in production.
 
 **Infra / platform**
-- [ ] Valkey cluster reachable in prod from the host service. **(Q6)**
+- [x] **Valkey cluster available in prod** to the host service. *(confirmed 2026-06-15, Q6)*
 - [ ] Shared Istio ingress gateway + who owns the `VirtualService`/`DestinationRule`; the new namespace name; cert ownership. **(§10)**
 - [ ] A NATS **service account** for the REST edge with publish rights on `chat.user.*.request.>` (and that user JWTs remain scoped to self). **(§9.3)**
 
 **Decisions to sign off (§12)**
-- [ ] **Q5 architecture: Option A or B** (the one open decision) · [ ] Q3 freeze-legacy · [ ] Q6 Valkey day-one
-- [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q7 idleWindow=180d · [x] Q8 password-only · [x] Q9 id-preserved
+- [ ] **Q5 architecture: Option A or B** · [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 freeze-legacy (dual-run window)
+- [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey day-one · [x] Q7 idleWindow=180d · [x] Q8 password-only · [x] Q9 id-preserved
