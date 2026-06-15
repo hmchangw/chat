@@ -28,6 +28,8 @@ services:
       - AVATAR_BUCKET=avatars
       - MAX_UPLOAD_BYTES=1048576
       - CACHE_MAX_AGE_SECONDS=21600
+      - EID_CACHE_TTL=24h
+      - EID_CACHE_CAPACITY=120000
     networks:
       - chat-local
 

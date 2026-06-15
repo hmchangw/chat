@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -24,7 +23,7 @@ func newHandler(store avatarStore, blobs blobStore, cfg *config) *handler {
 		store:    store,
 		blobs:    blobs,
 		cfg:      *cfg,
-		eidCache: newTTLCache(100000, 10*time.Minute),
+		eidCache: newTTLCache(cfg.EIDCacheCapacity, cfg.EIDCacheTTL),
 	}
 }
 

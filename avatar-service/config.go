@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // clusterDomain maps a site to its avatar-service base URL (incl. scheme).
@@ -61,6 +62,12 @@ type config struct {
 
 	MaxUploadBytes     int64 `env:"MAX_UPLOAD_BYTES" envDefault:"1048576"`
 	CacheMaxAgeSeconds int   `env:"CACHE_MAX_AGE_SECONDS" envDefault:"21600"`
+
+	// account→employeeId in-memory cache. The mapping is near-immutable, so the
+	// TTL is long (re-fetch is cheap and self-heals rare changes); capacity is
+	// sized to the employee population so the cache does not evict.
+	EIDCacheTTL      time.Duration `env:"EID_CACHE_TTL" envDefault:"24h"`
+	EIDCacheCapacity int           `env:"EID_CACHE_CAPACITY" envDefault:"120000"`
 }
 
 // clusterBaseURL returns the configured base URL for a site, or "" if unknown.

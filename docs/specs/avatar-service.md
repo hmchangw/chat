@@ -99,6 +99,8 @@ label — instrumented at one seam, not scattered across the decision tree.
 | `AVATAR_BUCKET` | MinIO bucket for avatars | `avatars` |
 | `MAX_UPLOAD_BYTES` | reject uploads larger than this | `1048576` (1 MiB) |
 | `CACHE_MAX_AGE_SECONDS` | `Cache-Control: public, max-age=` value | `21600` (6h) |
+| `EID_CACHE_TTL` | account→employeeId cache TTL (near-immutable → long) | `24h` |
+| `EID_CACHE_CAPACITY` | account→employeeId cache max entries (≈ employee population) | `120000` |
 
 `CLUSTER_DOMAINS` is a **JSON array** of `{"siteID","domain"}` objects mapping
 each `siteID` to the **full base URL (including scheme)** of *that cluster's*

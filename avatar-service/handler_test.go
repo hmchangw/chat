@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -30,6 +31,8 @@ func newTestRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore)
 		AvatarBucket:         "avatars",
 		ClusterDomains:       clusterDomains{entries: []clusterDomain{{SiteID: "s2", Domain: "https://avatar-s2"}}},
 		MaxUploadBytes:       1048576,
+		EIDCacheCapacity:     1000,
+		EIDCacheTTL:          time.Minute,
 	})
 	r := gin.New()
 	registerRoutes(r, h)
