@@ -70,8 +70,7 @@ func TestSetStatus_TooLong(t *testing.T) {
 
 func TestSetStatus_OutboxExcludesSelf(t *testing.T) {
 	svc, _, users, _, _, _, pub := newSvc(t)
-	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "busy", gomock.Any()).Return(true, nil)
-	users.EXPECT().GetUserStatus(gomock.Any(), "alice").Return(&model.User{Account: "alice", StatusText: "busy"}, nil)
+	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "busy", gomock.Any()).Return(&model.User{Account: "alice", StatusText: "busy"}, nil)
 	pub.EXPECT().Publish(gomock.Any(), subject.Outbox("site-a", "site-b", model.OutboxUserStatusUpdated), gomock.Any()).Return(nil)
 	_, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: "busy"})
 	require.NoError(t, err)
@@ -86,15 +85,14 @@ func TestGetStatusByName_StoreError(t *testing.T) {
 
 func TestSetStatus_StoreError(t *testing.T) {
 	svc, _, users, _, _, _, _ := newSvc(t)
-	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "away", gomock.Any()).Return(false, errors.New("write failed"))
+	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "away", gomock.Any()).Return(nil, errors.New("write failed"))
 	_, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: "away"})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestSetStatus_PublishError_StillSucceeds(t *testing.T) {
 	svc, _, users, _, _, _, pub := newSvc(t)
-	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "here", gomock.Any()).Return(true, nil)
-	users.EXPECT().GetUserStatus(gomock.Any(), "alice").Return(&model.User{Account: "alice", StatusText: "here"}, nil)
+	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "here", gomock.Any()).Return(&model.User{Account: "alice", StatusText: "here"}, nil)
 	pub.EXPECT().Publish(gomock.Any(), subject.Outbox("site-a", "site-b", model.OutboxUserStatusUpdated), gomock.Any()).
 		Return(errors.New("no responders"))
 	_, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: "here"})
@@ -103,8 +101,8 @@ func TestSetStatus_PublishError_StillSucceeds(t *testing.T) {
 
 func TestSetStatus_UnknownAccount_NotFound_NoPublish(t *testing.T) {
 	svc, _, users, _, _, _, _ := newSvc(t)
-	// matched=false ⇒ NotFound; pub has no Publish expectation so gomock fails if Publish is called.
-	users.EXPECT().SetUserStatus(gomock.Any(), "ghost", "busy", gomock.Any()).Return(false, nil)
+	// nil user ⇒ NotFound; pub has no Publish expectation so gomock fails if Publish is called.
+	users.EXPECT().SetUserStatus(gomock.Any(), "ghost", "busy", gomock.Any()).Return(nil, nil)
 	_, err := svc.SetStatus(ctx("ghost", "site-a"), models.StatusSetRequest{Text: "busy"})
 	requireCode(t, err, errcode.CodeNotFound)
 }
@@ -122,8 +120,7 @@ func TestSetStatus_NilIsShow_TextOnly(t *testing.T) {
 	// Text-only update: IsShow is nil, so the store receives a nil *bool
 	// (leave-flag-untouched semantics) and the write still publishes cross-site.
 	svc, _, users, _, _, _, pub := newSvc(t)
-	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "brb", gomock.Nil()).Return(true, nil)
-	users.EXPECT().GetUserStatus(gomock.Any(), "alice").Return(&model.User{Account: "alice", StatusText: "brb"}, nil)
+	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "brb", gomock.Nil()).Return(&model.User{Account: "alice", StatusText: "brb"}, nil)
 	pub.EXPECT().Publish(gomock.Any(), subject.Outbox("site-a", "site-b", model.OutboxUserStatusUpdated), gomock.Any()).Return(nil)
 	resp, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: "brb"})
 	require.NoError(t, err)
@@ -133,8 +130,7 @@ func TestSetStatus_NilIsShow_TextOnly(t *testing.T) {
 func TestSetStatus_AtLimit(t *testing.T) {
 	svc, _, users, _, _, _, pub := newSvc(t)
 	text512 := string(make([]byte, 512))
-	users.EXPECT().SetUserStatus(gomock.Any(), "alice", text512, gomock.Any()).Return(true, nil)
-	users.EXPECT().GetUserStatus(gomock.Any(), "alice").Return(&model.User{Account: "alice", StatusText: text512}, nil)
+	users.EXPECT().SetUserStatus(gomock.Any(), "alice", text512, gomock.Any()).Return(&model.User{Account: "alice", StatusText: text512}, nil)
 	pub.EXPECT().Publish(gomock.Any(), subject.Outbox("site-a", "site-b", model.OutboxUserStatusUpdated), gomock.Any()).Return(nil)
 	_, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: text512})
 	require.NoError(t, err)

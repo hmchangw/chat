@@ -62,16 +62,23 @@ func (s *UserService) SetStatus(c *natsrouter.Context, req models.StatusSetReque
 	if len(req.Text) > maxStatusBytes {
 		return nil, errcode.BadRequest("status text too long")
 	}
-	matched, err := s.users.SetUserStatus(c, account, req.Text, req.IsShow)
+	u, err := s.users.SetUserStatus(c, account, req.Text, req.IsShow)
 	if err != nil {
 		return nil, fmt.Errorf("set status: %w", err)
 	}
-	if !matched {
+	if u == nil {
 		// No active user doc matched — don't broadcast a status nobody owns.
 		return nil, errcode.NotFound("user not found")
 	}
 	s.publishStatus(c, account, req.Text, req.IsShow)
-	return s.GetStatusByName(c, models.StatusGetByNameRequest{Name: account})
+	// The FindOneAndUpdate already returned the updated doc — no second read.
+	return &models.StatusView{
+		Account:      u.Account,
+		StatusText:   u.StatusText,
+		StatusIsShow: u.StatusIsShow,
+		ChineseName:  u.ChineseName,
+		EngName:      u.EngName,
+	}, nil
 }
 
 // publishStatus broadcasts via core NATS to every configured site except self; errors are logged, not returned.

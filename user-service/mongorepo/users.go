@@ -93,19 +93,27 @@ func (r *UserRepo) GetHRInfoByAccounts(ctx context.Context, accounts []string) (
 	return out, nil
 }
 
-// SetUserStatus updates status fields; isShow is only written when non-nil.
-// Returns matched=false when no active user doc matched so callers can skip the cross-site broadcast.
-func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {
+// SetUserStatus updates status fields (isShow only written when non-nil) and
+// returns the updated user in one round-trip via FindOneAndUpdate(After),
+// projected to the StatusView fields; returns (nil, nil) when no active user matched.
+func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error) {
 	set := bson.M{"statusText": text}
 	if isShow != nil {
 		set["statusIsShow"] = *isShow
 	}
-	res, err := r.users.Raw().UpdateOne(ctx,
-		activeUserFilter(account),
-		bson.M{"$set": set},
-	)
-	if err != nil {
-		return false, fmt.Errorf("update user status: %w", err)
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.After).
+		SetProjection(bson.M{"_id": 0, "account": 1, "statusText": 1, "statusIsShow": 1, "chineseName": 1, "engName": 1})
+	res := r.users.Raw().FindOneAndUpdate(ctx, activeUserFilter(account), bson.M{"$set": set}, opts)
+	if err := res.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("update user status: %w", err)
 	}
-	return res.MatchedCount > 0, nil
+	var u model.User
+	if err := res.Decode(&u); err != nil {
+		return nil, fmt.Errorf("decode updated user status: %w", err)
+	}
+	return &u, nil
 }

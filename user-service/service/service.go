@@ -29,7 +29,7 @@ type SubscriptionRepository interface {
 // UserRepository is the consumer-defined interface for user status persistence.
 type UserRepository interface {
 	GetUserStatus(ctx context.Context, account string) (*model.User, error)
-	SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error)
+	SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error)
 	GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error)
 }
 

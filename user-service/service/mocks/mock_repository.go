@@ -218,10 +218,10 @@ func (mr *MockUserRepositoryMockRecorder) GetUserStatus(ctx, account any) *gomoc
 }
 
 // SetUserStatus mocks base method.
-func (m *MockUserRepository) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {
+func (m *MockUserRepository) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SetUserStatus", ctx, account, text, isShow)
-	ret0, _ := ret[0].(bool)
+	ret0, _ := ret[0].(*model.User)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
