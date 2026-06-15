@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/user-service/models"
 )
 
 type captured struct {
@@ -72,10 +73,12 @@ func TestRefreshRoomList_Requests(t *testing.T) {
 	c := &captured{}
 	u := &userState{ID: "u-1", Account: "user-1"}
 	ctx := actionCtx{Ctx: context.Background(), Publish: c.publish, Request: c.request, SiteID: "site-test"}
-	err := refreshRoomList(ctx, u)
-	require.NoError(t, err)
+	require.NoError(t, refreshRoomList(ctx, u))
 	require.Len(t, c.reqs, 1)
-	require.Equal(t, subject.UserSubscriptionGetRooms("user-1", "site-test"), c.reqs[0].Subj)
+	require.Equal(t, subject.UserSubscriptionList("user-1", "site-test"), c.reqs[0].Subj)
+	var got models.SubscriptionListRequest
+	require.NoError(t, json.Unmarshal(c.reqs[0].Data, &got))
+	require.Equal(t, models.SubscriptionListRequest{Type: "rooms"}, got)
 }
 
 func TestScrollHistory_Requests(t *testing.T) {

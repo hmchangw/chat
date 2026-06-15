@@ -76,7 +76,7 @@ export function RoomKeysProvider({ children }: { children: React.ReactNode }) {
 
     const liveNats = natsRef.current
 
-    // TODO: initial keys arrive via the subscription.get* RPCs (user-service
+    // TODO: initial keys arrive via the subscription.list RPC (user-service
     // responsibility — to be extended in a follow-up). Until then,
     // RoomKeysContext populates from live RoomKeyEvent subscriptions only;
     // reconnecting users re-acquire keys when a rotation or membership change
