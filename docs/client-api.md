@@ -801,9 +801,10 @@ Shared by Add Members, Remove Member, and Update Member Role.
 | `userId` | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
 | `subscription` | [Subscription](#subscription) | For `added` / `role_updated`: the full Subscription record. For `removed`: a [RemovedSubscriptionRef](#removedsubscriptionref) lean ref (see Remove Member). |
 | `action` | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
+| `roomName` | string | Per-subscriber display label. `channel`: the room name. `dm`: the counterpart's display name (`engName` + `chineseName`, falling back to account). `botDM`: the bot's app name. Falls back to the counterpart account when the user/app can't be resolved (including a not-yet-replicated cross-site counterpart). Absent on `removed` events. |
 | `timestamp` | number | Epoch ms (UTC). |
 
-On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
+On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present — and the envelope's `roomName` is always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
@@ -818,6 +819,7 @@ On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `
     "joinedAt": "2026-05-06T08:01:23Z"
   },
   "action": "added",
+  "roomName": "engineering-announcements",
   "timestamp": 1746518483000
 }
 ```
@@ -1015,6 +1017,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
     "joinedAt": "2026-05-06T08:01:23Z"
   },
   "action": "role_updated",
+  "roomName": "engineering-announcements",
   "timestamp": 1746518483000
 }
 ```
@@ -1544,6 +1547,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | [Subscription](#subscription) | The Subscription record with the updated `muted`. |
 | `action` | string | `"mute_toggled"`. |
+| `roomName` | string | Per-subscriber display label; for a DM/botDM the counterpart's name / app name. See the [subscription.update schema](#subscriptionupdate-event). |
 | `timestamp` | number | Epoch ms (UTC). |
 
 ##### Behaviour notes
@@ -1594,6 +1598,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | [Subscription](#subscription) | The Subscription record with the updated `favorite`. |
 | `action` | string | `"favorite_toggled"`. |
+| `roomName` | string | Per-subscriber display label; for a DM/botDM the counterpart's name / app name. See the [subscription.update schema](#subscriptionupdate-event). |
 | `timestamp` | number | Epoch ms (UTC). |
 
 ##### Cross-site behaviour

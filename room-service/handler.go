@@ -188,7 +188,7 @@ func classifyAndValidate(req *model.CreateRoomRequest, requesterAccount string) 
 			return "", errChannelNameTooLong
 		}
 		for _, a := range req.Users {
-			if isBot(a) {
+			if model.IsBot(a) || model.IsPlatformAdminAccount(a) {
 				return "", errBotInChannel
 			}
 		}
@@ -765,6 +765,38 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 	return &model.StatusReply{Status: "ok"}, nil
 }
 
+// resolveSubUpdateRoomName computes a subscription.update's roomName: the room name for
+// channels; for dm/botDM, app.Name when the counterpart is a bot account, else its display name.
+func (h *Handler) resolveSubUpdateRoomName(ctx context.Context, sub *model.Subscription) string {
+	switch sub.RoomType {
+	case model.RoomTypeDM, model.RoomTypeBotDM:
+		cp := sub.Name
+		// Platform-admin (p_) accounts are users, not bots, for naming — only .bot takes the app path.
+		if model.IsBot(cp) {
+			app, err := h.store.GetApp(ctx, cp)
+			if err == nil && app.Name != "" {
+				return app.Name
+			}
+			if err != nil && !errors.Is(err, ErrAppNotFound) {
+				slog.WarnContext(ctx, "resolve roomName: GetApp failed, using account fallback",
+					"request_id", natsutil.RequestIDFromContext(ctx), "botAccount", cp, "error", err)
+			}
+			return cp
+		}
+		user, err := h.store.GetUser(ctx, cp)
+		if err == nil {
+			return displayfmt.CombineWithFallback(user.EngName, user.ChineseName, cp)
+		}
+		if !errors.Is(err, ErrUserNotFound) {
+			slog.WarnContext(ctx, "resolve roomName: GetUser failed, using account fallback",
+				"request_id", natsutil.RequestIDFromContext(ctx), "account", cp, "error", err)
+		}
+		return cp
+	default:
+		return sub.Name
+	}
+}
+
 // publishSubscriptionUpdate marshals a SubscriptionUpdateEvent for sub with the
 // given action and best-effort publishes it to the account's subscription.update
 // subject over core NATS. A publish failure is logged, not returned — the DB
@@ -775,6 +807,7 @@ func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action
 		UserID:       sub.User.ID,
 		Subscription: *sub,
 		Action:       action,
+		RoomName:     h.resolveSubUpdateRoomName(ctx, sub),
 		Timestamp:    ts.UnixMilli(),
 	}
 	data, err := json.Marshal(subEvt)
@@ -825,7 +858,7 @@ func (h *Handler) addMembers(c *natsrouter.Context, req model.AddMembersRequest)
 	// create-channel: a client that explicitly lists a bot must see a hard
 	// error rather than a silent drop.
 	for _, a := range req.Users {
-		if isBot(a) {
+		if model.IsBot(a) || model.IsPlatformAdminAccount(a) {
 			return nil, errBotInChannel
 		}
 	}
@@ -1294,7 +1327,7 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 	}
 
 	// Best-effort subscription.update to the reader's account (multi-device sync).
-	if !isBot(account) {
+	if !model.IsBot(account) {
 		updatedSub := *sub
 		updatedSub.LastSeenAt = &now
 		updatedSub.Alert = newAlert
@@ -1684,7 +1717,7 @@ func (h *Handler) roomRename(c *natsrouter.Context, req model.RoomRenameRequest)
 		return nil, errRenameChannelOnly
 	}
 
-	if !isPlatformAdmin(requesterUser) {
+	if !model.IsPlatformAdmin(requesterUser) {
 		sub, subErr := h.store.GetSubscription(ctx, account, roomID)
 		if subErr != nil {
 			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
@@ -1735,7 +1768,7 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 	if getUserErr != nil && !errors.Is(getUserErr, ErrUserNotFound) {
 		return nil, fmt.Errorf("get user: %w", getUserErr)
 	}
-	if !isPlatformAdmin(requesterUser) {
+	if !model.IsPlatformAdmin(requesterUser) {
 		return nil, errOnlyAdmins
 	}
 

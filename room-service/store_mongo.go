@@ -17,10 +17,8 @@ import (
 	"github.com/hmchangw/chat/pkg/pipelines"
 )
 
-// botAccountRegex matches bot/app accounts by the ".bot" suffix.
-// Distinct from helper.go::botPattern which also matches "^p_" — that
-// clause is a pre-existing bug (p_ accounts are platform admins, not
-// bots) and is out of scope for this change.
+// botAccountRegex matches bot/app accounts by the ".bot" suffix only — it excludes
+// "p_" platform-admin accounts, which have user records and are looked up as users here.
 const botAccountRegex = `\.bot$`
 
 var botAccountPattern = regexp.MustCompile(botAccountRegex)

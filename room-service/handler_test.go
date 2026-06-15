@@ -6099,3 +6099,176 @@ func TestHandler_threadUnreadSummary(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_resolveSubUpdateRoomName(t *testing.T) {
+	tests := []struct {
+		name      string
+		sub       model.Subscription
+		setupMock func(s *MockRoomStore)
+		want      string
+	}{
+		{
+			name: "channel uses sub.Name",
+			sub:  model.Subscription{RoomType: model.RoomTypeChannel, Name: "general"},
+			want: "general",
+		},
+		{
+			name: "dm resolves counterpart via GetUser",
+			sub:  model.Subscription{RoomType: model.RoomTypeDM, Name: "bob"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "bob").Return(&model.User{Account: "bob", EngName: "Bob", ChineseName: "鮑伯"}, nil)
+			},
+			want: "Bob 鮑伯",
+		},
+		{
+			name: "dm GetUser error falls back to account",
+			sub:  model.Subscription{RoomType: model.RoomTypeDM, Name: "carol"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "carol").Return(nil, ErrUserNotFound)
+			},
+			want: "carol",
+		},
+		{
+			name: "botDM resolves app name",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetApp(gomock.Any(), "helper.bot").Return(&model.App{Name: "Helper Bot"}, nil)
+			},
+			want: "Helper Bot",
+		},
+		{
+			name: "botDM GetApp error falls back to bot account",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "broken.bot"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetApp(gomock.Any(), "broken.bot").Return(nil, ErrAppNotFound)
+			},
+			want: "broken.bot",
+		},
+		{
+			name: "botDM empty app name falls back to bot account",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "nameless.bot"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetApp(gomock.Any(), "nameless.bot").Return(&model.App{Name: ""}, nil)
+			},
+			want: "nameless.bot",
+		},
+		{
+			name: "botDM bot-side sub resolves human via GetUser",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "alice"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", EngName: "Alice", ChineseName: "愛麗絲"}, nil)
+			},
+			want: "Alice 愛麗絲",
+		},
+		{
+			name: "botDM GetApp infra error falls back to bot account",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "flaky.bot"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetApp(gomock.Any(), "flaky.bot").Return(nil, context.DeadlineExceeded)
+			},
+			want: "flaky.bot",
+		},
+		{
+			name: "dm GetUser infra error falls back to account",
+			sub:  model.Subscription{RoomType: model.RoomTypeDM, Name: "dave"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "dave").Return(nil, context.DeadlineExceeded)
+			},
+			want: "dave",
+		},
+		{
+			name: "botDM platform-admin (p_) counterpart resolves as a user via GetUser",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "p_admin"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "p_admin").Return(&model.User{Account: "p_admin", EngName: "Pat", ChineseName: "派特"}, nil)
+			},
+			want: "Pat 派特",
+		},
+		{
+			name: "botDM platform-admin (p_) counterpart GetUser miss falls back to account",
+			sub:  model.Subscription{RoomType: model.RoomTypeBotDM, Name: "p_admin"},
+			setupMock: func(s *MockRoomStore) {
+				s.EXPECT().GetUser(gomock.Any(), "p_admin").Return(nil, ErrUserNotFound)
+			},
+			want: "p_admin",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockRoomStore(ctrl)
+			if tt.setupMock != nil {
+				tt.setupMock(store)
+			}
+			h := &Handler{store: store}
+			got := h.resolveSubUpdateRoomName(context.Background(), &tt.sub)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestHandler_MuteToggle_DM_SetsRoomName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().ToggleSubscriptionMute(gomock.Any(), "dmroom", "alice", gomock.Any()).
+		Return(&model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "dmroom", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob", Muted: true,
+		}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "bob").
+		Return(&model.User{Account: "bob", EngName: "Bob", ChineseName: "鮑伯"}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	var coreBodies [][]byte
+	h := &Handler{
+		store:           store,
+		siteID:          "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+		publishCore: func(_ context.Context, _ string, data []byte) error {
+			coreBodies = append(coreBodies, data)
+			return nil
+		},
+	}
+
+	_, err := h.muteToggle(ctxParams(map[string]string{"account": "alice", "roomID": "dmroom"}))
+	require.NoError(t, err)
+
+	require.Len(t, coreBodies, 1)
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
+	assert.Equal(t, "Bob 鮑伯", evt.RoomName)
+}
+
+func TestHandler_FavoriteToggle_BotDM_SetsAppName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().ToggleSubscriptionFavorite(gomock.Any(), "botroom", "alice", gomock.Any()).
+		Return(&model.Subscription{
+			ID: "s1", User: model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID: "botroom", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot", Favorite: true,
+		}, nil)
+	store.EXPECT().GetApp(gomock.Any(), "helper.bot").Return(&model.App{Name: "Helper Bot"}, nil)
+	store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+
+	var coreBodies [][]byte
+	h := &Handler{
+		store:           store,
+		siteID:          "site-a",
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error { return nil },
+		publishCore: func(_ context.Context, _ string, data []byte) error {
+			coreBodies = append(coreBodies, data)
+			return nil
+		},
+	}
+
+	_, err := h.favoriteToggle(ctxParams(map[string]string{"account": "alice", "roomID": "botroom"}))
+	require.NoError(t, err)
+
+	require.Len(t, coreBodies, 1)
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(coreBodies[0], &evt))
+	assert.Equal(t, "Helper Bot", evt.RoomName)
+}
