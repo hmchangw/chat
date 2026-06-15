@@ -692,7 +692,7 @@ On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
     "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
@@ -800,7 +800,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
   "subscription": {
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" }
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false }
   },
   "action": "removed",
   "timestamp": 1746518483000
@@ -889,7 +889,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
   "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a",
   "subscription": {
     "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob" },
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "bob", "isBot": false },
     "roomId": "01970a4f8c2d7c9aQ",
     "roomType": "channel",
     "siteId": "siteA",
@@ -3301,6 +3301,7 @@ Same shape as `status.getByName`:
 | Condition | `code` | `reason` | Notes |
 |-----------|--------|----------|-------|
 | `text` > 512 bytes | `bad_request` | — | `{ "code": "bad_request", "error": "status text too long" }` |
+| No active user doc for the caller | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` — nothing is broadcast. |
 | Internal failure | `internal` | — | — |
 
 ---
@@ -3344,7 +3345,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
   "subscriptions": [
     {
       "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
       "roomId": "01970a4f8c2d7c9aQ",
       "siteId": "siteA",
       "roomType": "channel",
@@ -3403,7 +3404,7 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
   "subscriptions": [
     {
       "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b",
-      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
       "roomId": "01970a4f8c2d7c9aQ",
       "siteId": "siteA",
       "roomType": "channel",
@@ -3466,7 +3467,7 @@ Returns the calling user's DM subscription with the named counterpart. The reply
 {
   "subscription": {
     "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
-    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
     "roomId": "alice_bob",
     "siteId": "siteA",
     "roomType": "dm",
@@ -3524,7 +3525,7 @@ Same shape as `subscription.list` — a (here, at most one) list:
   "subscriptions": [
     {
       "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
-      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
       "roomId": "alice_bob",
       "siteId": "siteA",
       "roomType": "dm",
