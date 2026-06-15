@@ -18,7 +18,7 @@ A header is the right trigger for this case — but the safety must not depend o
 | **Safety gate** | A per-service config flag `DEBUG_LOG_PAYLOADS` (env `DEBUG_LOG_PAYLOADS`, **default `false`**). A service logs a body ONLY when its own config has the flag on. In prod the flag is unset → the header is **inert**, no client can cause a body to be logged. |
 | Emission | `slog` at INFO, message `"debug payload"`, fields: `direction` (request/reply/consumed), `subject`, `request_id`, `bytes`, `payload` (the raw bytes as a string). Keyed by `request_id` so request+reply pair up. |
 | Propagation | Rides the existing `X-Debug` machinery: `HeaderForContext` also emits `X-Debug-Payload`, so capture intent flows cross-service like the rung (useful for the async pipeline; not needed for single-service RPCs). |
-| Scope (capture sites) | **natsrouter Register** captures request + reply centrally (covers `LoadHistory` and every RPC at once). JetStream consumer entries capture `msg.Data()` under the same gate (follow-up / opt-in per service). |
+| Scope (capture sites) | **natsrouter** captures both centrally: the `RequestID` middleware captures the request, `ReplyJSON` captures the reply (covers `LoadHistory` and every RPC at once). JetStream consumer entries capture `msg.Data()` under the same gate (follow-up / opt-in per service). |
 
 **Why the env gate, not ingress stripping:** safety becomes "prod services are configured to ignore it" — a single, greppable, auditable flag (`DEBUG_LOG_PAYLOADS=false` in prod) — instead of "an ingress must strip a client header correctly, forever." Far smaller, more visible surface.
 
@@ -41,7 +41,7 @@ A header is the right trigger for this case — but the safety must not depend o
   Logging at INFO (not a sub-INFO rung) keeps payload capture **independent of the metadata-admission gate** — `CapturePayload` does all its own gating.
 
 ### `pkg/natsrouter` — central request/reply capture
-In `Register`'s wrapper: `logctx.CapturePayload(ctx, "request", subject, c.Msg.Data)` before the handler; `logctx.CapturePayload(ctx, "reply", subject, replyBytes)` after the reply is marshaled (the wrapper already has the bytes). One place → covers `LoadHistory` (history-service) and all RPC services.
+Two hook points, both already on the path: the `RequestID` middleware (`middleware.go`) calls `logctx.CapturePayload(ctx, "request", subject, c.Msg.Data)` before the handler; `ReplyJSON` (`context.go`) calls `logctx.CapturePayload(c, "reply", subject, replyBytes)` after marshaling (it already holds the bytes). Together they cover `LoadHistory` (history-service) and all RPC services.
 
 ### Service wiring
 Services that already parse `DebugLog logctx.Config` + call `logctx.Configure` get the flag for free. **history-service** must add the `DebugLog` config field + `logctx.Configure(cfg.DebugLog)` call so `LoadHistory` capture works.
@@ -66,5 +66,5 @@ This is the production guarantee. A test asserts: flag off + header set → no `
 ## Testing (TDD)
 - `natsutil`: payload header round-trips ctx↔header; `HeaderForContext`/`NewMsg` emit it; absent → not emitted.
 - `logctx.CapturePayload`: the three-case gate (flag off → silent even with header; flag on + requested → body; flag on + not requested → silent); `Admit` stamps payload-requested from the header.
-- `natsrouter`: Register captures request + reply when gated on; nothing when flag off.
+- `natsrouter`: the `RequestID` middleware captures the request and `ReplyJSON` captures the reply when gated on; nothing when flag off.
 - history-service: `Configure(cfg.DebugLog)` wired.

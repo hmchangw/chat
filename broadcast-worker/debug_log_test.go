@@ -86,7 +86,8 @@ func TestHandler_DMFanout_DebugBreadcrumbs(t *testing.T) {
 		Event: model.EventCreated, SiteID: "site-a", Timestamp: msgTime.UnixMilli(),
 		Message: model.Message{ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice", Content: "hey bob", CreatedAt: msgTime},
 	}
-	data, _ := json.Marshal(evt)
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
 
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
@@ -141,7 +142,8 @@ func TestHandler_DMFanout_NoContentLeak(t *testing.T) {
 		Event: model.EventCreated, SiteID: "site-a", Timestamp: msgTime.UnixMilli(),
 		Message: model.Message{ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice", Content: secret, CreatedAt: msgTime},
 	}
-	data, _ := json.Marshal(evt)
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
 
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)

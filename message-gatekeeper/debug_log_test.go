@@ -145,7 +145,8 @@ func TestHandler_processMessage_DebugBreadcrumbs(t *testing.T) {
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
 		for i := range rec.recs {
-			buf, _ := json.Marshal(attrsOf(&rec.recs[i]))
+			buf, err := json.Marshal(attrsOf(&rec.recs[i]))
+			require.NoError(t, err)
 			assert.NotContains(t, string(buf), "SUPER-SECRET-BODY", "breadcrumbs must be metadata-only")
 			assert.NotContains(t, rec.recs[i].Message, "SUPER-SECRET-BODY")
 		}
