@@ -109,12 +109,43 @@ func roomMatchStages() []bson.D {
 }
 
 // subscriptionProjection is the terminal $project for the member-match pipeline:
-// it strips the pipeline's scratch fields (the joined room array and the
-// member-matching arrays) so the result decodes cleanly into model.Subscription,
-// while preserving any room baseline copied to the top level. extra drops
-// additional caller-named fields.
+// an inclusion projection of the subscription's fields (incl. the room baseline
+// copied to the top level). Being inclusion-only, it naturally drops the
+// pipeline's scratch arrays (__matchedRoom, members, memberAccounts). extra adds
+// further caller-named fields.
 func subscriptionProjection(extra bson.M) bson.M {
-	proj := bson.M{matchedRoomField: 0, "members": 0, "memberAccounts": 0}
+	proj := bson.M{
+		"_id":                1,
+		"u":                  1,
+		"roomId":             1,
+		"siteId":             1,
+		"roles":              1,
+		"name":               1,
+		"roomType":           1,
+		"isSubscribed":       1,
+		"historySharedSince": 1,
+		"joinedAt":           1,
+		"lastSeenAt":         1,
+		"hasMention":         1,
+		"hasGroupMention":    1,
+		"hasUnread":          1,
+		"threadUnread":       1,
+		"alert":              1,
+		"muted":              1,
+		"favorite":           1,
+		"restricted":         1,
+		"externalAccess":     1,
+		"avatarUrl":          1,
+		"favoritedAt":        1,
+		"updatedAt":          1,
+		// room baseline copied to the top level (consumed by local enrichment)
+		"userCount":        1,
+		"lastMsgAt":        1,
+		"lastMsgId":        1,
+		"lastMentionAllAt": 1,
+		"appCount":         1,
+		"roomName":         1,
+	}
 	for k, v := range extra {
 		proj[k] = v
 	}
