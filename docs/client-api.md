@@ -428,6 +428,8 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
 | `hasMention` | boolean | Whether the user has an unread mention. Authoritative subscription state maintained by the write path (set when the user is @-mentioned, cleared on read); **not** modified by read enrichment. |
+| `hasGroupMention` | boolean | Whether the user has an unread room-wide (@all) mention. Authoritative subscription state; **not** modified by read enrichment. |
+| `hasUnread` | boolean | Whether the room has unread messages for the user. Authoritative subscription state; **not** modified by read enrichment. |
 | `alert` | boolean | Whether the room has an unread alert for the user. Authoritative subscription state maintained by the write path (set on new message, cleared on read receipt); **not** modified by read enrichment. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
@@ -438,6 +440,9 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `restricted` | boolean | Optional. Denormalized room restricted flag. |
 | `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
 | `room` | [SubscriptionRoom](#subscriptionroom) | Optional. Room-derived view (read-time enrichment; user-service endpoints only). |
+| `avatarUrl` | string | Optional. Subscription avatar URL. |
+| `favoritedAt` | RFC3339 timestamp | Optional. When the user favorited the room. |
+| `updatedAt` | RFC3339 timestamp | Optional. When the subscription was last updated. |
 
 #### SubscriptionRoom
 
@@ -455,22 +460,23 @@ optional (omitted when zero/unset).
 | `name` | string | The room's canonical name (may differ from the subscription `name`). |
 | `userCount` | number | Member count. |
 | `appCount` | number | App (bot) count. |
-| `lastMsgAt` | RFC3339 timestamp | Time of the room's last message. |
+| `lastMsgAt` | number | Epoch millis of the room's last message. |
 | `lastMsgId` | string | Last message ID. |
-| `lastMentionAllAt` | RFC3339 timestamp | Time of the last room-wide mention. |
+| `lastMentionAllAt` | number | Epoch millis of the last room-wide mention. |
 | `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Only present when the caller's site holds the key. |
 | `keyVersion` | number | Version of `privateKey`. |
 
 #### AppSubscription
 
-The row shape for **botDM** subscriptions in `subscription.list` — a
-[Subscription](#subscription) plus these top-level app-metadata fields. The
-botDM's display `name` (the base `Subscription.name`) is the **app's display
-name**. All app fields are optional (omitted when unset).
+The nested `app` object carried on **botDM** subscription rows in
+`subscription.list`. The botDM's base `Subscription.name` is the **app's display
+name**; the `app` object also carries its own `name`. All app fields are optional
+(omitted when unset).
 
 | Field | Type | Notes |
 |---|---|---|
 | `appId` | string | The app's ID. |
+| `name` | string | The app's display name. |
 | `description` | string | App description. |
 | `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument. |
 | `appViewUrl` | map<string, string> | App-view URLs keyed by view name. |
@@ -3420,15 +3426,15 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
 - Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object rather than dropping them. For **local** rooms the baseline is the Mongo `$lookup` values (`siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key). For **cross-site** rooms the local DB has no room doc, so the baseline is only `siteId` (the rest live at the room's origin site). `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
 
-**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows use [AppSubscription](#appsubscription) (§3.0, a Subscription plus flattened app-metadata fields). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
+**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows add a nested `app` object ([AppSubscription](#appsubscription), §3.0). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, `hasGroupMention`, `hasUnread`, `updatedAt`, and the rest of `room`). Type-specific fields:
 
 | Field | `channel` | `dm` | `botDM` |
 |---|---|---|---|
 | `name` | Channel name. | Counterpart's account. | App display name (falls back to the bot account when the app record is unavailable). |
 | `isSubscribed` | absent | absent | `true` — botDM rows are returned only while subscribed. |
 | `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — returned in both `subscription.list` and `subscription.getDM`. | absent |
-| app fields | absent | absent | Flattened app-metadata fields — see [AppSubscription](#appsubscription). |
-| `room.name` | Canonical channel name. | Empty (omitted — DM rooms have no canonical name). | Empty (omitted — botDM rooms have no canonical name; the app name is the top-level `name`). |
+| `app` | absent | absent | Nested app-metadata object — see [AppSubscription](#appsubscription). |
+| `room.name` | Canonical channel name. | Omitted (DM rooms have no canonical name). | Omitted (botDM rooms have no canonical name; the app name is the top-level `name`). |
 | `room.appCount` | Bot/app count in the channel (omitted when 0). | omitted (0). | ≥ 1. |
 
 The example below shows one record of each type in order (`channel`, `dm`, `botDM`):
@@ -3446,17 +3452,20 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": true,
       "alert": true,
       "muted": false,
       "favorite": true,
+      "updatedAt": "2026-06-01T10:00:05Z",
       "room": {
         "siteId": "siteA",
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgAt": 1780308000000,
         "lastMsgId": "01970a4f8c2d7c9aBB",
-        "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "lastMentionAllAt": 1780128000000,
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
       }
@@ -3471,17 +3480,16 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "bob",
       "joinedAt": "2026-04-01T09:00:00Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "alert": false,
       "muted": false,
       "favorite": false,
+      "updatedAt": "2026-05-20T15:30:00Z",
       "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
       "room": {
         "siteId": "siteA",
-        "userCount": 2,
-        "lastMsgAt": "2026-05-20T15:30:00Z",
-        "lastMsgId": "01970a4f8c2d7c9aCC",
-        "privateKey": "cXdlcnR5...base64...dWlvcD09",
-        "keyVersion": 1
+        "lastMsgAt": 1779291000000
       }
     },
     {
@@ -3495,20 +3503,26 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "isSubscribed": true,
       "joinedAt": "2026-03-15T11:00:00Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "alert": false,
       "muted": false,
       "favorite": false,
-      "appId": "app_helper",
-      "description": "Your friendly helper bot",
-      "assistant": { "name": "helper.bot", "enabled": true, "username": "Helper" },
-      "appViewUrl": { "main": "https://apps.example.com/helper" },
-      "version": "1.4.2",
-      "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }],
+      "updatedAt": "2026-05-01T08:00:10Z",
+      "app": {
+        "appId": "app_helper",
+        "name": "Helper",
+        "description": "Your friendly helper bot",
+        "assistant": { "name": "helper.bot", "enabled": true, "username": "Helper" },
+        "appViewUrl": { "main": "https://apps.example.com/helper" },
+        "version": "1.4.2",
+        "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
+      },
       "room": {
         "siteId": "siteA",
         "userCount": 1,
         "appCount": 1,
-        "lastMsgAt": "2026-05-01T08:00:00Z",
+        "lastMsgAt": 1777622400000,
         "lastMsgId": "01970a4f8c2d7c9aDD"
       }
     }
@@ -3564,15 +3578,18 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": true,
       "alert": true,
       "muted": false,
       "favorite": true,
+      "updatedAt": "2026-06-01T10:00:05Z",
       "room": {
         "siteId": "siteA",
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgAt": 1780308000000,
         "lastMsgId": "01970a4f8c2d7c9aBB",
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
@@ -3635,16 +3652,15 @@ Returns the calling user's DM subscription with the named counterpart. The reply
     "joinedAt": "2026-04-01T09:00:00Z",
     "alert": false,
     "hasMention": false,
+    "hasGroupMention": false,
+    "hasUnread": false,
     "muted": false,
     "favorite": false,
+    "updatedAt": "2026-05-20T15:30:00Z",
     "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
     "room": {
       "siteId": "siteA",
-      "userCount": 2,
-      "lastMsgAt": "2026-05-20T15:30:00Z",
-      "lastMsgId": "01970a4f8c2d7c9aCC",
-      "privateKey": "cXdlcnR5...base64...dWlvcD09",
-      "keyVersion": 1
+      "lastMsgAt": 1779291000000
     }
   }
 }
@@ -3701,12 +3717,14 @@ Same shape as `subscription.list` — a (here, at most one) list:
       "joinedAt": "2026-04-01T09:00:00Z",
       "alert": false,
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "muted": false,
       "favorite": false,
+      "updatedAt": "2026-05-20T15:30:00Z",
       "room": {
         "siteId": "siteA",
-        "userCount": 2,
-        "lastMsgAt": "2026-05-20T15:30:00Z",
+        "lastMsgAt": 1779291000000,
         "lastMsgId": "01970a4f8c2d7c9aCC",
         "privateKey": "cXdlcnR5...base64...dWlvcD09",
         "keyVersion": 1

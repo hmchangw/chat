@@ -19,15 +19,15 @@ type SubscriptionListResponse struct {
 // SubscriptionListItem is one heterogeneous row in a subscription list:
 //   - channel → just the embedded base Subscription
 //   - dm      → base + a top-level hrInfo object
-//   - botDM   → base + the app-metadata overlay flattened at top level
+//   - botDM   → base + a nested app object (app metadata)
 //
-// The embedded *Subscription promotes all base fields/JSON. A nil embedded
-// *AppMeta is omitted by encoding/json; a non-nil one flattens its app fields
-// (appId, description, assistant, …) to the top level. There are no json-tag
-// collisions between Subscription, AppMeta, and hrInfo.
+// The embedded *Subscription promotes all base fields/JSON. App is nested under
+// the `app` key (its own appId/name/description/… ) rather than flattened, so
+// app.name does not collide with the base Subscription.name. Both App and HRInfo
+// are omitted by encoding/json when nil.
 type SubscriptionListItem struct {
 	*model.Subscription
-	*model.AppMeta
+	App    *model.AppSubscription    `json:"app,omitempty"`
 	HRInfo *model.SubscriptionHRInfo `json:"hrInfo,omitempty"`
 }
 

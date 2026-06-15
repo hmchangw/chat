@@ -119,9 +119,9 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	assert.Equal(t, 2, sub.Room.AppCount)
 	assert.Equal(t, "m9", sub.Room.LastMsgID)
 	require.NotNil(t, sub.Room.LastMsgAt)
-	assert.Equal(t, time.UnixMilli(200).UTC(), *sub.Room.LastMsgAt)
+	assert.Equal(t, int64(200), *sub.Room.LastMsgAt)
 	require.NotNil(t, sub.Room.LastMentionAllAt)
-	assert.Equal(t, time.UnixMilli(50).UTC(), *sub.Room.LastMentionAllAt)
+	assert.Equal(t, int64(50), *sub.Room.LastMentionAllAt)
 	require.NotNil(t, sub.Room.PrivateKey, "private key must be forwarded, not dropped")
 	assert.Equal(t, pk, *sub.Room.PrivateKey)
 	require.NotNil(t, sub.Room.KeyVersion)
@@ -159,7 +159,7 @@ func TestListSubscriptions_LocalBaselineRoom_KeyDegrades(t *testing.T) {
 	assert.Equal(t, 9, room.UserCount)
 	assert.Equal(t, "m1", room.LastMsgID)
 	require.NotNil(t, room.LastMsgAt)
-	assert.Equal(t, lastMsg, *room.LastMsgAt)
+	assert.Equal(t, lastMsg.UnixMilli(), *room.LastMsgAt)
 	assert.Nil(t, room.PrivateKey, "degraded key read ⇒ no key material")
 }
 
@@ -188,22 +188,23 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	// botDM row: app display name + flattened AppMeta overlay, no hrInfo.
+	// botDM row: app display name + nested app object, no hrInfo.
 	bot := resp.Subscriptions[0]
 	assert.Equal(t, "Helper App", bot.Name, "botDM name must be replaced by the app display name")
 	require.NotNil(t, bot.Room)
 	assert.Equal(t, "bot-room-canonical", bot.Room.Name)
-	require.NotNil(t, bot.AppMeta, "botDM row must carry the app-metadata overlay")
-	assert.Equal(t, "app-helper", bot.AppID, "AppID must come from App.ID")
-	assert.Equal(t, "does helpful things", bot.Description)
-	assert.Equal(t, "1.0.0", bot.Version)
-	require.NotNil(t, bot.Assistant)
-	assert.Equal(t, "helper.bot", bot.Assistant.Name)
+	require.NotNil(t, bot.App, "botDM row must carry the nested app object")
+	assert.Equal(t, "app-helper", bot.App.AppID, "AppID must come from App.ID")
+	assert.Equal(t, "Helper App", bot.App.Name, "app object carries the app display name")
+	assert.Equal(t, "does helpful things", bot.App.Description)
+	assert.Equal(t, "1.0.0", bot.App.Version)
+	require.NotNil(t, bot.App.Assistant)
+	assert.Equal(t, "helper.bot", bot.App.Assistant.Name)
 	assert.Nil(t, bot.HRInfo, "botDM row must not carry hrInfo")
 	// channel row: base only.
 	ch := resp.Subscriptions[1]
 	assert.Equal(t, "general", ch.Name, "channel name must stay the subscription name")
-	assert.Nil(t, ch.AppMeta, "channel row must not carry AppMeta")
+	assert.Nil(t, ch.App, "channel row must not carry an app object")
 	assert.Nil(t, ch.HRInfo, "channel row must not carry hrInfo")
 }
 
@@ -224,7 +225,7 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 	require.NotNil(t, dm.HRInfo, "dm row must carry hrInfo")
 	assert.Equal(t, "鮑勃", dm.HRInfo.Name)
 	assert.Equal(t, "Bob Chen", dm.HRInfo.EngName)
-	assert.Nil(t, dm.AppMeta, "dm row must not carry AppMeta")
+	assert.Nil(t, dm.App, "dm row must not carry an app object")
 	assert.Nil(t, resp.Subscriptions[1].HRInfo, "channel row carries no hrInfo")
 }
 
@@ -261,8 +262,8 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	require.Len(t, resp.Subscriptions, 2)
 	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name)
 	assert.Equal(t, "Helper App", resp.Subscriptions[1].Name)
-	require.NotNil(t, resp.Subscriptions[0].AppMeta)
-	require.NotNil(t, resp.Subscriptions[1].AppMeta)
+	require.NotNil(t, resp.Subscriptions[0].App)
+	require.NotNil(t, resp.Subscriptions[1].App)
 }
 
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
@@ -278,7 +279,7 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 	require.NoError(t, err, "app lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "helper.bot", resp.Subscriptions[0].Name, "degraded lookup keeps the bot account name")
-	assert.Nil(t, resp.Subscriptions[0].AppMeta, "degraded app lookup omits the overlay")
+	assert.Nil(t, resp.Subscriptions[0].App, "degraded app lookup omits the app object")
 }
 
 func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
@@ -293,7 +294,7 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	assert.Equal(t, "orphan.bot", resp.Subscriptions[0].Name, "unmatched bot keeps the account name")
-	assert.Nil(t, resp.Subscriptions[0].AppMeta, "unmatched bot omits the overlay")
+	assert.Nil(t, resp.Subscriptions[0].App, "unmatched bot omits the app object")
 }
 
 func TestListSubscriptions_StoreError(t *testing.T) {
@@ -530,8 +531,8 @@ func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM via getByRoomID must also carry the app display name")
-	require.NotNil(t, resp.Subscriptions[0].AppMeta, "botDM via getByRoomID must carry the AppMeta overlay")
-	assert.Equal(t, "app-helper", resp.Subscriptions[0].AppID)
+	require.NotNil(t, resp.Subscriptions[0].App, "botDM via getByRoomID must carry the nested app object")
+	assert.Equal(t, "app-helper", resp.Subscriptions[0].App.AppID)
 }
 
 func TestCount_Total(t *testing.T) {

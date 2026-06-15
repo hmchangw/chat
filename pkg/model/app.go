@@ -24,11 +24,12 @@ type AppAssistant struct {
 	SettingsURL string `json:"settingsUrl,omitempty" bson:"settingsUrl,omitempty"`
 }
 
-// AppMeta is the app-metadata overlay flattened onto a botDM subscription row
-// (the "AppSubscription" wire shape). Wire-only — never decoded from Mongo
-// (bson:"-"); the app display name lives on the base Subscription.Name.
-type AppMeta struct {
+// AppSubscription is the app-metadata object nested under the `app` key on a
+// botDM subscription row. Wire-only — never decoded from Mongo (bson:"-"). Its
+// Name is the app's display name (the base Subscription.Name carries it too).
+type AppSubscription struct {
 	AppID         string            `json:"appId,omitempty"         bson:"-"` // = App.ID
+	Name          string            `json:"name,omitempty"          bson:"-"` // = App.Name
 	Description   string            `json:"description,omitempty"   bson:"-"`
 	Assistant     *AppAssistant     `json:"assistant,omitempty"     bson:"-"`
 	AppViewURL    map[string]string `json:"appViewUrl,omitempty"    bson:"-"`
@@ -39,10 +40,11 @@ type AppMeta struct {
 	Sponsors      []AppSponsor      `json:"sponsors,omitempty"      bson:"-"`
 }
 
-// AppMetaFromApp builds the botDM overlay from a full app document (AppID=a.ID).
-func AppMetaFromApp(a *App) *AppMeta {
-	return &AppMeta{
+// AppSubscriptionFromApp builds the botDM `app` object from a full app document (AppID=a.ID).
+func AppSubscriptionFromApp(a *App) *AppSubscription {
+	return &AppSubscription{
 		AppID:         a.ID,
+		Name:          a.Name,
 		Description:   a.Description,
 		Assistant:     a.Assistant,
 		AppViewURL:    a.AppViewURL,

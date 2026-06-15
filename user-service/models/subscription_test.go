@@ -37,14 +37,14 @@ func TestSubscriptionListResponse_RoundTrip(t *testing.T) {
 	require.NotNil(t, out.Subscriptions[0].Subscription)
 	require.Equal(t, "s1", out.Subscriptions[0].ID)
 	require.Equal(t, "General", out.Subscriptions[0].Name)
-	require.Nil(t, out.Subscriptions[0].AppMeta, "channel row carries no app overlay")
+	require.Nil(t, out.Subscriptions[0].App, "channel row carries no app object")
 	require.Nil(t, out.Subscriptions[0].HRInfo, "channel row carries no hrInfo")
 	require.Equal(t, 1, out.Total)
 }
 
 // TestSubscriptionListItem_HeterogeneousRows pins the wire shape per room type:
-// channel = base only; dm adds top-level hrInfo; botDM flattens app metadata
-// (appId/description/assistant/…) and carries NO hrInfo.
+// channel = base only; dm adds top-level hrInfo; botDM adds a nested app object
+// (appId/name/description/assistant/…) and carries NO hrInfo.
 func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 	t.Run("channel row is base only", func(t *testing.T) {
 		item := SubscriptionListItem{
@@ -54,10 +54,8 @@ func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 		require.Equal(t, "general", raw["name"])
 		_, hasHR := raw["hrInfo"]
 		require.False(t, hasHR, "channel row must not carry hrInfo")
-		for _, k := range []string{"appId", "description", "assistant", "version"} {
-			_, present := raw[k]
-			require.False(t, present, "channel row must not carry app field %q", k)
-		}
+		_, hasApp := raw["app"]
+		require.False(t, hasApp, "channel row must not carry an app object")
 	})
 
 	t.Run("dm row adds top-level hrInfo", func(t *testing.T) {
@@ -71,14 +69,14 @@ func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 		require.True(t, ok, "dm row must carry a top-level hrInfo object")
 		require.Equal(t, "鮑勃", hr["name"])
 		require.Equal(t, "Bob Chen", hr["engName"])
-		_, hasApp := raw["appId"]
-		require.False(t, hasApp, "dm row must not carry app metadata")
+		_, hasApp := raw["app"]
+		require.False(t, hasApp, "dm row must not carry an app object")
 	})
 
-	t.Run("botDM row flattens app metadata and carries no hrInfo", func(t *testing.T) {
+	t.Run("botDM row nests app metadata under app and carries no hrInfo", func(t *testing.T) {
 		item := SubscriptionListItem{
 			Subscription: &model.Subscription{ID: "b1", RoomID: "rb1", SiteID: "site-a", Name: "Helper App", RoomType: model.RoomTypeBotDM},
-			AppMeta: model.AppMetaFromApp(&model.App{
+			App: model.AppSubscriptionFromApp(&model.App{
 				ID:          "app-helper",
 				Name:        "Helper App",
 				Description: "does helpful things",
@@ -89,11 +87,14 @@ func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 		}
 		raw := marshalToMap(t, item)
 		require.Equal(t, "Helper App", raw["name"], "base subscription name carries the app display name")
-		require.Equal(t, "app-helper", raw["appId"], "appId must flatten to the top level")
-		require.Equal(t, "does helpful things", raw["description"])
-		require.Equal(t, "1.0.0", raw["version"])
-		assistant, ok := raw["assistant"].(map[string]any)
-		require.True(t, ok, "assistant must flatten to the top level")
+		app, ok := raw["app"].(map[string]any)
+		require.True(t, ok, "botDM row must carry a nested app object")
+		require.Equal(t, "app-helper", app["appId"])
+		require.Equal(t, "Helper App", app["name"], "app object carries its own display name")
+		require.Equal(t, "does helpful things", app["description"])
+		require.Equal(t, "1.0.0", app["version"])
+		assistant, ok := app["assistant"].(map[string]any)
+		require.True(t, ok, "assistant nests inside the app object")
 		require.Equal(t, "helper.bot", assistant["name"])
 		_, hasHR := raw["hrInfo"]
 		require.False(t, hasHR, "botDM row must not carry hrInfo")

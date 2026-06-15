@@ -57,12 +57,12 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 
 // buildListItems wraps each enriched subscription into a heterogeneous list row:
 //   - channel → base only
-//   - botDM   → base + the app-metadata overlay; the base name is also swapped to
+//   - botDM   → base + the nested app object; the base name is also swapped to
 //     the app's display name (preserving the prior botDM-name behavior)
 //   - dm      → base + the counterpart's hrInfo
 //
 // App and HR lookups degrade independently: a failed/missing lookup keeps the base
-// name and omits the overlay — it never fails the request.
+// name and omits the app object — it never fails the request.
 func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []models.SubscriptionListItem {
 	apps := s.lookupApps(c, subs)
 	hrInfo := s.lookupHRInfo(c, subs)
@@ -75,7 +75,7 @@ func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscri
 				if app.Name != "" {
 					subs[i].Name = app.Name
 				}
-				item.AppMeta = model.AppMetaFromApp(app)
+				item.App = model.AppSubscriptionFromApp(app)
 			}
 		case model.RoomTypeDM:
 			if hr, ok := hrInfo[subs[i].Name]; ok {
@@ -249,18 +249,18 @@ func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscr
 }
 
 // buildLocalRoom builds a SubscriptionRoom for a LOCAL sub from its flat $lookup
-// baseline, attaching the room E2E key when kp is present. LastMsgAt/
-// LastMentionAllAt are already *time.Time on the baseline, so they pass through
-// directly (no epoch-ms conversion — that is the cross-site RPC path's concern).
+// baseline, attaching the room E2E key when kp is present. The baseline carries
+// *time.Time, but the wire room object is epoch millis, so LastMsgAt/
+// LastMentionAllAt are converted here (matching the cross-site RPC path).
 func buildLocalRoom(sub *model.Subscription, kp *roomkeystore.VersionedKeyPair) *model.SubscriptionRoom {
 	room := &model.SubscriptionRoom{
 		SiteID:           sub.SiteID,
 		Name:             sub.RoomName,
 		UserCount:        sub.UserCount,
 		AppCount:         sub.AppCount,
-		LastMsgAt:        sub.LastMsgAt,
+		LastMsgAt:        timeToMillis(sub.LastMsgAt),
 		LastMsgID:        sub.LastMsgID,
-		LastMentionAllAt: sub.LastMentionAllAt,
+		LastMentionAllAt: timeToMillis(sub.LastMentionAllAt),
 	}
 	if kp != nil {
 		enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
@@ -279,24 +279,30 @@ func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	if !info.Found {
 		return
 	}
+	// info.LastMsgAt/LastMentionAllAt are already epoch millis (*int64) — the wire
+	// room object uses the same representation, so they pass through directly.
 	room := &model.SubscriptionRoom{
-		SiteID:     info.SiteID,
-		Name:       info.Name,
-		UserCount:  info.UserCount,
-		AppCount:   info.AppCount,
-		LastMsgID:  info.LastMsgID,
-		PrivateKey: info.PrivateKey,
-		KeyVersion: info.KeyVersion,
-	}
-	if info.LastMsgAt != nil {
-		t := time.UnixMilli(*info.LastMsgAt).UTC()
-		room.LastMsgAt = &t
-	}
-	if info.LastMentionAllAt != nil {
-		t := time.UnixMilli(*info.LastMentionAllAt).UTC()
-		room.LastMentionAllAt = &t
+		SiteID:           info.SiteID,
+		Name:             info.Name,
+		UserCount:        info.UserCount,
+		AppCount:         info.AppCount,
+		LastMsgAt:        info.LastMsgAt,
+		LastMsgID:        info.LastMsgID,
+		LastMentionAllAt: info.LastMentionAllAt,
+		PrivateKey:       info.PrivateKey,
+		KeyVersion:       info.KeyVersion,
 	}
 	sub.Room = room
+}
+
+// timeToMillis converts a nullable UTC timestamp to epoch millis for the wire
+// room object; nil in ⇒ nil out (the field is omitted).
+func timeToMillis(t *time.Time) *int64 {
+	if t == nil {
+		return nil
+	}
+	ms := t.UTC().UnixMilli()
+	return &ms
 }
 
 // unread: a room event at ms (epoch millis) is newer than lastSeen; nil ms ⇒ false, nil lastSeen with ms set ⇒ true.

@@ -52,7 +52,7 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 	assert.Equal(t, 2, subs[0].Room.AppCount)
 	assert.Equal(t, "m-7", subs[0].Room.LastMsgID)
 	require.NotNil(t, subs[0].Room.LastMsgAt)
-	assert.Equal(t, localMsg.UnixMilli(), subs[0].Room.LastMsgAt.UnixMilli())
+	assert.Equal(t, localMsg.UnixMilli(), *subs[0].Room.LastMsgAt)
 
 	require.NotNil(t, subs[1].Room)
 	assert.Equal(t, "Ops", subs[1].Room.Name)

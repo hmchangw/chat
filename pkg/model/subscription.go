@@ -45,6 +45,10 @@ type Subscription struct {
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 
+	// Authoritative subscription state maintained by the write path; never recomputed by read enrichment.
+	HasGroupMention bool `json:"hasGroupMention" bson:"hasGroupMention"`
+	HasUnread       bool `json:"hasUnread"       bson:"hasUnread"`
+
 	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), used to build
 	// sub.Room for LOCAL subs (cross-site subs carry zero values). Writers persisting a full Subscription
 	// doc MUST strip these fields.
@@ -58,19 +62,28 @@ type Subscription struct {
 	// Room carries all room-derived fields, populated at read time from room-service's
 	// RoomsInfoBatch RPC (baseline $lookup values when the RPC degrades). Never persisted.
 	Room *SubscriptionRoom `json:"room,omitempty" bson:"-"`
+
+	// Subscription-level metadata persisted on the Mongo subscriptions document.
+	// UpdatedAt is a nullable pointer so a creating writer that doesn't stamp it
+	// (e.g. room-worker's $setOnInsert) never persists a zero-time placeholder.
+	AvatarURL   string     `json:"avatarUrl,omitempty"   bson:"avatarUrl,omitempty"`
+	FavoritedAt *time.Time `json:"favoritedAt,omitempty" bson:"favoritedAt,omitempty"`
+	UpdatedAt   *time.Time `json:"updatedAt,omitempty"   bson:"updatedAt,omitempty"`
 }
 
 // SubscriptionRoom is the room-derived view nested on an enriched subscription.
 // Name is the room's canonical name — the subscription's own Name (counterpart
 // account for DMs, app display name for botDMs) is never overwritten by it.
 type SubscriptionRoom struct {
-	SiteID           string     `json:"siteId,omitempty" bson:"-"`
-	Name             string     `json:"name,omitempty" bson:"-"`
-	UserCount        int        `json:"userCount,omitempty" bson:"-"`
-	AppCount         int        `json:"appCount,omitempty" bson:"-"`
-	LastMsgAt        *time.Time `json:"lastMsgAt,omitempty" bson:"-"`
-	LastMsgID        string     `json:"lastMsgId,omitempty" bson:"-"`
-	LastMentionAllAt *time.Time `json:"lastMentionAllAt,omitempty" bson:"-"`
+	SiteID string `json:"siteId,omitempty" bson:"-"`
+	Name   string `json:"name,omitempty" bson:"-"`
+	// UserCount/AppCount/LastMsgID mirror the room-service room document (model.Room).
+	UserCount int `json:"userCount,omitempty" bson:"-"`
+	AppCount  int `json:"appCount,omitempty" bson:"-"`
+	// LastMsgAt/LastMentionAllAt are epoch millis (*int64) — they arrive over the room-service RPC.
+	LastMsgAt        *int64 `json:"lastMsgAt,omitempty" bson:"-"`
+	LastMsgID        string `json:"lastMsgId,omitempty" bson:"-"`
+	LastMentionAllAt *int64 `json:"lastMentionAllAt,omitempty" bson:"-"`
 	// Room E2E key delivered to authorized members for initial key bootstrap
 	// on subscription.list (same payload as the room.key.get RPC).
 	PrivateKey *string `json:"privateKey,omitempty" bson:"-"`
