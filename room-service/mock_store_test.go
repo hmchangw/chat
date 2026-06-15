@@ -727,3 +727,43 @@ func (mr *MockMessageReaderMockRecorder) GetMessageRoomAndCreatedAt(ctx, message
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageRoomAndCreatedAt", reflect.TypeOf((*MockMessageReader)(nil).GetMessageRoomAndCreatedAt), ctx, messageID)
 }
+
+// MockMeetMarkerReader is a mock of MeetMarkerReader interface.
+type MockMeetMarkerReader struct {
+	ctrl     *gomock.Controller
+	recorder *MockMeetMarkerReaderMockRecorder
+	isgomock struct{}
+}
+
+// MockMeetMarkerReaderMockRecorder is the mock recorder for MockMeetMarkerReader.
+type MockMeetMarkerReaderMockRecorder struct {
+	mock *MockMeetMarkerReader
+}
+
+// NewMockMeetMarkerReader creates a new mock instance.
+func NewMockMeetMarkerReader(ctrl *gomock.Controller) *MockMeetMarkerReader {
+	mock := &MockMeetMarkerReader{ctrl: ctrl}
+	mock.recorder = &MockMeetMarkerReaderMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockMeetMarkerReader) EXPECT() *MockMeetMarkerReaderMockRecorder {
+	return m.recorder
+}
+
+// GetLastTeamsMeetStarted mocks base method.
+func (m *MockMeetMarkerReader) GetLastTeamsMeetStarted(ctx context.Context, roomID string) (*model.TeamsMeetStartedSysData, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetLastTeamsMeetStarted", ctx, roomID)
+	ret0, _ := ret[0].(*model.TeamsMeetStartedSysData)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// GetLastTeamsMeetStarted indicates an expected call of GetLastTeamsMeetStarted.
+func (mr *MockMeetMarkerReaderMockRecorder) GetLastTeamsMeetStarted(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLastTeamsMeetStarted", reflect.TypeOf((*MockMeetMarkerReader)(nil).GetLastTeamsMeetStarted), ctx, roomID)
+}

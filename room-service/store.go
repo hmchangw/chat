@@ -227,3 +227,14 @@ type MessageReader interface {
 		roomID string, createdAt time.Time, senderAccount string, found bool, err error,
 	)
 }
+
+// MeetMarkerReader reads back the most-recent teams_meet_started system message
+// for a room, used to make the meetings RPC idempotent (a second call returns
+// the existing meeting instead of creating a duplicate Graph onlineMeeting).
+// found=false with err=nil means the room has no meeting marker. All reads are
+// keyspace-aware (the gocql session is bound to CASSANDRA_KEYSPACE).
+type MeetMarkerReader interface {
+	GetLastTeamsMeetStarted(ctx context.Context, roomID string) (
+		marker *model.TeamsMeetStartedSysData, found bool, err error,
+	)
+}
