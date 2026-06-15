@@ -3472,3 +3472,33 @@ func TestRoomEventMessageReadValue(t *testing.T) {
 		t.Errorf("RoomEventMessageRead = %q, want %q", model.RoomEventMessageRead, "message_read")
 	}
 }
+
+func TestOplogEventJSON_Insert(t *testing.T) {
+	src := model.OplogEvent{
+		EventID:      "8265A1B2",
+		Op:           "insert",
+		DB:           "rocketchat",
+		Collection:   "rocketchat_message",
+		DocumentKey:  json.RawMessage(`{"_id":"abc"}`),
+		ClusterTime:  1718100000000,
+		FullDocument: json.RawMessage(`{"_id":"abc","msg":"hi"}`),
+		SiteID:       "site1",
+		Timestamp:    1718100000123,
+	}
+	roundTrip(t, &src, &model.OplogEvent{})
+}
+
+func TestOplogEventJSON_UpdateDelta(t *testing.T) {
+	src := model.OplogEvent{
+		EventID:           "DEAD01",
+		Op:                "update",
+		DB:                "rocketchat",
+		Collection:        "rocketchat_message",
+		DocumentKey:       json.RawMessage(`{"_id":"abc"}`),
+		ClusterTime:       1718100000000,
+		UpdateDescription: json.RawMessage(`{"updatedFields":{"msg":"edited"},"removedFields":[]}`),
+		SiteID:            "site1",
+		Timestamp:         1718100000123,
+	}
+	roundTrip(t, &src, &model.OplogEvent{})
+}

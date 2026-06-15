@@ -46,8 +46,8 @@ func InitTracer(ctx context.Context, serviceName string) (func(context.Context) 
 	return tp.Shutdown, nil
 }
 
-// InitMeter creates a MeterProvider with Prometheus exporter.
-// Returns a shutdown function.
+// InitMeter creates a Prometheus-backed MeterProvider and installs it as the global
+// provider (so otel.Meter(...) is backed by it, like InitTracer). Returns a shutdown func.
 func InitMeter(serviceName string) (func(context.Context) error, error) {
 	exp, err := promexporter.New()
 	if err != nil {
@@ -55,5 +55,6 @@ func InitMeter(serviceName string) (func(context.Context) error, error) {
 	}
 
 	mp := metric.NewMeterProvider(metric.WithReader(exp))
+	otel.SetMeterProvider(mp)
 	return mp.Shutdown, nil
 }

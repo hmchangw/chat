@@ -1067,3 +1067,13 @@ func ParseSubscriptionUpdateAccount(s string) (account string, ok bool) {
 	}
 	return parts[2], true
 }
+
+// MigrationOplog builds the subject for one raw CDC event: chat.oplog.{siteID}.{collection}.{op}. collection is the raw source name (e.g. rocketchat_message), op is insert|update|replace|delete.
+func MigrationOplog(siteID, collection, op string) string {
+	return fmt.Sprintf("chat.oplog.%s.%s.%s", siteID, collection, op)
+}
+
+// MigrationOplogWildcard matches every oplog event for a site — the MIGRATION_OPLOG_{siteID} stream's subjects.
+func MigrationOplogWildcard(siteID string) string {
+	return fmt.Sprintf("chat.oplog.%s.>", siteID)
+}
