@@ -1,6 +1,6 @@
 # Spec: Bot Platform NextGen Migration — Password Auth, Sessions & Cutover
 
-> **Master spec, Part 2 of a multi-part set** — this is the **Technical Design**. Business requirements, the architecture decision, success criteria and the rollout plan live in **[Part 1 — Architecture & Business Requirements](./bot-platform-nextgen-auth-part1-requirements.md)**. A Part 3 components guide is planned.
+> **Master spec, Part 2 of 3** — this is the **Technical Design**. See **[Part 1 — Architecture & Business Requirements](./bot-platform-nextgen-auth-part1-requirements.md)** and **[Part 3 — Components & Integration Guide](./bot-platform-nextgen-auth-part3-components.md)**.
 >
 > **Status:** DESIGN-COMPLETE — pending verification against the internal (legacy RC fork + nextgen) codebase. §22 is the verification checklist to run before this becomes an implementation plan. Open questions are tracked in §12 (all but two resolved).
 
@@ -214,14 +214,16 @@ Subjects follow `chat.user.{account}.request.…` via `pkg/subject`. `docs/clien
 
 ---
 
-## 9. `bot-gateway` — web UI + REST↔NATS edge
+## 9. `bot-gateway` (a.k.a. `botplatform-service`) — web UI + auth + API proxy
 
-Legacy bots speak **REST with `X-Auth-Token`/`X-User-Id`**; nextgen speaks **NATS request/reply**. Admins/developers also need **browser** login & change-password pages. `bot-gateway` (the §7 Option-B service) is the stateless edge that serves both so bot code never changes and humans get a web UI.
+`bot-gateway` (the §7 Option-B service; called **`botplatform-service`** in the integration guide, **Part 3**) is the stateless edge that serves the bot web UI and authenticates bot/admin traffic so bot code never changes.
+
+> **Data-plane reconciliation (Part 3 §4.1).** The downstream for room/message API calls is **HTTP to the existing `botplatform-server:8080`** — *not* a REST→NATS bridge inside our service. `botplatform-server` owns room/message logic and any NATS work. So our service's data-plane job is **validate → reverse-proxy (with the principal in headers)**; the performance design below (pooled connections, cache-fronted validation, principal injection) applies with the **proxy target = `botplatform-server`** and a **pooled HTTP client** in place of the NATS pool. Our service still uses **NATS for the control plane** — calling `auth-service` to mint JWTs and the admin provisioning RPCs (§15).
 
 ### 9.1 Responsibilities
 1. **Web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies**, enforce **CSRF** on POST.
-2. **Protocol bridge** — terminate the REST verb, translate to a NATS request/reply call on the mapped subject, translate the reply back to the REST body/status.
-3. **Authentication boundary** — validate the credential against the session store (§9.3): `X-Auth-Token`+`X-User-Id` for API, **session cookie** for web. **Dual-token aware** — accepts legacy RC tokens (`scheme:"legacy"`) and new botplatform tokens (`scheme:"v1"`), §9.7. Reject with the RC-shaped 401 (API) / redirect-to-login (web).
+2. **API proxy** — validate, then reverse-proxy `/api/v2/*` (and legacy `/api/v1/*` as needed) to `botplatform-server:8080` (`BOTPLATFORM_SERVER_URL`), carrying the validated principal in headers. *(`botplatform-server` does any REST→NATS bridging.)*
+3. **Authentication boundary** — validate the credential against the session store (§9.3): `X-Auth-Token`+`X-User-Id` for API, **session cookie** for web. Also exposes **`POST /v1/auth/validate`** for the websocket server (Part 3 §4.2). **Dual-token aware** — accepts legacy RC tokens (`scheme:"legacy"`) and new botplatform tokens (`scheme:"v1"`), §9.7. Reject with the RC-shaped 401 (API) / redirect-to-login (web).
 4. **Principal injection** — attach the validated `account`/`userId` + a request-id (`idgen.GenerateRequestID`) into the NATS request headers so downstream handlers know who is calling.
 5. **Connection management** — own a small pool of **long-lived** `*nats.Conn` (never connect-per-request); call `auth-service` to mint a NATS JWT only for native-bot logins.
 6. **Deadline & backpressure** — map the HTTP context deadline onto `Conn.RequestMsgWithContext`; apply a concurrency limit / load-shed (503) under saturation.
@@ -286,12 +288,14 @@ These drive the design choices in §9.3 (pooled service-account connection, cach
 | Web — change-pwd submit | `/changepwd` | POST | redirect | session cookie | **yes** |
 | API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
 | API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
-| API — authenticated | `/v1/bot/*`, `/api/v1/*` | * | JSON → NATS | `X-Auth-Token`+`X-User-Id` | n/a |
+| API — WS validation | `/v1/auth/validate` | POST | JSON `{valid,account,userId}` | `{userId,authToken}` body | n/a |
+| API — authenticated proxy | `/api/v2/*` (+ legacy `/api/v1/*`) | * | JSON ← `botplatform-server:8080` | `X-Auth-Token`+`X-User-Id` | n/a |
 | Health | `/healthz` | GET | 200 | — | — |
 
 - **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
 - **API** = bearer tokens only; **no cookies, no CSRF** (no ambient credential to forge).
 - `/api/v1/login` reproduces the legacy RC contract verbatim (existing SDK). `/v1/bot/login` is the new re-architected path. Both write to the same `sessions` store.
+- `/v1/auth/validate` is the **once-per-connection** hook the websocket server (:8899) calls before accepting a connection (Part 3 §4.2). `/api/v2/*` is validated then reverse-proxied to `botplatform-server:8080` (Part 3 §4.1).
 
 ### 9.7 Dual-token validation (migration)
 Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via the 180-day sliding window. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
@@ -342,6 +346,11 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ### Recommended — pending infra confirmation
 - **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3). *Confirm:* dual-run window length; whether live password changes must keep working on legacy.
+
+### Integration decisions (Part 3) — recommended, pending confirmation
+- **Q10 — Token format.** Recommend **same opaque format** as legacy (indistinguishable to bots/WS); validate our-store-first then legacy-fallback. Optional `bp1_` prefix as a fast-path only if the fallback double-lookup is shown to matter. (Part 3 §7.)
+- **Q11 — `/api/v1` scope.** Recommend **`/api/v1/login` only** (compat shim) + `/v1/bot/login`; all data via `/api/v2/*` → `botplatform-server`. *Confirm:* do any bots still call **non-login** `/api/v1/*` data endpoints? (Part 3 §7.)
+- **Q12 — WebSocket validation.** Recommend the WS server **calls our `POST /v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. (Part 3 §7.)
 
 ### Confirmed — closed
 - **Q5 — Architecture.** ✅ **Option B — dedicated `bot-gateway`** (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. `bot-gateway` owns `credentials`+`sessions`; `auth-service` keeps the signing key and mints JWTs on request (§7).

@@ -22,7 +22,7 @@
 ## 2. Document map
 - **Part 1 (this doc)** — executive summary, architecture decision, business requirements (user stories), constraints, security, success criteria, rollout plan, scope.
 - **[Part 2 — Technical Design](./bot-platform-nextgen-auth.md)** — `credentials`/`sessions` data model, hashing/verify algorithms, login & validation flows, NATS subjects, gateway topology & performance design, configuration, test plan, verification checklist, open questions.
-- **Part 3 — Bot Platform Components Guide** *(planned; to be provided)* — the bot-platform components, their responsibilities, and how they fit the auth design above.
+- **[Part 3 — Components & Integration Guide](./bot-platform-nextgen-auth-part3-components.md)** — the bot-platform components (`botplatform-server`, websocket server, event consumer), what we build vs. what exists, and the integration points (API proxy, WebSocket auth, token-compatibility phases).
 
 ---
 
