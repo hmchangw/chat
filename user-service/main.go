@@ -2,14 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
@@ -88,28 +83,6 @@ func main() {
 
 	svc.RegisterHandlers(router)
 
-	// /metrics-only listener; bind synchronously so a port conflict fails startup loudly.
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.Handler())
-	metricsServer := &http.Server{
-		Handler:           metricsMux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	metricsListener, err := net.Listen("tcp", cfg.MetricsAddr)
-	if err != nil {
-		slog.Error("metrics server listen failed", "addr", cfg.MetricsAddr, "error", err)
-		os.Exit(1)
-	}
-	go func() {
-		slog.Info("metrics server listening", "addr", cfg.MetricsAddr)
-		if err := metricsServer.Serve(metricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("metrics server failed", "error", err)
-		}
-	}()
-
 	slog.Info("user-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
@@ -117,7 +90,5 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-		// /metrics last so Prometheus can scrape the final drain-window observations.
-		func(ctx context.Context) error { return metricsServer.Shutdown(ctx) },
 	)
 }
