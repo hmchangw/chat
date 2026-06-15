@@ -24,7 +24,7 @@ func newHandler(store avatarStore, blobs blobStore, cfg *config) *handler {
 		store:    store,
 		blobs:    blobs,
 		cfg:      *cfg,
-		eidCache: newTTLCache(50000, 10*time.Minute),
+		eidCache: newTTLCache(100000, 10*time.Minute),
 	}
 }
 
