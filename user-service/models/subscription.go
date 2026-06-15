@@ -12,8 +12,23 @@ type SubscriptionListRequest struct {
 
 // SubscriptionListResponse is returned by subscription.list and subscription.getChannels.
 type SubscriptionListResponse struct {
-	Subscriptions []model.Subscription `json:"subscriptions"`
-	Total         int                  `json:"total"`
+	Subscriptions []SubscriptionListItem `json:"subscriptions"`
+	Total         int                    `json:"total"`
+}
+
+// SubscriptionListItem is one heterogeneous row in a subscription list:
+//   - channel → just the embedded base Subscription
+//   - dm      → base + a top-level hrInfo object
+//   - botDM   → base + the app-metadata overlay flattened at top level
+//
+// The embedded *Subscription promotes all base fields/JSON. A nil embedded
+// *AppMeta is omitted by encoding/json; a non-nil one flattens its app fields
+// (appId, description, assistant, …) to the top level. There are no json-tag
+// collisions between Subscription, AppMeta, and hrInfo.
+type SubscriptionListItem struct {
+	*model.Subscription
+	*model.AppMeta
+	HRInfo *model.SubscriptionHRInfo `json:"hrInfo,omitempty"`
 }
 
 // GetChannelsRequest is the body of subscription.getChannels (exactly one of the two set).

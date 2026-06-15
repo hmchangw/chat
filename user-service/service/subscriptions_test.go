@@ -158,15 +158,26 @@ func TestListSubscriptions_DegradedSite_BaselineRoom(t *testing.T) {
 	assert.Nil(t, room.PrivateKey, "baseline has no key material")
 }
 
-func TestListSubscriptions_BotDM_AppDisplayName(t *testing.T) {
+func appHelper() *model.App {
+	return &model.App{
+		ID:          "app-helper",
+		Name:        "Helper App",
+		Description: "does helpful things",
+		AvatarURL:   "https://cdn/helper.png",
+		Assistant:   &model.AppAssistant{Enabled: true, Name: "helper.bot", Username: "Helper"},
+		Version:     "1.0.0",
+	}
+}
+
+func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	svc, subs, _, apps, rooms, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
-	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
-		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.InAnyOrder([]string{"rb1", "rc1"})).
 		Return([]model.RoomInfo{
 			{RoomID: "rb1", Found: true, Name: "bot-room-canonical"},
@@ -175,14 +186,63 @@ func TestListSubscriptions_BotDM_AppDisplayName(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM name must be replaced by the app display name")
-	require.NotNil(t, resp.Subscriptions[0].Room)
-	assert.Equal(t, "bot-room-canonical", resp.Subscriptions[0].Room.Name)
-	assert.Equal(t, "general", resp.Subscriptions[1].Name, "channel name must stay the subscription name")
+	// botDM row: app display name + flattened AppMeta overlay, no hrInfo.
+	bot := resp.Subscriptions[0]
+	assert.Equal(t, "Helper App", bot.Name, "botDM name must be replaced by the app display name")
+	require.NotNil(t, bot.Room)
+	assert.Equal(t, "bot-room-canonical", bot.Room.Name)
+	require.NotNil(t, bot.AppMeta, "botDM row must carry the app-metadata overlay")
+	assert.Equal(t, "app-helper", bot.AppID, "AppID must come from App.ID")
+	assert.Equal(t, "does helpful things", bot.Description)
+	assert.Equal(t, "1.0.0", bot.Version)
+	require.NotNil(t, bot.Assistant)
+	assert.Equal(t, "helper.bot", bot.Assistant.Name)
+	assert.Nil(t, bot.HRInfo, "botDM row must not carry hrInfo")
+	// channel row: base only.
+	ch := resp.Subscriptions[1]
+	assert.Equal(t, "general", ch.Name, "channel name must stay the subscription name")
+	assert.Nil(t, ch.AppMeta, "channel row must not carry AppMeta")
+	assert.Nil(t, ch.HRInfo, "channel row must not carry hrInfo")
 }
 
-// Two botDM subs sharing a bot account must dedup to a single GetAppNamesByAssistants
-// argument, and both rows get the resolved display name.
+func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
+	svc, subs, users, _, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
+		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).
+		Return(map[string]*model.SubscriptionHRInfo{"bob": {Account: "bob", Name: "鮑勃", EngName: "Bob Chen"}}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.Any()).Return(nil, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 2)
+	dm := resp.Subscriptions[0]
+	require.NotNil(t, dm.HRInfo, "dm row must carry hrInfo")
+	assert.Equal(t, "鮑勃", dm.HRInfo.Name)
+	assert.Equal(t, "Bob Chen", dm.HRInfo.EngName)
+	assert.Nil(t, dm.AppMeta, "dm row must not carry AppMeta")
+	assert.Nil(t, resp.Subscriptions[1].HRInfo, "channel row carries no hrInfo")
+}
+
+func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
+	svc, subs, users, _, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).Return(nil, errors.New("db down"))
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.Any()).Return(nil, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
+	require.NoError(t, err, "hr lookup failure must degrade, not fail the request")
+	require.Len(t, resp.Subscriptions, 1)
+	assert.Equal(t, "bob", resp.Subscriptions[0].Name, "degraded lookup keeps the counterpart account name")
+	assert.Nil(t, resp.Subscriptions[0].HRInfo, "degraded hr lookup omits hrInfo")
+}
+
+// Two botDM subs sharing a bot account must dedup to a single GetAppsByAssistants
+// argument, and both rows get the resolved display name and overlay.
 func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	svc, subs, _, apps, rooms, _ := newSvc(t)
 	storeSubs := []model.Subscription{
@@ -191,14 +251,16 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
 	// Exactly ["helper.bot"], not duplicated — gomock fails the call on arg mismatch.
-	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
-		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.Any()).Return(nil, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
 	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name)
 	assert.Equal(t, "Helper App", resp.Subscriptions[1].Name)
+	require.NotNil(t, resp.Subscriptions[0].AppMeta)
+	require.NotNil(t, resp.Subscriptions[1].AppMeta)
 }
 
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
@@ -207,13 +269,14 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
-	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
+	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(nil, errors.New("db down"))
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
-	require.NoError(t, err, "app-name lookup failure must degrade, not fail the request")
+	require.NoError(t, err, "app lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "helper.bot", resp.Subscriptions[0].Name, "degraded lookup keeps the bot account name")
+	assert.Nil(t, resp.Subscriptions[0].AppMeta, "degraded app lookup omits the overlay")
 }
 
 func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
@@ -222,12 +285,13 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
-	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"orphan.bot"}).
-		Return(map[string]string{}, nil)
+	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"orphan.bot"}).
+		Return(map[string]*model.App{}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	assert.Equal(t, "orphan.bot", resp.Subscriptions[0].Name, "unmatched bot keeps the account name")
+	assert.Nil(t, resp.Subscriptions[0].AppMeta, "unmatched bot omits the overlay")
 }
 
 func TestListSubscriptions_StoreError(t *testing.T) {
@@ -239,7 +303,7 @@ func TestListSubscriptions_StoreError(t *testing.T) {
 }
 
 func TestListSubscriptions_Favorite(t *testing.T) {
-	svc, subs, _, _, rooms, _ := newSvc(t)
+	svc, subs, users, _, rooms, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "ch1", RoomType: model.RoomTypeChannel, Name: "general", Favorite: false},
 		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true},
@@ -247,6 +311,9 @@ func TestListSubscriptions_Favorite(t *testing.T) {
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
 		Return(storeSubs, nil)
+	// The favorite self-DM survives the filter, so buildListItems resolves its hrInfo.
+	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"alice"}).
+		Return(map[string]*model.SubscriptionHRInfo{"alice": {Account: "alice", Name: "Alice"}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{
 		Type:     "current",
@@ -457,13 +524,15 @@ func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
 	svc, subs, _, apps, rooms, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "rb1").
 		Return(&model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}, nil)
-	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
-		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "rb1"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM via getByRoomID must also carry the app display name")
+	require.NotNil(t, resp.Subscriptions[0].AppMeta, "botDM via getByRoomID must carry the AppMeta overlay")
+	assert.Equal(t, "app-helper", resp.Subscriptions[0].AppID)
 }
 
 func TestCount_Total(t *testing.T) {

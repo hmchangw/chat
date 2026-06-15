@@ -73,6 +73,42 @@ func TestGetUserStatus_ProjectsOnlyStatusFields_Integration(t *testing.T) {
 	assert.Empty(t, u.Roles, "roles are outside the status projection")
 }
 
+func TestGetHRInfoByAccounts_Integration(t *testing.T) {
+	r, db := newTestUserRepo(t)
+	ctx := context.Background()
+	seed(t, db, "users",
+		bson.M{"_id": "u-bob", "account": "bob", "active": true, "chineseName": "鮑勃", "engName": "Bob Chen",
+			// Outside the projection — must not leak into the result.
+			"statusText": "deep work", "deptId": "dept-1"},
+		bson.M{"_id": "u-carol", "account": "carol", "active": true, "chineseName": "卡蘿", "engName": "Carol"},
+	)
+
+	t.Run("maps accounts to HR records (name = chineseName)", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{"bob", "carol"})
+		require.NoError(t, err)
+		require.Len(t, hr, 2)
+		require.NotNil(t, hr["bob"])
+		assert.Equal(t, "bob", hr["bob"].Account)
+		assert.Equal(t, "鮑勃", hr["bob"].Name, "hrInfo.name must mirror chineseName")
+		assert.Equal(t, "Bob Chen", hr["bob"].EngName)
+		require.NotNil(t, hr["carol"])
+		assert.Equal(t, "卡蘿", hr["carol"].Name)
+	})
+
+	t.Run("unknown account omitted", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{"bob", "ghost"})
+		require.NoError(t, err)
+		require.Len(t, hr, 1)
+		require.NotNil(t, hr["bob"])
+	})
+
+	t.Run("empty input yields empty map", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{})
+		require.NoError(t, err)
+		assert.Empty(t, hr)
+	})
+}
+
 func TestSetUserStatus_Integration(t *testing.T) {
 	ctx := context.Background()
 

@@ -29,13 +29,14 @@ type SubscriptionRepository interface {
 type UserRepository interface {
 	GetUserStatus(ctx context.Context, account string) (*model.User, error)
 	SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error)
+	GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error)
 }
 
 // AppRepository is the consumer-defined interface for app catalog reads.
 type AppRepository interface {
 	GetApp(ctx context.Context, appID string) (*model.App, error)
 	ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error)
-	GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error)
+	GetAppsByAssistants(ctx context.Context, botAccounts []string) (map[string]*model.App, error)
 }
 
 // RoomClient is the consumer-defined interface for room-service RPC calls.

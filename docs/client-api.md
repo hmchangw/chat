@@ -443,9 +443,11 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 
 The room-derived view nested on an enriched [Subscription](#subscription).
 Fully populated from room-service's `GetRoomsInfo` RPC; when that RPC fails or
-the room is unknown, a baseline object (`siteId` plus whatever the local DB
-knows: `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no name, no
-key) is returned instead. All fields are optional (omitted when zero/unset).
+the room is unknown, a baseline object is returned instead. For **local** rooms
+the baseline is the Mongo `$lookup` values (`siteId`, `userCount`, `lastMsgAt`,
+`lastMsgId`, `lastMentionAllAt` — no name, no key); for **cross-site** rooms the
+local DB has no room doc, so the baseline is only `siteId`. All fields are
+optional (omitted when zero/unset).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -458,6 +460,26 @@ key) is returned instead. All fields are optional (omitted when zero/unset).
 | `lastMentionAllAt` | RFC3339 timestamp | Time of the last room-wide mention. |
 | `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Only present when the caller's site holds the key. |
 | `keyVersion` | number | Version of `privateKey`. |
+
+#### AppSubscription
+
+The row shape for **botDM** subscriptions in `subscription.list` — a
+[Subscription](#subscription) plus these top-level app-metadata fields. The
+botDM's display `name` (the base `Subscription.name`) is the **app's display
+name**. All app fields are optional (omitted when unset).
+
+| Field | Type | Notes |
+|---|---|---|
+| `appId` | string | The app's ID. |
+| `description` | string | App description. |
+| `avatarUrl` | string | App avatar URL. |
+| `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument. |
+| `appViewUrl` | map<string, string> | App-view URLs keyed by view name. |
+| `reportUrl` | string | App report URL. |
+| `forumUrl` | string | App forum URL. |
+| `userManualUrl` | string | App user-manual URL. |
+| `version` | string | App version. |
+| `sponsors` | [AppSponsor](#appsponsor)[] | App sponsors. |
 
 #### HrInfo
 
@@ -475,17 +497,18 @@ The `hrInfo` field on a [DMSubscription](#subscription) — the DM counterpart's
 | Field | Type | Notes |
 |---|---|---|
 | `account` | string | Counterpart's account. |
-| `name` | string | Counterpart's display name. |
+| `name` | string | Counterpart's native (Chinese) name. |
 | `engName` | string | Counterpart's English name. |
 
 #### AppAssistant
 
-An app's assistant (bot) subdocument. `name` and `enabled` are always present; `settingsUrl` is optional.
+An app's assistant (bot) subdocument. `name` and `enabled` are always present; `username` and `settingsUrl` are optional.
 
 | Field | Type | Notes |
 |---|---|---|
-| `name` | string | Assistant/bot name. |
+| `name` | string | Assistant/bot name (bot account). |
 | `enabled` | boolean | Whether the assistant is enabled. |
+| `username` | string | Optional. Assistant display username. |
 | `settingsUrl` | string | Optional. Assistant settings URL. |
 
 #### AsyncJobResult
@@ -3285,7 +3308,7 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 **Subject:** `chat.user.{account}.request.user.{siteID}.profile.getByName`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It exists as a separate subject so the profile path can later be extended to fetch HR-collection profile data before the status fields (internal-repo implementation); until then both endpoints return the same payload.
+The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It is exposed as a separate subject.
 
 ##### Request body
 
@@ -3396,16 +3419,17 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 - `alert` and `hasMention` are **subscription** state, not room state: they are returned as stored on the subscription (maintained by the write path — `message-worker` sets `hasMention` when the user is @-mentioned, read receipts clear `alert`) and are **never** overwritten or recomputed by enrichment.
 - `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
-- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
+- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object rather than dropping them. For **local** rooms the baseline is the Mongo `$lookup` values (`siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key). For **cross-site** rooms the local DB has no room doc, so the baseline is only `siteId` (the rest live at the room's origin site). `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
 
-**Per-room-type record shape.** All three kinds returned by `subscription.list` (`channel`, `dm`, `botDM`) use the single [Subscription](#subscription) schema (§3.0) with the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the five below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
+**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows use [AppSubscription](#appsubscription) (§3.0, a Subscription plus flattened app-metadata fields). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
 
 | Field | `channel` | `dm` | `botDM` |
 |---|---|---|---|
 | `name` | Channel name. | Counterpart's account. | App display name (falls back to the bot account when the app record is unavailable). |
 | `isSubscribed` | absent | absent | `true` — botDM rows are returned only while subscribed. |
-| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — **`subscription.getDM` only**, never present in `subscription.list`. | absent |
-| `room.name` | Canonical channel name. | Server-generated DM room name. | Server-generated botDM room name. |
+| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — returned in both `subscription.list` and `subscription.getDM`. | absent |
+| app fields | absent | absent | Flattened app-metadata fields — see [AppSubscription](#appsubscription). |
+| `room.name` | Canonical channel name. | Empty (omitted — DM rooms have no canonical name). | Empty (omitted — botDM rooms have no canonical name; the app name is the top-level `name`). |
 | `room.appCount` | Bot/app count in the channel (omitted when 0). | omitted (0). | ≥ 1. |
 
 The example below shows one record of each type in order (`channel`, `dm`, `botDM`):
@@ -3451,9 +3475,9 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "alert": false,
       "muted": false,
       "favorite": false,
+      "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
       "room": {
         "siteId": "siteA",
-        "name": "alice_bob",
         "userCount": 2,
         "lastMsgAt": "2026-05-20T15:30:00Z",
         "lastMsgId": "01970a4f8c2d7c9aCC",
@@ -3475,9 +3499,15 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "alert": false,
       "muted": false,
       "favorite": false,
+      "appId": "app_helper",
+      "description": "Your friendly helper bot",
+      "avatarUrl": "https://cdn.example.com/apps/helper.png",
+      "assistant": { "name": "helper.bot", "enabled": true, "username": "Helper" },
+      "appViewUrl": { "main": "https://apps.example.com/helper" },
+      "version": "1.4.2",
+      "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }],
       "room": {
         "siteId": "siteA",
-        "name": "alice_helper.bot",
         "userCount": 1,
         "appCount": 1,
         "lastMsgAt": "2026-05-01T08:00:00Z",
@@ -3612,7 +3642,6 @@ Returns the calling user's DM subscription with the named counterpart. The reply
     "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
     "room": {
       "siteId": "siteA",
-      "name": "alice_bob",
       "userCount": 2,
       "lastMsgAt": "2026-05-20T15:30:00Z",
       "lastMsgId": "01970a4f8c2d7c9aCC",
@@ -3678,7 +3707,6 @@ Same shape as `subscription.list` — a (here, at most one) list:
       "favorite": false,
       "room": {
         "siteId": "siteA",
-        "name": "alice_bob",
         "userCount": 2,
         "lastMsgAt": "2026-05-20T15:30:00Z",
         "lastMsgId": "01970a4f8c2d7c9aCC",

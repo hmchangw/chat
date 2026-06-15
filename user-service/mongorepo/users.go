@@ -65,6 +65,34 @@ func (r *UserRepo) GetUserStatus(ctx context.Context, account string) (*model.Us
 	)
 }
 
+// GetHRInfoByAccounts maps account → the counterpart's HR-directory record for DM
+// sidebar/header rendering. hrInfo.name mirrors the chineseName field, matching the
+// hrUser $lookup in GetDMSubscription. Accounts with no users doc are omitted.
+func (r *UserRepo) GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error) {
+	type hrUser struct {
+		Account     string `bson:"account"`
+		ChineseName string `bson:"chineseName"`
+		EngName     string `bson:"engName"`
+	}
+	col := mongoutil.NewCollection[hrUser](r.users.Raw())
+	rows, err := col.FindMany(ctx,
+		bson.M{"account": bson.M{"$in": accounts}},
+		mongoutil.WithProjection(bson.M{"_id": 0, "account": 1, "chineseName": 1, "engName": 1}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find hr info by accounts: %w", err)
+	}
+	out := make(map[string]*model.SubscriptionHRInfo, len(rows))
+	for i := range rows {
+		out[rows[i].Account] = &model.SubscriptionHRInfo{
+			Account: rows[i].Account,
+			Name:    rows[i].ChineseName,
+			EngName: rows[i].EngName,
+		}
+	}
+	return out, nil
+}
+
 // SetUserStatus updates status fields; isShow is only written when non-nil.
 // Returns matched=false when no active user doc matched so callers can skip the cross-site broadcast.
 func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {

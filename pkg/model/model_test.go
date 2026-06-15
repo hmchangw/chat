@@ -2535,6 +2535,110 @@ func TestAppChannelTabRoundtrip(t *testing.T) {
 	roundTrip(t, &tab, &dst)
 }
 
+func TestAppRoundtrip_NewMetaFields(t *testing.T) {
+	a := model.App{
+		ID:        "app-meta",
+		Name:      "Meta Bot",
+		AvatarURL: "https://cdn.example.com/meta.png",
+		Assistant: &model.AppAssistant{
+			Enabled:  true,
+			Name:     "meta.bot",
+			Username: "Meta Assistant",
+		},
+		AppViewURL:    map[string]string{"default": "https://upstream/meta/view"},
+		ReportURL:     "https://upstream/meta/report",
+		ForumURL:      "https://upstream/meta/forum",
+		UserManualURL: "https://upstream/meta/manual",
+		Version:       "1.2.3",
+		Sponsors:      []model.AppSponsor{{Name: "Acme", Phone: "555-0199"}},
+	}
+	var dst model.App
+	roundTrip(t, &a, &dst)
+	require.NotNil(t, dst.Assistant)
+	assert.Equal(t, "Meta Assistant", dst.Assistant.Username)
+	assert.Equal(t, map[string]string{"default": "https://upstream/meta/view"}, dst.AppViewURL)
+	assert.Equal(t, "https://upstream/meta/report", dst.ReportURL)
+	assert.Equal(t, "https://upstream/meta/forum", dst.ForumURL)
+	assert.Equal(t, "https://upstream/meta/manual", dst.UserManualURL)
+	assert.Equal(t, "1.2.3", dst.Version)
+}
+
+func TestAppRoundtrip_NewMetaFields_OmitEmpty(t *testing.T) {
+	a := model.App{ID: "app-bare", Name: "Bare"}
+	b, err := json.Marshal(&a)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(b, &raw))
+	for _, k := range []string{"appViewUrl", "reportUrl", "forumUrl", "userManualUrl", "version"} {
+		_, present := raw[k]
+		assert.False(t, present, "empty %s must be omitted", k)
+	}
+}
+
+func TestAppMetaRoundtrip(t *testing.T) {
+	m := model.AppMeta{
+		AppID:       "app-meta",
+		Description: "A metadata overlay",
+		AvatarURL:   "https://cdn.example.com/meta.png",
+		Assistant: &model.AppAssistant{
+			Enabled:  true,
+			Name:     "meta.bot",
+			Username: "Meta Assistant",
+		},
+		AppViewURL:    map[string]string{"default": "https://upstream/meta/view"},
+		ReportURL:     "https://upstream/meta/report",
+		ForumURL:      "https://upstream/meta/forum",
+		UserManualURL: "https://upstream/meta/manual",
+		Version:       "1.2.3",
+		Sponsors:      []model.AppSponsor{{Name: "Acme", Phone: "555-0199"}},
+	}
+	var dst model.AppMeta
+	roundTrip(t, &m, &dst)
+	require.NotNil(t, dst.Assistant)
+	assert.Equal(t, "meta.bot", dst.Assistant.Name)
+	assert.Equal(t, "app-meta", dst.AppID)
+	assert.Len(t, dst.Sponsors, 1)
+}
+
+func TestAppMetaRoundtrip_OmitEmpty(t *testing.T) {
+	m := model.AppMeta{}
+	b, err := json.Marshal(&m)
+	require.NoError(t, err)
+	assert.Equal(t, "{}", string(b), "a zero AppMeta must marshal to an empty object")
+}
+
+func TestAppMetaFromApp(t *testing.T) {
+	a := &model.App{
+		ID:          "app-x",
+		Name:        "Display Name",
+		Description: "desc",
+		AvatarURL:   "https://cdn/x.png",
+		Assistant:   &model.AppAssistant{Enabled: true, Name: "x.bot", Username: "X"},
+		// ChannelTab is intentionally NOT carried onto AppMeta.
+		ChannelTab:    &model.AppChannelTab{Enabled: true, Name: "tab"},
+		AppViewURL:    map[string]string{"default": "https://upstream/x/view"},
+		ReportURL:     "https://upstream/x/report",
+		ForumURL:      "https://upstream/x/forum",
+		UserManualURL: "https://upstream/x/manual",
+		Version:       "9.9",
+		Sponsors:      []model.AppSponsor{{Name: "Sponsor", Phone: "555-0000"}},
+	}
+	meta := model.AppMetaFromApp(a)
+	require.NotNil(t, meta)
+	assert.Equal(t, "app-x", meta.AppID, "AppID must come from App.ID")
+	assert.Equal(t, "desc", meta.Description)
+	assert.Equal(t, "https://cdn/x.png", meta.AvatarURL)
+	require.NotNil(t, meta.Assistant)
+	assert.Equal(t, "x.bot", meta.Assistant.Name)
+	assert.Equal(t, "X", meta.Assistant.Username)
+	assert.Equal(t, map[string]string{"default": "https://upstream/x/view"}, meta.AppViewURL)
+	assert.Equal(t, "https://upstream/x/report", meta.ReportURL)
+	assert.Equal(t, "https://upstream/x/forum", meta.ForumURL)
+	assert.Equal(t, "https://upstream/x/manual", meta.UserManualURL)
+	assert.Equal(t, "9.9", meta.Version)
+	assert.Len(t, meta.Sponsors, 1)
+}
+
 func TestBotCmdMenuRoundtrip(t *testing.T) {
 	m := model.BotCmdMenu{
 		ID:           "bcm1",

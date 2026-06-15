@@ -89,6 +89,39 @@ func TestEnrichWithRoomInfo_RPCFailDegradesSiteKeepsOthers(t *testing.T) {
 	assert.True(t, subs[1].Alert, "stored alert preserved through enrichment")
 }
 
+// TestEnrichWithRoomInfo_CrossSiteDegraded_SiteIDOnly pins that a degraded CROSS-SITE
+// row gets a baseline room with ONLY siteId — the local Mongo $lookup has no room doc
+// for cross-site rooms, so userCount/lastMsgId/etc. would be meaningless and must be
+// dropped. A degraded LOCAL row keeps its baseline values.
+func TestEnrichWithRoomInfo_CrossSiteDegraded_SiteIDOnly(t *testing.T) {
+	svc, _, _, _, rooms, _ := newSvc(t)
+	lastMsg := time.UnixMilli(400).UTC()
+	mention := time.UnixMilli(300).UTC()
+	subs := []model.Subscription{
+		// local degraded row — keeps baseline.
+		{ID: "loc", RoomID: "r1", SiteID: "site-a", UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1", LastMentionAllAt: &mention},
+		// cross-site degraded row — baseline values must be dropped.
+		{ID: "remote", RoomID: "r2", SiteID: "site-b", UserCount: 4, LastMsgAt: &lastMsg, LastMsgID: "m2", LastMentionAllAt: &mention},
+	}
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).Return(nil, errors.New("down"))
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).Return(nil, errors.New("down"))
+	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+
+	require.NotNil(t, subs[0].Room)
+	assert.Equal(t, "site-a", subs[0].Room.SiteID)
+	assert.Equal(t, 9, subs[0].Room.UserCount, "local degraded row keeps baseline userCount")
+	assert.Equal(t, "m1", subs[0].Room.LastMsgID, "local degraded row keeps baseline lastMsgId")
+	require.NotNil(t, subs[0].Room.LastMsgAt)
+	require.NotNil(t, subs[0].Room.LastMentionAllAt)
+
+	require.NotNil(t, subs[1].Room)
+	assert.Equal(t, "site-b", subs[1].Room.SiteID, "cross-site degraded row carries siteId")
+	assert.Zero(t, subs[1].Room.UserCount, "cross-site degraded row must NOT carry baseline userCount")
+	assert.Empty(t, subs[1].Room.LastMsgID, "cross-site degraded row must NOT carry baseline lastMsgId")
+	assert.Nil(t, subs[1].Room.LastMsgAt, "cross-site degraded row must NOT carry baseline lastMsgAt")
+	assert.Nil(t, subs[1].Room.LastMentionAllAt, "cross-site degraded row must NOT carry baseline lastMentionAllAt")
+}
+
 func TestEnrichWithRoomInfo_Empty(t *testing.T) {
 	svc, _, _, _, _, _ := newSvc(t)
 	// No GetRoomsInfo expectation: empty input must short-circuit before any RPC.

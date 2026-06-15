@@ -51,43 +51,90 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 		subs = filterFavorites(subs)
 		subs = moveSelfDMFront(subs, account)
 	}
-	s.applyAppDisplayNames(c, subs)
 	s.enrichWithRoomInfo(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: subs, Total: len(subs)}, nil
+	items := s.buildListItems(c, subs)
+	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
 }
 
-// applyAppDisplayNames swaps each botDM subscription's name (the bot account) for the
-// app's display name — before enrichment, which never touches subscription names.
-// Lookup failure or a missing app degrades to the stored account name.
-func (s *UserService) applyAppDisplayNames(c *natsrouter.Context, subs []model.Subscription) {
-	var bots []string
+// buildListItems wraps each enriched subscription into a heterogeneous list row:
+//   - channel → base only
+//   - botDM   → base + the app-metadata overlay; the base name is also swapped to
+//     the app's display name (preserving the prior botDM-name behavior)
+//   - dm      → base + the counterpart's hrInfo
+//
+// App and HR lookups degrade independently: a failed/missing lookup keeps the base
+// name and omits the overlay — it never fails the request.
+func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []models.SubscriptionListItem {
+	apps := s.lookupApps(c, subs)
+	hrInfo := s.lookupHRInfo(c, subs)
+	items := make([]models.SubscriptionListItem, len(subs))
+	for i := range subs {
+		item := models.SubscriptionListItem{Subscription: &subs[i]}
+		switch subs[i].RoomType {
+		case model.RoomTypeBotDM:
+			if app, ok := apps[subs[i].Name]; ok && app != nil {
+				if app.Name != "" {
+					subs[i].Name = app.Name
+				}
+				item.AppMeta = model.AppMetaFromApp(app)
+			}
+		case model.RoomTypeDM:
+			if hr, ok := hrInfo[subs[i].Name]; ok {
+				item.HRInfo = hr
+			}
+		default:
+			// channel / discussion rows ship the base Subscription unchanged.
+		}
+		items[i] = item
+	}
+	return items
+}
+
+// lookupApps fetches the full app docs for the distinct botDM bot accounts; a
+// lookup failure degrades to nil (base name kept, no overlay).
+func (s *UserService) lookupApps(c *natsrouter.Context, subs []model.Subscription) map[string]*model.App {
+	bots := distinctNamesByType(subs, model.RoomTypeBotDM)
+	if len(bots) == 0 {
+		return nil
+	}
+	apps, err := s.apps.GetAppsByAssistants(c, bots)
+	if err != nil {
+		slog.WarnContext(c, "app metadata lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
+		return nil
+	}
+	return apps
+}
+
+// lookupHRInfo fetches the HR records for the distinct dm counterpart accounts; a
+// lookup failure degrades to nil (no hrInfo).
+func (s *UserService) lookupHRInfo(c *natsrouter.Context, subs []model.Subscription) map[string]*model.SubscriptionHRInfo {
+	accounts := distinctNamesByType(subs, model.RoomTypeDM)
+	if len(accounts) == 0 {
+		return nil
+	}
+	hr, err := s.users.GetHRInfoByAccounts(c, accounts)
+	if err != nil {
+		slog.WarnContext(c, "hr info lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
+		return nil
+	}
+	return hr
+}
+
+// distinctNamesByType returns the deduplicated sub.Name values for rows of roomType.
+func distinctNamesByType(subs []model.Subscription, roomType model.RoomType) []string {
+	var names []string
 	seen := map[string]struct{}{}
 	for i := range subs {
-		if subs[i].RoomType != model.RoomTypeBotDM {
+		if subs[i].RoomType != roomType {
 			continue
 		}
 		if _, dup := seen[subs[i].Name]; dup {
 			continue
 		}
 		seen[subs[i].Name] = struct{}{}
-		bots = append(bots, subs[i].Name)
+		names = append(names, subs[i].Name)
 	}
-	if len(bots) == 0 {
-		return
-	}
-	names, err := s.apps.GetAppNamesByAssistants(c, bots)
-	if err != nil {
-		slog.WarnContext(c, "app display-name lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
-		return
-	}
-	for i := range subs {
-		if subs[i].RoomType != model.RoomTypeBotDM {
-			continue
-		}
-		if name, ok := names[subs[i].Name]; ok && name != "" {
-			subs[i].Name = name
-		}
-	}
+	return names
 }
 
 // enrichWithRoomInfo overwrites room-derived fields per site in parallel; a failed
@@ -148,20 +195,23 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 			applyRoomInfo(&subs[j], &info)
 		}
 	}
-	// Degraded site or room not found ⇒ baseline room from the Mongo $lookup
-	// values, so the client always receives a room object. alert/hasMention are
+	// Degraded site or room not found ⇒ baseline room so the client always receives
+	// a room object. The Mongo $lookup only populates baseline UserCount/LastMsg…/
+	// LastMentionAllAt for LOCAL rooms; for cross-site rows there is no local room
+	// doc, so those fields are meaningless — set only SiteID. alert/hasMention are
 	// left as the stored subscription values (never recomputed from room data).
 	for i := range subs {
 		if subs[i].Room != nil {
 			continue
 		}
-		subs[i].Room = &model.SubscriptionRoom{
-			SiteID:           subs[i].SiteID,
-			UserCount:        subs[i].UserCount,
-			LastMsgAt:        subs[i].LastMsgAt,
-			LastMsgID:        subs[i].LastMsgID,
-			LastMentionAllAt: subs[i].LastMentionAllAt,
+		room := &model.SubscriptionRoom{SiteID: subs[i].SiteID}
+		if subs[i].SiteID == s.siteID {
+			room.UserCount = subs[i].UserCount
+			room.LastMsgAt = subs[i].LastMsgAt
+			room.LastMsgID = subs[i].LastMsgID
+			room.LastMentionAllAt = subs[i].LastMentionAllAt
 		}
+		subs[i].Room = room
 	}
 }
 
@@ -246,7 +296,8 @@ func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsR
 		return nil, fmt.Errorf("get channels: %w", err)
 	}
 	s.enrichWithRoomInfo(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: subs, Total: len(subs)}, nil
+	items := s.buildListItems(c, subs)
+	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
 }
 
 func (s *UserService) GetDM(c *natsrouter.Context, req models.GetDMRequest) (*models.DMResponse, error) {
@@ -289,12 +340,12 @@ func (s *UserService) GetByRoomID(c *natsrouter.Context, req models.GetByRoomIDR
 		return nil, fmt.Errorf("get subscription by roomId: %w", err)
 	}
 	if sub == nil {
-		return &models.SubscriptionListResponse{Subscriptions: []model.Subscription{}, Total: 0}, nil
+		return &models.SubscriptionListResponse{Subscriptions: []models.SubscriptionListItem{}, Total: 0}, nil
 	}
 	one := []model.Subscription{*sub}
-	s.applyAppDisplayNames(c, one)
 	s.enrichWithRoomInfo(c, one)
-	return &models.SubscriptionListResponse{Subscriptions: one, Total: 1}, nil
+	items := s.buildListItems(c, one)
+	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
 }
 
 func (s *UserService) CountSubscriptions(c *natsrouter.Context, req models.CountRequest) (*models.CountResponse, error) {
