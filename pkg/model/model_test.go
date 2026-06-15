@@ -1712,7 +1712,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		assert.True(t, foundPresent, "found must be present")
 		assert.Equal(t, false, foundVal)
 
-		for _, key := range []string{"siteId", "name", "lastMsgAt", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
+		for _, key := range []string{"siteId", "name", "userCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted", key)
 		}
