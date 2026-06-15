@@ -101,6 +101,7 @@ Use the sidebar buttons to pre-fill common patterns:
 |---------|---------|-------------|
 | `PORT`  | `8090`  | HTTP port the UI listens on |
 | `NATS_CREDS_FILE` | `""` | Optional NATS user credentials file (JWT + NKey). When set, it authenticates every NATS connection the tool opens (source, dest, and request). Empty means connect without credentials. The file is checked for existence at startup — a missing path fails fast. |
+| `SESSION_IDLE_TIMEOUT` | `30m` | How long a browser session may go without activity before its hub (and NATS connections) are torn down. Accepts Go durations (e.g. `15m`, `1h`). |
 
 > **Auth:** Point `NATS_CREDS_FILE` at a mounted creds file (e.g. the shared `docker-local/backend.creds`) when the target servers require authentication. The same credentials are applied to all three connections.
 
@@ -113,4 +114,10 @@ Browser ──SSE──▶ nats-debug server
                   (publish)   (subscribe)
 ```
 
-The server holds two independent NATS connections. Subscriptions are registered on the dest connection; publishes go to the source connection. Incoming NATS messages are broadcast to all connected browser tabs via Server-Sent Events (SSE).
+The server holds two independent NATS connections. Subscriptions are registered on the dest connection; publishes go to the source connection. Incoming NATS messages are broadcast to the owning session's browser tabs via Server-Sent Events (SSE).
+
+### Per-session isolation
+
+Each browser gets its **own** set of NATS connections, subscriptions, connection status, and message feed. On first request the server issues an `HttpOnly` session cookie (`ndsid`); every subsequent request and SSE stream carries it automatically (same-origin), so the frontend needs no special handling. One user connecting, disconnecting, subscribing, or publishing therefore has no effect on another user's view. Multiple tabs in the same browser intentionally share one session.
+
+A session's hub is torn down (and its NATS connections closed) after no activity for `SESSION_IDLE_TIMEOUT` (default 30m). An open SSE stream sends periodic keep-alives that count as activity, so an actively-watched feed is never swept mid-stream.
