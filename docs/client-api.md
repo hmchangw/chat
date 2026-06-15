@@ -2981,7 +2981,7 @@ See [Error envelope](#6-error-envelope-reference).
 | `threadParentMessageId` | string | omitted when not a thread reply |
 | `threadParentMessageCreatedAt` | RFC3339 timestamp (nullable) | omitted when not a thread reply |
 
-Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via their own subscription cache or subscription enrichment (HRInfo); `profile.getByName` was removed and is no longer available.
+Display fields (user name, room name) are intentionally NOT carried in the response. Clients resolve them via their own subscription cache, subscription enrichment (HRInfo), or [profile.getByName](#profilegetbyname) (§3.4).
 
 ##### Error response
 
@@ -3230,7 +3230,7 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 
 ### 3.4 user-service
 
-`user-service` exposes 9 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
+`user-service` exposes 10 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
 
 > **Events:** these endpoints emit no client-facing events. (`status.set` triggers a server-side cross-site federation update, which is internal and not delivered to clients.)
 
@@ -3260,6 +3260,46 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 | `statusIsShow` | boolean | Always present. Whether the status is displayed; `false` when never set. |
 | `chineseName`  | string  | Optional. Display name in Chinese. |
 | `engName`      | string  | Optional. English display name. |
+
+```json
+{
+  "account": "alice",
+  "statusText": "In a meeting",
+  "statusIsShow": true,
+  "chineseName": "愛麗絲",
+  "engName": "Alice"
+}
+```
+
+##### Error response
+
+| Condition | `code` | `reason` | Notes |
+|-----------|--------|----------|-------|
+| User not found | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` |
+| Internal failure | `internal` | — | — |
+
+---
+
+#### profile.getByName
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.profile.getByName`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It exists as a separate subject so the profile path can later be extended to fetch HR-collection profile data before the status fields (internal-repo implementation); until then both endpoints return the same payload.
+
+##### Request body
+
+| Field  | Type   | Required | Notes |
+|--------|--------|----------|-------|
+| `name` | string | yes      | Account name of the user whose profile to fetch. |
+
+```json
+{ "name": "alice" }
+```
+
+##### Success response
+
+Same shape as `status.getByName`:
 
 ```json
 {

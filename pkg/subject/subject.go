@@ -743,6 +743,13 @@ func UserStatusGetByName(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.user.%s.status.getByName", account, siteID)
 }
 
+func UserProfileGetByName(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.user.%s.profile.getByName", account, siteID)
+}
+
 func UserStatusSet(account, siteID string) string {
 	if !isValidAccountToken(account) {
 		panic("invalid account token: contains NATS wildcard characters")
@@ -782,6 +789,10 @@ func UserAppsList(account, siteID string) string {
 
 func UserStatusGetByNamePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.getByName", siteID)
+}
+
+func UserProfileGetByNamePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.profile.getByName", siteID)
 }
 
 func UserStatusSetPattern(siteID string) string {
