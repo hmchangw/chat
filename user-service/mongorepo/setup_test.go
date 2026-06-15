@@ -13,20 +13,14 @@ import (
 	"github.com/hmchangw/chat/user-service/service"
 )
 
-// Compile-time assertions that each repo satisfies its service-defined
-// interface. This is the primary correctness gate when Docker (and thus the
-// integration tests) is unavailable: `go vet -tags integration` fails here if
-// any method signature drifts from the interfaces.
+// Compile-time assertions: `go vet -tags integration` fails if any repo drifts from its interface.
 var (
 	_ service.SubscriptionRepository = (*SubscriptionRepo)(nil)
 	_ service.UserRepository         = (*UserRepo)(nil)
 	_ service.AppRepository          = (*AppRepo)(nil)
 )
 
-// newTestSubscriptionRepo builds a SubscriptionRepo over an isolated test
-// database with the local site fixed to "site-a". Seed local rows with siteId
-// "site-a" and cross-site rows with another siteId (e.g. "site-b") to exercise
-// the deleted-filter.
+// newTestSubscriptionRepo builds a SubscriptionRepo with siteID "site-a"; seed cross-site rows with a different siteId to exercise the deleted-filter.
 func newTestSubscriptionRepo(t *testing.T) (*SubscriptionRepo, *mongo.Database) {
 	t.Helper()
 	db := testutil.MongoDB(t, "user-service")

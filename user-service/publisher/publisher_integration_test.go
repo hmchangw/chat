@@ -17,10 +17,7 @@ import (
 	"github.com/hmchangw/chat/user-service/service"
 )
 
-// Compile-time assertion that *Publisher satisfies the service-defined
-// EventPublisher interface. This is the primary correctness gate when Docker
-// (and thus the integration tests) is unavailable: `go vet -tags integration`
-// fails here if any method signature drifts from the interface.
+// Compile-time assertion: `go vet -tags integration` fails if Publisher drifts from EventPublisher.
 var _ service.EventPublisher = (*Publisher)(nil)
 
 func TestMain(m *testing.M) { testutil.RunTests(m) }
@@ -63,9 +60,7 @@ func TestPublish_Integration(t *testing.T) {
 	}
 }
 
-// TestPublish_ClosedConn_Integration covers the error branch: publishing on a
-// closed connection must surface the wrapped "publish outbox event" failure
-// rather than silently succeeding.
+// TestPublish_ClosedConn_Integration: closed connection must surface the wrapped "publish outbox event" error.
 func TestPublish_ClosedConn_Integration(t *testing.T) {
 	nc, err := otelnats.Connect(testutil.NATS(t))
 	require.NoError(t, err)

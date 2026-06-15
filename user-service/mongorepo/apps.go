@@ -35,10 +35,7 @@ func (r *AppRepo) GetApp(ctx context.Context, appID string) (*model.App, error) 
 	return r.apps.FindByID(ctx, appID)
 }
 
-// ListApps returns the requested page of apps annotated with the requesting
-// user's subscription flag (isSubscribed true when the user holds a subscribed
-// botDM for the app's assistant). Results are sorted by name; Total is the full
-// catalog count regardless of the page slice.
+// ListApps returns a name-sorted page of apps with isSubscribed per user; Total is the full catalog count.
 func (r *AppRepo) ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error) {
 	pipeline := bson.A{
 		bson.M{"$lookup": bson.M{

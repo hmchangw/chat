@@ -586,9 +586,7 @@ func TestSubscriptionJSON_ThreadUnreadOmittedAlertAlwaysPresent(t *testing.T) {
 }
 
 func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
-	// Verify Go's embedded *Subscription serialisation flattens onto the
-	// top-level object — the frontend depends on this in api/types.ts
-	// (DMSubscription extends Subscription).
+	// Embedded *Subscription must flatten onto the top-level JSON object — frontend api/types.ts depends on this.
 	d := model.DMSubscription{
 		Subscription: &model.Subscription{
 			ID:       "s-dm-1",
@@ -627,9 +625,7 @@ func TestDMSubscriptionJSON_EmbeddedFlattensWithHRInfo(t *testing.T) {
 }
 
 func TestDMSubscriptionJSON_HRInfoOmittedWhenNil(t *testing.T) {
-	// `*SubscriptionHRInfo` with `omitempty` should disappear from the
-	// JSON when nil — channels/botDMs that share this wrapper shouldn't
-	// have a phantom hrInfo: null on the wire.
+	// nil *SubscriptionHRInfo with omitempty must not produce a phantom hrInfo:null on the wire.
 	d := model.DMSubscription{
 		Subscription: &model.Subscription{
 			ID:       "s-c-1",
@@ -652,8 +648,6 @@ func TestDMSubscriptionJSON_HRInfoOmittedWhenNil(t *testing.T) {
 }
 
 func TestSubscriptionHRInfoJSON(t *testing.T) {
-	// All three fields are required strings (no omitempty) — when the
-	// HRInfo pointer is non-nil, every field is on the wire.
 	hr := model.SubscriptionHRInfo{
 		Account: "bob",
 		Name:    "鮑勃",
@@ -981,9 +975,6 @@ func TestRoomKeyGetResponseJSON(t *testing.T) {
 	roundTrip(t, &src, &dst)
 }
 
-// TestNotificationEventJSON_Reaction round-trips the reaction notification
-// envelope published on chat.user.{account}.notification when someone reacts
-// to a message.
 func TestNotificationEventJSON_Reaction(t *testing.T) {
 	src := model.NotificationEvent{
 		Type:   "reaction",
@@ -2165,11 +2156,6 @@ func TestCreateRoomRequestRoundtrip(t *testing.T) {
 	assert.Equal(t, int64(1740000000000), dst.Timestamp)
 }
 
-// TestErrorResponseRoomIDOmitempty was removed: model.ErrorResponse was deleted
-// alongside the rest of the legacy error machinery (see pkg/errcode for the
-// canonical client-facing error type). The DM-exists path now returns a success
-// reply (model.CreateRoomReply{Status: CreateRoomStatusExists, RoomID}).
-
 func TestAsyncJobResultShape(t *testing.T) {
 	r := model.AsyncJobResult{
 		RequestID: "req-1",
@@ -2227,9 +2213,6 @@ func TestAddMembersRequestNoRequestIDField(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "requestId")
 }
-
-// TestErrorResponseJSON was removed alongside model.ErrorResponse. The wire
-// envelope is now owned by pkg/errcode (see pkg/errcode/error_test.go).
 
 func TestReadReceiptRequestJSON(t *testing.T) {
 	r := model.ReadReceiptRequest{MessageID: "m1"}

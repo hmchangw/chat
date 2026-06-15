@@ -27,9 +27,7 @@ func NewUserRepo(db *mongo.Database) *UserRepo {
 	}
 }
 
-// EnsureIndexes creates the user indexes this service queries on. The account
-// index is unique and shared with room-service; the failure paths mirror its
-// guidance so an operator hitting a dirty collection gets the same fix.
+// EnsureIndexes creates user indexes. The unique account index is shared with room-service; failure messages guide the operator to the same fix.
 func (r *UserRepo) EnsureIndexes(ctx context.Context) error {
 	_, err := r.users.Raw().Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "account", Value: 1}}, Options: options.Index().SetUnique(true),
@@ -51,10 +49,7 @@ func (r *UserRepo) EnsureIndexes(ctx context.Context) error {
 	return fmt.Errorf("create user index: %w", err)
 }
 
-// activeUserFilter matches users that are not explicitly deactivated. The
-// `active` field is scheduled to land on the users collection but isn't there
-// yet, so a MISSING active field is treated as active ({$ne:false} matches both
-// true and absent); only an explicit active:false excludes the user.
+// activeUserFilter matches non-deactivated users. Missing `active` is treated as active ({$ne:false}); only explicit false excludes.
 func activeUserFilter(account string) bson.M {
 	return bson.M{"account": account, "active": bson.M{"$ne": false}}
 }
@@ -70,10 +65,8 @@ func (r *UserRepo) GetUserStatus(ctx context.Context, account string) (*model.Us
 	)
 }
 
-// SetUserStatus updates the status fields on the user. isShow is only written
-// when non-nil so a text-only update leaves the existing flag intact. The
-// returned matched flag is false when no active user doc matched (unknown or
-// deactivated account) so the caller can skip the cross-site status broadcast.
+// SetUserStatus updates status fields; isShow is only written when non-nil.
+// Returns matched=false when no active user doc matched so callers can skip the cross-site broadcast.
 func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {
 	set := bson.M{"statusText": text}
 	if isShow != nil {
