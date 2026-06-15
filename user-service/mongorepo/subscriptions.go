@@ -113,9 +113,9 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 
 // aggregateCurrent merges the rooms (dm/channel) and apps (botDM) $facet branches — each needs a different roomType $match; no window.
 func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
-	match := bson.M{"u.account": account, "$or": bson.A{
-		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}, "muted": bson.M{"$ne": true}},
-		bson.M{"roomType": "botDM", "muted": bson.M{"$ne": true}, "isSubscribed": true},
+	match := bson.M{"u.account": account, "muted": bson.M{"$ne": true}, "$or": bson.A{
+		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}},
+		bson.M{"roomType": "botDM", "isSubscribed": true},
 	}}
 	pipeline := bson.A{bson.M{"$match": match}}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
@@ -235,6 +235,7 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	pipeline := bson.A{bson.M{"$match": bson.M{"u.account": account, "roomId": roomID}}}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
+	pipeline = append(pipeline, bson.M{"$limit": int64(1)}) // (roomId, u.account) is unique — short-circuit defensively
 	out, err := r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
 	if err != nil {
 		return nil, fmt.Errorf("aggregate subscription by roomId: %w", err)
@@ -247,9 +248,9 @@ func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account,
 
 // activeSubscriptionFilter: non-muted dm/channel subs, or non-muted subscribed botDMs (the count endpoints' notion of active).
 func activeSubscriptionFilter(account string) bson.M {
-	return bson.M{"u.account": account, "$or": bson.A{
-		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}, "muted": bson.M{"$ne": true}},
-		bson.M{"roomType": "botDM", "muted": bson.M{"$ne": true}, "isSubscribed": true},
+	return bson.M{"u.account": account, "muted": bson.M{"$ne": true}, "$or": bson.A{
+		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}},
+		bson.M{"roomType": "botDM", "isSubscribed": true},
 	}}
 }
 
