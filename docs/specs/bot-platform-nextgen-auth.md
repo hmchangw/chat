@@ -43,6 +43,11 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 
 **Implication:** identity is solved; we add (a) a credential store, (b) a session store using RC's exact token-hash form, (c) a password-login path that reuses JWT minting, (d) provisioning handlers + UI, (e) the gateway (§9).
 
+### 2.2 Confirmed by internal codebase analysis (2026-06-15)
+
+- **Bots authenticate with password only**, via the Node.js bot SDK calling `POST /api/v1/login`. **No PAT usage among bots** — Personal Access Tokens are a *human-user* feature. ⇒ PATs are **out of scope**; the session model carries no PAT `type`/`name` fields and migration imports no PAT tokens (§6 simplified, Q8 resolved).
+- **`users._id` is a 17-char Meteor ID**, and the v2 Go repo **preserves the legacy `_id` verbatim** through identity-sync. ⇒ nextgen `users._id` == legacy `_id` == the `X-User-Id` a bot sends. **No ID-mapping layer, no `LegacyUserID` field** (Q9 resolved).
+
 ---
 
 ## 3. Key design decisions
@@ -65,9 +70,8 @@ One document per password-login account (admin or bot), keyed to `users._id`.
 
 | Field | Type | Tags | Notes |
 |---|---|---|---|
-| ID | `string` | `bson:"_id"` | = `users._id` (32-char UUIDv7 hex). 1:1 with identity. |
-| Account | `string` | `bson:"account" json:"account"` | Denormalized for login lookup. Unique index. |
-| LegacyUserID | `string` | `bson:"legacyUserId,omitempty" json:"-"` | Legacy Meteor `_id` (17-char). Present only if nextgen `_id` ≠ legacy id; used to match the bot-supplied `X-User-Id` (Q9). Omit if identity-sync preserves the legacy `_id`. |
+| ID | `string` | `bson:"_id"` | = `users._id`, a **17-char Meteor ID** preserved verbatim from legacy by identity-sync (Q9). **Not** a generated UUIDv7 — these IDs come from the legacy system, not `idgen`. |
+| Account | `string` | `bson:"account" json:"account"` | Login username (`username@domain` form). Unique index. |
 | PasswordHash | `string` | `bson:"passwordHash" json:"-"` | Migrated verbatim from `services.password.bcrypt`. **Never serialized.** |
 | PasswordScheme | `string` | `bson:"passwordScheme" json:"-"` | `"rc-sha256-bcrypt"` = `bcrypt(sha256_hex(pw))`. Verification accepts plaintext **or** RC `{digest,algorithm:"sha-256"}` input (§2.1). |
 | RequirePasswordChange | `bool` | `bson:"requirePasswordChange" json:"requirePasswordChange"` | Migrated; drives first-login (§5.4). |
@@ -81,10 +85,9 @@ One document per live session. **No array, no cap.**
 | Field | Type | Tags | Notes |
 |---|---|---|---|
 | TokenHash | `string` | `bson:"_id"` | **`base64(sha256(rawToken))`** — RC/Meteor form. Lookup key; raw token never stored. |
-| UserID | `string` | `bson:"userId" json:"userId"` | = nextgen `users._id`. Indexed (revoke-all / list). |
-| LegacyUserID | `string` | `bson:"legacyUserId,omitempty" json:"-"` | Denormalized from `credentials`; matched against `X-User-Id` during validation when ids differ (Q9). |
-| Account | `string` | `bson:"account" json:"account"` | Denormalized. |
-| Scheme | `string` | `bson:"scheme" json:"scheme"` | `"legacy"` (imported RC tokens, §6.2) or `"v1"` (nextgen-issued). |
+| UserID | `string` | `bson:"userId" json:"userId"` | = `users._id` (17-char Meteor ID; same id space the bot sends as `X-User-Id` — no mapping). Indexed (revoke-all / list). |
+| Account | `string` | `bson:"account" json:"account"` | Denormalized (`username@domain`). **Kept** so validation returns the account directly — the gateway needs it to build `chat.user.{account}.…` subjects and inject the principal, avoiding a second `userstore` lookup per request. |
+| Scheme | `string` | `bson:"scheme" json:"scheme"` | `"legacy"` (imported RC tokens, §6.2) or `"v1"` (nextgen-issued). No PAT type — bots are password-only; PATs are a human-user feature, out of scope (§2.2). |
 | IssuedAt | `int64` | `bson:"issuedAt" json:"issuedAt"` | ms since epoch. |
 | LastUsedAt | `int64` | `bson:"lastUsedAt" json:"lastUsedAt"` | **Throttled** write (§12 Q4) — not every request. |
 | ExpiresAt | `*time.Time` | `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"` | **Sliding idle expiry** (§5.5): pushed to `now + idleWindow` on the throttled use-bump. `nil`/absent ⇒ never expires (pure-infinite mode). |
@@ -124,12 +127,12 @@ There is **no bot-facing resume verb**. A REST bot logs in once (username + pass
 ## 6. Migration (legacy RC Mongo → nextgen Mongo)
 
 ### 6.1 Credential import
-For each legacy `users` doc that is an admin or bot account:
-- Ensure the nextgen `users` identity row exists (existing identity-sync path, not owned here).
-- Insert `credentials`: `services.password.bcrypt` → `PasswordHash`, `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
+For each legacy `users` doc that is an admin or bot account **with a local password** (`services.password.bcrypt`):
+- Ensure the nextgen `users` identity row exists (existing identity-sync path, not owned here) — it carries the **same 17-char `_id`**.
+- Insert `credentials` with `_id = legacy users._id` (verbatim, 17-char Meteor ID): `services.password.bcrypt` → `PasswordHash`, `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
 
 ### 6.2 Live-session import (no-reauth cutover)
-For each entry in `services.resume.loginTokens[]`: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` is ignored since sessions are effectively infinite). Because we reuse RC's hash form, an in-flight bot's existing `X-Auth-Token` validates against the imported row unchanged. The next login issues a native `v1` token.
+For each entry in `services.resume.loginTokens[]` (bots have only password-issued resume tokens — **no PAT entries to handle**, §2.2): insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `UserID = legacy _id`, `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` ignored since sessions are effectively infinite). Because we reuse RC's hash form **and** the same `_id`, an in-flight bot's existing `X-Auth-Token`+`X-User-Id` validate against the imported row unchanged. The next login issues a native `v1` token.
 
 ### 6.3 Cutover source-of-truth — freeze legacy, one-time import (decided)
 At canary start, make legacy credentials **read-only** (disable password change / admin user-mgmt on the old stack) and run the one-time `credentials` import; nextgen is authoritative from that moment. Frozen-and-matched credentials mean a request landing on either stack authenticates identically (§10.3). A legacy→nextgen credential sync is the fallback **only** if a multi-week dual-run with live password changes is required.
@@ -241,11 +244,13 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 - **Q5 — Ownership.** **`auth-service` owns** credentials + sessions + JWT minting + provisioning; the **gateway is a separate stateless read-only cache consumer** (§7, §9.3). *Confirm:* gateway is built by the internal track and can read the Valkey session cache directly.
 - **Q6 — Cache layer.** In-pod LRU + **Valkey from day one** for the session-validation hot path (§9.3). *Confirm:* Valkey cluster available to the gateway/auth-service in prod.
 
+### Confirmed by codebase analysis (2026-06-15) — closed
+- **Q8 — Bot auth mechanism.** ✅ **Resolved.** Bots use **password login only** (Node.js SDK → `POST /api/v1/login`); PATs are human-only and **out of scope**. No PAT fields, no PAT import (§2.2, §6).
+- **Q9 — Identity ID mapping.** ✅ **Resolved.** v2 Go repo **preserves the 17-char legacy Meteor `_id`**, so nextgen `users._id` == `X-User-Id`. **No `LegacyUserID`, no mapping layer** (§2.2, §4).
+
 ### Still fully open (need an answer)
-- **Q1a — Exact `/dev-login` path + success-envelope placement** (body vs. headers vs. both), to lock gateway response fidelity.
+- **Q1a — Exact `/dev-login` path + success-envelope placement** (body vs. headers vs. both), to lock gateway response fidelity. *(Bot SDK posts to `/api/v1/login`; confirm whether the public path bots hit is `/api/v1/login` or a `/dev-login` alias.)*
 - **Q7 — `idleWindow` value.** Recommend 180d; confirm.
-- **Q8 — Bot auth mechanism.** Do bots authenticate with username/password each start, or with a long-lived **Personal Access Token**? RC stores PATs in the same `services.resume.loginTokens[]` (with `type:"personalAccessToken"`, `name`). This changes which migration path (§6.2) carries the bots — confirm against real bot accounts (§22).
-- **Q9 — Identity ID mapping.** Legacy Meteor `users._id` (17-char) vs. nextgen `users._id` (UUIDv7 hex). Bots send the legacy id as `X-User-Id`; the session/credentials must carry `LegacyUserID` to match it (or identity-sync must preserve the legacy `_id`). Confirm which (§22).
 
 ---
 
@@ -256,9 +261,8 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 ```go
 // model/credential.go
 type Credential struct {
-    ID                    string `json:"id"                    bson:"_id"`
+    ID                    string `json:"id"                    bson:"_id"` // 17-char Meteor ID (legacy-preserved)
     Account               string `json:"account"               bson:"account"`
-    LegacyUserID          string `json:"-"                     bson:"legacyUserId,omitempty"`
     PasswordHash          string `json:"-"                     bson:"passwordHash"`
     PasswordScheme        string `json:"-"                     bson:"passwordScheme"`
     RequirePasswordChange bool   `json:"requirePasswordChange" bson:"requirePasswordChange"`
@@ -269,8 +273,7 @@ type Credential struct {
 // model/session.go
 type Session struct {
     TokenHash    string     `json:"-"                    bson:"_id"`          // base64(sha256(token))
-    UserID       string     `json:"userId"               bson:"userId"`
-    LegacyUserID string     `json:"-"                    bson:"legacyUserId,omitempty"`
+    UserID       string     `json:"userId"               bson:"userId"`        // 17-char Meteor ID
     Account      string     `json:"account"              bson:"account"`
     Scheme       string     `json:"scheme"               bson:"scheme"`       // "legacy" | "v1"
     IssuedAt     int64      `json:"issuedAt"             bson:"issuedAt"`
@@ -322,7 +325,7 @@ s := valkey.Get(h)                       // hot path
 if miss: s = nats.Request(auth.session.validate, h)   // cold path; auth-svc reads Mongo + warms Valkey
 if s == nil           -> 401 invalidCredentials
 if s.ExpiresAt != nil && now > s.ExpiresAt -> 401 sessionExpired
-if s.LegacyUserID != "" && xUserId != s.LegacyUserID  -> 401 invalidCredentials
+if xUserId != "" && xUserId != s.UserID  -> 401 invalidCredentials   // sanity check; same 17-char id space, no mapping
 if now - s.LastUsedAt > throttleWindow: async bump LastUsedAt + ExpiresAt=now+idleWindow (Mongo + cache)
 return principal{account, userId}
 ```
@@ -371,7 +374,7 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 - **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
 - **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
 - **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
-- **Integration** (`//go:build integration`, `pkg/testutil`): `credentials`/`sessions` Mongo store incl. partial-TTL index behavior; Valkey read-through + invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped docs (password + loginTokens + a PAT entry).
+- **Integration** (`//go:build integration`, `pkg/testutil`): `credentials`/`sessions` Mongo store incl. partial-TTL index behavior; Valkey read-through + invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped docs (password + non-PAT `resume.loginTokens`). Assert 17-char `_id`s are preserved verbatim into `credentials._id`.
 
 ---
 
@@ -395,8 +398,8 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 ---
 
 ## 21. Risks
-- **PAT vs password (Q8)** — if bots use PATs, §6.2 must import PAT `loginTokens`, and "rotate password revokes sessions" must not silently kill PAT-based bots. Resolve before phase 4.
-- **ID mapping (Q9)** — wrong `X-User-Id` matching locks every bot out at cutover. Gate phase 5 on a confirmed answer.
+- ~~PAT vs password (Q8)~~ — **closed:** bots are password-only, PATs out of scope (§2.2).
+- ~~ID mapping (Q9)~~ — **closed:** legacy 17-char `_id` preserved end-to-end, no mapping (§2.2).
 - **Infinite sessions** — standing bearer tokens; mitigated by sliding reap + revocation, but operators must have working revoke before go-live.
 - **Cache/Mongo divergence on revoke** — a revoke that updates Mongo but not the cache leaves a token live until cache TTL; prefer explicit invalidation over TTL-only.
 
@@ -413,13 +416,13 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] Password storage really is `services.password.bcrypt` = `bcrypt(sha256_hex(pw))`, and the bcrypt cost. Spot-check one account by test-comparing. **(Q4/§14)**
 - [ ] Are there admin/bot accounts with **no** local password (SSO/LDAP-only) that can't migrate to password login?
 - [ ] Login-token storage: `services.resume.loginTokens[]`, `hashedToken = base64(sha256(raw))`, field names. **(Q2/§6.2)**
-- [ ] **Do bots use password login or Personal Access Tokens?** If PAT, capture the PAT entry shape (`type`, `name`). **(Q8)**
+- [x] **Bots use password login only; PATs are human-only / out of scope.** *(confirmed 2026-06-15, Q8)*
 - [ ] Token hashing parity: confirm a real token's `hashedToken` equals our `base64(sha256(token))`. **(§14 golden fixture)**
 - [ ] `loginExpirationDays` (only matters if you reject sliding-infinite). **(Q2)**
 
 **Nextgen / identity**
 - [ ] Does identity-sync already populate **admin + bot** accounts in nextgen `users`, with `roles`? **(§6.1)**
-- [ ] Is the nextgen `users._id` the **same** value as the legacy Meteor `_id`, or different? If different, `LegacyUserID` is mandatory. **(Q9)**
+- [x] **Nextgen `users._id` == legacy 17-char Meteor `_id`** (v2 Go repo preserves it); no `LegacyUserID`, no mapping. *(confirmed 2026-06-15, Q9)*
 - [ ] `model.IsBotAccount` covers every real bot naming pattern in production.
 
 **Infra / platform**
