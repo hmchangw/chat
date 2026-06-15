@@ -2579,7 +2579,6 @@ func TestAppMetaRoundtrip(t *testing.T) {
 	m := model.AppMeta{
 		AppID:       "app-meta",
 		Description: "A metadata overlay",
-		AvatarURL:   "https://cdn.example.com/meta.png",
 		Assistant: &model.AppAssistant{
 			Enabled:  true,
 			Name:     "meta.bot",
@@ -2627,7 +2626,6 @@ func TestAppMetaFromApp(t *testing.T) {
 	require.NotNil(t, meta)
 	assert.Equal(t, "app-x", meta.AppID, "AppID must come from App.ID")
 	assert.Equal(t, "desc", meta.Description)
-	assert.Equal(t, "https://cdn/x.png", meta.AvatarURL)
 	require.NotNil(t, meta.Assistant)
 	assert.Equal(t, "x.bot", meta.Assistant.Name)
 	assert.Equal(t, "X", meta.Assistant.Username)

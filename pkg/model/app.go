@@ -30,7 +30,6 @@ type AppAssistant struct {
 type AppMeta struct {
 	AppID         string            `json:"appId,omitempty"         bson:"-"` // = App.ID
 	Description   string            `json:"description,omitempty"   bson:"-"`
-	AvatarURL     string            `json:"avatarUrl,omitempty"     bson:"-"`
 	Assistant     *AppAssistant     `json:"assistant,omitempty"     bson:"-"`
 	AppViewURL    map[string]string `json:"appViewUrl,omitempty"    bson:"-"`
 	ReportURL     string            `json:"reportUrl,omitempty"     bson:"-"`
@@ -45,7 +44,6 @@ func AppMetaFromApp(a *App) *AppMeta {
 	return &AppMeta{
 		AppID:         a.ID,
 		Description:   a.Description,
-		AvatarURL:     a.AvatarURL,
 		Assistant:     a.Assistant,
 		AppViewURL:    a.AppViewURL,
 		ReportURL:     a.ReportURL,

@@ -472,7 +472,6 @@ name**. All app fields are optional (omitted when unset).
 |---|---|---|
 | `appId` | string | The app's ID. |
 | `description` | string | App description. |
-| `avatarUrl` | string | App avatar URL. |
 | `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument. |
 | `appViewUrl` | map<string, string> | App-view URLs keyed by view name. |
 | `reportUrl` | string | App report URL. |
@@ -3501,7 +3500,6 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "favorite": false,
       "appId": "app_helper",
       "description": "Your friendly helper bot",
-      "avatarUrl": "https://cdn.example.com/apps/helper.png",
       "assistant": { "name": "helper.bot", "enabled": true, "username": "Helper" },
       "appViewUrl": { "main": "https://apps.example.com/helper" },
       "version": "1.4.2",
