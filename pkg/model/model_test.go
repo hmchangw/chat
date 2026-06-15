@@ -647,6 +647,18 @@ func TestDMSubscriptionJSON_HRInfoOmittedWhenNil(t *testing.T) {
 	assert.False(t, hasHRInfo, "nil HRInfo must be omitted from JSON")
 }
 
+func TestSubscriptionItem_Base(t *testing.T) {
+	base := &model.Subscription{ID: "s1", Name: "row"}
+	items := []model.SubscriptionItem{
+		&model.ChannelSubscription{Subscription: base},
+		&model.DMSubscription{Subscription: base},
+		&model.BotDMSubscription{Subscription: base},
+	}
+	for _, it := range items {
+		assert.Same(t, base, it.Base(), "Base() must return the embedded base subscription")
+	}
+}
+
 func TestSubscriptionHRInfoJSON(t *testing.T) {
 	hr := model.SubscriptionHRInfo{
 		Account: "bob",

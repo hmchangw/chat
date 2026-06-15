@@ -97,12 +97,45 @@ type SubscriptionHRInfo struct {
 	EngName string `json:"engName" bson:"engName"`
 }
 
+// SubscriptionItem is the client-facing response shape for one subscription row.
+// Each concrete type embeds the base *Subscription (common fields flatten at JSON
+// marshal time) and adds its room-type-specific fields:
+//   - ChannelSubscription → base only
+//   - DMSubscription      → base + hrInfo
+//   - BotDMSubscription   → base + a nested app object
+//
+// It is a read/response model only — kept distinct from the base Subscription that
+// is persisted to MongoDB so the heterogeneous list can be modeled per room type.
+type SubscriptionItem interface {
+	// Base returns the embedded base subscription carrying the common fields.
+	Base() *Subscription
+	isSubscriptionItem()
+}
+
+// ChannelSubscription is the channel-room response row: just the base subscription.
+type ChannelSubscription struct {
+	*Subscription
+}
+
 // DMSubscription is the wire/storage shape for DM subscriptions: base Subscription plus counterpart HRInfo.
-// The embedded pointer flattens at JSON marshal time; only emitted for RoomTypeDM — channels/botDMs ship plain Subscription.
+// The embedded pointer flattens at JSON marshal time; only emitted for RoomTypeDM.
 type DMSubscription struct {
 	*Subscription `bson:",inline"`
 	HRInfo        *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
 }
+
+// BotDMSubscription is the botDM response row: base Subscription plus a nested app object.
+type BotDMSubscription struct {
+	*Subscription
+	App *AppSubscription `json:"app,omitempty"`
+}
+
+func (s *ChannelSubscription) Base() *Subscription { return s.Subscription }
+func (s *ChannelSubscription) isSubscriptionItem() {}
+func (s *DMSubscription) Base() *Subscription      { return s.Subscription }
+func (s *DMSubscription) isSubscriptionItem()      {}
+func (s *BotDMSubscription) Base() *Subscription   { return s.Subscription }
+func (s *BotDMSubscription) isSubscriptionItem()   {}
 
 // IsRoomMember reports whether sub represents an active membership; returns false for nil.
 func IsRoomMember(sub *Subscription) bool {

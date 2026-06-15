@@ -63,28 +63,32 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 //
 // App and HR lookups degrade independently: a failed/missing lookup keeps the base
 // name and omits the app object — it never fails the request.
-func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []models.SubscriptionListItem {
+func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []model.SubscriptionItem {
 	apps := s.lookupApps(c, subs)
 	hrInfo := s.lookupHRInfo(c, subs)
-	items := make([]models.SubscriptionListItem, len(subs))
+	items := make([]model.SubscriptionItem, len(subs))
 	for i := range subs {
-		item := models.SubscriptionListItem{Subscription: &subs[i]}
+		base := &subs[i]
 		switch subs[i].RoomType {
 		case model.RoomTypeBotDM:
+			botDM := &model.BotDMSubscription{Subscription: base}
 			if app, ok := apps[subs[i].Name]; ok && app != nil {
 				if app.Name != "" {
-					subs[i].Name = app.Name
+					base.Name = app.Name
 				}
-				item.App = model.AppSubscriptionFromApp(app)
+				botDM.App = model.AppSubscriptionFromApp(app)
 			}
+			items[i] = botDM
 		case model.RoomTypeDM:
+			dm := &model.DMSubscription{Subscription: base}
 			if hr, ok := hrInfo[subs[i].Name]; ok {
-				item.HRInfo = hr
+				dm.HRInfo = hr
 			}
+			items[i] = dm
 		default:
 			// channel / discussion rows ship the base Subscription unchanged.
+			items[i] = &model.ChannelSubscription{Subscription: base}
 		}
-		items[i] = item
 	}
 	return items
 }
@@ -403,7 +407,7 @@ func (s *UserService) GetByRoomID(c *natsrouter.Context, req models.GetByRoomIDR
 		return nil, fmt.Errorf("get subscription by roomId: %w", err)
 	}
 	if sub == nil {
-		return &models.SubscriptionListResponse{Subscriptions: []models.SubscriptionListItem{}, Total: 0}, nil
+		return &models.SubscriptionListResponse{Subscriptions: []model.SubscriptionItem{}, Total: 0}, nil
 	}
 	one := []model.Subscription{*sub}
 	s.enrichWithRoomInfo(c, one)

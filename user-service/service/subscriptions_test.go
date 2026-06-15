@@ -152,7 +152,7 @@ func TestListSubscriptions_LocalBaselineRoom_KeyDegrades(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
-	room := resp.Subscriptions[0].Room
+	room := resp.Subscriptions[0].Base().Room
 	require.NotNil(t, room, "local sub yields a baseline room object from the $lookup values")
 	assert.Equal(t, "site-a", room.SiteID)
 	assert.Equal(t, "General", room.Name)
@@ -188,8 +188,9 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	// botDM row: app display name + nested app object, no hrInfo.
-	bot := resp.Subscriptions[0]
+	// botDM row: app display name + nested app object (type guarantees no hrInfo).
+	bot, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
+	require.True(t, ok, "row 0 must be a botDM subscription")
 	assert.Equal(t, "Helper App", bot.Name, "botDM name must be replaced by the app display name")
 	require.NotNil(t, bot.Room)
 	assert.Equal(t, "bot-room-canonical", bot.Room.Name)
@@ -200,12 +201,10 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	assert.Equal(t, "1.0.0", bot.App.Version)
 	require.NotNil(t, bot.App.Assistant)
 	assert.Equal(t, "helper.bot", bot.App.Assistant.Name)
-	assert.Nil(t, bot.HRInfo, "botDM row must not carry hrInfo")
-	// channel row: base only.
-	ch := resp.Subscriptions[1]
+	// channel row: base only (type guarantees no app/hrInfo).
+	ch, ok := resp.Subscriptions[1].(*model.ChannelSubscription)
+	require.True(t, ok, "row 1 must be a channel subscription")
 	assert.Equal(t, "general", ch.Name, "channel name must stay the subscription name")
-	assert.Nil(t, ch.App, "channel row must not carry an app object")
-	assert.Nil(t, ch.HRInfo, "channel row must not carry hrInfo")
 }
 
 func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
@@ -221,12 +220,13 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	dm := resp.Subscriptions[0]
+	dm, ok := resp.Subscriptions[0].(*model.DMSubscription)
+	require.True(t, ok, "row 0 must be a dm subscription")
 	require.NotNil(t, dm.HRInfo, "dm row must carry hrInfo")
 	assert.Equal(t, "鮑勃", dm.HRInfo.Name)
 	assert.Equal(t, "Bob Chen", dm.HRInfo.EngName)
-	assert.Nil(t, dm.App, "dm row must not carry an app object")
-	assert.Nil(t, resp.Subscriptions[1].HRInfo, "channel row carries no hrInfo")
+	_, isChannel := resp.Subscriptions[1].(*model.ChannelSubscription)
+	assert.True(t, isChannel, "row 1 must be a channel subscription (no hrInfo)")
 }
 
 func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
@@ -240,8 +240,10 @@ func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err, "hr lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
-	assert.Equal(t, "bob", resp.Subscriptions[0].Name, "degraded lookup keeps the counterpart account name")
-	assert.Nil(t, resp.Subscriptions[0].HRInfo, "degraded hr lookup omits hrInfo")
+	dm, ok := resp.Subscriptions[0].(*model.DMSubscription)
+	require.True(t, ok, "row 0 must be a dm subscription")
+	assert.Equal(t, "bob", dm.Name, "degraded lookup keeps the counterpart account name")
+	assert.Nil(t, dm.HRInfo, "degraded hr lookup omits hrInfo")
 }
 
 // Two botDM subs sharing a bot account must dedup to a single GetAppsByAssistants
@@ -260,10 +262,14 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name)
-	assert.Equal(t, "Helper App", resp.Subscriptions[1].Name)
-	require.NotNil(t, resp.Subscriptions[0].App)
-	require.NotNil(t, resp.Subscriptions[1].App)
+	b0, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
+	require.True(t, ok)
+	b1, ok := resp.Subscriptions[1].(*model.BotDMSubscription)
+	require.True(t, ok)
+	assert.Equal(t, "Helper App", b0.Name)
+	assert.Equal(t, "Helper App", b1.Name)
+	require.NotNil(t, b0.App)
+	require.NotNil(t, b1.App)
 }
 
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
@@ -278,8 +284,10 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err, "app lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
-	assert.Equal(t, "helper.bot", resp.Subscriptions[0].Name, "degraded lookup keeps the bot account name")
-	assert.Nil(t, resp.Subscriptions[0].App, "degraded app lookup omits the app object")
+	bot, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
+	require.True(t, ok, "row 0 must be a botDM subscription")
+	assert.Equal(t, "helper.bot", bot.Name, "degraded lookup keeps the bot account name")
+	assert.Nil(t, bot.App, "degraded app lookup omits the app object")
 }
 
 func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
@@ -293,8 +301,10 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"rb1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
-	assert.Equal(t, "orphan.bot", resp.Subscriptions[0].Name, "unmatched bot keeps the account name")
-	assert.Nil(t, resp.Subscriptions[0].App, "unmatched bot omits the app object")
+	bot, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
+	require.True(t, ok, "row 0 must be a botDM subscription")
+	assert.Equal(t, "orphan.bot", bot.Name, "unmatched bot keeps the account name")
+	assert.Nil(t, bot.App, "unmatched bot omits the app object")
 }
 
 func TestListSubscriptions_StoreError(t *testing.T) {
@@ -324,8 +334,8 @@ func TestListSubscriptions_Favorite(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "self", resp.Subscriptions[0].ID, "self-DM favorite must be first")
-	assert.Equal(t, "ch2", resp.Subscriptions[1].ID)
+	assert.Equal(t, "self", resp.Subscriptions[0].Base().ID, "self-DM favorite must be first")
+	assert.Equal(t, "ch2", resp.Subscriptions[1].Base().ID)
 }
 
 func ptrBool(b bool) *bool { return &b }
@@ -498,10 +508,11 @@ func TestGetByRoomID_OK_Enriched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, resp.Total)
 	require.Len(t, resp.Subscriptions, 1)
-	assert.Equal(t, "s1", resp.Subscriptions[0].ID)
-	assert.Equal(t, "Stale", resp.Subscriptions[0].Name, "subscription name must survive enrichment")
-	require.NotNil(t, resp.Subscriptions[0].Room, "enriched room must propagate through the 1-elem slice")
-	assert.Equal(t, "Renamed", resp.Subscriptions[0].Room.Name)
+	base := resp.Subscriptions[0].Base()
+	assert.Equal(t, "s1", base.ID)
+	assert.Equal(t, "Stale", base.Name, "subscription name must survive enrichment")
+	require.NotNil(t, base.Room, "enriched room must propagate through the 1-elem slice")
+	assert.Equal(t, "Renamed", base.Room.Name)
 }
 
 func TestGetChannels_Empty(t *testing.T) {
@@ -530,9 +541,11 @@ func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "rb1"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
-	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM via getByRoomID must also carry the app display name")
-	require.NotNil(t, resp.Subscriptions[0].App, "botDM via getByRoomID must carry the nested app object")
-	assert.Equal(t, "app-helper", resp.Subscriptions[0].App.AppID)
+	bot, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
+	require.True(t, ok, "row 0 must be a botDM subscription")
+	assert.Equal(t, "Helper App", bot.Name, "botDM via getByRoomID must also carry the app display name")
+	require.NotNil(t, bot.App, "botDM via getByRoomID must carry the nested app object")
+	assert.Equal(t, "app-helper", bot.App.AppID)
 }
 
 func TestCount_Total(t *testing.T) {

@@ -21,33 +21,42 @@ func TestSubscriptionListRequest_RoundTrip(t *testing.T) {
 	require.Equal(t, in, out)
 }
 
-func TestSubscriptionListResponse_RoundTrip(t *testing.T) {
+func TestSubscriptionListResponse_Marshal(t *testing.T) {
+	// Subscriptions is a []model.SubscriptionItem (interface) — a server-only
+	// response type, so this verifies the marshaled wire shape (it is never
+	// unmarshaled back into the interface slice).
 	joined := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	in := SubscriptionListResponse{
-		Subscriptions: []SubscriptionListItem{
-			{Subscription: &model.Subscription{ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "General", JoinedAt: joined}},
+		Subscriptions: []model.SubscriptionItem{
+			&model.ChannelSubscription{Subscription: &model.Subscription{
+				ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "General", JoinedAt: joined, RoomType: model.RoomTypeChannel,
+			}},
 		},
 		Total: 1,
 	}
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
-	var out SubscriptionListResponse
+	var out struct {
+		Subscriptions []map[string]any `json:"subscriptions"`
+		Total         int              `json:"total"`
+	}
 	require.NoError(t, json.Unmarshal(b, &out))
 	require.Len(t, out.Subscriptions, 1)
-	require.NotNil(t, out.Subscriptions[0].Subscription)
-	require.Equal(t, "s1", out.Subscriptions[0].ID)
-	require.Equal(t, "General", out.Subscriptions[0].Name)
-	require.Nil(t, out.Subscriptions[0].App, "channel row carries no app object")
-	require.Nil(t, out.Subscriptions[0].HRInfo, "channel row carries no hrInfo")
+	require.Equal(t, "s1", out.Subscriptions[0]["id"])
+	require.Equal(t, "General", out.Subscriptions[0]["name"])
+	_, hasApp := out.Subscriptions[0]["app"]
+	require.False(t, hasApp, "channel row carries no app object")
+	_, hasHR := out.Subscriptions[0]["hrInfo"]
+	require.False(t, hasHR, "channel row carries no hrInfo")
 	require.Equal(t, 1, out.Total)
 }
 
-// TestSubscriptionListItem_HeterogeneousRows pins the wire shape per room type:
+// TestSubscriptionItem_HeterogeneousRows pins the wire shape per room type:
 // channel = base only; dm adds top-level hrInfo; botDM adds a nested app object
 // (appId/name/description/assistant/…) and carries NO hrInfo.
-func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
+func TestSubscriptionItem_HeterogeneousRows(t *testing.T) {
 	t.Run("channel row is base only", func(t *testing.T) {
-		item := SubscriptionListItem{
+		item := &model.ChannelSubscription{
 			Subscription: &model.Subscription{ID: "c1", RoomID: "rc1", SiteID: "site-a", Name: "general", RoomType: model.RoomTypeChannel},
 		}
 		raw := marshalToMap(t, item)
@@ -59,7 +68,7 @@ func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 	})
 
 	t.Run("dm row adds top-level hrInfo", func(t *testing.T) {
-		item := SubscriptionListItem{
+		item := &model.DMSubscription{
 			Subscription: &model.Subscription{ID: "d1", RoomID: "rd1", SiteID: "site-a", Name: "bob", RoomType: model.RoomTypeDM},
 			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "鮑勃", EngName: "Bob Chen"},
 		}
@@ -74,7 +83,7 @@ func TestSubscriptionListItem_HeterogeneousRows(t *testing.T) {
 	})
 
 	t.Run("botDM row nests app metadata under app and carries no hrInfo", func(t *testing.T) {
-		item := SubscriptionListItem{
+		item := &model.BotDMSubscription{
 			Subscription: &model.Subscription{ID: "b1", RoomID: "rb1", SiteID: "site-a", Name: "Helper App", RoomType: model.RoomTypeBotDM},
 			App: model.AppSubscriptionFromApp(&model.App{
 				ID:          "app-helper",

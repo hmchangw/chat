@@ -11,24 +11,12 @@ type SubscriptionListRequest struct {
 }
 
 // SubscriptionListResponse is returned by subscription.list and subscription.getChannels.
+// Subscriptions is a heterogeneous slice of per-room-type rows ([model.SubscriptionItem]):
+// channel ([model.ChannelSubscription]), dm ([model.DMSubscription], adds hrInfo), and
+// botDM ([model.BotDMSubscription], adds a nested app object).
 type SubscriptionListResponse struct {
-	Subscriptions []SubscriptionListItem `json:"subscriptions"`
-	Total         int                    `json:"total"`
-}
-
-// SubscriptionListItem is one heterogeneous row in a subscription list:
-//   - channel → just the embedded base Subscription
-//   - dm      → base + a top-level hrInfo object
-//   - botDM   → base + a nested app object (app metadata)
-//
-// The embedded *Subscription promotes all base fields/JSON. App is nested under
-// the `app` key (its own appId/name/description/… ) rather than flattened, so
-// app.name does not collide with the base Subscription.name. Both App and HRInfo
-// are omitted by encoding/json when nil.
-type SubscriptionListItem struct {
-	*model.Subscription
-	App    *model.AppSubscription    `json:"app,omitempty"`
-	HRInfo *model.SubscriptionHRInfo `json:"hrInfo,omitempty"`
+	Subscriptions []model.SubscriptionItem `json:"subscriptions"`
+	Total         int                      `json:"total"`
 }
 
 // GetChannelsRequest is the body of subscription.getChannels (exactly one of the two set).
