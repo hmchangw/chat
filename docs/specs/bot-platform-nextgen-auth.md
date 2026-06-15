@@ -147,7 +147,7 @@ At canary start, make legacy credentials **read-only** (disable password change 
 
 ## 7. Architecture decision — where bot auth + the REST edge live
 
-Two viable placements. Both implement the *same* responsibilities (§9); they differ only in **which service hosts them**. Decision is **open** (§12 Q5); **Option A is recommended**.
+Two viable placements. Both implement the *same* responsibilities (§9); they differ only in **which service hosts them**. **DECIDED: Option B** (design-review decision, 2026-06-15) — the bot edge grew into a browser-facing web app (§9.6: HTML forms, CSRF, cookies) plus dual-token validation; isolating that from the JWT-signing, human-SSO `auth-service` wins on **blast-radius/key safety** first and **independent scaling/lifecycle** second. The signing key stays in `auth-service`; `bot-gateway` calls it to mint JWTs (native-bot logins only — not the hot path). Option A (faster, but mixes a web security model into human auth) remains documented below as the considered alternative; it was the right call for the *original* narrow scope.
 
 ### Option A — Extend `auth-service` (recommended)
 Add password login + the bot REST edge to the existing `auth-service`.
@@ -193,9 +193,9 @@ Istio ingress
 | Long-term maintainability | moderate | **better** |
 | Team ownership | single owner | split ownership |
 
-**Recommendation: Option A** — fastest path, reuses JWT minting, single owner; the human-auth-regression risk is contained by keeping bot code in its own files (`bot_auth.go`, `passwordverify.go`, separate handlers) and a strong test gate (§18). Revisit B if bot REST traffic needs independent scaling or the team splits ownership.
+**Decision: Option B.** A dedicated `bot-gateway` was chosen because the service is **more than a JSON bridge** — it serves a web UI (§9.6) with CSRF + session cookies and must validate legacy + new tokens, concerns best kept out of the pure-SSO `auth-service`. `bot-gateway` owns `credentials`+`sessions` (its own Mongo+Valkey) and calls `auth-service` to mint NATS JWTs. (Option A would have been faster but mixes those web/auth concerns into human auth.)
 
-> The rest of this spec (stores, flows, §9 responsibilities) is **placement-agnostic** — it holds under either option. Only the deployment unit and the JWT-mint call path differ.
+> The rest of this spec (stores, flows, §9 responsibilities) is **placement-agnostic** — it holds under either option. Under the chosen Option B they live in `bot-gateway`; the JWT-mint is a service-to-service call to `auth-service`.
 
 ---
 
@@ -214,20 +214,19 @@ Subjects follow `chat.user.{account}.request.…` via `pkg/subject`. `docs/clien
 
 ---
 
-## 9. HTTP↔NATS gateway (the REST compatibility edge)
+## 9. `bot-gateway` — web UI + REST↔NATS edge
 
-Legacy bots speak **REST with `X-Auth-Token`/`X-User-Id`**; nextgen speaks **NATS request/reply**. The gateway is the stateless edge that bridges them so bot code never changes. This section defines its responsibilities and the recommended, performance-first topology.
-
-> **"Gateway" = wherever the §7 decision places these responsibilities** — middleware + handlers inside `auth-service` (Option A) or a standalone `bot-gateway` (Option B). The responsibilities, trust model, and performance design below are identical either way.
+Legacy bots speak **REST with `X-Auth-Token`/`X-User-Id`**; nextgen speaks **NATS request/reply**. Admins/developers also need **browser** login & change-password pages. `bot-gateway` (the §7 Option-B service) is the stateless edge that serves both so bot code never changes and humans get a web UI.
 
 ### 9.1 Responsibilities
-1. **Protocol bridge** — terminate the legacy REST verb, translate to a NATS request/reply call on the mapped subject (per-verb mapping owned by the gateway track), translate the reply back to the REST body/status.
-2. **Authentication boundary (for REST bots)** — validate `X-Auth-Token`+`X-User-Id` against the session store (§9.3); reject with the RC-shaped 401 on failure. This is where bot authz is enforced — *not* via NATS JWT scoping.
-3. **Principal injection** — attach the validated `account`/`userId` + a request-id (`idgen.GenerateRequestID`) into the NATS request envelope/headers so downstream handlers know who is calling.
-4. **Connection management** — own a small pool of **long-lived** `*nats.Conn` (never connect-per-request).
-5. **Deadline & backpressure** — map the HTTP context deadline onto `Conn.RequestMsgWithContext`; apply a concurrency limit / load-shed (503) under saturation.
-6. **Error mapping** — turn the `errcode` JSON envelope returned over NATS into the RC-shaped HTTP status/body (reuse `errcode` classification).
-7. **Observability** — propagate request-id, emit per-request metrics + traces (mirrors the HTTP middleware rule in CLAUDE.md).
+1. **Web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies**, enforce **CSRF** on POST.
+2. **Protocol bridge** — terminate the REST verb, translate to a NATS request/reply call on the mapped subject, translate the reply back to the REST body/status.
+3. **Authentication boundary** — validate the credential against the session store (§9.3): `X-Auth-Token`+`X-User-Id` for API, **session cookie** for web. **Dual-token aware** — accepts legacy RC tokens (`scheme:"legacy"`) and new botplatform tokens (`scheme:"v1"`), §9.7. Reject with the RC-shaped 401 (API) / redirect-to-login (web).
+4. **Principal injection** — attach the validated `account`/`userId` + a request-id (`idgen.GenerateRequestID`) into the NATS request headers so downstream handlers know who is calling.
+5. **Connection management** — own a small pool of **long-lived** `*nats.Conn` (never connect-per-request); call `auth-service` to mint a NATS JWT only for native-bot logins.
+6. **Deadline & backpressure** — map the HTTP context deadline onto `Conn.RequestMsgWithContext`; apply a concurrency limit / load-shed (503) under saturation.
+7. **Error mapping** — turn the `errcode` JSON envelope returned over NATS into the RC-shaped HTTP status/body (API) or a form error (web).
+8. **Observability** — propagate request-id, emit per-request metrics + traces (mirrors the HTTP middleware rule in CLAUDE.md).
 
 ### 9.2 Recommended topology — two client trust models
 
@@ -277,6 +276,26 @@ Build a **thin Go/Gin gateway**, consistent with the repo (auth-service is alrea
 
 These drive the design choices in §9.3 (pooled service-account connection, cache-fronted validation, throttled `LastUsedAt`) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `gw_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
 
+### 9.6 Endpoint inventory
+
+| Surface | Path | Method | Returns | Credential | CSRF |
+|---|---|---|---|---|---|
+| Web — login form | `/dev-login` | GET | HTML | — | — |
+| Web — login submit | `/dev-login` | POST | redirect + Set-Cookie | form | **yes** |
+| Web — change-pwd form | `/changepwd` | GET | HTML | session cookie | — |
+| Web — change-pwd submit | `/changepwd` | POST | redirect | session cookie | **yes** |
+| API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
+| API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
+| API — authenticated | `/v1/bot/*`, `/api/v1/*` | * | JSON → NATS | `X-Auth-Token`+`X-User-Id` | n/a |
+| Health | `/healthz` | GET | 200 | — | — |
+
+- **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
+- **API** = bearer tokens only; **no cookies, no CSRF** (no ambient credential to forge).
+- `/api/v1/login` reproduces the legacy RC contract verbatim (existing SDK). `/v1/bot/login` is the new re-architected path. Both write to the same `sessions` store.
+
+### 9.7 Dual-token validation (migration)
+Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via the 180-day sliding window. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
+
 ---
 
 ## 10. Zero-downtime cutover (Istio, same URL, new namespace)
@@ -305,6 +324,8 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 - **Timing-safe credential comparison** — run the bcrypt compare even on unknown accounts (dummy hash); uniform error + timing (no account enumeration).
 - **Login rate limiting / lockout:** **5 failed attempts → 15-minute lockout** (keyed by account, ideally also by source IP). Backed by Valkey (shared across pods); lockout returns a uniform auth error, not a distinct "locked" leak. Successful login resets the counter.
 - **HTTPS only** — TLS terminated at the Istio ingress gateway; the edge service speaks plain HTTP only inside the mesh.
+- **CSRF protection on web (form) routes** (`/dev-login`, `/changepwd`) — synchronizer-token (or double-submit) pattern; verified on every POST. **API/token routes are exempt** (bearer token is not an ambient credential, so not CSRF-forgeable).
+- **Session cookies (web)** — `HttpOnly`, `Secure`, `SameSite=Lax`, scoped path; the cookie carries the same session token (validated identically to the API header, §5.3). Distinct surface from API bearer tokens; both resolve to the one `sessions` store.
 - Client-facing errors use `pkg/errcode` named constructors + a domain `reason` where the frontend must branch (`requirePasswordChange`, `invalidCredentials`); replied via `errnats.Reply`. Infra failures return raw wrapped errors (collapse to `internal`).
 - New client-facing handlers → update `docs/client-api.md` in the same PR.
 
@@ -314,16 +335,16 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ## 12. Open questions & decisions
 
-> "Recommended" entries are the proposed answer with rationale, not yet locked. "Confirmed" entries were verified against the internal codebase. The one **decision still pending sign-off** is the architecture (Q5).
+> "Recommended" entries are the proposed answer with rationale, not yet locked. "Confirmed" entries were verified against the internal codebase or decided in design review.
 
 ### Decisions pending sign-off
-- **Q5 — Architecture (A vs B).** Two options fully laid out in §7. **Recommended: Option A** (extend `auth-service` — fastest, reuses JWT minting, single owner; human-auth risk contained by file/test isolation). Option B (dedicated `bot-gateway`) is the alternative if independent scaling or ownership split is wanted. *Awaiting your pick.*
 - **Q1b — Resume RPC for the new native bot SDK.** Recommend **exposing the §5.2 session→JWT exchange as a `session.refresh` RPC** for re-architected native bots (lets them reconnect from a stored token, no password). Legacy REST bots unaffected. *Decision: expose now or defer to the native-SDK milestone (§5.6).*
 
 ### Recommended — pending infra confirmation
 - **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3). *Confirm:* dual-run window length; whether live password changes must keep working on legacy.
 
 ### Confirmed — closed
+- **Q5 — Architecture.** ✅ **Option B — dedicated `bot-gateway`** (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. `bot-gateway` owns `credentials`+`sessions`; `auth-service` keeps the signing key and mints JWTs on request (§7).
 - **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
 - **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
 - **Q2 — Session lifetime.** ✅ **Sliding idle expiry**, effectively infinite at **180-day idle** — matches current v2 Go repo behavior (§5.5). Refreshed on the throttled use-bump; revocation is the kill switch.
@@ -445,7 +466,7 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 
 **auth-service** (additions): `SESSION_IDLE_WINDOW` (`envDefault:"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `JWT_TTL` (`"15m"`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `VALKEY_ADDRS` (required), Mongo URI/DB (required). Reuses existing `AUTH_SIGNING_KEY`.
 
-**gateway / REST edge** (its own service under Option B; merged into auth-service under Option A): `NATS_URL` + service-account creds (required), `GATEWAY_NATS_POOL_SIZE` (`"4"`), `GATEWAY_REQUEST_TIMEOUT` (`"10s"`), `GATEWAY_MAX_CONCURRENCY` (`"500"`), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"`), `PORT` (`"8080"`). Secrets never defaulted (house rule).
+**`bot-gateway`** (the §7 Option-B service): `NATS_URL` + service-account creds (required), `GATEWAY_NATS_POOL_SIZE` (`"4"`), `GATEWAY_REQUEST_TIMEOUT` (`"10s"`), `GATEWAY_MAX_CONCURRENCY` (`"500"`), `VALKEY_ADDRS` (required), Mongo URI/DB (required, owns `credentials`+`sessions`), `SESSION_CACHE_TTL` (`"5m"`), `BCRYPT_COST` (`"10"`), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSION_IDLE_WINDOW` (`"4320h"`), `SESSION_LASTUSED_THROTTLE` (`"5m"`), and web-surface vars: `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), `AUTH_SERVICE_SUBJECT` (for JWT-mint calls). `PORT` (`"8080"`). Secrets never defaulted (house rule).
 
 ---
 
@@ -461,6 +482,8 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 - **Password verify** — `TestVerifyPassword` (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
 - **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries; assert only the regular tokens become `sessions` rows.
 - **Rate limit** — `TestLoginRateLimit`: 5 failures → 6th is locked out (uniform error); successful login resets the counter; lockout expires after the window.
+- **Web/CSRF** — `TestDevLoginForm` (GET renders form + CSRF token), `TestDevLoginSubmit` (POST sets HttpOnly/Secure cookie on success; **rejects POST without/with bad CSRF token**), `TestChangePwd` (requires cookie + CSRF; revokes other sessions on success).
+- **Dual-token** — `TestValidate_AcceptsLegacyAndV1`: both a `scheme:"legacy"` and a `scheme:"v1"` token validate via the same path.
 - **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
 - **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
 - **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
@@ -469,16 +492,17 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 ---
 
 ## 19. Implementation phases (each = TDD + own PR)
-0. **Lock the §7 architecture (A or B)** — gates the deployment unit for phases 2/5.
-1. `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
-2. Password verify + session lifecycle + HTTP `POST /api/v1/login` + JWT refresh (in auth-service under A; in bot-gateway under B — reuse/call JWT minting).
-3. Valkey read-through cache + invalidation.
-4. Migration script (credential + non-PAT live-token import) with `--dry-run` + verify mode.
-5. REST↔NATS edge (principal injection, error mapping, pooled conn, load-shed) — middleware+handlers in auth-service (A) or standalone bot-gateway (B).
-6. Operator provisioning NATS handlers + admin authz + `docs/client-api.md`.
-7. **Load test** against the §9.5 SLAs/criteria (10k logins/min, 100k sessions, 1M validations/min) — gate cutover on pass.
-8. Istio routing + canary runbook (separate from app PRs).
-9. Operator UI frontend (likely a separate repo/track).
+*Architecture is decided: Option B — a new `bot-gateway` service (§7).*
+1. Scaffold `bot-gateway` service (per repo service template) + `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
+2. Password verify + session lifecycle + `POST /api/v1/login` + `POST /v1/bot/login` + JWT-refresh (service-to-service mint call to `auth-service`).
+3. Web UI: `/dev-login` + `/changepwd` HTML forms, session cookies, CSRF middleware.
+4. Valkey read-through cache + invalidation; dual-token (legacy + v1) validation.
+5. Migration script (credential + non-PAT live-token import) with `--dry-run` + verify mode.
+6. REST↔NATS edge (principal injection, error mapping, pooled conn, load-shed).
+7. Operator provisioning NATS handlers + admin authz + `docs/client-api.md`.
+8. **Load test** against the §9.5 SLAs/criteria — gate cutover on pass.
+9. Istio routing + canary runbook (separate from app PRs).
+10. Operator UI frontend (likely a separate repo/track).
 
 ---
 
@@ -521,5 +545,5 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] A NATS **service account** for the REST edge with publish rights on `chat.user.*.request.>` (and that user JWTs remain scoped to self). **(§9.3)**
 
 **Decisions to sign off (§12)**
-- [ ] **Q5 architecture: Option A or B** · [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 freeze-legacy (dual-run window)
-- [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey day-one · [x] Q7 idleWindow=180d · [x] Q8 password-only · [x] Q9 id-preserved
+- [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 freeze-legacy (dual-run window)
+- [x] **Q5 architecture = Option B (`bot-gateway`)** · [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey day-one · [x] Q7 idleWindow=180d · [x] Q8 password-only · [x] Q9 id-preserved

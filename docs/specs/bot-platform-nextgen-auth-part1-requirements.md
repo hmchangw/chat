@@ -26,23 +26,49 @@
 
 ---
 
-## 3. Architecture decision
+## 3. Architecture decision — DECIDED: Option B (new `bot-gateway` service)
 
-Where do bot auth + the REST edge live? Two options (full breakdown in **Part 2 §7**):
+Where do bot auth + the REST edge live? Two options were weighed (full breakdown in **Part 2 §7**):
 
-- **Option A — Extend `auth-service` (recommended).** Add password login, the `credentials`/`sessions` stores, header-validation middleware, and admin RPCs to the existing auth service.
-- **Option B — New `bot-gateway` service.** A dedicated service for bot password auth + REST→NATS translation + admin ops; `auth-service` stays pure-SSO.
+- **Option A — Extend `auth-service`.** Add password login + stores + middleware + admin RPCs to the existing auth service.
+- **Option B — New `bot-gateway` service. ✅ SELECTED (design-review decision, 2026-06-15).** A dedicated service for bot password auth + REST→NATS translation + admin ops; `auth-service` stays pure-SSO.
 
 | Criterion | Option A | Option B |
 |---|---|---|
-| Time to implement | **faster** | slower |
-| Operational complexity | **lower** | higher |
+| Time to implement | faster | slower |
+| Operational complexity | lower | higher |
 | Separation of concerns | poor | **good** |
 | Risk to human auth | higher | **lower** |
 | Long-term maintainability | moderate | **better** |
-| Team ownership | single owner | split ownership |
+| Team ownership | single owner | **split ownership** |
 
-**Recommendation: Option A** — fastest path, reuses the existing JWT-minting code, single-team ownership; the human-auth-regression risk is contained by isolating bot code in its own files and a strong test gate. **Decision pending sign-off.**
+**Why B, despite A being faster** (the scope crossed a threshold — it is now **more than a JSON API**):
+- **Blast radius / key safety:** `auth-service` holds the JWT signing key and does human SSO; a browser-facing web UI (HTML, cookies, CSRF) is a much larger attack surface that must not share a process with the signing key. Process isolation > file separation.
+- **Signing key stays put:** `bot-gateway` never holds the key — it calls `auth-service` to mint JWTs (and only for *native* bot logins; REST bots use the gateway's service-account connection, no per-bot JWT).
+- **Independent scaling & deploy:** bot load (10k logins/min, 1M validations/min) and the 1-week bot canary are decoupled from human SSO.
+- **Clean sunset:** legacy bot auth (Phase 5) is far easier to retire as a standalone service.
+
+A would have shipped faster but mixes a web app's security model into the human-auth signer. *(Note: A was the right call for the original narrow scope; the web-UI + dual-token additions are what tip it to B.)*
+
+---
+
+## 3a. Interfaces & endpoint paths
+
+The `bot-gateway` exposes **three surfaces**:
+
+| Surface | Path | Method | Returns | Auth |
+|---|---|---|---|---|
+| Web — login form | `/dev-login` | `GET` | **HTML** form | — |
+| Web — login submit | `/dev-login` | `POST` | redirect + **session cookie** | CSRF token |
+| Web — change-pwd form | `/changepwd` | `GET` | **HTML** form | session cookie |
+| Web — change-pwd submit | `/changepwd` | `POST` | redirect | session cookie + CSRF |
+| API — legacy bot login | `/api/v1/login` | `POST` | **JSON** (`authToken`,`userId`,`me`) | — |
+| API — new bot login | `/v1/bot/login` | `POST` | **JSON** (new token) | — |
+| API — authenticated calls | `/v1/bot/*`, `/api/v1/*` | * | JSON | `X-Auth-Token` + `X-User-Id` |
+
+- **Web routes** use **session cookies** (HttpOnly/Secure/SameSite) + **CSRF protection**.
+- **API routes** use **bearer tokens** (`X-Auth-Token`/`X-User-Id`) — no cookies, no CSRF.
+- **`/api/v1/login`** preserves the legacy contract verbatim (existing SDK bots). **`/v1/bot/login`** is the new path for the re-architected SDK.
 
 ---
 
@@ -86,6 +112,18 @@ Where do bot auth + the REST edge live? Two options (full breakdown in **Part 2 
 - Show last-used time.
 - Revoke an individual session or all of them.
 
+### US7 — Web login (browser)
+*As an admin/developer, I want to log in through a web page.*
+- `GET /dev-login` serves an **HTML** form; `POST /dev-login` submits it.
+- On success, set a **session cookie** (HttpOnly/Secure/SameSite) and redirect.
+- **CSRF-protected.**
+
+### US8 — Web change-password (browser)
+*As a logged-in user, I want to change my password through a web page.*
+- `GET /changepwd` serves an **HTML** form; `POST /changepwd` submits it.
+- Requires a valid session cookie + **CSRF** token.
+- On success, **revoke other sessions** and force re-login (consistent with US5).
+
 ---
 
 ## 5. Critical constraints
@@ -102,6 +140,11 @@ Where do bot auth + the REST edge live? Two options (full breakdown in **Part 2 
 - **Skip personal access tokens** (`type:"personalAccessToken"`) — not used by bots.
 - **Zero bot code changes required.**
 
+**Dual-token validation (during migration):**
+- **Accept old Rocket.Chat tokens** (imported, validated against the same store).
+- **Issue new botplatform tokens** on every fresh login.
+- **Gradually phase out old tokens** — as bots re-login they get new tokens; legacy tokens age out via the 180-day sliding window and can eventually be rejected outright once telemetry shows none in use.
+
 ---
 
 ## 7. Security
@@ -109,6 +152,8 @@ Where do bot auth + the REST edge live? Two options (full breakdown in **Part 2 
 - **Timing-safe credential comparison** (run bcrypt even on unknown accounts; uniform error/timing — no account enumeration).
 - **Rate limiting:** 5 failed attempts → **15-minute lockout**.
 - **HTTPS only.**
+- **CSRF protection on all web (form) routes** (`/dev-login`, `/changepwd`); API/token routes are exempt (no ambient cookie credential).
+- **Session cookies for web** — HttpOnly, Secure, SameSite — distinct from API bearer tokens. Both resolve to the same session store.
 
 ---
 
