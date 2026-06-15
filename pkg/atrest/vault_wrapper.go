@@ -95,7 +95,11 @@ func reauth(ctx context.Context, lease leaseFunc, backoff backoffFunc) (tokenLea
 		}
 		next, err := lease(ctx)
 		if err == nil {
-			slog.Info("atrest: vault re-authenticated for a fresh token")
+			// Debug, not Info: a successful re-auth is a routine event that
+			// recurs roughly every token max_ttl (e.g. every ~20 min), so it
+			// would otherwise be steady log noise. The failure path below
+			// stays at Error — that's the signal operators act on.
+			slog.Debug("atrest: vault re-authenticated for a fresh token")
 			return next, true
 		}
 		if ctx.Err() != nil {
