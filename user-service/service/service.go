@@ -61,29 +61,31 @@ type EventPublisher interface {
 
 // UserService handles all user-related NATS request/reply endpoints.
 type UserService struct {
-	subs       SubscriptionRepository
-	users      UserRepository
-	apps       AppRepository
-	rooms      RoomClient
-	roomKeys   RoomKeyReader
-	pub        EventPublisher
-	siteID     string
-	allSiteIDs []string
-	maxSubs    int
+	subs            SubscriptionRepository
+	users           UserRepository
+	apps            AppRepository
+	rooms           RoomClient
+	roomKeys        RoomKeyReader
+	pub             EventPublisher
+	siteID          string
+	allSiteIDs      []string
+	maxSubs         int
+	maxAccountNames int
 }
 
 // New constructs a UserService with the given dependencies and configuration.
 func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, roomKeys RoomKeyReader, pub EventPublisher, cfg *config.Config) *UserService {
 	return &UserService{
-		subs:       subs,
-		users:      users,
-		apps:       apps,
-		rooms:      rooms,
-		roomKeys:   roomKeys,
-		pub:        pub,
-		siteID:     cfg.SiteID,
-		allSiteIDs: cfg.AllSiteIDs,
-		maxSubs:    cfg.MaxSubscriptionLimit,
+		subs:            subs,
+		users:           users,
+		apps:            apps,
+		rooms:           rooms,
+		roomKeys:        roomKeys,
+		pub:             pub,
+		siteID:          cfg.SiteID,
+		allSiteIDs:      cfg.AllSiteIDs,
+		maxSubs:         cfg.MaxSubscriptionLimit,
+		maxAccountNames: cfg.MaxAccountNames,
 	}
 }
 

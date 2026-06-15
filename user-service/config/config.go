@@ -27,6 +27,7 @@ type Config struct {
 	SiteID               string        `env:"SITE_ID,notEmpty"`
 	AllSiteIDs           []string      `env:"ALL_SITE_IDS"           envDefault:"" envSeparator:","`
 	MaxSubscriptionLimit int           `env:"MAX_SUBSCRIPTION_LIMIT" envDefault:"1000"`
+	MaxAccountNames      int           `env:"MAX_ACCOUNT_NAMES"      envDefault:"100"`
 	HandlerTimeout       time.Duration `env:"HANDLER_TIMEOUT"        envDefault:"15s"`
 	Mongo                MongoConfig   `envPrefix:"MONGO_"`
 	NATS                 NATSConfig    `envPrefix:"NATS_"`

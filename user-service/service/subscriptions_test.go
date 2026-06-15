@@ -344,7 +344,7 @@ func TestGetChannels_ExactlyOne(t *testing.T) {
 
 func TestGetChannels_TooManyAccountNames(t *testing.T) {
 	svc, _, _, _, _, _, _ := newSvc(t)
-	names := make([]string, maxAccountNames+1)
+	names := make([]string, 101) // over the configured cap (newSvc sets MaxAccountNames=100)
 	for i := range names {
 		names[i] = "u"
 	}
@@ -355,7 +355,7 @@ func TestGetChannels_TooManyAccountNames(t *testing.T) {
 
 func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 	svc, subs, _, _, rooms, _, _ := newSvc(t)
-	names := make([]string, maxAccountNames)
+	names := make([]string, 100) // exactly the configured cap (newSvc sets MaxAccountNames=100)
 	for i := range names {
 		names[i] = "u"
 	}

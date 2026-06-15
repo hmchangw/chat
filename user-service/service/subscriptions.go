@@ -32,9 +32,6 @@ const (
 	dmTargetBotSuffix    = ".bot"
 )
 
-// maxAccountNames caps getChannels' accountNames — unbounded input builds an arbitrarily large $in/$setIsSubset operand.
-const maxAccountNames = 100
-
 func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.SubscriptionListResponse, error) {
 	if !validListTypes[req.Type] {
 		return nil, errcode.BadRequest("unknown subscription type")
@@ -343,7 +340,8 @@ func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsR
 	if hasContain == hasNames {
 		return nil, errcode.BadRequest("exactly one of membersContain or accountNames is required")
 	}
-	if len(req.AccountNames) > maxAccountNames {
+	// maxAccountNames caps getChannels' accountNames — unbounded input builds an arbitrarily large $in/$setIsSubset operand.
+	if len(req.AccountNames) > s.maxAccountNames {
 		return nil, errcode.BadRequest("too many accountNames")
 	}
 	members := req.AccountNames
