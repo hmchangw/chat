@@ -3806,7 +3806,7 @@ PUT-like idempotent endpoint to subscribe or unsubscribe the calling user from a
 |-----------|--------|----------|-------|
 | `appId` missing | `bad_request` | — | `"appId required"` |
 | App not found | `not_found` | `app_not_found` | `"app not found"` |
-| App has no enabled assistant | `bad_request` | `app_disabled` | `"app has no enabled assistant"` |
+| App has no assistant | `bad_request` | `app_disabled` | `"app has no assistant"` |
 | Internal failure | `internal` | — | — |
 
 ---
@@ -4366,7 +4366,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `invalid_nkey` | bad_request | auth-service (natsPublicKey format) |
 | `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing) |
 | `app_not_found` | not_found | user-service `subscription.setAppSubscription` (appId does not resolve to any app) |
-| `app_disabled` | bad_request | user-service `subscription.setAppSubscription` (app exists but has no enabled assistant) |
+| `app_disabled` | bad_request | user-service `subscription.setAppSubscription` (app exists but has no assistant) |
 | `invalid_dm_target` | bad_request | user-service `subscription.getDM` (target is a bot or platform account) |
 | `subscription_not_found` | not_found | user-service `subscription.getDM` (no DM subscription exists for the account pair) |
 
