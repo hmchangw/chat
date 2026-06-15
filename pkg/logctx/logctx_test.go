@@ -330,6 +330,26 @@ func TestShouldCapture(t *testing.T) {
 	assert.False(t, ShouldCapture(context.Background()), "not requested → false even when enabled")
 }
 
+// Enabled is the caller-side predicate that lets a hot path skip building
+// expensive breadcrumb args (e.g. msg.Metadata()) when the record would be
+// dropped anyway. It must mirror the Handler's admission decision.
+func TestEnabled(t *testing.T) {
+	// Unadmitted: only INFO+ is enabled; FLOW/TRACE are not.
+	assert.False(t, Enabled(context.Background(), LevelFlow))
+	assert.False(t, Enabled(context.Background(), LevelTrace))
+	assert.True(t, Enabled(context.Background(), slog.LevelInfo))
+
+	// Admitted at flow: FLOW passes, TRACE (deeper) does not.
+	flow := withHonoredThreshold(context.Background(), LevelFlow)
+	assert.True(t, Enabled(flow, LevelFlow))
+	assert.False(t, Enabled(flow, LevelTrace))
+
+	// Admitted at trace: both FLOW and TRACE pass.
+	trace := withHonoredThreshold(context.Background(), LevelTrace)
+	assert.True(t, Enabled(trace, LevelFlow))
+	assert.True(t, Enabled(trace, LevelTrace))
+}
+
 // Handle is part of the public slog.Handler contract and may be invoked directly
 // (handler fan-out, slog.NewLogLogger, a wrapping handler). It must mirror
 // Enabled's sub-INFO gate so a FLOW/TRACE record never reaches the base handler

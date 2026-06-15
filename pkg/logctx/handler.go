@@ -34,6 +34,16 @@ func honoredThreshold(ctx context.Context) slog.Level {
 	return slog.LevelInfo
 }
 
+// Enabled reports whether a record at level would be emitted for ctx. Mirrors
+// the Handler's admission decision so a hot path can guard the construction of
+// expensive breadcrumb args — e.g. `if logctx.Enabled(ctx, logctx.LevelFlow) {
+// ... msg.Metadata() ... }` — and pay nothing when the rung is suppressed.
+// slog.Log evaluates its variadic args in the caller before Enabled runs, so
+// this predicate is the only way to skip that work entirely.
+func Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= honoredThreshold(ctx)
+}
+
 // Handler wraps a base slog.Handler. Records at/above INFO pass through the base
 // unchanged; sub-INFO records (FLOW, DEBUG, TRACE) pass ONLY when ctx was
 // admitted to a threshold at or below the record's level — letting a single

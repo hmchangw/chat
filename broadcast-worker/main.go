@@ -275,13 +275,17 @@ func broadcastProcessor(handler *Handler) messageProcessor {
 		handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
 		logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 		// flow: hop entry with the stream-wait latency time-diffing can't see.
-		streamWaitMs := int64(-1)
-		if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
-			streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+		// Gate the block so msg.Metadata() and arg-building are skipped on the
+		// unflagged hot path (slog.Log builds its args before Enabled runs).
+		if logctx.Enabled(handlerCtx, logctx.LevelFlow) {
+			streamWaitMs := int64(-1)
+			if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
+				streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+			}
+			slog.Log(handlerCtx, logctx.LevelFlow, "broadcast received",
+				"phase", "received", "request_id", natsutil.RequestIDFromContext(handlerCtx),
+				"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 		}
-		slog.Log(handlerCtx, logctx.LevelFlow, "broadcast received",
-			"phase", "received", "request_id", natsutil.RequestIDFromContext(handlerCtx),
-			"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 		if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 			slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 			if err := msg.Nak(); err != nil {

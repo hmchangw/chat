@@ -43,13 +43,17 @@ func NewHandler(store Store, userStore userstore.UserStore, threadStore ThreadSt
 
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	// flow: hop entry — stream-wait latency the inter-hop time-diff can't see.
-	streamWaitMs := int64(-1)
-	if meta, err := msg.Metadata(); err == nil && meta != nil {
-		streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+	// Gate the whole block so msg.Metadata() and arg-building are skipped on the
+	// unflagged hot path (slog.Log evaluates its args before Enabled runs).
+	if logctx.Enabled(ctx, logctx.LevelFlow) {
+		streamWaitMs := int64(-1)
+		if meta, err := msg.Metadata(); err == nil && meta != nil {
+			streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+		}
+		slog.Log(ctx, logctx.LevelFlow, "message-worker received",
+			"phase", "received", "request_id", natsutil.RequestIDFromContext(ctx),
+			"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 	}
-	slog.Log(ctx, logctx.LevelFlow, "message-worker received",
-		"phase", "received", "request_id", natsutil.RequestIDFromContext(ctx),
-		"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 
 	if err := h.processMessage(ctx, msg.Data()); err != nil {
 		slog.Log(ctx, logctx.LevelFlow, "message-worker nak", "phase", "nak", "request_id", natsutil.RequestIDFromContext(ctx))

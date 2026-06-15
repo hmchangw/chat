@@ -200,13 +200,17 @@ func (h *Handler) reconcileRoomOnDuplicateKey(ctx context.Context, want *model.R
 func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 	subj := msg.Subject()
 	// flow: hop entry — the room-mutation operation and stream-wait latency.
-	streamWaitMs := int64(-1)
-	if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
-		streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+	// Gate the block so msg.Metadata() and arg-building are skipped on the
+	// unflagged hot path (slog.Log builds its args before Enabled runs).
+	if logctx.Enabled(ctx, logctx.LevelFlow) {
+		streamWaitMs := int64(-1)
+		if meta, mErr := msg.Metadata(); mErr == nil && meta != nil {
+			streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
+		}
+		slog.Log(ctx, logctx.LevelFlow, "room-worker received", "phase", "received",
+			"request_id", natsutil.RequestIDFromContext(ctx), "subject", subj,
+			"bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 	}
-	slog.Log(ctx, logctx.LevelFlow, "room-worker received", "phase", "received",
-		"request_id", natsutil.RequestIDFromContext(ctx), "subject", subj,
-		"bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 
 	var err error
 	switch {

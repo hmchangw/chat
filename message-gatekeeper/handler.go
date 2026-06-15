@@ -145,6 +145,9 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 // sat in MESSAGES before this consumer picked it up, the queue latency that
 // inter-hop timestamp-diffing cannot see. Metadata only — never the body.
 func debugFlowReceived(ctx context.Context, msg jetstream.Msg, requestID string) {
+	if !logctx.Enabled(ctx, logctx.LevelFlow) {
+		return // skip msg.Metadata() and arg-building on the unflagged hot path
+	}
 	streamWaitMs := int64(-1)
 	if meta, err := msg.Metadata(); err == nil && meta != nil {
 		streamWaitMs = time.Since(meta.Timestamp).Milliseconds()
