@@ -1954,7 +1954,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			req:  model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}},
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1", "r2", "r3"}).Return([]model.Room{
-					{ID: "r1", Name: "general", SiteID: "site-a"},
+					{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 42, LastMsgID: "m-100"},
 					{ID: "r2", Name: "random", SiteID: "site-a"},
 					{ID: "r3", Name: "help", SiteID: "site-b"},
 				}, nil)
@@ -1968,10 +1968,12 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
 				require.Len(t, resp.Rooms, 3)
 
-				// r1: found, keyed
+				// r1: found, keyed, room-doc denorm fields forwarded
 				assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 				assert.True(t, resp.Rooms[0].Found)
 				assert.Equal(t, "general", resp.Rooms[0].Name)
+				assert.Equal(t, 42, resp.Rooms[0].UserCount)
+				assert.Equal(t, "m-100", resp.Rooms[0].LastMsgID)
 				require.NotNil(t, resp.Rooms[0].PrivateKey)
 				assert.Equal(t, privB64, *resp.Rooms[0].PrivateKey)
 				require.NotNil(t, resp.Rooms[0].KeyVersion)
