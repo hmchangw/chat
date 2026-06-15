@@ -85,9 +85,9 @@ One document per live session. **No array, no cap.**
 | Scheme | `string` | `bson:"scheme" json:"scheme"` | `"legacy"` (imported RC tokens, §6.2) or `"v1"` (nextgen-issued). |
 | IssuedAt | `int64` | `bson:"issuedAt" json:"issuedAt"` | ms since epoch. |
 | LastUsedAt | `int64` | `bson:"lastUsedAt" json:"lastUsedAt"` | **Throttled** write (§12 Q4) — not every request. |
-| ExpiresAt | `time.Time` | `bson:"expiresAt" json:"expiresAt"` | **Mongo TTL index** (`expireAfterSeconds:0`) auto-expires. |
+| ExpiresAt | `*time.Time` | `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"` | **Sliding idle expiry** (§5.5): pushed to `now + idleWindow` on the throttled use-bump. `nil`/absent ⇒ never expires (pure-infinite mode). |
 
-Indexes: `_id` (token hash); `userId`; TTL on `expiresAt`.
+Indexes: `_id` (token hash); `userId`; **partial TTL** on `expiresAt` (`expireAfterSeconds:0`, partial filter `{expiresAt:{$exists:true}}` so null/infinite sessions are never reaped).
 
 **Why this beats the legacy array:** RC embedded a `loginTokens[]` array on the user doc → unbounded doc growth, O(n) scan per request, hence a cap. Per-session docs keyed by hash make validation O(1) regardless of session count, so the cap disappears.
 
@@ -110,6 +110,12 @@ Present a valid session token → validate (§5.3) → mint a short-lived NATS u
 ### 5.4 First-login `requirePasswordChange`
 Bots can't fill a form, so this is **operator-time**: a provisioned account has `RequirePasswordChange:true`; the operator sets the real password via the change-password handler (§8), which updates `PasswordHash`, clears the flag, and revokes existing sessions.
 
+### 5.5 Session lifetime — effectively infinite (sliding idle)
+Sessions do **not** have a fixed TTL. On each (throttled) use-bump, `ExpiresAt` is pushed to `now + idleWindow` (recommend `idleWindow` ≈ 180d), so an actively-used token never expires — infinite for any real bot. Only a token left unused past the window is reaped by the partial TTL index, bounding collection growth and limiting the blast radius of a leaked-then-abandoned token. Revocation (operator action, or rotate-password revoking all of an account's sessions) remains the immediate kill switch. Pure literally-never mode = leave `ExpiresAt` null; then revocation is the only cleanup and the collection grows unbounded.
+
+### 5.6 "Resume" / session reuse
+There is **no bot-facing resume verb**. A REST bot logs in once (username + password) and reuses its `X-Auth-Token` on every subsequent call — the header *is* session reuse. The only resume primitive is internal (§5.2): a native client or the gateway exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
+
 ---
 
 ## 6. Migration (legacy RC Mongo → nextgen Mongo)
@@ -120,10 +126,10 @@ For each legacy `users` doc that is an admin or bot account:
 - Insert `credentials`: `services.password.bcrypt` → `PasswordHash`, `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
 
 ### 6.2 Live-session import (no-reauth cutover)
-For each entry in `services.resume.loginTokens[]`: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `Scheme:"legacy"`, `ExpiresAt = when + loginExpirationDays`. Because we reuse RC's hash form, an in-flight bot's existing `X-Auth-Token` validates against the imported row unchanged. The next login issues a native `v1` token.
+For each entry in `services.resume.loginTokens[]`: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` is ignored since sessions are effectively infinite). Because we reuse RC's hash form, an in-flight bot's existing `X-Auth-Token` validates against the imported row unchanged. The next login issues a native `v1` token.
 
-### 6.3 Cutover source-of-truth
-Decide when nextgen `credentials` becomes authoritative: (a) freeze legacy password changes at cutover, or (b) run a short legacy→nextgen credential sync until decommission (§12 Q3).
+### 6.3 Cutover source-of-truth — freeze legacy, one-time import (decided)
+At canary start, make legacy credentials **read-only** (disable password change / admin user-mgmt on the old stack) and run the one-time `credentials` import; nextgen is authoritative from that moment. Frozen-and-matched credentials mean a request landing on either stack authenticates identically (§10.3). A legacy→nextgen credential sync is the fallback **only** if a multi-week dual-run with live password changes is required.
 
 ---
 
@@ -220,11 +226,16 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ---
 
-## 12. Open questions (resolve before implementation plan)
+## 12. Open questions
 
-1. **Q1 — Exact legacy route + envelope.** Confirm the fork's login path (`/dev-login`?) and whether the response is the standard RC `{status,data:{authToken,userId}}` body, header-only, or both — so the gateway reproduces it byte-for-byte. (Underlying mechanics are standard RC/Meteor, §2.1.)
-2. **Q2 — `loginExpirationDays`.** The legacy login-token TTL, to compute `ExpiresAt = when + TTL` for imported sessions (§6.2).
-3. **Q3 — Cutover source-of-truth.** Freeze legacy password changes at cutover, or run ongoing credential sync until decommission?
-4. **Q4 — `LastUsedAt`.** Throttle window (e.g. 5 min) or drop the field entirely?
-5. **Q5 — Ownership.** Confirm `auth-service` owns credentials+sessions+provisioning, and the gateway is a separate read-only-cache consumer (§7, §9.3).
-6. **Q6 — Cache layer.** In-pod LRU + Valkey for session validation from day one (recommended for the REST hot path), or Mongo-only until measured?
+### Resolved
+- **Q1 — Login contract.** Username + password only (plaintext or RC `{digest, algorithm:"sha-256"}`). **No bot-facing `resume` verb**; the only resume primitive is the internal session→JWT exchange (§5.2, §5.6). *Still to confirm: the fork's exact path (`/dev-login`?) and whether the success envelope is body, header, or both — needed for byte-for-byte gateway fidelity.*
+- **Q2 — Session lifetime.** Effectively **infinite via sliding idle expiry** (§5.5), refreshed on the throttled use-bump; legacy `when`/`loginExpirationDays` ignored on import. Revocation is the kill switch.
+- **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3).
+- **Q4 — `LastUsedAt`.** Throttled write (recommend ≈5 min window), which doubles as the sliding-expiry refresh (§5.5).
+- **Q5 — Ownership.** **`auth-service` owns** credentials + sessions + JWT minting + provisioning; the **gateway is a separate stateless read-only cache consumer** (§7, §9.3).
+- **Q6 — Cache layer.** In-pod LRU + **Valkey from day one** for the session-validation hot path (§9.3).
+
+### Still open
+- **Q1a — Exact `/dev-login` path + success-envelope placement** (body vs. headers vs. both), to lock gateway response fidelity.
+- **Q7 — `idleWindow` value.** Recommend 180d; confirm.
