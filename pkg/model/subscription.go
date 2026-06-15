@@ -48,6 +48,17 @@ type Subscription struct {
 	// Room doc. Treat missing as false.
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
+
+	// Room-level enrichment, populated at read time from the rooms $lookup
+	// ($addFields) for local rows; cross-site rows leave userCount/lastMsgId empty
+	// (the RoomsInfoBatch RPC reply has no such fields). The bson tags are
+	// read-only decode targets — user-service never writes them. They are NOT
+	// bson:"-" because the aggregation $addFields decode depends on them; any
+	// writer persisting a full Subscription doc (ReplaceOne / $set of the whole
+	// struct) must strip these three first to avoid staling them into storage.
+	UserCount int        `json:"userCount,omitempty" bson:"userCount,omitempty"`
+	LastMsgAt *time.Time `json:"lastMsgAt,omitempty" bson:"lastMsgAt,omitempty"`
+	LastMsgID string     `json:"lastMsgId,omitempty" bson:"lastMsgId,omitempty"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a
@@ -70,8 +81,8 @@ type SubscriptionHRInfo struct {
 // Subscription (no hrInfo). Frontend mirrors this split in
 // chat-frontend/src/api/types.ts.
 type DMSubscription struct {
-	*Subscription
-	HRInfo *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
+	*Subscription `bson:",inline"`
+	HRInfo        *SubscriptionHRInfo `json:"hrInfo,omitempty" bson:"hrInfo,omitempty"`
 }
 
 // IsRoomMember reports whether sub represents an active membership.

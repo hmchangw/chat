@@ -9,7 +9,8 @@ import (
 )
 
 // Register subscribes a typed handler to a subject pattern.
-// Handler receives *Context (implements context.Context) and unmarshalled request.
+// Handler receives *Context (implements context.Context) and unmarshalled request;
+// an empty payload yields the zero-value Req (optional-body endpoints).
 // Panics if subscription fails (startup-only, fatal).
 func Register[Req, Resp any](
 	r *Router,
@@ -18,12 +19,16 @@ func Register[Req, Resp any](
 ) {
 	handler := HandlerFunc(func(c *Context) {
 		var req Req
-		if err := json.Unmarshal(c.Msg.Data, &req); err != nil {
-			// Cause preserves the parse-error chain for the Classify server log
-			// without echoing it to the client (errcode.Error.cause is unexported,
-			// never JSON-serialized). The user-facing message stays generic.
-			replyErr(c, errcode.BadRequest("invalid request payload", errcode.WithCause(err)))
-			return
+		// An empty payload is valid: the handler receives the zero-value Req.
+		// This lets callers of optional-body endpoints send no body at all.
+		if len(c.Msg.Data) > 0 {
+			if err := json.Unmarshal(c.Msg.Data, &req); err != nil {
+				// Cause preserves the parse-error chain for the Classify server log
+				// without echoing it to the client (errcode.Error.cause is unexported,
+				// never JSON-serialized). The user-facing message stays generic.
+				replyErr(c, errcode.BadRequest("invalid request payload", errcode.WithCause(err)))
+				return
+			}
 		}
 
 		resp, err := fn(c, req)
@@ -65,6 +70,7 @@ func RegisterVoid[Req any](
 ) {
 	handler := HandlerFunc(func(c *Context) {
 		var req Req
+		// Unlike Register, an empty payload is rejected: void consumers always send a body.
 		if err := json.Unmarshal(c.Msg.Data, &req); err != nil {
 			slog.Error("invalid payload in void handler", "error", err, "subject", c.Msg.Subject)
 			return
