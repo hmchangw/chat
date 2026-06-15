@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
@@ -137,15 +139,67 @@ func distinctNamesByType(subs []model.Subscription, roomType model.RoomType) []s
 	return names
 }
 
-// enrichWithRoomInfo overwrites room-derived fields per site in parallel; a failed
-// site RPC keeps that site's subs unenriched — NOT count's all-or-nothing fallback.
+// enrichWithRoomInfo populates sub.Room for every subscription. LOCAL subs
+// (subs[i].SiteID == s.siteID) are enriched entirely from local Mongo — the
+// $lookup baseline carried on the subscription plus the room key read from the
+// local rooms collection, with NO room-service RPC. Only CROSS-SITE subs fan out
+// to the per-site GetRoomsInfo RPC, since their room docs live on another site.
+//
+// alert/hasMention are stored subscription state and are never touched here.
 func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Subscription) {
 	if len(subs) == 0 {
 		return
 	}
+
+	// Partition by locality. Cross-site subs are further grouped per remote site
+	// for the fan-out RPC.
+	var localIdx []int
 	idxBySite := map[string][]int{}
 	for i := range subs {
+		if subs[i].SiteID == s.siteID {
+			localIdx = append(localIdx, i)
+			continue
+		}
 		idxBySite[subs[i].SiteID] = append(idxBySite[subs[i].SiteID], i)
+	}
+
+	s.enrichLocal(c, subs, localIdx)
+	s.enrichCrossSite(c, subs, idxBySite)
+}
+
+// enrichLocal builds sub.Room for LOCAL subs from the $lookup baseline and the
+// room key read from the local rooms collection. A key-read failure degrades to
+// no key material (the room object is still built); it never fails the request.
+func (s *UserService) enrichLocal(c *natsrouter.Context, subs []model.Subscription, localIdx []int) {
+	if len(localIdx) == 0 {
+		return
+	}
+	roomIDs := make([]string, 0, len(localIdx))
+	seen := make(map[string]struct{}, len(localIdx))
+	for _, j := range localIdx {
+		rid := subs[j].RoomID
+		if _, dup := seen[rid]; dup {
+			continue
+		}
+		seen[rid] = struct{}{}
+		roomIDs = append(roomIDs, rid)
+	}
+	keys, err := s.roomKeys.GetMany(c, roomIDs)
+	if err != nil {
+		slog.WarnContext(c, "local room key lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
+		keys = nil
+	}
+	for _, j := range localIdx {
+		subs[j].Room = buildLocalRoom(&subs[j], keys[subs[j].RoomID])
+	}
+}
+
+// enrichCrossSite fans out per remote site to GetRoomsInfo; a failed site RPC
+// leaves that site's subs without a room object (no baseline fallback — there is
+// no local room doc for a cross-site room).
+func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscription, idxBySite map[string][]int) {
+	if len(idxBySite) == 0 {
+		return
 	}
 	sites := make([]string, 0, len(idxBySite))
 	for site := range idxBySite {
@@ -195,24 +249,29 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 			applyRoomInfo(&subs[j], &info)
 		}
 	}
-	// Degraded site or room not found ⇒ baseline room so the client always receives
-	// a room object. The Mongo $lookup only populates baseline UserCount/LastMsg…/
-	// LastMentionAllAt for LOCAL rooms; for cross-site rows there is no local room
-	// doc, so those fields are meaningless — set only SiteID. alert/hasMention are
-	// left as the stored subscription values (never recomputed from room data).
-	for i := range subs {
-		if subs[i].Room != nil {
-			continue
-		}
-		room := &model.SubscriptionRoom{SiteID: subs[i].SiteID}
-		if subs[i].SiteID == s.siteID {
-			room.UserCount = subs[i].UserCount
-			room.LastMsgAt = subs[i].LastMsgAt
-			room.LastMsgID = subs[i].LastMsgID
-			room.LastMentionAllAt = subs[i].LastMentionAllAt
-		}
-		subs[i].Room = room
+}
+
+// buildLocalRoom builds a SubscriptionRoom for a LOCAL sub from its flat $lookup
+// baseline, attaching the room E2E key when kp is present. LastMsgAt/
+// LastMentionAllAt are already *time.Time on the baseline, so they pass through
+// directly (no epoch-ms conversion — that is the cross-site RPC path's concern).
+func buildLocalRoom(sub *model.Subscription, kp *roomkeystore.VersionedKeyPair) *model.SubscriptionRoom {
+	room := &model.SubscriptionRoom{
+		SiteID:           sub.SiteID,
+		Name:             sub.RoomName,
+		UserCount:        sub.UserCount,
+		AppCount:         sub.AppCount,
+		LastMsgAt:        sub.LastMsgAt,
+		LastMsgID:        sub.LastMsgID,
+		LastMentionAllAt: sub.LastMentionAllAt,
 	}
+	if kp != nil {
+		enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
+		ver := kp.Version
+		room.PrivateKey = &enc
+		room.KeyVersion = &ver
+	}
+	return room
 }
 
 // applyRoomInfo nests all room-derived fields (including the E2E key for initial

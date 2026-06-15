@@ -10,6 +10,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
+	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/user-service/config"
 	"github.com/hmchangw/chat/user-service/mongorepo"
@@ -25,6 +26,7 @@ var (
 	_ service.AppRepository          = (*mongorepo.AppRepo)(nil)
 	_ service.RoomClient             = (*roomclient.Client)(nil)
 	_ service.EventPublisher         = (*publisher.Publisher)(nil)
+	_ service.RoomKeyReader          = (roomkeystore.RoomKeyStore)(nil)
 )
 
 func main() {
@@ -69,7 +71,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	svc := service.New(subRepo, userRepo, appRepo, roomclient.New(nc, cfg.SiteID), publisher.New(nc), &cfg)
+	// roomkeystore reads the CURRENT room key for LOCAL subscription enrichment;
+	// GetMany never consults the previous-key grace window, so gracePeriod is
+	// irrelevant here and passed as 0.
+	roomKeys := roomkeystore.NewMongoStore(db.Collection("rooms"), 0)
+
+	svc := service.New(subRepo, userRepo, appRepo, roomclient.New(nc, cfg.SiteID), roomKeys, publisher.New(nc), &cfg)
 
 	router := natsrouter.New(nc, "user-service")
 	router.Use(natsrouter.Recovery())
