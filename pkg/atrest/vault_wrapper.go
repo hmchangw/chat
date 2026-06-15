@@ -205,7 +205,7 @@ func (w *vaultKeyWrapper) Close() error {
 func startTokenMaintenance(ctx context.Context, lease leaseFunc) (context.CancelFunc, chan struct{}, error) {
 	initial, err := lease(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("initial token lease: %w", err)
 	}
 	// The loop outlives the constructor's ctx, so give it its own.
 	loopCtx, cancel := context.WithCancel(context.Background())
@@ -296,7 +296,7 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 	if lease != nil {
 		cancel, loopDone, err := startTokenMaintenance(ctx, lease)
 		if err != nil {
-			return nil, fmt.Errorf("vault: initial login: %w", err)
+			return nil, fmt.Errorf("vault: %w", err)
 		}
 		w.cancel = cancel
 		w.loopDone = loopDone
