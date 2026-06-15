@@ -21,16 +21,31 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 	}
 	mentionAt := int64(200)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).
-		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Eng", LastMsgAt: &newer, LastMentionAllAt: &mentionAt}}, nil)
+		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Eng", UserCount: 7, LastMsgAt: &newer, LastMsgID: "m-7", LastMentionAllAt: &mentionAt}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
-		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops", LastMsgAt: &newer}}, nil)
+		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops", UserCount: 3, LastMsgAt: &newer, LastMsgID: "m-3"}}, nil)
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	assert.Equal(t, "Eng", subs[0].Name)
 	assert.True(t, subs[0].Alert)         // lastMsgAt 200 > lastSeen 100
 	assert.True(t, subs[0].HasMention)    // lastMentionAllAt 200 > lastSeen 100
-	assert.Equal(t, 5, subs[0].UserCount) // preserved from $lookup
+	assert.Equal(t, 7, subs[0].UserCount) // RPC value overwrites the $lookup baseline (5)
+	assert.Equal(t, "m-7", subs[0].LastMsgID)
 	assert.Equal(t, "Ops", subs[1].Name)
 	assert.True(t, subs[1].Alert)
+	assert.Equal(t, 3, subs[1].UserCount) // cross-site sub now gets room fields via RPC
+	assert.Equal(t, "m-3", subs[1].LastMsgID)
+}
+
+// TestEnrichWithRoomInfo_RPCZeroFieldsKeepBaseline pins degradation semantics: a
+// found room whose RPC entry lacks userCount/lastMsgId must not blank the $lookup baseline.
+func TestEnrichWithRoomInfo_RPCZeroFieldsKeepBaseline(t *testing.T) {
+	svc, _, _, _, rooms, _ := newSvc(t)
+	subs := []model.Subscription{{ID: "a", RoomID: "r1", SiteID: "site-a", UserCount: 5, LastMsgID: "m-base"}}
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).
+		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Eng"}}, nil)
+	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+	assert.Equal(t, 5, subs[0].UserCount)
+	assert.Equal(t, "m-base", subs[0].LastMsgID)
 }
 
 func TestEnrichWithRoomInfo_NotFoundKeepsSub(t *testing.T) {

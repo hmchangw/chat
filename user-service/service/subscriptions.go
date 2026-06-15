@@ -97,8 +97,8 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 				return
 			}
 			m := make(map[string]model.RoomInfo, len(infos))
-			for _, info := range infos {
-				m[info.RoomID] = info
+			for i := range infos {
+				m[infos[i].RoomID] = infos[i]
 			}
 			infoBySite[i] = m
 		}()
@@ -124,6 +124,14 @@ func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	}
 	if info.Name != "" {
 		sub.Name = info.Name
+	}
+	// Zero-value guards keep the Mongo $lookup baseline when an older room-service
+	// doesn't forward these yet or the room doc lacks them.
+	if info.UserCount > 0 {
+		sub.UserCount = info.UserCount
+	}
+	if info.LastMsgID != "" {
+		sub.LastMsgID = info.LastMsgID
 	}
 	if info.LastMsgAt != nil {
 		t := time.UnixMilli(*info.LastMsgAt).UTC()
@@ -291,8 +299,8 @@ func (s *UserService) countUnread(ctx context.Context, account string, total int
 				return fmt.Errorf("unread count rooms-info for site %s: %w", site, err)
 			}
 			lastMsg := make(map[string]*int64, len(infos))
-			for _, info := range infos {
-				lastMsg[info.RoomID] = info.LastMsgAt
+			for i := range infos {
+				lastMsg[infos[i].RoomID] = infos[i].LastMsgAt
 			}
 			n := 0
 			for j := range siteSubs {
