@@ -16,8 +16,8 @@ services:
       - PORT=8080
       - LOG_LEVEL=info
       - SITE_ID=site-local
-      # Maps siteID=baseURL for cross-cluster avatar redirects. Adjust for your local setup.
-      - CLUSTER_DOMAINS=site-local=http://localhost:8080
+      # JSON array of {siteID, domain} for cross-cluster avatar redirects. Adjust for your local setup.
+      - 'CLUSTER_DOMAINS=[{"siteID":"site-local","domain":"http://localhost:8080"}]'
       - EMPLOYEE_PHOTO_BASE_URL=http://localhost:8081/photos
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat

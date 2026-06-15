@@ -92,7 +92,7 @@ label — instrumented at one seam, not scattered across the decision tree.
 | `PORT` | HTTP port | `8080` |
 | `LOG_LEVEL` | slog level | `info` |
 | `SITE_ID` | this cluster's site id | required |
-| `CLUSTER_DOMAINS` | `siteID=baseURL` map for cross-cluster redirects | required |
+| `CLUSTER_DOMAINS` | JSON array of `{siteID, domain}` for cross-cluster redirects | required |
 | `EMPLOYEE_PHOTO_BASE_URL` | external employee-photo host (the `xxx_domain`) | required |
 | `MONGO_URI` / `MONGO_DB` | operational DB | required / `chat` |
 | `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | object storage (custom uploads) | required |
@@ -100,10 +100,13 @@ label — instrumented at one seam, not scattered across the decision tree.
 | `MAX_UPLOAD_BYTES` | reject uploads larger than this | `1048576` (1 MiB) |
 | `CACHE_MAX_AGE_SECONDS` | `Cache-Control: public, max-age=` value | `21600` (6h) |
 
-`CLUSTER_DOMAINS` maps a `siteID` to the **full base URL (including scheme)** of
-*that cluster's* avatar-service (e.g. `xxx-2=https://avatar-service-xxx-2`).
-Redirect targets use this value **verbatim** — `clusterBaseURL(siteID)` returns
-it and the handler never prepends a scheme. Cross-cluster redirects and
+`CLUSTER_DOMAINS` is a **JSON array** of `{"siteID","domain"}` objects mapping
+each `siteID` to the **full base URL (including scheme)** of *that cluster's*
+avatar-service, e.g.
+`[{"siteID":"site2","domain":"https://avatar-service-site2"}]`. Parsed via a
+`TextUnmarshaler` on the config type (not env's key/val splitting). Redirect
+targets use the `domain` value **verbatim** — `clusterBaseURL(siteID)` returns it
+and the handler never prepends a scheme. Cross-cluster redirects and
 `EMPLOYEE_PHOTO_BASE_URL` are **config**, never hardcoded.
 
 MinIO is **required** in v1 — it holds custom bot uploads and migrated room
