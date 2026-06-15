@@ -34,13 +34,10 @@ func (s *UserService) GetStatusByName(c *natsrouter.Context, req models.StatusGe
 	}, nil
 }
 
-// GetProfileByName is the profile lookup. It behaves identically to
-// GetStatusByName today, but is kept as its own handler with its own body
-// (not a delegate) because the internal repo overrides it: this endpoint
-// should fetch data from the HR collection before querying the Mongo users
-// collection for statusIsShow and statusText. That HR step is not implemented
-// here — it needs to be done in the internal repo — so the two handlers must
-// be free to diverge.
+// GetProfileByName is the profile lookup. It returns the same shape as
+// GetStatusByName and currently shares its logic, but is its own handler so
+// the profile path can later diverge (e.g. enrich from an HR directory)
+// without touching status.
 func (s *UserService) GetProfileByName(c *natsrouter.Context, req models.StatusGetByNameRequest) (*models.StatusView, error) {
 	c.WithLogValues("account", c.Param("account"), "target", req.Name)
 	u, err := s.users.GetUserStatus(c, req.Name)
