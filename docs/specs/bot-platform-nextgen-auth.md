@@ -1,6 +1,6 @@
 # Spec: Bot Platform NextGen Migration — Password Auth, Sessions & Cutover
 
-> **Status:** DRAFT — design record for review. Forward-looking language ("the implementer must …", "Phase N") describes the proposed rollout, not shipped work. Open questions are tracked in §12; they must be resolved before this becomes an implementation plan.
+> **Status:** DESIGN-COMPLETE — pending verification against the internal (legacy RC fork + nextgen) codebase. §22 is the verification checklist to run before this becomes an implementation plan. Open questions are tracked in §12 (all but two resolved).
 
 *Bring password-based login (admins + bots) and durable session management to the nextgen NATS-native stack, migrating credentials from the legacy Rocket.Chat (RC) Mongo `users` collection without forcing any bot developer to change URLs, credentials, or client code, and cut over behind the shared Istio gateway with zero downtime.*
 
@@ -51,7 +51,7 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 |---|---|---|
 | Bot/admin **identity** | Stays in the shared `users` collection (roles distinguish admin/bot/user) | Every downstream service resolves accounts through the cached `userstore`; a second identity collection forces double lookups and breaks display-name/federation resolution. |
 | **Credentials** | New `credentials` collection, owned by the auth service | `users` is read-only shared infra cached fleet-wide; a bcrypt hash must not ride in a broadly-cached identity doc, and only the auth service verifies passwords. |
-| **Sessions** | New `sessions` collection, **one doc per session keyed by `base64(sha256(token))`** | Eliminates the legacy capped array; O(1) lookup independent of session count; TTL auto-expiry; per-session + per-account revocation. The hash form matches RC so one hash fn covers legacy + native tokens. |
+| **Sessions** | New `sessions` collection, **one doc per session keyed by `base64(sha256(token))`** | Eliminates the legacy capped array; O(1) lookup independent of session count; sliding idle expiry (§5.5); per-session + per-account revocation. The hash form matches RC so one hash fn covers legacy + native tokens. |
 | **Scope** | Credentials + sessions are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
 | **NATS JWT** | Short-lived, **minted from a valid session**, refreshed without re-entering the password | Reuses existing JWT machinery; session = durable login, JWT = ephemeral capability. |
 | **Validation hot path** | Mongo durable + **read-through cache (in-pod LRU + Valkey)** | Every REST call validates a token; a Mongo read per call is the bottleneck (§9.3). |
@@ -67,6 +67,7 @@ One document per password-login account (admin or bot), keyed to `users._id`.
 |---|---|---|---|
 | ID | `string` | `bson:"_id"` | = `users._id` (32-char UUIDv7 hex). 1:1 with identity. |
 | Account | `string` | `bson:"account" json:"account"` | Denormalized for login lookup. Unique index. |
+| LegacyUserID | `string` | `bson:"legacyUserId,omitempty" json:"-"` | Legacy Meteor `_id` (17-char). Present only if nextgen `_id` ≠ legacy id; used to match the bot-supplied `X-User-Id` (Q9). Omit if identity-sync preserves the legacy `_id`. |
 | PasswordHash | `string` | `bson:"passwordHash" json:"-"` | Migrated verbatim from `services.password.bcrypt`. **Never serialized.** |
 | PasswordScheme | `string` | `bson:"passwordScheme" json:"-"` | `"rc-sha256-bcrypt"` = `bcrypt(sha256_hex(pw))`. Verification accepts plaintext **or** RC `{digest,algorithm:"sha-256"}` input (§2.1). |
 | RequirePasswordChange | `bool` | `bson:"requirePasswordChange" json:"requirePasswordChange"` | Migrated; drives first-login (§5.4). |
@@ -80,7 +81,8 @@ One document per live session. **No array, no cap.**
 | Field | Type | Tags | Notes |
 |---|---|---|---|
 | TokenHash | `string` | `bson:"_id"` | **`base64(sha256(rawToken))`** — RC/Meteor form. Lookup key; raw token never stored. |
-| UserID | `string` | `bson:"userId" json:"userId"` | = `users._id`. Indexed (revoke-all / list). |
+| UserID | `string` | `bson:"userId" json:"userId"` | = nextgen `users._id`. Indexed (revoke-all / list). |
+| LegacyUserID | `string` | `bson:"legacyUserId,omitempty" json:"-"` | Denormalized from `credentials`; matched against `X-User-Id` during validation when ids differ (Q9). |
 | Account | `string` | `bson:"account" json:"account"` | Denormalized. |
 | Scheme | `string` | `bson:"scheme" json:"scheme"` | `"legacy"` (imported RC tokens, §6.2) or `"v1"` (nextgen-issued). |
 | IssuedAt | `int64` | `bson:"issuedAt" json:"issuedAt"` | ms since epoch. |
@@ -98,8 +100,9 @@ Indexes: `_id` (token hash); `userId`; **partial TTL** on `expiresAt` (`expireAf
 ### 5.1 Password login (admin or bot)
 1. Client `POST`s `{ user, password }` (plaintext **or** RC digest form) to the same public URL.
 2. Auth service loads `credentials` by account; derives `sha256_hex(pw)` (or uses the supplied digest); `bcrypt.CompareHashAndPassword` against `PasswordHash`. Constant-time; uniform error on unknown-account vs bad-password.
-3. On success: generate a raw token (`crypto/rand`), insert a `sessions` doc (`scheme:"v1"`, `ExpiresAt = now + loginTTL`), return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId } }` + `X-Auth-Token`/`X-User-Id`).
-4. If `RequirePasswordChange`, signal it (§5.4).
+3. On success: generate a raw token (`crypto/rand`), insert a `sessions` doc (`scheme:"v1"`, `ExpiresAt = now + idleWindow`, §5.5), return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId } }` + `X-Auth-Token`/`X-User-Id`).
+4. If the request carries a `natsPublicKey` (native client, e.g. operator UI), also mint and return a NATS user JWT (§5.2) so the client can connect to NATS immediately — REST bots omit this field and get the headers only.
+5. If `RequirePasswordChange`, signal it (§5.4).
 
 ### 5.2 NATS JWT minting from a session
 Present a valid session token → validate (§5.3) → mint a short-lived NATS user JWT scoped to `chat.user.{account}.>` (reusing `auth-service` grants). JWT expiry ≪ session expiry; refresh from the still-valid session without the password.
@@ -226,16 +229,204 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ---
 
-## 12. Open questions
+## 12. Open questions & decisions
 
-### Resolved
-- **Q1 — Login contract.** Username + password only (plaintext or RC `{digest, algorithm:"sha-256"}`). **No bot-facing `resume` verb**; the only resume primitive is the internal session→JWT exchange (§5.2, §5.6). *Still to confirm: the fork's exact path (`/dev-login`?) and whether the success envelope is body, header, or both — needed for byte-for-byte gateway fidelity.*
-- **Q2 — Session lifetime.** Effectively **infinite via sliding idle expiry** (§5.5), refreshed on the throttled use-bump; legacy `when`/`loginExpirationDays` ignored on import. Revocation is the kill switch.
-- **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3).
-- **Q4 — `LastUsedAt`.** Throttled write (recommend ≈5 min window), which doubles as the sliding-expiry refresh (§5.5).
-- **Q5 — Ownership.** **`auth-service` owns** credentials + sessions + JWT minting + provisioning; the **gateway is a separate stateless read-only cache consumer** (§7, §9.3).
-- **Q6 — Cache layer.** In-pod LRU + **Valkey from day one** for the session-validation hot path (§9.3).
+> **These stay OPEN until you confirm each against the internal codebase (§22).** "Recommended" entries are the proposed answer with rationale — they are not locked. Nothing here is final until signed off.
 
-### Still open
+### Recommended — pending your confirmation
+- **Q1 — Login contract.** Username + password only (plaintext or RC `{digest, algorithm:"sha-256"}`). **No bot-facing `resume` verb**; the only resume primitive is the internal session→JWT exchange (§5.2, §5.6). *Confirm:* the fork's exact path (`/dev-login`?) and whether the success envelope is body, header, or both — needed for byte-for-byte gateway fidelity.
+- **Q2 — Session lifetime.** Effectively **infinite via sliding idle expiry** (§5.5), refreshed on the throttled use-bump; legacy `when`/`loginExpirationDays` ignored on import. Revocation is the kill switch. *Confirm:* sliding-infinite acceptable vs. literally-never.
+- **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3). *Confirm:* dual-run window length; whether live password changes must keep working on legacy.
+- **Q4 — `LastUsedAt`.** Throttled write (recommend ≈5 min window), which doubles as the sliding-expiry refresh (§5.5). *Confirm:* window value, or drop the field.
+- **Q5 — Ownership.** **`auth-service` owns** credentials + sessions + JWT minting + provisioning; the **gateway is a separate stateless read-only cache consumer** (§7, §9.3). *Confirm:* gateway is built by the internal track and can read the Valkey session cache directly.
+- **Q6 — Cache layer.** In-pod LRU + **Valkey from day one** for the session-validation hot path (§9.3). *Confirm:* Valkey cluster available to the gateway/auth-service in prod.
+
+### Still fully open (need an answer)
 - **Q1a — Exact `/dev-login` path + success-envelope placement** (body vs. headers vs. both), to lock gateway response fidelity.
 - **Q7 — `idleWindow` value.** Recommend 180d; confirm.
+- **Q8 — Bot auth mechanism.** Do bots authenticate with username/password each start, or with a long-lived **Personal Access Token**? RC stores PATs in the same `services.resume.loginTokens[]` (with `type:"personalAccessToken"`, `name`). This changes which migration path (§6.2) carries the bots — confirm against real bot accounts (§22).
+- **Q9 — Identity ID mapping.** Legacy Meteor `users._id` (17-char) vs. nextgen `users._id` (UUIDv7 hex). Bots send the legacy id as `X-User-Id`; the session/credentials must carry `LegacyUserID` to match it (or identity-sync must preserve the legacy `_id`). Confirm which (§22).
+
+---
+
+## 13. Go types (proposed)
+
+`pkg/model` (shared domain types, both `json` + `bson` tags per house rule):
+
+```go
+// model/credential.go
+type Credential struct {
+    ID                    string `json:"id"                    bson:"_id"`
+    Account               string `json:"account"               bson:"account"`
+    LegacyUserID          string `json:"-"                     bson:"legacyUserId,omitempty"`
+    PasswordHash          string `json:"-"                     bson:"passwordHash"`
+    PasswordScheme        string `json:"-"                     bson:"passwordScheme"`
+    RequirePasswordChange bool   `json:"requirePasswordChange" bson:"requirePasswordChange"`
+    CreatedAt             int64  `json:"createdAt"             bson:"createdAt"`
+    UpdatedAt             int64  `json:"updatedAt"             bson:"updatedAt"`
+}
+
+// model/session.go
+type Session struct {
+    TokenHash    string     `json:"-"                    bson:"_id"`          // base64(sha256(token))
+    UserID       string     `json:"userId"               bson:"userId"`
+    LegacyUserID string     `json:"-"                    bson:"legacyUserId,omitempty"`
+    Account      string     `json:"account"              bson:"account"`
+    Scheme       string     `json:"scheme"               bson:"scheme"`       // "legacy" | "v1"
+    IssuedAt     int64      `json:"issuedAt"             bson:"issuedAt"`
+    LastUsedAt   int64      `json:"lastUsedAt"           bson:"lastUsedAt"`
+    ExpiresAt    *time.Time `json:"expiresAt,omitempty"  bson:"expiresAt,omitempty"`
+}
+```
+
+Wire envelopes (login is HTTP; field names mirror RC — confirm Q1):
+
+```go
+// login request (plaintext OR digest form)
+type loginRequest struct {
+    User     string          `json:"user"`
+    Password json.RawMessage `json:"password"`      // "secret"  OR  {"digest","algorithm"}
+    NATSKey  string          `json:"natsPublicKey,omitempty"` // native clients only (§5.1.4)
+}
+type loginResponse struct {
+    Status string `json:"status"`                   // "success"
+    Data   struct {
+        AuthToken string `json:"authToken"`
+        UserID    string `json:"userId"`
+        JWT       string `json:"jwt,omitempty"`      // native clients only
+    } `json:"data"`
+}
+```
+
+Gateway→handler principal injection rides as **NATS message headers** (not body, so the per-verb body mapping is untouched):
+`X-Chat-Account`, `X-Chat-User-Id`, `X-Request-ID`.
+
+---
+
+## 14. Algorithms (precise)
+
+**Token hashing (one function, legacy + v1):**
+`tokenHash = base64.StdEncoding(sha256(rawToken))` — must match Meteor `Accounts._hashLoginToken` byte-for-byte (verify with a golden fixture, §18).
+
+**Password verify:**
+```
+input = digest (if {digest,algorithm:"sha-256"} supplied)  else  hex(sha256(plaintext))
+ok    = bcrypt.CompareHashAndPassword(cred.PasswordHash, input) == nil
+```
+Run the bcrypt compare even on unknown-account (against a dummy hash) to keep timing uniform.
+
+**Session validation (gateway hot path):**
+```
+h := tokenHash(xAuthToken)
+s := valkey.Get(h)                       // hot path
+if miss: s = nats.Request(auth.session.validate, h)   // cold path; auth-svc reads Mongo + warms Valkey
+if s == nil           -> 401 invalidCredentials
+if s.ExpiresAt != nil && now > s.ExpiresAt -> 401 sessionExpired
+if s.LegacyUserID != "" && xUserId != s.LegacyUserID  -> 401 invalidCredentials
+if now - s.LastUsedAt > throttleWindow: async bump LastUsedAt + ExpiresAt=now+idleWindow (Mongo + cache)
+return principal{account, userId}
+```
+
+---
+
+## 15. NATS subjects & error reasons
+
+**Server-internal (gateway/edge → auth-service; caller not yet user-scoped or is the trusted gateway):**
+- `chat.server.request.auth.login` — verify credentials, create session.
+- `chat.server.request.auth.session.validate` — token hash → principal (cold-miss).
+- `chat.server.request.auth.session.refresh` — session token → fresh JWT (HTTP-frontable for native clients).
+
+**Operator, user-scoped (admin JWT; handler checks caller `roles ∋ admin` via `userstore`):**
+- `chat.user.{account}.request.admin.bot.create`
+- `chat.user.{account}.request.admin.bot.password.set`
+- `chat.user.{account}.request.admin.session.list`
+- `chat.user.{account}.request.admin.session.revoke`
+- `chat.user.{account}.request.admin.session.revokeAll`
+
+Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
+
+**Error reasons** (`codes_authservice.go`, attached via `errcode.WithReason`):
+`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`.
+
+---
+
+## 16. Configuration (env, `caarlos0/env`)
+
+**auth-service** (additions): `SESSION_IDLE_WINDOW` (`envDefault:"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `JWT_TTL` (`"15m"`), `BCRYPT_COST` (`"10"` — match legacy), `VALKEY_ADDRS` (required), Mongo URI/DB (required). Reuses existing `AUTH_SIGNING_KEY`.
+
+**gateway** (new service): `NATS_URL` + service-account creds (required), `GATEWAY_NATS_POOL_SIZE` (`"4"`), `GATEWAY_REQUEST_TIMEOUT` (`"10s"`), `GATEWAY_MAX_CONCURRENCY` (`"500"`), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"`), `PORT` (`"8080"`). Secrets never defaulted (house rule).
+
+---
+
+## 17. Observability (metrics)
+- `auth_login_total{result}`, `auth_session_validate_total{source=cache|mongo,result}`, `auth_session_validate_latency_seconds`, `auth_active_sessions` (gauge).
+- gateway: `gw_request_duration_seconds{route,status}`, `gw_nats_request_total{result=ok|timeout|err}`, `gw_session_cache_hits_total{hit}`.
+- Logging: `log/slog` JSON, request-id propagated; **never** log tokens / password input / hashes.
+
+---
+
+## 18. Test plan (TDD, ≥80% / 90% core)
+- **Golden hash fixture** (first test): a known `(rawToken → base64(sha256))` pair proving parity with Meteor — gate before any store code.
+- **Password verify** (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
+- **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
+- **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
+- **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
+- **Integration** (`//go:build integration`, `pkg/testutil`): `credentials`/`sessions` Mongo store incl. partial-TTL index behavior; Valkey read-through + invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped docs (password + loginTokens + a PAT entry).
+
+---
+
+## 19. Implementation phases (each = TDD + own PR)
+1. `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
+2. Password verify + session lifecycle + HTTP login/refresh in auth-service (reuse JWT minting).
+3. Valkey read-through cache + invalidation.
+4. Migration script (credential + live-token/PAT import) with `--dry-run` + verify mode.
+5. Gateway service (REST↔NATS, principal injection, error mapping, pooled conn, load-shed).
+6. Operator provisioning NATS handlers + admin authz + `docs/client-api.md`.
+7. Istio routing + canary runbook (separate from app PRs).
+8. Operator UI frontend (likely a separate repo/track).
+
+---
+
+## 20. `docs/client-api.md` delta
+- **§2.2** — add the password-login HTTP endpoint (request: `user`+`password` plaintext/digest, optional `natsPublicKey`; response envelope; error cases incl. `requirePasswordChange`).
+- **New admin section** — the five provisioning RPCs (§15) with request/response field tables + JSON examples + error reasons.
+- Updated in the **same PR** as the handlers (house rule).
+
+---
+
+## 21. Risks
+- **PAT vs password (Q8)** — if bots use PATs, §6.2 must import PAT `loginTokens`, and "rotate password revokes sessions" must not silently kill PAT-based bots. Resolve before phase 4.
+- **ID mapping (Q9)** — wrong `X-User-Id` matching locks every bot out at cutover. Gate phase 5 on a confirmed answer.
+- **Infinite sessions** — standing bearer tokens; mitigated by sliding reap + revocation, but operators must have working revoke before go-live.
+- **Cache/Mongo divergence on revoke** — a revoke that updates Mongo but not the cache leaves a token live until cache TTL; prefer explicit invalidation over TTL-only.
+
+---
+
+## 22. Verification checklist (run against the internal codebase before implementation)
+
+Tick each before promoting this spec to a plan. These are the assumptions the design rests on.
+
+**Legacy RC fork**
+- [ ] Exact login route + method (is it `/dev-login`? path, verb). **(Q1a)**
+- [ ] Login request field names (`user` vs `username`) and whether digest-form is used by any client. **(Q1)**
+- [ ] Login success envelope: body shape, header set (`X-Auth-Token`/`X-User-Id`), status code, and the **error** body shape. **(Q1a)**
+- [ ] Password storage really is `services.password.bcrypt` = `bcrypt(sha256_hex(pw))`, and the bcrypt cost. Spot-check one account by test-comparing. **(Q4/§14)**
+- [ ] Are there admin/bot accounts with **no** local password (SSO/LDAP-only) that can't migrate to password login?
+- [ ] Login-token storage: `services.resume.loginTokens[]`, `hashedToken = base64(sha256(raw))`, field names. **(Q2/§6.2)**
+- [ ] **Do bots use password login or Personal Access Tokens?** If PAT, capture the PAT entry shape (`type`, `name`). **(Q8)**
+- [ ] Token hashing parity: confirm a real token's `hashedToken` equals our `base64(sha256(token))`. **(§14 golden fixture)**
+- [ ] `loginExpirationDays` (only matters if you reject sliding-infinite). **(Q2)**
+
+**Nextgen / identity**
+- [ ] Does identity-sync already populate **admin + bot** accounts in nextgen `users`, with `roles`? **(§6.1)**
+- [ ] Is the nextgen `users._id` the **same** value as the legacy Meteor `_id`, or different? If different, `LegacyUserID` is mandatory. **(Q9)**
+- [ ] `model.IsBotAccount` covers every real bot naming pattern in production.
+
+**Infra / platform**
+- [ ] Valkey cluster reachable from auth-service **and** the gateway in prod. **(Q6)**
+- [ ] The HTTP↔NATS **gateway is owned/built by the internal track**, and can read the Valkey session cache (or must go through `auth.session.validate`). **(Q5)**
+- [ ] Shared Istio ingress gateway + who owns the `VirtualService`/`DestinationRule`; the new namespace name; cert ownership. **(§10)**
+- [ ] A NATS **service account** for the gateway with publish rights on `chat.user.*.request.>` (and that user JWTs remain scoped to self). **(§9.3)**
+
+**Decisions to sign off (§12)**
+- [ ] Q2 sliding-infinite · [ ] Q3 freeze-legacy · [ ] Q4 throttle window · [ ] Q5 ownership · [ ] Q6 Valkey day-one · [ ] Q7 `idleWindow`=180d
