@@ -108,7 +108,7 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 		bson.M{"$sort": bson.D{{Key: "favorite", Value: -1}, {Key: "name", Value: 1}}},
 		bson.M{"$limit": int64(limit)},
 	)
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	return r.subscriptions.Aggregate(ctx, pipeline)
 }
 
 // aggregateCurrent merges the rooms (dm/channel) and apps (botDM) $facet branches — each needs a different roomType $match; no window.
@@ -140,7 +140,7 @@ func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string,
 		sortStage,
 		limitStage,
 	)
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	return r.subscriptions.Aggregate(ctx, pipeline)
 }
 
 // FindChannelsByMembers returns the requester's channel subs whose room contains ALL given members (bots excluded), room.createdAt desc.
@@ -192,7 +192,7 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 		bson.M{"$project": bson.M{"room": 0}},
 		bson.M{"$limit": int64(limit)},
 	}
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	return r.subscriptions.Aggregate(ctx, pipeline)
 }
 
 // GetDMSubscription returns the requester's room-enriched DM sub with target plus the counterpart's HRInfo (cross-site ⇒ nil), or (nil, nil).
@@ -218,7 +218,7 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 		bson.M{"$project": bson.M{"hrUser": 0}},
 	)
 	// .Raw(): decodes into []model.DMSubscription, not []model.Subscription.
-	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
+	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate dm subscription: %w", err)
 	}
@@ -237,7 +237,7 @@ func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account,
 	pipeline := bson.A{bson.M{"$match": bson.M{"u.account": account, "roomId": roomID}}}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
 	pipeline = append(pipeline, bson.M{"$limit": int64(1)}) // (roomId, u.account) is unique — short-circuit defensively
-	out, err := r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	out, err := r.subscriptions.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate subscription by roomId: %w", err)
 	}
@@ -262,7 +262,7 @@ func (r *SubscriptionRepo) CountActiveSubscriptions(ctx context.Context, account
 	pipeline := bson.A{bson.M{"$match": activeSubscriptionFilter(account)}}
 	pipeline = append(pipeline, roomsEnrichStages(r.siteID, nil)...)
 	pipeline = append(pipeline, bson.M{"$count": "n"})
-	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
+	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline)
 	if err != nil {
 		return 0, fmt.Errorf("count active subscriptions: %w", err)
 	}
@@ -286,7 +286,7 @@ func (r *SubscriptionRepo) GetActiveSubscriptions(ctx context.Context, account s
 	if limit > 0 {
 		pipeline = append(pipeline, bson.M{"$limit": int64(limit)})
 	}
-	return r.subscriptions.Aggregate(ctx, pipeline, mongoutil.WithAllowDiskUse())
+	return r.subscriptions.Aggregate(ctx, pipeline)
 }
 
 // GetAppSubscription returns the requester's botDM subscription for botName, or (nil, nil).

@@ -54,7 +54,7 @@ func (r *AppRepo) ListApps(ctx context.Context, account string, page mongoutil.O
 		bson.M{"$project": bson.M{"sub": 0}},
 		bson.M{"$sort": bson.M{"name": 1}},
 	}
-	out, err := r.items.AggregatePaged(ctx, pipeline, page, mongoutil.WithAllowDiskUse())
+	out, err := r.items.AggregatePaged(ctx, pipeline, page)
 	if err != nil {
 		return mongoutil.OffsetPage[models.AppListItem]{}, fmt.Errorf("aggregate apps page: %w", err)
 	}

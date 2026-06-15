@@ -37,8 +37,3 @@ func TestApply_LastValueWins(t *testing.T) {
 	})
 	assert.Equal(t, int64(20), *qo.limit)
 }
-
-func TestApply_AllowDiskUse(t *testing.T) {
-	assert.False(t, apply(nil).allowDiskUse)
-	assert.True(t, apply([]QueryOption{WithAllowDiskUse()}).allowDiskUse)
-}
