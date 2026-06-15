@@ -1,22 +1,17 @@
-import {
-  userSubscriptionGetCurrent,
-  userSubscriptionGetApps,
-  userSubscriptionGetRooms,
-} from '../_transport/subjects'
+import { userSubscriptionList } from '../_transport/subjects'
 import type { Nats, DMSubscription, Room } from '../types'
 
-/** Wire shape of every `subscription.get*` reply.
- *  Both fields are non-omitempty on the Go side
- *  (`mock-user-service/handler.go::subscriptionListResp`) — `Subscriptions`
- *  is always a slice (possibly empty), and `Total` is always an int.
+/** Wire shape of the `subscription.list` reply served by user-service.
+ *  Both fields are non-omitempty on the Go side — `Subscriptions` is
+ *  always a slice (possibly empty), and `Total` is always an int.
  *
  *  Each entry is typed `DMSubscription` (= Subscription ∪ { hrInfo? }) to
  *  match Go's flattened JSON for both subscription kinds: channels/groups
  *  ship plain Subscription (hrInfo absent ⇒ typed `undefined`), DM rooms
  *  ship DMSubscription (hrInfo present). One type covers both since
- *  DMSubscription extends Subscription. The real user-service additionally
- *  embeds room-level metadata (userCount, lastMsgAt, lastMsgId) inline so
- *  the frontend doesn't need a separate `rooms.list` call. */
+ *  DMSubscription extends Subscription. user-service embeds room-level
+ *  metadata (userCount, lastMsgAt, lastMsgId) inline so the frontend
+ *  doesn't need a separate `rooms.list` call. */
 interface SidebarBucketReply {
   subscriptions: DMSubscription[]
   total: number
@@ -41,31 +36,29 @@ export interface SidebarBuckets {
 
 /**
  * Bootstrap the sidebar by fetching three lists from user-service in
- * parallel:
- *   1. `getCurrent({ favorite: true })` — favorited subscriptions, drives
- *      the Favorite section.
- *   2. `getApps()` — app subscriptions, drives the Apps section.
- *   3. `getRooms()` — non-app room subscriptions (channels / DMs /
+ * parallel via `subscription.list`:
+ *   1. `{ type: "current", favorite: true }` — favorited subscriptions,
+ *      drives the Favorite section.
+ *   2. `{ type: "apps" }` — app subscriptions, drives the Apps section.
+ *   3. `{ type: "rooms" }` — non-app room subscriptions (channels / DMs /
  *      discussions), drives the Channels and DMs section.
  *
- * Each subscription record carries its room metadata inline on the real
- * user-service, so we derive `rooms` from the union of all three replies
- * (deduped by roomId). The reducer's `BUCKETS_LOADED` action consumes
- * this shape directly. Partition exclusivity (favorite > apps > channelDm)
- * is enforced at render time by `useSidebarSections`, so a room ID can
- * appear in more than one bucket without double-render.
+ * Each subscription record carries its room metadata inline, so we derive
+ * `rooms` from the union of all three replies (deduped by roomId). The
+ * reducer's `BUCKETS_LOADED` action consumes this shape directly. Partition
+ * exclusivity (favorite > apps > channelDm) is enforced at render time by
+ * `useSidebarSections`, so a room ID can appear in more than one bucket
+ * without double-render.
  *
  * Uses `Promise.allSettled` so a single bucket RPC failure degrades that
  * one bucket to empty rather than black-holing the whole bootstrap.
  */
 export async function fetchSidebarBuckets({ user, request }: Nats): Promise<SidebarBuckets> {
-  const favSubject = userSubscriptionGetCurrent(user.account, user.siteId)
-  const appsSubject = userSubscriptionGetApps(user.account, user.siteId)
-  const roomsSubject = userSubscriptionGetRooms(user.account, user.siteId)
+  const subject = userSubscriptionList(user.account, user.siteId)
   const results = await Promise.allSettled([
-    request<SidebarBucketReply>(favSubject, { favorite: true }),
-    request<SidebarBucketReply>(appsSubject, {}),
-    request<SidebarBucketReply>(roomsSubject, {}),
+    request<SidebarBucketReply>(subject, { type: 'current', favorite: true }),
+    request<SidebarBucketReply>(subject, { type: 'apps' }),
+    request<SidebarBucketReply>(subject, { type: 'rooms' }),
   ])
   const empty: SidebarBucketReply = { subscriptions: [], total: 0 }
   const unwrap = (
@@ -73,12 +66,6 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     label: string,
   ): SidebarBucketReply => {
     if (result.status === 'fulfilled') {
-      // TEMP DEBUG: compact summary so we can verify what each
-      // subscription RPC returns on cold start. Remove once verified.
-      console.log('[sidebar-bootstrap]', label, {
-        count: result.value.subscriptions.length,
-        roomIds: result.value.subscriptions.map((s) => s.roomId),
-      })
       return result.value
     }
     const err = result.reason
@@ -90,9 +77,9 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
     )
     return empty
   }
-  const favResp = unwrap(results[0], `${favSubject} {favorite:true}`)
-  const appResp = unwrap(results[1], appsSubject)
-  const roomResp = unwrap(results[2], roomsSubject)
+  const favResp = unwrap(results[0], `${subject} {type:current,favorite:true}`)
+  const appResp = unwrap(results[1], `${subject} {type:apps}`)
+  const roomResp = unwrap(results[2], `${subject} {type:rooms}`)
 
   const subscriptions: Record<string, DMSubscription> = {}
   const rooms: Room[] = []
