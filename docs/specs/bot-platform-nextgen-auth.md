@@ -1,5 +1,7 @@
 # Spec: Bot Platform NextGen Migration — Password Auth, Sessions & Cutover
 
+> **Master spec, Part 2 of a multi-part set** — this is the **Technical Design**. Business requirements, the architecture decision, success criteria and the rollout plan live in **[Part 1 — Architecture & Business Requirements](./bot-platform-nextgen-auth-part1-requirements.md)**. A Part 3 components guide is planned.
+>
 > **Status:** DESIGN-COMPLETE — pending verification against the internal (legacy RC fork + nextgen) codebase. §22 is the verification checklist to run before this becomes an implementation plan. Open questions are tracked in §12 (all but two resolved).
 
 *Bring password-based login (admins + bots) and durable session management to the nextgen NATS-native stack, migrating credentials from the legacy Rocket.Chat (RC) Mongo `users` collection without forcing any bot developer to change URLs, credentials, or client code, and cut over behind the shared Istio gateway with zero downtime.*
@@ -286,9 +288,9 @@ One `VirtualService` on the shared ingressgateway routes host + path to a backen
 
 ### 10.2 Sequence
 1. Deploy nextgen dark in `chat-nextgen`; gateway 100% → old; health-gate on `/healthz`.
-2. **Canary:** weighted shift of a small % → nextgen; ramp while watching error/latency SLOs.
-3. 100% → nextgen.
-4. **Rollback** = shift weights back to the `chat` subset (instant).
+2. **Canary ramp over ~1 week:** `1% → 10% → 50% → 100%`, holding at each step while watching SLOs; **gate on error rate < 0.1%** and the §9.5 latency SLAs before advancing. Monitor 24h at 100%.
+3. **Rollback within 1 hour** at any step = shift weights back to the `chat` subset (effectively instant via `VirtualService`).
+4. **Zero data loss** — sessions/credentials are migrated, not recreated; either-stack auth holds (§10.3).
 
 ### 10.3 Why either-stack routing is safe
 nextgen honors **migrated credentials** (§6.1) *and* **migrated live legacy tokens** (§6.2, same hash form), so a request routed to either stack stays authenticated — the precondition that makes weighted routing non-disruptive.
@@ -300,9 +302,13 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ## 11. Security & rules compliance
 - `PasswordHash` / raw tokens are **never** serialized (`json:"-"`) and **never** logged; `sessions._id` stores only `base64(sha256(token))`.
+- **Timing-safe credential comparison** — run the bcrypt compare even on unknown accounts (dummy hash); uniform error + timing (no account enumeration).
+- **Login rate limiting / lockout:** **5 failed attempts → 15-minute lockout** (keyed by account, ideally also by source IP). Backed by Valkey (shared across pods); lockout returns a uniform auth error, not a distinct "locked" leak. Successful login resets the counter.
+- **HTTPS only** — TLS terminated at the Istio ingress gateway; the edge service speaks plain HTTP only inside the mesh.
 - Client-facing errors use `pkg/errcode` named constructors + a domain `reason` where the frontend must branch (`requirePasswordChange`, `invalidCredentials`); replied via `errnats.Reply`. Infra failures return raw wrapped errors (collapse to `internal`).
-- Uniform auth-failure responses (no account-enumeration via differing errors/timing).
 - New client-facing handlers → update `docs/client-api.md` in the same PR.
+
+**WebSocket auth (integration note).** The bot SDK also opens a realtime/WebSocket connection; that transport must authenticate against the **same** `sessions` store (validate the token on connect/upgrade, reuse §5.3). Captured here because Part 1's rollout calls out "fix WebSocket authentication" (Phase 2); the WebSocket handshake path and any per-frame auth belong in the Part 3 components guide.
 
 ---
 
@@ -437,14 +443,14 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 
 ## 16. Configuration (env, `caarlos0/env`)
 
-**auth-service** (additions): `SESSION_IDLE_WINDOW` (`envDefault:"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `JWT_TTL` (`"15m"`), `BCRYPT_COST` (`"10"` — match legacy), `VALKEY_ADDRS` (required), Mongo URI/DB (required). Reuses existing `AUTH_SIGNING_KEY`.
+**auth-service** (additions): `SESSION_IDLE_WINDOW` (`envDefault:"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `JWT_TTL` (`"15m"`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `VALKEY_ADDRS` (required), Mongo URI/DB (required). Reuses existing `AUTH_SIGNING_KEY`.
 
 **gateway / REST edge** (its own service under Option B; merged into auth-service under Option A): `NATS_URL` + service-account creds (required), `GATEWAY_NATS_POOL_SIZE` (`"4"`), `GATEWAY_REQUEST_TIMEOUT` (`"10s"`), `GATEWAY_MAX_CONCURRENCY` (`"500"`), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"`), `PORT` (`"8080"`). Secrets never defaulted (house rule).
 
 ---
 
 ## 17. Observability (metrics)
-- `auth_login_total{result}`, `auth_session_validate_total{source=cache|mongo,result}`, `auth_session_validate_latency_seconds`, `auth_active_sessions` (gauge).
+- `auth_login_total{result}`, `auth_login_lockouts_total`, `auth_session_validate_total{source=cache|mongo,result}`, `auth_session_validate_latency_seconds`, `auth_active_sessions` (gauge).
 - gateway: `gw_request_duration_seconds{route,status}`, `gw_nats_request_total{result=ok|timeout|err}`, `gw_session_cache_hits_total{hit}`.
 - Logging: `log/slog` JSON, request-id propagated; **never** log tokens / password input / hashes.
 
@@ -454,6 +460,7 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 - **Golden hash fixture** — `TestHashAuthToken`: a known `(rawToken → base64(sha256))` pair proving parity with Meteor `Accounts._hashLoginToken`. **First test; gates all store code.**
 - **Password verify** — `TestVerifyPassword` (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
 - **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries; assert only the regular tokens become `sessions` rows.
+- **Rate limit** — `TestLoginRateLimit`: 5 failures → 6th is locked out (uniform error); successful login resets the counter; lockout expires after the window.
 - **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
 - **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
 - **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
