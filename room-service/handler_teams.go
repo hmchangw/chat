@@ -114,7 +114,17 @@ func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingReques
 	}
 
 	// Idempotency: a prior teams_meet_started marker short-circuits the Graph
-	// create so retries (and concurrent clients) reuse the same meeting.
+	// create so retries (and most concurrent clients) reuse the same meeting.
+	//
+	// Known limitation (read-then-create race): the marker is written via the
+	// canonical message path, which is asynchronous, so two callers racing
+	// before the first marker materializes can each create a Graph meeting. This
+	// mirrors the previous GetLastMeetStartedMessage behavior — there is no CAS/
+	// LWT lock primitive in this layer to make the create atomic, and adding one
+	// is a larger design decision left to the maintainer. The marker makes the
+	// endpoint eventually-idempotent: once a marker is visible, all subsequent
+	// calls reuse it. The blast radius of the race is a duplicate Teams meeting,
+	// not data corruption.
 	marker, found, err := h.meetMarkerReader.GetLastTeamsMeetStarted(ctx, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("read meeting marker: %w", err)

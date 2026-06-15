@@ -225,7 +225,20 @@ func (g *graphClient) CreateOnlineMeeting(ctx context.Context, req CreateOnlineM
 		return nil, fmt.Errorf("read onlineMeeting response: %w", err)
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("create onlineMeeting: graph returned status %d: %s", resp.StatusCode, string(respBody))
+		// Never wrap the raw response body into the error/cause — it can carry
+		// upstream payload. Parse the Graph error envelope and surface only the
+		// status + sanitized error code.
+		var graphErr struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &graphErr)
+		if graphErr.Error.Code != "" {
+			return nil, fmt.Errorf("create onlineMeeting: graph returned status %d (%s)", resp.StatusCode, graphErr.Error.Code)
+		}
+		return nil, fmt.Errorf("create onlineMeeting: graph returned status %d", resp.StatusCode)
 	}
 
 	var meeting OnlineMeeting

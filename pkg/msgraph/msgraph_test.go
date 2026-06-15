@@ -84,7 +84,8 @@ func TestCreateOnlineMeeting_GraphError(t *testing.T) {
 	defer tokenSrv.Close()
 	graphSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":{"code":"Forbidden"}}`))
+		// The message carries sensitive-looking detail that must NOT leak into the error.
+		_, _ = w.Write([]byte(`{"error":{"code":"Forbidden","message":"secret-internal-detail-xyz"}}`))
 	}))
 	defer graphSrv.Close()
 
@@ -92,6 +93,8 @@ func TestCreateOnlineMeeting_GraphError(t *testing.T) {
 	_, err := c.CreateOnlineMeeting(context.Background(), CreateOnlineMeetingRequest{OrganizerEmail: "a@b.com"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
+	assert.Contains(t, err.Error(), "Forbidden", "sanitized error code should be surfaced")
+	assert.NotContains(t, err.Error(), "secret-internal-detail-xyz", "raw response message must not leak")
 }
 
 func TestCreateOnlineMeeting_MissingJoinURL(t *testing.T) {

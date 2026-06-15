@@ -1954,7 +1954,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 ##### Triggered events — success path
 
-A `teams_meet_started` system message is published on the canonical message path (`chat.msg.canonical.{siteID}.created`), persisted by `message-worker`, and fanned out to room members like other system messages. Its `sysMsgData` carries `{ "meetingId": "...", "joinUrl": "..." }`.
+On first creation, a `teams_meet_started` system message is published on the canonical message path (`chat.msg.canonical.{siteID}.created`), persisted by `message-worker`, and fanned out to room members like other system messages. Its `sysMsgData` carries `{ "meetingId": "...", "joinUrl": "..." }`.
+On idempotent repeat calls that return cached meeting details, no additional system message is published.
 
 ##### Triggered events — error path
 
