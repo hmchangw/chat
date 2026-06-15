@@ -766,13 +766,14 @@ func RoomAppCmdMenuPattern(siteID string) string {
 // 1:1 deep-link builder with no room; the target account travels in the body.
 
 // TeamsRoomCall returns the concrete subject for the room-call deep-link RPC.
-// Panics if account contains a NATS wildcard, matching the other room-scoped
-// concrete builders (e.g. RoomAppTabs, MsgHistory).
-func TeamsRoomCall(account, roomID, siteID string) string {
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12), so this returns the error rather than panicking
+// like the older sibling builders (e.g. RoomAppTabs, MsgHistory).
+func TeamsRoomCall(account, roomID, siteID string) (string, error) {
 	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
 	}
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.call", account, roomID, siteID)
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.call", account, roomID, siteID), nil
 }
 
 // TeamsRoomCallPattern is the natsrouter registration pattern for the room-call RPC.
@@ -781,13 +782,13 @@ func TeamsRoomCallPattern(siteID string) string {
 }
 
 // TeamsMeeting returns the concrete subject for the Graph onlineMeeting RPC.
-// Panics if account contains a NATS wildcard, matching the other room-scoped
-// concrete builders.
-func TeamsMeeting(account, roomID, siteID string) string {
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12).
+func TeamsMeeting(account, roomID, siteID string) (string, error) {
 	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
 	}
-	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.meeting", account, roomID, siteID)
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.meeting", account, roomID, siteID), nil
 }
 
 // TeamsMeetingPattern is the natsrouter registration pattern for the meetings RPC.
@@ -796,13 +797,13 @@ func TeamsMeetingPattern(siteID string) string {
 }
 
 // TeamsUserCall returns the concrete subject for the 1:1 user-call deep-link RPC.
-// Panics if account contains a NATS wildcard, matching the other concrete
-// account-scoped builders.
-func TeamsUserCall(account, siteID string) string {
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12).
+func TeamsUserCall(account, siteID string) (string, error) {
 	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
 	}
-	return fmt.Sprintf("chat.user.%s.request.teams.%s.call.user", account, siteID)
+	return fmt.Sprintf("chat.user.%s.request.teams.%s.call.user", account, siteID), nil
 }
 
 // TeamsUserCallPattern is the natsrouter registration pattern for the user-call RPC.
