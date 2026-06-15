@@ -87,7 +87,7 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 	if listType == "current" {
 		return r.aggregateCurrent(ctx, account, limit)
 	}
-	match := bson.M{"u.account": account, "muted": bson.M{"$ne": true}}
+	match := bson.M{"u.account": account}
 	var windowCutoff *time.Time
 	switch listType {
 	case "rooms":
@@ -113,7 +113,7 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 
 // aggregateCurrent merges the rooms (dm/channel) and apps (botDM) $facet branches — each needs a different roomType $match; no window.
 func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
-	match := bson.M{"u.account": account, "muted": bson.M{"$ne": true}, "$or": bson.A{
+	match := bson.M{"u.account": account, "$or": bson.A{
 		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}},
 		bson.M{"roomType": "botDM", "isSubscribed": true},
 	}}
@@ -148,7 +148,7 @@ func (r *SubscriptionRepo) aggregateCurrent(ctx context.Context, account string,
 func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account string, members []string, limit int) ([]model.Subscription, error) {
 	localSiteID := r.siteID
 	pipeline := bson.A{
-		bson.M{"$match": bson.M{"u.account": account, "roomType": "channel", "muted": bson.M{"$ne": true}}},
+		bson.M{"$match": bson.M{"u.account": account, "roomType": "channel"}},
 		// Co-member join — NOT siteId-filtered (any local/federated sub counts), projected
 		// to u.account only. members is $literal-wrapped: $-values read as literals, not field paths.
 		bson.M{"$lookup": bson.M{
@@ -247,7 +247,9 @@ func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account,
 	return &out[0], nil
 }
 
-// activeSubscriptionFilter: non-muted dm/channel subs, or non-muted subscribed botDMs (the count endpoints' notion of active).
+// activeSubscriptionFilter: non-muted dm/channel subs, or non-muted subscribed botDMs (the count
+// endpoints' notion of active). Unlike the list endpoints, the count EXCLUDES muted subs — mute
+// keeps a room visible in lists but out of the active/badge count.
 func activeSubscriptionFilter(account string) bson.M {
 	return bson.M{"u.account": account, "muted": bson.M{"$ne": true}, "$or": bson.A{
 		bson.M{"roomType": bson.M{"$in": bson.A{"dm", "channel"}}},
