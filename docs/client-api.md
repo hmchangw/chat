@@ -3398,14 +3398,17 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
 - Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are still computed from these baseline timestamps, so they remain correct on a degraded site.
 
-**Per-room-type record shape** — the three subscription kinds share one schema and differ only in these fields:
+**Per-room-type record shape.** All three kinds returned by `subscription.list` (`channel`, `dm`, `botDM`) use the single [Subscription](#subscription) schema (§3.0) with the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the five below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
 
 | Field | `channel` | `dm` | `botDM` |
 |---|---|---|---|
-| `name` | Channel name. | Counterpart's account. | App's display name (bot account when the app record is unavailable). |
-| `hrInfo` | — | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)); `subscription.getDM` only. | — |
-| `room.name` | Canonical room name. | Server-generated DM room name. | Server-generated botDM room name. |
-| `room.appCount` | Bots in the channel. | — | ≥ 1. |
+| `name` | Channel name. | Counterpart's account. | App display name (falls back to the bot account when the app record is unavailable). |
+| `isSubscribed` | absent | absent | `true` — botDM rows are returned only while subscribed. |
+| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — **`subscription.getDM` only**, never present in `subscription.list`. | absent |
+| `room.name` | Canonical channel name. | Server-generated DM room name. | Server-generated botDM room name. |
+| `room.appCount` | Bot/app count in the channel (omitted when 0). | omitted (0). | ≥ 1. |
+
+The example below shows one record of each type in order (`channel`, `dm`, `botDM`):
 
 ```json
 {
