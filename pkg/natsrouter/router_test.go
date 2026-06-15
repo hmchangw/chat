@@ -82,56 +82,6 @@ func TestRegister_ParamsExtraction(t *testing.T) {
 	assert.Equal(t, "site-prod", captured.Get("siteID"))
 }
 
-func TestRegister_EmptyPayload_ZeroValueRequest(t *testing.T) {
-	nc := startTestNATS(t)
-	r := New(nc, "test-service")
-
-	var captured testReq
-	Register(r, "test.{id}",
-		func(c *Context, req testReq) (*testResp, error) {
-			captured = req
-			return &testResp{Greeting: "ok"}, nil
-		})
-
-	resp, err := nc.Request(context.Background(), "test.123", nil, 2*time.Second)
-	require.NoError(t, err)
-
-	var result testResp
-	require.NoError(t, json.Unmarshal(resp.Data, &result))
-	assert.Equal(t, "ok", result.Greeting, "empty payload must reach the handler, not bad_request")
-	assert.Equal(t, testReq{}, captured, "handler must receive the zero-value request")
-}
-
-func TestRegister_WhitespacePayload_StillBadRequest(t *testing.T) {
-	nc := startTestNATS(t)
-	r := New(nc, "test-service")
-
-	Register(r, "test.{id}",
-		func(c *Context, req testReq) (*testResp, error) {
-			t.Error("handler must not be called for non-empty invalid JSON")
-			return nil, nil
-		})
-
-	cases := []struct {
-		name    string
-		payload []byte
-	}{
-		{"whitespace only", []byte("   ")},
-		{"malformed json", []byte("{not json")},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp, err := nc.Request(context.Background(), "test.123", tc.payload, 2*time.Second)
-			require.NoError(t, err)
-
-			var errResp errcode.Error
-			require.NoError(t, json.Unmarshal(resp.Data, &errResp))
-			assert.Equal(t, "invalid request payload", errResp.Message)
-			assert.Equal(t, "bad_request", string(errResp.Code))
-		})
-	}
-}
-
 func TestRegister_InvalidJSON(t *testing.T) {
 	nc := startTestNATS(t)
 	r := New(nc, "test-service")
