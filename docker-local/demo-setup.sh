@@ -8,14 +8,18 @@
 #   1. installs the `nats` CLI to a persistent path (if missing)
 #   2. re-creates Vault's `chat-kek` transit key (dev-mode Vault loses it on restart)
 #   3. restarts any encryption-dependent service that died on a Vault bounce
-#   4. mints a fresh room + message (old rooms are poisoned if Vault lost its key)
+#   4. seeds a roster of demo users (so room-service can resolve members and you
+#      can act as different accounts)
+#   5. seeds custom emoji shortcodes so reactions validate (reactions require a
+#      registered custom emoji; there is no built-in/unicode set)
+#   6. mints a fresh room (owner + $MEMBERS) + message
 #
 # Writes the ids to /tmp/room_id.txt and /tmp/msg_id.txt and prints copy-paste
 # commands. Pass --logs to stream the app logs live in this terminal once setup
 # is done (otherwise run ./demo-logs.sh in a separate terminal).
 #
-# Env overrides: ACCOUNT, SITE_ID, MEMBER, NATS_BIN_DIR, NATS_URL,
-# NATS_CREDS, VAULT_C, VAULT_TOKEN, CASS_C.
+# Env overrides: ACCOUNT, SITE_ID, MEMBERS, REACT_EMOJIS, NATS_BIN_DIR, NATS_URL,
+# NATS_CREDS, VAULT_C, VAULT_TOKEN, CASS_C, MONGO_C.
 
 set -euo pipefail
 
@@ -25,13 +29,15 @@ FOLLOW_LOGS=0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT="${ACCOUNT:-alice}"
 SITE_ID="${SITE_ID:-site-local}"
-MEMBER="${MEMBER:-bob}"
+MEMBERS="${MEMBERS:-bob carol dave}"   # extra members added to the demo room
 NATS_BIN_DIR="${NATS_BIN_DIR:-/home/codespace/.local/bin}"
 NATS_URL="${NATS_URL:-nats://localhost:4222}"
 NATS_CREDS="${NATS_CREDS:-$HERE/backend.creds}"
 VAULT_C="${VAULT_C:-chat-local-services-vault-1}"
 VAULT_TOKEN="${VAULT_TOKEN:-dev-only-token}"
 CASS_C="${CASS_C:-chat-local-cassandra}"
+MONGO_C="${MONGO_C:-chat-local-mongodb}"
+REACT_EMOJIS="${REACT_EMOJIS:-thumbsup heart tada}"
 
 log() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
@@ -64,13 +70,57 @@ for c in chat-local-services-{auth-service,room-service,history-service,message-
   if ! running "$c"; then echo "starting $c"; docker start "$c" >/dev/null; fi
 done
 
-# 4. Mint a fresh room + message (creating a room doubles as a readiness probe).
-log "minting a fresh room + message"
+# 4. Seed a roster of demo users. room-service resolves members against the users
+#    collection, so these must exist before you create rooms or act as them
+#    (ACCOUNT=erin ...). Idempotent upsert; safe to re-run. Includes a bot
+#    (helper.bot) — bots bypass the large-room pin guard. Different departments
+#    let you exercise org/dept scenarios.
+log "seeding demo users"
+docker exec "$MONGO_C" mongosh chat --quiet --eval "
+  const roster = [
+    ['alice','Alice','爱丽丝','Engineering'], ['bob','Bob','鲍勃','Engineering'],
+    ['carol','Carol','卡罗尔','Product'],     ['dave','Dave','戴夫','Product'],
+    ['erin','Erin','艾琳','Design'],          ['frank','Frank','弗兰克','Design'],
+    ['grace','Grace','格蕾丝','Sales'],        ['heidi','Heidi','海蒂','Sales'],
+    ['ivan','Ivan','伊万','Support'],          ['judy','Judy','朱迪','Support'],
+    ['mallory','Mallory','玛洛里','Security'],  ['trent','Trent','特伦特','Security'],
+    ['helper.bot','Helper Bot','助手','Bots'],
+  ];
+  roster.forEach(([acc,en,zh,dept]) =>
+    db.users.updateOne(
+      {_id:'u-'+acc},
+      {\$set:{account:acc,siteId:'$SITE_ID',engName:en,chineseName:zh,
+              deptId:dept.toLowerCase(),deptName:dept,sectId:'',sectName:'',employeeId:''}},
+      {upsert:true}));
+  print('users: ' + db.users.find({siteId:'$SITE_ID'},{_id:0,account:1}).toArray().map(u=>u.account).join(', '));
+" 2>&1 | tail -1
+
+# 5. Seed custom emoji shortcodes so reactions validate. history-service checks
+#    the custom_emojis collection (no built-in set); seed BEFORE any react so the
+#    60s negative-lookup cache is never poisoned. Upsert = idempotent.
+log "seeding reaction emoji ($REACT_EMOJIS)"
+docker exec "$MONGO_C" mongosh chat --quiet --eval "
+  ['$(echo "$REACT_EMOJIS" | sed "s/ /','/g")'].forEach(sc =>
+    db.custom_emojis.updateOne(
+      {siteId:'$SITE_ID',shortcode:sc},
+      {\$setOnInsert:{_id:'ce-'+sc+'-$SITE_ID',siteId:'$SITE_ID',shortcode:sc,
+        imageUrl:'https://example.com/e/'+sc+'.png',createdBy:'u-$ACCOUNT',createdAt:Date.now()}},
+      {upsert:true}));
+  print('custom_emojis for $SITE_ID: ' +
+    db.custom_emojis.find({siteId:'$SITE_ID'},{_id:0,shortcode:1}).toArray().map(e=>e.shortcode).join(', '));
+" 2>&1 | tail -1
+
+# 6. Mint a fresh room + message (creating a room doubles as a readiness probe).
+#    The room includes $MEMBERS so you can act as any of them (ACCOUNT=bob ...);
+#    $ACCOUNT is the owner. Users NOT listed here are non-members — act as one to
+#    exercise the not_subscribed path.
+log "minting a fresh room (owner=$ACCOUNT, members=$MEMBERS) + message"
+MEMBERS_JSON="[\"$(echo "$MEMBERS" | sed 's/  */","/g')\"]"
 NC=(nats --server "$NATS_URL" --creds "$NATS_CREDS")
 RID=""
 for _ in $(seq 1 30); do
   RID="$("${NC[@]}" req "chat.user.$ACCOUNT.request.room.$SITE_ID.create" \
-        "{\"name\":\"pin-fav-demo\",\"users\":[\"$MEMBER\"]}" --raw 2>/dev/null | jq -r '.roomId // empty' || true)"
+        "{\"name\":\"pin-fav-demo\",\"users\":$MEMBERS_JSON}" --raw 2>/dev/null | jq -r '.roomId // empty' || true)"
   [ -n "$RID" ] && break
   sleep 2
 done
@@ -103,6 +153,7 @@ export PATH=$NATS_BIN_DIR:\$PATH
 ./docker-local/demo-pin-fav.sh pin   $RID $MID
 ./docker-local/demo-pin-fav.sh list  $RID
 ./docker-local/demo-pin-fav.sh unpin $RID $MID
+./docker-local/demo-pin-fav.sh react $RID $MID thumbsup   # toggle; run twice to add then remove
 ./docker-local/demo-pin-fav.sh fav   $RID
 ./docker-local/demo-pin-fav.sh unfav $RID
 

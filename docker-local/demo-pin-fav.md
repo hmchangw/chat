@@ -1,7 +1,7 @@
-# Pin / Unpin / Favorite demo
+# Pin / Unpin / Favorite / Reaction demo
 
 `demo-pin-fav.sh` is a thin [`nats` CLI](https://github.com/nats-io/natscli) driver
-for the pin/unpin and favorite RPCs against the local-dev stack. It does
+for the pin/unpin, favorite, and reaction RPCs against the local-dev stack. It does
 **request → reply** only — each action is a **discrete subcommand** that fires one
 RPC and prints the raw reply. It does **not** create the room or message; use
 `demo-setup.sh` (below) for that.
@@ -21,14 +21,22 @@ demo-pin-fav.sh <action> [args]
 | `pin` | `<ROOM_ID> <MESSAGE_ID>` | `chat.user.{acct}.request.room.{room}.{site}.msg.pin` | history-service |
 | `unpin` | `<ROOM_ID> <MESSAGE_ID>` | `…msg.unpin` | history-service |
 | `list` | `<ROOM_ID>` | `…msg.pinned.list` | history-service |
+| `react` | `<ROOM_ID> <MESSAGE_ID> [EMOJI]` | `…msg.react` (toggle; default `thumbsup`) | history-service |
 | `fav` | `<ROOM_ID>` | `…favorite.toggle` → `favorite=true` | room-service |
 | `unfav` | `<ROOM_ID>` | `…favorite.toggle` → `favorite=false` | room-service |
 | `toggle` | `<ROOM_ID>` | `…favorite.toggle` (single flip) | room-service |
 | `all` | `<ROOM_ID> <MESSAGE_ID>` | the whole sequence, in order | both |
 
-`favorite.toggle` is a pure server-side flip (no target state). `fav`/`unfav` make it
-**idempotent** by reading the returned `favorite` and toggling once more only if needed
-(≤2 RPCs); `toggle` just flips once and reports the new state.
+`favorite.toggle` and `msg.react` are both pure server-side flips (no target state).
+`fav`/`unfav` make favorite **idempotent** by reading the returned `favorite` and
+toggling once more only if needed (≤2 RPCs); `toggle` flips once. `react` is a single
+toggle — the reply's `action` says which way it went (`added` / `removed`); run it
+twice to add then remove.
+
+> **Reactions need a registered custom emoji.** `msg.react` validates the shortcode
+> against the `custom_emojis` collection (no built-in/unicode set), so an unregistered
+> shortcode is rejected. `demo-setup.sh` seeds `thumbsup`, `heart`, `tada` for
+> `site-local`; override with `REACT_EMOJIS`.
 
 ## Prerequisites
 
@@ -59,25 +67,66 @@ export PATH=/home/codespace/.local/bin:$PATH
 / `/tmp/msg_id.txt`). The current ones are:
 
 ```
-ROOM_ID = GajUvvpBrQ0H4CS4r
-MSG_ID  = TDTxlwffjf2teHcVE3VB
+ROOM_ID = okm5C3qYfbOGD839n
+MSG_ID  = 6AKWgB4dbacQCmhEtFkT
 ```
 
 Then fire whichever action you want (these run against the ids above):
 
 ```bash
-./docker-local/demo-pin-fav.sh pin    GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB
-./docker-local/demo-pin-fav.sh list   GajUvvpBrQ0H4CS4r
-./docker-local/demo-pin-fav.sh unpin  GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB
-./docker-local/demo-pin-fav.sh fav    GajUvvpBrQ0H4CS4r
-./docker-local/demo-pin-fav.sh unfav  GajUvvpBrQ0H4CS4r
-./docker-local/demo-pin-fav.sh all    GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB   # whole sequence
+./docker-local/demo-pin-fav.sh pin    okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
+./docker-local/demo-pin-fav.sh list   okm5C3qYfbOGD839n
+./docker-local/demo-pin-fav.sh unpin  okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
+./docker-local/demo-pin-fav.sh react  okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT thumbsup  # toggle
+./docker-local/demo-pin-fav.sh fav    okm5C3qYfbOGD839n
+./docker-local/demo-pin-fav.sh unfav  okm5C3qYfbOGD839n
+./docker-local/demo-pin-fav.sh all    okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT   # whole sequence
 ```
 
 > The ids above are a live example from the last `demo-setup.sh` run. Re-running
 > setup mints new ones — grab them from its output or `cat /tmp/room_id.txt
 > /tmp/msg_id.txt`. (A room is poisoned if Vault loses its key, so always use the
 > latest minted ids — see Troubleshooting.)
+
+## Acting as different users (scenarios)
+
+`demo-setup.sh` seeds a **roster of users** (so room-service can resolve them) and
+puts several in the demo room. The acting user comes from the NATS subject, so just
+set `ACCOUNT=<who>` — the shared creds work for any account.
+
+**Seeded roster** (all in `users`, `site-local`):
+
+| Accounts | Dept | In the demo room? |
+|----------|------|-------------------|
+| `alice` | Engineering | **owner** (creator) |
+| `bob`, `carol`, `dave` | Eng/Product | **members** (the default `MEMBERS`) |
+| `erin`, `frank`, `grace`, `heidi`, `ivan`, `judy`, `mallory`, `trent` | Design/Sales/Support/Security | not members |
+| `helper.bot` | Bots | not a member — **bots bypass the large-room pin guard** |
+
+Override the room's members with `MEMBERS="bob carol erin" ./docker-local/demo-setup.sh`.
+
+**Recipes** (`RID`/`MID` from setup):
+
+```bash
+# a member reacts / pins / favorites — all succeed
+ACCOUNT=bob   ./docker-local/demo-pin-fav.sh react $RID $MID heart
+ACCOUNT=carol ./docker-local/demo-pin-fav.sh react $RID $MID thumbsup   # stacks: 2 reactors
+ACCOUNT=dave  ./docker-local/demo-pin-fav.sh pin   $RID $MID
+
+# a NON-member is rejected (negative tests)
+ACCOUNT=erin  ./docker-local/demo-pin-fav.sh react $RID $MID tada   # forbidden / not_subscribed
+ACCOUNT=erin  ./docker-local/demo-pin-fav.sh fav   $RID            # forbidden / not_room_member
+
+# same user re-reacting toggles the reaction off again
+ACCOUNT=bob   ./docker-local/demo-pin-fav.sh react $RID $MID heart   # → removed
+```
+
+Each member's reaction lands as its own `(emoji, user)` cell, so `demo-state.sh`'s
+reactions map shows every reactor (id, name) — e.g. `heart=bob`, `thumbsup=carol`.
+
+Other scenarios the roster enables: build a room owned by someone else
+(`ACCOUNT=grace … create`), test reactions from many distinct users on one message,
+or add `helper.bot` as a member to exercise the bot pin-bypass.
 
 ## Watching it live (multiple terminals)
 
@@ -94,10 +143,21 @@ A two-terminal workflow:
 | Terminal | Command |
 |----------|---------|
 | **1 — logs** | `./docker-local/demo-setup.sh --logs` (sets up, then streams logs here) |
-| **2 — drive** | `./docker-local/demo-pin-fav.sh pin GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB`, etc. |
+| **2 — drive** | `./docker-local/demo-pin-fav.sh pin okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT`, etc. |
 
 `--logs` runs the full setup and then `exec`s `demo-logs.sh` in the same terminal,
 so the setup terminal becomes your live log view.
+
+> **Successful requests don't log by default.** As of the per-request `X-Debug`
+> logging change, services log a per-RPC line only when the request is flagged —
+> steady-state visibility is via metrics/traces, and **errors always log**. To see
+> the `"nats request"` breadcrumb for *successful* calls, run the driver with
+> `DEBUG=1`, which sends the `X-Debug:flow` header:
+> ```bash
+> DEBUG=1 ./docker-local/demo-pin-fav.sh pin $RID $MID
+> ```
+> Without it, a successful pin/react/favorite leaves the log stream quiet — that's
+> expected, not a broken follower.
 
 ## Watch the state change
 
@@ -119,7 +179,7 @@ It prints:
 
 Typical loop:
 ```bash
-RID=GajUvvpBrQ0H4CS4r ; MID=TDTxlwffjf2teHcVE3VB
+RID=okm5C3qYfbOGD839n ; MID=6AKWgB4dbacQCmhEtFkT
 ./docker-local/demo-state.sh   $RID $MID         # before — 0 pinned rows, pinned_at=null
 ./docker-local/demo-pin-fav.sh pin $RID $MID
 ./docker-local/demo-state.sh   $RID $MID         # after  — note the counts / pin flag
@@ -136,6 +196,8 @@ All overridable via environment variables (defaults shown):
 |-----|---------|-------|
 | `ACCOUNT` | `alice` | acting user (taken from the NATS subject) |
 | `SITE_ID` | `site-local` | |
+| `REACT_EMOJI` | `thumbsup` | default reaction shortcode for `react` |
+| `DEBUG` | _(unset)_ | when set, sends `X-Debug:flow` so successful requests log a per-RPC line |
 | `NATS_URL` | `nats://localhost:4222` | |
 | `NATS_CREDS` | `<script-dir>/backend.creds` | |
 
@@ -148,25 +210,28 @@ local demo — no per-user JWT needed.
 Each subcommand prints one raw reply:
 
 ```bash
-$ ./demo-pin-fav.sh pin   GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB
-{"messageId":"TDTxlwffjf2teHcVE3VB","pinnedAt":1781057044222}
+$ ./demo-pin-fav.sh pin   okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
+{"messageId":"6AKWgB4dbacQCmhEtFkT","pinnedAt":1781057044222}
 
-$ ./demo-pin-fav.sh list  GajUvvpBrQ0H4CS4r
+$ ./demo-pin-fav.sh list  okm5C3qYfbOGD839n
 {"messages":[{… "msg":"Pin me!" … "pinnedAt":"…","pinnedBy":{"id":"u-alice",…}}],"hasNext":false}
 
-$ ./demo-pin-fav.sh unpin GajUvvpBrQ0H4CS4r TDTxlwffjf2teHcVE3VB
-{"messageId":"TDTxlwffjf2teHcVE3VB"}
+$ ./demo-pin-fav.sh unpin okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
+{"messageId":"6AKWgB4dbacQCmhEtFkT"}
 
-$ ./demo-pin-fav.sh fav   GajUvvpBrQ0H4CS4r
+$ ./demo-pin-fav.sh react okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT thumbsup   # again → "removed"
+{"messageId":"6AKWgB4dbacQCmhEtFkT","shortcode":"thumbsup","action":"added","reactedAt":1781636442212}
+
+$ ./demo-pin-fav.sh fav   okm5C3qYfbOGD839n
 {"status":"ok","favorite":true}
 
-$ ./demo-pin-fav.sh unfav GajUvvpBrQ0H4CS4r
+$ ./demo-pin-fav.sh unfav okm5C3qYfbOGD839n
 {"status":"ok","favorite":false}
 ```
 
 ## Feature reference
 
-What the two features actually enforce server-side (so the replies above make sense).
+What the three features actually enforce server-side (so the replies above make sense).
 
 ### Raw NATS requests (no script)
 
@@ -183,25 +248,30 @@ $NC req "<subject>" '<body>' --raw
 | pin | `chat.user.{account}.request.room.{roomID}.{site}.msg.pin` | `{"messageId":"<id>"}` |
 | unpin | `chat.user.{account}.request.room.{roomID}.{site}.msg.unpin` | `{"messageId":"<id>"}` |
 | list pinned | `chat.user.{account}.request.room.{roomID}.{site}.msg.pinned.list` | `{}` &nbsp;or&nbsp; `{"cursor":"<c>","limit":50}` |
+| react | `chat.user.{account}.request.room.{roomID}.{site}.msg.react` | `{"messageId":"<id>","shortcode":"<emoji>"}` |
 | favorite | `chat.user.{account}.request.room.{roomID}.{site}.favorite.toggle` | *(empty — no body)* |
 
-Concrete examples (account `alice`, room `GajUvvpBrQ0H4CS4r`, message `TDTxlwffjf2teHcVE3VB`):
+Concrete examples (account `alice`, room `okm5C3qYfbOGD839n`, message `6AKWgB4dbacQCmhEtFkT`):
 
 ```bash
 # pin
-$NC req "chat.user.alice.request.room.GajUvvpBrQ0H4CS4r.site-local.msg.pin" \
-  '{"messageId":"TDTxlwffjf2teHcVE3VB"}' --raw
+$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.pin" \
+  '{"messageId":"6AKWgB4dbacQCmhEtFkT"}' --raw
 
 # unpin
-$NC req "chat.user.alice.request.room.GajUvvpBrQ0H4CS4r.site-local.msg.unpin" \
-  '{"messageId":"TDTxlwffjf2teHcVE3VB"}' --raw
+$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.unpin" \
+  '{"messageId":"6AKWgB4dbacQCmhEtFkT"}' --raw
 
 # list pinned (body REQUIRED — empty body is rejected)
-$NC req "chat.user.alice.request.room.GajUvvpBrQ0H4CS4r.site-local.msg.pinned.list" \
+$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.pinned.list" \
   '{}' --raw
 
+# react (toggle; shortcode must be a registered custom emoji)
+$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.react" \
+  '{"messageId":"6AKWgB4dbacQCmhEtFkT","shortcode":"thumbsup"}' --raw
+
 # favorite (no body; pure toggle)
-$NC req "chat.user.alice.request.room.GajUvvpBrQ0H4CS4r.site-local.favorite.toggle" \
+$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.favorite.toggle" \
   '' --raw
 ```
 
@@ -267,6 +337,36 @@ Both `pin` and `unpin` share a pre-check: **kill-switch → subscription → mes
   `demo-pin-fav.sh fav`/`unfav` reach a specific state by reading this `favorite` and
   toggling again only if needed.
 
+### Reactions — history-service
+
+`msg.react` toggles one `(emoji, user)` reaction on a message — there's no separate
+add/remove RPC; the same call adds if absent and removes if present.
+
+- **Required fields.** `messageId` and `shortcode` (both `bad_request` if missing).
+- **Shortcode validation.** Bare shortcode (no colons), regex `^[a-z0-9_+-]{1,32}$`,
+  NFC-normalised. It **must be a registered custom emoji** for the site — validated
+  against the `custom_emojis` collection; there is **no built-in/unicode set**. An
+  unknown or malformed shortcode → `bad_request` "invalid reaction shortcode".
+- **Subscription-gated** (same `not_subscribed` reason as pin/list).
+- **Message must exist.** Unknown id → `not_found`. Adding to a soft-deleted message is
+  rejected (`not_found`); **removing** an existing reaction on a deleted message is allowed.
+- **Toggle semantics.** The in-row reaction map decides add vs remove without an extra
+  read; the response `action` is `added` or `removed`.
+- **Storage.** The reaction is a `map<frozen<reaction_key>, frozen<reactor_info>>` cell
+  written to every message mirror (`messages_by_id`, `messages_by_room`, thread/pinned
+  copies). Adding to a custom emoji that isn't registered is the only validation hop that
+  touches Mongo; everything else is the Cassandra map write.
+- **Events.** A successful react best-effort publishes a canonical `reacted` event
+  (`chat.msg.canonical.{site}.reacted`) with a `reactionDelta` (shortcode, action, actor).
+- **Response.** `{messageId, shortcode, action, reactedAt}` (`reactedAt` is UTC millis).
+
+| Error | code | note |
+|-------|------|------|
+| missing `messageId` / `shortcode` | `bad_request` | — |
+| unregistered or malformed shortcode | `bad_request` | "invalid reaction shortcode" |
+| not a room member | `forbidden` | `not_subscribed` |
+| message unknown / adding to a deleted message | `not_found` | remove on deleted is allowed |
+
 ### Config knobs (history-service)
 
 | Env var | Default | Effect |
@@ -293,6 +393,30 @@ Both `pin` and `unpin` share a pre-check: **kill-switch → subscription → mes
 - **Room create fails with "must include at least one of users, orgs, channels, or name"**
   — a name alone isn't enough once resolution runs; include a real member
   (`"users":["bob"]`).
+- **The log stream doesn't move on a successful pin/react/favorite** — expected. Services
+  log a per-request line only when the request carries `X-Debug` (errors always log). Run
+  the driver with `DEBUG=1` (sends `X-Debug:flow`) to see the `"nats request"` breadcrumb.
+- **`react` returns `bad_request: invalid reaction shortcode`** — the shortcode isn't a
+  registered custom emoji for the site (there's no built-in set). `demo-setup.sh` seeds
+  `thumbsup`/`heart`/`tada`; register more in the `custom_emojis` collection. Note
+  history-service caches lookups (incl. negatives) for ~60s, so if you reacted *before*
+  registering, wait out the TTL or restart history-service.
+- **`react` returns `internal error` with `can not marshal cassandra.ReactionKey into
+  varchar`** — your persistent volume has the **old reactions column type**
+  (`map<text, frozen<set<frozen<Participant>>>>`) instead of
+  `map<frozen<reaction_key>, frozen<reactor_info>>`. Cassandra can't re-type a column in
+  place, so drop and recreate the message tables from the current DDL (loses message
+  history, not rooms/users), then re-add the pinned-table reactions column:
+  ```bash
+  for t in messages_by_id messages_by_room pinned_messages_by_room \
+           thread_messages_by_thread; do
+    docker exec chat-local-cassandra cqlsh -e "DROP TABLE IF EXISTS chat.$t;"
+  done
+  docker compose -f docker-local/compose.deps.yaml --profile init run --rm cassandra-init
+  docker exec chat-local-cassandra cqlsh -e \
+    "ALTER TABLE chat.pinned_messages_by_room ADD reactions map<frozen<reaction_key>, frozen<reactor_info>>;"
+  docker restart chat-local-services-history-service-1 chat-local-services-message-worker-1
+  ```
 - **`internal error` with `cipher: message authentication failed` (or message/history
   services crash-looping on Vault)** — Vault runs in **dev mode (in-memory)**, so a Vault
   restart loses the `chat-kek` transit key. Every room created under the old key is then

@@ -3,9 +3,10 @@
 # demo-state.sh — Snapshot the moving parts the pin/fav demo touches.
 #
 # Prints, with zero extra tooling (just curl + docker):
-#   1. JetStream stream stats   — from the NATS HTTP monitor port (:8222)
-#   2. Pinned rows for a room   — from Cassandra pinned_messages_by_room
-#   3. The message's pin flag    — from Cassandra messages_by_id
+#   1. JetStream stream stats     — from the NATS HTTP monitor port (:8222)
+#   2. Pinned rows for a room     — from Cassandra pinned_messages_by_room
+#   3. The message's pin flag     — from Cassandra messages_by_id
+#   4. The message's reactions    — the reactions map on messages_by_id
 #
 # Run it before and after ./demo-pin-fav.sh to watch the numbers move.
 #
@@ -39,3 +40,6 @@ cql "SELECT message_id, pinned_at, pinned_by FROM ${KEYSPACE}.pinned_messages_by
 
 echo "================ Cassandra: messages_by_id pin flag (msg=$MSG_ID) ======="
 cql "SELECT message_id, pinned_at, pinned_by FROM ${KEYSPACE}.messages_by_id WHERE message_id='${MSG_ID}';"
+
+echo "================ Cassandra: reactions on the message (msg=$MSG_ID) ======"
+cql "SELECT reactions FROM ${KEYSPACE}.messages_by_id WHERE message_id='${MSG_ID}';"
