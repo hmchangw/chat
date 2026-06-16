@@ -88,6 +88,7 @@ Each site runs its own NATS server, so these figures are per-site.
 | Member add/remove ops per day per user *(member-change subset of R_room)* | R_member | **50** |
 | Search ops per day per user | R_search | ~5 |
 | Presence status changes per day per user | C_pres | ~20 |
+| Presence health-check ops per day per user (ping/pong/hello/bye) | C_hc | 4 |
 | Push notifications per day | M_push | 4,000,000 |
 | HR sync records per daily run (burst @ 100 msg/s) | M_hr | 40,000 |
 | Migration oplog QPS (sustained 24/7, 130KB payload, 1 consumer) | Q_mig | 200 |
@@ -150,10 +151,14 @@ own in §8 and must not be summed with steady-state.
 | `chat.user.*.notification` | M × ~10% | 0.4M | 0.4M | 5 | 1KB | 0.4 GB |
 | `chat.user.*.event.subscription.update` *(member-driven)* | R_member × U × ~2 | 1.04M | 2.08M | 24 | 0.5KB | 1 GB |
 | `chat.user.*.event.presence` | U × C_pres × P | 0.42M | 8.3M | 96 | 0.15KB | 1.3 GB |
+| `chat.user.*.event.presence` (health-check ping/pong/hello/bye) | U × C_hc × P | 0.083M | 1.66M | 19 | ~0.05KB | 0.08 GB |
 | `chat.room.*.event.typing` | active room only | — | — | — | — | *(ignored)* |
-| **Core delivery subtotal** | | | **~915M** | **~10,590** | | **~565 GB** |
+| **Core delivery subtotal** | | | **~917M** | **~10,610** | | **~565 GB** |
 
-Presence delivery dropped sharply (was 42M) because P went 100 → 20.
+Presence delivery dropped sharply (was 42M) because P went 100 → 20. The health-check
+row is **client-published** (each connection publishes ping/pong/hello/bye to its own
+presence subject); each op fans out to the user's P watchers like a status change, but
+with a tiny ~50B payload so it adds negligible bytes.
 
 ### 6.3 Request/Reply endpoints
 
@@ -170,9 +175,9 @@ Presence delivery dropped sharply (was 42M) because P went 100 → 20.
 | Layer | Ops or deliveries/day | avg msg/s | Bytes/day |
 |-------|----------------------:|----------:|----------:|
 | JetStream streams | ~46M | ~536 | ~41 GB |
-| Core delivery subjects | ~915M | ~10,590 | ~565 GB |
+| Core delivery subjects | ~917M | ~10,610 | ~565 GB |
 | R/R (req + resp) | ~17M | ~200 | ~180 GB |
-| **TOTAL (steady-state)** | **~0.98B/day** | **~11,300/s avg · ~45,300/s peak** | **~0.79 TB/day** |
+| **TOTAL (steady-state)** | **~0.98B/day** | **~11,340/s avg · ~45,400/s peak** | **~0.79 TB/day** |
 
 Excludes `MIGRATION_OPLOG` (separate phase — §8).
 
@@ -225,10 +230,10 @@ connection state scale with D.** Effective fan-out becomes `F × D = 500` per me
 | Layer | D=1 deliveries/day | D=5 deliveries/day | D=1 bytes/day | D=5 bytes/day |
 |-------|-------------------:|-------------------:|--------------:|--------------:|
 | JetStream streams | ~46M | ~46M *(flat)* | ~41 GB | ~41 GB |
-| Core delivery | ~915M | ~4,575M | ~565 GB | ~2,825 GB |
+| Core delivery | ~917M | ~4,585M | ~565 GB | ~2,825 GB |
 | R/R (req+resp) | ~17M | ~86M | ~180 GB | ~900 GB |
-| **TOTAL (steady-state)** | **~0.98B** | **~4.71B** | **~0.79 TB** | **~3.77 TB** |
-| **avg / peak msg/s** | ~11.3k / ~45k | **~54.5k / ~218k** | | |
+| **TOTAL (steady-state)** | **~0.98B** | **~4.72B** | **~0.79 TB** | **~3.77 TB** |
+| **avg / peak msg/s** | ~11.3k / ~45k | **~54.6k / ~218k** | | |
 
 Connection state at D=5: **~104k connections** × (100 + 20) = **~12.5M subscription
 interests**. Excludes `MIGRATION_OPLOG` (server-side, does not scale with D — §8).
@@ -324,20 +329,20 @@ site independently. Peak ≈ 4× avg.
 
 | Fab | Users | Msg/day | Deliveries/day | avg msg/s | peak msg/s | Traffic/day | avg MB/s |
 |-----|------:|--------:|---------------:|----------:|-----------:|------------:|---------:|
-| Fab 1 | 20,789 | 4.00M | ~978M | 11,300 | 45,300 | 0.79 TB | 9.1 |
-| Fab 2 | 12,150 | 2.33M | ~570M | 6,600 | 26,400 | 0.46 TB | 5.3 |
-| Fab 3 | 2,922 | 0.56M | ~137M | 1,590 | 6,350 | 0.11 TB | 1.3 |
-| Fab 4 | 2,078 | 0.39M | ~96M | 1,110 | 4,430 | 0.08 TB | 0.9 |
-| Fab 5 | 17,061 | 3.38M | ~823M | 9,530 | 38,100 | 0.66 TB | 7.6 |
-| Fab 6 | 4,138 | 0.79M | ~194M | 2,240 | 8,960 | 0.16 TB | 1.8 |
-| Fab 7 | 2,199 | 0.42M | ~103M | 1,190 | 4,760 | 0.08 TB | 1.0 |
-| Fab 8 | 3,244 | 0.62M | ~152M | 1,760 | 7,030 | 0.12 TB | 1.4 |
-| Fab 9 | 4,492 | 0.86M | ~211M | 2,440 | 9,750 | 0.17 TB | 2.0 |
-| Fab 10 | 4,754 | 0.90M | ~221M | 2,560 | 10,220 | 0.18 TB | 2.1 |
-| Fab 11 | 5,537 | 1.00M | ~247M | 2,860 | 11,430 | 0.20 TB | 2.3 |
-| Fab 12 | 4,356 | 0.83M | ~203M | 2,350 | 9,420 | 0.16 TB | 1.9 |
-| Fab 13 | 2,227 | 0.42M | ~103M | 1,190 | 4,770 | 0.08 TB | 1.0 |
-| Fab 14 | 5,215 | 1.00M | ~245M | 2,830 | 11,330 | 0.20 TB | 2.3 |
+| Fab 1 | 20,789 | 4.00M | ~980M | 11,340 | 45,400 | 0.79 TB | 9.1 |
+| Fab 2 | 12,150 | 2.33M | ~571M | 6,610 | 26,400 | 0.46 TB | 5.3 |
+| Fab 3 | 2,922 | 0.56M | ~137M | 1,590 | 6,360 | 0.11 TB | 1.3 |
+| Fab 4 | 2,078 | 0.39M | ~96M | 1,110 | 4,440 | 0.08 TB | 0.9 |
+| Fab 5 | 17,061 | 3.38M | ~825M | 9,550 | 38,200 | 0.66 TB | 7.6 |
+| Fab 6 | 4,138 | 0.79M | ~194M | 2,240 | 8,970 | 0.16 TB | 1.8 |
+| Fab 7 | 2,199 | 0.42M | ~103M | 1,190 | 4,770 | 0.08 TB | 1.0 |
+| Fab 8 | 3,244 | 0.62M | ~152M | 1,760 | 7,040 | 0.12 TB | 1.4 |
+| Fab 9 | 4,492 | 0.86M | ~211M | 2,440 | 9,760 | 0.17 TB | 2.0 |
+| Fab 10 | 4,754 | 0.90M | ~221M | 2,560 | 10,240 | 0.18 TB | 2.1 |
+| Fab 11 | 5,537 | 1.00M | ~247M | 2,860 | 11,450 | 0.20 TB | 2.3 |
+| Fab 12 | 4,356 | 0.83M | ~204M | 2,360 | 9,430 | 0.16 TB | 1.9 |
+| Fab 13 | 2,227 | 0.42M | ~103M | 1,190 | 4,780 | 0.08 TB | 1.0 |
+| Fab 14 | 5,215 | 1.00M | ~245M | 2,840 | 11,350 | 0.20 TB | 2.3 |
 
 Per-fab byte split holds at the §6.4 ratio for every site: **core delivery ~72%**, R/R
 ~23%, JetStream streams ~5%. For multi-device (D), scale Deliveries/day, Traffic/day, and
@@ -349,6 +354,10 @@ MB/s by the rule in §7 (≈ ×D); `MIGRATION_OPLOG` per fab is per §8 and inde
   *(member-driven)* lines scale with it.
 - **Presence is not implemented** ("future"). The estimate assumes ~20 event-driven
   status changes/user/day; a heartbeat design would explode this.
+- **Presence health-check** (ping/pong/hello/bye, C_hc = 4/user/day) is modeled as
+  publishing to `chat.user.{account}.event.presence` and fanning out to the user's P
+  watchers (~1.66M deliveries/day, negligible bytes). If these are server-only keepalives
+  with no watcher fan-out, the delivery count drops ~20× (to ~83k/day).
 - **OUTBOX and federated INBOX inflow are excluded** from this estimate per scope; INBOX
   here reflects local member events only.
 - **PUSH_NOTIFICATIONS / HRSYNC / MIGRATION_OPLOG are pre-merge** — revisit when the
