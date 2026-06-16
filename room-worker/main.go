@@ -16,6 +16,7 @@ import (
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -25,6 +26,7 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type config struct {
@@ -40,12 +42,15 @@ type config struct {
 	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	HealthAddr       string                  `env:"HEALTH_ADDR" envDefault:":8081"`
+	DebugLog         logctx.Config           `envPrefix:"DEBUG_LOG_"`
 
-	// Required: room-worker reads/rotates the room key on every create/add/remove path.
-	ValkeyAddrs    []string `env:"VALKEY_ADDRS,required"     envSeparator:","`
-	ValkeyPassword string   `env:"VALKEY_PASSWORD"           envDefault:""`
-	// TTL on the :prev key slot after a rotation.
-	ValkeyKeyGracePeriod time.Duration `env:"VALKEY_KEY_GRACE_PERIOD"   envDefault:"24h"`
+	// Grace window during which a rotated-out previous key remains valid for decrypt.
+	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD" envDefault:"24h"`
+
+	// Valkey backs best-effort room-meta L2 cache invalidation. Optional: when
+	// VALKEY_ADDRS is empty the bust is a no-op (the L2 TTL reconciles).
+	ValkeyAddrs    []string `env:"VALKEY_ADDRS"    envSeparator:","`
+	ValkeyPassword string   `env:"VALKEY_PASSWORD" envDefault:""`
 
 	// Atrest/Vault drive eager at-rest DEK provisioning for synchronously-created
 	// DM rooms. When Atrest.Enabled is false the DEK is created lazily by message-worker.
@@ -54,17 +59,18 @@ type config struct {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	logctx.SetupDefault(os.Stdout)
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
-	if cfg.ValkeyKeyGracePeriod <= 0 {
-		slog.Error("VALKEY_KEY_GRACE_PERIOD must be a positive duration",
-			"valkey_key_grace_period", cfg.ValkeyKeyGracePeriod)
+	if cfg.RoomKeyGracePeriod <= 0 {
+		slog.Error("ROOM_KEY_GRACE_PERIOD must be a positive duration",
+			"room_key_grace_period", cfg.RoomKeyGracePeriod)
 		os.Exit(1)
 	}
 
@@ -104,15 +110,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
-		Addrs:       cfg.ValkeyAddrs,
-		Password:    cfg.ValkeyPassword,
-		GracePeriod: cfg.ValkeyKeyGracePeriod,
-	})
-	if err != nil {
-		slog.Error("valkey connect failed", "error", err)
-		os.Exit(1)
+	keyStore := roomkeystore.NewMongoStore(mongoClient.Database(cfg.MongoDB).Collection("rooms"), cfg.RoomKeyGracePeriod)
+
+	var metaValkey valkeyutil.Client
+	if len(cfg.ValkeyAddrs) > 0 {
+		metaValkey, err = valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+		if err != nil {
+			slog.Error("valkey connect (room-meta L2 invalidation) failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("room-meta L2 invalidation enabled")
 	}
+
 	keySender := roomkeysender.NewSender(nc.NatsConn())
 
 	// Eager at-rest DEK provisioning for synchronously-created DM rooms (the
@@ -151,9 +160,10 @@ func main() {
 	}, keyStore, keySender)
 	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
 	handler.dekProvisioner = dekProvisioner
+	handler.valkey = metaValkey
 
 	router := natsrouter.New(nc, "room-worker")
-	router.Use(natsrouter.Recovery(), natsrouter.RequireRequestID(), natsrouter.Logging())
+	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
 	natsrouter.Register(router, subject.RoomCreateDMSync(cfg.SiteID), handler.serverCreateDM)
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, streamCfg.Name, buildConsumerConfig(cfg.Consumer))
@@ -225,6 +235,7 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(_ context.Context) error { valkeyutil.Disconnect(metaValkey); return nil },
 		func(context.Context) error {
 			if vaultWrapper != nil {
 				return vaultWrapper.Close()
@@ -262,12 +273,14 @@ func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstr
 			}
 		}
 	}()
-	// Defensive mint: room-service rejects missing/malformed X-Request-ID at
-	// publish time (RequireRequestID), so by the time a message lands on the
-	// ROOMS stream the header should always be a valid UUID. If we end up
-	// minting here, that's an upstream contract violation worth an Error log —
-	// downstream OutboxDedupID / message-ID generation will derive dedup keys
-	// from the fresh mint, breaking client-retry dedup. See
+	// Defensive mint: room-service stamps an X-Request-ID at publish time (its
+	// RequestID middleware mints one when the client omits it), so by the time a
+	// message lands on the ROOMS stream the header should always be a valid UUID.
+	// If we end up minting here, room-service failed to stamp one — an anomaly
+	// worth an Error log, because downstream OutboxDedupID / message-ID generation
+	// derives dedup keys from the request ID. Note: clients that retry without a
+	// stable X-Request-ID still defeat dedup upstream (room-service mints a fresh
+	// ID each attempt); the boundary no longer rejects them. See
 	// docs/error-handling.md §3a.
 	inbound := ""
 	if h := msg.Headers(); h != nil {
@@ -275,10 +288,12 @@ func runJobWithRecovery(msgCtx context.Context, handler jobProcessor, msg jetstr
 	}
 	id, replaced := idgen.ResolveRequestID(inbound)
 	if replaced || inbound == "" {
-		slog.Error("ROOMS stream message missing or invalid X-Request-ID — minting defensively; upstream contract broken",
+		slog.Error("ROOMS stream message missing or invalid X-Request-ID — minting defensively; room-service should have stamped one",
 			"inbound", inbound, "subject", msg.Subject())
 	}
 	handlerCtx := natsutil.WithRequestID(msgCtx, id)
+	handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+	logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 	handler.HandleJetStreamMsg(handlerCtx, msg)
 }
 

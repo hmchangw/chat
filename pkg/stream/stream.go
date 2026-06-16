@@ -40,11 +40,11 @@ func Outbox(siteID string) Config {
 	}
 }
 
-// PushNotifications returns the PUSH_NOTIFICATIONS_{siteID} stream config.
+// PushNotification returns the PUSH_NOTIFICATION_{siteID} stream config.
 // Owned by ops in production; notification-worker bootstraps it in dev only.
-func PushNotifications(siteID string) Config {
+func PushNotification(siteID string) Config {
 	return Config{
-		Name:     fmt.Sprintf("PUSH_NOTIFICATIONS_%s", siteID),
+		Name:     fmt.Sprintf("PUSH_NOTIFICATION_%s", siteID),
 		Subjects: []string{subject.PushNotificationFilter(siteID)},
 	}
 }
@@ -84,5 +84,13 @@ func Inbox(siteID string) Config {
 			fmt.Sprintf("chat.inbox.%s.*", siteID),
 			fmt.Sprintf("chat.inbox.%s.aggregate.>", siteID),
 		},
+	}
+}
+
+// MigrationOplog returns the MIGRATION_OPLOG_{siteID} stream config: raw CDC events from the legacy source Mongo. Owned by the oplog-connector (dev bootstrap; ops/IaC in prod).
+func MigrationOplog(siteID string) Config {
+	return Config{
+		Name:     fmt.Sprintf("MIGRATION_OPLOG_%s", siteID),
+		Subjects: []string{subject.MigrationOplogWildcard(siteID)},
 	}
 }

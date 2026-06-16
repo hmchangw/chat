@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -10,8 +11,10 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
+	"github.com/hmchangw/chat/history-service/internal/config"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/history-service/internal/service"
+	"github.com/hmchangw/chat/history-service/internal/service/mocks"
 	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -37,9 +40,7 @@ func makeThreadPage(total int64) mongoutil.OffsetPage[pkgmodel.ThreadRoom] {
 	return mongoutil.OffsetPage[pkgmodel.ThreadRoom]{Data: makeThreadRooms(), Total: total}
 }
 
-// ============================================================
-// GetThreadMessages
-// ============================================================
+// --- GetThreadMessages ---
 
 func TestHistoryService_GetThreadMessages_Success(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
@@ -166,7 +167,7 @@ func TestHistoryService_GetThreadMessages_NoHSS(t *testing.T) {
 	assert.Empty(t, resp.Messages)
 }
 
-// TCount == 0 means the parent has never received a reply — short-circuit
+// TCount explicitly 0 means all replies have been deleted — short-circuit
 // without a Cassandra round-trip. Mock will fail if GetThreadMessages is called.
 func TestHistoryService_GetThreadMessages_TCountZeroSkipsCassandra(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
@@ -183,10 +184,8 @@ func TestHistoryService_GetThreadMessages_TCountZeroSkipsCassandra(t *testing.T)
 	assert.Empty(t, resp.NextCursor)
 }
 
-// TCount nil = column never written. Treat as 'unknown' rather than 'zero':
-// fall through to Cassandra so a brief window between a reply INSERT and a
-// successful tcount LWT does not hide replies. The Cassandra slice on an
-// empty partition is cheap.
+// TCount nil = column never written (possibly mid-write before the tcount LWT) —
+// must fall through to Cassandra rather than short-circuit, or replies could be hidden.
 func TestHistoryService_GetThreadMessages_TCountNilFallsThroughToCassandra(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
 	c := testContext()
@@ -305,9 +304,97 @@ func TestHistoryService_GetThreadMessages_ParentBeforeAccessSinceReturnsForbidde
 	assertForbiddenErr(t, err, "thread is outside access window")
 }
 
-// ============================================================
-// GetThreadParentMessages
-// ============================================================
+// Regression: thread replies never bump rooms.lastMsgAt, so any room-watermark ceiling
+// hides fresh replies — the queried ceiling must track the server clock.
+func TestHistoryService_GetThreadMessages_CeilingIncludesFreshReplies(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	now := time.Now().UTC()
+	parentCreatedAt := now.Add(-3 * time.Hour)
+	recentReplyAt := now.Add(-time.Minute) // newer than any room activity watermark
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: parentCreatedAt, ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-1", RoomID: "r1", ThreadRoomID: "tr-1", ThreadParentID: "m-parent", CreatedAt: recentReplyAt},
+	}
+	var gotCeiling, gotFloor time.Time
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, before, floor time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+			gotCeiling = before
+			gotFloor = floor
+			return makePage(replies, false), nil
+		})
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	assert.True(t, gotCeiling.After(recentReplyAt),
+		"ceiling %v must include replies created moments before the call (%v)", gotCeiling, recentReplyAt)
+	assert.False(t, gotFloor.Before(joinTime), "floor %v must not undercut accessSince %v", gotFloor, joinTime)
+	assert.True(t, gotFloor.Before(recentReplyAt), "floor %v must not clip fresh replies (%v)", gotFloor, recentReplyAt)
+}
+
+// An accessSince beyond the skew-tolerance ceiling (parent dated past it, so the
+// access-window check admits it) must collapse the range instead of inverting it.
+func TestHistoryService_GetThreadMessages_InvertedRangeCollapsesToFloor(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	now := time.Now().UTC()
+	accessSince := now.Add(2 * time.Hour) // beyond the 1h skew-tolerance ceiling
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: now.Add(3 * time.Hour), ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&accessSince, true, nil)
+
+	var gotCeiling, gotFloor time.Time
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, before, floor time.Time, _ cassrepo.PageRequest) (cassrepo.Page[models.Message], error) {
+			gotCeiling = before
+			gotFloor = floor
+			return makePage(nil, false), nil
+		})
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+	assert.Equal(t, accessSince, gotFloor)
+	assert.True(t, gotCeiling.Equal(gotFloor), "inverted range must collapse: ceiling %v, floor %v", gotCeiling, gotFloor)
+}
+
+// GetThreadMessages must not read the Mongo rooms collection; the strict room mock
+// (no GetRoomTimes stub) fails the test on any regression to room-times reads.
+func TestHistoryService_GetThreadMessages_NoRoomTimesDependency(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	msgs := mocks.NewMockMessageRepository(ctrl)
+	subs := mocks.NewMockSubscriptionRepository(ctrl)
+	rooms := mocks.NewMockRoomRepository(ctrl) // strict: any GetRoomTimes call fails
+	pub := mocks.NewMockEventPublisher(ctrl)
+	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	users := mocks.NewMockUserStore(ctrl)
+	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
+	cfg := &config.Config{
+		MessageHistoryFloorDays: 90,
+		LargeRoomThreshold:      500,
+		MaxPinnedPerRoom:        10,
+		PinEnabled:              true,
+	}
+	svc := service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg)
+	c := testContext()
+
+	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: intPtr(1)}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+}
+
+// --- GetThreadParentMessages ---
 
 func TestHistoryService_GetThreadParentMessages_All(t *testing.T) {
 	svc, msgs, subs, _, threadRooms := newService(t)
@@ -488,9 +575,7 @@ func TestHistoryService_GetThreadParentMessages_InvalidFilter(t *testing.T) {
 	assert.Equal(t, errcode.CodeBadRequest, routeErr.Code)
 }
 
-// ============================================================
-// Quote redaction — thread endpoints
-// ============================================================
+// --- Quote redaction — thread endpoints ---
 
 func TestHistoryService_GetThreadMessages_RedactsQuoteBeforeAccessSince(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
@@ -643,10 +728,8 @@ func TestHistoryService_GetThreadParentMessages_PostHydrationAccessCheck(t *test
 	svc, msgs, subs, _, threadRooms := newService(t)
 	c := testContext()
 
-	// MongoDB filter uses threadParentCreatedAt which can be zero (field absent from original event).
-	// The thread room record has a zero ThreadParentCreatedAt, so MongoDB's $match on
-	// threadParentCreatedAt > accessSince is bypassed. After hydrating from Cassandra, the
-	// actual CreatedAt is before accessSince — the row must be excluded from results.
+	// A zero ThreadParentCreatedAt bypasses MongoDB's $match on accessSince; the
+	// post-hydration check must still exclude the row once Cassandra reveals the real CreatedAt.
 	earlyCreatedAt := joinTime.Add(-1 * time.Hour)
 	threadRoom := pkgmodel.ThreadRoom{
 		ID: "tr-early", RoomID: "r1", ParentMessageID: "p-early",

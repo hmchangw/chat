@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  pinned_at TIMESTAMP,              // pin indicator for the channel timeline; null when not pinned.
+                                    //   pinned_by is intentionally NOT mirrored here — the timeline
+                                    //   indicator only needs pinned_at; richer pin metadata is a
+                                    //   point lookup on messages_by_id.
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
@@ -162,6 +166,14 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
     'compaction_window_size': '72'
   };
 ```
+
+Note: `messages_by_room` rows originate from channel messages AND from
+`tshow=true` ("also send to channel") thread replies — message-worker
+dual-writes such replies here (keyed by the reply's own `created_at`/bucket,
+with `tshow`, `thread_parent_id`, `thread_parent_created_at` populated) in
+addition to the usual `thread_messages_by_thread` + `messages_by_id` writes.
+Edits and soft-deletes of a tshow reply propagate to this copy as well.
+
 #### thread_messages_by_thread
 ```cql
 CREATE TABLE IF NOT EXISTS thread_messages_by_thread(

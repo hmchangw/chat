@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,15 +12,31 @@ import (
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
-type mongoStore struct {
-	roomCol *mongo.Collection
-	subCol  *mongo.Collection
+// EnsureIndexes creates indexes that back the store's read paths.
+// Must be called once at startup; index creation is idempotent when the key
+// spec matches.
+func (m *mongoStore) EnsureIndexes(ctx context.Context) error {
+	if _, err := m.threadRoomCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "siteId", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_rooms (parentMessageId, siteId) index: %w", err)
+	}
+	return nil
 }
 
-func NewMongoStore(roomCol, subCol *mongo.Collection) *mongoStore {
-	return &mongoStore{roomCol: roomCol, subCol: subCol}
+type mongoStore struct {
+	roomCol       *mongo.Collection
+	subCol        *mongo.Collection
+	threadRoomCol *mongo.Collection
+	valkey        valkeyutil.Client // nil disables the L2 tier (pure Mongo)
+	metaTTL       time.Duration
+}
+
+func NewMongoStore(roomCol, subCol, threadRoomCol *mongo.Collection, valkey valkeyutil.Client, metaTTL time.Duration) *mongoStore {
+	return &mongoStore{roomCol: roomCol, subCol: subCol, threadRoomCol: threadRoomCol, valkey: valkey, metaTTL: metaTTL}
 }
 
 func (m *mongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
@@ -46,7 +63,7 @@ func (m *mongoStore) ListSubscriptions(ctx context.Context, roomID string) ([]mo
 }
 
 func (m *mongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-	return roommetacache.FetchFromMongo(ctx, m.roomCol, roomID)
+	return roommetacache.ReadThrough(ctx, m.valkey, m.roomCol, roomID, m.metaTTL)
 }
 
 func (m *mongoStore) UpdateRoomLastMessage(ctx context.Context, roomID, msgID string, msgAt time.Time, mentionAll bool) error {
@@ -110,4 +127,25 @@ func (m *mongoStore) SetSubscriptionMentions(ctx context.Context, roomID string,
 		return fmt.Errorf("set subscription mentions for room %s: %w", roomID, err)
 	}
 	return nil
+}
+
+func (m *mongoStore) GetThreadFollowers(ctx context.Context, parentMessageID string) (map[string]struct{}, error) {
+	var doc struct {
+		ReplyAccounts []string `bson:"replyAccounts"`
+	}
+	opts := options.FindOne().SetProjection(bson.M{"replyAccounts": 1, "_id": 0})
+	err := m.threadRoomCol.FindOne(ctx, bson.M{"parentMessageId": parentMessageID}, opts).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("find thread room by parent %s: %w", parentMessageID, err)
+	}
+	out := make(map[string]struct{}, len(doc.ReplyAccounts))
+	for _, a := range doc.ReplyAccounts {
+		if a != "" {
+			out[a] = struct{}{}
+		}
+	}
+	return out, nil
 }

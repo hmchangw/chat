@@ -18,6 +18,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/health"
+	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -43,6 +44,7 @@ type config struct {
 	PushRecipientBatchSize int                     `env:"PUSH_RECIPIENT_BATCH_SIZE" envDefault:"100"`
 	RoomMetaCacheSize      int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
 	RoomMetaCacheTTL       time.Duration           `env:"ROOM_META_CACHE_TTL"       envDefault:"2m"`
+	RoomMetaL2TTL          time.Duration           `env:"ROOM_META_L2_TTL"          envDefault:"15m"`
 	ValkeyAddrs            []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword         string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	RoomSubCacheTTL        time.Duration           `env:"ROOMSUBCACHE_TTL"          envDefault:"5m"`
@@ -140,20 +142,21 @@ func main() {
 	threadRoomCol := db.Collection("thread_rooms")
 	roomsCol := db.Collection("rooms")
 
+	valkeyClient, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+
 	roomMetaCache, err := roommetacache.New(cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL,
 		func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-			return roommetacache.FetchFromMongo(ctx, roomsCol, roomID)
+			return roommetacache.ReadThrough(ctx, valkeyClient, roomsCol, roomID, cfg.RoomMetaL2TTL)
 		})
 	if err != nil {
 		slog.Error("init room-meta cache failed", "error", err)
 		os.Exit(1)
 	}
 
-	valkeyClient, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
-	if err != nil {
-		slog.Error("valkey connect failed", "error", err)
-		os.Exit(1)
-	}
 	cache := roomsubcache.NewValkeyCache(valkeyClient)
 	loader := &mongoMemberLoader{col: subCol}
 	memberLookup := newCachedMemberLookup(cache, loader.Load, cfg.RoomSubCacheTTL)
@@ -176,7 +179,7 @@ func main() {
 	}
 
 	canonicalCfg := stream.MessagesCanonical(cfg.SiteID)
-	cons, err := otelJS.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer))
+	cons, err := otelJS.CreateOrUpdateConsumer(ctx, canonicalCfg.Name, buildConsumerConfig(cfg.Consumer, cfg.SiteID))
 	if err != nil {
 		slog.Error("create consumer failed", "error", err)
 		os.Exit(1)
@@ -200,7 +203,6 @@ func main() {
 		Presence:           presence,
 		Hook:               noopVetoer{},
 		Emitter:            emitter,
-		ReactionPub:        natsPublisher{nc: nc.NatsConn()},
 		RoomMeta:           roomMetaCache,
 		LargeRoomThreshold: cfg.LargeRoomThreshold,
 		RecipientBatchSize: cfg.PushRecipientBatchSize,
@@ -282,17 +284,22 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
-				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
-					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
-					if err := msg.Nak(); err != nil {
-						slog.Error("failed to nak message", "error", err)
+				// jobguard recovers handler panics — this goroutine runs outside
+				// natsrouter's Recovery middleware, so an unrecovered panic would
+				// crash the worker and crash-loop on JetStream redelivery.
+				jobguard.Run(msg, func() {
+					handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+					if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
+						slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
+						if err := msg.Nak(); err != nil {
+							slog.Error("failed to nak message", "error", err)
+						}
+						return
 					}
-					return
-				}
-				if err := msg.Ack(); err != nil {
-					slog.Error("failed to ack message", "error", err)
-				}
+					if err := msg.Ack(); err != nil {
+						slog.Error("failed to ack message", "error", err)
+					}
+				})
 			}()
 		}
 	}()
@@ -353,9 +360,12 @@ func main() {
 	)
 }
 
-// buildConsumerConfig returns the durable consumer config for notification-worker.
-func buildConsumerConfig(s stream.ConsumerSettings) jetstream.ConsumerConfig {
+// buildConsumerConfig returns the durable; FilterSubjects = {created} only (reacted moved to broadcast-worker).
+func buildConsumerConfig(s stream.ConsumerSettings, siteID string) jetstream.ConsumerConfig {
 	cc := stream.DurableConsumerDefaults(s)
 	cc.Durable = "notification-worker"
+	cc.FilterSubjects = []string{
+		subject.MsgCanonicalCreated(siteID),
+	}
 	return cc
 }

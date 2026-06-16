@@ -32,18 +32,18 @@ SEMGREP_VERSION       := 1.163.0
 GOSEC       := $(GOBIN_DIR)/gosec
 GOVULNCHECK := $(GOBIN_DIR)/govulncheck
 
-# gosec scope: shipped product code only. tools/ holds dev/ops utilities
+# gosec scope: shipped product code + tests. tools/ holds dev/ops utilities
 # (loadgen, nats-debug) that are not deployed services; chat-frontend is
-# JS. -tests=false skips *_test.go (including generated mocks);
-# -exclude-generated skips code-generated files. Gate: medium+ severity.
-GOSEC_FLAGS := -quiet -severity medium -confidence medium -tests=false \
+# JS. -tests=true scans *_test.go so PR gating catches issues in test code
+# too (mocks are filtered by -exclude-generated). Gate: medium+ severity.
+GOSEC_FLAGS := -quiet -severity medium -confidence medium -tests=true \
                -exclude-generated -exclude-dir=tools -exclude-dir=testdata
 
 # semgrep: fail on medium+ (WARNING/ERROR; INFO is informational/low).
 SEMGREP_FLAGS := --error --severity=WARNING --severity=ERROR --metrics=off \
                  --exclude=tools --exclude=chat-frontend --exclude=testdata \
                  --exclude=docs --config=p/golang --config=p/security-audit \
-                 --config=.semgrep/errcode.yml
+                 --config=.semgrep/
 
 # Makefile for the distributed multi-site chat system.
 

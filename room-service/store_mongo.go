@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/hmchangw/chat/pkg/displayfmt"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/pipelines"
@@ -118,6 +118,22 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (u.account,name) index: %w", err)
 	}
+	// Backs getRoomSubscriptions: filter roomId, sort {joinedAt, _id} with
+	// skip/limit pagination. Including the sort keys lets Mongo return ordered
+	// pages from the index instead of an in-memory sort that risks the 32MB
+	// sort limit on large rooms.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "joinedAt", Value: 1}, {Key: "_id", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,joinedAt,_id) index: %w", err)
+	}
+	// Backs CountOwners (filters on roomId+roles) so owner counts stay
+	// index-only instead of scanning every subscription in the room.
+	if _, err := s.subscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "roomId", Value: 1}, {Key: "roles", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure subscriptions (roomId,roles) index: %w", err)
+	}
 	// Mirrors the unique index created by message-worker / history-service so per-service test DBs also enforce it.
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
@@ -129,6 +145,13 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,userAccount) index: %w", err)
+	}
+	// Backs GetThreadUnreadSummary's $match {userAccount, siteId}. No existing
+	// thread_subscriptions index has userAccount as a prefix.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "userAccount", Value: 1}, {Key: "siteId", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (userAccount,siteId) index: %w", err)
 	}
 	if _, err := s.apps.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{
@@ -412,50 +435,91 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 	}
 
 	// Enriched path: decode into a hybrid row type that carries a parallel
-	// `display` sub-document (the aggregation writes values there to sidestep
-	// the bson:"-" tags on RoomMemberEntry's display fields). Then copy the
-	// display values onto Member.* in Go memory, where bson:"-" is irrelevant.
+	// `display` sub-document (the aggregation writes individual-member values
+	// there to sidestep the bson:"-" tags on RoomMemberEntry's display fields).
+	// Org-member display (sectName, memberCount) is resolved separately in a
+	// single index-backed batch below — see attachOrgDisplay — rather than via a
+	// per-row correlated $lookup that would force a users collection scan per row.
 	var rows []roomMemberEnrichedRow
 	if err := cursor.All(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("decode enriched room_members for %q: %w", roomID, err)
 	}
-	members := make([]model.RoomMember, 0, len(rows))
+	members := make([]model.RoomMember, len(rows))
+	var orgIDs []string
 	for i := range rows {
 		rm := rows[i].RoomMember
 		d := rows[i].Display
 		rm.Member.EngName = d.EngName
 		rm.Member.ChineseName = d.ChineseName
 		rm.Member.IsOwner = d.IsOwner
-		rm.Member.MemberCount = d.MemberCount
-		// Org rows resolve display Go-side using the two-pass dept-first
-		// tiebreak that mirrors room-worker's processRemoveOrg exactly:
-		//
-		//   1. Prefer dept names when a dept match exists AND has non-empty
-		//      name/tcName.
-		//   2. Otherwise fall back to the sect names (which the aggregation
-		//      now retains alongside the dept names — see the $group stage).
-		//   3. CombineWithFallback handles the both-empty case by emitting
-		//      the member.id, matching the worker's displayOrg/orgID fallback.
-		//
-		// Without the explicit fallback on empty dept names, a row with
-		// IsDept=true but empty deptName + a sibling row with sectName="Eng"
-		// would render the orgID server-side while the worker emits "Eng" —
-		// the spec requires byte-identical output between the two paths.
 		if rm.Member.Type == model.RoomMemberOrg {
-			var name, tcName string
-			if d.OrgRaw != nil {
-				if d.OrgRaw.IsDept && (d.OrgRaw.DeptName != "" || d.OrgRaw.DeptTCName != "") {
-					name, tcName = d.OrgRaw.DeptName, d.OrgRaw.DeptTCName
-				}
-				if name == "" && tcName == "" {
-					name, tcName = d.OrgRaw.SectName, d.OrgRaw.SectTCName
-				}
-			}
-			rm.Member.OrgName = displayfmt.CombineWithFallback(name, tcName, rm.Member.ID)
+			orgIDs = append(orgIDs, rm.Member.ID)
 		}
-		members = append(members, rm)
+		members[i] = rm
+	}
+	if len(orgIDs) > 0 {
+		if err := s.attachOrgDisplay(ctx, roomID, members, orgIDs); err != nil {
+			return nil, err
+		}
 	}
 	return members, nil
+}
+
+// attachOrgDisplay resolves org-member display names and member counts for the
+// org rows in members, then fills SectName (dept-first tiebreak) and MemberCount
+// in place. It mirrors attachUserDisplayNames but for the org dimension: a
+// single index-backed batch query feeds a Go-side rollup, replacing the prior
+// per-row correlated $lookup whose $expr $or could not use an index.
+func (s *MongoStore) attachOrgDisplay(ctx context.Context, roomID string, members []model.RoomMember, orgIDs []string) error {
+	users, err := s.fetchOrgDisplayUsers(ctx, orgIDs)
+	if err != nil {
+		return fmt.Errorf("attach org display for %q: %w", roomID, err)
+	}
+	agg := buildOrgDisplay(orgIDs, users)
+	for i := range members {
+		if members[i].Member.Type != model.RoomMemberOrg {
+			continue
+		}
+		id := members[i].Member.ID
+		if a := agg[id]; a != nil {
+			members[i].Member.MemberCount = a.memberCount
+		}
+		members[i].Member.OrgName = orgDisplaySectName(agg[id], id)
+	}
+	return nil
+}
+
+// fetchOrgDisplayUsers returns the dept/sect identity and name fields for every
+// user whose deptId or sectId is one of orgIDs. The top-level $or with $in is
+// index-backed by the (deptId, account) and (sectId, account) indexes — unlike
+// the prior $expr-based correlated $lookup, which forced a users collection
+// scan for each org row.
+func (s *MongoStore) fetchOrgDisplayUsers(ctx context.Context, orgIDs []string) ([]orgDisplayUser, error) {
+	cursor, err := s.users.Find(ctx,
+		bson.M{"$or": []bson.M{
+			{"deptId": bson.M{"$in": orgIDs}},
+			{"sectId": bson.M{"$in": orgIDs}},
+		}},
+		options.Find().SetProjection(bson.M{
+			"_id":        0,
+			"deptId":     1,
+			"sectId":     1,
+			"deptName":   1,
+			"deptTCName": 1,
+			"sectName":   1,
+			"sectTCName": 1,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find org display users: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var users []orgDisplayUser
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, fmt.Errorf("decode org display users: %w", err)
+	}
+	return users, nil
 }
 
 // roomMemberEnrichedRow is the decode target for the enriched aggregation
@@ -471,32 +535,17 @@ type roomMemberEnrichedRow struct {
 }
 
 type roomMemberEnrichedDisplay struct {
-	EngName     string         `bson:"engName,omitempty"`
-	ChineseName string         `bson:"chineseName,omitempty"`
-	IsOwner     bool           `bson:"isOwner,omitempty"`
-	MemberCount int            `bson:"memberCount,omitempty"`
-	OrgRaw      *orgRawDisplay `bson:"orgRaw,omitempty"`
-}
-
-// orgRawDisplay carries the unresolved org-lookup result (one element of the
-// `_orgMatch` group). It exists so Go-side post-processing can pick the
-// dept-vs-sect branch and run displayfmt.CombineWithFallback — keeping the
-// final display string consistent with the sys-message formatter used by
-// room-worker. A nil pointer means no user matched the org id at all, in
-// which case the loop falls back to the raw member.id.
-type orgRawDisplay struct {
-	IsDept     bool   `bson:"isDept,omitempty"`
-	DeptName   string `bson:"deptName,omitempty"`
-	DeptTCName string `bson:"deptTCName,omitempty"`
-	SectName   string `bson:"sectName,omitempty"`
-	SectTCName string `bson:"sectTCName,omitempty"`
+	EngName     string `bson:"engName,omitempty"`
+	ChineseName string `bson:"chineseName,omitempty"`
+	IsOwner     bool   `bson:"isOwner,omitempty"`
 }
 
 // enrichRoomMembersStages returns the $lookup + $set stages appended to the
-// room_members aggregation when enrich=true. Each stage matches on
-// member.type via $expr so it only fires for rows of the appropriate kind.
-// All enrichment output is written into a `display` sub-document so it
-// survives the RoomMemberEntry bson:"-" tags on decode.
+// room_members aggregation when enrich=true. These enrich INDIVIDUAL members
+// only (engName/chineseName/isOwner) via account-keyed, index-backed lookups.
+// Org-member display is resolved separately by attachOrgDisplay — see there for
+// why it is not a pipeline $lookup. Enrichment output is written into a
+// `display` sub-document so it survives the RoomMemberEntry bson:"-" tags.
 func enrichRoomMembersStages(roomID string) []bson.D {
 	return []bson.D{
 		// Individuals: join users on account → pull engName / chineseName.
@@ -534,51 +583,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			},
 			"as": "_subMatch",
 		}}},
-		// Orgs: join users whose deptId OR sectId matches member.id. The
-		// pipeline returns one grouped document carrying raw {isDept, deptName,
-		// deptTCName, sectName, sectTCName, memberCount}. The dept-vs-sect
-		// decision plus the localized + traditional name combine happen
-		// Go-side via displayfmt.CombineWithFallback so the output matches
-		// the sys-message formatter used by room-worker byte-for-byte.
-		{{Key: "$lookup", Value: bson.M{
-			"from": "users",
-			"let": bson.M{
-				"orgId": "$member.id",
-				"mtyp":  "$member.type",
-			},
-			"pipeline": bson.A{
-				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
-					bson.M{"$eq": bson.A{"$$mtyp", "org"}},
-					bson.M{"$or": bson.A{
-						bson.M{"$eq": bson.A{"$deptId", "$$orgId"}},
-						bson.M{"$eq": bson.A{"$sectId", "$$orgId"}},
-					}},
-				}}}},
-				bson.M{"$addFields": bson.M{
-					"_isDept": bson.M{"$eq": bson.A{"$deptId", "$$orgId"}},
-					"_name":   bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptName", "$sectName"}},
-					"_tcName": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$deptId", "$$orgId"}}, "$deptTCName", "$sectTCName"}},
-				}},
-				// $max over a bool surfaces "any user matched deptId" — when at
-				// least one dept-match exists it wins regardless of how many
-				// sect-only users join the same group. dept/sect *Name fields
-				// are gated by _isDept so the chosen branch's strings flow
-				// through and the other branch's are null-suppressed.
-				bson.M{"$group": bson.M{
-					"_id":         nil,
-					"isDept":      bson.M{"$max": "$_isDept"},
-					"deptName":    bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", "$_name", nil}}},
-					"deptTCName":  bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", "$_tcName", nil}}},
-					"sectName":    bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", nil, "$_name"}}},
-					"sectTCName":  bson.M{"$max": bson.M{"$cond": bson.A{"$_isDept", nil, "$_tcName"}}},
-					"memberCount": bson.M{"$sum": 1},
-				}},
-			},
-			"as": "_orgMatch",
-		}}},
-		// Fold the three matches into a single `display` sub-document.
-		// `orgRaw` surfaces the raw org-lookup pair for Go-side combine —
-		// nil when no users matched, triggering the orgId fallback below.
+		// Fold the individual matches into a single `display` sub-document.
 		{{Key: "$set", Value: bson.M{
 			"display": bson.M{
 				"engName":     bson.M{"$arrayElemAt": bson.A{"$_userMatch.engName", 0}},
@@ -590,12 +595,10 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 						bson.A{},
 					}},
 				}},
-				"orgRaw":      bson.M{"$arrayElemAt": bson.A{"$_orgMatch", 0}},
-				"memberCount": bson.M{"$arrayElemAt": bson.A{"$_orgMatch.memberCount", 0}},
 			},
 		}}},
 		// Drop the temporary join arrays.
-		{{Key: "$project", Value: bson.M{"_userMatch": 0, "_subMatch": 0, "_orgMatch": 0}}},
+		{{Key: "$project", Value: bson.M{"_userMatch": 0, "_subMatch": 0}}},
 	}
 }
 
@@ -931,25 +934,33 @@ func (s *MongoStore) findOneAndUpdateSub(ctx context.Context, roomID, account, o
 }
 
 // ToggleSubscriptionMute flips muted. $ifNull treats an absent field as false so
-// legacy docs toggle to true on first call.
-func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+// legacy docs toggle to true on first call. muteUpdatedAt is stamped from the same
+// instant the caller publishes as the event timestamp, keeping the origin doc and
+// every federated replica on one high-water mark.
+func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string, muteUpdatedAt time.Time) (*model.Subscription, error) {
 	return s.findOneAndUpdateSub(ctx, roomID, account, "toggle mute", bson.M{
-		"muted": bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$muted", false}}}},
+		"muted":         bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$muted", false}}}},
+		"muteUpdatedAt": muteUpdatedAt,
 	})
 }
 
 // ToggleSubscriptionFavorite flips favorite. $ifNull treats an absent field as
-// false so legacy docs toggle to true on first call.
-func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+// false so legacy docs toggle to true on first call. favoriteUpdatedAt is stamped
+// from the same instant the caller publishes as the event timestamp, keeping the
+// origin doc and every federated replica on one high-water mark.
+func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, account string, favoriteUpdatedAt time.Time) (*model.Subscription, error) {
 	return s.findOneAndUpdateSub(ctx, roomID, account, "toggle favorite", bson.M{
-		"favorite": bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$favorite", false}}}},
+		"favorite":          bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$favorite", false}}}},
+		"favoriteUpdatedAt": favoriteUpdatedAt,
 	})
 }
 
 // SetOwnerRole atomically grants or revokes the owner role, returning the updated
 // subscription. Promote appends "owner" only when absent; demote filters "owner"
 // out. Any other roles (e.g. "member") are preserved and array order stays stable.
-func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error) {
+// rolesUpdatedAt is stamped from the same instant the caller publishes as the event
+// timestamp, keeping the origin doc and every federated replica on one high-water mark.
+func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool, rolesUpdatedAt time.Time) (*model.Subscription, error) {
 	currentRoles := bson.M{"$ifNull": bson.A{"$roles", bson.A{}}}
 	var rolesExpr bson.M
 	if makeOwner {
@@ -972,7 +983,10 @@ func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, m
 			"else": bson.M{"$concatArrays": bson.A{withoutOwner, bson.A{model.RoleMember}}},
 		}}
 	}
-	return s.findOneAndUpdateSub(ctx, roomID, account, "set owner role", bson.M{"roles": rolesExpr})
+	return s.findOneAndUpdateSub(ctx, roomID, account, "set owner role", bson.M{
+		"roles":          rolesExpr,
+		"rolesUpdatedAt": rolesUpdatedAt,
+	})
 }
 
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no
@@ -1119,27 +1133,38 @@ func (s *MongoStore) GetThreadSubscriptionByParent(ctx context.Context, account,
 	return &ts, nil
 }
 
-// Empty threadUnread is $unset so it round-trips through JSON as nil (omitempty contract).
-func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account string, threadUnread []string, alert bool) error {
+// UpdateSubscriptionThreadRead removes threadID from threadUnread using a $pull
+// and returns the resulting state. If threadUnread becomes empty a second update
+// clears alert and removes the field.
+func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) ([]string, bool, error) {
 	filter := bson.M{"roomId": roomID, "u.account": account}
-	var update bson.M
-	if len(threadUnread) == 0 {
-		update = bson.M{
-			"$set":   bson.M{"alert": alert},
-			"$unset": bson.M{"threadUnread": ""},
-		}
-	} else {
-		update = bson.M{"$set": bson.M{"threadUnread": threadUnread, "alert": alert}}
-	}
-	res, err := s.subscriptions.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("update subscription thread-read for %q in room %q: %w",
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var updated model.Subscription
+	err := s.subscriptions.FindOneAndUpdate(ctx, filter,
+		bson.M{"$pull": bson.M{"threadUnread": threadID}},
+		opts,
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w",
 			account, roomID, model.ErrSubscriptionNotFound)
 	}
-	return nil
+	if err != nil {
+		return nil, false, fmt.Errorf("update subscription thread-read for %q in room %q: %w", account, roomID, err)
+	}
+
+	if len(updated.ThreadUnread) == 0 {
+		if _, err = s.subscriptions.UpdateOne(ctx, filter, bson.M{
+			"$set":   bson.M{"alert": false},
+			"$unset": bson.M{"threadUnread": ""},
+		}); err != nil {
+			slog.WarnContext(ctx, "clear alert after empty threadUnread",
+				"error", err, "account", account, "roomID", roomID)
+		}
+		return nil, false, nil
+	}
+
+	return updated.ThreadUnread, updated.Alert, nil
 }
 
 // ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
@@ -1437,7 +1462,7 @@ func (s *MongoStore) UpdateRoomVisibility(ctx context.Context, roomID string, re
 // ownerAccount holds RoleOwner — atomically, so the restrict transition cannot
 // land in a zero-owner state. Returns ErrOwnerNotSubscribed when ownerAccount
 // has no active subscription in the room.
-func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error {
+func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string, visibilityUpdatedAt time.Time) error {
 	filter := bson.M{"roomId": roomID}
 
 	if restricted && ownerAccount != "" {
@@ -1453,8 +1478,9 @@ func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID str
 		}
 		pipeline := mongo.Pipeline{
 			bson.D{{Key: "$set", Value: bson.M{
-				"restricted":     true,
-				"externalAccess": externalAccess,
+				"restricted":          true,
+				"externalAccess":      externalAccess,
+				"visibilityUpdatedAt": visibilityUpdatedAt,
 				"roles": bson.M{"$cond": bson.M{
 					"if":   bson.M{"$eq": bson.A{"$u.account", ownerAccount}},
 					"then": bson.A{string(model.RoleOwner)},
@@ -1469,7 +1495,7 @@ func (s *MongoStore) ApplySubscriptionVisibility(ctx context.Context, roomID str
 	}
 
 	if _, err := s.subscriptions.UpdateMany(ctx, filter, bson.M{
-		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess},
+		"$set": bson.M{"restricted": restricted, "externalAccess": externalAccess, "visibilityUpdatedAt": visibilityUpdatedAt},
 	}); err != nil {
 		return fmt.Errorf("apply visibility (flags only): %w", err)
 	}
@@ -1504,4 +1530,66 @@ func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string)
 		return nil, fmt.Errorf("decode users: %w", err)
 	}
 	return users, nil
+}
+
+// GetThreadUnreadSummary rolls up a single user's thread unread state on this
+// site. Unread = subscribed AND threadRoom.lastMsgAt > lastSeenAt (nil lastSeenAt
+// = never seen = unread, via BSON null being the smallest value). The booleans
+// are an OR across the user's threads, expressed as $max over per-row booleans
+// (BSON orders false < true). lastMessageAt is the newest thread message time.
+func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID string) (*ThreadUnreadSummary, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"userAccount": account, "siteId": siteID}}},
+		{{Key: "$lookup", Value: bson.M{
+			"from":         "thread_rooms",
+			"localField":   "threadRoomId",
+			"foreignField": "_id",
+			"as":           "tr",
+		}}},
+		{{Key: "$unwind", Value: "$tr"}},
+		{{Key: "$lookup", Value: bson.M{
+			"from":         "rooms",
+			"localField":   "roomId",
+			"foreignField": "_id",
+			"as":           "room",
+		}}},
+		{{Key: "$unwind", Value: bson.M{"path": "$room", "preserveNullAndEmptyArrays": true}}},
+		{{Key: "$addFields", Value: bson.M{
+			"isUnread": bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
+			"isDMUnread": bson.M{"$and": bson.A{
+				bson.M{"$gt": bson.A{"$tr.lastMsgAt", "$lastSeenAt"}},
+				bson.M{"$eq": bson.A{"$room.type", model.RoomTypeDM}},
+			}},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":    nil,
+			"unread": bson.M{"$max": "$isUnread"},
+			// unreadMention is not conditioned on isUnread: UpdateThreadSubscriptionRead
+			// always clears hasMention to false, so a true value implies the thread is
+			// still unread. inbox-worker's $max-merge can re-set it on a late federated
+			// mention event after a local read — intentional, pre-existing behavior.
+			"unreadDirectMessage": bson.M{"$max": "$isDMUnread"},
+			"unreadMention":       bson.M{"$max": "$hasMention"},
+			"lastMessageAt":       bson.M{"$max": "$tr.lastMsgAt"},
+		}}},
+	}
+
+	cursor, err := s.threadSubscriptions.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate thread unread summary: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	if !cursor.Next(ctx) {
+		if err := cursor.Err(); err != nil {
+			return nil, fmt.Errorf("iterate thread unread summary: %w", err)
+		}
+		return &ThreadUnreadSummary{}, nil
+	}
+
+	var result ThreadUnreadSummary
+	if err := cursor.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode thread unread summary: %w", err)
+	}
+	return &result, nil
 }

@@ -28,17 +28,17 @@ make -C tools/loadgen/deploy run-dashboards PRESET=medium
 Tear down:
 
 ```
-make -C tools/loadgen/deploy teardown PRESET=medium  # drop Mongo + Valkey fixtures
+make -C tools/loadgen/deploy teardown PRESET=medium  # drop Mongo fixtures
 make -C tools/loadgen/deploy down                     # stop containers
 ```
 
 ## Encryption
 
 `broadcast-worker` runs with `ENCRYPTION_ENABLED=true` by default in this
-stack. `loadgen seed` provisions one P-256 keypair per fixture room into
-Valkey (the same Valkey `broadcast-worker` reads from), derived from the
-RNG seed so runs stay reproducible. To run an apples-to-apples plaintext
-comparison:
+stack. `loadgen seed` provisions one AES-256-GCM key per fixture room into
+the room's document in the MongoDB `rooms` collection (the same place
+`broadcast-worker` reads from), derived from the RNG seed so runs stay
+reproducible. To run an apples-to-apples plaintext comparison:
 
 ```
 ENCRYPTION_ENABLED=false make -C tools/loadgen/deploy up
@@ -60,12 +60,12 @@ the run binary itself never touches ciphertext.
 ## Subcommands
 
 - `loadgen seed --preset=<name> [--seed=42]` — idempotently populate
-  MongoDB with fixtures and Valkey with per-room keypairs.
+  MongoDB with fixtures, including a per-room key in each room document.
 - `loadgen run --preset=<name> [flags]` — open-loop publish at `--rate`
   msgs/sec for `--duration`, print a summary at the end. Flags:
   `--seed`, `--warmup`, `--inject=frontdoor|canonical`, `--csv=<path>`.
 - `loadgen teardown --preset=<name> [--seed=42]` — drop the seeded
-  Mongo collections and delete the per-room Valkey keys for the preset.
+  Mongo collections (the per-room keys go with the room documents).
 
 ## Reading the summary
 
@@ -140,7 +140,7 @@ If instead each request need only add one member, `members-medium` at
 ### Subcommands
 
 - `loadgen seed --workload=members --preset=<name>` — populate Mongo
-  + Valkey for the members workload.
+  for the members workload (including per-room keys in the room documents).
 - `loadgen teardown --workload=members --preset=<name>` — drop the seeded data.
 - `loadgen members-sustained --preset=<name> [flags]` — open-loop publish
   at `--rate` req/sec for `--duration`. Flags: `--users-per-add` (default 10),
@@ -234,7 +234,7 @@ loadgen history-sustained --preset=history-medium --rate=200 --duration=60s
 ```
 
 The history workload requires `CASSANDRA_HOSTS` (e.g. `cassandra:9042`)
-in addition to the standard Mongo/Valkey/NATS env. `MESSAGE_BUCKET_HOURS`
+in addition to the standard Mongo/NATS env. `MESSAGE_BUCKET_HOURS`
 (default 72) must match what `history-service` is configured with so
 seed-time and read-time bucket math agree.
 
@@ -255,8 +255,8 @@ most reads.
 ### Subcommands
 
 - `loadgen seed --workload=history --preset=<name>` — populate Mongo
-  (users/rooms/subscriptions/thread\_rooms), Valkey (room keys, harmless
-  for read workload), and Cassandra (messages\_by\_room,
+  (users/rooms/subscriptions/thread\_rooms, plus per-room keys in the room
+  documents — harmless for read workload), and Cassandra (messages\_by\_room,
   messages\_by\_id, thread\_messages\_by\_room).
 - `loadgen teardown --workload=history --preset=<name>` — drop the
   seeded data.
@@ -475,7 +475,7 @@ Single-site only. Not a CI gate — invoked manually for capacity work.
 # 1. Bring up the docker-local stack (NATS, Mongo, Valkey, Cassandra, all services).
 make -C tools/loadgen/deploy up
 
-# 2. Seed Mongo + Valkey with users/rooms/subscriptions/room-keys for your preset.
+# 2. Seed Mongo with users/rooms/subscriptions (room keys live in the room docs) for your preset.
 #    Must be re-run when you change preset (the fixture IDs differ per preset).
 make -C tools/loadgen/deploy seed PRESET=daily-heavy
 
@@ -491,7 +491,7 @@ Before `loadgen daily` will produce a meaningful verdict, you need:
 |---|---|---|
 | Docker-local stack running | Daily talks to message-gatekeeper, room-service, broadcast-worker, etc. | `make -C tools/loadgen/deploy up` |
 | Mongo `users`/`rooms`/`subscriptions` seeded for the preset | Gatekeeper rejects every send with "user not subscribed" otherwise | `loadgen seed --workload=messages --preset=<your daily preset>` |
-| Valkey per-room AES-256-GCM keys | broadcast-worker decrypts with these when `ENCRYPTION_ENABLED=true` (default) | Written by the same `loadgen seed` step |
+| Per-room AES-256-GCM keys (in the room documents) | broadcast-worker decrypts with these when `ENCRYPTION_ENABLED=true` (default) | Written by the same `loadgen seed` step |
 | JetStream streams (`MESSAGES`, `MESSAGES_CANONICAL`, `ROOMS`, `OUTBOX`, `INBOX`) | The whole pipeline | Auto-created by services at startup when `BOOTSTRAP_STREAMS=true` (docker-local default) |
 | Cassandra tables | message-worker writes here; history-service reads here | Created by `docker-local/cassandra/init/*.cql` at first stack boot |
 | `NATS_CREDS_FILE` pointing at credentials with `pub/sub` on `chat.>` | Loadgen otherwise dials anonymously and gets permission violations | docker-local writes `backend.creds` with full perms via `docker-local/setup.sh` |
@@ -554,8 +554,7 @@ Read by the base loadgen `config` struct (env vars, not flags):
 | `NATS_URL` | (required) | `nats://...` |
 | `NATS_CREDS_FILE` | `""` | Path to NATS creds (mandatory against operator-mode NATS — otherwise loadgen dials anonymous and gets "permissions violation"). |
 | `NATS_MONITORING_URL` | `http://nats:8222/jsz` | Where the JetStream-pending poller queries. Override to `http://127.0.0.1:8222/jsz` if you're running loadgen on the host instead of inside the compose network. |
-| `MONGO_URI`, `MONGO_DB`, `MONGO_USERNAME`, `MONGO_PASSWORD` | (uri required; db default `chat`) | Used by the seed step and the daily preflight. |
-| `VALKEY_ADDRS`, `VALKEY_PASSWORD` | (addrs required) | Used by the seed step for per-room keys. |
+| `MONGO_URI`, `MONGO_DB`, `MONGO_USERNAME`, `MONGO_PASSWORD` | (uri required; db default `chat`) | Used by the seed step (including per-room keys, now stored in the room documents) and the daily preflight. |
 | `SITE_ID` | `site-local` | Must match the gatekeeper's configured site or every send is rejected with `siteID mismatch`. Also used as the partition key for seeded fixtures. |
 
 ### SLO signals and verdicts
@@ -653,3 +652,59 @@ run:
 - `docs/superpowers/specs/2026-05-27-daily-im-load-scenario-design.md` — full spec (goal, scope, behavior model, fixture topology, receiver architecture, ramp protocol, SLO definitions, risks).
 - `docs/superpowers/plans/2026-05-27-daily-im-load-scenario.md` — implementation plan (file structure, task decomposition).
 - `tools/loadgen/daily.go`, `daily_pool.go`, `daily_actions.go`, `daily_verdict.go`, `daily_report.go`, `preset.go` — implementation.
+
+## Large-room bot scenario (max-room-size)
+
+Finds the largest room a bot can blast at a fixed send rate before an SLO
+signal breaks — gating on **notification-worker** consumer backlog as the
+headline O(N)-per-message signal (notification-worker is NOT exempt here,
+unlike the daily scenario).
+
+### Quick start
+
+```
+make -C tools/loadgen/deploy up
+make -C tools/loadgen/deploy seed-botroom PRESET=botroom-medium
+make -C tools/loadgen/deploy run-max-room-size PRESET=botroom-medium RATE=200
+```
+
+### Presets
+
+| preset          | sizes                      | rooms/size | users | use case          |
+|-----------------|----------------------------|------------|-------|-------------------|
+| `botroom-small` | 50, 100, 200               | 4          | 300   | smoke / dev       |
+| `botroom-medium`| 100, 500, 1000, 2000, 5000 | 4          | 5500  | default capacity  |
+
+### Flags
+
+`--rate` (required, bot msgs/sec split across the step's rooms), `--sizes`
+(default `100,500,1000,2000,5000`), `--rooms-per-size` (default 4), `--reads`
+(room-service read rate, default 0 = off), `--warmup`/`--hold`/`--cooldown`,
+`--stop-on-trip`, `--slo-p95`/`--slo-p99`/`--slo-error-rate`/`--slo-pending-growth`,
+`--rate-tolerance`, `--seed`, `--csv`.
+
+### Reading the output
+
+A per-step table (size, rooms, rate, e2 p50/p95/p99, err%, worst-pending, verdict)
+followed by `ANSWER: max room size = N` — the largest size where every SLO
+signal held — and a `Next limit:` line naming the first signal that tripped.
+
+### One room vs many
+
+`--rooms-per-size=1` concentrates the rate on a single room — probes the
+Cassandra hot-partition (`messages_by_room` key `(room_id, bucket)`) and the
+Mongo room-doc write contention (`UpdateRoomLastMessage`). The default `4`
+spreads the rate to measure aggregate fan-out plus member-list cache churn.
+
+### Add-path past 1000 members
+
+To test adding members to rooms larger than the old 1000 cap, the loadgen
+deploy sets room-service `MAX_ROOM_SIZE=6000` and ships a `members-capacity-xl`
+preset; run e.g. `make -C tools/loadgen/deploy run-capacity PRESET=members-capacity-xl TARGET_SIZE=5000`.
+
+### v2 follow-ups (not yet built)
+
+- Create-and-blast: bots create a ~100-member room and immediately send
+  (cold-cache penalty).
+- Live N-connection pool to measure NATS core delivery fan-out to real member
+  connections.

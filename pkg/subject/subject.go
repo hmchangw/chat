@@ -220,6 +220,12 @@ func RoomsInfoBatch(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
+// ThreadUnreadSummary is the server-to-server request subject for a per-site
+// thread unread rollup for a single user.
+func ThreadUnreadSummary(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.thread.unread.summary", siteID)
+}
+
 // RoomKeyEnsure is the server-to-server request subject for the room key ensure
 // RPC. Callers send a RoomKeyEnsureRequest and receive a RoomKeyEnsureResponse
 // confirming the room has a key pair in Valkey at the returned version.
@@ -354,6 +360,12 @@ func RoomsInfoBatchSubscribe(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.info.batch", siteID)
 }
 
+// ThreadUnreadSummarySubscribe is the per-site subscription subject for the
+// thread unread summary RPC.
+func ThreadUnreadSummarySubscribe(siteID string) string {
+	return fmt.Sprintf("chat.server.request.room.%s.thread.unread.summary", siteID)
+}
+
 func UserResponseWildcard() string {
 	return "chat.user.*.response.>"
 }
@@ -424,6 +436,63 @@ func MsgReactPattern(siteID string) string {
 
 func MsgThreadPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.thread", siteID)
+}
+
+// --- presence ---
+
+// Presence write subjects carry the user's home siteID so the message routes
+// to the presence service that owns that user's state, regardless of which
+// site the client is connected to. {account} is the JWT-enforced self token;
+// the service registers each pattern with its own literal siteID.
+
+// PresenceHelloPattern is the natsrouter pattern for connection init.
+func PresenceHelloPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.event.presence.%s.hello", siteID)
+}
+
+// PresencePingPattern is the natsrouter pattern for liveness pings (heartbeat).
+func PresencePingPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.event.presence.%s.ping", siteID)
+}
+
+// PresenceActivityPattern is the natsrouter pattern for active/inactive updates.
+func PresenceActivityPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.event.presence.%s.activity", siteID)
+}
+
+// PresenceByePattern is the natsrouter pattern for best-effort disconnects.
+func PresenceByePattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.event.presence.%s.bye", siteID)
+}
+
+// PresenceManualSetPattern is the natsrouter pattern for manual-override set/clear.
+func PresenceManualSetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.presence.%s.manual.set", siteID)
+}
+
+// PresenceQueryBatch is the concrete (per-site, literal) subject a client sends
+// a batch initial-state query to. The client targets its OWN local site; that
+// site resolves each account's home site and fans out to peers as needed.
+func PresenceQueryBatch(siteID string) string {
+	return fmt.Sprintf("chat.user.presence.%s.query.batch", siteID)
+}
+
+// PresenceQueryBatchPeer is the server-to-server request subject a presence
+// service uses to fetch presence for accounts homed on a remote site (the
+// fan-out leaf — local lookup only, no further fan-out). Mirrors RoomsInfoBatch.
+func PresenceQueryBatchPeer(siteID string) string {
+	return fmt.Sprintf("chat.server.request.presence.%s.query.batch", siteID)
+}
+
+// PresenceState is the live-state subject the owning site publishes a user's
+// effective status to; clients subscribe to it (possibly cross-site). It omits
+// siteID: the broadcast is a global per-user event, so a subscriber needs only
+// the account and does not have to resolve the user's home site first.
+// Callers pass a server-derived auth identity (the publishing handler's
+// JWT-pinned account), so the builder does not validate — panicking on a
+// server-side invariant would crash the process.
+func PresenceState(account string) string {
+	return fmt.Sprintf("chat.user.presence.state.%s", account)
 }
 
 // MsgHistory is the concrete-subject form clients publish on to invoke
@@ -971,6 +1040,20 @@ func PushNotificationFilter(siteID string) string {
 	return fmt.Sprintf("chat.server.notification.push.%s.>", siteID)
 }
 
+// ServerBroadcastThreadTCount is the core-NATS subject on which message-worker
+// publishes thread reply-count badge events. Broadcast-worker queue-subscribes
+// using the wildcard ServerBroadcastWildcard so this stays fire-and-forget
+// without polluting MESSAGES_CANONICAL (which is reserved for message CRUD).
+func ServerBroadcastThreadTCount(siteID string) string {
+	return fmt.Sprintf("chat.server.broadcast.%s.thread.tcount", siteID)
+}
+
+// ServerBroadcastWildcard is the queue-subscribe subject used by broadcast-worker
+// to receive all server-broadcast events for a site.
+func ServerBroadcastWildcard(siteID string) string {
+	return fmt.Sprintf("chat.server.broadcast.%s.>", siteID)
+}
+
 // PresenceSnapshot is the bulk presence RPC subject (request/reply).
 func PresenceSnapshot(siteID string) string {
 	return fmt.Sprintf("chat.presence.%s.request.snapshot", siteID)
@@ -995,4 +1078,14 @@ func ParseSubscriptionUpdateAccount(s string) (account string, ok bool) {
 		return "", false
 	}
 	return parts[2], true
+}
+
+// MigrationOplog builds the subject for one raw CDC event: chat.oplog.{siteID}.{collection}.{op}. collection is the raw source name (e.g. rocketchat_message), op is insert|update|replace|delete.
+func MigrationOplog(siteID, collection, op string) string {
+	return fmt.Sprintf("chat.oplog.%s.%s.%s", siteID, collection, op)
+}
+
+// MigrationOplogWildcard matches every oplog event for a site — the MIGRATION_OPLOG_{siteID} stream's subjects.
+func MigrationOplogWildcard(siteID string) string {
+	return fmt.Sprintf("chat.oplog.%s.>", siteID)
 }

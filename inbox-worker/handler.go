@@ -13,17 +13,22 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 )
-
-//go:generate mockgen -destination=mock_store_test.go -package=main . InboxStore
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
 type InboxStore interface {
 	CreateSubscription(ctx context.Context, sub *model.Subscription) error
 	BulkCreateSubscriptions(ctx context.Context, subs []*model.Subscription) error
+	// UpsertRoom replicates room metadata, guarded by the incoming room's
+	// UpdatedAt: an event carrying an older (or equal) UpdatedAt than the
+	// stored one is a silent no-op, so out-of-order federated delivery cannot
+	// regress room metadata.
 	UpsertRoom(ctx context.Context, room *model.Room) error
-	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role) error
+	// UpdateSubscriptionRoles applies roles guarded by rolesUpdatedAt (the source
+	// event's publish time): older/duplicate events are silent no-ops. A
+	// genuinely missing subscription still returns an error so the event is
+	// redelivered until member_added lands (federation race).
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, rolesUpdatedAt time.Time) error
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
@@ -35,18 +40,25 @@ type InboxStore interface {
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 	// ApplyThreadRead writes ThreadSubscription under a $lt lastSeenAt guard, then the Subscription only if the guard accepted.
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
-	// UpdateSubscriptionMute sets muted by (roomID, account); missing-sub is a silent no-op for federation races.
-	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool) error
-	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
-	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
-
-	// UpdateSubscriptionNamesForRoom mass-renames subscription mirrors on this site.
-	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
-
-	// ApplySubscriptionVisibility mirrors room-worker's counterpart (same 3 branches).
-	// On a remote site this only updates mirrored subs whose users are homed here;
-	// OwnerAccount is load-bearing so $cond can promote the chosen owner's local mirror.
-	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string) error
+	// UpdateSubscriptionMute sets muted by (roomID, account), guarded by
+	// muteUpdatedAt (the source event's publish time): older/duplicate events
+	// are silent no-ops. Missing-sub is also a silent no-op for federation races.
+	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, muteUpdatedAt time.Time) error
+	// UpdateSubscriptionFavorite sets favorite by (roomID, account), guarded by
+	// favoriteUpdatedAt (the source event's publish time): older/duplicate events
+	// are silent no-ops. Missing-sub is also a silent no-op for federation races.
+	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool, favoriteUpdatedAt time.Time) error
+	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room,
+	// each guarded by its own nameUpdatedAt so an out-of-order rename cannot regress
+	// a sub to a stale name. Used when a channel is renamed — replicated via the
+	// outbox to remote sites.
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, nameUpdatedAt time.Time) error
+	// ApplySubscriptionVisibility writes {restricted, externalAccess, roles} to all subs
+	// in the room, each guarded by its own visibilityUpdatedAt so an out-of-order
+	// visibility change cannot regress the flags/roles. When restricted=true and
+	// ownerAccount is non-empty, a $cond pipeline demotes all accounts except
+	// ownerAccount to RoleMember.
+	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string, visibilityUpdatedAt time.Time) error
 }
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -85,10 +97,10 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleThreadSubscriptionUpserted(ctx, &evt)
 	case "thread_read":
 		return h.handleThreadRead(ctx, &evt)
-	case "room_renamed":
+	case model.OutboxRoomRenamed:
 		return h.handleRoomRenamed(ctx, &evt)
-	case "room_restricted":
-		return h.handleRoomRestricted(ctx, &evt)
+	case model.OutboxRoomRestricted:
+		return h.handleRoomVisibilityChanged(ctx, &evt)
 	default:
 		slog.Warn("unknown event type, skipping", "type", evt.Type)
 		return nil
@@ -210,7 +222,7 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 			"account", account, "room_id", roomID)
 		return errcode.Permanent(errcode.BadRequest("role_updated event has empty roles"))
 	}
-	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles); err != nil {
+	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles, time.UnixMilli(subEvt.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update subscription roles: %w", err)
 	}
 	return nil
@@ -237,7 +249,7 @@ func (h *Handler) handleSubscriptionMuteToggled(ctx context.Context, evt *model.
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal subscription_mute_toggled payload: %w", err)
 	}
-	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted); err != nil {
+	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted, time.UnixMilli(e.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update subscription mute for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil
@@ -249,7 +261,7 @@ func (h *Handler) handleSubscriptionFavoriteToggled(ctx context.Context, evt *mo
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal subscription_favorite_toggled payload: %w", err)
 	}
-	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite); err != nil {
+	if err := h.store.UpdateSubscriptionFavorite(ctx, e.RoomID, e.Account, e.Favorite, time.UnixMilli(e.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update subscription favorite for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil
@@ -278,40 +290,30 @@ func (h *Handler) handleThreadRead(ctx context.Context, evt *model.OutboxEvent) 
 	}
 	lastSeenAt := time.UnixMilli(e.LastSeenAt).UTC()
 	if err := h.store.ApplyThreadRead(ctx, e.RoomID, e.ThreadRoomID, e.Account, e.NewThreadUnread, e.Alert, lastSeenAt); err != nil {
-		return fmt.Errorf("apply thread read (room %q, parent %q, account %q): %w",
-			e.RoomID, e.ParentMessageID, e.Account, err)
+		return fmt.Errorf("apply thread read (room %q, thread %q, account %q): %w",
+			e.RoomID, e.ThreadRoomID, e.Account, err)
 	}
 	return nil
 }
 
 func (h *Handler) handleRoomRenamed(ctx context.Context, evt *model.OutboxEvent) error {
-	var payload model.RoomRenamedOutboxPayload
-	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal room_renamed payload: %w", err)
+	var p model.RoomRenamedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &p); err != nil {
+		return errcode.Permanent(errcode.BadRequest("unmarshal room_renamed payload"))
 	}
-	slog.Info("processing room_renamed",
-		"roomID", payload.RoomID,
-		"newName", payload.NewName,
-		"requestID", natsutil.RequestIDFromContext(ctx))
-	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, payload.RoomID, payload.NewName); err != nil {
-		return fmt.Errorf("update subscription names for room %s: %w", payload.RoomID, err)
+	if err := h.store.UpdateSubscriptionNamesForRoom(ctx, p.RoomID, p.NewName, time.UnixMilli(p.Timestamp).UTC()); err != nil {
+		return fmt.Errorf("update subscription names for room %s: %w", p.RoomID, err)
 	}
 	return nil
 }
 
-func (h *Handler) handleRoomRestricted(ctx context.Context, evt *model.OutboxEvent) error {
-	var payload model.RoomRestrictedOutboxPayload
-	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return fmt.Errorf("unmarshal room_restricted payload: %w", err)
+func (h *Handler) handleRoomVisibilityChanged(ctx context.Context, evt *model.OutboxEvent) error {
+	var p model.RoomRestrictedOutboxPayload
+	if err := json.Unmarshal(evt.Payload, &p); err != nil {
+		return errcode.Permanent(errcode.BadRequest("unmarshal room_restricted payload"))
 	}
-	slog.Info("processing room_restricted",
-		"roomID", payload.RoomID,
-		"restricted", payload.Restricted,
-		"externalAccess", payload.ExternalAccess,
-		"ownerAccount", payload.OwnerAccount,
-		"requestID", natsutil.RequestIDFromContext(ctx))
-	if err := h.store.ApplySubscriptionVisibility(ctx, payload.RoomID, payload.Restricted, payload.ExternalAccess, payload.OwnerAccount); err != nil {
-		return fmt.Errorf("apply restricted for room %s: %w", payload.RoomID, err)
+	if err := h.store.ApplySubscriptionVisibility(ctx, p.RoomID, p.Restricted, p.ExternalAccess, p.OwnerAccount, time.UnixMilli(p.Timestamp).UTC()); err != nil {
+		return fmt.Errorf("apply subscription visibility for room %s: %w", p.RoomID, err)
 	}
 	return nil
 }

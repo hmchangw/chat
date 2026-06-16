@@ -145,23 +145,19 @@ func TestLoadSurroundingMessagesRequest_WithMeta_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestGetThreadMessagesRequest_WithMeta_Roundtrip(t *testing.T) {
-	last := int64(1234567890123)
-	created := int64(1234567000000)
-	cases := []struct {
-		name string
-		in   GetThreadMessagesRequest
-	}{
-		{name: "meta nil", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10}},
-		{name: "meta populated", in: GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10, Meta: &RoomMeta{LastMsgAt: &last, CreatedAt: &created}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			data, err := json.Marshal(tc.in)
-			require.NoError(t, err)
-			var got GetThreadMessagesRequest
-			require.NoError(t, json.Unmarshal(data, &got))
-			assert.Equal(t, tc.in, got)
-		})
-	}
+func TestGetThreadMessagesRequest_Roundtrip(t *testing.T) {
+	in := GetThreadMessagesRequest{ThreadMessageID: "t-abc", Cursor: "c1", Limit: 10}
+	data, err := json.Marshal(in)
+	require.NoError(t, err)
+	var got GetThreadMessagesRequest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, in, got)
+}
+
+// A legacy payload still carrying the removed meta field must decode cleanly, field ignored.
+func TestGetThreadMessagesRequest_IgnoresLegacyMetaField(t *testing.T) {
+	payload := []byte(`{"threadMessageId":"t-abc","limit":10,"meta":{"lastMsgAt":1234567890123,"createdAt":1234567000000}}`)
+	var got GetThreadMessagesRequest
+	require.NoError(t, json.Unmarshal(payload, &got))
+	assert.Equal(t, GetThreadMessagesRequest{ThreadMessageID: "t-abc", Limit: 10}, got)
 }

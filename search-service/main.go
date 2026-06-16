@@ -13,6 +13,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/hmchangw/chat/pkg/health"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -88,16 +89,18 @@ type Config struct {
 	Search   SearchConfig   `envPrefix:"SEARCH_"`
 	Mongo    MongoConfig    `envPrefix:"MONGO_"`
 	UsersAPI UsersAPIConfig `envPrefix:"USERS_API_"`
+	DebugLog logctx.Config  `envPrefix:"DEBUG_LOG_"`
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	logctx.SetupDefault(os.Stdout)
 
 	cfg, err := env.ParseAs[Config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	spotlightBase, _, ok := searchindex.StripVersion(cfg.Search.SpotlightIndex)
 	if !ok {
@@ -154,6 +157,14 @@ func main() {
 	store := newESStore(engine, cfg.Search.UserRoomIndex)
 	cache := newValkeyCache(valkey)
 	mongoStore := newMongoStore(mongoDB)
+
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := mongoStore.ensureIndexes(ensureCtx); err != nil {
+		ensureCancel()
+		slog.Error("ensure mongo indexes failed", "error", err)
+		os.Exit(1)
+	}
+	ensureCancel()
 	handler := newHandler(store, mongoStore, usersClient, cache, &handlerConfig{
 		SiteID:                  cfg.SiteID,
 		DocCounts:               cfg.Search.DocCounts,

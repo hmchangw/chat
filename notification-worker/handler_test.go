@@ -757,8 +757,69 @@ func TestHandle_InvalidatesCacheOnMemberChangeSysMessage(t *testing.T) {
 				Type: msgType, CreatedAt: time.Now(),
 			})))
 
-			require.GreaterOrEqual(t, len(members.calls), 2)
-			assert.Equal(t, []string{"inval:r1", "get:r1"}, members.calls[:2], "Invalidate must happen before GetMembers to avoid stale read")
+			assert.Equal(t, []string{"inval:r1"}, members.calls,
+				"member-change sys-message invalidates but is gated as non-notifiable before fan-out (no GetMembers)")
+			assert.Empty(t, emit.emitted, "system messages never push")
+		})
+	}
+}
+
+func TestIsNotifiable(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType string
+		want    bool
+	}{
+		{"regular message", "", true},
+		{"room created", model.MessageTypeRoomCreated, false},
+		{"members added", model.MessageTypeMembersAdded, false},
+		{"member removed", model.MessageTypeMemberRemoved, false},
+		{"member left", model.MessageTypeMemberLeft, false},
+		{"room renamed", model.MessageTypeRoomRenamed, false},
+		{"room restricted", model.MessageTypeRoomRestricted, false},
+		{"unknown future system type", "some_future_sys_type", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNotifiable(tt.msgType))
+		})
+	}
+}
+
+// System messages must never push — not in a small channel (where fan-out would
+// otherwise notify every non-sender), nor when content parses as an @mention
+// (the latent leak this gate closes).
+func TestHandle_SystemMessageProducesNoPush(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType string
+		content string
+	}{
+		{"room created", model.MessageTypeRoomCreated, "system text"},
+		{"members added", model.MessageTypeMembersAdded, "system text"},
+		{"member removed", model.MessageTypeMemberRemoved, "system text"},
+		{"member left", model.MessageTypeMemberLeft, "system text"},
+		{"room renamed", model.MessageTypeRoomRenamed, "system text"},
+		{"room restricted", model.MessageTypeRoomRestricted, "system text"},
+		{"members added with @mention content", model.MessageTypeMembersAdded, "added @bob"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			members := &stubMembers{out: map[string][]roomsubcache.Member{
+				"r1": {
+					{ID: "alice", Account: "alice", RoomType: model.RoomTypeChannel},
+					{ID: "bob", Account: "bob", RoomType: model.RoomTypeChannel},
+				},
+			}}
+			emit := &recordingEmitter{}
+			h := newTestHandler(members, &stubFollowers{}, noopPresenceSnapshotter{}, noopVetoer{}, emit)
+
+			require.NoError(t, h.HandleMessage(context.Background(), msgEvent(&model.Message{
+				ID: "m1", RoomID: "r1", UserID: "alice", UserAccount: "alice",
+				Type: tt.msgType, Content: tt.content, CreatedAt: time.Now(),
+			})))
+
+			assert.Empty(t, emit.emitted, "system message must not push")
 		})
 	}
 }
@@ -778,121 +839,4 @@ func TestHandle_DoesNotInvalidateOnRegularMessage(t *testing.T) {
 	for _, c := range members.calls {
 		assert.NotContains(t, c, "inval:", "regular messages must not invalidate cache")
 	}
-}
-
-// --- Reaction notification path tests (separate from the push pipeline) ---
-
-type mockReactionPub struct {
-	mu      sync.Mutex
-	records []reactionPubRecord
-}
-
-type reactionPubRecord struct {
-	subject string
-	data    []byte
-}
-
-func (m *mockReactionPub) Publish(_ context.Context, subj string, data []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.records = append(m.records, reactionPubRecord{subject: subj, data: data})
-	return nil
-}
-
-func (m *mockReactionPub) getRecords() []reactionPubRecord {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]reactionPubRecord(nil), m.records...)
-}
-
-func reactHandler(pub Publisher) *Handler {
-	return NewHandler(HandlerDeps{
-		Members:     &stubMembers{},
-		Followers:   &stubFollowers{},
-		Presence:    noopPresenceSnapshotter{},
-		Hook:        noopVetoer{},
-		Emitter:     &recordingEmitter{},
-		ReactionPub: pub,
-	})
-}
-
-func TestHandleMessage_Reaction_Added_NotifiesAuthorOnly(t *testing.T) {
-	pub := &mockReactionPub{}
-	h := reactHandler(pub)
-
-	evt := model.MessageEvent{
-		Event:  model.EventReacted,
-		SiteID: "site-a",
-		Message: model.Message{
-			ID: "m1", RoomID: "room-1", UserID: "bob", UserAccount: "account-bob",
-		},
-		ReactionDelta: &model.ReactionDelta{
-			Shortcode: "thumbsup", Action: model.ReactionActionAdded,
-			Actor: model.Participant{UserID: "alice", Account: "account-alice", EngName: "Alice"},
-		},
-	}
-	data, _ := json.Marshal(evt)
-	require.NoError(t, h.HandleMessage(context.Background(), data))
-
-	records := pub.getRecords()
-	require.Len(t, records, 1)
-	assert.Equal(t, "chat.user.account-bob.notification", records[0].subject)
-	var notif model.NotificationEvent
-	require.NoError(t, json.Unmarshal(records[0].data, &notif))
-	assert.Equal(t, "reaction", notif.Type)
-	require.NotNil(t, notif.ReactionDelta)
-	assert.Equal(t, "thumbsup", notif.ReactionDelta.Shortcode)
-}
-
-func TestHandleMessage_Reaction_Removed_NoNotification(t *testing.T) {
-	pub := &mockReactionPub{}
-	h := reactHandler(pub)
-
-	evt := model.MessageEvent{
-		Event: model.EventReacted,
-		Message: model.Message{
-			RoomID: "room-1", UserID: "bob", UserAccount: "account-bob",
-		},
-		ReactionDelta: &model.ReactionDelta{
-			Shortcode: "thumbsup", Action: model.ReactionActionRemoved,
-			Actor: model.Participant{UserID: "alice", Account: "account-alice"},
-		},
-	}
-	data, _ := json.Marshal(evt)
-	require.NoError(t, h.HandleMessage(context.Background(), data))
-	assert.Empty(t, pub.getRecords(), "removed action must not notify")
-}
-
-func TestHandleMessage_Reaction_SelfReact_NoNotification(t *testing.T) {
-	pub := &mockReactionPub{}
-	h := reactHandler(pub)
-
-	evt := model.MessageEvent{
-		Event: model.EventReacted,
-		Message: model.Message{
-			RoomID: "room-1", UserID: "alice", UserAccount: "account-alice",
-		},
-		ReactionDelta: &model.ReactionDelta{
-			Shortcode: "thumbsup", Action: model.ReactionActionAdded,
-			Actor: model.Participant{UserID: "alice", Account: "account-alice"},
-		},
-	}
-	data, _ := json.Marshal(evt)
-	require.NoError(t, h.HandleMessage(context.Background(), data))
-	assert.Empty(t, pub.getRecords(), "self-react must not notify")
-}
-
-// Nil ReactionDelta is a publisher contract violation; the consumer must Ack
-// (return nil) rather than NAK forever, and must not publish a notification.
-func TestHandleMessage_Reaction_MissingDelta_LogsAndDrops(t *testing.T) {
-	pub := &mockReactionPub{}
-	h := reactHandler(pub)
-
-	evt := model.MessageEvent{
-		Event:   model.EventReacted,
-		Message: model.Message{RoomID: "room-1", UserAccount: "account-bob"},
-	}
-	data, _ := json.Marshal(evt)
-	require.NoError(t, h.HandleMessage(context.Background(), data), "malformed event must be acked")
-	assert.Empty(t, pub.getRecords())
 }

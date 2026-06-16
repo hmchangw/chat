@@ -7,16 +7,21 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
+// sseKeepAlive is the interval between SSE keep-alive pings, which also refresh
+// the session so an actively-watched feed is not swept as idle.
+const sseKeepAlive = 25 * time.Second
+
 type handler struct {
-	hub Hub
+	sessions *sessionManager
 }
 
-func newHandler(hub Hub) *handler {
-	return &handler{hub: hub}
+func newHandler(sessions *sessionManager) *handler {
+	return &handler{sessions: sessions}
 }
 
 func (h *handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -30,6 +35,7 @@ type connectRequest struct {
 }
 
 func (h *handler) connect(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	var req connectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -39,21 +45,23 @@ func (h *handler) connect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sourceURL and destURL are required", http.StatusBadRequest)
 		return
 	}
-	if err := h.hub.Connect(req.SourceURL, req.DestURL); err != nil {
+	if err := sess.hub.Connect(req.SourceURL, req.DestURL); err != nil {
 		slog.Error("connect to NATS failed", "error", err)
 		http.Error(w, fmt.Sprintf("connection failed: %s", err.Error()), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.hub.Status())
+	writeJSON(w, http.StatusOK, sess.hub.Status())
 }
 
-func (h *handler) disconnect(w http.ResponseWriter, _ *http.Request) {
-	h.hub.Disconnect()
+func (h *handler) disconnect(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
+	sess.hub.Disconnect()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
 }
 
-func (h *handler) status(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, h.hub.Status())
+func (h *handler) status(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
+	writeJSON(w, http.StatusOK, sess.hub.Status())
 }
 
 type subscribeRequest struct {
@@ -61,6 +69,7 @@ type subscribeRequest struct {
 }
 
 func (h *handler) subscribe(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	var req subscribeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -70,7 +79,7 @@ func (h *handler) subscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "subject is required", http.StatusBadRequest)
 		return
 	}
-	sub, err := h.hub.Subscribe(req.Subject)
+	sub, err := sess.hub.Subscribe(req.Subject)
 	if err != nil {
 		slog.Error("subscribe failed", "subject", req.Subject, "error", err)
 		http.Error(w, fmt.Sprintf("subscribe failed: %s", err.Error()), http.StatusInternalServerError)
@@ -80,20 +89,22 @@ func (h *handler) subscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) unsubscribe(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	id := r.PathValue("id")
 	if id == "" {
 		http.Error(w, "subscription id is required", http.StatusBadRequest)
 		return
 	}
-	if err := h.hub.Unsubscribe(id); err != nil {
+	if err := sess.hub.Unsubscribe(id); err != nil {
 		http.Error(w, fmt.Sprintf("unsubscribe failed: %s", err.Error()), http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *handler) listSubscriptions(w http.ResponseWriter, _ *http.Request) {
-	subs := h.hub.Subscriptions()
+func (h *handler) listSubscriptions(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
+	subs := sess.hub.Subscriptions()
 	if subs == nil {
 		subs = []Subscription{}
 	}
@@ -106,6 +117,7 @@ type publishRequest struct {
 }
 
 func (h *handler) publish(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	var req publishRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -115,7 +127,7 @@ func (h *handler) publish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "subject is required", http.StatusBadRequest)
 		return
 	}
-	if err := h.hub.Publish(req.Subject, req.Payload); err != nil {
+	if err := sess.hub.Publish(req.Subject, req.Payload); err != nil {
 		slog.Error("publish failed", "subject", req.Subject, "error", err)
 		http.Error(w, fmt.Sprintf("publish failed: %s", err.Error()), http.StatusInternalServerError)
 		return
@@ -124,6 +136,8 @@ func (h *handler) publish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) events(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -136,8 +150,11 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ch := make(chan Message, 64)
-	clientID := h.hub.RegisterSSEClient(ch)
-	defer h.hub.UnregisterSSEClient(clientID)
+	clientID := sess.hub.RegisterSSEClient(ch)
+	defer sess.hub.UnregisterSSEClient(clientID)
+
+	keepalive := time.NewTicker(sseKeepAlive)
+	defer keepalive.Stop()
 
 	fmt.Fprint(w, "event: connected\ndata: {}\n\n")
 	flusher.Flush()
@@ -156,6 +173,11 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 			}
 			fmt.Fprintf(w, "event: message\ndata: %s\n", buf.String())
 			flusher.Flush()
+		case <-keepalive.C:
+			// Refresh the session so an actively-watched feed is not swept.
+			h.sessions.touch(sess)
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
 		case <-r.Context().Done():
 			return
 		}
@@ -167,6 +189,7 @@ type requestConnectRequest struct {
 }
 
 func (h *handler) requestConnect(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	var req requestConnectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -176,16 +199,17 @@ func (h *handler) requestConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	if err := h.hub.ConnectRequest(req.URL); err != nil {
+	if err := sess.hub.ConnectRequest(req.URL); err != nil {
 		slog.Error("connect to request NATS failed", "error", err)
 		http.Error(w, fmt.Sprintf("connection failed: %s", err.Error()), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.hub.Status())
+	writeJSON(w, http.StatusOK, sess.hub.Status())
 }
 
-func (h *handler) requestDisconnect(w http.ResponseWriter, _ *http.Request) {
-	h.hub.DisconnectRequest()
+func (h *handler) requestDisconnect(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
+	sess.hub.DisconnectRequest()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
 }
 
@@ -196,6 +220,7 @@ type natsRequestBody struct {
 }
 
 func (h *handler) request(w http.ResponseWriter, r *http.Request) {
+	sess := h.sessions.resolve(w, r)
 	var req natsRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -210,7 +235,7 @@ func (h *handler) request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reply, err := h.hub.Request(req.Subject, req.Payload, req.TimeoutMs)
+	reply, err := sess.hub.Request(req.Subject, req.Payload, req.TimeoutMs)
 	if err != nil {
 		switch {
 		case errors.Is(err, nats.ErrNoResponders):

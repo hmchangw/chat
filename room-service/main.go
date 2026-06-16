@@ -16,6 +16,7 @@ import (
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/health"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -36,9 +37,7 @@ type config struct {
 	MaxRoomSize              int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
 	MaxBatchSize             int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
 	MemberListTimeout        time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
-	ValkeyAddrs              []string        `env:"VALKEY_ADDRS,required"     envSeparator:","`
-	ValkeyPassword           string          `env:"VALKEY_PASSWORD"           envDefault:""`
-	ValkeyGracePeriod        time.Duration   `env:"VALKEY_KEY_GRACE_PERIOD,required"`
+	RoomKeyGracePeriod       time.Duration   `env:"ROOM_KEY_GRACE_PERIOD"     envDefault:"24h"`
 	CassandraHosts           string          `env:"CASSANDRA_HOSTS,required"`
 	CassandraKeyspace        string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
 	CassandraUsername        string          `env:"CASSANDRA_USERNAME"        envDefault:""`
@@ -49,18 +48,20 @@ type config struct {
 	RestrictedRoomMinMembers int             `env:"RESTRICTED_ROOM_MIN_MEMBERS" envDefault:"5"`
 	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
 	// When Atrest.Enabled is false the DEK is created lazily by message-worker.
-	Atrest atrest.Config      // env vars already prefixed ATREST_*
-	Vault  atrest.VaultConfig // env vars already prefixed (VAULT_*, ATREST_VAULT_*)
+	Atrest   atrest.Config      // env vars already prefixed ATREST_*
+	Vault    atrest.VaultConfig // env vars already prefixed (VAULT_*, ATREST_VAULT_*)
+	DebugLog logctx.Config      `envPrefix:"DEBUG_LOG_"`
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	logctx.SetupDefault(os.Stdout)
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 	if cfg.MemberListTimeout <= 0 {
 		slog.Error("invalid MEMBER_LIST_TIMEOUT: must be > 0", "value", cfg.MemberListTimeout)
 		os.Exit(1)
@@ -103,15 +104,12 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	keyStore, err := roomkeystore.NewValkeyClusterStore(roomkeystore.ClusterConfig{
-		Addrs:       cfg.ValkeyAddrs,
-		Password:    cfg.ValkeyPassword,
-		GracePeriod: cfg.ValkeyGracePeriod,
-	})
-	if err != nil {
-		slog.Error("valkey connect failed", "error", err)
+	if cfg.RoomKeyGracePeriod <= 0 {
+		slog.Error("ROOM_KEY_GRACE_PERIOD must be a positive duration",
+			"room_key_grace_period", cfg.RoomKeyGracePeriod)
 		os.Exit(1)
 	}
+	keyStore := roomkeystore.NewMongoStore(db.Collection("rooms"), cfg.RoomKeyGracePeriod)
 
 	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {
 		slog.Error("bootstrap streams failed", "error", err)
@@ -183,7 +181,7 @@ func main() {
 	handler.dekProvisioner = dekProvisioner
 
 	router := natsrouter.New(nc, "room-service")
-	router.Use(natsrouter.Recovery(), natsrouter.RequireRequestID(), natsrouter.Logging())
+	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
 	handler.Register(router)
 
 	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
