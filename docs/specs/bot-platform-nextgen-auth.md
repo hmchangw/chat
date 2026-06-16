@@ -126,7 +126,7 @@ Sessions do **not** have a fixed TTL. On each (throttled) use-bump, `ExpiresAt` 
 
 **Internal primitive:** §5.2 — a native client or the REST edge exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
 
-**New native bot SDK (re-architecture) — recommended (Q1b):** surface that internal primitive as an explicit **`session.refresh` resume RPC** so a re-architected bot can reconnect / re-mint a JWT from its stored session token after a restart, without storing the password. This is the §5.2 exchange exposed to native clients — cheap (already designed), and it gives new bots a first-class resume path while legacy REST bots are untouched. *Decision pending: expose it now vs. defer to the native-SDK milestone.*
+**New native bot SDK (re-architecture) — decided (Q1b):** the internal session→JWT exchange ships anyway; the **public `session.refresh` resume RPC is deferred to the native-SDK milestone** (no caller until that SDK exists). Legacy REST bots are untouched (header reuse).
 
 ---
 
@@ -353,18 +353,14 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ## 12. Open questions & decisions
 
-> "Recommended" entries are the proposed answer with rationale, not yet locked. "Confirmed" entries were verified against the internal codebase or decided in design review.
+> "Confirmed" entries were verified against the internal codebase or decided in design review. As of 2026-06-16 **all open questions are decided** — the recommendation was accepted for each; Q12/Q13 remain subject to external-team wiring confirmation but the design assumes the recommended answer.
 
-### Decisions pending sign-off
-- **Q1b — Resume RPC for the new native bot SDK.** Recommend **exposing the §5.2 session→JWT exchange as a `session.refresh` RPC** for re-architected native bots (lets them reconnect from a stored token, no password). Legacy REST bots unaffected. *Decision: expose now or defer to the native-SDK milestone (§5.6).*
-
-### Recommended — pending infra confirmation
-- **Q3 — Cutover source-of-truth.** Use the **real-time `users`-collection sync** (the identity-sync that preserves the 17-char `_id`), **extended to carry the bcrypt hash into nextgen `credentials`** — password changes on legacy then propagate automatically, **no freeze** (§6.3). One write-authority during the ~1-week ramp (legacy writes; nextgen-side changes off until cutover). *Confirm:* the sync can carry the credential field; a literal read-only freeze is the trivial fallback. **Tokens are a separate axis — see Q14.**
-
-### Integration decisions (Part 3) — recommended, pending external-team confirmation
-- **Q10 — Token format.** Recommend **same opaque format** as legacy (indistinguishable to bots/WS); validate our-store-first then legacy-fallback. Optional `bp1_` prefix as a fast-path only if the fallback double-lookup is shown to matter. (Part 3 §7.)
-- **Q12 — WebSocket validation.** WS server **calls `/v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. *Confirm WS-team wiring.* (Part 3 §7.)
-- **Q13 — REST→NATS bridge ownership.** A bridge is required (nextgen = NATS RPCs, legacy = pure REST); it lives in **`Server`/`botplatform-server` (data-plane track)**, never in our auth service. *Confirm with the external-dev team.* (Part 3 §4.1.)
+### Decided 2026-06-16 (recommendation accepted)
+- **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) ships anyway. Legacy REST bots use header reuse (§5.6).
+- **Q3 — Cutover source-of-truth.** ✅ **Real-time `users`-collection sync extended to carry the bcrypt hash into `credentials`** → password changes propagate, **no freeze** (§6.3). One write-authority during the ramp (legacy writes; nextgen-side changes off until cutover). Tokens are a separate axis (Q14). *Infra: confirm the sync can carry the credential field; read-only freeze is the trivial fallback.*
+- **Q10 — Token format.** ✅ **Same opaque format** as legacy; validate our-store-first then legacy-fallback. Optional `bp1_` fast-path prefix only if profiling demands it (Part 3 §7).
+- **Q12 — WebSocket validation.** ✅ WS server **calls `/v1/auth/validate`** (Part 3 §7). *Wired during implementation/migration — not a design blocker.*
+- **Q13 — REST→NATS bridge ownership.** ✅ Bridge lives in **`Server`/data-plane track**, never our auth service (Part 3 §4.1). *Wired during implementation/migration — not a design blocker.*
 
 ### Confirmed — closed
 - **Q17 — Service scope.** ✅ **`botplatform-service` is the auth provider, not a data-path proxy** (Option (b), 2026-06-16). ApiGW (existing) keeps routing/rate-limit/metrics and calls our `/v1/auth/validate`; `Server` serves `/api/v2/*`. We own login + validate + `credentials`/`sessions` + web UI + admin (§9).
@@ -562,6 +558,5 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] External-dev confirmations: **WS server** calls `/v1/auth/validate` (Q12); **Server/data-plane** owns the REST→NATS bridge (Q13).
 - [ ] Real-time `users`-collection sync can carry the bcrypt hash into `credentials` (Q3).
 
-**Decisions to sign off (§12)**
-- [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 sync-not-freeze · [ ] Q10 token format · [ ] Q12/Q13 external confirms
-- [x] **Q5** Option B · [x] **Q14** validate authority · [x] **Q15** REST admin · [x] **Q16** validation-first · [x] **Q17** auth-provider-not-proxy · [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey · [x] Q7 180d · [x] Q8 password-only · [x] Q9 id-preserved · [x] Q11 v1-login-only
+**Decisions (§12) — all decided 2026-06-16** *(Q12/Q13 get wired during implementation/migration — not blockers)*
+- [x] Q1 contract · [x] Q1b defer-resume · [x] Q2 sliding-infinite · [x] Q3 sync-not-freeze · [x] Q4 throttle=5m · [x] Q5 Option B · [x] Q6 Valkey · [x] Q7 180d · [x] Q8 password-only · [x] Q9 id-preserved · [x] Q10 same-format · [x] Q11 v1-login-only · [x] Q14 validate-authority · [x] Q15 REST-admin · [x] Q16 validation-first · [x] Q17 auth-provider
