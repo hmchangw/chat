@@ -14,8 +14,9 @@ import (
 )
 
 // emptyThreadResponse is the shared "no replies" shape for all short-circuit branches.
-func emptyThreadResponse() *models.GetThreadMessagesResponse {
-	return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}
+// parent is the fetched thread-parent message and is always included in the response.
+func emptyThreadResponse(parent *models.Message) *models.GetThreadMessagesResponse {
+	return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false, ParentMessage: parent}
 }
 
 // NATS: chat.user.{account}.request.room.{roomID}.{siteID}.msg.thread
@@ -46,6 +47,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, errcode.Forbidden("thread is outside access window", errcode.WithReason(errcode.MessageOutsideAccessWindow))
 	}
 
+	// Apply redaction to the parent's quoted message before including it in the response.
+	redactUnavailableQuote(msg, accessSince)
+
 	// Empty ThreadRoomID means no replies yet or a silently-failed stamp in message-worker.
 	if msg.ThreadRoomID == "" {
 		slog.Warn("thread fetch: parent has empty thread_room_id, returning no replies",
@@ -55,7 +59,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 			"messageCreatedAt", msg.CreatedAt,
 			"account", account,
 		)
-		return emptyThreadResponse(), nil
+		return emptyThreadResponse(msg), nil
 	}
 
 	limit := req.Limit
@@ -73,7 +77,7 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// tcount==0 means all replies were deleted — skip Cassandra. nil means never written
 	// (new parent, or mid-write before the tcount LWT) and must fall through or replies could be hidden.
 	if msg.TCount != nil && *msg.TCount == 0 {
-		return emptyThreadResponse(), nil
+		return emptyThreadResponse(msg), nil
 	}
 
 	// Server-clock bounds only: thread replies never bump rooms.lastMsgAt (fan-out skips it),
@@ -97,9 +101,10 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 
 	redactUnavailableQuotes(page.Data, accessSince)
 	return &models.GetThreadMessagesResponse{
-		Messages:   page.Data,
-		NextCursor: page.NextCursor,
-		HasNext:    page.HasNext,
+		Messages:      page.Data,
+		NextCursor:    page.NextCursor,
+		HasNext:       page.HasNext,
+		ParentMessage: msg,
 	}, nil
 }
 

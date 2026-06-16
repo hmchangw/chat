@@ -130,7 +130,8 @@ type GetThreadMessagesRequest struct {
 }
 
 type GetThreadMessagesResponse struct {
-	Messages   []Message `json:"messages"`
-	NextCursor string    `json:"nextCursor,omitempty"`
-	HasNext    bool      `json:"hasNext"`
+	Messages      []Message `json:"messages"`
+	NextCursor    string    `json:"nextCursor,omitempty"`
+	HasNext       bool      `json:"hasNext"`
+	ParentMessage *Message  `json:"parentMessage,omitempty"`
 }
