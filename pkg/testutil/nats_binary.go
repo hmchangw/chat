@@ -35,10 +35,10 @@ func startNATSBinary() (url string, stop func(), err error) {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	// Test-only fixture: binPath is exec.LookPath of the literal "nats-server";
 	// argv is fully fixed (port from freePort, storeDir from MkdirTemp). No
-	// taint from external input — both SAST rules below are false positives.
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	// taint from external input — gosec G204 and every semgrep
+	// subprocess-exec rule are false positives here.
 	// #nosec G204
-	cmd := exec.CommandContext(bgCtx, binPath,
+	cmd := exec.CommandContext(bgCtx, binPath, // nosemgrep
 		"-js",
 		"-a", "127.0.0.1",
 		"-p", strconv.Itoa(port),
