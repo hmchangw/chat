@@ -43,7 +43,7 @@ GOSEC_FLAGS := -quiet -severity medium -confidence medium -tests=true \
 SEMGREP_FLAGS := --error --severity=WARNING --severity=ERROR --metrics=off \
                  --exclude=tools --exclude=chat-frontend --exclude=testdata \
                  --exclude=docs --config=p/golang --config=p/security-audit \
-                 --config=.semgrep/
+                 --config=.semgrep/errcode.yml
 
 # Makefile for the distributed multi-site chat system.
 
