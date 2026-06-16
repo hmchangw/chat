@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,39 +111,74 @@ func TestDirectoryCache_EmptyRefreshAfterReadyKeepsPrevious(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestDirectoryCache_DuplicateAccountKeepsPrevious(t *testing.T) {
+func TestDirectoryCache_DuplicateAccountSkippedKeepsRest(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockDirectoryStore(ctrl)
 	dupAlice := aliceEmployee
 	dupAlice.SiteID = "site-b"
-	gomock.InOrder(
-		store.EXPECT().ListEmployees(gomock.Any()).Return([]employee{aliceEmployee}, nil),
-		store.EXPECT().ListEmployees(gomock.Any()).Return([]employee{bobEmployee, dupAlice, aliceEmployee}, nil),
-	)
+	// The first occurrence wins; the later duplicate row is skipped (with a
+	// warning) rather than rejecting the whole snapshot.
+	store.EXPECT().ListEmployees(gomock.Any()).Return([]employee{aliceEmployee, bobEmployee, dupAlice}, nil)
 
 	cache := newDirectoryCache()
-	require.NoError(t, cache.Load(context.Background(), store))
-	require.Error(t, cache.Load(context.Background(), store),
-		"a snapshot with duplicate accounts must be rejected, not published last-write-wins")
+	require.NoError(t, cache.Load(context.Background(), store),
+		"a duplicate row must be skipped, not reject the whole snapshot")
 
+	assert.True(t, cache.Ready())
 	got, ok := cache.Get("alice")
 	require.True(t, ok)
-	assert.Equal(t, aliceEmployee, got, "the previous snapshot must keep serving")
+	assert.Equal(t, aliceEmployee, got, "the first occurrence wins")
 	_, ok = cache.Get("bob")
-	assert.False(t, ok, "no row of a rejected snapshot may be published")
+	assert.True(t, ok, "non-duplicate rows are still published")
 }
 
-func TestDirectoryCache_DuplicateAccountAtStartupNotReady(t *testing.T) {
+func TestDirectoryCache_DuplicateAccountAtStartupReady(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockDirectoryStore(ctrl)
 	store.EXPECT().ListEmployees(gomock.Any()).Return([]employee{aliceEmployee, aliceEmployee}, nil)
 
 	cache := newDirectoryCache()
-	require.Error(t, cache.Load(context.Background(), store))
+	require.NoError(t, cache.Load(context.Background(), store))
 
-	assert.False(t, cache.Ready())
-	_, ok := cache.Get("alice")
-	assert.False(t, ok)
+	assert.True(t, cache.Ready(), "a duplicate at startup is skipped, not fatal")
+	got, ok := cache.Get("alice")
+	require.True(t, ok)
+	assert.Equal(t, aliceEmployee, got)
+}
+
+// TestDirectoryCache_ConcurrentReadDuringLoad guards the lock-free read path:
+// many readers hit Get/Ready while the writer swaps the snapshot. The race
+// detector fails this if the swap is not atomic against concurrent reads.
+func TestDirectoryCache_ConcurrentReadDuringLoad(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockDirectoryStore(ctrl)
+	store.EXPECT().ListEmployees(gomock.Any()).Return([]employee{aliceEmployee, bobEmployee}, nil).AnyTimes()
+
+	cache := newDirectoryCache()
+	require.NoError(t, cache.Load(context.Background(), store))
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					cache.Get("alice")
+					cache.Ready()
+				}
+			}
+		}()
+	}
+	for range 50 {
+		require.NoError(t, cache.Load(context.Background(), store))
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestDirectoryCache_RefreshLoop(t *testing.T) {

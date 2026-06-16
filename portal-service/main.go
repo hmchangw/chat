@@ -28,10 +28,10 @@ type config struct {
 	DevFallbackSiteID  string `env:"PORTAL_DEV_FALLBACK_SITE_ID"  envDefault:"site-local"`
 	DevFallbackNatsURL string `env:"PORTAL_DEV_FALLBACK_NATS_URL" envDefault:"ws://localhost:9222"`
 
-	// AuthURLTemplate maps a siteId to that site's auth-service base URL by
-	// substituting "{siteId}" (e.g. https://auth.{siteId}.example.com); a
-	// value without the placeholder is used verbatim (single-site).
-	AuthURLTemplate string `env:"PORTAL_AUTH_URL_TEMPLATE,required"`
+	// SiteURLs is the per-site URL registry: a JSON object mapping siteId to
+	// {authServiceUrl, baseUrl}. A single template can't express sites on
+	// different domains, so each site's URLs are listed explicitly.
+	SiteURLs string `env:"PORTAL_SITE_URLS,required"`
 
 	// CacheRefreshInterval matches the cadence of the daily HR cron that
 	// rewrites the hr_employee collection.
@@ -58,6 +58,11 @@ func run() error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
+	sites, err := parseSiteURLs(cfg.SiteURLs)
+	if err != nil {
+		return fmt.Errorf("parse site URL registry: %w", err)
+	}
+
 	ctx := context.Background()
 
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
@@ -80,10 +85,10 @@ func run() error {
 		cache.RefreshLoop(refreshCtx, store, cfg.CacheRefreshInterval, cacheRetryInterval)
 	})
 
-	slog.Info("directory config", "authUrlTemplate", cfg.AuthURLTemplate, "refreshInterval", cfg.CacheRefreshInterval.String())
+	slog.Info("directory config", "sites", len(sites), "refreshInterval", cfg.CacheRefreshInterval.String())
 
-	handler := NewPortalHandler(cache, cfg.DevMode,
-		cfg.DevFallbackSiteID, cfg.DevFallbackNatsURL, cfg.AuthURLTemplate)
+	handler := NewPortalHandler(cache, store, cfg.DevMode,
+		cfg.DevFallbackSiteID, cfg.DevFallbackNatsURL, sites)
 	if cfg.DevMode {
 		slog.Info("dev mode enabled — unknown accounts fall back to the dev site")
 	}

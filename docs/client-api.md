@@ -210,7 +210,6 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 | 400 | `bad_request` | — | `{ "code": "bad_request", "error": "account must be a single NATS subject token (no '.', '*', '>' or whitespace)" }` — the account becomes a NATS subject token, so separator/wildcard/whitespace characters are refused. |
 | 401 | `unauthenticated` | `sso_token_expired` | `{ "code": "unauthenticated", "reason": "sso_token_expired", "error": "SSO token has expired, please re-login" }` |
 | 401 | `unauthenticated` | `invalid_sso_token` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid SSO token" }` |
-| 403 | `forbidden` | `account_not_provisioned` | `{ "code": "forbidden", "reason": "account_not_provisioned", "error": "account not provisioned for this site" }` — the account is not in this site's user directory (unprovisioned, or homed on a different site). Applies to initial login and background renewal alike. |
 | 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — the real cause is logged server-side and never sent to the client. |
 
 The returned `natsJwt` has a server-configured lifetime (default 2h). Clients should re-call `POST /auth` to refresh before it expires.
@@ -236,9 +235,9 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 **Endpoint:** `GET /api/userInfo?account={account}`
 **Reply:** synchronous HTTP response
 
-Site discovery — called once per login, **before** §2.2. Looks the account up in the portal's in-memory directory (loaded from the HR employee feed at startup and refreshed daily) and returns the home site's connection coordinates. The client then calls `POST {authServiceUrl}/auth` (§2.2) and connects to `natsUrl` (§2.1). JWT renewal does **not** re-query the portal — site assignment is stable within a session.
+Site discovery — called once per login, **before** §2.2. Looks the account up in the portal's in-memory directory (loaded from the HR employee feed at startup and refreshed daily), confirms the account is provisioned in the `users` collection (the canonical user record), and returns the home site's connection coordinates. The client then calls `POST {authServiceUrl}/auth` (§2.2) and connects to `natsUrl` (§2.1). JWT renewal does **not** re-query the portal — site assignment is stable within a session.
 
-**Discovery only — no token is validated here.** The endpoint serves non-secret directory data keyed by `account`. The client supplies the account directly: derived from the SSO token's `preferred_username` claim in production, or the dev login form in dev mode. The authoritative check is auth-service (§2.2), which validates the SSO token and enforces provisioning before minting a JWT — an account that resolves here still cannot obtain a NATS JWT or connect without a valid token at that step.
+**Discovery only — no token is validated here.** The endpoint serves non-secret directory data keyed by `account`. The client supplies the account directly: derived from the SSO token's `preferred_username` claim in production, or the dev login form in dev mode. The authoritative check is auth-service (§2.2), which validates the SSO token before minting a JWT — an account that resolves here still cannot obtain a NATS JWT or connect without a valid token at that step.
 
 #### Request
 
@@ -259,6 +258,7 @@ GET /api/userInfo?account=alice
 | `account` | string | The `{account}` used in every NATS subject. |
 | `employeeId` | string | From the portal directory; informational. |
 | `authServiceUrl` | string | Base URL of the home site's auth-service — call `POST {authServiceUrl}/auth` next. |
+| `baseUrl` | string | Base URL of the user's home site itself (site-scoped HTTP origin) — a distinct URL, not the auth-service URL. |
 | `natsUrl` | string | WebSocket URL of the home site's NATS. |
 | `siteId` | string | The user's home site; scopes site-suffixed NATS subjects. |
 
@@ -267,6 +267,7 @@ GET /api/userInfo?account=alice
   "account": "alice",
   "employeeId": "E12345",
   "authServiceUrl": "https://auth.site-a.example.com",
+  "baseUrl": "https://site-a.example.com",
   "natsUrl": "wss://nats.site-a.example.com",
   "siteId": "site-a"
 }
@@ -280,7 +281,7 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 |---|---|---|---|
 | 400 | `bad_request` | `missing_fields` | `{ "code": "bad_request", "reason": "missing_fields", "error": "account is required" }` |
 | 400 | `bad_request` | — | `{ "code": "bad_request", "error": "account must be a single NATS subject token (no '.', '*', '>' or whitespace)" }` — same account rule as §2.2. |
-| 403 | `forbidden` | `account_not_ready` | `{ "code": "forbidden", "reason": "account_not_ready", "error": "account not ready for chat" }` — account absent from the portal directory (provisioning is fed by a daily HR sync; a freshly provisioned account appears after the next refresh). |
+| 403 | `forbidden` | `account_not_ready` | `{ "code": "forbidden", "reason": "account_not_ready", "error": "account not ready for chat" }` — the account is not usable for chat: either absent from the portal's HR directory (fed by a daily sync), or present there but not yet provisioned in the `users` collection. |
 | 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` |
 
 #### Triggered events — success path
@@ -3740,8 +3741,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `invalid_request` | bad_request | auth-service (body parse / required field missing) |
 | `invalid_nkey` | bad_request | auth-service (natsPublicKey format) |
 | `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing); portal-service `GET /api/userInfo` (account missing) |
-| `account_not_provisioned` | forbidden | auth-service `POST /auth` minting gate |
-| `account_not_ready` | forbidden | portal-service `GET /api/userInfo` (account absent from the portal directory cache) |
+| `account_not_ready` | forbidden | portal-service `GET /api/userInfo` (account absent from the HR directory cache, or not provisioned in the users collection) |
 
 ### Where envelopes are sent
 

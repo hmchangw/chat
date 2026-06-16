@@ -80,3 +80,35 @@ func TestMongoDirectoryStore_EnsureIndexes_UniqueAccount(t *testing.T) {
 	_, err = coll.InsertOne(ctx, bson.M{"account": "bob", "employeeId": "E002", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"})
 	require.NoError(t, err)
 }
+
+func TestMongoDirectoryStore_AccountProvisioned(t *testing.T) {
+	db := testutil.MongoDB(t, "portal")
+	store := newMongoDirectoryStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "u-alice", "account": "alice", "siteId": "site-a"},
+		bson.M{"_id": "u-ivan", "account": "ivan", "siteId": "site-b"},
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		account string
+		siteID  string
+		want    bool
+	}{
+		{"provisioned on this site", "alice", "site-a", true},
+		// ivan exists in users but is homed on site-b; the compound predicate
+		// must not match him for site-a.
+		{"homed on another site", "ivan", "site-a", false},
+		{"unknown account", "carol", "site-a", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.AccountProvisioned(ctx, tt.account, tt.siteID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

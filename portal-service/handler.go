@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -12,48 +13,79 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-// siteIDPlaceholder is the token in PORTAL_AUTH_URL_TEMPLATE that is replaced
-// with the employee's siteId to form the home site's auth-service URL.
-const siteIDPlaceholder = "{siteId}"
+// siteURL holds a site's externally reachable HTTP URLs, looked up by siteId
+// from the PORTAL_SITE_URLS registry. AuthServiceURL is where the client mints
+// its JWT (POST /auth); BaseURL is the site's own origin, a distinct URL — not
+// derived from AuthServiceURL. A single template can't express sites on
+// different domains (siteA.xx.com vs siteB.yy.com), so each site is explicit.
+type siteURL struct {
+	AuthServiceURL string `json:"authServiceUrl"`
+	BaseURL        string `json:"baseUrl"`
+}
+
+// parseSiteURLs decodes the PORTAL_SITE_URLS registry — a JSON object mapping
+// siteId to that site's URLs — and requires every site to carry both URLs, so a
+// misconfigured registry fails at startup rather than at a user's login.
+func parseSiteURLs(raw string) (map[string]siteURL, error) {
+	var sites map[string]siteURL
+	if err := json.Unmarshal([]byte(raw), &sites); err != nil {
+		return nil, fmt.Errorf("decode site URL registry: %w", err)
+	}
+	if len(sites) == 0 {
+		return nil, fmt.Errorf("site URL registry is empty")
+	}
+	for id, s := range sites {
+		if s.AuthServiceURL == "" || s.BaseURL == "" {
+			return nil, fmt.Errorf("site %q: both authServiceUrl and baseUrl are required", id)
+		}
+	}
+	return sites, nil
+}
 
 type userInfoResponse struct {
 	Account        string `json:"account"`
 	EmployeeID     string `json:"employeeId"`
 	AuthServiceURL string `json:"authServiceUrl"`
+	BaseURL        string `json:"baseUrl"`
 	NATSURL        string `json:"natsUrl"`
 	SiteID         string `json:"siteId"`
 }
 
+// provisionChecker confirms an account has a record in the users collection —
+// the canonical user store every other service reads — for its home site.
+// hr_employee membership proves only that the account is an employee.
+type provisionChecker interface {
+	AccountProvisioned(ctx context.Context, account, siteID string) (bool, error)
+}
+
 // PortalHandler resolves a user's home-site coordinates from the in-memory
-// directory cache. Discovery only: it serves non-secret directory data keyed by
+// directory cache and confirms the account is provisioned in the users
+// collection. Discovery only: it serves non-secret directory data keyed by
 // account and validates no token. The authoritative gate is auth-service, which
-// validates the SSO token and enforces provisioning before minting a JWT.
+// validates the SSO token before minting a JWT.
 type PortalHandler struct {
 	cache              *directoryCache
+	store              provisionChecker
 	devMode            bool
 	devFallbackSiteID  string
 	devFallbackNatsURL string
-	authURLTemplate    string
+	sites              map[string]siteURL
 }
 
 // NewPortalHandler creates a PortalHandler. devMode synthesizes a dev-site
 // entry for accounts absent from the directory so local logins need no seeding.
-// authURLTemplate maps a siteId to that site's auth-service base URL by
-// substituting "{siteId}"; a value without the placeholder is used verbatim
-// (single-site deployments).
-func NewPortalHandler(cache *directoryCache, devMode bool, devFallbackSiteID, devFallbackNatsURL, authURLTemplate string) *PortalHandler {
+// store backs the per-request provisioning check against the users collection;
+// sites is the siteId → URL registry used to resolve each account's home-site
+// auth-service and base URLs.
+func NewPortalHandler(cache *directoryCache, store provisionChecker, devMode bool, devFallbackSiteID, devFallbackNatsURL string, sites map[string]siteURL) *PortalHandler {
 	return &PortalHandler{
 		cache:              cache,
+		store:              store,
 		devMode:            devMode,
 		devFallbackSiteID:  devFallbackSiteID,
 		devFallbackNatsURL: devFallbackNatsURL,
-		authURLTemplate:    authURLTemplate,
+		sites:              sites,
 	}
-}
-
-// authServiceURL derives a site's auth-service base URL from the template.
-func (h *PortalHandler) authServiceURL(siteID string) string {
-	return strings.ReplaceAll(h.authURLTemplate, siteIDPlaceholder, siteID)
 }
 
 // HandleUserInfo resolves the home-site coordinates for the `account` query
@@ -92,10 +124,36 @@ func (h *PortalHandler) resolve(ctx context.Context, c *gin.Context, account str
 		e = employee{Account: account, SiteID: h.devFallbackSiteID, NATSURL: h.devFallbackNatsURL}
 	}
 
+	// hr_employee proves the account is an employee; the users collection is the
+	// canonical record every other service reads. Confirm the account is
+	// provisioned there too before blessing the login. Dev mode skips it — the
+	// synthesized dev account has no users row.
+	if !h.devMode {
+		provisioned, err := h.store.AccountProvisioned(ctx, account, e.SiteID)
+		if err != nil {
+			errhttp.Write(ctx, c, fmt.Errorf("check account provisioning: %w", err))
+			return
+		}
+		if !provisioned {
+			errhttp.Write(ctx, c, errcode.Forbidden("account not ready for chat",
+				errcode.WithReason(errcode.PortalAccountNotReady)))
+			return
+		}
+	}
+
+	site, ok := h.sites[e.SiteID]
+	if !ok {
+		// A directory entry homed on a site missing from the registry is an ops
+		// misconfiguration, not a client error — surface it as internal.
+		errhttp.Write(ctx, c, fmt.Errorf("no URLs configured for siteId %q", e.SiteID))
+		return
+	}
+
 	c.JSON(http.StatusOK, userInfoResponse{
 		Account:        e.Account,
 		EmployeeID:     e.EmployeeID,
-		AuthServiceURL: h.authServiceURL(e.SiteID),
+		AuthServiceURL: site.AuthServiceURL,
+		BaseURL:        site.BaseURL,
 		NATSURL:        e.NATSURL,
 		SiteID:         e.SiteID,
 	})

@@ -298,12 +298,12 @@ describe('formatAsyncJobError', () => {
     expect(formatAsyncJobError(err)).toBe('This room is at capacity.')
   })
 
-  it('maps account_not_provisioned to the contact-administrator copy', () => {
-    const err = new AsyncJobError('account not provisioned for chat', ASYNC_JOB_ERROR_KINDS.SyncError, {
+  it('maps account_not_ready to the contact-administrator copy', () => {
+    const err = new AsyncJobError('account not ready for chat', ASYNC_JOB_ERROR_KINDS.SyncError, {
       code: 'forbidden',
-      reason: 'account_not_provisioned',
+      reason: 'account_not_ready',
     })
-    expect(formatAsyncJobError(err)).toBe("Your account isn't set up for chat yet — contact your administrator.")
+    expect(formatAsyncJobError(err)).toBe("Your account isn't ready for chat yet — contact your administrator.")
   })
 
   it('returns the humanized copy for not_room_member', () => {

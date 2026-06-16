@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +15,6 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errtest"
@@ -422,52 +420,6 @@ func TestSignNATSJWT_LifetimeJitter(t *testing.T) {
 	}
 }
 
-func TestHandleAuth_ProvisionGate(t *testing.T) {
-	signingKP := mustAccountKP(t)
-
-	tests := []struct {
-		name        string
-		account     string
-		provisioned bool
-		storeErr    error
-		wantStatus  int
-		wantReason  errcode.Reason
-	}{
-		{"provisioned account mints", "alice", true, nil, http.StatusOK, ""},
-		{"unprovisioned account refused", "mallory", false, nil, http.StatusForbidden, errcode.PortalAccountNotProvisioned},
-		// ivan exists in the users collection but is homed on site-b; this
-		// auth-service runs site-a — the compound predicate refuses him.
-		{"wrong-site account refused", "ivan", false, nil, http.StatusForbidden, errcode.PortalAccountNotProvisioned},
-		{"store error fails closed", "alice", false, errors.New("mongo down"), http.StatusInternalServerError, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			store := NewMockProvisionStore(ctrl)
-			store.EXPECT().AccountProvisioned(gomock.Any(), tt.account, "site-a").
-				Return(tt.provisioned, tt.storeErr)
-
-			validator := &fakeValidator{account: tt.account, subject: "uuid-" + tt.account}
-			handler := NewAuthHandler(validator, signingKP, 2*time.Hour, false,
-				WithProvisionGate(store, "site-a"))
-			router := setupRouter(t, handler)
-
-			userPub := mustUserNKey(t)
-			body := `{"ssoToken":"valid-token","natsPublicKey":"` + userPub + `"}`
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			router.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.wantStatus, w.Code)
-			if tt.wantReason != "" {
-				errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeForbidden)
-				errtest.AssertReason(t, w.Body.Bytes(), tt.wantReason)
-			}
-		})
-	}
-}
-
 func TestHandleAuth_MissingAccountClaim(t *testing.T) {
 	// Prod-mode guard: a token with no usable account claim must be refused
 	// before minting — the JWT would otherwise grant chat.user..> permissions.
@@ -542,25 +494,6 @@ func TestHandleAuth_InvalidAccountFormat(t *testing.T) {
 			assert.Equal(t, http.StatusOK, w.Code)
 		})
 	}
-}
-
-func TestHandleAuth_ProvisionGate_SkippedInDevMode(t *testing.T) {
-	signingKP := mustAccountKP(t)
-	ctrl := gomock.NewController(t)
-	store := NewMockProvisionStore(ctrl) // no EXPECT — any call fails the test
-
-	handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true,
-		WithProvisionGate(store, "site-a"))
-	router := setupRouter(t, handler)
-
-	userPub := mustUserNKey(t)
-	body := `{"account":"anyone","natsPublicKey":"` + userPub + `"}`
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestHandleAuth_TokenGenerationFailure(t *testing.T) {

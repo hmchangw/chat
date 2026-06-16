@@ -60,8 +60,6 @@ type AuthHandler struct {
 	jwtJitter  float64        // fraction of jwtExpiry; 0 = fixed lifetime
 	randFloat  func() float64 // injectable [0,1) source; defaults to crypto rand
 	devMode    bool
-	store      ProvisionStore // nil = gate disabled (dev mode or REQUIRE_PROVISIONED=false)
-	siteID     string
 }
 
 // Option configures optional AuthHandler behavior.
@@ -84,15 +82,6 @@ func WithJitter(frac float64) Option {
 // WithRandFloat overrides the randomness source (test seam).
 func WithRandFloat(fn func() float64) Option {
 	return func(h *AuthHandler) { h.randFloat = fn }
-}
-
-// WithProvisionGate enables the minting gate: {account, siteID} must exist
-// in the site's users collection before a JWT is signed. Dev mode skips it.
-func WithProvisionGate(store ProvisionStore, siteID string) Option {
-	return func(h *AuthHandler) {
-		h.store = store
-		h.siteID = siteID
-	}
 }
 
 // NewAuthHandler creates an AuthHandler with the given token validator,
@@ -173,19 +162,6 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 	ctx = errcode.WithLogValues(ctx, "account", account)
-
-	if h.store != nil {
-		provisioned, err := h.store.AccountProvisioned(ctx, account, h.siteID)
-		if err != nil {
-			errhttp.Write(ctx, c, fmt.Errorf("check account provisioning: %w", err))
-			return
-		}
-		if !provisioned {
-			errhttp.Write(ctx, c, errcode.Forbidden("account not provisioned for this site",
-				errcode.WithReason(errcode.PortalAccountNotProvisioned)))
-			return
-		}
-	}
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, account)
 	if err != nil {

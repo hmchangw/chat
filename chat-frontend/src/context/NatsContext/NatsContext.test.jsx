@@ -159,7 +159,7 @@ describe('NatsProvider connect wiring', () => {
       }
       return {
         ok: false,
-        json: async () => ({ code: 'forbidden', reason: 'account_not_provisioned', error: 'account not provisioned for this site' }),
+        json: async () => ({ code: 'unauthenticated', reason: 'sso_token_expired', error: 'SSO token has expired, please re-login' }),
       }
     })
     const { result } = renderHook(() => useNats(), { wrapper })
@@ -167,8 +167,8 @@ describe('NatsProvider connect wiring', () => {
     await act(async () => {
       try { await result.current.connect({ mode: 'sso', ssoToken: 'tok', account: 'alice' }) } catch (err) { thrown = err }
     })
-    expect(thrown.reason).toBe('account_not_provisioned')
-    expect(thrown.message).toBe('account not provisioned for this site')
+    expect(thrown.reason).toBe('sso_token_expired')
+    expect(thrown.message).toBe('SSO token has expired, please re-login')
     expect(global.fetch).toHaveBeenCalledTimes(2)
     expect(natsConnect).not.toHaveBeenCalled()
   })

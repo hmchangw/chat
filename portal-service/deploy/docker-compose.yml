@@ -44,8 +44,9 @@ services:
       - DEV_MODE=${DEV_MODE:-true}
       - PORTAL_DEV_FALLBACK_SITE_ID=site-local
       - PORTAL_DEV_FALLBACK_NATS_URL=ws://localhost:9222
-      # Single-site local: no {siteId} placeholder, used verbatim for all sites.
-      - PORTAL_AUTH_URL_TEMPLATE=http://localhost:8080
+      # Per-site URL registry (JSON): siteId -> {authServiceUrl, baseUrl}.
+      # baseUrl is the site's own origin, distinct from the auth-service URL.
+      - 'PORTAL_SITE_URLS={"site-local":{"authServiceUrl":"http://localhost:8080","baseUrl":"http://localhost:3000"}}'
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=portal
     networks:

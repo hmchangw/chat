@@ -4,21 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // cacheLoadTimeout bounds a single full scan of the hr_employee collection.
 const cacheLoadTimeout = time.Minute
 
-// directoryCache is the in-memory account → employee directory. Entries have
-// no TTL — the whole map is swapped wholesale by Load (at startup and on the
-// periodic refresh; the backing hr_employee collection is rewritten by a
-// daily HR cron).
+// directoryCache is the in-memory account → employee directory. The backing
+// hr_employee collection is rewritten wholesale by a daily HR cron, so the
+// whole map is swapped wholesale by Load (at startup and on the periodic
+// refresh) — entries have no TTL.
+//
+// The snapshot lives in an atomic.Pointer: reads (Get/Ready) happen all day and
+// are a single lock-free load of an immutable map, while the once-a-day refresh
+// swaps in a freshly built map with one atomic store. The map is never mutated
+// in place, so readers never need a lock.
 type directoryCache struct {
-	mu      sync.RWMutex
-	entries map[string]employee
-	loaded  bool
+	entries atomic.Pointer[map[string]employee]
 }
 
 func newDirectoryCache() *directoryCache {
@@ -27,24 +30,24 @@ func newDirectoryCache() *directoryCache {
 
 // Get returns the directory entry for account.
 func (c *directoryCache) Get(account string) (employee, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[account]
+	m := c.entries.Load()
+	if m == nil {
+		return employee{}, false
+	}
+	e, ok := (*m)[account]
 	return e, ok
 }
 
 // Ready reports whether the cache holds directory data — the /readyz signal.
 // An empty directory is not ready: the portal cannot resolve any account.
 func (c *directoryCache) Ready() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.loaded && len(c.entries) > 0
+	m := c.entries.Load()
+	return m != nil && len(*m) > 0
 }
 
-// Load reads the full employee directory and swaps it in. A corrupt snapshot
-// (duplicate accounts, or empty after a prior successful load — the HR cron
-// may be mid-rewrite) is rejected; on any error the previous entries keep
-// serving and the refresh loop retries.
+// Load reads the full employee directory and swaps it in. An empty snapshot
+// after a prior successful load (the HR cron may be mid-rewrite) is rejected;
+// on any error the previous entries keep serving and the refresh loop retries.
 func (c *directoryCache) Load(ctx context.Context, store DirectoryStore) error {
 	ctx, cancel := context.WithTimeout(ctx, cacheLoadTimeout)
 	defer cancel()
@@ -55,28 +58,27 @@ func (c *directoryCache) Load(ctx context.Context, store DirectoryStore) error {
 	if c.Ready() && len(emps) == 0 {
 		return fmt.Errorf("refresh employee directory: empty snapshot after a successful load")
 	}
-	if err := c.replace(emps); err != nil {
-		return fmt.Errorf("refresh employee directory: %w", err)
-	}
-	slog.Info("directory cache loaded", "entries", len(emps))
+	n := c.replace(emps)
+	slog.Info("directory cache loaded", "rows", len(emps), "entries", n)
 	return nil
 }
 
-// replace publishes a new snapshot, refusing one with duplicate accounts —
-// last-write-wins would route the account by Mongo cursor order.
-func (c *directoryCache) replace(emps []employee) error {
+// replace builds a snapshot keyed by account and swaps it in atomically. A
+// duplicate account is skipped with a warning rather than rejecting the whole
+// snapshot, so one malformed HR row cannot stall the directory; the first
+// occurrence wins (deterministic, independent of Mongo cursor order). Returns
+// the number of accounts published.
+func (c *directoryCache) replace(emps []employee) int {
 	entries := make(map[string]employee, len(emps))
 	for _, e := range emps {
 		if _, dup := entries[e.Account]; dup {
-			return fmt.Errorf("duplicate account %q", e.Account)
+			slog.Warn("duplicate account in directory, skipping", "account", e.Account)
+			continue
 		}
 		entries[e.Account] = e
 	}
-	c.mu.Lock()
-	c.entries = entries
-	c.loaded = true
-	c.mu.Unlock()
-	return nil
+	c.entries.Store(&entries)
+	return len(entries)
 }
 
 // RefreshLoop populates the cache immediately, then refreshes it every

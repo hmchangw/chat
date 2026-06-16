@@ -11,10 +11,8 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nkeys"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/ginutil"
-	"github.com/hmchangw/chat/pkg/mongoutil"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
@@ -30,15 +28,6 @@ type config struct {
 	OIDCIssuerURL string   `env:"OIDC_ISSUER_URL"`
 	OIDCAudiences []string `env:"OIDC_AUDIENCES" envSeparator:","`
 	TLSSkipVerify bool     `env:"TLS_SKIP_VERIFY"           envDefault:"false"`
-
-	// Provisioning gate. MONGO_URI and SITE_ID are required only when active
-	// (DEV_MODE=false and REQUIRE_PROVISIONED=true); validated in run().
-	SiteID             string `env:"SITE_ID"`
-	RequireProvisioned bool   `env:"REQUIRE_PROVISIONED" envDefault:"true"`
-	MongoURI           string `env:"MONGO_URI"`
-	MongoDB            string `env:"MONGO_DB"            envDefault:"chat"`
-	MongoUsername      string `env:"MONGO_USERNAME"      envDefault:""`
-	MongoPassword      string `env:"MONGO_PASSWORD"      envDefault:""`
 }
 
 func main() {
@@ -65,35 +54,10 @@ func run() error {
 
 	opts := []Option{WithJitter(cfg.NATSJWTExpiryJitter)}
 
-	var mongoClient *mongo.Client
-	if !cfg.DevMode && !cfg.RequireProvisioned {
-		slog.Warn("provisioning gate DISABLED (REQUIRE_PROVISIONED=false) — any valid SSO token can mint a JWT")
-	}
-	if !cfg.DevMode && cfg.RequireProvisioned {
-		if cfg.MongoURI == "" {
-			return fmt.Errorf("MONGO_URI is required when the provisioning gate is active (set REQUIRE_PROVISIONED=false to defer the gate)")
-		}
-		if cfg.SiteID == "" {
-			return fmt.Errorf("SITE_ID is required when the provisioning gate is active (set REQUIRE_PROVISIONED=false to defer the gate)")
-		}
-		mongoClient, err = mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
-		if err != nil {
-			return fmt.Errorf("connect mongo for provisioning gate: %w", err)
-		}
-		store := newMongoProvisionStore(mongoClient.Database(cfg.MongoDB))
-		idxCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := store.EnsureIndexes(idxCtx); err != nil {
-			cancel()
-			return fmt.Errorf("ensure provisioning indexes: %w", err)
-		}
-		cancel()
-		opts = append(opts, WithProvisionGate(store, cfg.SiteID))
-	}
-
 	var handler *AuthHandler
 
 	if cfg.DevMode {
-		slog.Warn("dev mode enabled — OIDC validation and provisioning gate disabled")
+		slog.Warn("dev mode enabled — OIDC validation disabled")
 		handler = NewAuthHandler(nil, signingKP, cfg.NATSJWTExpiry, true, opts...)
 	} else {
 		if cfg.OIDCIssuerURL == "" || len(cfg.OIDCAudiences) == 0 {
@@ -140,11 +104,7 @@ func run() error {
 		defer close(shutdownDone)
 		shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
 			slog.Info("shutting down auth service")
-			err := srv.Shutdown(ctx)
-			if mongoClient != nil {
-				mongoutil.Disconnect(ctx, mongoClient)
-			}
-			return err
+			return srv.Shutdown(ctx)
 		})
 	}()
 

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -46,16 +48,39 @@ func getPath(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorde
 // cacheWith returns a directory cache populated with the given entries.
 func cacheWith(emps ...employee) *directoryCache {
 	c := newDirectoryCache()
-	if err := c.replace(emps); err != nil {
-		panic(err)
-	}
+	c.replace(emps)
 	return c
 }
 
-// newTestHandler builds a PortalHandler with the standard test auth-URL
-// template and the local dev-fallback coordinates.
+// testSites is the per-site URL registry used by the handler tests, with a
+// distinct domain per site to prove URLs are looked up, not templated.
+var testSites = map[string]siteURL{
+	"site-a":     {AuthServiceURL: "https://auth.site-a.example.com", BaseURL: "https://site-a.example.com"},
+	"site-b":     {AuthServiceURL: "https://auth.site-b.example.com", BaseURL: "https://site-b.example.com"},
+	"site-local": {AuthServiceURL: "https://auth.site-local.example.com", BaseURL: "http://localhost:3000"},
+}
+
+// fakeProvisionChecker is a hand-written provisionChecker stub; the real users
+// collection is exercised in integration_test.go.
+type fakeProvisionChecker struct {
+	provisioned bool
+	err         error
+}
+
+func (f fakeProvisionChecker) AccountProvisioned(_ context.Context, _, _ string) (bool, error) {
+	return f.provisioned, f.err
+}
+
+// newTestHandler builds a PortalHandler with the test site registry, the local
+// dev-fallback coordinates, and a provisioning check that always passes.
 func newTestHandler(cache *directoryCache, devMode bool) *PortalHandler {
-	return NewPortalHandler(cache, devMode, "site-local", "ws://localhost:9222", "https://auth.{siteId}.example.com")
+	return newTestHandlerWithProvision(cache, devMode, fakeProvisionChecker{provisioned: true})
+}
+
+// newTestHandlerWithProvision builds a PortalHandler with an explicit
+// provisioning stub, for cases that assert on the users-collection check.
+func newTestHandlerWithProvision(cache *directoryCache, devMode bool, pc provisionChecker) *PortalHandler {
+	return NewPortalHandler(cache, pc, devMode, "site-local", "ws://localhost:9222", testSites)
 }
 
 func TestHandleUserInfo_HappyPath(t *testing.T) {
@@ -69,29 +94,34 @@ func TestHandleUserInfo_HappyPath(t *testing.T) {
 		Account:        "alice",
 		EmployeeID:     "E001",
 		AuthServiceURL: "https://auth.site-a.example.com",
+		BaseURL:        "https://site-a.example.com",
 		NATSURL:        "wss://nats-3.site-a.example.com",
 		SiteID:         "site-a",
 	}, resp)
 }
 
-func TestHandleUserInfo_AuthURLTemplate(t *testing.T) {
-	t.Run("placeholder replaced with the employee siteId", func(t *testing.T) {
-		h := newTestHandler(cacheWith(bobEmployee), false)
-		w := getUserInfo(t, setupRouter(t, h), "bob")
-		require.Equal(t, http.StatusOK, w.Code)
-		var resp userInfoResponse
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		assert.Equal(t, "https://auth.site-b.example.com", resp.AuthServiceURL)
+func TestHandleUserInfo_PerSiteURLs(t *testing.T) {
+	t.Run("each site resolves its own auth and base URL from the registry", func(t *testing.T) {
+		h := newTestHandler(cacheWith(aliceEmployee, bobEmployee), false)
+		r := setupRouter(t, h)
+
+		var alice userInfoResponse
+		require.NoError(t, json.Unmarshal(getUserInfo(t, r, "alice").Body.Bytes(), &alice))
+		assert.Equal(t, "https://auth.site-a.example.com", alice.AuthServiceURL)
+		assert.Equal(t, "https://site-a.example.com", alice.BaseURL)
+
+		var bob userInfoResponse
+		require.NoError(t, json.Unmarshal(getUserInfo(t, r, "bob").Body.Bytes(), &bob))
+		assert.Equal(t, "https://auth.site-b.example.com", bob.AuthServiceURL)
+		assert.Equal(t, "https://site-b.example.com", bob.BaseURL)
 	})
 
-	t.Run("template without placeholder is used verbatim", func(t *testing.T) {
-		// Single-site deployments configure a fixed URL.
-		h := NewPortalHandler(cacheWith(aliceEmployee), false, "site-local", "ws://localhost:9222", "http://localhost:8080")
-		w := getUserInfo(t, setupRouter(t, h), "alice")
-		require.Equal(t, http.StatusOK, w.Code)
-		var resp userInfoResponse
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		assert.Equal(t, "http://localhost:8080", resp.AuthServiceURL)
+	t.Run("a site missing from the registry is a server error, not a client error", func(t *testing.T) {
+		orphan := employee{Account: "carol", EmployeeID: "E003", SiteID: "site-unknown", NATSURL: "wss://nats.example.com"}
+		h := newTestHandler(cacheWith(orphan), false)
+		w := getUserInfo(t, setupRouter(t, h), "carol")
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeInternal)
 	})
 }
 
@@ -140,6 +170,27 @@ func TestHandleUserInfo_AccountNotReady(t *testing.T) {
 	})
 }
 
+func TestHandleUserInfo_NotProvisionedInUsers(t *testing.T) {
+	// The account is in the HR directory but absent from the users collection —
+	// not yet a real chat user, so the login is refused with the same reason as
+	// a directory miss.
+	h := newTestHandlerWithProvision(cacheWith(aliceEmployee), false, fakeProvisionChecker{provisioned: false})
+	w := getUserInfo(t, setupRouter(t, h), "alice")
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeForbidden)
+	errtest.AssertReason(t, w.Body.Bytes(), errcode.PortalAccountNotReady)
+}
+
+func TestHandleUserInfo_ProvisionCheckError(t *testing.T) {
+	// A users-collection query failure fails closed as internal, not leaked.
+	h := newTestHandlerWithProvision(cacheWith(aliceEmployee), false, fakeProvisionChecker{err: errors.New("mongo down")})
+	w := getUserInfo(t, setupRouter(t, h), "alice")
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeInternal)
+}
+
 func TestHandleUserInfo_DevMode(t *testing.T) {
 	t.Run("known account resolves normally", func(t *testing.T) {
 		h := newTestHandler(cacheWith(aliceEmployee), true)
@@ -158,8 +209,8 @@ func TestHandleUserInfo_DevMode(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		assert.Equal(t, userInfoResponse{
 			Account: "newdev", EmployeeID: "",
-			AuthServiceURL: "https://auth.site-local.example.com", NATSURL: "ws://localhost:9222",
-			SiteID: "site-local",
+			AuthServiceURL: "https://auth.site-local.example.com", BaseURL: "http://localhost:3000",
+			NATSURL: "ws://localhost:9222", SiteID: "site-local",
 		}, resp)
 	})
 
@@ -211,6 +262,27 @@ func TestHandleReady(t *testing.T) {
 			h := newTestHandler(tt.cache, false)
 			w := getPath(t, setupRouter(t, h), "/readyz")
 			assert.Equal(t, tt.wantCode, w.Code)
+		})
+	}
+}
+
+func TestParseSiteURLs(t *testing.T) {
+	t.Run("valid registry decodes per-site URLs", func(t *testing.T) {
+		sites, err := parseSiteURLs(`{"site-a":{"authServiceUrl":"https://auth.a.com","baseUrl":"https://a.com"},"site-b":{"authServiceUrl":"https://auth.b.com","baseUrl":"https://b.com"}}`)
+		require.NoError(t, err)
+		assert.Equal(t, siteURL{AuthServiceURL: "https://auth.a.com", BaseURL: "https://a.com"}, sites["site-a"])
+		assert.Equal(t, siteURL{AuthServiceURL: "https://auth.b.com", BaseURL: "https://b.com"}, sites["site-b"])
+	})
+
+	for _, tt := range []struct{ name, raw string }{
+		{"not JSON", "site-a=https://auth.a.com"},
+		{"empty object", "{}"},
+		{"missing baseUrl", `{"site-a":{"authServiceUrl":"https://auth.a.com"}}`},
+		{"missing authServiceUrl", `{"site-a":{"baseUrl":"https://a.com"}}`},
+	} {
+		t.Run(tt.name+" is rejected", func(t *testing.T) {
+			_, err := parseSiteURLs(tt.raw)
+			assert.Error(t, err)
 		})
 	}
 }
