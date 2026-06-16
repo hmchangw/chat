@@ -53,7 +53,6 @@ func run() error {
 	r.Use(accessLogMiddleware())
 	r.Use(corsMiddleware())
 	registerRoutes(r, h)
-	registerUploadRoutes(r, h)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),

@@ -18,11 +18,6 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 )
 
-// registerUploadRoutes wires PUT /avatar/v1/bot/:botName. v1 has NO auth (§7a.4).
-func registerUploadRoutes(r *gin.Engine, h *handler) {
-	r.PUT("/avatar/v1/bot/:botName", h.HandleBotUpload)
-}
-
 // botUploadResponse is the 200 body on a successful upload — it hands the
 // uploader the new ETag (for immediate cache-busting) plus the stored metadata.
 type botUploadResponse struct {

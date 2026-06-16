@@ -36,7 +36,6 @@ func newTestRouter(t *testing.T) (*gin.Engine, *MockavatarStore, *fakeBlobStore)
 	})
 	r := gin.New()
 	registerRoutes(r, h)
-	registerUploadRoutes(r, h)
 	return r, store, blobs
 }
 
