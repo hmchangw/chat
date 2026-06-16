@@ -55,13 +55,13 @@ func (c *Client) GetBaseURLFromRoomOrigin(origin string) string {
 }
 
 // UploadGroupImages uploads files to a Drive group in one bulk multipart call.
-// userID/username/email are sent as form fields; each file is attached with the
+// userID/userName/email are sent as form fields; each file is attached with the
 // indexed naming convention files[i].file / files[i].fileName / files[i].mode.
 func (c *Client) UploadGroupImages(userID, username, email, groupID, origin string, files []MultipartFile) ([]UploadGroupImageResponse, error) {
 	req := c.uploadClient.R().SetHeader("api-token", c.apiToken)
 	formData := map[string]string{
 		"userId":   userID,
-		"username": username,
+		"userName": username,
 		"email":    email,
 	}
 	for i, f := range files {
