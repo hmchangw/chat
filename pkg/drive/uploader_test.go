@@ -31,6 +31,7 @@ func TestClient_UploadGroupImages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotToken = r.Header.Get("api-token")
+		// #nosec G120 -- test httptest server with a fixed 10MiB bound; not exposed to untrusted traffic
 		_ = r.ParseMultipartForm(10 << 20)
 		gotUserID = r.FormValue("userId")
 		gotFileName = r.FormValue("files[0].fileName")

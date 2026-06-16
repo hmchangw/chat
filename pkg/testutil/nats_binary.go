@@ -33,6 +33,7 @@ func startNATSBinary() (url string, stop func(), err error) {
 	}
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	// #nosec G204 -- binPath is exec.LookPath of the literal "nats-server"; args are fixed
 	cmd := exec.CommandContext(bgCtx, binPath,
 		"-js",
 		"-a", "127.0.0.1",

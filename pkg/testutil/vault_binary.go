@@ -37,6 +37,7 @@ func startVaultDevBinary() (addr string, stop func(), err error) {
 	addr = "http://" + listenAddr
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	// #nosec G204 -- binPath is exec.LookPath of the literal "vault"; args are fixed
 	cmd := exec.CommandContext(bgCtx, binPath, "server", "-dev",
 		"-dev-root-token-id="+vaultRootToken,
 		"-dev-listen-address="+listenAddr,

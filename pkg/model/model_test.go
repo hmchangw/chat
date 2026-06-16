@@ -953,6 +953,7 @@ func TestRoomKeyEventJSON(t *testing.T) {
 		Timestamp:  1735689600000,
 	}
 
+	// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 	data, err := json.Marshal(src)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1713,6 +1714,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			PrivateKey:       &pk,
 			KeyVersion:       &kv,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 		var dst model.RoomInfo
@@ -1727,6 +1729,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			RoomID: "r1",
 			Found:  false,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
@@ -1753,6 +1756,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			SiteID: "site-a",
 			Name:   "general",
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
@@ -1773,6 +1777,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			LastMsgAt:        nil,
 			LastMentionAllAt: &zero,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
