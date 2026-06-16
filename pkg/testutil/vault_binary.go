@@ -37,11 +37,7 @@ func startVaultDevBinary() (addr string, stop func(), err error) {
 	addr = "http://" + listenAddr
 
 	bgCtx, cancel := context.WithCancel(context.Background())
-	// Test-only fixture: binPath is exec.LookPath of the literal "vault"; argv
-	// is fully fixed (vaultRootToken is a package constant, listenAddr is
-	// 127.0.0.1:<freePort>). No taint from external input — gosec G204 and
-	// every semgrep subprocess-exec rule are false positives here.
-	// #nosec G204
+	// #nosec G204 -- binPath via exec.LookPath("vault"); argv fixed (const token, loopback addr).
 	cmd := exec.CommandContext(bgCtx, binPath, "server", "-dev", // nosemgrep
 		"-dev-root-token-id="+vaultRootToken,
 		"-dev-listen-address="+listenAddr,
