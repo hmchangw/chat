@@ -66,3 +66,6 @@ tmp/
 .air.*.toml
 /loadgen
 .claude/worktrees/
+
+# stray local build of the data-migration service
+/oplog-connector

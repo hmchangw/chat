@@ -86,3 +86,11 @@ func Inbox(siteID string) Config {
 		},
 	}
 }
+
+// MigrationOplog returns the MIGRATION_OPLOG_{siteID} stream config: raw CDC events from the legacy source Mongo. Owned by the oplog-connector (dev bootstrap; ops/IaC in prod).
+func MigrationOplog(siteID string) Config {
+	return Config{
+		Name:     fmt.Sprintf("MIGRATION_OPLOG_%s", siteID),
+		Subjects: []string{subject.MigrationOplogWildcard(siteID)},
+	}
+}
