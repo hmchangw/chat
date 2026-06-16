@@ -1885,8 +1885,8 @@ func TestHandleThreadCreated_ChannelRoom_FansOutToFollowers(t *testing.T) {
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
-	// bob and carol (followers), alice (sender) excluded
-	require.Len(t, pub.records, 2)
+	// bob and carol (followers) + alice (sender) included for multi-device parity
+	require.Len(t, pub.records, 3)
 	subjects := map[string]bool{}
 	for _, r := range pub.records {
 		subjects[r.subject] = true
@@ -1896,11 +1896,12 @@ func TestHandleThreadCreated_ChannelRoom_FansOutToFollowers(t *testing.T) {
 		assert.Positive(t, roomEvt.Timestamp, "Timestamp must be the broadcast-worker publish time")
 		assert.Equal(t, msgTime.UnixMilli(), roomEvt.EventTimestamp)
 	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
 	assert.True(t, subjects[subject.UserRoomEvent("bob")])
 	assert.True(t, subjects[subject.UserRoomEvent("carol")])
 }
 
-func TestHandleThreadCreated_ChannelRoom_NoFollowers_Skips(t *testing.T) {
+func TestHandleThreadCreated_ChannelRoom_NoFollowers_SendsToSenderOnly(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	us := NewMockUserStore(ctrl)
@@ -1911,6 +1912,7 @@ func TestHandleThreadCreated_ChannelRoom_NoFollowers_Skips(t *testing.T) {
 
 	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(metaOf(testChannelRoom), nil)
 	store.EXPECT().GetThreadFollowers(gomock.Any(), "parent-1").Return(map[string]struct{}{}, nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"alice"}).Return([]model.User{testUsers[0]}, nil)
 
 	evt := model.MessageEvent{
 		Event:     model.EventCreated,
@@ -1919,6 +1921,7 @@ func TestHandleThreadCreated_ChannelRoom_NoFollowers_Skips(t *testing.T) {
 		Message: model.Message{
 			ID:                    "reply-1",
 			RoomID:                "r1",
+			UserID:                "u-alice",
 			UserAccount:           "alice",
 			Content:               "hello",
 			CreatedAt:             msgTime,
@@ -1930,7 +1933,9 @@ func TestHandleThreadCreated_ChannelRoom_NoFollowers_Skips(t *testing.T) {
 
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
-	assert.Empty(t, pub.records, "no followers → nothing published")
+	// No other followers → sender still receives their own echo (multi-device parity).
+	require.Len(t, pub.records, 1)
+	assert.Equal(t, subject.UserRoomEvent("alice"), pub.records[0].subject)
 }
 
 func TestHandleThreadCreated_DMRoom_FansOutToAllMembers(t *testing.T) {
@@ -2050,8 +2055,11 @@ func TestHandleThreadUpdated_ChannelRoom_FansOutToFollowers(t *testing.T) {
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
-	require.Len(t, pub.records, 2)
+	// bob and carol (followers) + alice (sender) included for multi-device parity
+	require.Len(t, pub.records, 3)
+	subjects := map[string]bool{}
 	for _, r := range pub.records {
+		subjects[r.subject] = true
 		var roomEvt model.EditRoomEvent
 		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessageEdited, roomEvt.Type)
@@ -2060,6 +2068,9 @@ func TestHandleThreadUpdated_ChannelRoom_FansOutToFollowers(t *testing.T) {
 		assert.Positive(t, roomEvt.Timestamp, "Timestamp must be the broadcast-worker publish time")
 		assert.Equal(t, editedAt.UnixMilli(), roomEvt.EventTimestamp)
 	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+	assert.True(t, subjects[subject.UserRoomEvent("carol")])
 }
 
 func TestHandleThreadUpdated_ChannelRoom_GetThreadFollowersError(t *testing.T) {
@@ -2192,8 +2203,11 @@ func TestHandleThreadDeleted_ChannelRoom_FansOutToFollowers(t *testing.T) {
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
-	require.Len(t, pub.records, 2)
+	// bob and carol (followers) + alice (sender) included for multi-device parity
+	require.Len(t, pub.records, 3)
+	subjects := map[string]bool{}
 	for _, r := range pub.records {
+		subjects[r.subject] = true
 		var roomEvt model.DeleteRoomEvent
 		require.NoError(t, json.Unmarshal(r.data, &roomEvt))
 		assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
@@ -2201,6 +2215,9 @@ func TestHandleThreadDeleted_ChannelRoom_FansOutToFollowers(t *testing.T) {
 		assert.Positive(t, roomEvt.Timestamp, "Timestamp must be the broadcast-worker publish time")
 		assert.Equal(t, deletedAt.UnixMilli(), roomEvt.EventTimestamp)
 	}
+	assert.True(t, subjects[subject.UserRoomEvent("alice")])
+	assert.True(t, subjects[subject.UserRoomEvent("bob")])
+	assert.True(t, subjects[subject.UserRoomEvent("carol")])
 }
 
 func TestHandleThreadDeleted_ChannelRoom_WithBadgeUpdate(t *testing.T) {
@@ -2239,9 +2256,10 @@ func TestHandleThreadDeleted_ChannelRoom_WithBadgeUpdate(t *testing.T) {
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), data))
 
-	// 1 delete event (to bob) + 1 badge update (to room channel)
-	require.Len(t, pub.records, 2)
-	var sawDelete, sawBadge bool
+	// delete events to bob (follower) + alice (sender, multi-device parity) + 1 badge update (to room channel)
+	require.Len(t, pub.records, 3)
+	var sawBadge bool
+	deleteSubjects := map[string]bool{}
 	for _, r := range pub.records {
 		if r.subject == subject.RoomEvent("r1") {
 			var tmEvt model.ThreadMetadataUpdatedEvent
@@ -2253,10 +2271,11 @@ func TestHandleThreadDeleted_ChannelRoom_WithBadgeUpdate(t *testing.T) {
 			var roomEvt model.DeleteRoomEvent
 			require.NoError(t, json.Unmarshal(r.data, &roomEvt))
 			assert.Equal(t, model.RoomEventMessageDeleted, roomEvt.Type)
-			sawDelete = true
+			deleteSubjects[r.subject] = true
 		}
 	}
-	assert.True(t, sawDelete, "delete event must be published to follower")
+	assert.True(t, deleteSubjects[subject.UserRoomEvent("bob")], "delete event must be published to follower")
+	assert.True(t, deleteSubjects[subject.UserRoomEvent("alice")], "delete event must be published to sender for multi-device parity")
 	assert.True(t, sawBadge, "badge update must be published to room channel")
 }
 
