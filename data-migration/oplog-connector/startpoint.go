@@ -11,10 +11,9 @@ import (
 type startKind int
 
 const (
-	startFromNow       startKind = iota // default cold start: stream from now
-	startFromBeginning                  // cold start: earliest available (best-effort, see source)
-	startAfterToken                     // resume/seed via change-stream resume token
-	startAtTime                         // resume/seed via operation time
+	startFromNow    startKind = iota // default cold start: stream from now
+	startAfterToken                  // resume/seed via change-stream resume token
+	startAtTime                      // resume/seed via operation time
 )
 
 // startPoint is the resolved per-collection stream start position.
@@ -55,8 +54,6 @@ func resolveStartPoint(cfg *config, cp *Checkpoint) (startPoint, error) {
 
 	// Tier 3: cold start.
 	switch cfg.StartMode {
-	case "beginning":
-		return startPoint{Kind: startFromBeginning}, nil
 	case "time":
 		// parseConfig guarantees StartAtTime is set, but it was already handled
 		// by the Tier-1 override branch above; reaching here means it was empty.

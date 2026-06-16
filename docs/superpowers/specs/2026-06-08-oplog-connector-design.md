@@ -181,7 +181,7 @@ The **resume token is the real checkpoint** (opaque, raw BSON so it round-trips 
 2. Persisted checkpoint
      startAfter(cp.ResumeToken)         (or startAtOperationTime(cp.ClusterTime) if token absent)
 3. Cold start default (no checkpoint, no override)
-     START_MODE = now (default) | beginning | time(+START_AT_TIME)
+     START_MODE = now (default) | time(+START_AT_TIME)
 ```
 
 ### 4.3 The two operator inputs
@@ -215,7 +215,7 @@ Tokens are fed back with **`startAfter`**: it survives invalidate events (collec
 | `READ_PREFERENCE` | | `secondary` | source read preference |
 | `CHECKPOINT_EVERY` | | `100` | persist the resume token every N acked events |
 | `CHECKPOINT_MAX_AGE` | | `30` | also persist at least every N seconds (bounds replay for low-volume collections) |
-| `START_MODE` | | `now` | cold-start default: `now` \| `beginning` \| `time` |
+| `START_MODE` | | `now` | cold-start default: `now` \| `time` |
 | `START_AT_TIME` | | — | RFC3339 or unix-ms; used with `START_MODE=time` or as override |
 | `START_RESUME_TOKEN` | | — | one-off global seed override (`startAfter`) |
 | `BOOTSTRAP_STREAMS` | | `false` | dev-only stream creation |

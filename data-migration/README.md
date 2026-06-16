@@ -71,7 +71,7 @@ fail-fast at startup.
 | `READ_PREFERENCE` | | `secondary` | source read pref (`primary`\|`primaryPreferred`\|`secondary`\|`secondaryPreferred`\|`nearest`) |
 | `CHECKPOINT_EVERY` | | `100` | persist the resume token every N acked events |
 | `CHECKPOINT_MAX_AGE` | | `30` | also persist it at least every N seconds (bounds replay for low-volume collections) |
-| `START_MODE` | | `now` | cold-start when no checkpoint exists: `now`\|`beginning`\|`time` |
+| `START_MODE` | | `now` | cold-start when no checkpoint exists: `now`\|`time` |
 | `START_AT_TIME` | | `""` | RFC3339 or unix-ms; used by `START_MODE=time` **and** as an override (see below) |
 | `START_RESUME_TOKEN` | | `""` | `_data` hex; one-off seed override (see below) |
 | `BOOTSTRAP_STREAMS` | | `false` | dev-only stream creation; **keep `false` in prod** (ops/IaC owns the stream) |
@@ -83,7 +83,7 @@ fail-fast at startup.
 1. **Env override** — `START_RESUME_TOKEN` (→ `startAfter`) or `START_AT_TIME`
    (→ `startAtOperationTime`). Forces a reseed; **ignores the stored checkpoint.**
 2. **Stored checkpoint** — `startAfter(resumeToken)` (the normal restart path).
-3. **Cold start** — `START_MODE`: `now` (default) \| `beginning` \| `time`.
+3. **Cold start** — `START_MODE`: `now` (default) \| `time`.
 
 ### Source-side prerequisites (ops)
 

@@ -32,7 +32,7 @@ type config struct {
 	CheckpointMaxAgeSeconds int `env:"CHECKPOINT_MAX_AGE" envDefault:"30"`
 
 	// Start-point resolution (see resolveStartPoint / spec §4.2).
-	StartMode        string `env:"START_MODE"         envDefault:"now"` // now | beginning | time
+	StartMode        string `env:"START_MODE"         envDefault:"now"` // now | time
 	StartAtTime      string `env:"START_AT_TIME"      envDefault:""`    // RFC3339 or unix-ms
 	StartResumeToken string `env:"START_RESUME_TOKEN" envDefault:""`    // _data hex, one-off seed override
 
@@ -62,9 +62,9 @@ func parseConfig() (config, error) {
 	}
 	cfg.WatchCollections = trimmed
 	switch cfg.StartMode {
-	case "now", "beginning", "time":
+	case "now", "time":
 	default:
-		return config{}, fmt.Errorf("invalid START_MODE %q (want now|beginning|time)", cfg.StartMode)
+		return config{}, fmt.Errorf("invalid START_MODE %q (want now|time)", cfg.StartMode)
 	}
 	if cfg.StartMode == "time" && cfg.StartAtTime == "" {
 		return config{}, fmt.Errorf("START_MODE=time requires START_AT_TIME")

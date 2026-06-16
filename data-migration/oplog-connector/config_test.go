@@ -72,6 +72,14 @@ func TestParseConfig_InvalidStartMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "START_MODE")
 }
 
+func TestParseConfig_RejectsBeginningMode(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("START_MODE", "beginning")
+	_, err := parseConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "START_MODE")
+}
+
 func TestParseConfig_TimeModeRequiresStartAtTime(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("START_MODE", "time")

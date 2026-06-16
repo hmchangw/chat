@@ -66,12 +66,6 @@ func TestResolveStartPoint_Precedence(t *testing.T) {
 			wantKind: startFromNow,
 		},
 		{
-			name:     "cold start beginning",
-			cfg:      config{StartMode: "beginning"},
-			cp:       nil,
-			wantKind: startFromBeginning,
-		},
-		{
 			name:     "cold start time via START_AT_TIME RFC3339",
 			cfg:      config{StartMode: "time", StartAtTime: "2024-06-11T00:00:00Z"},
 			cp:       nil,

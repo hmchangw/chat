@@ -42,9 +42,6 @@ func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp start
 		}
 		// #nosec G115 -- secs bounded to [0, math.MaxUint32] by the check above
 		opts.SetStartAtOperationTime(&bson.Timestamp{T: uint32(secs), I: 0})
-	case startFromBeginning:
-		// Mongo can't replay arbitrarily far back without a token/time, so "beginning"
-		// behaves as "now"; the real start is always a seed token or stored checkpoint.
 	case startFromNow:
 		// default — stream from the current point.
 	}
