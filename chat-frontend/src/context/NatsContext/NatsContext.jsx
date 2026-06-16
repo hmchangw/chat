@@ -23,17 +23,19 @@ export function NatsProvider({ children }) {
   const authUrl = AUTH_URL
   const natsUrl = NATS_URL
 
-  // Keep the live debug flag in a ref so the transport callbacks can read it
+  // Keep the live debug level in a ref so the transport callbacks can read it
   // at send time without being recreated (and re-rendering consumers) on every
-  // toggle. When on, every request/publish carries an `X-Debug` header.
-  const { debug } = useDebug()
-  const debugRef = useRef(debug)
-  useEffect(() => { debugRef.current = debug }, [debug])
+  // change. When not 'off', every request/publish carries an `X-Debug` header
+  // whose value is the selected level.
+  const { level: debugLevel } = useDebug()
+  const debugLevelRef = useRef(debugLevel)
+  useEffect(() => { debugLevelRef.current = debugLevel }, [debugLevel])
 
   const buildHeaders = useCallback(() => {
-    if (!debugRef.current) return undefined
+    const lvl = debugLevelRef.current
+    if (!lvl || lvl === 'off') return undefined
     const h = natsHeaders()
-    h.set('X-Debug', '1')
+    h.set('X-Debug', lvl)
     return h
   }, [])
 
@@ -166,7 +168,7 @@ export function NatsProvider({ children }) {
     if (!ncRef.current) throw new Error('Not connected')
     const account = user?.account
     if (!account) throw new Error('Not authenticated')
-    return asyncJobRequest(ncRef.current, account, subject, data, { debug: debugRef.current, ...opts })
+    return asyncJobRequest(ncRef.current, account, subject, data, { debugLevel: debugLevelRef.current, ...opts })
   }, [user])
 
   /**

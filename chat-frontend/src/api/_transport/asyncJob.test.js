@@ -81,18 +81,27 @@ describe('requestWithAsyncResult', () => {
     expect(opts.headers.get('X-Request-ID')).toBe('req-1')
   })
 
-  it('sends the X-Debug header when opts.debug is true', async () => {
+  it('sends the X-Debug header with the level when opts.debugLevel is set', async () => {
     const nc = makeNc()
-    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1', debug: true })
+    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1', debugLevel: 'trace' })
     nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
     await p
     const opts = nc.request.mock.calls[0][2]
-    expect(opts.headers.get('X-Debug')).toBe('1')
+    expect(opts.headers.get('X-Debug')).toBe('trace')
   })
 
   it('omits the X-Debug header by default', async () => {
     const nc = makeNc()
     const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1' })
+    nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
+    await p
+    const opts = nc.request.mock.calls[0][2]
+    expect(opts.headers.get('X-Debug')).toBe('')
+  })
+
+  it('omits the X-Debug header when debugLevel is "off"', async () => {
+    const nc = makeNc()
+    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1', debugLevel: 'off' })
     nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
     await p
     const opts = nc.request.mock.calls[0][2]
