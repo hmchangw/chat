@@ -140,8 +140,12 @@ For each legacy `users` doc that is an admin or bot account **with a local passw
 ### 6.2 Live-session import (no-reauth cutover)
 Import **only regular login tokens** from `services.resume.loginTokens[]` — i.e. entries where **`type` is empty/absent**. **Explicitly skip `type:"personalAccessToken"`** (human PATs, out of scope, §2.2). For each imported entry: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `UserID = legacy _id`, `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` ignored since sessions are effectively infinite). Because we reuse RC's hash form **and** the same `_id`, an in-flight bot's existing `X-Auth-Token`+`X-User-Id` validate against the imported row unchanged. The next login issues a native `v1` token.
 
-### 6.3 Cutover source-of-truth — freeze legacy, one-time import (decided)
-At canary start, make legacy credentials **read-only** (disable password change / admin user-mgmt on the old stack) and run the one-time `credentials` import; nextgen is authoritative from that moment. Frozen-and-matched credentials mean a request landing on either stack authenticates identically (§10.3). A legacy→nextgen credential sync is the fallback **only** if a multi-week dual-run with live password changes is required.
+### 6.3 Cutover source-of-truth — real-time users-collection sync (Q3)
+
+The migration has **no risky data "flip"** — two separable axes:
+
+- **Credentials (passwords) — solved by a real-time sync.** Credentials are static and imported verbatim (§6.1); to also cover any password *change* during the ~1-week ramp, ride the **real-time legacy→nextgen `users`-collection sync** (the same identity-sync that preserves the 17-char `_id`), **extended to carry `services.password.bcrypt` → nextgen `credentials`**. With that, a password change on legacy propagates automatically — both sides hold the same hash, **no freeze required**. Conditions: (a) the sync must route the hash into the `credentials` collection (it lives there, not on the `users` doc); (b) keep **one write-authority** during the window — legacy writes, sync is one-directional legacy→nextgen, and nextgen-side password changes (`/changepwd`, rotation) stay disabled until 100% cutover (avoids bidirectional races). *(A literal read-only "freeze" is the trivial fallback if the sync can't carry credentials.)*
+- **Tokens — a separate axis (not solved by the users sync).** Legacy tokens import/validate on both sides, but **nextgen-issued `v1` tokens don't exist on the legacy side**, so any downstream that re-validates a bearer token must use our dual-token validator — see **Q14 / §9.8**. Token continuity during the ramp rests on dual-token import + a **monotonic ramp** (only shift weight toward nextgen) + routing affinity, not on the credential sync.
 
 ---
 
@@ -300,6 +304,15 @@ These drive the design choices in §9.3 (pooled service-account connection, cach
 ### 9.7 Dual-token validation (migration)
 Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via the 180-day sliding window. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
 
+### 9.8 `/v1/auth/validate` — the single dual-token authority (Q14)
+`POST /v1/auth/validate` is the **one** place token validation lives; it runs §5.3 (dual-token: `legacy` + `v1`) and returns `{valid, account, userId}`. Downstreams **must not** re-implement token logic or blindly trust a raw `X-User-Id`:
+
+- **WebSocket server (:8899)** — not behind our HTTP gateway, so it **calls `/v1/auth/validate`** once per connection (Part 3 §4.2).
+- **Legacy v2 backend** — if reachable **directly** (not strictly gateway-fronted), it likewise **calls `/v1/auth/validate`** instead of validating against its own store (so it stays token-format-agnostic).
+- **Gateway-fronted proxy path** (`/api/v2/*`) — our service **already validated once** before proxying, so legacy v2 **trusts the injected principal**, secured by **Istio mTLS service-identity** (only our service may call legacy v2) + the gateway **overwriting/stripping** any client-supplied `X-User-Id`. This avoids **double-validating** the 1M/min hot path — not blind trust, but identity-enforced trust.
+
+Rule of thumb: **no trusted upstream → call `/v1/auth/validate`; trusted (mTLS-fronted) upstream → trust the injected principal.**
+
 ---
 
 ## 10. Zero-downtime cutover (Istio, same URL, new namespace)
@@ -345,12 +358,13 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 - **Q1b — Resume RPC for the new native bot SDK.** Recommend **exposing the §5.2 session→JWT exchange as a `session.refresh` RPC** for re-architected native bots (lets them reconnect from a stored token, no password). Legacy REST bots unaffected. *Decision: expose now or defer to the native-SDK milestone (§5.6).*
 
 ### Recommended — pending infra confirmation
-- **Q3 — Cutover source-of-truth.** **Freeze legacy credentials at canary start + one-time import**; nextgen authoritative thereafter (§6.3). *Confirm:* dual-run window length; whether live password changes must keep working on legacy.
+- **Q3 — Cutover source-of-truth.** Use the **real-time `users`-collection sync** (the identity-sync that preserves the 17-char `_id`), **extended to carry the bcrypt hash into nextgen `credentials`** — password changes on legacy then propagate automatically, **no freeze** (§6.3). One write-authority during the ~1-week ramp (legacy writes; nextgen-side changes off until cutover). *Confirm:* the sync can carry the credential field; a literal read-only freeze is the trivial fallback. **Tokens are a separate axis — see Q14.**
 
 ### Integration decisions (Part 3) — recommended, pending confirmation
 - **Q10 — Token format.** Recommend **same opaque format** as legacy (indistinguishable to bots/WS); validate our-store-first then legacy-fallback. Optional `bp1_` prefix as a fast-path only if the fallback double-lookup is shown to matter. (Part 3 §7.)
 - **Q12 — WebSocket validation.** Recommend the WS server **calls our `POST /v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. (Part 3 §7.)
 - **Q13 — REST→NATS bridge ownership.** A bridge is required (nextgen = NATS RPCs, legacy = pure REST). Recommend it lives in **`botplatform-server` / the data-plane track**, *downstream* of our transparent HTTP proxy — **not** in our auth service (which would couple auth to every data RPC's subject/schema). *Confirm with the external-dev team* that `botplatform-server` owns the bridge and our proxy stays transparent. (Part 3 §4.1.)
+- **Q14 — Downstream token validation.** `/v1/auth/validate` is the **single dual-token authority** (§9.8). WS server + any directly-reachable legacy v2 **call it** (no re-implemented token logic, no blind header trust). The gateway-fronted `/api/v2/*` path **trusts the mTLS-injected principal** (already validated once) to avoid double-validating the hot path. *Confirm:* legacy v2 can either call `/v1/auth/validate` or be put strictly behind our gateway with mTLS service-identity.
 
 ### Confirmed — closed
 - **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; all data via `/api/v2/*` → `botplatform-server`. The `/api/v2/*` endpoints are the REST APIs exposed by the **legacy v2 code**; `botplatform-server` reverse-proxies to **`/api/v2/`** (not `/api/v1`), so our service never proxies any `/api/v1/*` data route. *(confirmed 2026-06-16.)*

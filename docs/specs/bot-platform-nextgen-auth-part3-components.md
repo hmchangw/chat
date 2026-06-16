@@ -65,7 +65,7 @@ Today the WS connection is unauthenticated. Required flow:
 3. Our service validates (same dual-token logic) and returns accept/reject (+ principal).
 4. WS server **accepts or rejects** the connection accordingly.
 
-Validation happens **once per connection** (not per frame), so an HTTP hop is cheap; the WS server caches the result for the connection lifetime.
+Validation happens **once per connection** (not per frame), so an HTTP hop is cheap; the WS server caches the result for the connection lifetime. `/v1/auth/validate` is the **single dual-token authority** (Q14) — the WS server uses it precisely because it isn't behind our HTTP gateway.
 
 ### 4.3 Token compatibility (migration support)
 | Phase | Web login | API validation |
@@ -74,12 +74,16 @@ Validation happens **once per connection** (not per frame), so an HTTP hop is ch
 | **2 (hybrid)** | bot → `/dev-login` → **our service** (issues new token) | our service validates **new tokens + also accepts old** |
 | **3** | bot → `/dev-login` → **our service only** | our service (new tokens); **legacy code off** |
 
-**Validation logic (hybrid phase):**
+**Validation logic (hybrid phase) — `/v1/auth/validate`:**
 ```
-look up token in OUR store (Valkey→Mongo)   → if found, validate
+look up token in OUR store (Valkey→Mongo)   → if found, validate (legacy or v1 scheme)
 else fall back to legacy validation          → (call legacy code / legacy store)
 keep both working through the transition
 ```
+
+**Who validates (Q14).** New `v1` tokens don't exist in the legacy store, so any downstream that re-checks a bearer token must use **our** validator, not its own:
+- **WS server** and **legacy v2 if reachable directly** → **call `POST /v1/auth/validate`** (dual-token).
+- **Gateway-fronted `/api/v2/*`** → our service already validated once before proxying, so legacy v2 **trusts the injected principal**, enforced by **Istio mTLS service-identity** + the gateway **overwriting** client-supplied `X-User-Id`. This avoids double-validating the hot path.
 
 ---
 
@@ -119,6 +123,13 @@ Use direct-Valkey only if per-connection latency ever becomes a measured problem
 
 ### Q13 — Where does the REST→NATS bridge live?
 A bridge **is** required: nextgen is all **NATS request/reply RPCs**; the legacy v2 code was **pure REST**. So bot REST `/api/v2/*` calls must, eventually, become NATS RPCs against the nextgen backend. **Recommendation: the bridge lives in `botplatform-server` / the data-plane track — downstream of our auth proxy — never in our auth service.** Our service stays a **transparent HTTP reverse-proxy** that doesn't know whether `botplatform-server` is hitting legacy v2 REST or bridging to nextgen NATS. Putting the bridge in our auth service would couple auth to every `/api/v2/*` subject + request/response schema — the entire data API surface — which is exactly what Option B (§Part 1 §3) avoids. *Confirm ownership with the external-dev team.*
+
+### Q14 — How does the legacy v2 backend (and WS) accept the new tokens?
+New `v1` tokens don't exist in the legacy store, so a downstream that re-validates a bearer token would 401 them. **Don't have legacy v2 invent its own check or blindly trust `X-User-Id`** — instead make **`/v1/auth/validate` the single dual-token authority** (it checks legacy + `v1`):
+- **WS server** and **legacy v2 if reachable directly** → **call `/v1/auth/validate`**.
+- **Gateway-fronted `/api/v2/*`** → our service already validated once; legacy v2 **trusts the injected principal** under **Istio mTLS service-identity** + `X-User-Id` overwrite — so the 1M/min hot path isn't validated twice.
+
+Rule: **no trusted upstream → call validate; mTLS-fronted upstream → trust the injected principal.** *Confirm with the external-dev team* whether legacy v2 calls validate or sits strictly behind the gateway.
 
 ---
 
