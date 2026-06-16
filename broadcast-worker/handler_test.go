@@ -1657,11 +1657,18 @@ func TestThreadFanOutAccounts(t *testing.T) {
 		want          []string
 	}{
 		{
-			name:          "no followers no extras",
+			name:          "sender alone still notified (own devices, no other followers)",
 			sender:        "alice",
 			followers:     map[string]struct{}{},
 			extraAccounts: nil,
-			want:          nil,
+			want:          []string{"alice"},
+		},
+		{
+			name:          "sender included even when not yet in replyAccounts (race-free)",
+			sender:        "alice",
+			followers:     map[string]struct{}{"bob": {}},
+			extraAccounts: nil,
+			want:          []string{"alice", "bob"},
 		},
 		{
 			name:      "sender included when also a follower (multi-device support)",
@@ -1681,7 +1688,7 @@ func TestThreadFanOutAccounts(t *testing.T) {
 			sender:        "alice",
 			followers:     map[string]struct{}{"bob": {}},
 			extraAccounts: []string{"bob", "carol"},
-			want:          []string{"bob", "carol"},
+			want:          []string{"alice", "bob", "carol"},
 		},
 		{
 			name:          "bot accounts skipped even if sender is bot",
