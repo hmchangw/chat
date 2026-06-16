@@ -318,12 +318,21 @@ Rule of thumb: **front-door / no trusted upstream → call `/v1/auth/validate`; 
 
 ---
 
-## 10. Zero-downtime cutover (Istio, same URL, new namespace)
+## 10. Zero-downtime cutover (Istio, same URL — cross-cluster)
 
-Old: namespace `chat`, serves `https://xx.chat.com/…`. Nextgen: new namespace (`chat-nextgen`), **same public URL**, reusing the shared Istio ingress gateway. Only the backend the gateway routes to changes, invisibly.
+**Actual topology.** Legacy runs in cluster **fz2**, namespace **chat**, behind the **chat gateway**; the bot/chat domain (`botpltfr-{site}.chat.f15.com`) resolves to fz2. Nextgen runs in cluster **fz1**, namespace **wsp**, behind the **wsp gateway**. "No URL change" only constrains the **hostname the bot dials** — DNS, gateway routing, and TLS are all server-side, so the migration is invisible to bots.
 
-### 10.1 Routing
-One `VirtualService` on the shared ingressgateway routes host + path to a backend `host` in the new namespace (`<gw-svc>.chat-nextgen.svc.cluster.local`), with `DestinationRule` subsets for weighting. TLS/DNS unchanged (gateway terminates the cert) → no cert churn.
+### 10.1 Routing — front door stays the chat gateway (recommended)
+- **DNS unchanged:** chat domain → **chat gateway (fz2)**. No bot-facing DNS or cert change.
+- The bot host's `VirtualService` on the chat gateway gets **two weighted backends**: legacy (local, `chat` ns) and **nextgen cross-cluster** to the **wsp gateway (fz1)** — reached via Istio multi-cluster mesh **or** a `ServiceEntry` to the wsp gateway's address.
+- The **wsp gateway accepts the chat host** (a Gateway server block + cert/SNI for the chat domain alongside the wsp domain) and routes it to nextgen `botplatform-service`/ApiGW in the `wsp` ns.
+- **Alternative (final state):** repoint the chat-domain DNS to the wsp gateway and let it route migrated→nextgen-local / unmigrated→legacy(fz2). Coarser canary (weighted DNS + TTL) and slower rollback — prefer it *after* migration, not as the canary mechanism.
+
+### 10.2 Sequence
+1. Deploy nextgen dark in `fz1`/`wsp`; chat-gateway weight 100% → legacy (fz2); health-gate on `/healthz`.
+2. **Canary ramp over ~1 week:** `1% → 10% → 50% → 100%` of the chat-gateway VirtualService weight shifted **cross-cluster to fz1/wsp**, holding at each step on SLOs; **gate on error rate < 0.1%** + §9.5 latency. Monitor 24h at 100%.
+3. **Rollback within 1 hour** = shift weights back to the fz2 subset (instant via `VirtualService`).
+4. **Zero data loss** — credentials/sessions migrated + kept current by the real-time users-sync (§6.3); either stack authenticates identically (§10.3).
 
 ### 10.2 Sequence
 1. Deploy nextgen dark in `chat-nextgen`; gateway 100% → old; health-gate on `/healthz`.

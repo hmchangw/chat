@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1340" height="900" viewBox="0 0 1340 900" font-family="Helvetica,Arial,sans-serif">
+<rect width="1340" height="900" fill="#FFFFFF"/>
+<defs><marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#455A64"/></marker><marker id="arrg" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2E7D32"/></marker></defs>
+<text x="670.0" y="26" text-anchor="middle" font-size="20" font-weight="bold" fill="#263238">Bot Platform NextGen — Deployment &amp; Cutover (no URL change)</text>
+<rect x="50" y="320" width="590" height="520" rx="14" fill="#FAFAFA" stroke="#90A4AE" stroke-width="2" stroke-dasharray="7 5"/>
+<text x="66" y="344" font-size="15" font-weight="bold" fill="#90A4AE">Cluster fz2 · namespace: chat  (LEGACY)</text>
+<rect x="700" y="320" width="590" height="520" rx="14" fill="#FAFAFA" stroke="#2E7D32" stroke-width="2" stroke-dasharray="7 5"/>
+<text x="716" y="344" font-size="15" font-weight="bold" fill="#2E7D32">Cluster fz1 · namespace: wsp  (NEXTGEN)</text>
+<line x1="670" y1="96" x2="670" y2="128" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<line x1="670" y1="178" x2="670" y2="208" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<line x1="615" y1="266" x2="400" y2="380" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<rect x="451" y="306" width="113" height="16" fill="#FFFFFF" opacity="0.92"/>
+<text x="508" y="318" text-anchor="middle" font-size="11" fill="#37474F">weight 100% -> 0%</text>
+<line x1="725" y1="266" x2="940" y2="380" stroke="#2E7D32" stroke-width="1.8" marker-end="url(#arrg)"/>
+<rect x="701" y="306" width="262" height="16" fill="#FFFFFF" opacity="0.92"/>
+<text x="832" y="318" text-anchor="middle" font-size="11" fill="#37474F">weight 0% -> 100% (canary, cross-cluster)</text>
+<line x1="345" y1="438" x2="345" y2="468" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<line x1="345" y1="526" x2="345" y2="556" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<line x1="995" y1="438" x2="995" y2="468" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<line x1="995" y1="520" x2="995" y2="548" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<rect x="966" y="517" width="58" height="16" fill="#FFFFFF" opacity="0.92"/>
+<text x="995" y="529" text-anchor="middle" font-size="11" fill="#37474F">validate</text>
+<line x1="976" y1="520" x2="886" y2="640" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<rect x="890" y="563" width="82" height="16" fill="#FFFFFF" opacity="0.92"/>
+<text x="931" y="575" text-anchor="middle" font-size="11" fill="#37474F">route (mTLS)</text>
+<line x1="1040" y1="610" x2="1084" y2="640" stroke="#455A64" stroke-width="1.8" marker-end="url(#arr)"/>
+<rect x="390" y="40" width="560" height="56" rx="9" fill="#ECEFF1" stroke="#37474F" stroke-width="1.6"/>
+<text x="670" y="64" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Bots — UNCHANGED URL</text>
+<text x="670" y="81" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">https://botpltfr-{site}.chat.f15.com</text>
+<rect x="420" y="128" width="500" height="50" rx="9" fill="#E3F2FD" stroke="#37474F" stroke-width="1.6"/>
+<text x="670" y="149" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">DNS (chat domain)</text>
+<text x="670" y="166" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">-> chat gateway  (unchanged)</text>
+<rect x="360" y="208" width="620" height="58" rx="9" fill="#FFE0B2" stroke="#E65100" stroke-width="1.6"/>
+<text x="670" y="233" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">chat gateway · Istio · cluster fz2</text>
+<text x="670" y="250" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">VirtualService: weighted split (canary)</text>
+<rect x="95" y="380" width="500" height="58" rx="9" fill="#FFF3E0" stroke="#37474F" stroke-width="1.6"/>
+<text x="345" y="405" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Legacy ApiGW (chat ns)</text>
+<text x="345" y="422" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">auth via legacy /login (v2)</text>
+<rect x="95" y="468" width="500" height="58" rx="9" fill="#FFF3E0" stroke="#37474F" stroke-width="1.6"/>
+<text x="345" y="493" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Server  /api/v2/*</text>
+<text x="345" y="510" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">(legacy v2 REST)</text>
+<rect x="95" y="556" width="500" height="58" rx="9" fill="#FFF3E0" stroke="#37474F" stroke-width="1.6"/>
+<text x="345" y="581" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Legacy v2 / Rocket.Chat</text>
+<text x="345" y="598" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">users collection (Mongo)</text>
+<rect x="745" y="380" width="500" height="58" rx="9" fill="#FFE0B2" stroke="#E65100" stroke-width="1.6"/>
+<text x="995" y="405" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">wsp gateway</text>
+<text x="995" y="422" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">accepts wsp + chat host (cert/SNI)</text>
+<rect x="745" y="468" width="500" height="52" rx="9" fill="#FFF3E0" stroke="#37474F" stroke-width="1.6"/>
+<text x="995" y="490" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">ApiGW (nextgen)</text>
+<text x="995" y="507" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">calls /v1/auth/validate</text>
+<rect x="745" y="548" width="500" height="62" rx="9" fill="#C8E6C9" stroke="#2E7D32" stroke-width="1.6"/>
+<text x="995" y="575" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">botplatform-service (NEW)</text>
+<text x="995" y="592" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">login · validate · web UI · admin</text>
+<rect x="745" y="640" width="240" height="56" rx="9" fill="#FFF3E0" stroke="#37474F" stroke-width="1.6"/>
+<text x="865" y="664" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Server</text>
+<text x="865" y="681" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">/api/v2/*</text>
+<rect x="1005" y="640" width="240" height="56" rx="9" fill="#F3E5F5" stroke="#6A1B9A" stroke-width="1.6"/>
+<text x="1125" y="664" text-anchor="middle" font-size="15" font-weight="bold" fill="#263238">Valkey + Mongo</text>
+<text x="1125" y="681" text-anchor="middle" font-size="13" font-weight="normal" fill="#263238">sessions · credentials</text>
+<text x="50" y="862" font-size="12" fill="#37474F">• No URL change: the chat domain stays the front door (DNS + TLS cert unchanged on the bot-facing side).</text>
+<text x="50" y="880" font-size="12" fill="#37474F">• Canary: shift the chat-gateway VirtualService weight chat -> nextgen (cross-cluster to wsp gateway). Rollback: shift weight back (instant).</text>
+<text x="50" y="898" font-size="12" fill="#37474F">• wsp gateway accepts the chat host so forwarded chat-domain traffic routes to nextgen. Final state (optional): repoint DNS to wsp gateway, retire chat gateway.</text>
+</svg>
