@@ -1807,6 +1807,12 @@ Same envelope and sentinels as Get Room App Tabs.
 
 ---
 
+> **Note on `External client label`:** each Teams RPC below lists an HTTP-style
+> label (e.g. `POST /api/v1/calls/room`). That label is the path the **edge
+> gateway exposes to external/mobile clients**; the gateway translates it to the
+> NATS RPC shown under **Subject**. This service implements **only** the NATS RPC
+> (request/reply over `_INBOX.>`) — it does not serve an HTTP endpoint.
+
 #### Start Teams Room Call
 
 Builds a Microsoft Teams deep link for a call to every other member of the room (the caller is excluded). No Graph API call — the link is built from the member list, deriving each member's email as `account@TEAMS_EMAIL_DOMAIN`.
