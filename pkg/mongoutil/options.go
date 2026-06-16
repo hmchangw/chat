@@ -35,10 +35,6 @@ func (qo *queryOptions) findOpts() *options.FindOptionsBuilder {
 	return opts
 }
 
-func (qo *queryOptions) aggregateOpts() *options.AggregateOptionsBuilder {
-	return options.Aggregate()
-}
-
 type QueryOption func(*queryOptions)
 
 func WithProjection(projection any) QueryOption {
