@@ -314,6 +314,9 @@ export interface AsyncJobOptions {
   requestId?: string
   syncTimeout?: number
   asyncTimeout?: number
+  /** When true, stamp an `X-Debug` header on the request so the backend
+   *  emits verbose diagnostics for this call. Driven by the UI debug toggle. */
+  debug?: boolean
 }
 
 /**
