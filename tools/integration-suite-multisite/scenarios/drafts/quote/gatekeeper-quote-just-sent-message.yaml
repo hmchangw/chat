@@ -1,0 +1,88 @@
+scenario: gatekeeper-quote-just-sent-message
+source: >
+  message-gatekeeper/handler.go:257-340 (resolveQuoteSnapshot synchronously fetches the quoted
+  parent from history-service; a NotFound propagates and drops the whole message — F-006),
+  message-worker persists the canonical message to Cassandra ASYNC (behind the gatekeeper
+  publish), so a just-sent message is not yet readable by history GetMessageByID; multi-input
+  per 2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: positive
+
+# OPEN FINDING F-006 (fresh-quote facet) — LOAD-DEPENDENT race.
+# task1 sends M; task2 immediately quotes M by its client-set id. The
+# gatekeeper resolves the quote via a synchronous history fetch while
+# message-worker persists M asynchronously. +ve: the quoting message should
+# ship (read-your-write).
+#
+# Outcome is load-dependent: under the FULL suite it FAILS (run 94b5 — the
+# quote-fetch beats the persist, M not found, quoting message dropped); under
+# a light isolated sweep it passed 5/5 (the persist wins when unloaded). The
+# full suite is authoritative, so this is a reproducing finding (red); a
+# light/isolated re-run may show it green. See F-006 in the findings doc.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  - id: send_original
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m0origmsg00000000001
+      content: the original message
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567912
+    credential: ${alice.credential}
+
+  - id: send_quote
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m1quotingmsg00000001
+      content: quoting the message I just sent
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567913
+      quotedParentMessageId: m0origmsg00000000001
+    credential: ${alice.credential}
+
+# OPEN FINDING F-006 (fresh-quote facet) — EXPECTED TO FAIL until quoting a
+# just-sent message works (read-your-write). +ve scenario asserting the
+# correct behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
+expected:
+  # Control (+ve, passes) — the ORIGINAL send went through (its canonical is
+  # published), so the failure below is the fresh-quote race, not a broken send.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0origmsg00000000001
+
+  # CORRECT — quoting a message you JUST sent should succeed: the quoting
+  # message's canonical is published. FAILS today because the gatekeeper's
+  # synchronous quote-fetch races the worker's async persist of M and returns
+  # not_found, dropping the whole quoting message.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m1quotingmsg00000001

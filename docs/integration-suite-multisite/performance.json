@@ -1,0 +1,1315 @@
+{
+  "schemaVersion": 1,
+  "lastRunAt": "2026-06-14T16:22:22Z",
+  "cases": {
+    "create-then-rename-after-room-persists/create": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 2
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T22:28:25Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/create_accepted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:06:07Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/rename": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 2
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:06:07Z"
+      },
+      "worst": {
+        "verdict": "halted-upstream",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/rename_accepted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:06:07Z"
+      },
+      "worst": {
+        "verdict": "halted-upstream",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/rename_canonical": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:17:25Z"
+      },
+      "worst": {
+        "verdict": "halted-upstream",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/room_persisted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:06:07Z"
+      },
+      "worst": {
+        "verdict": "halted-upstream",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/room_renamed_in_mongo": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:06:07Z"
+      },
+      "worst": {
+        "verdict": "halted-upstream",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "create-then-rename-after-room-persists/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 206
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:17:25Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T22:28:25Z"
+      }
+    },
+    "cross-site-message-federation/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:58:28Z",
+        "verdict": "fail",
+        "durationMs": 15104,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 15.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"mCrossSiteFed0000001\",\"roomId\":\"r-shared\"}}}\n  reply from system: (no events polled)\n  events polled:     0",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T22:45:50Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T22:45:50Z"
+      }
+    },
+    "cross-site-room-rename-federation/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 12019
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T13:14:47Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T23:06:21Z"
+      }
+    },
+    "cross-site-seed-visibility/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      }
+    },
+    "dm-create-idempotency-multi-input/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T19:09:31Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T19:09:31Z"
+      }
+    },
+    "edit-after-persist-succeeds/edit": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 10
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/edit_ok": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/edited_canonical": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 101
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/edited_persisted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 3
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/persisted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 106
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/send": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "edit-after-persist-succeeds/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 319
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T23:23:45Z"
+      }
+    },
+    "gatekeeper-create-room-then-send-races-subscription/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5003,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"m0createsend00000001\"}}}\n  reply from system: {\"subject\":\"chat.msg.canonical.site-a.created\",\"body_json\":{\"event\":\"created\",\"message\":{\"content\":\"A new room has been created\",\"createdAt\":\"2026-06-14T16:22:36.383Z\",\"id\":\"HrCN7DiNOVtanmd3CqNJ\",\"roomId\":\"6t4TnWXltJmvq6tQV\",\"sysMsgData\":\"eyJuYW1lIjoiRW5naW5lZXJpbmciLCJ1c2VycyI6WyJyb29tbWF0ZSJdLCJvcmdzIjpudWxsLCJjaGFubmVscyI6bnVsbCwiYWRkZWRVc2Vyc0NvdW50IjoxfQ==\",\"type\":\"room_created\",\"userAccount\":\"alice\",\"userId\":\"u-alice\"},\"siteId\":\"site-a\",\"timestamp\":1781454156384},\"header\":{\"Nats-Msg-Id\":[\"HrCN7DiNOVtanmd3CqNJ\"],\"X-Request-ID\":[\"019ec6f1-325d-78f3-a1d8-0af60cf17d21\"]},\"sequence\":7}\n  mismatch reason:   matches_shape: field \"body_json.message.id\": got \"HrCN7DiNOVtanmd3CqNJ\" want \"m0createsend00000001\"\n  events polled:     2",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:31:54Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T20:22:43Z"
+      }
+    },
+    "gatekeeper-duplicate-message-id-cross-sender-deduped/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5106,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.001s.\nMatchShape failed.\n  expected:          {\"received\":[{\"body_json\":{\"code\":\"conflict\"}}]}\n  reply from system: {\"subject\":\"chat.user.bob.response.01970a4f-8c2d-7c9a-abcd-e01234567921\",\"received\":[{\"subject\":\"chat.user.bob.response.01970a4f-8c2d-7c9a-abcd-e01234567921\",\"body_json\":{\"content\":\"bob's colliding message\",\"createdAt\":\"2026-06-14T16:22:41.543181109Z\",\"id\":\"m0collideid000000001\",\"roomId\":\"r-collide\",\"userAccount\":\"bob\",\"userDisplayName\":\"bob\",\"userId\":\"u-bob\"},\"header\":{\"X-Request-ID\":[\"019ec6f1-4685-7d8a-87a1-f1deb80b6bd7\"]}}]}\n  mismatch reason:   matches_shape: field \"received\": expected element [0] not found at or after observed[0] (cursor advanced through 0/1 elements)\nMISSING: this element does not appear anywhere in observed\nclosest candidate's diff:\nExpected\n    \u003cstring\u003e: \nto match keys: {\n.\"body_json\":\n\tmissing expected key code\n}\n\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:12:39Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T23:06:07Z"
+      }
+    },
+    "gatekeeper-empty-content-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5214
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "gatekeeper-invalid-message-id-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5214
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      }
+    },
+    "gatekeeper-large-room-bot-bypass/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-member-blocked/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5212
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-owner-bypass/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:47:40Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-thread-reply-exempt/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-malformed-requestid-silent-drop/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5001,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"received\":[{\"body_json\":{\"code\":\"bad_request\"}}]}\n  reply from system: {\"subject\":\"chat.user.alice.response.\\u003e\",\"received\":[]}\n  mismatch reason:   matches_shape: field \"received\": expected element [0] not found at or after observed[0] (cursor advanced through 0/0 elements)\nMISSING: this element does not appear anywhere in observed\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:45:29Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:21:30Z"
+      }
+    },
+    "gatekeeper-not-subscribed-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "gatekeeper-quote-cross-context-mismatch-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:10:24Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:10:24Z"
+      }
+    },
+    "gatekeeper-quote-cross-room-drops-message/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5001,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"m0crossroomquote0001\"}}}\n  reply from system: (no events polled)\n  events polled:     0",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:53:41Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:47:48Z"
+      }
+    },
+    "gatekeeper-quote-happy-path-embeds-snapshot/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:24:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:24:55Z"
+      }
+    },
+    "gatekeeper-quote-just-sent-message/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5102,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"m1quotingmsg00000001\"}}}\n  reply from system: {\"subject\":\"chat.msg.canonical.site-a.created\",\"body_json\":{\"event\":\"created\",\"message\":{\"content\":\"the original message\",\"createdAt\":\"2026-06-14T16:23:59.346019804Z\",\"id\":\"m0origmsg00000000001\",\"roomId\":\"r-general\",\"userAccount\":\"alice\",\"userDisplayName\":\"alice\",\"userId\":\"u-alice\"},\"siteId\":\"site-a\",\"timestamp\":1781454239346},\"header\":{\"Nats-Msg-Id\":[\"m0origmsg00000000001\"],\"X-Request-ID\":[\"01970a4f-8c2d-7c9a-abcd-e01234567912\"]},\"sequence\":31}\n  mismatch reason:   matches_shape: field \"body_json.message.id\": got \"m0origmsg00000000001\" want \"m1quotingmsg00000001\"\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:12:26Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T20:06:46Z"
+      }
+    },
+    "gatekeeper-quote-nonexistent-parent-drops-message/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5002,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"m2quotemiss000drop1a\"}}}\n  reply from system: (no events polled)\n  events polled:     0",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:21:30Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T11:02:31Z"
+      }
+    },
+    "gatekeeper-quote-soft-deleted-message-resurrects-content/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 37,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.005s.\nMatchShape: expected no event to match shape map[message_id:m0deletedmsg00000001 msg:secret content alice will delete], but event #0 (location=\"cassandra_select\") did with payload map[attachments:\u003cnil\u003e card:\u003cnil\u003e card_action:\u003cnil\u003e created_at:2026-06-14 15:22:35.460Z deleted:true edited_at:\u003cnil\u003e enc_meta:\u003cnil\u003e enc_payload:\u003cnil\u003e file:\u003cnil\u003e mentions:\u003cnil\u003e message_id:m0deletedmsg00000001 msg:secret content alice will delete pinned_at:\u003cnil\u003e pinned_by:\u003cnil\u003e quoted_parent_message:\u003cnil\u003e reactions:\u003cnil\u003e room_id:r-deltest sender:map[account:alice app_id:\u003cnil\u003e app_name:\u003cnil\u003e company_name:alice eng_name:alice id:u-alice is_bot:\u003cnil\u003e] site_id:site-a sys_msg_data:\u003cnil\u003e tcount:\u003cnil\u003e thread_parent_created_at:\u003cnil\u003e thread_parent_id:\u003cnil\u003e thread_room_id:\u003cnil\u003e tshow:\u003cnil\u003e type:\u003cnil\u003e updated_at:2026-06-14 16:22:35.640Z visible_to:\u003cnil\u003e]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:43:42Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:36:10Z"
+      }
+    },
+    "gatekeeper-sender-impersonation-blocked/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 102,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.101s.\nMatchShape: expected no event to match shape map[body_json:map[message:map[id:m0impersonate0000001]]], but event #0 (location=\"jetstream_consume\") did with payload {chat.msg.canonical.site-a.created map[event:created message:map[content:pretending to be bob createdAt:2026-06-14T16:24:09.730373928Z id:m0impersonate0000001 roomId:r-imp userAccount:bob_imp userDisplayName:bob_imp userId:u-bob_imp] siteId:site-a timestamp:1.78145424973e+12]  map[Nats-Msg-Id:[m0impersonate0000001] X-Request-ID:[01970a4f-8c2d-7c9a-abcd-e01234560aa1]] 32}",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T23:33:58Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T23:33:58Z"
+      }
+    },
+    "gatekeeper-thread-reply-missing-parent-createdat-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5214
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      }
+    },
+    "gatekeeper-whitespace-only-content-accepted/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 102,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.101s.\nMatchShape: expected no event to match shape map[body_json:map[event:created message:map[id:m3whitespaceonly0001]]], but event #0 (location=\"jetstream_consume\") did with payload {chat.msg.canonical.site-a.created map[event:created message:map[content:    createdAt:2026-06-14T16:23:13.225477259Z id:m3whitespaceonly0001 roomId:r-general userAccount:alice userDisplayName:alice userId:u-alice] siteId:site-a timestamp:1.781454193225e+12]  map[Nats-Msg-Id:[m3whitespaceonly0001] X-Request-ID:[01970a4f-8c2d-7c9a-abcd-e01234567904]] 10}",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:47:48Z"
+      }
+    },
+    "history-service-get-message-by-id/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      }
+    },
+    "infra-sanity-rooms-pipeline-site-a/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 205
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T01:04:56Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-07T14:43:06Z"
+      }
+    },
+    "infra-sanity-rooms-pipeline-site-b/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 205
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T01:04:56Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-07T14:43:06Z"
+      }
+    },
+    "logs-tail-positive-captures-request-failed/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T20:04:09Z",
+        "verdict": "pass",
+        "durationMs": 122
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:50:28Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:50:28Z"
+      }
+    },
+    "logs-tail-regression-guard-not-must-fail-when-line-present/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T20:04:09Z",
+        "verdict": "fail",
+        "durationMs": 111,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.100s.\nMatchShape: expected no event to match shape map[code:bad_request msg:request failed], but event #0 (location=\"logs_tail\") did with payload map[account:alice cause:invalid requestId \"abc123\": must be a hyphenated UUID code:bad_request level:INFO msg:request failed reason: request_id:abc123 room_id:r-general time:2026-06-08T20:05:05.750054237Z]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:50:28Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:50:28Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/bob_reply": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/bob_thread_sub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 101
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/remove": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 2
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/remove_accepted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/remove_processed": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 101
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/room_sub_gone": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5000
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5308,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "step \"thread_sub_removed\" (observe): expected \"thread_sub_removed\" (mongo_find): Failed after 0.001s.\nMatchShape: expected no event to match shape map[userAccount:bob], but event #0 (location=\"mongo_find\") did with payload map[_id:019ec6f2a0147b6b900727fedf9dd84c createdAt:1781454249991 hasMention:false lastSeenAt:\u003cnil\u003e parentMessageId:m0rmthrparent0000001 roomId:r-rmthread siteId:site-a threadRoomId:019ec6f2a007778e899513ed8986a77a updatedAt:1781454249991 userAccount:bob userId:u-bob]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:40:18Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/thread_sub_removed": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "expected \"thread_sub_removed\" (mongo_find): Failed after 0.001s.\nMatchShape: expected no event to match shape map[userAccount:bob], but event #0 (location=\"mongo_find\") did with payload map[_id:019ec6f2a0147b6b900727fedf9dd84c createdAt:1781454249991 hasMention:false lastSeenAt:\u003cnil\u003e parentMessageId:m0rmthrparent0000001 roomId:r-rmthread siteId:site-a threadRoomId:019ec6f2a007778e899513ed8986a77a updatedAt:1781454249991 userAccount:bob userId:u-bob]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:40:18Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:40:18Z"
+      }
+    },
+    "member-removal-leaves-thread-subscription/thread_sub_survives": {
+      "latest": {
+        "ranAt": "2026-06-14T10:26:48Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:16:55Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/edit": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/edit_ok": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 100
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/mentions_updated": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 10001,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "expected \"mentions_updated\" (cassandra_select): Timed out after 10.002s.\nMatchShape failed.\n  expected:          {\"mentions\":[{\"account\":\"bob\"}],\"message_id\":\"m0editmention0000001\",\"msg\":\"@bob you are now mentioned\"}\n  reply from system: {\"attachments\":null,\"card\":null,\"card_action\":null,\"created_at\":\"2026-06-14 16:23:21.399Z\",\"deleted\":null,\"edited_at\":\"2026-06-14 16:23:21.506Z\",\"enc_meta\":null,\"enc_payload\":null,\"file\":null,\"mentions\":null,\"message_id\":\"m0editmention0000001\",\"msg\":\"@bob you are now mentioned\",\"pinned_at\":null,\"pinned_by\":null,\"quoted_parent_message\":null,\"reactions\":null,\"room_id\":\"r-editmention\",\"sender\":{\"account\":\"alice\",\"app_id\":\"\",\"app_name\":\"\",\"company_name\":\"alice\",\"eng_name\":\"alice\",\"id\":\"u-alice\",\"is_bot\":false},\"site_id\":\"site-a\",\"sys_msg_data\":null,\"tcount\":null,\"thread_parent_created_at\":null,\"thread_parent_id\":null,\"thread_room_id\":null,\"tshow\":false,\"type\":\"\",\"updated_at\":\"2026-06-14 16:23:21.506Z\",\"visible_to\":null}\n  mismatch reason:   matches_shape: field \"mentions\": expected array, got \u003cnil\u003e\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/persisted": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 105
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/send": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass"
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-does-not-update-persisted-mentions/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 10214,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "step \"mentions_updated\" (observe): expected \"mentions_updated\" (cassandra_select): Timed out after 10.002s.\nMatchShape failed.\n  expected:          {\"mentions\":[{\"account\":\"bob\"}],\"message_id\":\"m0editmention0000001\",\"msg\":\"@bob you are now mentioned\"}\n  reply from system: {\"attachments\":null,\"card\":null,\"card_action\":null,\"created_at\":\"2026-06-14 16:23:21.399Z\",\"deleted\":null,\"edited_at\":\"2026-06-14 16:23:21.506Z\",\"enc_meta\":null,\"enc_payload\":null,\"file\":null,\"mentions\":null,\"message_id\":\"m0editmention0000001\",\"msg\":\"@bob you are now mentioned\",\"pinned_at\":null,\"pinned_by\":null,\"quoted_parent_message\":null,\"reactions\":null,\"room_id\":\"r-editmention\",\"sender\":{\"account\":\"alice\",\"app_id\":\"\",\"app_name\":\"\",\"company_name\":\"alice\",\"eng_name\":\"alice\",\"id\":\"u-alice\",\"is_bot\":false},\"site_id\":\"site-a\",\"sys_msg_data\":null,\"tcount\":null,\"thread_parent_created_at\":null,\"thread_parent_id\":null,\"thread_room_id\":null,\"tshow\":false,\"type\":\"\",\"updated_at\":\"2026-06-14 16:23:21.506Z\",\"visible_to\":null}\n  mismatch reason:   matches_shape: field \"mentions\": expected array, got \u003cnil\u003e\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "message-edit-just-sent-races-persistence/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 5003,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"messageId\":\"m0editsent0000000001\"}}\n  reply from system: {\"body_json\":{\"code\":\"not_found\",\"error\":\"message not found\"},\"latency_ms\":2}\n  mismatch reason:   matches_shape: field \"body_json.messageId\" missing\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:58:55Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T20:53:41Z"
+      }
+    },
+    "message-edit-to-whitespace-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:07:22Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:07:22Z"
+      }
+    },
+    "message-pipeline-send-and-persist/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 212
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      }
+    },
+    "message-worker-at-all-mention-persisted/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      }
+    },
+    "message-worker-cross-room-thread-reply-pollutes-foreign-parent/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 105,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.104s.\nMatchShape: expected no event to match shape map[message_id:m0otherroomthread001 tcount:1], but event #0 (location=\"cassandra_select\") did with payload map[attachments:\u003cnil\u003e card:\u003cnil\u003e card_action:\u003cnil\u003e created_at:2025-06-01 00:00:00.000Z deleted:\u003cnil\u003e edited_at:\u003cnil\u003e enc_meta:\u003cnil\u003e enc_payload:\u003cnil\u003e file:\u003cnil\u003e mentions:\u003cnil\u003e message_id:m0otherroomthread001 msg:a message in a room alice is not in pinned_at:\u003cnil\u003e pinned_by:\u003cnil\u003e quoted_parent_message:\u003cnil\u003e reactions:\u003cnil\u003e room_id:r-other sender:map[account:someone app_id:\u003cnil\u003e app_name:\u003cnil\u003e company_name:someone eng_name:someone id:u-someone is_bot:\u003cnil\u003e] site_id:site-a sys_msg_data:\u003cnil\u003e tcount:1 thread_parent_created_at:\u003cnil\u003e thread_parent_id:\u003cnil\u003e thread_room_id:019ec6f2b5657a06ae3fb1ca8f5e2a2c tshow:\u003cnil\u003e type:\u003cnil\u003e updated_at:\u003cnil\u003e visible_to:\u003cnil\u003e]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:58:38Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:40:18Z"
+      }
+    },
+    "message-worker-mentions-persisted/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "message-worker-subsequent-thread-reply-multi-input/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 10106,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 10.001s.\nMatchShape failed.\n  expected:          {\"message_id\":\"m0subseqparent000001\",\"tcount\":2}\n  reply from system: {\"attachments\":null,\"card\":null,\"card_action\":null,\"created_at\":\"2025-06-01 00:00:00.000Z\",\"deleted\":null,\"edited_at\":null,\"enc_meta\":null,\"enc_payload\":null,\"file\":null,\"mentions\":null,\"message_id\":\"m0subseqparent000001\",\"msg\":\"parent message for the subsequent-reply test\",\"pinned_at\":null,\"pinned_by\":null,\"quoted_parent_message\":null,\"reactions\":null,\"room_id\":\"r-general\",\"sender\":{\"account\":\"threadauthor\",\"app_id\":null,\"app_name\":null,\"company_name\":\"threadauthor\",\"eng_name\":\"threadauthor\",\"id\":\"u-threadauthor\",\"is_bot\":null},\"site_id\":\"site-a\",\"sys_msg_data\":null,\"tcount\":1,\"thread_parent_created_at\":null,\"thread_parent_id\":null,\"thread_room_id\":\"019ec6f2246470bd8fd40bc862a8432b\",\"tshow\":null,\"type\":null,\"updated_at\":null,\"visible_to\":null}\n  mismatch reason:   matches_shape: field \"tcount\": got 1 want 2\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T19:20:33Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T19:20:33Z"
+      }
+    },
+    "message-worker-thread-mention-nonmember-auto-subscribes/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 101,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.101s.\nMatchShape: expected no event to match shape map[userAccount:bob], but event #0 (location=\"mongo_find\") did with payload map[_id:019ec6f221f97f33bf8aff24763ccb7d createdAt:1781454217702 hasMention:true lastSeenAt:\u003cnil\u003e parentMessageId:m0mthrparent00000001 roomId:r-mthread siteId:site-a threadRoomId:019ec6f221e67661a55eb0a40647ebee updatedAt:1781454217702 userAccount:bob userId:u-bob]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T21:52:19Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T10:40:18Z"
+      }
+    },
+    "message-worker-thread-reply-publishes-tcount-badge/stub": {
+      "latest": {
+        "ranAt": "2026-06-13T16:09:26Z",
+        "verdict": "pass",
+        "durationMs": 202
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:09:26Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T16:07:16Z"
+      }
+    },
+    "message-worker-thread-reply-with-mention/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T16:07:16Z"
+      }
+    },
+    "message-worker-two-repliers-merge-replyaccounts/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:06:46Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-13T20:06:46Z"
+      }
+    },
+    "room-create-federates-cross-site/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:21:04Z",
+        "verdict": "fail",
+        "durationMs": 5003,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"status\":\"accepted\"}}\n  reply from system: {\"body_json\":{\"code\":\"not_found\",\"error\":\"user \\\"bob\\\" not found\",\"reason\":\"user_not_found\"},\"latency_ms\":3}\n  mismatch reason:   matches_shape: field \"body_json.status\" missing\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      }
+    },
+    "room-creates-federates-to-site-b/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:21:04Z",
+        "verdict": "fail",
+        "durationMs": 5002,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"status\":\"accepted\"}}\n  reply from system: {\"body_json\":{\"code\":\"bad_request\",\"error\":\"request must include at least one of users, orgs, channels, or name\"},\"latency_ms\":1}\n  mismatch reason:   matches_shape: field \"body_json.status\" missing\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      }
+    },
+    "single-site-room-create-baseline/stub": {
+      "latest": {
+        "ranAt": "2026-06-07T00:50:06Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      }
+    },
+    "thread-first-reply-happy-path/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 106
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T20:13:52Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T19:15:46Z"
+      }
+    },
+    "thread-first-reply-remote-parent-federates-subscription/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 302
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T20:22:25Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T20:48:58Z"
+      }
+    },
+    "thread-mention-remote-nonmember-federates-subscription/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 196,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.000s.\nMatchShape: expected no event to match shape map[userAccount:remotebob], but event #0 (location=\"mongo_find\") did with payload map[_id:019ec6f131827a8688e70ad2cd400513 createdAt:1781454156135 hasMention:true lastSeenAt:\u003cnil\u003e parentMessageId:m0fedmentparent00001 roomId:r-fedment siteId:site-a threadRoomId:019ec6f131687a6281969d23b7462519 updatedAt:1781454156135 userAccount:remotebob userId:u-remotebob]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-14T00:03:07Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-13T23:59:59Z"
+      }
+    },
+    "thread-reply-broadcast-delivers-to-nonmember-follower/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "fail",
+        "durationMs": 101,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.101s.\nMatchShape: expected no event to match shape map[received:[map[body_json:map[message:map[content:non-member must not receive this thread reply]]]]], but event #0 (location=\"nats_subscribe\") did with payload {chat.user.bob.event.room [{chat.user.bob.event.room map[eventTimestamp:1.781454257056e+12 lastMsgAt:2026-06-14T16:24:17.056722683Z lastMsgId:m1bthrreply000000001 message:map[content:non-member must not receive this thread reply createdAt:2026-06-14T16:24:17.056722683Z id:m1bthrreply000000001 roomId:r-bthread sender:map[account:alice chineseName:alice engName:alice userId:u-alice] threadParentMessageCreatedAt:2025-06-01T00:00:00Z threadParentMessageId:m0bthrparent00000001 userAccount:alice userDisplayName:alice userId:u-alice] roomId:r-bthread roomName:Broadcast Thread roomType:channel siteId:site-a timestamp:1.781454257057e+12 type:new_message userCount:1]  map[X-Request-ID:[01970a4f-8c2d-7c9a-abcd-e01234567941]]}]}",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-14T15:57:04Z"
+      }
+    },
+    "thread-reply-to-nonexistent-parent-creates-orphan/stub": {
+      "latest": {
+        "ranAt": "2026-06-14T16:22:22Z",
+        "verdict": "pass",
+        "durationMs": 5105
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      }
+    }
+  }
+}

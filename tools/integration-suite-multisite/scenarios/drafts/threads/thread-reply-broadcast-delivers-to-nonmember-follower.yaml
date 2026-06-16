@@ -1,0 +1,91 @@
+scenario: thread-reply-broadcast-delivers-to-nonmember-follower
+source: >
+  broadcast-worker/handler.go channelThreadFanOut → GetThreadFollowers (reads
+  thread_rooms.replyAccounts) → threadFanOutAccounts (excludes only sender+bots,
+  NO membership filter) → publishToThreadAccounts → Publish(subject.UserRoomEvent
+  = chat.user.{account}.event.room). F-016 puts non-members onto replyAccounts,
+  so a non-member follower is delivered thread-reply broadcasts in real time.
+  Corrects F-016's "bounded (no push)" note: notification fan-out is
+  membership-gated, but this real-time broadcast is NOT.
+status: draft
+tag: negative
+
+# OPEN FINDING (access / delivery, extends F-016) — EXPECTED TO FAIL until
+# thread-reply delivery is membership-scoped. -ve scenario asserting the
+# CORRECT behavior; the failure IS the bug. Per AUTHORING.md §Pass/fail.
+#
+# bob is a NON-member of r-bthread but is pre-seeded as a thread follower
+# (replyAccounts) — exactly the state F-016 produces from an @-mention.
+# alice (a member) posts a thread reply; broadcast-worker fans the reply out
+# to every replyAccount with no membership check, so bob's per-user delivery
+# subject receives it. CORRECT behavior: a non-member must NOT be delivered
+# the reply.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob:   { verified: true }   # NON-member of r-bthread
+      rooms:
+        - { id: r-bthread, name: Broadcast Thread, type: channel }
+      memberships:
+        alice:
+          - { room: r-bthread, roles: [member] }
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0bthrparent00000001
+        created_at: 1748736000000
+        room_id: r-bthread
+        site_id: site-a
+        msg: "thread parent"
+        sender: { id: u-alice, account: alice, eng_name: alice, company_name: alice }
+  - table: messages_by_room
+    rows:
+      - room_id: r-bthread
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0bthrparent00000001
+        site_id: site-a
+        msg: "thread parent"
+        sender: { id: u-alice, account: alice, eng_name: alice, company_name: alice }
+
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: 019ec2780000000000000000bthrrm01
+        parentMessageId: m0bthrparent00000001
+        roomId: r-bthread
+        siteId: site-a
+        replyAccounts: [bob]   # bob (non-member) pre-established as a follower (F-016 state)
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-bthread.site-a.msg.send
+  payload:
+    id: m1bthrreply000000001
+    content: non-member must not receive this thread reply
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567941
+    threadParentMessageId: m0bthrparent00000001
+    threadParentMessageCreatedAt: 1748736000000
+  credential: ${alice.credential}
+
+expected:
+  # CORRECT — bob, a NON-member, must NOT be delivered the thread reply.
+  # EXPECTED: nothing on his per-user delivery subject. FAILS today because
+  # channelThreadFanOut fans out to replyAccounts (incl. bob) with no
+  # membership filter.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${bob.account}.event.room
+    not: true
+    match:
+      received:
+        - body_json:
+            message:
+              content: non-member must not receive this thread reply

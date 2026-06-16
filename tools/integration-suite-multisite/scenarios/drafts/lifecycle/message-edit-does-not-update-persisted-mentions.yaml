@@ -1,0 +1,101 @@
+scenario: message-edit-does-not-update-persisted-mentions
+source: >
+  history-service/internal/cassrepo/write.go:23 (editMsgByID UPDATE touches only
+  msg/enc_payload/enc_meta/edited_at/updated_at — NOT the `mentions` column),
+  UpdateMessageContent (write.go:211, per-table edits, mentions untouched),
+  message-worker/main.go:225 (worker consumer FilterSubject = MsgCanonicalCreated
+  — .created only; history publishes .updated to the same stream but the worker
+  filters it out, so no mention re-resolution on edit),
+  message-worker/handler.go:63-67 (mention.Resolve runs ONLY on the create path).
+status: draft
+tag: negative
+
+# OPEN FINDING (consistency) — EXPECTED TO FAIL until editing content
+# re-resolves the persisted mentions set. -ve scenario asserting the CORRECT
+# behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
+#
+# CORRECT behavior: after an edit, messages_by_id.mentions must reflect the
+# edited content. The bug: mention.Resolve runs only on the create path;
+# edits are applied by history-service (UpdateMessageContent) which updates
+# only `msg`, and message-worker (which resolves mentions) consumes .created
+# only — so editing "plain" → "@bob ..." leaves the persisted mentions set
+# EMPTY. Stored mentions diverge from content; any reader/feature using the
+# stored set (not re-parsing content) sees the wrong mentions.
+#
+# flow: send a plain message (no mention) → gate on its persistence → edit it
+# to add @bob → assert the persisted mentions now include bob (it doesn't).
+# Unique room r-editmention to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }   # resolvable profile so a re-resolve WOULD find @bob
+      rooms:
+        - id: r-editmention
+          name: Edit Mention
+          type: channel
+      memberships:
+        alice:
+          - room: r-editmention
+            roles: [member]
+
+input:
+  - id: send
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-editmention.site-a.msg.send
+    payload:
+      id: m0editmention0000001
+      content: plain text with no mention
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567931
+    credential: ${alice.credential}
+
+  - id: edit
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.r-editmention.site-a.msg.edit
+    payload:
+      messageId: m0editmention0000001
+      newMsg: "@bob you are now mentioned"
+    credential: ${alice.credential}
+
+expected:
+  # GATE — wait until the worker persists the send (mentions empty at this point).
+  - id: persisted
+    location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0editmention0000001]
+    match:
+      message_id: m0editmention0000001
+      msg: plain text with no mention
+    timeout: 10s
+
+  # The edit succeeds (the message exists by now).
+  - id: edit_ok
+    location: reply
+    of: edit
+    match:
+      body_json:
+        messageId: m0editmention0000001
+
+  # CORRECT — after the edit, the persisted row reflects the edited content
+  # AND its mentions are re-resolved to include bob. The msg update lands;
+  # the mentions re-resolution does NOT — the mentions set stays empty, so
+  # this fails. That failure is the bug.
+  - id: mentions_updated
+    location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0editmention0000001]
+    match:
+      message_id: m0editmention0000001
+      msg: "@bob you are now mentioned"
+      mentions:
+        - account: bob
+    timeout: 10s
+
+flow: send >> persisted >> edit >> edit_ok >> mentions_updated

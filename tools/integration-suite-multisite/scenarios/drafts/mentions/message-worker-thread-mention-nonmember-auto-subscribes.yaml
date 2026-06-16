@@ -1,0 +1,118 @@
+scenario: message-worker-thread-mention-nonmember-auto-subscribes
+source: >
+  message-worker/handler.go:63-67 (mention.Resolve looks up @accounts via
+  FindUsersByAccounts — a GLOBAL user lookup, NOT scoped to room membership),
+  handler.go:89-98 (every thread reply runs markThreadMentions),
+  handler.go:359-392 (markThreadMentions auto-creates a thread_subscription for
+  EVERY mentionee — MarkThreadSubscriptionMention upserts the sub — and adds
+  them to thread_rooms.replyAccounts, with NO room-membership check),
+  pkg/mention/mention.go ResolveFromParsed (resolves any account the lookup
+  returns). Seeded users get a resolvable mongo profile (sandbox.go:403-435).
+status: draft
+tag: negative
+
+# ACCESS-CONTROL BUG: mentioning a NON-MEMBER in a thread reply silently
+# pulls them into the thread. mention.Resolve is a global user lookup with
+# no room-membership scoping, and markThreadMentions auto-creates a
+# thread_subscription + adds the mentionee to thread_rooms.replyAccounts for
+# EVERY resolved mentionee. So @bob — a real user who is NOT a member of the
+# room — gets a thread subscription and becomes a thread follower (for
+# notification fan-out and the "following threads" feed) for a thread inside
+# a room he cannot otherwise access.
+#
+# This is broader than the already-documented main-room phantom-mention
+# (message-worker-mentions-persisted, where @bob merely lands in the
+# persisted mentions set): here the non-member gains a SUBSCRIPTION — a
+# durable access/notification relationship — to room-scoped content.
+#
+# bob is seeded as a profile only (no membership), alice (a member) replies
+# in a thread mentioning @bob. Parent is seeded (no async-parent race).
+# Unique room r-mthread to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }   # real user, but NOT a member of r-mthread
+      rooms:
+        - id: r-mthread
+          name: Mention Thread
+          type: channel
+      memberships:
+        alice:
+          - room: r-mthread
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0mthrparent00000001
+        created_at: 1748736000000
+        room_id: r-mthread
+        site_id: site-a
+        msg: "thread parent"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+  - table: messages_by_room
+    rows:
+      - room_id: r-mthread
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0mthrparent00000001
+        site_id: site-a
+        msg: "thread parent"
+        sender:
+          id: u-alice
+          account: alice
+          eng_name: alice
+          company_name: alice
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-mthread.site-a.msg.send
+  payload:
+    id: m1mthrreply000000001
+    content: "@bob look at this thread"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567924
+    threadParentMessageId: m0mthrparent00000001
+    threadParentMessageCreatedAt: 1748736000000
+  credential: ${alice.credential}
+
+# OPEN FINDING F-016 (access) — EXPECTED TO FAIL until mention resolution is
+# scoped to room members. -ve scenario asserting the CORRECT behavior; the
+# failure IS the bug (draft + fail = open finding). Per AUTHORING.md
+# §Pass/fail semantics.
+expected:
+  # CORRECT — bob, a NON-member, must NOT get a thread_subscription from being
+  # @-mentioned. EXPECTED: no such row. FAILS today because markThreadMentions
+  # upserts a thread_subscription for every mentionee with no membership check.
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0mthrparent00000001
+        userAccount: bob
+    not: true
+    match:
+      userAccount: bob
+    timeout: 10s
+
+  # CORRECT — bob must NOT become a thread follower (replyAccounts). EXPECTED:
+  # absent. FAILS today (he is added to replyAccounts via the same path).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0mthrparent00000001
+        replyAccounts: bob
+    not: true
+    match:
+      parentMessageId: m0mthrparent00000001
+    timeout: 10s

@@ -1,0 +1,1156 @@
+# Test scenario YAML — reference (multi-site)
+
+How a multi-site scenario YAML is shaped, what each field means, what
+tokens you can use inside it, and what the loader accepts or rejects.
+
+This is a reference, not a workflow guide. For the workflow see
+[AUTHORING.md](AUTHORING.md). For the infrastructure that scenarios
+reference (verbs, readers, matchers, seed-effects), see the YAMLs
+under `catalogs/` — each file is heavily commented.
+
+**Authoritative schema:** `internal/scenario/types.go`. When this doc
+disagrees with that file, the Go type wins — that is a doc bug.
+
+The multi-site shape is **fundamentally different** from the single-site
+shape. The key differences are:
+
+- No `cases:` array.
+- No `base_input:`.
+- No top-level `seed:` — seed is nested under `sites.<site>.seed`.
+- `tag:` is at scenario level, not per-case.
+- `site:` is required on `input` and on every site-scoped
+  `expected[i]`.
+- `site:` is forbidden on `reply` and `cassandra_select` entries.
+
+---
+
+## 1. Where scenarios live
+
+```
+scenarios/
+├── drafts/                     unreviewed; informational in CI
+│   ├── <name>.yaml
+│   └── <group>/<name>.yaml     subdirectories permitted (any depth)
+└── approved/                   promoted via human PR; gates the run
+    ├── <name>.yaml
+    └── <group>/<name>.yaml
+```
+
+One scenario per file. Discovery walks both trees recursively, so
+authors are free to group by service (`messages/`, `rooms/`), by
+phase (`infra-sanity/`, `federation/`), or not at all. CI scoring
+keys off the `status: approved` field, never the directory.
+
+**Uniqueness rule.** The `scenario:` field is the perf-history key
+in `docs/integration-suite-multisite/performance.json` and the
+identity used by the menu / reporter. Two scenarios with the same
+`scenario:` field — even in different subdirectories — is a hard
+loader error at validate and runner startup. Filenames may collide
+across subdirs (they're just paths); `scenario:` names cannot.
+
+The filename (without `.yaml`) should still match the `scenario:`
+field by convention — it makes `vi`-from-failure-report straight-
+forward and keeps cross-references discoverable.
+
+**`pre_fire_scripts:` resolution is unchanged** by nesting. Paths
+resolve relative to the YAML's directory (see §4.5) — co-located
+scripts continue to work at any depth.
+
+---
+
+## 2. Top-level scenario shape
+
+Every field the loader recognizes:
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `scenario` | string | yes | — | Human-readable name; appears in reports and perf keys. |
+| `source` | string | yes | — | Design doc or file:line citation. Authors do not invent expectations. |
+| `status` | string | no | `draft` | `draft` or `approved`. `approved` gates CI via the approved-only report. |
+| `tag` | string | yes | — | `positive` or `negative`. Drives the confusion matrix. |
+| `sites` | map | yes | — | Map of `site-a`/`site-b` → site spec. At least one site required. |
+| `cassandra_data` | list | no | — | Top-level Cassandra seed rows. Cassandra is shared; do not put this under `sites`. |
+| `pre_fire_scripts` | list of strings | no | — | Author-owned scripts that run after `Sandbox.Setup` and before `Dispatcher.Fire`. See §4.5. |
+| `input` | object | yes | — | The single verb fire. |
+| `expected` | list | yes | — | Non-empty list of assertions. |
+
+A minimal valid scenario:
+
+```yaml
+scenario: Room Creates on Site A
+source: room-service/handler.go:300
+tag: positive
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: Lobby
+    users: ["${alice.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+```
+
+---
+
+## 3. `sites` map shape
+
+```yaml
+sites:
+  site-a:            # must be "site-a" or "site-b" — no other values
+    seed:
+      users: ...
+      rooms: ...         # optional
+      memberships: ...   # optional
+  site-b:
+    seed:
+      users: ...
+```
+
+Exactly two site keys are supported: `site-a` and `site-b`. Any other
+key is a loader error. A site may be omitted entirely if no seed is
+needed for it (e.g. a single-site baseline).
+
+### 3.1 Seed — users
+
+```yaml
+seed:
+  users:
+    <alias>:
+      <effect-flag>: <bool>
+```
+
+- `<alias>` is a scenario-local handle. Substitution tokens
+  `${<alias>.account}`, `${<alias>.id}`, `${<alias>.jwt}`,
+  `${<alias>.nkey}`, `${<alias>.credential}` resolve to the
+  materialized user's fields.
+- `<effect-flag>` is a key from `catalogs/seed-effects/` (closed
+  catalog). Unknown flags fail validation before any I/O.
+- Effect flags with value `false` are explicit no-ops.
+- The user's ID is derived: `id = "u-" + account`.
+- Users are registered against the specified site's auth-service; their
+  credentials are only valid on that site.
+
+**Seed-effects catalog (today):**
+
+| Flag | Effect | When |
+|------|--------|------|
+| `verified: true` | Mint nkey + JWT via auth-service /auth | Any actor that needs to make a NATS request |
+
+`verified: false` (default; also explicit) leaves the user with empty
+JWT/NkeySeed — for negative scenarios that assert NATS auth rejection.
+
+### 3.2 Seed — rooms
+
+```yaml
+seed:
+  rooms:
+    - id: r-eng            # required; must be unique within scenario
+      type: channel        # "channel" or "dm"
+      name: Engineering    # required for channel; omit for dm
+      user_count: 501      # optional; overrides the auto-derived count
+      created_at: ${now - 1h}  # optional; defaults to now if omitted
+```
+
+Rooms are inserted into the site's Mongo `rooms` collection before the
+fire. Closed enum for `type`. DM rooms are limited to two members (see
+`docs/spec-room-subscription-seed.md`). `created_at` must be a
+`${now ± duration}` token (same grammar as `cassandra_data`
+timestamps — see §4); omitted → the room's `createdAt` is stamped at
+seed time (sandbox open).
+
+`user_count` defaults to the number of seeded memberships for the
+room (mirrors what `room-worker` writes at create-room time). Set
+explicitly when the scenario needs to trip the **large-room post
+restriction** without actually seeding hundreds of members: the gate
+in `message-gatekeeper/handler.go` reads `rooms.userCount` (cached
+metadata) — so `user_count: 501` with two real members is the
+canonical shape for exercising the cap.
+
+### 3.3 Seed — memberships
+
+```yaml
+seed:
+  memberships:
+    alice:                  # user alias (must be declared in seed.users)
+      - room: r-eng         # must reference a room in seed.rooms
+        roles: [owner]      # list of "owner" / "admin" / "member"; defaults to [member]
+    bob: [r-eng]            # shorthand: list of room IDs → all default to [member]
+```
+
+The grammar is `map[<user-alias>] → list of memberships`. Each
+membership entry is either:
+- An object `{room: <id>, roles: [<role>...]}` for explicit roles, or
+- A bare room-ID string (no role list — defaults to `[member]`).
+
+Both forms can coexist in one scenario (see
+`scenarios/drafts/cross-site-room-rename-federation.yaml` for a
+worked example using both shapes).
+
+Memberships insert subscription rows into the site's Mongo
+`subscriptions` collection.
+
+---
+
+## 4. `cassandra_data:` shape
+
+```yaml
+cassandra_data:
+  - table: messages_by_room
+    rows:
+      - room_id: r-eng
+        created_at: ${now - 2m}
+        bucket: ${bucket(created_at)}
+        message_id: m-1
+        msg: "hello"
+        site_id: site-a
+```
+
+This block is at scenario top level, not under any site. Cassandra is
+a shared single-cluster deployment.
+
+- `table` — CQL table name (must exist in the keyspace).
+- `rows` — list of column→value maps. Column names must match the CQL
+  schema exactly — for `messages_by_room` and `messages_by_id` the
+  text body column is `msg` (NOT `body_text`); see
+  `docs/cassandra_message_model.md` and
+  `pkg/model/cassandra/message.go` for the full schema.
+- `${now ± d}` — relative timestamp. Supported units: `ms`, `s`, `m`,
+  `h`. Resolves to Unix milliseconds relative to `Sandbox.StartTime`.
+- `${bucket(<col>)}` — auto-computes the message-bucket partition key
+  from the resolved value of the named column (`created_at` in the
+  example). Uses the same `MESSAGE_BUCKET_HOURS` window the services
+  use.
+
+---
+
+## 4.4 `mongo_data:` shape
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: tr-1
+        roomId: r-shared
+        parentMsgId: m-abc
+        ownerAccount: ${alice.account}
+        createdAt: ${now - 5m}
+```
+
+Site-scoped pre-population of sandbox-owned Mongo collections beyond
+the three `seed.<site>.seed.{users,rooms,memberships}` shapes.
+Typically used for thread/notification scenarios that need a
+pre-existing `thread_rooms` or `thread_subscriptions` doc to address
+by primary key from the verb fire.
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `site` | yes | `site-a` or `site-b`. Must match a site declared under `sites:`. |
+| `collection` | yes | Closed enum — see below. |
+| `docs` | yes | List of documents to insert (each a plain map). |
+
+**Closed-catalog collections.** A `mongo_data` entry MUST reference
+a collection from the sandbox-owned set. Today:
+
+```
+users          rooms                 subscriptions
+room_members   thread_rooms          thread_subscriptions
+custom_emojis
+```
+
+If a scenario needs a collection that isn't here yet, extend the
+catalog in `internal/runtime/sandbox_mongo_data.go`
+(`mongoDataAllowedCollections`) and `internal/runtime/sandbox.go`
+(`sandboxOwnedCollections`) together — the first is the seed
+contract, the second is the drop contract. Both must agree or the
+sandbox can't guarantee byte-identical state between runs.
+
+**Substitution and tokens.** Inside each doc value:
+- `${<alias>.<field>}` resolves like everywhere else — same Phase A
+  pass as the input subject.
+- `${now ± d}` resolves to a `time.Time` anchored at `Sandbox.StartTime`.
+- Strings that aren't tokens pass through unchanged.
+
+Recursion: substitution + now-token resolution walk into nested
+maps and lists, so a sub-document like `parent: { senderId:
+${alice.id}, createdAt: ${now - 1h} }` works without flattening.
+
+**When to use `mongo_data` — and when NOT to use it**
+
+`mongo_data` seeds **state that already exists before the fire under
+test** — state the system genuinely would have produced earlier, in
+some prior interaction the scenario isn't exercising. The classic
+shape is "a pre-condition the fire reads from but doesn't write to":
+
+  ✓ a subscription that `room-worker` created earlier (a fire is
+    going to test the subscription-reading side of some other flow)
+  ✓ a `thread_rooms` doc that a peer site's federation event is
+    about to update (the fire under test is the federation handler,
+    not the thread-creation that produced the doc)
+  ✓ historical `notifications` rows for a "mark-as-read" verb's
+    side-effect test
+
+`mongo_data` is **NOT** a substitute for multi-fire. Specifically,
+**do not fabricate the output of a fire you're skipping** in order
+to test what would have come AFTER it. Example of the anti-pattern:
+seeding `thread_rooms` + `thread_subscriptions` to simulate "the
+first thread reply happened" so you can fire reply #2 and call it a
+test of the subsequent-reply path.
+
+That fails for a reason worth naming. The system's real
+first-reply path produces a *specific* shape — UUIDv7
+`thread_room._id`, exact `replyAccounts` contents, the parent's
+`thread_room_id` stamp in Cassandra, the
+`(threadRoomId, userAccount)` unique-index linkage. A hand-built
+fixture either:
+
+- diverges from that shape and produces a test that's green
+  against state the system would never produce, or
+- has to be kept in lockstep across `mongo_data` + `cassandra_data`
+  by hand, which is fiddly and breaks subtly when the production
+  shape evolves.
+
+The legitimate path for subsequent-reply / dedup / redelivery /
+multi-step scenarios is the DAG-of-tasks / multi-fire work in
+`docs/integration-suite-plan-ahead.md` §2.3 (T2). Until that lands,
+those scenarios stay blocked — `mongo_data` is not the workaround.
+
+**Worked example — pre-existing subscription for a federation
+arrival test:**
+
+```yaml
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-eng
+          name: Engineering
+          type: channel
+      memberships:
+        alice: [r-eng]
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
+
+# Pre-existing thread_rooms doc on site-b — modeling "bob already
+# replied locally to m-parent earlier; the doc was created by
+# message-worker-site-b at that prior moment." The scenario fires
+# a cross-site event that inbox-worker-site-b will upsert AGAINST
+# this existing doc — testing the federation-receive side, NOT
+# the thread-creation side.
+mongo_data:
+  - site: site-b
+    collection: thread_rooms
+    docs:
+      - _id: tr-existing
+        roomId: r-eng
+        parentMsgId: m-parent
+        parentMsgCreatedAt: ${now - 1h}
+        replyAccounts: ["${bob.account}"]
+        createdAt: ${now - 1h}
+```
+
+The thread_rooms doc is genuine pre-existing state: bob's earlier
+local reply would have created it. The scenario's fire (a federated
+`thread_subscription_upserted` event arriving from site-a) is what
+we're testing. `inbox-worker-site-b` upserting against the existing
+doc — joining alice into `replyAccounts`, materializing a new
+`thread_subscriptions` row — is the assertion target. No
+fabrication of first-reply output; the system genuinely produces
+this pre-state in production.
+
+---
+
+## 4.5 `pre_fire_scripts` — author-owned setup hooks
+
+Some scenarios need pre-conditions that the seed grammar cannot
+express — typically operationally-scaffolded state that lives outside
+any service's bootstrap responsibility (per `ARCHITECTURE.md` §0,
+"the tool's limits"). The `pre_fire_scripts` field lets the author
+declare a list of executable scripts that the harness runs **after
+`Sandbox.Setup` completes and before `Dispatcher.Fire`**.
+
+```yaml
+pre_fire_scripts:
+  - prep-outbox-streams.sh
+  - prep-vault-secret.sh
+```
+
+The grammar is intentionally minimal — a list of relative paths
+(strings only; no `args:`, no nested config). Each script is the
+author's bespoke tool for one job; if it needs values, it reads
+env vars or just hard-codes.
+
+| Property | Rule |
+|----------|------|
+| Path | Relative to the directory of the scenario YAML file. |
+| Working directory | The directory of the scenario YAML file. |
+| Execution order | List order. Single-threaded; the next script does not start until the previous one exits 0. |
+| Exit code | Non-zero fails the scenario; remaining scripts do not run. |
+| Failure reason | `pre_fire_scripts[i] "name.sh": exit status N; output: <stderr/stdout snippet, truncated at 4 KB>`. Surfaces in `last-run.md`. |
+| Permissions | Script must be executable (`chmod +x`). The harness exec's it directly — shebang line picks the interpreter. |
+
+### Environment variables exposed to the script
+
+```
+   ISM_SITE_A_NATS_URL      host-mapped NATS URL for site-a
+   ISM_SITE_B_NATS_URL      host-mapped NATS URL for site-b
+   ISM_NATS_CREDS_FILE      absolute path to backend.creds
+   ISM_SITE_A_MONGO_URI     host-mapped Mongo URI for site-a
+   ISM_SITE_B_MONGO_URI     host-mapped Mongo URI for site-b
+   ISM_CASSANDRA_HOSTS      shared Cassandra host:port (single)
+   ISM_RUN_ID               sandbox run identifier
+   ISM_SCENARIO_NAME        the `scenario:` field of this YAML
+```
+
+The script also inherits the caller's `PATH`, `HOME`, and other
+environment so CLI tools (`nats`, `mongosh`, `cqlsh`, etc.) the
+operator already installed are discoverable.
+
+### Worked example — pre-creating `OUTBOX_<site>`
+
+`OUTBOX_<site>` is owned by ops/IaC in production and is not
+bootstrapped by any chat service. If a scenario fires production code
+that publishes to `outbox.<site>.>`, the publish returns `nats: no
+response from stream`. That's a real finding; the harness will not
+auto-fill the gap (per the limits doc). A scenario that wants to
+test downstream effects past the gap can declare the prep as a
+script the operator's own infrastructure runs.
+
+```yaml
+pre_fire_scripts:
+  - prep-outbox-streams.sh
+```
+
+```sh
+# prep-outbox-streams.sh
+#!/usr/bin/env bash
+set -euo pipefail
+for site in site-a site-b; do
+  url_var="ISM_$(echo "$site" | tr 'a-z-' 'A-Z_')_NATS_URL"
+  nats stream add "OUTBOX_$site" \
+       --subjects "outbox.$site.>" \
+       --server "${!url_var}" \
+       --creds "$ISM_NATS_CREDS_FILE" \
+       --defaults --no-progress
+done
+```
+
+The script is the author's responsibility — its content, its
+runtime dependencies, its cleanup, its idempotency. The harness's
+role is purely to execute it and surface the result.
+
+### What `pre_fire_scripts` is NOT
+
+- Not a fallback for missing scenario state. Anything the seed grammar
+  CAN express (users, rooms, memberships, remote_users, cassandra_data)
+  belongs in the seed block — author-visible, declarative, no
+  external dependency.
+- Not a place to invoke production code on the author's behalf — if
+  the scenario wants the app to do something, that's `input:`, not
+  `pre_fire_scripts:`.
+- Not a workaround for harness bugs — if a scenario shouldn't need
+  a script, fix the harness or the scenario, not patch around it.
+
+---
+
+## 5. `input` shape
+
+`input:` accepts EITHER a single fire (a map) OR a list of tasks fired
+in declaration order. Both decode to the same internal task list.
+
+**Single fire (map):**
+
+```yaml
+input:
+  site: site-a        # required; "site-a" or "site-b"
+  verb: nats_request  # required; from catalogs/verbs/
+  subject: <template> # required; substitution tokens resolved
+  payload: <map>      # required for nats_request; substitution resolved
+  credential: <ref>   # required; ${<alias>.credential}
+```
+
+**Multi-fire (list of tasks):**
+
+```yaml
+input:
+  - id: create        # required in list shape; unique; [a-z][a-z0-9_-]*
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload: { name: Engineering }
+    credential: ${alice.credential}
+  - id: rename
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.${create.reply.body_json.roomId}.site-a.rename
+    payload: { name: Renamed }
+    credential: ${alice.credential}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | string | list shape only | Unique within the scenario. Names the task for `${id.reply.*}` substitution and `match.task: id` scoping. The single-fire map shape needs no id. |
+| `site` | string | yes | `site-a` or `site-b`. Routes the fire to that site's NATS connection. |
+| `verb` | string | yes | Must be in `catalogs/verbs/`. Today: `nats_request`, `jetstream_publish`. |
+| `subject` | string | yes | NATS subject template. Tokens resolved before dispatch. |
+| `payload` | map | yes | JSON payload. Tokens resolved. |
+| `credential` | string | yes | `${<alias>.credential}`. The alias must be declared in `sites.<input.site>.seed.users`. |
+
+Tasks fire **sequentially in declaration order**. There is no parallel
+/ ordering grammar — that is a separate, deferred feature.
+
+### 5.1 Reply substitution — `${<id>.reply.*}`
+
+A later task (or any `expected[]` assertion) can reference an earlier
+task's captured reply:
+
+| Token | Resolves to |
+|-------|-------------|
+| `${<id>.reply.body_json.<field>}` | A field of the decoded JSON reply body (dot-walk for nesting). |
+| `${<id>.reply.status}` | Sugar for `body_json.status`. |
+
+Reply-only. Rules enforced at load time:
+
+- The referenced `<id>` must be a task declared **earlier** in
+  declaration order (forward / unknown references are rejected).
+- Only `nats_request` tasks produce a reply. A `${<id>.reply.*}`
+  reference to a `jetstream_publish` task (fire-and-forget, no reply)
+  fails at fire time.
+
+> **Async-job caveat.** Several RPCs (Create Room, Add Members, …) are
+> async-job: the synchronous reply only confirms acceptance; the
+> durable effect (room, subscriptions) is written later by a worker.
+> Because tasks fire back-to-back with **no inter-task wait**, a task
+> that acts on a resource another task just created may race the async
+> write. Chain reply *data* that is valid immediately (e.g. a
+> deterministic DM roomId); do not assume a created room is queryable
+> by the next fire.
+
+---
+
+## 6. `expected[]` shape
+
+Each element in the `expected` list is one assertion.
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `location` | string | yes | — | One of the six registered poller locations (see §7). |
+| `site` | string | see §7 | — | Required or forbidden depending on `location`. |
+| `args` | map | location-specific | — | Per-primitive args (see §7). |
+| `match` | map | yes | — | Subset shape against the event payload. May carry the `task:` selector (reply only — see below). |
+| `timeout` | duration | no | `5s` | Gomega `Eventually` timeout. Go duration strings. |
+| `polling` | duration | no | `100ms` | How often the poller is re-invoked. |
+| `not` | bool | no | `false` | `true` uses `Consistently(…).ShouldNot(…)`. |
+
+The runner short-circuits on the first failing assertion.
+
+### 6.1 `match.task:` selector (reply assertions only)
+
+In a multi-fire scenario each `nats_request` task produces its own
+reply event. To scope a `reply` assertion to one task, add a reserved
+`task:` key inside `match:`:
+
+```yaml
+expected:
+  - location: reply
+    match: { task: create, body_json: { status: accepted } }
+  - location: reply
+    match: { task: rename, body_json: { status: accepted } }
+```
+
+- Valid **only** on `location: reply` — rejected at load time on any
+  other location. A reply is captured synchronously while its task is
+  firing, so it can be tagged unambiguously; background pollers observe
+  state with no "active task", so DB/stream assertions disambiguate by
+  **content** (the fields that already identify the row) instead.
+- Unscoped reply `match:` (no `task:`) accepts any reply — the
+  single-fire default.
+- Forbidden nested inside `outbox_payload:`.
+
+---
+
+## 6.2 `flow:` shape (optional, opt-in)
+
+When a scenario needs **a gate between fires** — wait for an
+observation before firing the next task — add a top-level `flow:`
+field that orders existing `input:` and `expected:` entries by id.
+Without `flow:`, scenarios run as today (fires sequentially, then
+flat `expected[]` evaluated against the accumulated buffer). With
+`flow:`, the flow executor walks the ordering barrier-by-barrier;
+observations positioned between fires are gates.
+
+**When to add `flow:`:** you need to wait for X to land before
+firing Y, or test a read-after-write contract. Otherwise leave it
+out — legacy is fine for simple 1-fire/N-assert validation.
+
+**Grammar:**
+
+```
+flow ::= group ( ">>" group )*
+group ::= id | "[" id ( "," id )* "]"
+```
+
+- `>>` = sequential.
+- `[a, b]` = parallel observation group (homogeneous; mixed
+  fire+observe rejected; parallel-fire `[fire_a, fire_b]` reserved
+  but rejected in v1 with "deferred to the concurrency slice").
+- Nested brackets rejected.
+- Compact (`a >> [b, c] >> d`) and YAML list (`- a / - [b, c] / - d`)
+  forms both accepted; they normalize identically.
+
+**Required when `flow:` is present:**
+- Every `input[].id` and `expected[].id` must appear in `flow:`
+  exactly once. Un-referenced entries are a hard error — flow is
+  the single source of truth.
+- Every input and every expected gets an `id:` (multi-input already
+  required ids on inputs; in flow scenarios expecteds need them too).
+
+**Field additions on `expected[]`:**
+
+| Field | When | Type | Notes |
+|---|---|---|---|
+| `id` | required when `flow:` is set | string | `[a-z][a-z0-9_-]*`, unique. Names the observation for `${id.body_json.x}` substitution and flow ordering. |
+| `of` | optional, reply observations only | string | Names an `input[].id` whose tagged reply this observation matches against. Defaults to the immediately-preceding fire in the linearized flow. Required only when ambiguity exists (multiple fires precede without an intervening reply observation). |
+
+`match.task:` directive is **rejected** in flow scenarios; use
+`expected[].of` instead. The legacy multi-input shape (no `flow:`)
+continues to accept `match.task:`.
+
+**Reply scoping (auto, no field for the common case):**
+- One preceding fire before a reply observation → position-default;
+  no `of:` needed.
+- Multiple fires precede with no intervening reply observation →
+  loader rejects as ambiguous; add `of: <input-id>`.
+
+**New substitution form:**
+
+| Token | Resolves to |
+|---|---|
+| `${<expected-id>.body_json.<field>}` | A field of the matched event's `body_json` map (mongo doc, JetStream event body, reply payload, …). Walks dotted paths. |
+
+Continues to work in flow scenarios: `${<input-id>.reply.body_json.x}`,
+`${<input-id>.reply.status}`, and all existing placeholder /
+`${now}` / `$auto` forms.
+
+**Worked example:**
+
+```yaml
+input:
+  - id: create
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload: { name: Engineering }
+    credential: ${alice.credential}
+
+  - id: rename
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.${create.reply.body_json.roomId}.site-a.room.rename
+    payload: { newName: Renamed }
+    credential: ${alice.credential}
+
+expected:
+  - id: create_accepted
+    location: reply
+    match: { body_json: { status: accepted } }
+
+  - id: room_persisted
+    location: mongo_find
+    site: site-a
+    args: { collection: rooms, filter: { _id: ${create.reply.body_json.roomId} } }
+    match: { _id: ${create.reply.body_json.roomId}, name: Engineering, type: channel }
+    timeout: 10s
+
+  - id: rename_accepted
+    location: reply
+    match: { body_json: { status: accepted } }
+
+  - id: room_renamed_in_mongo
+    location: mongo_find
+    site: site-a
+    args: { collection: rooms, filter: { _id: ${create.reply.body_json.roomId} } }
+    match: { _id: ${create.reply.body_json.roomId}, name: Renamed }
+
+  - id: rename_canonical
+    location: jetstream_consume
+    site: site-a
+    args: { stream: ROOMS_site-a, filter_subject: chat.room.canonical.site-a.> }
+    match: { body_json: { type: room_renamed, newName: Renamed } }
+
+flow: create >> create_accepted >> room_persisted >> rename >> rename_accepted >> [room_renamed_in_mongo, rename_canonical]
+```
+
+See `AUTHORING.md` for the `## Negative-observe semantics` rule
+(critical when migrating scenarios with `not: true`), and `FLOW.md`
+for the cookbook patterns.
+
+---
+
+## 7. Universal primitives — `location` + `site` rules
+
+### 7.1 Site presence/absence
+
+| `location` | `site:` |
+|------------|---------|
+| `reply` | **forbidden** — intrinsic to `input.site` |
+| `cassandra_select` | **forbidden** — shared cluster |
+| `mongo_find` | **required** |
+| `jetstream_consume` | **required** |
+| `nats_subscribe` | **required** |
+| `logs_tail` | **required** |
+
+Violating either rule is a loader error caught before any container
+is booted.
+
+### 7.2 `reply`
+
+```yaml
+- location: reply
+  match:
+    body_json:
+      status: accepted
+```
+
+The synchronous reply payload from the `nats_request` verb. Injected
+by the dispatcher into the `ReplyReader` buffer. `site:` is forbidden.
+`args:` is not used.
+
+**Pitfall: `reply` only fires for `nats_request`.** If your scenario's
+`input.verb` is `jetstream_publish` (e.g. the message-send pipeline,
+which publishes to `MESSAGES_<site>` and gets an async response on
+`chat.user.<acct>.response.<requestId>`), the ReplyReader buffer
+stays empty and `reply` assertions silently never match. For
+async-response paths, use a `nats_subscribe` Warmer on the response
+subject instead — see
+`scenarios/drafts/message-pipeline-send-and-persist.yaml` Surface 1
+for the worked pattern (hardcode the `requestId` in the payload so
+the subscribe filter is known pre-fire).
+
+### 7.3 `mongo_find`
+
+```yaml
+- location: mongo_find
+  site: site-a
+  args:
+    collection: rooms
+    filter:
+      name: EngineeringFederated
+  match:
+    name: EngineeringFederated
+    createdBy: ${alice.id}
+  timeout: 5s
+  polling: 100ms
+```
+
+Queries the named collection on the specified site's Mongo. The
+`createdAt >= startTime` filter is auto-merged so assertions only
+observe events that occurred after `Sandbox.StartTime`.
+
+| Arg | Required | Notes |
+|-----|----------|-------|
+| `collection` | yes | Mongo collection name. |
+| `filter` | yes | MongoDB query document. Tokens resolved. |
+
+### 7.4 `cassandra_select`
+
+```yaml
+- location: cassandra_select
+  args:
+    query: "SELECT JSON * FROM messages_by_room WHERE room_id = ? AND bucket = ?"
+    params: ["r-eng", 0]
+  match:
+    msg: "hello"
+    room_id: "r-eng"
+```
+
+Queries the shared Cassandra cluster. `site:` is forbidden.
+
+The poller scans a SINGLE JSON column per row (`SELECT JSON ...`).
+Plain `SELECT *` returns multi-column rows that the scanner can't
+unpack — always use `SELECT JSON *` (or another JSON-yielding shape).
+Match keys are CQL column names in snake_case (`msg`, `room_id`,
+`message_id`), NOT the camelCase JSON tags from the Go Message
+struct.
+
+| Arg | Required | Notes |
+|-----|----------|-------|
+| `query` | yes | CQL query string. `?` placeholders bound in order. |
+| `params` | no | List of bind values. `StartTime` is bound to the first `?` when `params` is absent. |
+
+**Timestamp-typed params.** A CQL `timestamp` column needs a Go
+`time.Time` bound at the `?` — an `int64` lands as `bigint` and the
+comparison silently fails. Opt in with the `ts:<unix-millis>` string
+prefix on the param value; the poller converts it to `time.Time`
+before binding. Example:
+
+```yaml
+- location: cassandra_select
+  args:
+    query: "SELECT JSON * FROM messages_by_id WHERE message_id = ? AND created_at = ?"
+    params: ["m0parentmsg000000001", "ts:1748736000000"]
+  match:
+    message_id: "m0parentmsg000000001"
+    tcount: 2
+```
+
+Malformed `ts:` bodies (non-numeric) pass through as the raw string so
+`gocql` surfaces a precise type-mismatch error rather than silently
+masking the typo.
+
+### 7.5 `jetstream_consume`
+
+```yaml
+- location: jetstream_consume
+  site: site-b
+  args:
+    stream: INBOX_site-b
+    filter_subject: outbox.site-a.to.site-b.room.created
+  match:
+    roomId: ${input.payload.name}
+  timeout: 10s
+```
+
+Replays messages from the JetStream stream via a `DeliverByStartTime`
+ephemeral consumer. Uses `WithDomain(site)` to target the correct JS
+domain.
+
+| Arg | Required | Notes |
+|-----|----------|-------|
+| `stream` | yes | JetStream stream name. |
+| `filter_subject` | yes | Subject filter for the ephemeral consumer. |
+
+**Gzipped payloads** (push-notification fan-out, etc.) are
+decompressed automatically before JSON decoding. Detection is by the
+`Content-Encoding: gzip` header (case-insensitive) OR by the gzip
+magic bytes `0x1f 0x8b` at the start of the payload — producers that
+omit the header still get transparent decoding. `match.body_json:`
+sees the decoded shape. If decompression fails, the raw (still-
+compressed) bytes fall through to `body_raw` so the matcher / failure
+detail surface what arrived.
+
+### 7.6 `nats_subscribe`
+
+```yaml
+- location: nats_subscribe
+  site: site-a
+  args:
+    subject: chat.room.r-eng.>
+  match:
+    eventType: room.created
+```
+
+Subscribes to a Core NATS subject. This poller implements `Warmer` —
+the subscription opens before the verb fires. The subscription has no
+replay; if the fire races ahead of `Warm`, events may be missed.
+
+| Arg | Required | Notes |
+|-----|----------|-------|
+| `subject` | yes | NATS subject with optional `*`/`>` wildcards. |
+| `credential` | no | When set, opens the subscription as that specific user instead of the shared admin connection. Use `${<alias>.credential}` — substitution resolves it to the `{account, jwt, nkey}` map the poller's per-credential opener consumes. |
+
+**Per-credential subscribe.** By default `nats_subscribe` uses the
+runner's shared admin connection, which has broad permissions and can
+see everything published. That's fine when the assertion is "did this
+message reach the bus at all?" but it cannot distinguish "a scoped
+non-member's client receives this" from "an admin sees it." For
+publish-time / subscribe-time auth-boundary scenarios — F-019 sender
+impersonation, F-021 channel eavesdrop, F-022 thread-reply broadcast
+to non-member followers — write `args.credential: ${<alias>.credential}`:
+
+```yaml
+expected:
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.room.r-shared.event
+      credential: ${bob.credential}   # ← subscribes AS bob, not as admin
+    match:
+      received:
+        - { body_json: { event: "message.created" } }
+```
+
+The poller opens a per-credential NATS connection authenticated as the
+named user (via `nats.UserJWTAndSeed`), uses that connection for the
+subscription, and caches it per `(subject, account)`. Different
+credentials get separate cache entries — a `bob` assertion and an
+`alice` assertion on the same subject do not cross-contaminate.
+
+**Auth failures surface as scenario verdicts.** If the per-credential
+connection fails to authenticate, `Warm` returns an error and the
+scenario fails with the auth message. Assertions that EXPECT auth
+failure should target it via `not: true` on a positive receive — the
+authenticated subscribe simply never sees the message.
+
+### 7.7 `logs_tail`
+
+```yaml
+- location: logs_tail
+  site: site-a
+  args:
+    container: room-service
+    service: room-service
+  match:
+    msg: "room created"
+    roomId: r-eng
+```
+
+Tails container stdout/stderr. The runner resolves the container name
+as `<container>-<site>` (e.g. `room-service-site-a`).
+
+| Arg | Required | Notes |
+|-----|----------|-------|
+| `container` | yes | Base container name (without site suffix). |
+| `service` | no | Alias for log-line filtering; defaults to `container`. |
+
+---
+
+## 8. Substitution token grammar
+
+Tokens are resolved in subject, payload, credential, match, and args
+fields. Resolution occurs before the fire for `input` fields, and per
+assertion for `expected[i]` fields.
+
+```
+token ::= "${" expr "}" | "$auto"
+
+expr  ::= alias-field
+        | "now"
+        | "now" ws op ws duration
+        | "date:" now-expr
+        | "bucket(" col ")"
+        | "input." input-field
+
+now-expr ::= "now" | "now" ws op ws duration
+
+alias-field  ::= alias "." field
+alias        ::= [a-zA-Z_][a-zA-Z0-9_]*    (declared in sites.*.seed.users)
+field        ::= "account" | "id" | "jwt" | "nkey" | "credential"
+
+op           ::= "+" | "-"
+duration     ::= [0-9]+ unit
+unit         ::= "ms" | "s" | "m" | "h"
+col          ::= [a-zA-Z_][a-zA-Z0-9_]*    (column name in cassandra_data row)
+
+input-field  ::= "subject" | "payload." key | "requestId"
+key          ::= [a-zA-Z_][a-zA-Z0-9_.]*
+```
+
+`$auto` resolves to a runtime-generated unique string of the form
+`it-<runID>-room-auto-<N>`. Useful for room names and IDs that must
+not collide across parallel or repeated runs.
+
+### Where `${now ± d}` arithmetic actually resolves
+
+`${now}` (with no offset) resolves **everywhere** — payloads,
+subjects, match, args, `mongo_data`, `cassandra_data` rows — returning
+`int64` millis.
+
+`${now - 1h}` / `${now + 5m}` arithmetic-only resolves inside
+**`cassandra_data` row values and `cassandra_select` args** today.
+Outside those two contexts (payloads, subjects, match shapes,
+`mongo_data`, `nats_subscribe` args, etc.) the bare arithmetic form
+errors with `unknown path "now-1h": no placeholder "now-1h" resolved`
+because the general substitute resolver doesn't recognize the offset
+without the `date:` cast prefix.
+
+The uniform-everywhere form is `${date:now ± d}` (next subsection),
+which returns `time.Time` and resolves wherever any other token does.
+The split exists for backward-compat: the Cassandra path predates the
+cast wrapper and keeps the bare arithmetic for its int64 timestamps.
+
+### Type cast: `${date:<now-expr>}` → `time.Time`
+
+`${now}` returns an `int64` (unix millis) because that's what subjects
+and payloads want. Some downstream consumers need a real Go
+`time.Time` — most commonly **BSON Date** fields in `mongo_data`
+seeds, where unmarshalling a `*time.Time` field from an int silently
+fails. The `${date:<expr>}` wrapper casts a now-expression to
+`time.Time`. Examples:
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: rooms
+    docs:
+      - _id: r-eng
+        name: Engineering
+        historySharedSince: ${date:now-1h}   # ← BSON Date, not int64
+        retentionUntil:     ${date:now+30d}  # ← future Date
+        createdAt:          ${date:now}      # ← current Date
+```
+
+- The inner `<expr>` is the same grammar as the standalone `${now ± d}`
+  form (`now`, `now-1h`, `now+5m`, etc.).
+- Result type is `time.Time` (UTC). BSON encodes it as Date; JSON
+  payloads serialize it as ISO-8601 string; CQL bind sites accept it
+  as `timestamp`.
+- Malformed expression → hard error naming the bad token.
+- The `date:` prefix is namespaced for future casts (`${objectid:...}`,
+  `${binary:...}`) — same wrapper shape if more types ever land.
+
+---
+
+## 9. Loader errors
+
+The loader rejects scenarios before any container is booted.
+
+| Error | Cause |
+|-------|-------|
+| `scenario: required` | `scenario:` field missing or empty. |
+| `source: required` | `source:` field missing or empty. |
+| `tag: must be "positive" or "negative"` | `tag:` is absent or has another value. |
+| `sites: required` | `sites:` map absent or empty. |
+| `sites key must be "site-a" or "site-b"` | An unknown site key was used. |
+| `input: required` | `input:` block missing. |
+| `input.site: required` | `site:` field absent from `input`. |
+| `input.site: must be "site-a" or "site-b"` | Site value is not one of the two. |
+| `input.verb: unknown verb "<v>"` | Verb not in `catalogs/verbs/`. |
+| `expected: must have at least one entry` | `expected:` list is empty or absent. |
+| `expected[N].location: unknown "<loc>"` | Location not in the registered poller set. |
+| `expected[N]: site: forbidden for location "reply"` | `site:` present on a `reply` entry. |
+| `expected[N]: site: forbidden for location "cassandra_select"` | `site:` present on a `cassandra_select` entry. |
+| `expected[N]: site: required for location "<loc>"` | `site:` absent on a site-scoped entry. |
+| `expected[N]: site: must be "site-a" or "site-b"` | Site value is not one of the two. |
+| `forbidden token "${site}" in <field>` | The ambiguous `${site}` token was used. Write `site-a` or `site-b` literally. |
+| `forbidden token "${siteA}" ...` | Same family of forbidden tokens. |
+| `forbidden token "${service.*}" ...` | Service credentials are not exposed. |
+| `seed.users.<alias>: unknown flag "<flag>"` | A flag not in `catalogs/seed-effects/` was set to `true`. |
+| `cassandra_data: must not appear under sites` | `cassandra_data` was placed inside a site block; move it to top level. |
+
+---
+
+## 10. Validator errors (site-presence)
+
+The static validator (`make validate`) also checks:
+
+| Error | Cause |
+|-------|-------|
+| `expected[N]: site must be absent for "reply"` | `site:` present when forbidden. |
+| `expected[N]: site must be absent for "cassandra_select"` | Same. |
+| `expected[N]: site required for "<loc>"` | `site:` absent when required. |
+| `expected[N]: site "<s>" unknown` | Not `site-a` or `site-b`. |
+| `input.site "<s>" not declared in sites:` | Input fires at a site with no seed block. Add the site to `sites:` even if its seed is empty. |
+
+---
+
+## 11. Matcher semantics — `matches_shape`
+
+The default (and only) matcher for `expected[].match` is
+`matches_shape`:
+
+- **Subset deep match.** Extra fields in the observed payload are
+  ignored; only fields the `match` block mentions must match.
+- **Nested maps recurse** with the same subset semantics:
+  `match: {body_json: {status: accepted}}` succeeds against
+  `{body_json: {status: accepted, roomId: r-x, ...}}`.
+- **Type normalisation.** JSON numbers decoded as float64 are
+  normalized for integer comparison.
+- **Struct payloads** (e.g. `ReplyPayload`) marshal to JSON and
+  unmarshal as a generic map.
+- **ROSM (Relative Order Subset Match).** When the expected match
+  value is a list, the matcher walks the observed slice looking for
+  each expected element in declaration order.
+
+For "must NOT happen" assertions, set `not: true` — the loop uses
+`Consistently(...).ShouldNot(...)`.
+
+### 11.1 `outbox_payload:` — decoded inner subset for cross-site events
+
+Cross-site federation events arrive on `OUTBOX_<site>` and
+`INBOX_<site>` wrapped in `pkg/model.OutboxEvent`. The inner event
+is serialized as `[]byte`, which Go's `encoding/json` writes as a
+base64 string on the wire. A normal `body_json:` subset can reach
+the envelope (`type`, `siteId`, `destSiteId`, `timestamp`) but the
+inner content (`roomId`, `newName`, `member_added` fields, …) is
+locked behind the base64.
+
+The `outbox_payload:` directive in a `match:` block tells the
+matcher to base64-decode `body_json.payload`, JSON-parse it, and
+subset-match the decoded inner content against the value:
+
+```yaml
+- location: jetstream_consume
+  site: site-a
+  args:
+    stream: OUTBOX_site-a
+    filter_subject: outbox.site-a.to.site-b.room_renamed
+  match:
+    body_json:
+      type: room_renamed         # envelope assertion (as before)
+      siteId: site-a
+      destSiteId: site-b
+    outbox_payload:              # decoded inner subset
+      roomId: r-shared
+      newName: SharedChannelRenamed
+```
+
+**Semantics.** The matcher splits the expected shape into
+"envelope" (everything except `outbox_payload`) and "directive" (the
+value of `outbox_payload`). For each polled event:
+
+1. Subset-match the envelope against `event.Payload` as usual. If
+   the envelope mismatches, the event is skipped (the directive is
+   NOT evaluated — envelope-level mismatch short-circuits).
+2. If `outbox_payload:` is present, locate
+   `event.Payload.body_json.payload` (must be a string),
+   base64-decode it, JSON-parse the bytes, and subset-match against
+   the directive value.
+3. An event matches iff BOTH halves match.
+
+**Failure reasons.** When the decode pipeline breaks, the
+mismatch reason names the exact stage so the operator can localize
+the producer- or wire-format regression:
+
+- `outbox_payload: body_json is missing or not a map` — poller-
+  shape regression; the event isn't a JSON object at all.
+- `outbox_payload: body_json.payload is missing or not a string` —
+  producer skipped the encode step.
+- `outbox_payload: base64 decode of body_json.payload failed: …` —
+  the payload bytes aren't standard base64.
+- `outbox_payload: JSON parse of decoded payload failed: …` —
+  schema-shape change; the inner format isn't JSON anymore.
+- `outbox_payload: decoded subset mismatch: …` — decode works; the
+  inner fields don't match the expected subset.
+
+**When NOT to use it.** `outbox_payload:` is a one-trick directive
+tuned for the OutboxEvent envelope shape (`body_json.payload` as a
+base64 string). For other base64+JSON shapes — should they emerge
+— add a sibling directive with an explicit `from:` path rather
+than overload `outbox_payload`. For events whose inner content is
+NOT base64-encoded (e.g. plain `ROOMS_<site>` canonical events
+where the body is already JSON), use plain `body_json:` —
+`outbox_payload:` would fail with "body_json.payload missing"
+because the field isn't base64-wrapped to begin with.
+
+---
+
+## 12. Common mistakes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `forbidden token "${site}"` | Used `${site}` in subject or payload. | Replace with the literal string `site-a` or `site-b`. |
+| `expected[N]: site: required for location "mongo_find"` | `site:` missing on a `mongo_find` entry. | Add `site: site-a` or `site: site-b`. |
+| `expected[N]: site: forbidden for location "reply"` | `site:` present on a `reply` entry. | Remove `site:` from that entry. |
+| Assertion times out at `mongo_find` (cross-site) | Federation pipeline hasn't delivered the event within the default 5s window. | Extend `timeout:` to `10s` or longer for cross-site assertions. |
+| Assertion times out at `mongo_find` (single-site) | `createdAt >= startTime` auto-filter excludes rows written before `Sandbox.StartTime`. | Confirm the scenario writes the row after setup; check filter. |
+| Assertion times out at `nats_subscribe` | Subscription opened after the verb fired (race). | Ensure `nats_subscribe` entries are listed before `reply` — the runner processes Warmers in declaration order. |
+| `seed.users.<alias>: unknown flag "X"` | Effect flag not in `catalogs/seed-effects/`. | Use `verified: true`; check catalog for new flags. |
+| Federation cross-site assertion times out consistently | Production code may not federate on room-metadata events (only on message-send). | See "Open Concerns" in `README.md`; this is a known hypothesis the smoke run tests. |

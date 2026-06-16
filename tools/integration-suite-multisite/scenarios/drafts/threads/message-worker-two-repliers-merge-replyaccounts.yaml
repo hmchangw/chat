@@ -1,0 +1,126 @@
+scenario: message-worker-two-repliers-merge-replyaccounts
+source: >
+  message-worker/handler.go:229-322 (handleSubsequentThreadReply: second reply takes the
+  errThreadRoomExists branch, upserts the replier subscription and $addToSet-merges accounts
+  into thread_rooms.replyAccounts), store_mongo.go UpdateThreadRoomLastMessage / AddReplyAccounts
+  ($addToSet replyAccounts); multi-input per 2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: positive
+
+# CONTRACT (deterministic part of the subsequent-reply path): two DISTINCT
+# repliers to the same thread both land in thread_rooms.replyAccounts via
+# $addToSet, and each gets a thread_subscription. Asserts the
+# order-independent merge (mongo array-membership filter) and SKIPS tcount
+# on purpose — tcount is the F-011 lost-update race; replyAccounts merge is
+# idempotent + order-independent, so this is race-robust.
+#
+# Two msg.send tasks (alice, then dave) to a pre-seeded parent. Parent is
+# seeded (not task-created) so neither reply races an async parent write.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        dave: { verified: true }
+        threadauthor: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+        dave:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0mergeparent0000001
+        created_at: 1748736000000
+        room_id: r-general
+        site_id: site-a
+        msg: "parent for the replyAccounts-merge test"
+        sender:
+          id: u-threadauthor
+          account: threadauthor
+          eng_name: threadauthor
+          company_name: threadauthor
+  - table: messages_by_room
+    rows:
+      - room_id: r-general
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0mergeparent0000001
+        site_id: site-a
+        msg: "parent for the replyAccounts-merge test"
+        sender:
+          id: u-threadauthor
+          account: threadauthor
+          eng_name: threadauthor
+          company_name: threadauthor
+
+input:
+  - id: reply1
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m1mergereply00000001
+      content: alice's reply
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567910
+      threadParentMessageId: m0mergeparent0000001
+      threadParentMessageCreatedAt: 1748736000000
+    credential: ${alice.credential}
+
+  - id: reply2
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${dave.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m2mergereply00000001
+      content: dave's reply
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567911
+      threadParentMessageId: m0mergeparent0000001
+      threadParentMessageCreatedAt: 1748736000000
+    credential: ${dave.credential}
+
+expected:
+  # replyAccounts contains alice (array-membership filter — order-independent)
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0mergeparent0000001
+        replyAccounts: ${alice.account}
+    match:
+      parentMessageId: m0mergeparent0000001
+    timeout: 10s
+
+  # replyAccounts contains dave
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0mergeparent0000001
+        replyAccounts: ${dave.account}
+    match:
+      parentMessageId: m0mergeparent0000001
+    timeout: 10s
+
+  # both repliers have a thread subscription
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0mergeparent0000001
+        userAccount: ${dave.account}
+    match:
+      userAccount: ${dave.account}
+    timeout: 10s

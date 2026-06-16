@@ -1,0 +1,171 @@
+scenario: message-worker-subsequent-thread-reply-multi-input
+source: >
+  message-worker/handler.go:124-147 (handleThreadRoomAndSubscriptions: first reply creates the
+  thread room; CreateThreadRoom errThreadRoomExists → handleSubsequentThreadReply),
+  handler.go:229-322 (handleSubsequentThreadReply: upsert both subscriptions, $addToSet-merge
+  replyAccounts, bump lastMsg, re-stamp), message-worker/store_cassandra.go incrementParentTcount
+  (LWT CAS — second reply takes tcount 1→2); multi-input per
+  docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: positive
+
+# CONTRACT (the subsequent-reply path — previously UNTESTABLE under single
+# fire, unblocked by multi-input): a SECOND reply to a thread reuses the
+# existing thread_room (unique parentMessageId), upserts the second
+# replier's subscription, merges both repliers into replyAccounts, and the
+# parent tcount reaches 2.
+#
+# Two msg.send tasks (alice then dave) target the SAME pre-seeded parent.
+# v1 multi-input fires back-to-back with no inter-task wait, so the two
+# replies race each other in the worker — but the assertions are
+# cumulative end-state (Eventually): tcount converges to 2 and both
+# subscriptions exist regardless of which reply the worker processes
+# first. The parent is pre-seeded (not created by a prior task) precisely
+# to avoid the async-write race the proof scenario documents.
+#
+# No match.task / reply substitution needed: msg.send is jetstream_publish
+# (no synchronous reply to chain); multi-input is used purely for the
+# "two fires in one scenario" capability that single-fire lacked. Both
+# tasks reference the seeded parent's known id + created_at (1748736000000).
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        dave: { verified: true }
+        threadauthor: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+        dave:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0subseqparent000001
+        created_at: 1748736000000
+        room_id: r-general
+        site_id: site-a
+        msg: "parent message for the subsequent-reply test"
+        sender:
+          id: u-threadauthor
+          account: threadauthor
+          eng_name: threadauthor
+          company_name: threadauthor
+  - table: messages_by_room
+    rows:
+      - room_id: r-general
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0subseqparent000001
+        site_id: site-a
+        msg: "parent message for the subsequent-reply test"
+        sender:
+          id: u-threadauthor
+          account: threadauthor
+          eng_name: threadauthor
+          company_name: threadauthor
+
+input:
+  - id: reply1
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m1subseqreply0000001
+      content: first reply in the thread
+      requestId: 01970a4f-8c2d-7c9a-abcd-e0123456790e
+      threadParentMessageId: m0subseqparent000001
+      threadParentMessageCreatedAt: 1748736000000
+    credential: ${alice.credential}
+
+  - id: reply2
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${dave.account}.room.r-general.site-a.msg.send
+    payload:
+      id: m2subseqreply0000001
+      content: second reply in the thread
+      requestId: 01970a4f-8c2d-7c9a-abcd-e0123456790f
+      threadParentMessageId: m0subseqparent000001
+      threadParentMessageCreatedAt: 1748736000000
+    credential: ${dave.credential}
+
+expected:
+  # Exactly one thread room for the parent (unique parentMessageId — the
+  # second reply reuses it rather than creating a duplicate).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0subseqparent000001
+    match:
+      parentMessageId: m0subseqparent000001
+    timeout: 10s
+
+  # Both repliers subscribed (first-reply insert + subsequent-reply upsert).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0subseqparent000001
+        userAccount: ${alice.account}
+    match:
+      userAccount: ${alice.account}
+    timeout: 10s
+
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0subseqparent000001
+        userAccount: ${dave.account}
+    match:
+      userAccount: ${dave.account}
+    timeout: 10s
+
+  # BOTH reply rows persisted — proves both replies were processed (not one
+  # dropped). These are ordered BEFORE the tcount check: if they pass and the
+  # tcount check then fails, the count IS really 2 but the parent's stored
+  # tcount is stale → a lost update (not a dropped reply).
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m1subseqreply0000001]
+    match:
+      message_id: m1subseqreply0000001
+      thread_parent_id: m0subseqparent000001
+    timeout: 10s
+
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m2subseqreply0000001]
+    match:
+      message_id: m2subseqreply0000001
+      thread_parent_id: m0subseqparent000001
+    timeout: 10s
+
+  # Parent tcount should equal the reply count (2). Under #245's non-atomic
+  # count-and-set this can lose an update across concurrent replies → got 1.
+  # Reaching THIS assertion means both reply rows above are present, so a
+  # got=1 here is a confirmed lost update.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0subseqparent000001]
+    match:
+      message_id: m0subseqparent000001
+      tcount: 2
+    timeout: 10s

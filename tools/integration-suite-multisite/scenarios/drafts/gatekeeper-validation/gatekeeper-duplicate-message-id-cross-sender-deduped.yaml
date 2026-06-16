@@ -1,0 +1,112 @@
+scenario: gatekeeper-duplicate-message-id-cross-sender-deduped
+source: >
+  message-gatekeeper/handler.go:301 (publishes the canonical with
+  jetstream.WithMsgID(natsutil.CanonicalDedupID(&evt))), pkg/natsutil/canonical_dedup.go:25-?
+  (CanonicalDedupID for a `created` event is evt.Message.ID ALONE — no sender,
+  content, or requestId), so MESSAGES_CANONICAL JetStream-level dedup
+  (default ~2m window) suppresses any second publish carrying the same
+  message id, regardless of who sent it. message-worker/store_cassandra.go
+  SaveMessage is a blind INSERT (Cassandra upsert), no IF NOT EXISTS.
+status: draft
+tag: negative
+
+# OBSERVATION (client-supplied message-id dedup is SENDER-AGNOSTIC): the
+# canonical dedup key for a new message is the message id ALONE. Two sends
+# carrying the same id within the dedup window collapse to one — even when
+# they are from DIFFERENT senders with DIFFERENT content.
+#
+# This is correct, desirable idempotency for a single client retrying its
+# OWN send. The sharp edge: ids are client-supplied, so a SECOND sender who
+# reuses an existing id has their (distinct) message silently deduped —
+# the gatekeeper still gets a successful (duplicate) PubAck and acks the
+# send, but nothing new is persisted. Success ack != message stored.
+#
+# Here alice sends id=COLLIDE first (wins); bob sends the SAME id with
+# different content back-to-back (deduped). The persisted message is
+# alice's — bob's content/sender never reach Cassandra, yet bob's send was
+# accepted. Documents the current behavior; whether a cross-sender id
+# collision should be rejected (or namespaced by sender) is the chat-app
+# team's call. Unique room r-collide to avoid F-009 cache bleed.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }
+      rooms:
+        - id: r-collide
+          name: Collide
+          type: channel
+      memberships:
+        alice:
+          - room: r-collide
+            roles: [member]
+        bob:
+          - room: r-collide
+            roles: [member]
+
+input:
+  - id: alice_send
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice.account}.room.r-collide.site-a.msg.send
+    payload:
+      id: m0collideid000000001
+      content: alice's original message
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567920
+    credential: ${alice.credential}
+
+  - id: bob_send
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${bob.account}.room.r-collide.site-a.msg.send
+    payload:
+      id: m0collideid000000001
+      content: bob's colliding message
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234567921
+    credential: ${bob.credential}
+
+# OPEN FINDING F-014 (integrity) — EXPECTED TO FAIL until the gatekeeper
+# enforces global message-id uniqueness. -ve scenario asserting the CORRECT
+# behavior; the failure IS the bug (draft + fail = open finding). Per
+# AUTHORING.md §Pass/fail semantics.
+expected:
+  # Control (+ve, passes) — alice (first) is the message stored: her canonical
+  # is published and her row persisted under the shared global id.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0collideid000000001
+          content: alice's original message
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0collideid000000001]
+    match:
+      message_id: m0collideid000000001
+      msg: alice's original message
+    timeout: 10s
+
+  # CORRECT (the invariant) — message_id is a GLOBAL partition key in the
+  # shared multi-tenant Cassandra (all rooms, all users, all 15-20 sites), so
+  # a second sender reusing an existing id must be REJECTED with an error, not
+  # silently accepted. EXPECTED: bob receives a conflict error. FAILS today
+  # because the gatekeeper ignores the duplicate PubAck — bob's distinct
+  # message is silently deduped and bob is told nothing (or "success"). The
+  # exact error code is the team's choice; the invariant is "bob must be
+  # rejected, not silently dropped" — low probability with random ids, but a
+  # fatal cross-tenant integrity breach if it ever lands.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${bob.account}.response.01970a4f-8c2d-7c9a-abcd-e01234567921
+    match:
+      received:
+        - body_json:
+            code: conflict

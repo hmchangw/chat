@@ -1,0 +1,90 @@
+scenario: message-worker-thread-reply-with-mention
+source: >
+  message-worker/handler.go:96 (markThreadMentions runs on every thread reply),
+  handler.go:366-392 (markThreadMentions: for each @mentionee that is not the sender and not
+  @all, MarkThreadSubscriptionMention sets hasMention=true and the account is added to
+  thread_rooms.replyAccounts), message-worker/store_mongo.go:107-122
+  (MarkThreadSubscriptionMention upserts the thread_subscription with hasMention=true),
+  pkg/mention/mention.go (resolves @account against seeded users)
+status: draft
+tag: positive
+
+# CONTRACT: a thread reply that @mentions a user creates (or flips) that
+# user's thread_subscription with hasMention=true — distinct from a plain
+# reply subscription. Exercises markThreadMentions (auto-create + mention
+# flag), which the prior thread scenarios did not cover.
+#
+# alice (member) replies in a thread (parent authored by threadauthor),
+# mentioning carol. carol is seeded as a profile so mention.Resolve finds
+# her. The parent is seeded so GetMessageSender resolves the author;
+# created_at is a relative ${now-1h} token (the mention path does not need
+# PK coordination — markThreadMentions keys by message_id-independent
+# (threadRoomId, userAccount); tcount/badge are not asserted here).
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        threadauthor: { verified: true }
+        carol: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0mentionparent00001
+        created_at: ${now - 1h}
+        room_id: r-general
+        site_id: site-a
+        msg: "parent message for the thread-mention test"
+        sender:
+          id: u-threadauthor
+          account: threadauthor
+          eng_name: threadauthor
+          company_name: threadauthor
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m9mentionreply000001
+    content: "@carol please take a look at this thread"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e0123456790c
+    threadParentMessageId: m0mentionparent00001
+    threadParentMessageCreatedAt: ${now}
+  credential: ${alice.credential}
+
+expected:
+  # canonical event published (gatekeeper validated the thread reply)
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m9mentionreply000001
+
+  # the worker marked carol's thread subscription with hasMention=true
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0mentionparent00001
+        userAccount: carol
+    match:
+      userAccount: carol
+      hasMention: true
+    timeout: 10s

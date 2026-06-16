@@ -1,0 +1,111 @@
+# Draft scenario tied to F-019 — currently failing because the
+# documented gap is not yet resolved. This is the steady-state shape
+# of an open finding in the suite: a -ve scenario whose negative
+# assertion (NATS rejects the cross-namespace publish) does not hold
+# yet, so the scenario is `draft + fail`. See AUTHORING.md
+# §Pass/fail semantics and open findings, and
+# docs/integration-suite-multisite-findings.md F-019 for the gap, the
+# trust-chain trace, and the 5-minute runtime-verification check that
+# pins suite-config-gap vs production vulnerability.
+#
+# Once F-019 is resolved this scenario flips to pass; the author then
+# promotes it to status: approved so it becomes a CI-gated regression
+# guard.
+
+scenario: gatekeeper-sender-impersonation-blocked
+source: >
+  message-gatekeeper/handler.go:81 (gatekeeper derives sender from the
+  subject's {account} token and trusts it — sound only if NATS rejects
+  publishes outside the JWT's Pub.Allow);
+  auth-service/handler.go:234 (user JWTs minted with Pub.Allow scoped
+  to chat.user.{account}.>);
+  intended invariant: NATS rejects connections that publish outside
+  their JWT's Pub.Allow, so the gatekeeper never sees a cross-namespace
+  publish. F-019 reports this invariant is not currently enforced.
+status: draft
+tag: negative
+
+# CONTRACT under test: a client authenticated as alice (using alice's
+# correctly-scoped JWT) MUST NOT be able to publish to chat.user.bob.…
+# NATS should reject the publish at the connection level, the
+# gatekeeper should never see it, and no canonical event should be
+# produced for the impersonating publish.
+#
+# Two fires from one alice-authenticated connection:
+#   - impersonate → publishes to bob's namespace pretending to be bob
+#   - control     → publishes to alice's own namespace normally
+#
+# Pass: impersonation has no canonical (assertion 1 negative holds)
+#       AND control has its canonical (assertion 2 positive holds).
+# Fail: impersonation produced a canonical the gatekeeper attributed
+#       to bob (the F-019 symptom).
+#
+# Both users must be subscribed to r-imp so the gatekeeper's
+# subscription check (which IS working) doesn't reject the impersonate
+# publish for a different reason and mask the auth gap.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice_imp: { verified: true }
+        bob_imp:   { verified: true }
+      rooms:
+        - { id: r-imp, name: ImpersonationRoom, type: channel }
+      memberships:
+        alice_imp: [{ room: r-imp, roles: [owner] }]
+        bob_imp:   [{ room: r-imp, roles: [member] }]
+
+input:
+  - id: impersonate
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${bob_imp.account}.room.r-imp.site-a.msg.send
+    payload:
+      id: m0impersonate0000001
+      content: "pretending to be bob"
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234560aa1
+    credential: ${alice_imp.credential}     # alice's JWT, publishing to bob's namespace
+
+  - id: control
+    site: site-a
+    verb: jetstream_publish
+    subject: chat.user.${alice_imp.account}.room.r-imp.site-a.msg.send
+    payload:
+      id: m0controlbaseline00001
+      content: "alice posting normally"
+      requestId: 01970a4f-8c2d-7c9a-abcd-e01234560bb1
+    credential: ${alice_imp.credential}
+
+expected:
+  # The impersonation publish must NOT produce a canonical event. If
+  # NATS is enforcing alice's Pub.Allow, the publish is rejected at
+  # connection level and the gatekeeper never sees it.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0impersonate0000001
+    not: true
+    timeout: 5s
+
+  # The control publish must succeed normally — proves alice's
+  # credential and the gatekeeper pipeline are otherwise functional.
+  # Without this positive, a failure of the negative above wouldn't
+  # tell us whether enforcement is working or the suite is broken.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        message:
+          id: m0controlbaseline00001
+          content: "alice posting normally"
+          userAccount: ${alice_imp.account}
+    timeout: 10s

@@ -1,0 +1,84 @@
+scenario: dm-create-idempotency-multi-input
+source: >
+  room-service/handler.go (Create Room open-or-create DM contract),
+  docs/client-api.md Create Room (DM dedup: status "exists", same roomId);
+  multi-input proof per docs/superpowers/specs/2026-06-13-integration-suite-multi-input.md
+status: draft
+tag: positive
+
+# MULTI-INPUT PROOF (spec 2026-06-13-integration-suite-multi-input.md).
+# Two nats_request fires in declaration order where the SECOND task's
+# assertion references the FIRST task's reply via
+# ${create1.reply.body_json.roomId} substitution — a cross-task
+# reference impossible with the single-fire input: shape. Per-task
+# reply assertions use the match.task: selector.
+#
+# Why DM-create-twice and NOT the create -> join -> send example from
+# the spec body: Create Room is an async-job RPC — the room and its
+# subscriptions are written by room-worker AFTER the synchronous reply.
+# v1 multi-input fires tasks back-to-back with NO inter-task wait (the
+# ${task.events.*} event-window wait is deferred — spec §10), so any
+# task that ACTS on the just-created room races the async write:
+# member.add reads the requester subscription synchronously and returns
+# a 403 (room-service/handler.go:769), and a msg.send to a not-yet-
+# subscribed sender is dropped poison by the gatekeeper
+# (message-gatekeeper/handler.go:213). A DM's roomId is DETERMINISTIC
+# (idgen.BuildDMRoomID — sorted concat of the two user ids), so it is
+# identical across both fires regardless of async timing. That makes
+# the cross-task reply-substitution assertion robust without any
+# inter-task wait. The substitution machinery exercised here is the
+# same Context.Replies path a fire-time subject substitution uses.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob:   { verified: true }
+
+input:
+  - id: create1
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload:
+      users: ["${bob.account}"]
+    credential: ${alice.credential}
+
+  - id: create2
+    site: site-a
+    verb: nats_request
+    subject: chat.user.${alice.account}.request.room.site-a.create
+    payload:
+      users: ["${bob.account}"]
+    credential: ${alice.credential}
+
+expected:
+  # create1 — a DM room is created; the reply carries its roomId.
+  - location: reply
+    match:
+      task: create1
+      body_json:
+        roomType: dm
+
+  # create2 (open-or-create) — the SAME deterministic DM roomId, proven
+  # by substituting create1's captured reply into create2's assertion.
+  # This is the cross-task reference single-fire scenarios cannot make.
+  - location: reply
+    match:
+      task: create2
+      body_json:
+        roomId: ${create1.reply.body_json.roomId}
+
+  # The DM room eventually persists under the id create1's reply
+  # returned (assertion-time reply substitution + eventual Mongo state).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        _id: ${create1.reply.body_json.roomId}
+    match:
+      type: dm
+      siteId: site-a
+    timeout: 10s
