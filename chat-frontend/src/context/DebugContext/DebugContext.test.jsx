@@ -3,14 +3,17 @@ import { render, screen, act } from '@testing-library/react'
 import { DebugProvider, useDebug, DEBUG_LEVELS } from './DebugContext'
 
 function Probe() {
-  const { level, setLevel } = useDebug()
+  const { level, setLevel, payload, setPayload } = useDebug()
   return (
     <>
       <span data-testid="level">{level}</span>
+      <span data-testid="payload">{String(payload)}</span>
       <button data-testid="set-trace" onClick={() => setLevel('trace')}>trace</button>
       <button data-testid="set-flow" onClick={() => setLevel('flow')}>flow</button>
       <button data-testid="set-off" onClick={() => setLevel('off')}>off</button>
       <button data-testid="set-bogus" onClick={() => setLevel('bogus')}>bogus</button>
+      <button data-testid="payload-on" onClick={() => setPayload(true)}>payload on</button>
+      <button data-testid="payload-off" onClick={() => setPayload(false)}>payload off</button>
     </>
   )
 }
@@ -31,9 +34,10 @@ describe('DEBUG_LEVELS', () => {
 })
 
 describe('DebugProvider initial state', () => {
-  it('defaults to "off" when localStorage is empty', () => {
+  it('defaults to "off" and payload disabled when localStorage is empty', () => {
     render(<DebugProvider><Probe /></DebugProvider>)
     expect(screen.getByTestId('level').textContent).toBe('off')
+    expect(screen.getByTestId('payload').textContent).toBe('false')
   })
 
   it('reads a stored level verbatim', () => {
@@ -42,13 +46,19 @@ describe('DebugProvider initial state', () => {
     expect(screen.getByTestId('level').textContent).toBe('trace')
   })
 
-  it('maps the legacy "1" value to "debug"', () => {
+  it('reads stored payload capture as enabled', () => {
+    localStorage.setItem('debugPayload', '1')
+    render(<DebugProvider><Probe /></DebugProvider>)
+    expect(screen.getByTestId('payload').textContent).toBe('true')
+  })
+
+  it('maps the legacy "1" level value to "debug"', () => {
     localStorage.setItem('debug', '1')
     render(<DebugProvider><Probe /></DebugProvider>)
     expect(screen.getByTestId('level').textContent).toBe('debug')
   })
 
-  it('treats an unknown stored value as "off"', () => {
+  it('treats an unknown stored level as "off"', () => {
     localStorage.setItem('debug', 'verbose')
     render(<DebugProvider><Probe /></DebugProvider>)
     expect(screen.getByTestId('level').textContent).toBe('off')
@@ -62,13 +72,14 @@ describe('DebugProvider initial state', () => {
     try {
       render(<DebugProvider><Probe /></DebugProvider>)
       expect(screen.getByTestId('level').textContent).toBe('off')
+      expect(screen.getByTestId('payload').textContent).toBe('false')
     } finally {
       Storage.prototype.getItem = original
     }
   })
 })
 
-describe('DebugProvider mutations', () => {
+describe('DebugProvider level mutations', () => {
   it('setLevel persists a non-off level', () => {
     render(<DebugProvider><Probe /></DebugProvider>)
     act(() => { screen.getByTestId('set-trace').click() })
@@ -108,6 +119,26 @@ describe('DebugProvider mutations', () => {
     } finally {
       Storage.prototype.setItem = original
     }
+  })
+})
+
+describe('DebugProvider payload-capture mutations', () => {
+  it('setPayload(true) enables and persists, setPayload(false) clears the key', () => {
+    render(<DebugProvider><Probe /></DebugProvider>)
+    act(() => { screen.getByTestId('payload-on').click() })
+    expect(screen.getByTestId('payload').textContent).toBe('true')
+    expect(localStorage.getItem('debugPayload')).toBe('1')
+
+    act(() => { screen.getByTestId('payload-off').click() })
+    expect(screen.getByTestId('payload').textContent).toBe('false')
+    expect(localStorage.getItem('debugPayload')).toBeNull()
+  })
+
+  it('payload capture is independent of the level', () => {
+    render(<DebugProvider><Probe /></DebugProvider>)
+    act(() => { screen.getByTestId('payload-on').click() })
+    expect(screen.getByTestId('level').textContent).toBe('off')
+    expect(screen.getByTestId('payload').textContent).toBe('true')
   })
 })
 

@@ -108,6 +108,34 @@ describe('requestWithAsyncResult', () => {
     expect(opts.headers.get('X-Debug')).toBe('')
   })
 
+  it('sends X-Debug-Payload=1 when opts.debugPayload is true', async () => {
+    const nc = makeNc()
+    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1', debugPayload: true })
+    nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
+    await p
+    const opts = nc.request.mock.calls[0][2]
+    expect(opts.headers.get('X-Debug-Payload')).toBe('1')
+  })
+
+  it('captures payloads independently of the debug level', async () => {
+    const nc = makeNc()
+    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1', debugPayload: true })
+    nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
+    await p
+    const opts = nc.request.mock.calls[0][2]
+    expect(opts.headers.get('X-Debug')).toBe('')
+    expect(opts.headers.get('X-Debug-Payload')).toBe('1')
+  })
+
+  it('omits X-Debug-Payload by default', async () => {
+    const nc = makeNc()
+    const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1' })
+    nc.sub.push(encode({ requestId: 'req-1', operation: 'room.create', status: 'ok', timestamp: 1 }))
+    await p
+    const opts = nc.request.mock.calls[0][2]
+    expect(opts.headers.get('X-Debug-Payload')).toBe('')
+  })
+
   it('resolves with sync + async results when async status is ok', async () => {
     const nc = makeNc({ syncReply: { status: 'accepted', roomId: 'r1', roomType: 'channel' } })
     const p = requestWithAsyncResult(nc, 'alice', 'subj', {}, { requestId: 'req-1' })

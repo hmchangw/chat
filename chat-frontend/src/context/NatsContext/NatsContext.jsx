@@ -23,19 +23,25 @@ export function NatsProvider({ children }) {
   const authUrl = AUTH_URL
   const natsUrl = NATS_URL
 
-  // Keep the live debug level in a ref so the transport callbacks can read it
-  // at send time without being recreated (and re-rendering consumers) on every
-  // change. When not 'off', every request/publish carries an `X-Debug` header
-  // whose value is the selected level.
-  const { level: debugLevel } = useDebug()
+  // Keep the live debug settings in refs so the transport callbacks can read
+  // them at send time without being recreated (and re-rendering consumers) on
+  // every change. When the level is not 'off' every request/publish carries an
+  // `X-Debug: <level>` header; when payload capture is on it also carries
+  // `X-Debug-Payload: 1` (independent of the level).
+  const { level: debugLevel, payload: debugPayload } = useDebug()
   const debugLevelRef = useRef(debugLevel)
+  const debugPayloadRef = useRef(debugPayload)
   useEffect(() => { debugLevelRef.current = debugLevel }, [debugLevel])
+  useEffect(() => { debugPayloadRef.current = debugPayload }, [debugPayload])
 
   const buildHeaders = useCallback(() => {
     const lvl = debugLevelRef.current
-    if (!lvl || lvl === 'off') return undefined
+    const payload = debugPayloadRef.current
+    const wantsDebug = lvl && lvl !== 'off'
+    if (!wantsDebug && !payload) return undefined
     const h = natsHeaders()
-    h.set('X-Debug', lvl)
+    if (wantsDebug) h.set('X-Debug', lvl)
+    if (payload) h.set('X-Debug-Payload', '1')
     return h
   }, [])
 
@@ -168,7 +174,11 @@ export function NatsProvider({ children }) {
     if (!ncRef.current) throw new Error('Not connected')
     const account = user?.account
     if (!account) throw new Error('Not authenticated')
-    return asyncJobRequest(ncRef.current, account, subject, data, { debugLevel: debugLevelRef.current, ...opts })
+    return asyncJobRequest(ncRef.current, account, subject, data, {
+      debugLevel: debugLevelRef.current,
+      debugPayload: debugPayloadRef.current,
+      ...opts,
+    })
   }, [user])
 
   /**

@@ -321,6 +321,10 @@ export interface AsyncJobOptions {
   /** When set to a non-'off' level, stamp an `X-Debug: <level>` header on the
    *  request so the backend scales diagnostics. Driven by the UI selector. */
   debugLevel?: DebugLevel
+  /** When true, stamp an `X-Debug-Payload: 1` header so the backend captures
+   *  full request/reply payloads (only honored where DEBUG_LOG_PAYLOADS is on).
+   *  Independent of `debugLevel`. */
+  debugPayload?: boolean
 }
 
 /**

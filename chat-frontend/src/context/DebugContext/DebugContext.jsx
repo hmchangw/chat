@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 
-const STORAGE_KEY = 'debug'
+const LEVEL_KEY = 'debug'
+const PAYLOAD_KEY = 'debugPayload'
 
 // Ordered debug verbosity levels. 'off' sends no X-Debug header; the others
 // are sent verbatim as the header value so the backend can scale diagnostics.
@@ -13,34 +14,56 @@ function normalizeLevel(value) {
   return DEBUG_LEVELS.includes(value) ? value : 'off'
 }
 
-function resolveInitialLevel() {
+function readLevel() {
   try {
-    return normalizeLevel(localStorage.getItem(STORAGE_KEY))
+    return normalizeLevel(localStorage.getItem(LEVEL_KEY))
   } catch {
     // localStorage unavailable; treat as off
     return 'off'
   }
 }
 
-function persistLevel(level) {
+function readPayload() {
   try {
-    if (level === 'off') localStorage.removeItem(STORAGE_KEY)
-    else localStorage.setItem(STORAGE_KEY, level)
+    return localStorage.getItem(PAYLOAD_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// Persists a stored value, or removes the key when value is falsy.
+function persist(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value)
+    else localStorage.removeItem(key)
   } catch {
     // tolerate private mode / quota errors
   }
 }
 
 export function DebugProvider({ children }) {
-  const [level, setLevelState] = useState(resolveInitialLevel)
+  const [level, setLevelState] = useState(readLevel)
+  const [payload, setPayloadState] = useState(readPayload)
 
   const setLevel = useCallback((next) => {
     const normalized = normalizeLevel(next)
-    persistLevel(normalized)
+    persist(LEVEL_KEY, normalized === 'off' ? '' : normalized)
     setLevelState(normalized)
   }, [])
 
-  const value = useMemo(() => ({ level, setLevel }), [level, setLevel])
+  // Payload capture (X-Debug-Payload) is a separate capability from the rung —
+  // the backend gates it behind its own DEBUG_LOG_PAYLOADS flag — so it is
+  // tracked independently of `level`.
+  const setPayload = useCallback((next) => {
+    const on = Boolean(next)
+    persist(PAYLOAD_KEY, on ? '1' : '')
+    setPayloadState(on)
+  }, [])
+
+  const value = useMemo(
+    () => ({ level, setLevel, payload, setPayload }),
+    [level, setLevel, payload, setPayload],
+  )
 
   return <DebugContext.Provider value={value}>{children}</DebugContext.Provider>
 }
