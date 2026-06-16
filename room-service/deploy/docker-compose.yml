@@ -65,9 +65,6 @@ services:
       - TEAMS_CLIENT_SECRET=
       - ROOM_MEMBERS_LIMIT=500
       - ROOM_MEMBERS_CALL_LIMIT=20
-      # Must match message-worker's MESSAGE_BUCKET_HOURS so the teams_meet_started
-      # idempotency read walks the same partitions writes land in.
-      - MESSAGE_BUCKET_HOURS=72
       - BOOTSTRAP_STREAMS=true
       - ATREST_ENABLED=true
       - VAULT_ADDR=http://vault:8200

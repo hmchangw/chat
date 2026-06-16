@@ -18,7 +18,6 @@ import (
 	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
-	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/msgraph"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -58,10 +57,6 @@ type config struct {
 	TeamsEmailDomain     string `env:"TEAMS_EMAIL_DOMAIN"       envDefault:"dev.local"`
 	RoomMembersLimit     int    `env:"ROOM_MEMBERS_LIMIT"       envDefault:"500"`
 	RoomMembersCallLimit int    `env:"ROOM_MEMBERS_CALL_LIMIT"  envDefault:"20"`
-	// MessageBucketHours must match message-worker's MESSAGE_BUCKET_HOURS so the
-	// teams_meet_started idempotency read walks the same partitions writes land in.
-	MessageBucketHours    int `env:"MESSAGE_BUCKET_HOURS"       envDefault:"72"`
-	MessageReadMaxBuckets int `env:"MESSAGE_READ_MAX_BUCKETS"   envDefault:"30"`
 	// Atrest/Vault drive eager at-rest DEK provisioning at room creation.
 	// When Atrest.Enabled is false the DEK is created lazily by message-worker.
 	Atrest   atrest.Config      // env vars already prefixed ATREST_*
@@ -155,20 +150,6 @@ func main() {
 	}
 	cassReader := NewCassMessageReader(cassSession)
 
-	if cfg.MessageBucketHours <= 0 {
-		slog.Error("invalid MESSAGE_BUCKET_HOURS: must be > 0", "value", cfg.MessageBucketHours)
-		os.Exit(1)
-	}
-	if cfg.MessageReadMaxBuckets <= 0 {
-		slog.Error("invalid MESSAGE_READ_MAX_BUCKETS: must be > 0", "value", cfg.MessageReadMaxBuckets)
-		os.Exit(1)
-	}
-	meetMarkerReader := NewCassMeetMarkerReader(
-		cassSession,
-		msgbucket.New(time.Duration(cfg.MessageBucketHours)*time.Hour),
-		cfg.MessageReadMaxBuckets,
-	)
-
 	// Graph client backs the meetings RPC. Constructed only when the Azure app
 	// credentials are present; otherwise the meetings RPC reports not-configured
 	// while the deep-link RPCs keep working.
@@ -222,7 +203,7 @@ func main() {
 	)
 	handler.dekProvisioner = dekProvisioner
 	handler.graphClient = graphClient
-	handler.meetMarkerReader = meetMarkerReader
+	handler.teamsMeetingStore = store
 	handler.teamsEmailDomain = cfg.TeamsEmailDomain
 	handler.roomMembersLimit = cfg.RoomMembersLimit
 	handler.roomMembersCallLimit = cfg.RoomMembersCallLimit

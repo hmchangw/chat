@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
+
 	"github.com/hmchangw/chat/pkg/displayfmt"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
@@ -89,9 +91,23 @@ func (h *Handler) teamsUserCall(c *natsrouter.Context, req model.TeamsUserCallRe
 }
 
 // teamsMeeting creates (or returns the existing) Microsoft Teams onlineMeeting
-// for the room. Idempotent per room: the last teams_meet_started system message
-// is the source of truth, so a second call returns the prior meeting without a
-// duplicate Graph create. Enforces roomMembersLimit.
+// for the room. Idempotent per room under concurrency via two cooperating
+// guarantees:
+//
+//  1. Graph createOrGet keyed on a stable per-room externalId — Graph returns
+//     the same meeting for repeated/concurrent calls with the same key, so even
+//     a true race never produces two distinct Graph meetings (the correctness
+//     guarantee across restarts and multiple service instances).
+//  2. A teams_meetings Mongo record with a UNIQUE index on (roomId, siteId) —
+//     this is the local first-class idempotency record (mirrors the
+//     room_members / subscriptions retry-safe-write convention). On a concurrent
+//     insert race the loser hits a duplicate-key error and reads back the
+//     winner's record, so exactly ONE teams_meet_started system message is ever
+//     published per room.
+//
+// Flow: fast-path read the record → if present, return it → else createOrGet →
+// insert the record → on dup-key, read back the winner → publish the system
+// message only when THIS call created the record. Enforces roomMembersLimit.
 func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingRequest) (*model.TeamsMeetingReply, error) { //nolint:gocritic // hugeParam: req passed by value to satisfy natsrouter.Register
 	var ctx context.Context = c
 	requestID := natsutil.RequestIDFromContext(c)
@@ -104,7 +120,7 @@ func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingReques
 	if roomID == "" {
 		return nil, errTeamsRoomIDRequired
 	}
-	if h.graphClient == nil || h.meetMarkerReader == nil {
+	if h.graphClient == nil || h.teamsMeetingStore == nil {
 		return nil, errTeamsNotConfigured
 	}
 
@@ -113,24 +129,11 @@ func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingReques
 		return nil, err
 	}
 
-	// Idempotency: a prior teams_meet_started marker short-circuits the Graph
-	// create so retries (and most concurrent clients) reuse the same meeting.
-	//
-	// Known limitation (read-then-create race): the marker is written via the
-	// canonical message path, which is asynchronous, so two callers racing
-	// before the first marker materializes can each create a Graph meeting. This
-	// mirrors the previous GetLastMeetStartedMessage behavior — there is no CAS/
-	// LWT lock primitive in this layer to make the create atomic, and adding one
-	// is a larger design decision left to the maintainer. The marker makes the
-	// endpoint eventually-idempotent: once a marker is visible, all subsequent
-	// calls reuse it. The blast radius of the race is a duplicate Teams meeting,
-	// not data corruption.
-	marker, found, err := h.meetMarkerReader.GetLastTeamsMeetStarted(ctx, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("read meeting marker: %w", err)
-	}
-	if found && marker != nil && marker.JoinURL != "" {
-		return &model.TeamsMeetingReply{ID: marker.MeetingID, JoinURL: marker.JoinURL}, nil
+	// (a) Fast-path: an existing record short-circuits Graph + insert + publish.
+	if rec, found, err := h.teamsMeetingStore.GetTeamsMeeting(ctx, roomID, h.siteID); err != nil {
+		return nil, fmt.Errorf("read teams meeting record: %w", err)
+	} else if found && rec != nil && rec.JoinURL != "" {
+		return &model.TeamsMeetingReply{ID: rec.MeetingID, JoinURL: rec.JoinURL}, nil
 	}
 
 	members, err := h.store.ListRoomMembers(ctx, roomID, nil, nil, false)
@@ -144,7 +147,10 @@ func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingReques
 	attendeeEmails := membersToAttendeeEmails(members, h.teamsEmailDomain)
 	organizerEmail := teamsEmail(requesterAccount, h.teamsEmailDomain)
 
+	// (b) Graph createOrGet keyed on the stable per-room externalId. Even on a
+	// race both callers get the SAME meeting back from Graph.
 	meeting, err := h.graphClient.CreateOnlineMeeting(ctx, msgraph.CreateOnlineMeetingRequest{
+		ExternalID:     teamsMeetingExternalID(h.siteID, roomID),
 		Subject:        meetingSubject(room),
 		OrganizerEmail: organizerEmail,
 		AttendeeEmails: attendeeEmails,
@@ -153,11 +159,50 @@ func (h *Handler) teamsMeeting(c *natsrouter.Context, _ model.TeamsMeetingReques
 		return nil, fmt.Errorf("create online meeting: %w", err)
 	}
 
+	// (c) Insert the idempotency record. The (roomId, siteId) unique index makes
+	// this the gate: on a concurrent insert race the loser hits a duplicate-key
+	// error, reads back the winner's record, and returns WITHOUT publishing a
+	// second system message.
+	record := model.TeamsMeetingRecord{
+		RoomID:    roomID,
+		SiteID:    h.siteID,
+		MeetingID: meeting.ID,
+		JoinURL:   meeting.JoinURL,
+		CreatedAt: time.Now().UTC().UnixMilli(),
+	}
+	if err := h.teamsMeetingStore.InsertTeamsMeeting(ctx, record); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			// A concurrent winner already wrote the record — read it back and
+			// return its meeting. Do NOT publish: the winner publishes.
+			rec, found, readErr := h.teamsMeetingStore.GetTeamsMeeting(ctx, roomID, h.siteID)
+			if readErr != nil {
+				return nil, fmt.Errorf("read teams meeting record after duplicate key: %w", readErr)
+			}
+			if found && rec != nil && rec.JoinURL != "" {
+				return &model.TeamsMeetingReply{ID: rec.MeetingID, JoinURL: rec.JoinURL}, nil
+			}
+			// Extremely unlikely: dup-key but no readable record. Fall back to
+			// the Graph meeting (createOrGet already guaranteed it is the same one).
+			return &model.TeamsMeetingReply{ID: meeting.ID, JoinURL: meeting.JoinURL}, nil
+		}
+		return nil, fmt.Errorf("insert teams meeting record: %w", err)
+	}
+
+	// (d) This call created the record — it is the unique winner, so publish the
+	// teams_meet_started system message exactly once.
 	if err := h.publishTeamsMeetStarted(ctx, requestID, roomID, requesterAccount, meeting); err != nil {
 		return nil, err
 	}
 
 	return &model.TeamsMeetingReply{ID: meeting.ID, JoinURL: meeting.JoinURL}, nil
+}
+
+// teamsMeetingExternalID builds the stable per-room idempotency key passed to
+// Graph createOrGet (and matching the teams_meetings unique key dimensions).
+// Scoped by siteID so the same roomID on different sites maps to distinct
+// meetings.
+func teamsMeetingExternalID(siteID, roomID string) string {
+	return siteID + ":" + roomID
 }
 
 // publishTeamsMeetStarted writes the teams_meet_started system message through

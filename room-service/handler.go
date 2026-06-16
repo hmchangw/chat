@@ -56,11 +56,12 @@ type Handler struct {
 
 	// Microsoft Teams integration. graphClient is nil-safe: only the meetings
 	// RPC uses it (the deep-link RPCs are pure string building). teamsEmailDomain
-	// derives a member's email as account@domain. meetMarkerReader backs the
-	// per-room idempotency read. roomMembersLimit / roomMembersCallLimit cap the
-	// member set for meetings and calls respectively.
+	// derives a member's email as account@domain. teamsMeetingStore backs the
+	// per-room idempotency record (Mongo unique key on roomId+siteId).
+	// roomMembersLimit / roomMembersCallLimit cap the member set for meetings and
+	// calls respectively.
 	graphClient          msgraph.Client
-	meetMarkerReader     MeetMarkerReader
+	teamsMeetingStore    TeamsMeetingStore
 	teamsEmailDomain     string
 	roomMembersLimit     int
 	roomMembersCallLimit int

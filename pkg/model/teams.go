@@ -38,3 +38,18 @@ type TeamsMeetingReply struct {
 	ID      string `json:"id"`
 	JoinURL string `json:"joinUrl"`
 }
+
+// TeamsMeetingRecord is the first-class persisted record of a room's Teams
+// meeting in the teams_meetings collection. A UNIQUE index on (roomId, siteId)
+// makes the meetings RPC retry-safe: a concurrent second create hits a
+// duplicate-key error, and the loser reads back the winner's record instead of
+// creating a duplicate system message. This is the same unique-index +
+// IsDuplicateKeyError idempotency convention room-service already uses for
+// room_members and subscriptions.
+type TeamsMeetingRecord struct {
+	RoomID    string `bson:"roomId"`
+	SiteID    string `bson:"siteId"`
+	MeetingID string `bson:"meetingId"`
+	JoinURL   string `bson:"joinUrl"`
+	CreatedAt int64  `bson:"createdAt"`
+}

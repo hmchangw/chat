@@ -21,13 +21,22 @@ import (
 // Client is the Graph surface room-service depends on. Only the meetings RPC
 // touches Graph, so this is intentionally tiny. Mocked in tests.
 type Client interface {
-	// CreateOnlineMeeting creates an onlineMeeting on behalf of the configured
-	// organizer and returns its ID and join URL.
+	// CreateOnlineMeeting creates (or returns the existing) onlineMeeting on
+	// behalf of the configured organizer and returns its ID and join URL. It
+	// uses Graph's idempotent createOrGet endpoint keyed on req.ExternalID, so
+	// concurrent or repeated calls with the same ExternalID return the same
+	// meeting — Graph itself is the idempotency source of truth.
 	CreateOnlineMeeting(ctx context.Context, req CreateOnlineMeetingRequest) (*OnlineMeeting, error)
 }
 
 // CreateOnlineMeetingRequest carries the attributes used to create a meeting.
 type CreateOnlineMeetingRequest struct {
+	// ExternalID is the stable per-room idempotency key passed to Graph's
+	// createOrGet endpoint. Graph guarantees exactly one meeting per
+	// (organizer, externalId), so repeated/concurrent calls with the same
+	// ExternalID return the same meeting instead of creating duplicates.
+	// Required: createOrGet rejects an empty externalId.
+	ExternalID string
 	// Subject is the meeting title shown in Teams.
 	Subject string
 	// OrganizerEmail is the user the meeting is created for (the organizer).
@@ -163,8 +172,10 @@ func (g *graphClient) accessToken(ctx context.Context) (string, error) {
 	return g.token, nil
 }
 
-// onlineMeetingPayload is the Graph create-onlineMeeting request body.
+// onlineMeetingPayload is the Graph createOrGet-onlineMeeting request body.
+// externalId is required by createOrGet and is the per-room idempotency key.
 type onlineMeetingPayload struct {
+	ExternalID   string               `json:"externalId"`
 	Subject      string               `json:"subject,omitempty"`
 	Participants *meetingParticipants `json:"participants,omitempty"`
 }
@@ -178,22 +189,27 @@ type meetingAttendee struct {
 }
 
 func (g *graphClient) CreateOnlineMeeting(ctx context.Context, req CreateOnlineMeetingRequest) (*OnlineMeeting, error) {
+	if req.ExternalID == "" {
+		return nil, fmt.Errorf("create onlineMeeting: externalId is required for createOrGet idempotency")
+	}
 	token, err := g.accessToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire graph token: %w", err)
 	}
 
+	// createOrGet pushes idempotency to Graph: it returns the existing meeting
+	// for an (organizer, externalId) pair if one exists, otherwise creates one.
 	// App-only context requires targeting a specific organizer mailbox via the
-	// /users/{id}/onlineMeetings path; delegated context uses /me. We use the
-	// organizer-scoped path when an organizer email is supplied.
+	// /users/{id}/onlineMeetings/createOrGet path; delegated context uses /me.
+	// We use the organizer-scoped path when an organizer email is supplied.
 	var endpoint string
 	if req.OrganizerEmail != "" {
-		endpoint = fmt.Sprintf("%s/users/%s/onlineMeetings", g.baseURL, url.PathEscape(req.OrganizerEmail))
+		endpoint = fmt.Sprintf("%s/users/%s/onlineMeetings/createOrGet", g.baseURL, url.PathEscape(req.OrganizerEmail))
 	} else {
-		endpoint = g.baseURL + "/me/onlineMeetings"
+		endpoint = g.baseURL + "/me/onlineMeetings/createOrGet"
 	}
 
-	payload := onlineMeetingPayload{Subject: req.Subject}
+	payload := onlineMeetingPayload{ExternalID: req.ExternalID, Subject: req.Subject}
 	if len(req.AttendeeEmails) > 0 {
 		attendees := make([]meetingAttendee, 0, len(req.AttendeeEmails))
 		for _, email := range req.AttendeeEmails {

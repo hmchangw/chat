@@ -1911,7 +1911,7 @@ See [Error envelope](#6-error-envelope-reference).
 
 #### Start Teams Meeting
 
-Creates a Microsoft Teams `onlineMeeting` via the Graph API and returns its join URL. **Idempotent per room:** the most recent `teams_meet_started` system message is the source of truth, so a second call returns the existing meeting without creating a duplicate. Attendee emails are derived as `account@TEAMS_EMAIL_DOMAIN`.
+Creates a Microsoft Teams `onlineMeeting` via the Graph API and returns its join URL. **Idempotent per room, including under concurrency:** the meeting is created via Graph's `createOrGet` endpoint keyed on a stable per-room `externalId`, and a first-class `teams_meetings` record with a unique key on `(roomId, siteId)` guards local state. Repeated or concurrent calls for the same room return the same meeting and publish exactly one `teams_meet_started` system message. Attendee emails are derived as `account@TEAMS_EMAIL_DOMAIN`.
 
 External client label: `POST /api/v1/meetings`.
 
