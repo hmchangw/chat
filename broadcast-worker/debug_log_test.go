@@ -136,11 +136,11 @@ func TestHandler_DMFanout_DebugBreadcrumbs(t *testing.T) {
 // emission in the feature — so explicitly lock that the message body never
 // reaches any breadcrumb (message or attr).
 func TestHandler_DMFanout_NoContentLeak(t *testing.T) {
-	const secret = "SUPER-SECRET-BODY-DO-NOT-LOG"
+	const canaryBody = "CANARY-BODY-MUST-NOT-LOG"
 	msgTime := time.Date(2026, 3, 26, 11, 0, 0, 0, time.UTC)
 	evt := model.MessageEvent{
 		Event: model.EventCreated, SiteID: "site-a", Timestamp: msgTime.UnixMilli(),
-		Message: model.Message{ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice", Content: secret, CreatedAt: msgTime},
+		Message: model.Message{ID: "msg-1", RoomID: "dm-1", UserID: "alice-id", UserAccount: "alice", Content: canaryBody, CreatedAt: msgTime},
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
@@ -160,9 +160,9 @@ func TestHandler_DMFanout_NoContentLeak(t *testing.T) {
 	defer rec.mu.Unlock()
 	require.NotEmpty(t, rec.recs, "trace run must emit breadcrumbs")
 	for i := range rec.recs {
-		assert.NotContains(t, rec.recs[i].Message, secret)
+		assert.NotContains(t, rec.recs[i].Message, canaryBody)
 		rec.recs[i].Attrs(func(a slog.Attr) bool {
-			assert.NotContains(t, a.Value.String(), secret, "attr %q leaked content", a.Key)
+			assert.NotContains(t, a.Value.String(), canaryBody, "attr %q leaked content", a.Key)
 			return true
 		})
 	}
