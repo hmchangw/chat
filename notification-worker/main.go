@@ -17,6 +17,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -53,6 +54,7 @@ type config struct {
 	NatsMaxPayloadBytes    int                     `env:"NATS_MAX_PAYLOAD_BYTES"    envDefault:"262144"` // must match broker max_payload; emitter rejects any gzipped batch exceeding this
 	Consumer               stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap              bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	HealthAddr             string                  `env:"HEALTH_ADDR" envDefault:":8081"`
 }
 
 type mongoMemberLoader struct {
@@ -302,6 +304,14 @@ func main() {
 		}
 	}()
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("notification-worker started",
 		"site", cfg.SiteID,
 		"large_room_threshold", cfg.LargeRoomThreshold,
@@ -346,6 +356,7 @@ func main() {
 		func(_ context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(_ context.Context) error { valkeyutil.Disconnect(valkeyClient); return nil },
+		func(ctx context.Context) error { return healthStop(ctx) },
 	)
 }
 

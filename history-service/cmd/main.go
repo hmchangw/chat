@@ -17,6 +17,7 @@ import (
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/emoji"
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/msgbucket"
@@ -185,6 +186,14 @@ func main() {
 
 	svc.RegisterHandlers(router, cfg.SiteID)
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("history-service running", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
@@ -199,5 +208,6 @@ func main() {
 			}
 			return nil
 		},
+		func(ctx context.Context) error { return healthStop(ctx) },
 	)
 }

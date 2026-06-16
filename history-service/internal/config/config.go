@@ -37,6 +37,7 @@ type NATSConfig struct {
 // Config is the top-level configuration for the history-service.
 type Config struct {
 	SiteID                  string          `env:"SITE_ID"                    envDefault:"site-local"`
+	HealthAddr              string          `env:"HEALTH_ADDR"                envDefault:":8081"`
 	Cassandra               CassandraConfig `envPrefix:"CASSANDRA_"`
 	Mongo                   MongoConfig     `envPrefix:"MONGO_"`
 	NATS                    NATSConfig      `envPrefix:"NATS_"`

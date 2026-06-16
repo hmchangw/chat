@@ -12,6 +12,7 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -53,6 +54,7 @@ type config struct {
 	MsgIndexPrefix      string `env:"MSG_INDEX_PREFIX,required"`
 	SpotlightIndex      string `env:"SPOTLIGHT_INDEX,required"`
 	UserRoomIndex       string `env:"USER_ROOM_INDEX,required"`
+	HealthAddr          string `env:"HEALTH_ADDR" envDefault:":8081"`
 
 	// SyncMessagesFrom is an optional YYYY-MM-DD cutoff (UTC) that the
 	// messages collection compares against Message.CreatedAt. Events
@@ -256,6 +258,14 @@ func main() {
 		go runConsumer(ctx, cons, handler, cfg.FetchBatchSize, cfg.BulkBatchSize, bulkFlushInterval, stopCh, doneCh)
 	}
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	syncMessagesFromLog := "disabled"
 	if !syncMessagesFrom.IsZero() {
 		syncMessagesFromLog = syncMessagesFrom.Format(time.RFC3339)
@@ -286,6 +296,7 @@ func main() {
 		},
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
+		func(ctx context.Context) error { return healthStop(ctx) },
 	)
 }
 

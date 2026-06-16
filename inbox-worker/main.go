@@ -18,6 +18,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -39,6 +40,7 @@ type config struct {
 	MaxWorkers    int                     `env:"MAX_WORKERS"     envDefault:"100"`
 	Consumer      stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap     bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	HealthAddr    string                  `env:"HEALTH_ADDR" envDefault:":8081"`
 }
 
 // mongoInboxStore implements InboxStore using MongoDB.
@@ -531,6 +533,14 @@ func main() {
 		}
 	}()
 
+	healthStop, err := health.Serve(cfg.HealthAddr, 5*time.Second,
+		natsutil.HealthCheck(nc),
+	)
+	if err != nil {
+		slog.Error("health server failed to start", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("inbox-worker started", "site", cfg.SiteID)
 
 	shutdown.Wait(ctx, 25*time.Second,
@@ -551,6 +561,7 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(ctx context.Context) error { return healthStop(ctx) },
 	)
 }
 
