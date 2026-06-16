@@ -72,18 +72,29 @@ func (m *mongoChangeSource) Next(ctx context.Context) (changeEvent, error) {
 	if err := m.cs.Decode(&doc); err != nil {
 		return changeEvent{}, fmt.Errorf("decode change event: %w", err)
 	}
-	return doc.toChangeEvent(m.cs.ResumeToken()), nil
+	ce, err := doc.toChangeEvent(m.cs.ResumeToken())
+	if err != nil {
+		return changeEvent{}, fmt.Errorf("change event %q: %w", doc.OperationType, err)
+	}
+	return ce, nil
 }
 
 func (m *mongoChangeSource) Close(ctx context.Context) error {
 	return m.cs.Close(ctx)
 }
 
-func (d *rawChangeDoc) toChangeEvent(resumeToken bson.Raw) changeEvent {
+func (d *rawChangeDoc) toChangeEvent(resumeToken bson.Raw) (changeEvent, error) {
 	var idDoc struct {
 		Data string `bson:"_data"`
 	}
-	_ = bson.Unmarshal(d.ID, &idDoc)
+	if err := bson.Unmarshal(d.ID, &idDoc); err != nil {
+		return changeEvent{}, fmt.Errorf("decode resume token _id: %w", err)
+	}
+	if idDoc.Data == "" {
+		// Mongo guarantees a non-empty _data on every change event; an empty one is a
+		// serious driver/server anomaly — fail loud rather than emit an undedup-able event.
+		return changeEvent{}, fmt.Errorf("resume token _id._data is empty")
+	}
 
 	// Each bson.Raw aliases the stream's Current buffer (valid only until the next Next),
 	// so clone to stay valid if held across a Next(). bytes.Clone(nil)==nil preserves omitempty.
@@ -99,5 +110,5 @@ func (d *rawChangeDoc) toChangeEvent(resumeToken bson.Raw) changeEvent {
 		// Seconds only, so events within the same second share this value — fine for the
 		// coarse cross-collection sort, not a strict ordering key.
 		ClusterTimeMs: int64(d.ClusterTime.T) * 1000,
-	}
+	}, nil
 }

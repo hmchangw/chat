@@ -257,20 +257,6 @@ func TestWatcher_PeriodicFlushCheckpointsBelowCount(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond, "periodic flusher should persist the frontier without hitting the count threshold")
 }
 
-func TestWatcher_EmptyEventIDSkipped(t *testing.T) {
-	// An event with no _id._data can't be deduped; it must be skipped, never
-	// published, and never recorded as a frontier.
-	ev := mkEvent("", "insert")
-	src := &fakeSource{events: []changeEvent{ev}}
-	pub := &fakePublisher{}
-	store, saved := captureStore(t)
-	w := testWatcher(src, pub, store, 1)
-
-	require.NoError(t, w.run(context.Background()))
-	assert.Empty(t, pub.msgs, "empty-id event must not be published")
-	assert.Empty(t, saved.ids(), "empty-id event must not advance the checkpoint")
-}
-
 func TestCheckpointer_FlushDedupes(t *testing.T) {
 	store, saved := captureStore(t)
 	cps := &checkpointer{store: store}

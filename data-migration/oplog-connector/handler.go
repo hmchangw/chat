@@ -156,11 +156,6 @@ func (w *watcher) run(ctx context.Context) error {
 			return nil // only ctx cancellation breaks the retry loop — graceful
 		}
 
-		// A skipped poison event (empty EventID) is never recorded as a frontier;
-		// the next valid event's resume token advances safely past it.
-		if ev.EventID == "" {
-			continue
-		}
 		cps.record(&Checkpoint{
 			SiteID:      w.siteID,
 			Collection:  w.collection,
@@ -183,16 +178,9 @@ func (w *watcher) run(ctx context.Context) error {
 	}
 }
 
-// publishWithRetry publishes one event synchronously, retrying with capped backoff until pub-ack or ctx cancel. An event with a missing dedup id is dropped; a field that fails to encode is published degraded (not dropped) so the stream stays lossless.
+// publishWithRetry publishes one event synchronously, retrying with capped backoff until pub-ack or ctx cancel. EventID (the dedup id) is guaranteed non-empty upstream; a field that fails to encode is published degraded (not dropped) so the stream stays lossless.
 func (w *watcher) publishWithRetry(ctx context.Context, ev *changeEvent) error {
 	subj, msgID, evt := buildEnvelope(ev, w.siteID, w.now())
-	if msgID == "" {
-		// An empty Nats-Msg-Id disables JetStream dedup, so publishing this would
-		// silently forfeit the at-least-once-deduped guarantee. Skip instead.
-		w.log.Error("change event has empty id — skipping (cannot dedup)", "collection", w.collection, "op", evt.Op)
-		w.metrics.onSkipped(ctx, w.collection)
-		return nil
-	}
 	data, err := json.Marshal(evt)
 	if err != nil {
 		w.log.Error("marshal oplog event failed — skipping event", "eventId", ev.EventID, "error", err)
