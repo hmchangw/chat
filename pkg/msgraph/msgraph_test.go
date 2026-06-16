@@ -29,7 +29,7 @@ func TestCreateOnlineMeeting_Success(t *testing.T) {
 		require.NoError(t, r.ParseForm())
 		assert.Equal(t, "client_credentials", r.Form.Get("grant_type"))
 		assert.Equal(t, graphScope, r.Form.Get("scope"))
-		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok-123", ExpiresIn: 3600})
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok-123", ExpiresIn: 3600}) // #nosec G117 -- test mock encodes a fake OAuth token response; dummy value, not a real secret
 	}))
 	defer tokenSrv.Close()
 
@@ -70,7 +70,7 @@ func TestCreateOnlineMeeting_Success(t *testing.T) {
 // truth — the server returns the existing meeting on the second createOrGet).
 func TestCreateOnlineMeeting_Idempotent_SameExternalID(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600})
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600}) // #nosec G117 -- test mock encodes a fake OAuth token response; dummy value, not a real secret
 	}))
 	defer tokenSrv.Close()
 
@@ -120,7 +120,7 @@ func TestCreateOnlineMeeting_RequiresExternalID(t *testing.T) {
 func TestCreateOnlineMeeting_TokenError(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(tokenResponse{Error: "invalid_client", ErrorDesc: "bad secret"})
+		_ = json.NewEncoder(w).Encode(tokenResponse{Error: "invalid_client", ErrorDesc: "bad secret"}) // #nosec G117 -- test mock encodes a fake OAuth token response; dummy value, not a real secret
 	}))
 	defer tokenSrv.Close()
 
@@ -137,7 +137,7 @@ func TestCreateOnlineMeeting_TokenError(t *testing.T) {
 
 func TestCreateOnlineMeeting_GraphError(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600})
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600}) // #nosec G117 -- test mock encodes a fake OAuth token response; dummy value, not a real secret
 	}))
 	defer tokenSrv.Close()
 	graphSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -157,7 +157,7 @@ func TestCreateOnlineMeeting_GraphError(t *testing.T) {
 
 func TestCreateOnlineMeeting_MissingJoinURL(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600})
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600}) // #nosec G117 -- test mock encodes a fake OAuth token response; dummy value, not a real secret
 	}))
 	defer tokenSrv.Close()
 	graphSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
