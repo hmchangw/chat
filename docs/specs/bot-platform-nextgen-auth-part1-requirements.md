@@ -63,11 +63,12 @@ A would have shipped faster but mixes a web app's security model into the human-
 | API — legacy bot login | `/api/v1/login` | POST | **JSON** (`authToken`,`userId`,`me`) | — |
 | API — new bot login | `/v1/bot/login` | POST | **JSON** (new token) | — |
 | API — token validation | `/v1/auth/validate` | POST | **JSON** (`valid`,principal) | `{userId,authToken}` |
-| Admin | `/v1/admin/bots…` | POST/GET/DELETE | JSON | admin session |
+| Web — admin console *(role==admin)* | `/admin`, `/admin/bots…` | GET/POST | **HTML** / redirect | admin session cookie + CSRF |
 
+- **`/dev-login` is one role-aware web login** for humans (admin + bot-dev). Admins see an **admin console**; non-admins see a **simple page** (change own password). **Admin is part of the web UI — not a separate API** (Q18).
 - **Web routes** use **session cookies** (HttpOnly/Secure/SameSite) + **CSRF**.
 - **`/v1/auth/validate`** is called by **ApiGW, the WebSocket server, and EventConsumer** to authenticate bot traffic (replacing legacy-proxy validation).
-- **`/api/v1/login`** preserves the legacy contract verbatim; **`/v1/bot/login`** is the new path. Both via Istio at the same hostnames so bots don't change URLs.
+- **`/api/v1/login`** (legacy contract) + **`/v1/bot/login`** (new) are for **bot processes** (SDK); both via Istio at the same hostnames so bots don't change URLs.
 
 ---
 

@@ -203,18 +203,24 @@ Istio ingress
 
 ---
 
-## 8. Operator UI + admin REST endpoints (Q15)
-The operator UI is a **web app talking to `botplatform-service` over REST** — *not* a NATS-native client. (The earlier "NATS-native operator UI" assumption is superseded: under Option B our service is an HTTP/web service that already owns `credentials`/`sessions` and serves the web UI, so admin ops are REST endpoints on it — bolting NATS handlers onto an HTTP service would serve no caller. NATS stays reserved for the nextgen chat backend's own comms.) Each op = one Gin handler returning a typed `*errcode.Error` via `errhttp.Write`; guarded by an admin session + `roles ∋ admin`.
+## 8. Admin = role-gated web UI (Q15, Q18)
 
-| Operation | Endpoint (§9.6) | Writes |
+There is **no separate admin API.** `/dev-login` is the **one** web login for humans (admins *and* bot-account holders / devs); after auth the **server-rendered UI is role-aware**:
+
+- **admin** (`roles ∋ admin`) → an **admin console**: create bot, set/rotate password, list/revoke sessions.
+- **non-admin** (bot account / dev) → a **simple page**: you're logged in; change your own password.
+
+Admin actions are **CSRF-protected form POSTs on role-gated web routes** within the same UI — *not* a JSON API the front-end "calls again," and *not* NATS. Each is a Gin handler that renders HTML / redirects (errors via the web flow). Bot **processes** never use these — they authenticate programmatically via `POST /api/v1/login` / `/v1/bot/login`.
+
+| Admin action (web, `role==admin`) | Route | Writes |
 |---|---|---|
-| admin login | `POST /dev-login` (web) | `sessions` |
-| create bot | `POST /v1/admin/bots` | `users` + `credentials` (`RequirePasswordChange:true`) |
-| set/rotate password | `POST /v1/admin/bots/{id}/password` | `credentials`, revoke `sessions` |
-| list sessions | `GET /v1/admin/bots/{id}/sessions` | reads `sessions` by `userId` |
-| revoke session / revoke all | `DELETE /v1/admin/bots/{id}/sessions[/{sid}]` | `sessions` |
+| console / list bots | `GET /admin` | reads |
+| create bot | `POST /admin/bots` | `users` + `credentials` (`RequirePasswordChange:true`) |
+| set/rotate password | `POST /admin/bots/{id}/password` | `credentials`, revoke `sessions` |
+| list sessions | `GET /admin/bots/{id}/sessions` | reads `sessions` by `userId` |
+| revoke session / all | `POST /admin/bots/{id}/sessions/revoke` | `sessions` |
 
-`docs/client-api.md` is for `chat.user.` NATS RPCs and does **not** apply here; document these REST endpoints in `botplatform-service`'s own API doc (per repo HTTP-service convention).
+> A **JSON** admin API would only be added later **if** programmatic provisioning is needed (e.g. CI creating bots) — not now (Q18). `docs/client-api.md` (NATS `chat.user.` RPCs) does not apply; document these web routes in `botplatform-service`'s own README/API doc.
 
 ---
 
@@ -283,19 +289,15 @@ These drive the design choices in §9.3 (cache-fronted validation, throttled `La
 |---|---|---|---|---|---|
 | Web — login form | `/dev-login` | GET | HTML | — | — |
 | Web — login submit | `/dev-login` | POST | redirect + Set-Cookie | form | **yes** |
-| Web — change-pwd form | `/changepwd` | GET | HTML | session cookie | — |
-| Web — change-pwd submit | `/changepwd` | POST | redirect | session cookie | **yes** |
+| Web — change-pwd | `/changepwd` | GET/POST | HTML / redirect | session cookie | **yes** (POST) |
+| Web — admin console *(role==admin)* | `/admin`, `/admin/bots[...]` | GET/POST | HTML / redirect | admin session cookie | **yes** (POST) |
 | API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
 | API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
 | API — token validation | `/v1/auth/validate` | POST | JSON `{valid,account,userId}` | `{userId,authToken}` body | n/a |
-| Admin — create bot | `/v1/admin/bots` | POST | JSON | admin session | n/a |
-| Admin — set/rotate password | `/v1/admin/bots/{id}/password` | POST | JSON | admin session | n/a |
-| Admin — list sessions | `/v1/admin/bots/{id}/sessions` | GET | JSON | admin session | n/a |
-| Admin — revoke session(s) | `/v1/admin/bots/{id}/sessions[/{sid}]` | DELETE | JSON | admin session | n/a |
 | Health | `/healthz` | GET | 200 | — | — |
 
 - **There is no `/api/v2/*` here** — ApiGW (existing) routes that to `Server`; we only answer ApiGW's `/v1/auth/validate` calls (Q17).
-- **Admin endpoints are REST** (not NATS, Q15), guarded by an admin session (web operator UI) and an `roles ∋ admin` check.
+- **Admin is part of the role-gated web UI** (not a separate JSON API, not NATS — Q15/Q18): the same `/dev-login` session, `roles ∋ admin`, server-rendered pages + CSRF form POSTs (§8).
 
 - **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
 - **API** = bearer tokens only; **no cookies, no CSRF** (no ambient credential to forge).
@@ -363,6 +365,7 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 - **Q13 — REST→NATS bridge ownership.** ✅ Bridge lives in **`Server`/data-plane track**, never our auth service (Part 3 §4.1). *Wired during implementation/migration — not a design blocker.*
 
 ### Confirmed — closed
+- **Q18 — Admin surface.** ✅ **No separate admin API.** `/dev-login` is one role-aware web login; admin = role-gated server-rendered web routes + CSRF form POSTs (§8). Bot processes use the login API only. A JSON admin API is deferred until programmatic provisioning is actually needed. *(2026-06-16.)*
 - **Q17 — Service scope.** ✅ **`botplatform-service` is the auth provider, not a data-path proxy** (Option (b), 2026-06-16). ApiGW (existing) keeps routing/rate-limit/metrics and calls our `/v1/auth/validate`; `Server` serves `/api/v2/*`. We own login + validate + `credentials`/`sessions` + web UI + admin (§9).
 - **Q16 — Sequencing.** ✅ **Validation-first** (§19): move validation off the legacy proxy first (biggest win), then login, then sunset legacy. Login is phase-2.
 - **Q15 — Admin/auth surface protocol.** ✅ **REST, not NATS** (§8, §15). Every caller (bots, browsers, ApiGW, WS) speaks HTTP; NATS is reserved for the nextgen backend's own comms. Admin ops are REST endpoints on `botplatform-service`.
