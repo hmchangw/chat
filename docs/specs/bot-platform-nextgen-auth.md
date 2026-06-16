@@ -305,13 +305,13 @@ These drive the design choices in §9.3 (pooled service-account connection, cach
 Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via the 180-day sliding window. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
 
 ### 9.8 `/v1/auth/validate` — the single dual-token authority (Q14)
-`POST /v1/auth/validate` is the **one** place token validation lives; it runs §5.3 (dual-token: `legacy` + `v1`) and returns `{valid, account, userId}`. Downstreams **must not** re-implement token logic or blindly trust a raw `X-User-Id`:
+`POST /v1/auth/validate` is the **one** place token validation lives; it runs §5.3 (dual-token: `legacy` + `v1`) and returns `{valid, account, userId}`. **The caching is part of this API** — Valkey hot path (<5 ms, >95% hit), Mongo on miss, legacy-fallback, sliding-expiry bump, and lockout all live behind it — so callers get fast, correct validation without re-implementing any of it or coupling to our cache schema. Downstreams **must not** re-implement token logic or blindly trust a raw `X-User-Id`:
 
-- **WebSocket server (:8899)** — not behind our HTTP gateway, so it **calls `/v1/auth/validate`** once per connection (Part 3 §4.2).
-- **Legacy v2 backend** — if reachable **directly** (not strictly gateway-fronted), it likewise **calls `/v1/auth/validate`** instead of validating against its own store (so it stays token-format-agnostic).
-- **Gateway-fronted proxy path** (`/api/v2/*`) — our service **already validated once** before proxying, so legacy v2 **trusts the injected principal**, secured by **Istio mTLS service-identity** (only our service may call legacy v2) + the gateway **overwriting/stripping** any client-supplied `X-User-Id`. This avoids **double-validating** the 1M/min hot path — not blind trust, but identity-enforced trust.
+- **ApiGW** — the front-door router; **calls `/v1/auth/validate`** before routing (replacing today's proxy-to-legacy validation, which added latency + failure points). May add an optional short-TTL micro-cache.
+- **WebSocket server (:8899)** and **EventConsumer** — not behind ApiGW, so they **call `/v1/auth/validate`** directly.
+- **Server / legacy v2 backend** — sits *behind* ApiGW, so it **trusts the principal ApiGW injects** under **Istio mTLS service-identity** + `X-User-Id` overwrite. No double-validation of the 1M/min hot path.
 
-Rule of thumb: **no trusted upstream → call `/v1/auth/validate`; trusted (mTLS-fronted) upstream → trust the injected principal.**
+Rule of thumb: **front-door / no trusted upstream → call `/v1/auth/validate`; behind a trusted (mTLS) validator → trust the injected principal.**
 
 ---
 
