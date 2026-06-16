@@ -47,7 +47,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, errcode.Forbidden("thread is outside access window", errcode.WithReason(errcode.MessageOutsideAccessWindow))
 	}
 
-	// Apply redaction to the parent's quoted message before including it in the response.
+	// Apply redaction to the parent's quoted message in-place before including it in the
+	// response. This must run before both short-circuit returns below so no branch can
+	// return an unredacted parent. msg is subsequently stored in ParentMessage.
 	redactUnavailableQuote(msg, accessSince)
 
 	// Empty ThreadRoomID means no replies yet or a silently-failed stamp in message-worker.
