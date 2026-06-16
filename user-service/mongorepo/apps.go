@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -28,6 +29,21 @@ func NewAppRepo(db *mongo.Database) *AppRepo {
 		apps:  mongoutil.NewCollection[model.App](col),
 		items: mongoutil.NewCollection[models.AppListItem](col),
 	}
+}
+
+// EnsureIndexes creates the apps index that backs assistant.name lookups
+// (GetAppsByAssistants and the bot-DM $lookup), removing the COLLSCAN. The name
+// matches room-service's so the two services' CreateOne calls agree instead of
+// colliding with IndexOptionsConflict — each service declares the index it needs.
+func (r *AppRepo) EnsureIndexes(ctx context.Context) error {
+	appsIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
+		Options: options.Index().SetName("assistant_name_idx"),
+	}
+	if _, err := r.apps.Raw().Indexes().CreateOne(ctx, appsIndex); err != nil {
+		return fmt.Errorf("ensure apps index: %w", err)
+	}
+	return nil
 }
 
 // GetApp returns the app by id, or (nil, nil) when none matches.

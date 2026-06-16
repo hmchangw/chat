@@ -36,6 +36,22 @@ func indexKeySpecs(t *testing.T, coll *mongo.Collection) map[string]struct{} {
 	return out
 }
 
+// indexNames returns the set of index names on coll.
+func indexNames(t *testing.T, coll *mongo.Collection) map[string]struct{} {
+	t.Helper()
+	cur, err := coll.Indexes().List(context.Background())
+	require.NoError(t, err)
+	var idx []struct {
+		Name string `bson:"name"`
+	}
+	require.NoError(t, cur.All(context.Background(), &idx))
+	out := make(map[string]struct{}, len(idx))
+	for _, ix := range idx {
+		out[ix.Name] = struct{}{}
+	}
+	return out
+}
+
 func TestEnsureIndexes_Integration(t *testing.T) {
 	subRepo, _ := newTestSubscriptionRepo(t)
 	userRepo, _ := newTestUserRepo(t)
@@ -89,4 +105,24 @@ func TestUserEnsureIndexes_NonUniqueAccountConflict_Integration(t *testing.T) {
 	err = NewUserRepo(db).EnsureIndexes(ctx)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "drop the old non-unique account_1 index")
+}
+
+// The apps index backs assistant.name lookups (GetAppsByAssistants / the bot-DM
+// $lookup), removing the COLLSCAN. It must carry the SAME name as room-service's
+// so the two services' CreateOne calls agree instead of colliding with
+// IndexOptionsConflict.
+func TestAppEnsureIndexes_Integration(t *testing.T) {
+	appRepo, _ := newTestAppRepo(t)
+	ctx := context.Background()
+
+	require.NoError(t, appRepo.EnsureIndexes(ctx))
+	// Idempotent: a second call (e.g. restart, or after room-service created it)
+	// must not error.
+	require.NoError(t, appRepo.EnsureIndexes(ctx))
+
+	keys := indexKeySpecs(t, appRepo.apps.Raw())
+	require.Contains(t, keys, "assistant.name:1")
+
+	names := indexNames(t, appRepo.apps.Raw())
+	require.Contains(t, names, "assistant_name_idx")
 }

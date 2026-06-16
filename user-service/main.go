@@ -70,6 +70,10 @@ func main() {
 		slog.Error("ensure indexes failed", "error", err)
 		os.Exit(1)
 	}
+	if err := appRepo.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
 
 	// roomkeystore reads the CURRENT room key for LOCAL subscription enrichment;
 	// GetMany never consults the previous-key grace window, so gracePeriod is
