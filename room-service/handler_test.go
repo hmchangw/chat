@@ -3908,6 +3908,7 @@ func TestHandler_natsGetRoomKey(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, resp)
+			// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 			respJSON, mErr := json.Marshal(resp)
 			require.NoError(t, mErr)
 			require.JSONEq(t, tc.want.replyJSON, string(respJSON))
