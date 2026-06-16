@@ -3502,3 +3502,19 @@ func TestOplogEventJSON_UpdateDelta(t *testing.T) {
 	}
 	roundTrip(t, &src, &model.OplogEvent{})
 }
+
+func TestOplogEventJSON_Degraded(t *testing.T) {
+	src := model.OplogEvent{
+		EventID:        "F00D01",
+		Op:             "insert",
+		DB:             "rocketchat",
+		Collection:     "rocketchat_message",
+		DocumentKey:    json.RawMessage(`{"_id":"abc"}`),
+		ClusterTime:    1718100000000,
+		Degraded:       true,
+		DegradedReason: "x",
+		SiteID:         "site1",
+		Timestamp:      1718100000123,
+	}
+	roundTrip(t, &src, &model.OplogEvent{})
+}

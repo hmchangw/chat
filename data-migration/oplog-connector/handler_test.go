@@ -221,16 +221,22 @@ func TestIsHistoryLost(t *testing.T) {
 	assert.False(t, isHistoryLost(nil))
 }
 
-func TestBuildEnvelope_InvalidBSONErrors(t *testing.T) {
-	// A malformed documentKey makes the BSON→JSON conversion fail.
-	ev := changeEvent{
-		EventID:     "E1",
-		Op:          "insert",
-		Collection:  "rocketchat_message",
-		DocumentKey: bson.Raw([]byte{0x01, 0x02, 0x03}), // not a valid BSON document
-	}
-	_, _, _, err := buildEnvelope(&ev, "site1", 1)
-	require.Error(t, err)
+func TestWatcher_DegradedEventStillPublishedAndCheckpointed(t *testing.T) {
+	// A field that fails to encode must NOT drop the event: it is published
+	// degraded so the checkpoint advances legitimately (lossless guarantee).
+	ev := mkEvent("E1", "insert")
+	ev.FullDocument = bson.Raw{0x05, 0x00, 0x00, 0x00, 0x01} // invalid BSON → encode fails
+
+	src := &fakeSource{events: []changeEvent{ev}}
+	pub := &fakePublisher{}
+	store, saved := captureStore(t)
+	w := testWatcher(src, pub, store, 1)
+
+	require.NoError(t, w.run(context.Background()))
+
+	require.Len(t, pub.msgs, 1, "degraded event is still published, never dropped")
+	assert.Equal(t, "E1", pub.msgs[0].Header.Get("Nats-Msg-Id"))
+	assert.Equal(t, []string{"E1"}, saved.ids(), "checkpoint advances past the published degraded event")
 }
 
 func TestWatcher_PeriodicFlushCheckpointsBelowCount(t *testing.T) {

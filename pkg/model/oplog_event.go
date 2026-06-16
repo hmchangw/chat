@@ -22,7 +22,12 @@ type OplogEvent struct {
 	// UpdateDescription is the raw change delta (updatedFields/removedFields/truncatedArrays)
 	// for update ops, forwarded verbatim; no updateLookup post-image (that's a downstream lookup).
 	UpdateDescription json.RawMessage `json:"updateDescription,omitempty" bson:"updateDescription,omitempty"`
-	SiteID            string          `json:"siteId" bson:"siteId"`
+	// Degraded is true when one or more opaque fields could not be encoded; the affected field
+	// is omitted. The event is still published (never dropped) so the stream stays lossless.
+	Degraded bool `json:"degraded,omitempty" bson:"degraded,omitempty"`
+	// DegradedReason describes which field failed and why (first failure wins).
+	DegradedReason string `json:"degradedReason,omitempty" bson:"degradedReason,omitempty"`
+	SiteID         string `json:"siteId" bson:"siteId"`
 	// Timestamp is the event-level publish time in unix milliseconds.
 	Timestamp int64 `json:"timestamp" bson:"timestamp"`
 }

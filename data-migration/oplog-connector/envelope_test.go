@@ -50,8 +50,7 @@ func TestBuildEnvelope_OpsAndSubjects(t *testing.T) {
 				ev.UpdateDescription = mustRaw(t, bson.M{"updatedFields": bson.M{"msg": "edited"}})
 			}
 
-			subj, msgID, evt, err := buildEnvelope(&ev, site, nowMs)
-			require.NoError(t, err)
+			subj, msgID, evt := buildEnvelope(&ev, site, nowMs)
 
 			assert.Equal(t, tc.wantSubject, subj)
 			assert.Equal(t, ev.EventID, msgID, "msgID must equal eventID")
@@ -79,8 +78,43 @@ func TestBuildEnvelope_OpsAndSubjects(t *testing.T) {
 			} else {
 				assert.Nil(t, evt.UpdateDescription)
 			}
+
+			assert.False(t, evt.Degraded, "well-formed events are not degraded")
+			assert.Empty(t, evt.DegradedReason)
 		})
 	}
+}
+
+func TestBuildEnvelope_DegradesOnFieldEncodeFailure(t *testing.T) {
+	// Lock the fixture: this raw declares length 5 but its terminator byte is
+	// 0x01 (not 0x00), so MarshalExtJSON rejects it.
+	bad := bson.Raw{0x05, 0x00, 0x00, 0x00, 0x01}
+	_, e := rawToJSON(bad)
+	require.Error(t, e, "fixture must make rawToJSON fail")
+
+	ev := changeEvent{
+		EventID:      "EVT-degrade",
+		Op:           "insert",
+		DB:           "rocketchat",
+		Collection:   "rocketchat_message",
+		DocumentKey:  mustRaw(t, bson.M{"_id": "abc"}),
+		FullDocument: bad, // forces the encode failure
+	}
+
+	_, msgID, evt := buildEnvelope(&ev, "site1", 1)
+
+	assert.True(t, evt.Degraded, "a field that fails to encode degrades the event")
+	assert.NotEmpty(t, evt.DegradedReason, "degraded events carry a reason")
+	assert.Contains(t, evt.DegradedReason, "fullDocument", "reason names the failed field")
+	assert.Nil(t, evt.FullDocument, "the failed field is omitted")
+
+	// Non-failing fields are still populated — the event is published, not dropped.
+	assert.Equal(t, "EVT-degrade", msgID)
+	assert.Equal(t, "EVT-degrade", evt.EventID)
+	assert.Equal(t, "insert", evt.Op)
+	assert.Equal(t, "rocketchat_message", evt.Collection)
+	require.NotNil(t, evt.DocumentKey)
+	assert.True(t, json.Valid(evt.DocumentKey))
 }
 
 func TestBuildEnvelope_OpaqueDocumentContents(t *testing.T) {
@@ -92,8 +126,7 @@ func TestBuildEnvelope_OpaqueDocumentContents(t *testing.T) {
 		DocumentKey:  mustRaw(t, bson.M{"_id": "u1"}),
 		FullDocument: mustRaw(t, bson.M{"_id": "u1", "name": "alice", "active": true}),
 	}
-	_, _, evt, err := buildEnvelope(&ev, "site1", 1)
-	require.NoError(t, err)
+	_, _, evt := buildEnvelope(&ev, "site1", 1)
 
 	// The connector does not interpret the doc; it round-trips as JSON.
 	var decoded map[string]any

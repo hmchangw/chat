@@ -14,6 +14,7 @@ type metrics struct {
 	published metric.Int64Counter
 	errors    metric.Int64Counter
 	skipped   metric.Int64Counter
+	degraded  metric.Int64Counter
 	lagMs     metric.Int64Gauge
 }
 
@@ -34,12 +35,17 @@ func newMetrics() (*metrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skipped counter: %w", err)
 	}
+	degraded, err := m.Int64Counter("oplog_events_degraded_total",
+		metric.WithDescription("events published with a field that failed to encode, by collection"))
+	if err != nil {
+		return nil, fmt.Errorf("degraded counter: %w", err)
+	}
 	lag, err := m.Int64Gauge("oplog_replication_lag_ms",
 		metric.WithDescription("now - clusterTime at publish, by collection"))
 	if err != nil {
 		return nil, fmt.Errorf("lag gauge: %w", err)
 	}
-	return &metrics{published: published, errors: errs, skipped: skipped, lagMs: lag}, nil
+	return &metrics{published: published, errors: errs, skipped: skipped, degraded: degraded, lagMs: lag}, nil
 }
 
 func collAttr(coll string) metric.MeasurementOption {
@@ -66,4 +72,11 @@ func (m *metrics) onSkipped(ctx context.Context, coll string) {
 		return
 	}
 	m.skipped.Add(ctx, 1, collAttr(coll))
+}
+
+func (m *metrics) onDegraded(ctx context.Context, coll string) {
+	if m == nil {
+		return
+	}
+	m.degraded.Add(ctx, 1, collAttr(coll))
 }

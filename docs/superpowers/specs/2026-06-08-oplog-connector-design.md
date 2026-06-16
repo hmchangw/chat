@@ -91,6 +91,8 @@ type OplogEvent struct {
 
 The opaque **resume token** is kept **internally** for checkpointing and is *not* in the payload.
 
+**Encode-failure degradation (lossless).** If an opaque field (`documentKey`/`fullDocument`/`updateDescription`) fails to encode, that field is omitted and the event is published with `Degraded=true` and a `DegradedReason` (first failure wins) — it is **never dropped**, so the checkpoint advances legitimately and the stream stays lossless. The downstream transformer recovers degraded events.
+
 **No lookups — native oplog content only.** The connector never enriches: it forwards exactly what the change stream carries natively. `FullDocument` is the document for `insert`/`replace` (it's in the oplog entry — free); `update` carries only `UpdateDescription` (the raw delta), **not** an `updateLookup` post-image; `delete` carries only the `documentKey`. No `updateLookup` (an extra source read, and it returns the *current* doc, which can be newer than the event) and **no pre-images** (a source-side feature with storage cost). All enrichment — resolving a delete's `_id`, applying a delta, joining to a room/user — is the downstream transformer's job, against the state it is building. This keeps the pump dumb and the `MIGRATION_OPLOG` stream a faithful raw-change record for retention/replay.
 
 ---

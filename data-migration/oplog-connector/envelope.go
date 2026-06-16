@@ -24,36 +24,47 @@ type changeEvent struct {
 }
 
 // buildEnvelope maps a change event to its subject, dedup id, and opaque OplogEvent. nowMs is injected (no time.Now) so the function stays pure and testable.
-func buildEnvelope(ev *changeEvent, siteID string, nowMs int64) (subj, msgID string, evt model.OplogEvent, err error) {
+//
+// A field that won't encode never drops the event: the field is left nil and the
+// event is flagged Degraded (first failure wins) so the stream stays lossless.
+func buildEnvelope(ev *changeEvent, siteID string, nowMs int64) (subj, msgID string, evt model.OplogEvent) {
 	subj = subject.MigrationOplog(siteID, ev.Collection, ev.Op)
 	msgID = ev.EventID
 
-	docKey, err := rawToJSON(ev.DocumentKey)
-	if err != nil {
-		return "", "", model.OplogEvent{}, fmt.Errorf("encode documentKey for %s: %w", msgID, err)
-	}
-	full, err := rawToJSON(ev.FullDocument)
-	if err != nil {
-		return "", "", model.OplogEvent{}, fmt.Errorf("encode fullDocument for %s: %w", msgID, err)
-	}
-	updateDesc, err := rawToJSON(ev.UpdateDescription)
-	if err != nil {
-		return "", "", model.OplogEvent{}, fmt.Errorf("encode updateDescription for %s: %w", msgID, err)
+	evt = model.OplogEvent{
+		EventID:     ev.EventID,
+		Op:          ev.Op,
+		DB:          ev.DB,
+		Collection:  ev.Collection,
+		ClusterTime: ev.ClusterTimeMs,
+		SiteID:      siteID,
+		Timestamp:   nowMs,
 	}
 
-	evt = model.OplogEvent{
-		EventID:           ev.EventID,
-		Op:                ev.Op,
-		DB:                ev.DB,
-		Collection:        ev.Collection,
-		DocumentKey:       docKey,
-		ClusterTime:       ev.ClusterTimeMs,
-		FullDocument:      full,
-		UpdateDescription: updateDesc,
-		SiteID:            siteID,
-		Timestamp:         nowMs,
+	degrade := func(field string, err error) {
+		evt.Degraded = true
+		if evt.DegradedReason == "" {
+			evt.DegradedReason = fmt.Sprintf("%s encode failed: %v", field, err)
+		}
 	}
-	return subj, msgID, evt, nil
+
+	if docKey, err := rawToJSON(ev.DocumentKey); err != nil {
+		degrade("documentKey", err)
+	} else {
+		evt.DocumentKey = docKey
+	}
+	if full, err := rawToJSON(ev.FullDocument); err != nil {
+		degrade("fullDocument", err)
+	} else {
+		evt.FullDocument = full
+	}
+	if updateDesc, err := rawToJSON(ev.UpdateDescription); err != nil {
+		degrade("updateDescription", err)
+	} else {
+		evt.UpdateDescription = updateDesc
+	}
+
+	return subj, msgID, evt
 }
 
 // rawToJSON converts raw BSON to relaxed extended JSON for the envelope; empty input → nil (omitempty fires).

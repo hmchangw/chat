@@ -183,14 +183,9 @@ func (w *watcher) run(ctx context.Context) error {
 	}
 }
 
-// publishWithRetry publishes one event synchronously, retrying with capped backoff until pub-ack or ctx cancel. Poison events (malformed doc or missing dedup id) are the only ones dropped.
+// publishWithRetry publishes one event synchronously, retrying with capped backoff until pub-ack or ctx cancel. An event with a missing dedup id is dropped; a field that fails to encode is published degraded (not dropped) so the stream stays lossless.
 func (w *watcher) publishWithRetry(ctx context.Context, ev *changeEvent) error {
-	subj, msgID, evt, err := buildEnvelope(ev, w.siteID, w.now())
-	if err != nil {
-		w.log.Error("build envelope failed — skipping event", "eventId", ev.EventID, "error", err)
-		w.metrics.onSkipped(ctx, w.collection)
-		return nil
-	}
+	subj, msgID, evt := buildEnvelope(ev, w.siteID, w.now())
 	if msgID == "" {
 		// An empty Nats-Msg-Id disables JetStream dedup, so publishing this would
 		// silently forfeit the at-least-once-deduped guarantee. Skip instead.
@@ -212,6 +207,10 @@ func (w *watcher) publishWithRetry(ctx context.Context, ev *changeEvent) error {
 	for {
 		_, err := w.pub.PublishMsg(ctx, msg)
 		if err == nil {
+			if evt.Degraded {
+				w.log.Warn("published degraded event", "eventId", evt.EventID, "reason", evt.DegradedReason)
+				w.metrics.onDegraded(ctx, w.collection)
+			}
 			w.metrics.onPublished(ctx, w.collection, w.now()-ev.ClusterTimeMs)
 			return nil
 		}
