@@ -238,10 +238,13 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		)
 	}
 
-	// Validate thread parent fields are paired
-	if req.ThreadParentMessageID != "" && req.ThreadParentMessageCreatedAt == nil {
-		return nil, errcode.BadRequest("validate thread parent fields: threadParentMessageCreatedAt is required when threadParentMessageId is set")
-	}
+	// #322: threadParentMessageCreatedAt is no longer required on the request.
+	// When ThreadParentMessageID is set, the gatekeeper resolves the parent's
+	// createdAt server-side (see resolveThreadParentCreatedAt below) so that a
+	// missing — or wrong — client value cannot corrupt the value every
+	// downstream consumer reads from the canonical message (search-sync-worker
+	// ES index, history-service TShow access-window, notification-worker
+	// history-shared gate, message-worker parent thread_room_id stamp).
 
 	// Verify subscription
 	sub, err := h.store.GetSubscription(ctx, account, roomID)
@@ -287,12 +290,6 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// Build Message
 	now := time.Now().UTC()
 
-	var threadParentCreatedAt *time.Time
-	if req.ThreadParentMessageCreatedAt != nil {
-		t := time.UnixMilli(*req.ThreadParentMessageCreatedAt).UTC()
-		threadParentCreatedAt = &t
-	}
-
 	quotedSnapshot, err := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID)
 	if err != nil {
 		return nil, err
@@ -300,6 +297,15 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	if req.QuotedParentMessageID != "" {
 		// debug: quote passed the same-conversation-context check.
 		slog.DebugContext(ctx, "gatekeeper quote resolved", "request_id", req.RequestID, "quoted_id", req.QuotedParentMessageID)
+	}
+
+	// #322: resolve the thread parent's createdAt server-side. The
+	// server-resolved value always wins over any client-sent value — a wrong
+	// client value must not corrupt downstream consumers. Done after the quote
+	// resolution so a quote-context failure short-circuits the extra fetch.
+	threadParentCreatedAt, err := h.resolveThreadParentCreatedAt(ctx, account, roomID, siteID, req.ThreadParentMessageID, req.QuotedParentMessageID, quotedSnapshot)
+	if err != nil {
+		return nil, err
 	}
 
 	// Compose the sender's render-ready display name once at write time so every
@@ -356,6 +362,58 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		"phase", "published", "request_id", req.RequestID, "subject", canonicalSubj, "bytes", len(evtData))
 
 	return json.Marshal(msg)
+}
+
+// resolveThreadParentCreatedAt resolves the thread parent's own createdAt
+// server-side (#322). It returns nil when the message is not a thread reply.
+//
+// The server-resolved value is authoritative: clients no longer need to send
+// threadParentMessageCreatedAt, and any value they do send is ignored — this
+// prevents a wrong client value from corrupting the timestamp that downstream
+// consumers (search-sync-worker ES index, history-service TShow access-window,
+// notification-worker history-shared gate, message-worker parent
+// thread_room_id stamp) read from the canonical message.
+//
+// When the request also quotes the very same message as its thread parent, the
+// already-fetched quote snapshot's CreatedAt is reused to avoid a second fetch;
+// otherwise the parent is fetched by ID via the same history-service
+// GetMessageByID RPC the quote path uses (FetchQuotedParent projects the
+// parent's own CreatedAt onto QuotedParentMessage.CreatedAt).
+//
+// A fetch failure is returned as a bare (infra) error so the handler Naks for
+// redelivery rather than permanently dropping the reply — the resolved value is
+// correctness-critical and a transient history-service hiccup must not silently
+// strip it.
+func (h *Handler) resolveThreadParentCreatedAt(
+	ctx context.Context,
+	account, roomID, siteID, threadParentMessageID, quotedParentMessageID string,
+	quotedSnapshot *cassandra.QuotedParentMessage,
+) (*time.Time, error) {
+	if threadParentMessageID == "" {
+		return nil, nil
+	}
+
+	// Reuse the quote snapshot when the quoted parent is the thread parent.
+	if quotedSnapshot != nil && quotedParentMessageID == threadParentMessageID {
+		t := quotedSnapshot.CreatedAt.UTC()
+		return &t, nil
+	}
+
+	snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, threadParentMessageID)
+	if err != nil {
+		// Bare error → infra → Nak for redelivery (see HandleJetStreamMsg). Wrap
+		// only with a short description; never include the raw fetch error body
+		// in a client-facing path (it returns to the dispatcher log, not the
+		// client, but keep the convention consistent).
+		return nil, fmt.Errorf("resolve thread parent createdAt for %s: %w", threadParentMessageID, err)
+	}
+	if snap == nil {
+		// Contract violation (nil snapshot, nil error) — treat as infra so the
+		// reply is redelivered rather than shipped without the resolved value.
+		return nil, fmt.Errorf("resolve thread parent createdAt for %s: fetcher returned nil snapshot", threadParentMessageID)
+	}
+	t := snap.CreatedAt.UTC()
+	return &t, nil
 }
 
 // resolveQuoteSnapshot fetches the quoted parent and returns its snapshot.

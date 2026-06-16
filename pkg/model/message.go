@@ -56,10 +56,16 @@ type RoomRestrictedSysData struct {
 }
 
 type SendMessageRequest struct {
-	ID                           string `json:"id"`
-	Content                      string `json:"content"`
-	RequestID                    string `json:"requestId"`
-	ThreadParentMessageID        string `json:"threadParentMessageId,omitempty"`
+	ID                    string `json:"id"`
+	Content               string `json:"content"`
+	RequestID             string `json:"requestId"`
+	ThreadParentMessageID string `json:"threadParentMessageId,omitempty"`
+	// ThreadParentMessageCreatedAt is OPTIONAL and IGNORED on the request (#322).
+	// message-gatekeeper resolves the thread parent's createdAt server-side from
+	// ThreadParentMessageID and populates Message.ThreadParentMessageCreatedAt;
+	// any client-sent value here is overridden so a wrong value cannot corrupt
+	// the timestamp downstream consumers read from the canonical message.
+	// Retained for backward compatibility; clients may omit it. Epoch ms (UTC).
 	ThreadParentMessageCreatedAt *int64 `json:"threadParentMessageCreatedAt,omitempty"`
 	QuotedParentMessageID        string `json:"quotedParentMessageId,omitempty"`
 	// TShow requests that a thread reply also appear in the parent room's
