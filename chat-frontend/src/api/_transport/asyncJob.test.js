@@ -182,10 +182,13 @@ describe('requestWithAsyncResult', () => {
         requestId: 'req-1',
         asyncTimeout: 500,
       })
+      // Attach the rejection handler before advancing: the async timer API
+      // flushes the rejection during the advance, so a later .catch would miss it.
+      const settled = p.catch((e) => e)
       await Promise.resolve()
       await Promise.resolve()
-      vi.advanceTimersByTime(600)
-      const err = await p.catch((e) => e)
+      await vi.advanceTimersByTimeAsync(600)
+      const err = await settled
       expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
       expect(err.message).toMatch(/timeout/i)
     } finally {
@@ -202,9 +205,12 @@ describe('requestWithAsyncResult', () => {
         requestId: 'req-1',
         asyncTimeout: 100,
       })
+      // Attach the rejection assertion before advancing so the async timer
+      // flush doesn't surface the rejection as unhandled.
+      const rejection = expect(p).rejects.toThrow()
       await Promise.resolve(); await Promise.resolve()
-      vi.advanceTimersByTime(200)
-      await expect(p).rejects.toThrow()
+      await vi.advanceTimersByTimeAsync(200)
+      await rejection
       expect(unsubSpy).toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
