@@ -838,13 +838,11 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
 
-	parentTs := int64(1000)
 	req := model.SendMessageRequest{
-		ID:                           idgen.GenerateMessageID(),
-		Content:                      "reply",
-		RequestID:                    "01970a4f-8c2d-7c9a-abcd-e0123456789f",
-		ThreadParentMessageID:        "not-a-valid-msg-id",
-		ThreadParentMessageCreatedAt: &parentTs,
+		ID:                    idgen.GenerateMessageID(),
+		Content:               "reply",
+		RequestID:             "01970a4f-8c2d-7c9a-abcd-e0123456789f",
+		ThreadParentMessageID: "not-a-valid-msg-id",
 	}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 	require.Error(t, err)
@@ -1534,14 +1532,12 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 		var published []publishedMsg
 		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
 
-		ts := parentTs
 		req := model.SendMessageRequest{
-			ID:                           idgen.GenerateMessageID(),
-			Content:                      "reply",
-			RequestID:                    reqUUID,
-			ThreadParentMessageID:        parentID,
-			ThreadParentMessageCreatedAt: &ts,
-			TShow:                        true,
+			ID:                    idgen.GenerateMessageID(),
+			Content:               "reply",
+			RequestID:             reqUUID,
+			ThreadParentMessageID: parentID,
+			TShow:                 true,
 		}
 		data, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 		require.NoError(t, err)
@@ -1570,13 +1566,11 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 		var published []publishedMsg
 		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
 
-		ts := parentTs
 		req := model.SendMessageRequest{
-			ID:                           idgen.GenerateMessageID(),
-			Content:                      "reply",
-			RequestID:                    reqUUID,
-			ThreadParentMessageID:        parentID,
-			ThreadParentMessageCreatedAt: &ts,
+			ID:                    idgen.GenerateMessageID(),
+			Content:               "reply",
+			RequestID:             reqUUID,
+			ThreadParentMessageID: parentID,
 		}
 		_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 		require.NoError(t, err)

@@ -238,13 +238,8 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 		)
 	}
 
-	// #322: threadParentMessageCreatedAt is no longer required on the request.
-	// When ThreadParentMessageID is set, the gatekeeper resolves the parent's
-	// createdAt server-side (see resolveThreadParentCreatedAt below) so that a
-	// missing — or wrong — client value cannot corrupt the value every
-	// downstream consumer reads from the canonical message (search-sync-worker
-	// ES index, history-service TShow access-window, notification-worker
-	// history-shared gate, message-worker parent thread_room_id stamp).
+	// #322: the gatekeeper resolves the parent's createdAt server-side
+	// (resolveThreadParentCreatedAt) rather than trusting the request.
 
 	// Verify subscription
 	sub, err := h.store.GetSubscription(ctx, account, roomID)
@@ -364,26 +359,11 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	return json.Marshal(msg)
 }
 
-// resolveThreadParentCreatedAt resolves the thread parent's own createdAt
-// server-side (#322). It returns nil when the message is not a thread reply.
-//
-// The server-resolved value is authoritative: clients no longer need to send
-// threadParentMessageCreatedAt, and any value they do send is ignored — this
-// prevents a wrong client value from corrupting the timestamp that downstream
-// consumers (search-sync-worker ES index, history-service TShow access-window,
-// notification-worker history-shared gate, message-worker parent
-// thread_room_id stamp) read from the canonical message.
-//
-// When the request also quotes the very same message as its thread parent, the
-// already-fetched quote snapshot's CreatedAt is reused to avoid a second fetch;
-// otherwise the parent is fetched by ID via the same history-service
-// GetMessageByID RPC the quote path uses (FetchQuotedParent projects the
-// parent's own CreatedAt onto QuotedParentMessage.CreatedAt).
-//
-// A fetch failure is returned as a bare (infra) error so the handler Naks for
-// redelivery rather than permanently dropping the reply — the resolved value is
-// correctness-critical and a transient history-service hiccup must not silently
-// strip it.
+// resolveThreadParentCreatedAt resolves the thread parent's createdAt
+// server-side (#322), returning nil for a non-thread reply. It reuses the quote
+// snapshot's CreatedAt when the parent is also the quoted message, otherwise
+// fetches by ID. A fetch failure returns a bare error so the handler Naks for
+// redelivery rather than dropping the correctness-critical value.
 func (h *Handler) resolveThreadParentCreatedAt(
 	ctx context.Context,
 	account, roomID, siteID, threadParentMessageID, quotedParentMessageID string,

@@ -3199,7 +3199,6 @@ The same subject and request body cover three send variants: plain message, thre
 | `content` | string | yes | The message body. Must be non-empty and ≤ 20 KiB. |
 | `requestId` | string | yes | A 36-char hyphenated UUID (v4 or v7) the client generates. **Validated** — an empty or malformed `requestId` is rejected with no message published. The async reply is delivered to `chat.user.{account}.response.{requestId}`. |
 | `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. |
-| `threadParentMessageCreatedAt` | number | no | **Optional and ignored.** The server resolves the thread parent's `createdAt` itself from `threadParentMessageId`; any value sent here is overridden by the server-resolved value. Retained for backward compatibility — clients may omit it. Epoch ms (UTC) if sent. |
 | `tshow` | boolean | no | The "Also send to channel" option. Only meaningful on a thread reply (`threadParentMessageId` set): the reply is persisted into the parent room's channel timeline as well as the thread (dual-write into `messages_by_room` in addition to `thread_messages_by_thread` + `messages_by_id`), and is surfaced with `tshow: true` on the persisted message. On a non-thread send the flag is **ignored and normalized to `false`** — the request is not rejected. |
 | `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
 
@@ -3223,8 +3222,6 @@ The same subject and request body cover three send variants: plain message, thre
   "threadParentMessageId": "01970a4f8c2d7c9aQRST"
 }
 ```
-
-The server resolves `threadParentMessageCreatedAt` from `threadParentMessageId` — clients no longer send it (any value sent is ignored).
 
 ##### Quoted message
 
