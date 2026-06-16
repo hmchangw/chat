@@ -386,6 +386,10 @@ doc keys on it (`_id = bot:{account}`), **identical to the GET read key** (§6),
 an upload and its later read always address the same doc. The bot's owning site
 (for the locality check, §7a.3) comes from its user record, not the path.
 
+**Success → `200 OK`** with a small JSON body `{etag, contentType, size, updatedAt}`,
+so the uploader gets the new `ETag` for immediate cache-busting without a
+follow-up `GET`. (`200`+body rather than `204`, since the result is useful.)
+
 ### 7a.1 Validation & security (mandatory)
 
 - **Well-formed bot account.** The `:botName` (stray `@…` stripped) MUST satisfy

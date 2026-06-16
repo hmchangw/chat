@@ -23,6 +23,15 @@ func registerUploadRoutes(r *gin.Engine, h *handler) {
 	r.PUT("/avatar/v1/bot/:botName", h.HandleBotUpload)
 }
 
+// botUploadResponse is the 200 body on a successful upload — it hands the
+// uploader the new ETag (for immediate cache-busting) plus the stored metadata.
+type botUploadResponse struct {
+	ETag        string    `json:"etag"`
+	ContentType string    `json:"contentType"`
+	Size        int64     `json:"size"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
 func (h *handler) HandleBotUpload(c *gin.Context) {
 	ctx := c.Request.Context()
 	account, _ := parseAccount(c.Param("botName"))
@@ -74,7 +83,7 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := h.store.SetBotAvatar(ctx, &model.Avatar{
+	av := &model.Avatar{
 		ID:          "bot:" + account,
 		SubjectType: model.AvatarSubjectBot,
 		SubjectID:   account,
@@ -84,10 +93,16 @@ func (h *handler) HandleBotUpload(c *gin.Context) {
 		ETag:        etag,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}); err != nil {
+	}
+	if err := h.store.SetBotAvatar(ctx, av); err != nil {
 		errhttp.Write(ctx, c, fmt.Errorf("upsert avatar doc: %w", err))
 		return
 	}
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusOK, botUploadResponse{
+		ETag:        av.ETag,
+		ContentType: av.ContentType,
+		Size:        av.Size,
+		UpdatedAt:   av.UpdatedAt,
+	})
 }

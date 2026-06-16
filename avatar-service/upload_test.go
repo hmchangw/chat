@@ -83,8 +83,13 @@ func TestUpload_Success_StoresThenUpserts(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
-	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	body := w.Body.String()
+	assert.Contains(t, body, `"etag":"etag-bot/helper.bot"`)
+	assert.Contains(t, body, `"contentType":"image/png"`)
+	assert.Contains(t, body, `"size":`)
+	assert.Contains(t, body, `"updatedAt":`)
 	_, ok := blobs.objects["bot/helper.bot"]
 	assert.True(t, ok, "object stored before the doc")
 }

@@ -3573,10 +3573,28 @@ The service decodes the image bytes to verify they are a valid PNG or JPEG — m
 
 | Status | Condition |
 |---|---|
-| `204 No Content` | Upload accepted and stored. |
+| `200 OK` | Upload accepted and stored. Body returns the new avatar metadata (below). |
 | `400 Bad Request` | `botName` does not match the bot pattern; `Content-Type` is not `image/png` or `image/jpeg`; body is not a valid image; body exceeds `MAX_UPLOAD_BYTES`. |
 | `404 Not Found` | No user record for `botName` — unknown bot. |
 | `409 Conflict` | Bot is owned by a different cluster. Response body names the correct domain. |
+
+##### Success response (`200`)
+
+| Field | Type | Notes |
+|---|---|---|
+| `etag` | string | The stored object's ETag — use it to bust caches / set `If-None-Match` without a follow-up `GET`. |
+| `contentType` | string | Detected image type (`image/png` or `image/jpeg`). |
+| `size` | int | Stored object size in bytes. |
+| `updatedAt` | string (RFC 3339) | When the avatar was stored. |
+
+```json
+{
+  "etag": "\"9b2cf...\"",
+  "contentType": "image/png",
+  "size": 20480,
+  "updatedAt": "2026-06-16T02:00:00Z"
+}
+```
 
 On `409`, the response body carries a human-readable message indicating which cluster to re-upload to (e.g. `"bot is owned by site-b — upload to https://avatar-service-site-b"`). The client must re-issue the `PUT` to the correct domain.
 
