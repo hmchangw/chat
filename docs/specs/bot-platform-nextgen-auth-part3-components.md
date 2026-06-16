@@ -8,7 +8,7 @@
 
 ## 1. Naming
 - **`botplatform-service`** — *the new service we build* (Part 2 calls it `bot-gateway`; same thing). Auth + web UI + token validation + API proxy.
-- **`botplatform-server` :8080** — *existing* service: reverse-proxies `/api/v2/*` to the REST APIs exposed by the **legacy v2 code** (API routing, message posting, room management). We proxy to it **after auth**.
+- **`botplatform-server` :8080** — *existing* service (external-dev track): serves `/api/v2/*`. Today it reverse-proxies to the **legacy v2 REST code**; as the data plane migrates it will **bridge REST→NATS** to the nextgen backend (Q13). We proxy to it **after auth**, transparently.
 - **websocket server :8899** — *existing*: real-time bot connections; **calls our service to authenticate**.
 - **event consumer** — *existing*: NATS → webhook delivery.
 
@@ -55,7 +55,7 @@ Flow when a bot calls `GET /api/v2/rooms`:
 
 Config: `BOTPLATFORM_SERVER_URL=http://botplatform-server:8080`.
 
-> **Reconciliation with Part 2 §9:** the data path is **HTTP all the way** — our service reverse-proxies `/api/v2/*` to `botplatform-server:8080`, which reverse-proxies to the `/api/v2/*` REST APIs of the **legacy v2 code**. No REST→NATS bridge and no `/api/v1` in the data plane. Our service is **auth + reverse-proxy + principal-header injection**.
+> **Reconciliation with Part 2 §9:** our service is a **transparent HTTP reverse-proxy** — it forwards `/api/v2/*` to `botplatform-server:8080` and doesn't care what's behind it. `botplatform-server` serves requests from the **legacy v2 REST code** today, and will **bridge REST→NATS** to the nextgen backend as the data plane migrates (a bridge is required since nextgen is NATS RPC and legacy was pure REST — Q13). **That bridge is owned by the data-plane track, not our auth service.** Our service is **auth + reverse-proxy + principal-header injection**; no `/api/v1` data path.
 
 ### 4.2 WebSocket auth (security fix required)
 Today the WS connection is unauthenticated. Required flow:
@@ -116,6 +116,9 @@ keep both working through the transition
 - **Cost is negligible** — WS auth is **once per connection** (long-lived), not per message, so the <5 ms per-API-call budget doesn't apply. Keep the call mesh-internal (Istio mTLS) and cache the result for the connection lifetime.
 
 Use direct-Valkey only if per-connection latency ever becomes a measured problem (it won't, at once-per-connect).
+
+### Q13 — Where does the REST→NATS bridge live?
+A bridge **is** required: nextgen is all **NATS request/reply RPCs**; the legacy v2 code was **pure REST**. So bot REST `/api/v2/*` calls must, eventually, become NATS RPCs against the nextgen backend. **Recommendation: the bridge lives in `botplatform-server` / the data-plane track — downstream of our auth proxy — never in our auth service.** Our service stays a **transparent HTTP reverse-proxy** that doesn't know whether `botplatform-server` is hitting legacy v2 REST or bridging to nextgen NATS. Putting the bridge in our auth service would couple auth to every `/api/v2/*` subject + request/response schema — the entire data API surface — which is exactly what Option B (§Part 1 §3) avoids. *Confirm ownership with the external-dev team.*
 
 ---
 
