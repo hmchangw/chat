@@ -917,11 +917,12 @@ func (h *Handler) publishToThreadAccounts(ctx context.Context, accounts []string
 }
 
 // threadFanOutAccounts builds the deduplicated fan-out recipient list for
-// a thread event. senderAccount is always excluded. extraAccounts
-// (e.g. @mentioned users from the message payload) are added after the
-// follower pass.
+// a thread event. The sender is included so that their other devices receive
+// the notification (multi-device support). Bot accounts are always excluded.
+// extraAccounts (e.g. @mentioned users from the message payload) are added
+// after the follower pass.
 func threadFanOutAccounts(senderAccount string, followers map[string]struct{}, extraAccounts []string) []string {
-	seen := map[string]struct{}{senderAccount: {}}
+	seen := map[string]struct{}{}
 	var fanOut []string
 	for acc := range followers {
 		if _, ok := seen[acc]; ok {

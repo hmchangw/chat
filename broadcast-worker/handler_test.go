@@ -1664,10 +1664,17 @@ func TestThreadFanOutAccounts(t *testing.T) {
 			want:          nil,
 		},
 		{
-			name:      "sender excluded from followers",
+			name:      "sender included when also a follower (multi-device support)",
 			sender:    "alice",
 			followers: map[string]struct{}{"alice": {}, "bob": {}},
-			want:      []string{"bob"},
+			want:      []string{"alice", "bob"},
+		},
+		{
+			name:          "sender included when only in extra accounts",
+			sender:        "alice",
+			followers:     map[string]struct{}{"bob": {}},
+			extraAccounts: []string{"alice"},
+			want:          []string{"bob", "alice"},
 		},
 		{
 			name:          "extra accounts merged deduped",
@@ -1677,11 +1684,18 @@ func TestThreadFanOutAccounts(t *testing.T) {
 			want:          []string{"bob", "carol"},
 		},
 		{
-			name:          "bot accounts skipped",
-			sender:        "alice",
+			name:          "bot accounts skipped even if sender is bot",
+			sender:        "helper.bot",
 			followers:     map[string]struct{}{"helper.bot": {}, "bob": {}},
 			extraAccounts: []string{"other.bot"},
 			want:          []string{"bob"},
+		},
+		{
+			name:          "sender not duplicated when in both followers and extras",
+			sender:        "alice",
+			followers:     map[string]struct{}{"alice": {}, "bob": {}},
+			extraAccounts: []string{"alice", "carol"},
+			want:          []string{"alice", "bob", "carol"},
 		},
 	}
 
