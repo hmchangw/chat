@@ -39,6 +39,7 @@ paths.
 2. [Connection & Auth](#2-connection--auth)
    - [2.1 NATS connection](#21-nats-connection)
    - [2.2 HTTP — POST /auth](#22-http--post-auth)
+   - [2.3 HTTP — Protected image upload/download](#23-http--protected-image-uploaddownload)
 3. [Request/Reply Methods](#3-requestreply-methods)
    - [3.0 Shared schemas](#30-shared-schemas)
    - [3.1 room-service](#31-room-service)
@@ -59,6 +60,7 @@ paths.
    - [GET /avatar/v1/:accountName](#get-avatarv1accountname)
    - [GET /avatar/v1/room/:roomID](#get-avatarv1roomroomid)
    - [PUT /avatar/v1/bot/:botName](#put-avatarv1botbotname)
+8. [Presence](#8-presence)
 
 ---
 
@@ -103,6 +105,19 @@ All NATS payloads are JSON. All HTTP request/response bodies are JSON.
 Clients **may** include an `X-Request-ID` NATS message header on outbound requests. If present, the server uses it for log correlation; if absent, the server generates one. The header value must be a valid hyphenated UUID (v4 or v7, case-insensitive).
 
 The `msg.send` flow is different — see [§4](#4-message-send): the client puts the request ID in the JSON payload (`requestId` field), and the server replies on `chat.user.{account}.response.{requestID}`.
+
+### Debug tracing (`X-Debug`)
+
+Clients **may** include an optional `X-Debug` NATS header to turn on verbose, server-side, per-request tracing for a **single** request — useful when diagnosing "what happened to my message?". It changes neither the request schema, the reply, nor any triggered event; output is written only to the server logs, joinable by `request_id`.
+
+| Value | Effect |
+|-------|--------|
+| _(absent)_ / `0` / `false` / `off` | Off — the default. Any unrecognized value is also treated as off. |
+| `flow` | Cross-service path + timing breadcrumbs (how far the request got, where latency was spent). |
+| `debug` (also `1` / `true` / `on`) | Adds in-service decision detail. |
+| `trace` | Adds per-item / per-recipient detail (most verbose). |
+
+Each rung includes the ones below it. The header propagates across every service the request touches. It is **best-effort and rate-limited** per server instance: under load, verbose output for some flagged requests may be dropped (the request itself is unaffected). Treat it as a diagnostic aid, not a guaranteed log.
 
 ### Reply patterns
 
@@ -219,6 +234,126 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 
 ---
 
+### 2.3 HTTP — Protected image upload/download
+
+Two HTTP endpoints on `upload-service` for protected inline images, proxied
+to/from an internal Drive. Both require the `ssoToken` header (validated via
+OIDC) and that the caller is a member (has a subscription) of `:roomId`. Errors
+use the standard [§6](#6-error-envelope-reference) envelope `{ code, reason?, error }`.
+
+#### POST /api/v1/rooms/:roomId/upload/images
+
+**Endpoint:** `POST /api/v1/rooms/:roomId/upload/images`
+**Reply:** synchronous HTTP response
+
+Uploads one or more images for a room on behalf of the authenticated user. Each
+file is validated independently and the response reports per-file
+success/failure in a single `200` (partial success).
+
+#### Request
+
+`Content-Type: multipart/form-data`
+
+| Field | Source | Type | Required | Notes |
+|---|---|---|---|---|
+| `ssoToken` | header | string | yes | OIDC-issued SSO token; identifies the uploader. |
+| `roomId` | path | string | yes | Target room ID; the caller must be a member. |
+| `images` | form file | file[] | yes | One or more images (`.png`/`.jpeg`/`.jpg`/`.heic`), each ≤ `MAX_IMAGE_SIZE_BYTES` (default 25 MiB); at most `MAX_FILES` (default 10). Repeat the field once per file. |
+
+#### Success response
+
+`HTTP 200` — one `results` entry per submitted file (successes and failures together).
+
+| Field | Type | Notes |
+|---|---|---|
+| `results` | [UploadResult](#uploadresult)[] | Per-file outcome. |
+
+##### UploadResult
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | The file name. |
+| `status` | string | `Success` for an uploaded file, `failure` for a rejected one. |
+| `error` | string | Present on failure: `file size exceeds limit`, `file has an invalid file type`, or `failed to open file`. |
+| `relativePath` | string | Present on success: path to download the image via the GET endpoint below, including the `drive_host` query param. |
+
+```json
+{
+  "results": [
+    { "name": "pic1.png", "status": "Success", "relativePath": "api/v1/rooms/abc123/image/img-xyz?drive_host=https://drive.example.com" },
+    { "name": "big.exe", "status": "failure", "error": "file has an invalid file type" }
+  ]
+}
+```
+
+#### Error response
+
+A whole-request failure (not a per-file rejection) uses the
+[§6](#6-error-envelope-reference) envelope. HTTP statuses:
+
+| Status | `code` | `reason` | Example body |
+|---|---|---|---|
+| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "too many files" }` — also `roomId is required`, `request must be multipart/form-data`. |
+| 401 | `unauthenticated` | `invalid_sso_token` / `sso_token_expired` / `missing_fields` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid sso token" }` |
+| 403 | `forbidden` | `not_room_member` | `{ "code": "forbidden", "reason": "not_room_member", "error": "user alice is not in room abc123" }` |
+| 404 | `not_found` | — | `{ "code": "not_found", "error": "room not found" }` |
+| 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — user missing in context, no email on the account, or a Drive/store fault; real cause logged server-side only. |
+
+#### Triggered events — success path
+
+`None — HTTP-only.`
+
+#### Triggered events — error path
+
+`None.`
+
+---
+
+#### GET /api/v1/rooms/:roomId/image/:fileId
+
+**Endpoint:** `GET /api/v1/rooms/:roomId/image/:fileId`
+**Reply:** synchronous HTTP response (raw image bytes, not JSON)
+
+Downloads a protected image. The service proxies the bytes from Drive: it
+fetches a signed URL, streams the body, and pipes it straight back. Typically
+called with the `relativePath` returned by the upload endpoint.
+
+#### Request
+
+| Field | Source | Type | Required | Notes |
+|---|---|---|---|---|
+| `ssoToken` | header | string | yes | OIDC-issued SSO token. |
+| `roomId` | path | string | yes | Room the image belongs to; the caller must be a member. |
+| `fileId` | path | string | yes | Drive file ID (from the upload response). |
+| `drive_host` | query | string | yes | Drive base URL (from the upload response). |
+
+#### Success response
+
+`HTTP 200` — raw image binary streamed directly (not JSON), with the upstream
+`Content-Type` (defaulting to `application/octet-stream`).
+
+#### Error response
+
+See [Error envelope](#6-error-envelope-reference). HTTP statuses:
+
+| Status | `code` | `reason` | Example body |
+|---|---|---|---|
+| 400 | `bad_request` | — | `{ "code": "bad_request", "error": "drive_host is required" }` — also `roomId is required`, `fileId is required`. |
+| 401 | `unauthenticated` | `invalid_sso_token` / `sso_token_expired` / `missing_fields` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid sso token" }` |
+| 403 | `forbidden` | `not_room_member` | `{ "code": "forbidden", "reason": "not_room_member", "error": "user alice is not in room abc123" }` |
+| 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — user missing in context. |
+| 503 | `unavailable` | — | `{ "code": "unavailable", "error": "failed to retrieve image" }` — Drive signer/download failure. |
+
+#### Triggered events — success path
+
+`None — HTTP-only.`
+
+#### Triggered events — error path
+
+`None.`
+
+---
+
 ## 3. Request/Reply Methods
 
 ### 3.0 Shared schemas
@@ -235,8 +370,8 @@ Actor / sender identity embedded in room and message events.
 | `userId` | string | Optional. Internal user ID. |
 | `account` | string | The user's account name. |
 | `siteId` | string | Optional. The user's home site. |
-| `chineseName` | string | Chinese display name (always present; may be empty). |
-| `engName` | string | English display name (always present; may be empty). |
+| `chineseName` | string | Optional. Chinese display name — omitted when unset. |
+| `engName` | string | Optional. English display name — omitted when unset. |
 | `displayName` | string | Optional. Server-composed render-ready name. |
 
 #### SubscriptionUser
@@ -446,7 +581,7 @@ The creator (from the subject) plus any members supplied via `users` / `orgs` / 
 
 **2. `chat.user.{account}.event.subscription.update`** — one per enrolled member (including the owner), `action: "added"`. See the [subscription.update schema](#subscriptionupdate-event) under Add Members.
 
-**3. `chat.user.{account}.event.room.key`** — one `RoomKeyEvent` per enrolled local member. See [§5 Room Encryption](#5-room-encryption).
+**3. `chat.user.{account}.event.room.key`** — **channel rooms only:** one `RoomKeyEvent` per enrolled local member. DM/botDM rooms are not encrypted and emit no key event. See [§5 Room Encryption](#5-room-encryption).
 
 For **channel** rooms, the first messages (`type: "room_created"`, then `type: "members_added"` when initial members were enrolled) flow through the normal message pipeline and arrive as `new_message` room events (see [§4](#4-message-send)).
 
@@ -803,7 +938,11 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 - `"X-Request-ID header is required …"` — `bad_request` (reason `request_id_required`); the `X-Request-ID` header is absent or not a valid hyphenated UUID.
 
 ```json
-{ "error": "rename is only allowed in channel rooms" }
+{
+  "error": "rename is only allowed in channel rooms",
+  "code": "bad_request",
+  "reason": "non_channel_operation"
+}
 ```
 
 ##### Triggered events — success path
@@ -1144,11 +1283,30 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - **No `JoinedAt` fallback for the early-return:** if `subscription.lastSeenAt` is null (the user was invited but has never opened the room), the handler does **not** treat `joinedAt` as a synthetic read position — being invited isn't reading. The room-floor recompute runs in this case so a member who has just read for the first time is reflected in the floor.
 - **Room-floor recompute (`Room.MinUserLastSeenAt`):** the room's read floor (surfaced as `minUserLastSeenAt` in history responses) is a **strict "everyone has read" marker**: `MIN(lastSeenAt)` across **all** of the room's subscriptions, set **only when every subscription has a usable `lastSeenAt`**. If **any** member has never read the room (no/zero `lastSeenAt` — e.g. invited but never opened), the floor is `$unset` (null). Bots are counted like any other member, so a **botDM room — where the bot never reads — always has a null floor**. Reading a room can advance the floor (or, if this was the last unread member, raise it from null to a value).
 - **Recompute trigger & a known gap:** the floor is recomputed only on this Mark Read path, and only when the caller was not already past `room.lastMsgAt` (the early-return above). Adding a member does not itself recompute the floor, so a newly-invited, never-read member will not flip an existing non-null floor to null until the next recompute is triggered (e.g. that member reads, or another member reads while the room has content).
-- **No system message, no fan-out events:** read receipts are silent; only the requester receives the `accepted` reply.
+- **Read-floor fan-out:** when (and only when) the recompute above changes `Room.MinUserLastSeenAt`, the server publishes a `message_read` room event carrying the new floor, so peers can advance read-receipt / unread UI live. Fan-out is best-effort (a publish failure does not fail the RPC) and never fires on the early-return paths or when the floor is unchanged. No system message is written.
 
 ##### Triggered events — success path
 
-`None — reply only.`
+Emitted **only when the room read floor (`Room.MinUserLastSeenAt`) changes** (best-effort, core NATS):
+
+- **Channel rooms — `chat.room.{roomID}.event`** — a single `message_read` event to every client subscribed to the room.
+- **DM rooms — `chat.user.{account}.event.room`** — one `message_read` event per subscriber.
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | Always `"message_read"`. |
+| `roomId` | string | The room whose floor advanced. |
+| `minUserLastSeenAt` | string | Optional. RFC3339 UTC timestamp of the new read floor. **Omitted** when the floor is null (a member is still fully unread). |
+| `timestamp` | number | Event publish time, UTC milliseconds since Unix epoch. |
+
+```json
+{
+  "type": "message_read",
+  "roomId": "Rb3kQ2",
+  "minUserLastSeenAt": "2026-06-09T10:30:00Z",
+  "timestamp": 1749465000123
+}
+```
 
 ##### Triggered events — error path
 
@@ -1194,7 +1352,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Behaviour notes
 
-- **Alert recomputation:** new `alert = oldSub.alert && len(newThreadUnread) > 0`. A thread-read can only clear an alert, never set one. When the post-removal `threadUnread` is empty, `alert` becomes false.
+- **Alert recomputation:** `alert = oldSub.alert && len(newThreadUnread) > 0`. A thread-read can only clear an alert, never set one. When the post-removal `threadUnread` is empty, `alert` becomes false. This computation runs atomically inside the MongoDB aggregation pipeline on the handler's site — not derived client-side.
 - **Concurrent local writes:** the room-`Subscription` update and the `ThreadSubscription` update run in parallel inside an `errgroup`. Both must succeed before the handler proceeds.
 - **Cross-site federation:** if the user's home site differs from the handler's site, a `thread_read` event is published to `outbox.{handlerSite}.to.{userSite}.thread_read` with payload `{account, roomId, threadRoomId, parentMessageId, newThreadUnread, alert, lastSeenAt, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the supplied `newThreadUnread`+`alert` to the local Subscription cache and applies `lastSeenAt`+`updatedAt`+`hasMention=false` to the local ThreadSubscription with an `$lt` order-safety guard so out-of-order delivery cannot regress the thread's read position.
 - **Defensive `roomId` filter:** the thread-subscription lookup additionally enforces that the supplied `threadId` belongs to the room named in the subject. Mismatches return `thread subscription not found` (rather than silently clearing an unrelated thread).
@@ -1610,7 +1768,7 @@ The paginated read RPCs (Load History, Load Next, Load Surrounding, Get Thread M
 | Field | Type | Notes |
 |---|---|---|
 | `limit` | number | Page size. Defaults when `0`/omitted: **20** for Load History, Load Next, and Get Thread Messages; **50** for Load Surrounding. Capped at **100**. |
-| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. |
+| `meta` | [RoomMeta](#roommeta) | Optional. Room time hints — see below. Not accepted by Get Thread Messages. |
 
 ###### RoomMeta
 
@@ -1667,7 +1825,7 @@ Used by every history-service method that returns messages. Mirrors the Cassandr
 | `editedAt` | string | Optional. RFC 3339. Set after an edit. |
 | `updatedAt` | string | Optional. RFC 3339. Mirrors `editedAt` for edits, set on delete to record the deletion time. |
 | `threadRoomId` | string | Optional. The thread room ID when this is a thread message. |
-| `pinnedAt` | string | Optional. RFC 3339. |
+| `pinnedAt` | string | Optional. RFC 3339. With the `messages_by_room` `pinned_at` mirror, room-timeline history loads now return this on pinned rows too (previously only `pin.list` and point lookups carried it). |
 | `pinnedBy` | [MessageParticipant](#messageparticipant) | Optional. |
 
 ##### MessageParticipant
@@ -2128,10 +2286,12 @@ See [Error envelope](#6-error-envelope-reference). Errors:
 
 ##### Triggered events — success path
 
-A `DeleteRoomEvent` is fanned out by `broadcast-worker` (not published when the request hits an already-deleted message or loses a concurrent-delete CAS). The subject depends on room type:
+A `DeleteRoomEvent` is fanned out by `broadcast-worker` (not published when the request hits an already-deleted message or loses a concurrent-delete CAS). The subject and recipients depend on message type:
 
-- **Channel rooms — `chat.room.{roomID}.event`** — one publish to the room stream.
-- **DM/botDM rooms — `chat.user.{recipient}.event.room`** — published once per non-bot member.
+- **Top-level channel message — `chat.room.{roomID}.event`** — one publish to the room stream; all room subscribers receive it.
+- **Thread reply (TShow=false) in a channel** — `chat.user.{recipient}.event.room` — published once per thread subscriber (followers + @-mentioned accounts). Non-subscribers do not receive this event.
+- **Thread reply (TShow=true) in a channel** — `chat.room.{roomID}.event` — visible in the main channel, so the full room stream receives it.
+- **DM/botDM message — `chat.user.{recipient}.event.room`** — published once per non-bot member.
 
 The payload is flat:
 
@@ -2140,7 +2300,8 @@ The payload is flat:
 | `type` | string | Always `"message_deleted"`. |
 | `roomId` | string | |
 | `siteId` | string | |
-| `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
 | `messageId` | string | The deleted message's ID. |
 | `deletedBy` | string | The sender's account. |
 | `deletedAt` | string | RFC 3339 timestamp. Domain time of the delete. |
@@ -2158,6 +2319,8 @@ The payload is flat:
   "updatedAt": "2026-05-06T08:06:40Z"
 }
 ```
+
+**Thread-reply deletes additionally emit a `ThreadMetadataUpdatedEvent`** (see [§4.1 Thread Metadata Event](#41-thread-metadata-event)) to update the parent message's reply-count badge. The `DeleteRoomEvent` and `ThreadMetadataUpdatedEvent` are published independently; clients must handle each on its own.
 
 ##### Triggered events — error path
 
@@ -2211,32 +2374,36 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Triggered events — success path
 
-**Channel rooms:** `chat.room.{roomID}.event` — `MessagePinnedEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessagePinnedEvent`. Recipients: each non-bot DM participant.
+**Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-pinned message (idempotent short-circuit).
+
+Pin and unpin share the same flat `PinStateRoomEvent` payload; `type` discriminates and `pinned` carries the resulting state.
 
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_pinned"`. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `eventTimestamp` | number | Epoch ms (UTC). Canonical event time. Omitted when zero. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
-| `messagePinned.messageId` | string | The pinned message's ID. |
-| `messagePinned.pinnedBy` | [Participant](#participant) | The actor who pinned (`userId`, `account`). |
-| `messagePinned.pinnedAt` | string | RFC 3339. Domain time of the pin. |
+| `messageId` | string | The pinned message's ID. |
+| `pinned` | boolean | Resulting pin state. Always `true` for `message_pinned`. |
+| `by` | [Participant](#participant) | Optional — omitted if no actor was recorded. The actor who pinned. `chineseName` / `engName` are omitted when unset. |
+| `at` | string | RFC 3339. Domain time of the pin. |
 
 ```json
 {
   "type": "message_pinned",
   "timestamp": 1746518900123,
+  "eventTimestamp": 1746518900100,
   "roomId": "01970a4f8c2d7c9aQ",
   "siteId": "site1",
-  "messagePinned": {
-    "messageId": "01970a4f8c2d7c9aQRST",
-    "pinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
-    "pinnedAt": "2026-05-06T08:01:40Z"
-  }
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "pinned": true,
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+  "at": "2026-05-06T08:01:40Z"
 }
 ```
 
@@ -2315,32 +2482,36 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 
 ##### Triggered events — success path
 
-**Channel rooms:** `chat.room.{roomID}.event` — `MessageUnpinnedEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `MessageUnpinnedEvent`. Recipients: each non-bot DM participant.
+**Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
+**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-unpinned message (idempotent short-circuit).
+
+Same flat `PinStateRoomEvent` payload as [Pin Message](#pin-message); `type` discriminates and `pinned` carries the resulting state.
 
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | Always `"message_unpinned"`. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
+| `eventTimestamp` | number | Epoch ms (UTC). Canonical event time. Omitted when zero. |
 | `roomId` | string | |
 | `siteId` | string | Originating site. |
-| `messageUnpinned.messageId` | string | The unpinned message's ID. |
-| `messageUnpinned.unpinnedBy` | [Participant](#participant) | The actor who unpinned (`userId`, `account`). |
-| `messageUnpinned.unpinnedAt` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
+| `messageId` | string | The unpinned message's ID. |
+| `pinned` | boolean | Resulting pin state. Always `false` for `message_unpinned`. |
+| `by` | [Participant](#participant) | Optional — omitted if no actor was recorded. The actor recorded on the pin. `chineseName` / `engName` are omitted when unset. |
+| `at` | string | RFC 3339. Stamped by history-service when it processes the unpin RPC (the canonical unpin event clears the pin timestamp, so this is the only unpin time on the wire). |
 
 ```json
 {
   "type": "message_unpinned",
   "timestamp": 1746518950123,
+  "eventTimestamp": 1746518950100,
   "roomId": "01970a4f8c2d7c9aQ",
   "siteId": "site1",
-  "messageUnpinned": {
-    "messageId": "01970a4f8c2d7c9aQRST",
-    "unpinnedBy": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
-    "unpinnedAt": "2026-05-06T08:02:30Z"
-  }
+  "messageId": "01970a4f8c2d7c9aQRST",
+  "pinned": false,
+  "by": { "userId": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+  "at": "2026-05-06T08:02:30Z"
 }
 ```
 
@@ -3033,6 +3204,7 @@ The same subject and request body cover three send variants: plain message, thre
 | `requestId` | string | yes | A 36-char hyphenated UUID (v4 or v7) the client generates. **Validated** — an empty or malformed `requestId` is rejected with no message published. The async reply is delivered to `chat.user.{account}.response.{requestId}`. |
 | `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. Pair with `threadParentMessageCreatedAt`. |
 | `threadParentMessageCreatedAt` | number | no | Required when `threadParentMessageId` is set. Epoch ms (UTC). |
+| `tshow` | boolean | no | The "Also send to channel" option. Only meaningful on a thread reply (`threadParentMessageId` set): the reply is persisted into the parent room's channel timeline as well as the thread (dual-write into `messages_by_room` in addition to `thread_messages_by_thread` + `messages_by_id`), and is surfaced with `tshow: true` on the persisted message. On a non-thread send the flag is **ignored and normalized to `false`** — the request is not rejected. |
 | `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
 
 ##### Plain message
@@ -3083,9 +3255,10 @@ Delivered on `chat.user.{account}.response.{requestId}`. The body is the persist
 | `createdAt` | string | RFC 3339. Server-assigned send time (UTC). |
 | `threadParentMessageId` | string | Present only for a thread reply (echoes the request). |
 | `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
+| `tshow` | boolean | Present only when the request set `tshow: true` on a thread reply (absent when the flag was normalized away on a non-thread send). |
 | `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | Present only for a quoted send — the server-fetched snapshot of the quoted parent. |
 
-The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `tshow`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
+The gatekeeper does **not** populate `mentions`, `editedAt`/`updatedAt`, `type`, or `sysMsgData` on this reply (all `omitempty`, so they are absent). Mention resolution and the enriched `sender` happen in the broadcast fan-out event ([§4 triggered events](#triggered-events--success-path)), not in this reply.
 
 ```json
 {
@@ -3229,6 +3402,8 @@ A `RoomEvent` (same struct as above) published once per DM participant. Recipien
 }
 ```
 
+**Thread replies additionally emit a `ThreadMetadataUpdatedEvent`** (see [§4.1 Thread Metadata Event](#41-thread-metadata-event)) to update the parent message's reply-count badge. This event is published to all room members (not only thread subscribers) so every client can show the correct badge without subscribing to the thread.
+
 #### Triggered events — error path
 
 When validation fails, the gatekeeper publishes the error envelope to `chat.user.{account}.response.{requestId}` and **no downstream events are emitted**. The client should display the error and offer a retry.
@@ -3261,11 +3436,62 @@ The worker filters recipients per message:
 
 ---
 
+## 4.1 Thread Metadata Event
+
+### ThreadMetadataUpdatedEvent
+
+Pushed by `broadcast-worker` whenever a thread reply is **created** (`action: "reply_added"`) or **deleted** (`action: "reply_deleted"`). Its purpose is to let clients update the reply-count badge on the parent message without reloading the thread.
+
+#### Subjects
+
+| Room type | Subject |
+|-----------|---------|
+| Channel | `chat.room.{roomID}.event` |
+| DM / botDM | `chat.user.{account}.event.room` — published once per non-bot member |
+
+#### Payload
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | Always `"thread_metadata_updated"`. |
+| `roomId` | string | The room the thread lives in. |
+| `siteId` | string | |
+| `parentMessageId` | string | The thread parent message's ID. Clients use this to locate the message in their cache and update its badge. |
+| `newTcount` | number | Authoritative post-CAS reply count for the parent message. Replaces any locally-computed count — do not delta. |
+| `action` | string | `"reply_added"` or `"reply_deleted"`. |
+| `replyMessageId` | string | The reply that was added or deleted. |
+| `timestamp` | number | Milliseconds since Unix epoch (UTC). When broadcast-worker published this event. |
+| `eventTimestamp` | number | Milliseconds since Unix epoch (UTC). When message-worker published the canonical event. Omitted for legacy events. |
+
+```json
+{
+  "type": "thread_metadata_updated",
+  "roomId": "01970a4f8c2d7c9aQ",
+  "siteId": "siteA",
+  "parentMessageId": "01970a4f8c2d7c9aQRST",
+  "newTcount": 4,
+  "action": "reply_added",
+  "replyMessageId": "01970a4f8c2d7c9aUVWX",
+  "timestamp": 1746518100123
+}
+```
+
+#### When it fires
+
+- **Reply added (`action: "reply_added"`):** fired when a new thread reply is successfully persisted (triggered by a `Send Message` RPC with `threadParentId` set). Published in addition to the per-subscriber `new_message` `RoomEvent` that carries the reply content.
+- **Reply deleted (`action: "reply_deleted"`):** fired when a thread reply is soft-deleted (triggered by a `Delete Message` RPC). Published in addition to the `DeleteRoomEvent` that carries the delete notification.
+
+#### Client handling
+
+Apply `newTcount` directly to the parent message's badge — do not compute a delta. Events for the same parent may arrive out of order due to JetStream redelivery; always prefer the event with the larger `timestamp` for badge state.
+
+---
+
 ## 5. Room Encryption
 
 Channel messages can be end-to-end encrypted. The key material reaches clients as `RoomKeyEvent`s, which are triggered by the Create Room / Add Members / Remove Member RPCs (see their "Triggered events" sections). This section describes the event payload and how a client uses it to decrypt.
 
-Each room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms receive a `RoomKeyEvent` at create time for implementation consistency, but currently broadcast plaintext `message` (no `encryptedMessage`), so clients may skip persisting DM/botDM keys.
+Each **channel** room has a 32-byte secret generated server-side at create time (`crypto/rand`). The secret is distributed to channel members and used directly as an AES-256-GCM key — no key derivation step. DM and botDM rooms are **not** encrypted: their messages fan out to per-user subjects that only the recipient can subscribe to, so they carry no room key, emit no `RoomKeyEvent`, and always broadcast plaintext `message` (no `encryptedMessage`).
 
 #### Subject
 
@@ -3305,7 +3531,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
    - **The cipher is identical for both event kinds (same `roomcrypto` AES-256-GCM seal); only the plaintext payload differs**, because each event encrypts exactly what the client needs:
      - **`encryptedMessage`** (new message) decrypts to a UTF-8-encoded JSON `ClientMessage` — a brand-new message the client has never seen, so the whole object (sender, timestamps, thread/quote fields) is sealed.
      - **`encryptedNewContent`** (edit) decrypts to a plain UTF-8 content **string** — the client already has the original message rendered, and an edit only replaces its `content`, so just the new body is sealed (the surrounding message metadata is unchanged and already known).
-3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `VALKEY_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
+3. Retain past versions to support history scrolling. The server retains the previous version in its store for at least `ROOM_KEY_GRACE_PERIOD` (default 24h); after that, server-side decryption of old messages may not be possible, but clients holding old keys can still decrypt locally.
 
 #### When clients receive `RoomKeyEvent`s
 
@@ -3400,9 +3626,9 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | Field | Type | Notes |
 |---|---|---|
 | `error` | string | Human-readable, user-safe (never carries an internal cause). Do not parse or pattern-match against the text. |
-| `code` | string | **Always present.** One of the 7 categories below. Drives HTTP status. |
+| `code` | string | **Always present.** One of the 8 categories below. Drives HTTP status. |
 | `reason` | string (optional) | Domain-specific machine code (e.g. `max_room_size_reached`, `not_subscribed`). When present, the client should branch on `reason ?? code`. |
-| `metadata` | map<string, string> | Optional. Free-form map for structured detail (e.g. `{ "limit": "500" }`). |
+| `metadata` | object (optional) | Free-form `string→string` map for structured detail (e.g. `{ "limit": "500" }`). |
 
 ### Generic `code` values (always present) → HTTP status
 
@@ -3454,7 +3680,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 
 - **NATS sync replies** — on the reply subject for §3/§4 RPCs.
 - **JetStream async results** — `model.AsyncJobResult` carries the same `code` + `reason` fields when `status == "error"`, so a failed async job is surfaced the same way as a sync error.
-- **HTTP** — auth-service `POST /auth` writes the envelope as the response body with the matching HTTP status from the table above.
+- **HTTP** — auth-service `POST /auth` (§2.2) and upload-service's image endpoints (§2.3) write the envelope as the response body with the matching HTTP status from the table above.
 
 ### Client branching guidance
 
@@ -3599,3 +3825,185 @@ The service decodes the image bytes to verify they are a valid PNG or JPEG — m
 On `409`, the response body carries a human-readable message indicating which cluster to re-upload to (e.g. `"bot is owned by site-b — upload to https://avatar-service-site-b"`). The client must re-issue the `PUT` to the correct domain.
 
 On success, the custom image takes effect immediately: subsequent `GET /avatar/v1/:accountName` calls for that bot will stream it (or return `304`). A re-upload overwrites the previous image; there is no delete/reset in v1.
+
+## 8. Presence
+
+Served by **user-presence-service**. Tracks each user's effective presence —
+`online`, `away`, `busy`, `offline` — derived from live connections plus an
+optional manual override. Each site owns the presence of its local users; a
+user's home site is the site they connect to. Cross-site is transparent: for
+**live state** (§8.7) a watcher subscribes to the global per-user subject and
+the NATS gateway routes it; for **batch queries** (§8.6) the watcher sends a
+single request to its **own local site**, which resolves each account's home
+site and fans out to peer sites server-side.
+
+**Connection model.** A client mints one **client-generated** `connId` (e.g.
+`crypto.randomUUID()`) per connection — browser tab / SharedWorker / socket —
+when it comes up, reuses it for that connection's `hello`/`ping`/`activity`/`bye`,
+and discards it on close. The server never assigns it. Writes carry the user's
+**home `{siteID}`** so they route to the presence service that owns the user's
+state regardless of which site the client is connected to; `{account}` is
+JWT-pinned to the caller, so a client can only ever write its own presence.
+
+`online` vs `away` is derived from per-connection activity the client reports
+via `activity` (§8.3); the server has at least one **active** connection ⇒
+`online`, all connections **inactive** ⇒ `away`, none ⇒ `offline`.
+
+**Effective status resolution.** The server evaluates this precedence ladder
+top-down; the **first** matching rule wins (so a stale manual override never
+keeps a fully-disconnected user "present"):
+
+1. **No live connections → `offline`** — beats any manual override.
+2. Manual `appear_offline` → `offline`; manual `away` → `away`.
+3. Manual `online` → `online`; manual `busy` → `busy`.
+4. Any other manual override → that status.
+5. All live connections inactive → `away`.
+6. Otherwise → `online`.
+
+### 8.1 Hello — initialize a connection (publish, fire-and-forget)
+
+**Subject:** `chat.user.{account}.event.presence.{siteID}.hello`
+
+Sent once when a connection comes up, to register it (and bring the user
+`online`). No reply. A `ping` for an unseen `connId` also creates it, so a
+dropped `hello` self-heals on the next ping.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `connId` | string | yes | Client-generated per connection (e.g. a UUID per browser/SharedWorker). |
+| `timestamp` | number | no | Millis since Unix epoch (UTC). |
+
+```json
+{ "connId": "1f0a-uuid", "timestamp": 1746518100000 }
+```
+
+### 8.2 Ping — liveness (publish, fire-and-forget)
+
+**Subject:** `chat.user.{account}.event.presence.{siteID}.ping`
+
+Published per connection roughly every **30 s** (no reply) to refresh liveness.
+A connection is considered live for ~**45 s** after its last ping; miss that
+window and the sweeper decays it toward `offline`. A ping does **not** change
+activity — use `activity` (§8.3) for that. Pinging a `connId` the server has not
+seen before creates it (offline→online), so an initial `hello` is optional.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `connId` | string | yes | The connection being refreshed. |
+| `timestamp` | number | no | Millis since Unix epoch (UTC). |
+
+```json
+{ "connId": "1f0a-uuid", "timestamp": 1746518100000 }
+```
+
+### 8.3 Activity — active / inactive (publish, fire-and-forget)
+
+**Subject:** `chat.user.{account}.event.presence.{siteID}.activity`
+
+Published when the client's own idle detection (mouse/keyboard) flips a
+connection between active and inactive — not on every ping. The server
+aggregates across the user's connections: all inactive ⇒ `away`, any active ⇒
+`online`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `connId` | string | yes | The connection whose activity changed. |
+| `away` | boolean | yes | `true` marks the connection inactive, `false` active. |
+| `timestamp` | number | no | Millis since Unix epoch (UTC). |
+
+```json
+{ "connId": "1f0a-uuid", "away": true, "timestamp": 1746518103000 }
+```
+
+### 8.4 Disconnect (publish, best-effort)
+
+**Subject:** `chat.user.{account}.event.presence.{siteID}.bye`
+
+Sent best-effort on tab close (`beforeunload`) for instant offline instead of
+waiting for the liveness window to lapse. The sweeper is the backstop when it
+does not arrive.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `connId` | string | yes | The connection being closed. |
+| `timestamp` | number | no | Millis since Unix epoch (UTC). |
+
+### 8.5 Set / clear manual override (request/reply)
+
+**Subject:** `chat.user.{account}.request.presence.{siteID}.manual.set`
+**Reply:** standard `_INBOX.>`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `status` | string | yes | One of `online`, `away`, `busy`, `appear_offline`, or `""` to clear. Any other value → `bad_request`. |
+| `timestamp` | number | no | Millis since Unix epoch (UTC). |
+
+**Success reply:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `account` | string | Echoes the caller. |
+| `status` | string | The override just set (or `""` when cleared). |
+| `setAt` | number | Server-assigned millis (UTC) the override was set. |
+| `effective` | string | The resolved effective status after applying the override. |
+
+```json
+{ "account": "alice", "status": "busy", "setAt": 1746518100000, "effective": "busy" }
+```
+
+### 8.6 Batch query — initial state (request/reply)
+
+**Subject:** `chat.user.presence.{siteID}.query.batch` — addressed to **your own
+local site**. You do **not** need to know or group accounts by their home site.
+**Reply:** standard `_INBOX.>`.
+
+Send one request with all the accounts you want, regardless of which site they
+live on. The local site resolves each account's home site, serves locally-homed
+accounts from its own store, and fans out **server-to-server in parallel** to
+the peer sites that own the rest (via the internal
+`chat.server.request.presence.{siteID}.query.batch` RPC), then aggregates. At
+most **100 accounts** per request (configurable server-side); more →
+`bad_request`.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `accounts` | string[] | yes | ≤ 100 accounts, any mix of home sites. |
+
+**Success reply:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `states` | [PresenceState](#presencestate)[] | One per requested account, in request order. |
+| `timestamp` | number | Reply time, millis (UTC). |
+
+The query is
+best-effort for display: an account that is unknown to the directory, or whose
+home site does not respond within the per-peer timeout, reports `offline` (its
+`siteId` is still the resolved home site when known) rather than failing the
+whole request. Only a failure of the local site's own store surfaces as an error.
+
+### 8.7 Live state (subscribe)
+
+**Subject:** `chat.user.presence.state.{account}` — the owning site publishes a
+user's effective status (a [PresenceState](#presencestate)) here on every
+change. The subject omits `siteID`: it is a global per-user event, so you
+subscribe knowing only the account, without first resolving the user's home site
+(cross-site delivery is routed by the gateway). The home site is still reported
+in the `siteId` payload field.
+
+```json
+{ "account": "bob", "siteId": "site-b", "status": "away", "timestamp": 1746518105000 }
+```
+
+#### PresenceState
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `account` | string | The user. |
+| `siteId` | string | The user's home site. |
+| `status` | string | Effective status: `online` / `away` / `busy` / `offline`. |
+| `timestamp` | number | Millis since Unix epoch (UTC) of the change. |
+
+**Subscribe before you snapshot.** To avoid missing a transition between the
+snapshot and the subscription, subscribe to the state subject(s) **first**, then
+send the §8.6 batch query for current values.

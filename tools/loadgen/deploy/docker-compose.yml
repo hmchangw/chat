@@ -19,7 +19,6 @@ services:
       - SITE_ID=site-local
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=chat
-      - VALKEY_ADDR=valkey:6379
       - METRICS_ADDR=:9099
       # Worker-pool cap for concurrent publishes. Set to 0 to publish
       # serially on the ticker goroutine (legacy behavior).
@@ -36,6 +35,10 @@ services:
     entrypoint: ["sleep", "infinity"]
     networks:
       - chat-local
+
+  room-service:
+    environment:
+      - MAX_ROOM_SIZE=6000
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1

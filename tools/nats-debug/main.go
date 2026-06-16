@@ -15,6 +15,13 @@ import (
 
 type config struct {
 	Port int `env:"PORT" envDefault:"8090"`
+	// CredsFile is an optional NATS user credentials file (JWT + NKey). When
+	// set, it authenticates every NATS connection the tool opens. Empty means
+	// connect without credentials.
+	CredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
+	// IdleTimeout is how long a browser session may go without activity before
+	// its hub (and NATS connections) are torn down.
+	IdleTimeout time.Duration `env:"SESSION_IDLE_TIMEOUT" envDefault:"30m"`
 }
 
 func main() {
@@ -26,8 +33,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	hub := newNATSHub()
-	h := newHandler(hub)
+	if cfg.CredsFile != "" {
+		if _, err := os.Stat(cfg.CredsFile); err != nil {
+			slog.Error("nats creds file not accessible", "path", cfg.CredsFile, "error", err)
+			os.Exit(1)
+		}
+	}
+
+	sessions := newSessionManager(func() Hub { return newNATSHub(cfg.CredsFile) }, cfg.IdleTimeout)
+	sessions.start()
+	h := newHandler(sessions)
 
 	mux := http.NewServeMux()
 	h.registerRoutes(mux)
@@ -51,6 +66,6 @@ func main() {
 
 	shutdown.Wait(context.Background(), 10*time.Second,
 		func(ctx context.Context) error { return srv.Shutdown(ctx) },
-		func(_ context.Context) error { hub.Disconnect(); return nil },
+		func(_ context.Context) error { sessions.shutdown(); return nil },
 	)
 }

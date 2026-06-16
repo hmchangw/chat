@@ -25,15 +25,33 @@ type natsHub struct {
 	sourceURL   string
 	destURL     string
 	requestURL  string
+	credsFile   string
 	subs        map[string]*natsSub
 	clients     map[string]chan<- Message
 }
 
-func newNATSHub() *natsHub {
+// newNATSHub builds a hub. When credsFile is non-empty it is applied as the
+// user credentials (JWT + NKey) on every NATS connection the hub opens.
+func newNATSHub(credsFile string) *natsHub {
 	return &natsHub{
-		subs:    make(map[string]*natsSub),
-		clients: make(map[string]chan<- Message),
+		credsFile: credsFile,
+		subs:      make(map[string]*natsSub),
+		clients:   make(map[string]chan<- Message),
 	}
+}
+
+// buildConnectOptions returns the connection options for a debug connection
+// named name. The debug tool never auto-reconnects (MaxReconnects(0)). When
+// credsFile is non-empty the connection authenticates with those credentials.
+func buildConnectOptions(name, credsFile string) []nats.Option {
+	opts := []nats.Option{
+		nats.Name(name),
+		nats.MaxReconnects(0),
+	}
+	if credsFile != "" {
+		opts = append(opts, nats.UserCredentials(credsFile))
+	}
+	return opts
 }
 
 func (h *natsHub) Connect(sourceURL, destURL string) error {
@@ -42,18 +60,12 @@ func (h *natsHub) Connect(sourceURL, destURL string) error {
 
 	h.disconnectLocked()
 
-	srcConn, err := nats.Connect(sourceURL,
-		nats.Name("nats-debug-source"),
-		nats.MaxReconnects(0),
-	)
+	srcConn, err := nats.Connect(sourceURL, buildConnectOptions("nats-debug-source", h.credsFile)...)
 	if err != nil {
 		return fmt.Errorf("connect to source NATS %s: %w", sourceURL, err)
 	}
 
-	dstConn, err := nats.Connect(destURL,
-		nats.Name("nats-debug-dest"),
-		nats.MaxReconnects(0),
-	)
+	dstConn, err := nats.Connect(destURL, buildConnectOptions("nats-debug-dest", h.credsFile)...)
 	if err != nil {
 		srcConn.Close()
 		return fmt.Errorf("connect to dest NATS %s: %w", destURL, err)
@@ -203,10 +215,7 @@ func (h *natsHub) ConnectRequest(url string) error {
 		h.requestURL = ""
 	}
 
-	conn, err := nats.Connect(url,
-		nats.Name("nats-debug-request"),
-		nats.MaxReconnects(0),
-	)
+	conn, err := nats.Connect(url, buildConnectOptions("nats-debug-request", h.credsFile)...)
 	if err != nil {
 		return fmt.Errorf("connect to request NATS %s: %w", url, err)
 	}

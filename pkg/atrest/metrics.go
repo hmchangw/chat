@@ -46,6 +46,6 @@ var (
 
 	kekRenewalFailures = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "atrest_kek_renewal_failures_total",
-		Help: "Vault lifetime-watcher renewal failures. A non-zero value means the service has lost its Vault auth and every Wrap/Unwrap is failing; treat as a hard alert.",
+		Help: "Vault re-authentication failures. Incremented each time the service fails to obtain a fresh token after its current one ended. A sustained non-zero rate means the service cannot get a Vault token and Wrap/Unwrap will fail once the current token expires; treat as a hard alert.",
 	})
 )

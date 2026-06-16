@@ -3,7 +3,6 @@ package service
 import (
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/hmchangw/chat/history-service/internal/models"
@@ -14,9 +13,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// emptyThreadResponse is the canonical shape for "no replies" — keeps the
-// shared response shape in one place so future fields can't drift between
-// the short-circuit branches.
+// emptyThreadResponse is the shared "no replies" shape for all short-circuit branches.
 func emptyThreadResponse() *models.GetThreadMessagesResponse {
 	return &models.GetThreadMessagesResponse{Messages: []models.Message{}, HasNext: false}
 }
@@ -36,34 +33,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// Parent lookup (Cassandra) and room-times resolve (Mongo) have no
-	// dependency on each other; fan them out so the worst-case pre-fetch
-	// latency is one RTT instead of two. We capture each side's error
-	// separately rather than letting errgroup return whichever-fires-first,
-	// so input-validation 400s derived from the parent (reply ID, empty
-	// ThreadRoomID, TCount explicitly 0) take precedence over a transient
-	// Mongo error from the room-times read.
-	now := time.Now().UTC()
-	var (
-		msg                  *models.Message
-		findErr              error
-		lastMsgAt, createdAt time.Time
-		rtErr                error
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		msg, findErr = s.findMessage(c, roomID, req.ThreadMessageID)
-	}()
-	go func() {
-		defer wg.Done()
-		lastMsgAt, createdAt, rtErr = s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
-	}()
-	wg.Wait()
-
-	if findErr != nil {
-		return nil, findErr
+	msg, err := s.findMessage(c, roomID, req.ThreadMessageID)
+	if err != nil {
+		return nil, err
 	}
 
 	if msg.ThreadParentID != "" {
@@ -98,40 +70,22 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		return nil, err
 	}
 
-	// tcount explicitly 0 means all replies have been deleted — skip the
-	// Cassandra round-trip. tcount == nil means the column was never written:
-	// commonly a brand-new parent with no replies yet, but also briefly true
-	// between a successful SaveThreadMessage INSERT and the follow-up
-	// incrementParentTcount LWT. Fall through to Cassandra in the nil case so
-	// the optimisation can't hide replies during that window.
+	// tcount==0 means all replies were deleted — skip Cassandra. nil means never written
+	// (new parent, or mid-write before the tcount LWT) and must fall through or replies could be hidden.
 	if msg.TCount != nil && *msg.TCount == 0 {
 		return emptyThreadResponse(), nil
 	}
 
-	// Room-times error only matters once we're committed to the Cassandra
-	// read — short-circuit paths above don't depend on the result.
-	if rtErr != nil {
-		return nil, rtErr
-	}
-
-	// Ceiling: lastMsgAt+1ms or now+clockSkewTolerance when unknown.
-	ceiling := lastMsgAt
-	if ceiling.IsZero() {
-		ceiling = now.Add(clockSkewTolerance)
-	} else {
-		ceiling = ceiling.Add(time.Millisecond)
-	}
-
-	// Floor: max(createdAt, accessSince) clamped to historyFloor so an ancient createdAt can't exceed the configured limit.
-	historyFloor := now.Add(-s.historyFloor)
-	floor := createdAt
+	// Server-clock bounds only: thread replies never bump rooms.lastMsgAt (fan-out skips it),
+	// and the single-partition slice has no bucket walk — the loose ceiling only guards future-dated rows.
+	now := time.Now().UTC()
+	ceiling := now.Add(clockSkewTolerance)
+	floor := now.Add(-s.historyFloor)
 	if accessSince != nil && accessSince.After(floor) {
 		floor = *accessSince
 	}
-	if floor.IsZero() || floor.Before(historyFloor) {
-		floor = historyFloor
-	}
-	// Inverted range guard: collapsed thread on a room older than historyFloor.
+	// Defensive: reachable only with an accessSince beyond the skew tolerance and a parent
+	// dated past it; collapse rather than hand Cassandra an inverted slice.
 	if ceiling.Before(floor) {
 		ceiling = floor
 	}

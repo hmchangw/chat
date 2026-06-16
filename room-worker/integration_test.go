@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
@@ -1241,9 +1240,9 @@ func TestMongoStore_ListAddMemberCandidates_DeptMatching_Integration(t *testing.
 	assert.Len(t, got, 2)
 }
 
-func setupValkey(t *testing.T) roomkeystore.RoomKeyStore {
+func setupKeyStore(t *testing.T, db *mongo.Database) roomkeystore.RoomKeyStore {
 	t.Helper()
-	return roomkeystore.NewValkeyClusterStoreFromClient(testutil.StartValkeyCluster(t), time.Hour)
+	return roomkeystore.NewMongoStore(db.Collection("rooms"), time.Hour)
 }
 
 // startEmbeddedNATS starts an in-process NATS server and returns a connected client.
@@ -1263,12 +1262,12 @@ func startEmbeddedNATS(t *testing.T) *nats.Conn {
 }
 
 // TestIntegration_CreateRoom_FansOutRoomKeyEvent verifies that processCreateRoom
-// fans out the room key via NATS to every local-site member after a successful create.
+// provisions the room key (in the room document) and fans it out via NATS to
+// every local-site member after a successful create.
 //
-// Setup: pre-seed key in Valkey (simulating room-service having stored it), seed
-// users and the canonical CreateRoomRequest, then drive processCreateRoom and assert
-// that RoomKeyEvent publishes arrive on chat.user.{account}.event.room.key for each
-// local-site member.
+// Setup: seed users and the canonical CreateRoomRequest, then drive
+// processCreateRoom and assert that RoomKeyEvent publishes arrive on
+// chat.user.{account}.event.room.key for each local-site member.
 func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)
@@ -1284,15 +1283,9 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 		EngName: "Bob", ChineseName: "鲍勃",
 	})
 
-	// Pre-seed room key in Valkey (simulating room-service having run Set before the
-	// canonical event was published).
-	keyStore := setupValkey(t)
+	// room-worker provisions the key during create; no pre-seed needed.
+	keyStore := setupKeyStore(t, db)
 	const roomID = "test-fan-out-room"
-	seedPair := roomkeystore.RoomKeyPair{
-		PrivateKey: bytes.Repeat([]byte{0xAA}, 32),
-	}
-	_, err := keyStore.Set(ctx, roomID, seedPair)
-	require.NoError(t, err)
 
 	// Embedded NATS for key fan-out; subscribe to both accounts' key subjects.
 	nc := startEmbeddedNATS(t)
@@ -1334,6 +1327,13 @@ func TestIntegration_CreateRoom_FansOutRoomKeyEvent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, h.processCreateRoom(ctx, body))
+
+	// The key must have been persisted inline with the room document (a single
+	// CreateRoom write), readable back through the key store.
+	persisted, err := keyStore.Get(ctx, roomID)
+	require.NoError(t, err)
+	require.NotNil(t, persisted, "room key must be persisted in the room document on create")
+	require.Len(t, persisted.KeyPair.PrivateKey, 32)
 
 	// Allow a brief window for async NATS delivery.
 	require.Eventually(t, func() bool {
@@ -1850,7 +1850,7 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	})
 	mustInsertSub(t, db, &model.Subscription{
 		ID: idgen.GenerateUUIDv7(), User: model.SubscriptionUser{ID: "u3", Account: "carol"},
-		RoomID: roomID, SiteID: siteID, Name: oldName, RoomType: model.RoomTypeChannel,
+		RoomID: roomID, SiteID: remoteSite, Name: oldName, RoomType: model.RoomTypeChannel,
 		Roles: []model.Role{model.RoleMember}, JoinedAt: time.Now().UTC(),
 	})
 	mustInsertUser(t, db, &model.User{ID: "u1", Account: "alice", SiteID: siteID})
@@ -1910,4 +1910,59 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
 	assert.Equal(t, roomID, outboxPayload.RoomID)
 	assert.Equal(t, newName, outboxPayload.NewName)
+}
+
+// TestMongoStore_UpdateSubscriptionNamesForRoom_StampsTimestamp asserts the
+// origin rename write stamps nameUpdatedAt so the doc shares the federated
+// event's high-water mark (inbox-worker guards remote applies against it).
+func TestMongoStore_UpdateSubscriptionNamesForRoom_StampsTimestamp(t *testing.T) {
+	db := testutil.MongoDB(t, "room-worker-rename-stamp")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	mustInsertSub(t, db, &model.Subscription{
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		RoomType: model.RoomTypeChannel,
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+		Name:     "old",
+	})
+
+	subName := func() (string, time.Time) {
+		t.Helper()
+		var doc bson.M
+		require.NoError(t, db.Collection("subscriptions").
+			FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&doc))
+		dt, ok := doc["nameUpdatedAt"].(bson.DateTime)
+		require.True(t, ok, "nameUpdatedAt is %T, want bson.DateTime", doc["nameUpdatedAt"])
+		return doc["name"].(string), dt.Time().UTC()
+	}
+
+	ts := time.Now().UTC()
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new", ts))
+	gotName, gotTs := subName()
+	assert.Equal(t, "new", gotName)
+	assert.Equal(t, ts.UnixMilli(), gotTs.UnixMilli())
+
+	// Older rename is a guarded no-op — name and high-water mark unchanged.
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "stale", ts.Add(-time.Second)))
+	gotName, gotTs = subName()
+	assert.Equal(t, "new", gotName, "stale rename must not regress a newer name")
+	assert.Equal(t, ts.UnixMilli(), gotTs.UnixMilli())
+
+	// Equal-timestamp replay is a guarded no-op — the guard is strict $lt.
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "same-ts", ts))
+	gotName, gotTs = subName()
+	assert.Equal(t, "new", gotName, "same-timestamp rename must not modify state")
+	assert.Equal(t, ts.UnixMilli(), gotTs.UnixMilli())
+
+	// Newer rename advances both name and high-water mark.
+	newer := ts.Add(time.Second)
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "newest", newer))
+	gotName, gotTs = subName()
+	assert.Equal(t, "newest", gotName)
+	assert.Equal(t, newer.UnixMilli(), gotTs.UnixMilli())
 }

@@ -12,6 +12,7 @@ package main
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	model "github.com/hmchangw/chat/pkg/model"
 	roomkeystore "github.com/hmchangw/chat/pkg/roomkeystore"
@@ -71,17 +72,18 @@ func (mr *MockSubscriptionStoreMockRecorder) BulkCreateSubscriptions(ctx, subs a
 }
 
 // CreateRoom mocks base method.
-func (m *MockSubscriptionStore) CreateRoom(ctx context.Context, room *model.Room) error {
+func (m *MockSubscriptionStore) CreateRoom(ctx context.Context, room *model.Room, key *roomkeystore.RoomKeyPair) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateRoom", ctx, room)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "CreateRoom", ctx, room, key)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // CreateRoom indicates an expected call of CreateRoom.
-func (mr *MockSubscriptionStoreMockRecorder) CreateRoom(ctx, room any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) CreateRoom(ctx, room, key any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).CreateRoom), ctx, room)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).CreateRoom), ctx, room, key)
 }
 
 // DeleteRoomMember mocks base method.
@@ -352,17 +354,17 @@ func (mr *MockSubscriptionStoreMockRecorder) UpdateRoomName(ctx, roomID, newName
 }
 
 // UpdateSubscriptionNamesForRoom mocks base method.
-func (m *MockSubscriptionStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+func (m *MockSubscriptionStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, nameUpdatedAt time.Time) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateSubscriptionNamesForRoom", ctx, roomID, newName)
+	ret := m.ctrl.Call(m, "UpdateSubscriptionNamesForRoom", ctx, roomID, newName, nameUpdatedAt)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // UpdateSubscriptionNamesForRoom indicates an expected call of UpdateSubscriptionNamesForRoom.
-func (mr *MockSubscriptionStoreMockRecorder) UpdateSubscriptionNamesForRoom(ctx, roomID, newName any) *gomock.Call {
+func (mr *MockSubscriptionStoreMockRecorder) UpdateSubscriptionNamesForRoom(ctx, roomID, newName, nameUpdatedAt any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionNamesForRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateSubscriptionNamesForRoom), ctx, roomID, newName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionNamesForRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).UpdateSubscriptionNamesForRoom), ctx, roomID, newName, nameUpdatedAt)
 }
 
 // MockRoomKeyStore is a mock of RoomKeyStore interface.

@@ -8,12 +8,13 @@ import (
 type EventType string
 
 const (
-	EventCreated  EventType = "created"
-	EventUpdated  EventType = "updated"
-	EventDeleted  EventType = "deleted"
-	EventPinned   EventType = "pinned"
-	EventUnpinned EventType = "unpinned"
-	EventReacted  EventType = "reacted"
+	EventCreated          EventType = "created"
+	EventUpdated          EventType = "updated"
+	EventDeleted          EventType = "deleted"
+	EventPinned           EventType = "pinned"
+	EventUnpinned         EventType = "unpinned"
+	EventReacted          EventType = "reacted"
+	EventThreadReplyAdded EventType = "thread_reply_added"
 )
 
 type MessageEvent struct {
@@ -23,6 +24,11 @@ type MessageEvent struct {
 	// ReactionDelta is set only when Event == EventReacted.
 	ReactionDelta *ReactionDelta `json:"reactionDelta,omitempty" bson:"reactionDelta,omitempty"`
 	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
+	// NewTCount is the authoritative tcount of the parent message after a thread
+	// reply is added (EventThreadReplyAdded) or deleted (EventDeleted with
+	// ThreadParentMessageID set). Nil for all other event types.
+	// bson tag omits omitempty — zero is a valid count when the last reply is deleted.
+	NewTCount *int `json:"newTcount,omitempty" bson:"newTcount"`
 }
 
 // ReactionAction is the toggle direction on ReactionDelta.Action; defined
@@ -185,8 +191,8 @@ type Participant struct {
 	UserID      string `json:"userId,omitempty"      bson:"userId,omitempty"`
 	Account     string `json:"account"               bson:"account"`
 	SiteID      string `json:"siteId,omitempty"      bson:"siteId,omitempty"`
-	ChineseName string `json:"chineseName"           bson:"chineseName"`
-	EngName     string `json:"engName"               bson:"engName"`
+	ChineseName string `json:"chineseName,omitempty" bson:"chineseName"`
+	EngName     string `json:"engName,omitempty"     bson:"engName"`
 	DisplayName string `json:"displayName,omitempty" bson:"displayName,omitempty"`
 }
 
@@ -199,24 +205,35 @@ type ClientMessage struct {
 type RoomEventType string
 
 const (
-	RoomEventNewMessage      RoomEventType = "new_message"
-	RoomEventMessageEdited   RoomEventType = "message_edited"
-	RoomEventMessageDeleted  RoomEventType = "message_deleted"
-	RoomEventMessagePinned   RoomEventType = "message_pinned"
-	RoomEventMessageUnpinned RoomEventType = "message_unpinned"
-	RoomEventRoomRenamed     RoomEventType = "room_renamed"
-	RoomEventRoomRestricted  RoomEventType = "room_restricted"
-	RoomEventMessageReacted  RoomEventType = "message_reacted"
+	RoomEventNewMessage            RoomEventType = "new_message"
+	RoomEventMessageEdited         RoomEventType = "message_edited"
+	RoomEventMessageDeleted        RoomEventType = "message_deleted"
+	RoomEventMessagePinned         RoomEventType = "message_pinned"
+	RoomEventMessageUnpinned       RoomEventType = "message_unpinned"
+	RoomEventRoomRenamed           RoomEventType = "room_renamed"
+	RoomEventRoomRestricted        RoomEventType = "room_restricted"
+	RoomEventMessageReacted        RoomEventType = "message_reacted"
+	RoomEventThreadMetadataUpdated RoomEventType = "thread_metadata_updated"
+	RoomEventMessageRead           RoomEventType = "message_read"
+)
+
+// ThreadAction identifies what operation triggered a ThreadMetadataUpdatedEvent.
+type ThreadAction string
+
+const (
+	ThreadActionReplyAdded   ThreadAction = "reply_added"
+	ThreadActionReplyDeleted ThreadAction = "reply_deleted"
 )
 
 // RoomEvent is the live fan-out event for a newly created message
 // (RoomEventNewMessage). Edits, deletes, pins, and unpins use the flattened
-// EditRoomEvent / DeleteRoomEvent / PinRoomEvent / UnpinRoomEvent so clients
-// are not handed zero-valued base fields.
+// EditRoomEvent / DeleteRoomEvent / PinStateRoomEvent so clients are not
+// handed zero-valued base fields.
 type RoomEvent struct {
-	Type      RoomEventType `json:"type"`
-	RoomID    string        `json:"roomId"`
-	Timestamp int64         `json:"timestamp" bson:"timestamp"`
+	Type           RoomEventType `json:"type"`
+	RoomID         string        `json:"roomId"`
+	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
 
 	RoomName  string    `json:"roomName"`
 	RoomType  RoomType  `json:"roomType"`
@@ -234,6 +251,21 @@ type RoomEvent struct {
 	EncryptedMessage json.RawMessage `json:"encryptedMessage,omitempty"`
 }
 
+// MessageReadEvent is the live event published when a room's read floor
+// (minUserLastSeenAt) advances after a member marks the room read. Channel
+// rooms receive it once on the room event subject; DM rooms receive it per
+// member on their user event subject. MinUserLastSeenAt is nil when any member
+// is still fully unread (the floor cannot be established), in which case the
+// field is omitted. No siteId: consumers key rooms by roomId and already cache
+// the room's origin site, and this event never reaches a client for a room it
+// is not already subscribed to.
+type MessageReadEvent struct {
+	Type              RoomEventType `json:"type" bson:"type"`
+	RoomID            string        `json:"roomId" bson:"roomId"`
+	MinUserLastSeenAt *time.Time    `json:"minUserLastSeenAt,omitempty" bson:"minUserLastSeenAt,omitempty"`
+	Timestamp         int64         `json:"timestamp" bson:"timestamp"`
+}
+
 // EditRoomEvent is the live event published when a message is edited. Fields are
 // flat (no zero-valued RoomEvent base fields). For encrypted channel rooms
 // NewContent is empty and EncryptedNewContent carries the ciphertext; otherwise
@@ -243,6 +275,7 @@ type EditRoomEvent struct {
 	RoomID              string          `json:"roomId" bson:"roomId"`
 	SiteID              string          `json:"siteId" bson:"siteId"`
 	Timestamp           int64           `json:"timestamp" bson:"timestamp"`
+	EventTimestamp      int64           `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
 	MessageID           string          `json:"messageId" bson:"messageId"`
 	NewContent          string          `json:"newContent,omitempty" bson:"newContent,omitempty"`
 	EncryptedNewContent json.RawMessage `json:"encryptedNewContent,omitempty" bson:"encryptedNewContent,omitempty"`
@@ -254,38 +287,47 @@ type EditRoomEvent struct {
 // DeleteRoomEvent is the live event published when a message is deleted. Fields
 // are flat (no zero-valued RoomEvent base fields).
 type DeleteRoomEvent struct {
-	Type      RoomEventType `json:"type" bson:"type"`
-	RoomID    string        `json:"roomId" bson:"roomId"`
-	SiteID    string        `json:"siteId" bson:"siteId"`
-	Timestamp int64         `json:"timestamp" bson:"timestamp"`
-	MessageID string        `json:"messageId" bson:"messageId"`
-	DeletedBy string        `json:"deletedBy" bson:"deletedBy"`
-	DeletedAt time.Time     `json:"deletedAt" bson:"deletedAt"`
-	UpdatedAt time.Time     `json:"updatedAt" bson:"updatedAt"`
+	Type           RoomEventType `json:"type" bson:"type"`
+	RoomID         string        `json:"roomId" bson:"roomId"`
+	SiteID         string        `json:"siteId" bson:"siteId"`
+	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	MessageID      string        `json:"messageId" bson:"messageId"`
+	DeletedBy      string        `json:"deletedBy" bson:"deletedBy"`
+	DeletedAt      time.Time     `json:"deletedAt" bson:"deletedAt"`
+	UpdatedAt      time.Time     `json:"updatedAt" bson:"updatedAt"`
 }
 
-// PinRoomEvent is the live event published when a message is pinned. Fields
-// are flat (no zero-valued RoomEvent base fields). Mirrors the
-// EditRoomEvent / DeleteRoomEvent pattern.
-type PinRoomEvent struct {
-	Type      RoomEventType `json:"type" bson:"type"`
-	RoomID    string        `json:"roomId" bson:"roomId"`
-	SiteID    string        `json:"siteId" bson:"siteId"`
-	Timestamp int64         `json:"timestamp" bson:"timestamp"`
-	MessageID string        `json:"messageId" bson:"messageId"`
-	PinnedBy  *Participant  `json:"pinnedBy,omitempty" bson:"pinnedBy,omitempty"`
-	PinnedAt  time.Time     `json:"pinnedAt" bson:"pinnedAt"`
+// PinStateRoomEvent is the live event published when a message is pinned or
+// unpinned. Fields are flat (no zero-valued RoomEvent base fields). Mirrors
+// the EditRoomEvent / DeleteRoomEvent pattern. Pinned carries the resulting
+// pin state; By and At name the actor and domain time of the change. Type
+// stays the discriminator (RoomEventMessagePinned / RoomEventMessageUnpinned).
+type PinStateRoomEvent struct {
+	Type           RoomEventType `json:"type" bson:"type"`
+	RoomID         string        `json:"roomId" bson:"roomId"`
+	SiteID         string        `json:"siteId" bson:"siteId"`
+	Timestamp      int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	MessageID      string        `json:"messageId" bson:"messageId"`
+	Pinned         bool          `json:"pinned" bson:"pinned"`
+	By             *Participant  `json:"by,omitempty" bson:"by,omitempty"`
+	At             time.Time     `json:"at" bson:"at"`
 }
 
-// UnpinRoomEvent is the live event published when a message is unpinned.
-type UnpinRoomEvent struct {
-	Type       RoomEventType `json:"type" bson:"type"`
-	RoomID     string        `json:"roomId" bson:"roomId"`
-	SiteID     string        `json:"siteId" bson:"siteId"`
-	Timestamp  int64         `json:"timestamp" bson:"timestamp"`
-	MessageID  string        `json:"messageId" bson:"messageId"`
-	UnpinnedBy *Participant  `json:"unpinnedBy,omitempty" bson:"unpinnedBy,omitempty"`
-	UnpinnedAt time.Time     `json:"unpinnedAt" bson:"unpinnedAt"`
+// ThreadMetadataUpdatedEvent is published on the per-user NATS subject when a
+// thread reply is added or deleted, so clients can update the reply-count badge
+// on the parent message without re-fetching the full message.
+type ThreadMetadataUpdatedEvent struct {
+	Type            RoomEventType `json:"type" bson:"type"`
+	RoomID          string        `json:"roomId" bson:"roomId"`
+	SiteID          string        `json:"siteId" bson:"siteId"`
+	Timestamp       int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp  int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	ParentMessageID string        `json:"parentMessageId" bson:"parentMessageId"`
+	ReplyMessageID  string        `json:"replyMessageId" bson:"replyMessageId"`
+	NewTCount       int           `json:"newTcount" bson:"newTcount"`
+	Action          ThreadAction  `json:"action" bson:"action"`
 }
 
 // RoomRenamedRoomEvent is the live event published when a channel is renamed.
@@ -323,16 +365,17 @@ type RoomRestrictedRoomEvent struct {
 // ReactRoomEvent is the live event published when a reaction is toggled.
 // Actor carries the full Participant so clients can render display names without a side lookup.
 type ReactRoomEvent struct {
-	Type      RoomEventType  `json:"type" bson:"type"`
-	RoomID    string         `json:"roomId" bson:"roomId"`
-	SiteID    string         `json:"siteId" bson:"siteId"`
-	Timestamp int64          `json:"timestamp" bson:"timestamp"`
-	MessageID string         `json:"messageId" bson:"messageId"`
-	Shortcode string         `json:"shortcode" bson:"shortcode"`
-	Action    ReactionAction `json:"action"    bson:"action"`
-	Actor     Participant    `json:"actor"     bson:"actor"`
-	ReactedAt time.Time      `json:"reactedAt" bson:"reactedAt"`
-	UpdatedAt time.Time      `json:"updatedAt" bson:"updatedAt"`
+	Type           RoomEventType  `json:"type" bson:"type"`
+	RoomID         string         `json:"roomId" bson:"roomId"`
+	SiteID         string         `json:"siteId" bson:"siteId"`
+	Timestamp      int64          `json:"timestamp" bson:"timestamp"`
+	EventTimestamp int64          `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	MessageID      string         `json:"messageId" bson:"messageId"`
+	Shortcode      string         `json:"shortcode" bson:"shortcode"`
+	Action         ReactionAction `json:"action"    bson:"action"`
+	Actor          Participant    `json:"actor"     bson:"actor"`
+	ReactedAt      time.Time      `json:"reactedAt" bson:"reactedAt"`
+	UpdatedAt      time.Time      `json:"updatedAt" bson:"updatedAt"`
 }
 
 // RemovedSubscriptionRef is the minimal subscription identity carried on a

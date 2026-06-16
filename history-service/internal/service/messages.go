@@ -30,14 +30,13 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 	account := c.Param("account")
 	roomID := c.Param("roomID")
 	c.WithLogValues("account", account, "room_id", roomID)
-
-	accessSince, err := s.getAccessSince(c, account, roomID)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
+
+	// The access check and room-times resolve are independent Mongo reads; run
+	// them concurrently so the worst-case latency is one RTT, not two. Access
+	// errors take precedence so a "not subscribed" 403 isn't masked by a
+	// transient room-times error.
+	accessSince, lastMsgAt, createdAt, err := s.checkAccessAndRoomTimes(c, account, roomID, req.Meta, now)
 	if err != nil {
 		return nil, err
 	}
@@ -114,14 +113,9 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 	account := c.Param("account")
 	roomID := c.Param("roomID")
 	c.WithLogValues("account", account, "room_id", roomID)
-
-	accessSince, err := s.getAccessSince(c, account, roomID)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now().UTC()
-	lastMsgAt, createdAt, err := s.resolveRoomTimesOrError(c, roomID, req.Meta, now)
+
+	accessSince, lastMsgAt, createdAt, err := s.checkAccessAndRoomTimes(c, account, roomID, req.Meta, now)
 	if err != nil {
 		return nil, err
 	}
@@ -330,18 +324,24 @@ func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req m
 
 	editedAtMs := editedAt.UnixMilli()
 
-	// Mentions intentionally omitted — broadcast-worker re-resolves them from Content.
+	// Carry the fields downstream actually reads: search-sync-worker reindexes
+	// by Content/EditedAt/UpdatedAt; broadcast-worker emits a slim
+	// MessageEditedPayload of {ID, Content, EditedBy, EditedAt, UpdatedAt} and
+	// routes thread-reply edits via ThreadParentMessageID + TShow.
+	// Mentions intentionally omitted — broadcast-worker re-resolves from Content.
 	canonicalEvt := model.MessageEvent{
 		Event: model.EventUpdated,
 		Message: model.Message{
-			ID:          msg.MessageID,
-			RoomID:      msg.RoomID,
-			UserID:      msg.Sender.ID,
-			UserAccount: msg.Sender.Account,
-			Content:     req.NewMsg,
-			CreatedAt:   msg.CreatedAt,
-			EditedAt:    &editedAt,
-			UpdatedAt:   &editedAt,
+			ID:                    msg.MessageID,
+			RoomID:                msg.RoomID,
+			UserID:                msg.Sender.ID,
+			UserAccount:           msg.Sender.Account,
+			Content:               req.NewMsg,
+			CreatedAt:             msg.CreatedAt,
+			EditedAt:              &editedAt,
+			UpdatedAt:             &editedAt,
+			ThreadParentMessageID: msg.ThreadParentID,
+			TShow:                 msg.TShow,
 		},
 		SiteID:    siteID,
 		Timestamp: editedAtMs,
@@ -374,6 +374,10 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 		return nil, errcode.Forbidden("only the sender can delete")
 	}
 
+	// Already-deleted short-circuit: echo the current updated_at as the DeletedAt.
+	// Prevents tcount double-decrement on caller retry and avoids duplicate events.
+	// countAndSetParentTcount already wrote the correct tcount on the first delete,
+	// so no re-publish is needed — the tcount is durable in Cassandra.
 	if msg.Deleted {
 		var deletedAtMs int64
 		if msg.UpdatedAt != nil {
@@ -386,7 +390,7 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	}
 
 	deletedAt := time.Now().UTC()
-	actualDeletedAt, applied, err := s.msgWriter.SoftDeleteMessage(c, msg, deletedAt)
+	actualDeletedAt, applied, newTcount, err := s.msgWriter.SoftDeleteMessage(c, msg, deletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("deleting message %s: %w", req.MessageID, err)
 	}
@@ -403,15 +407,19 @@ func (s *HistoryService) DeleteMessage(c *natsrouter.Context, siteID string, req
 	canonicalEvt := model.MessageEvent{
 		Event: model.EventDeleted,
 		Message: model.Message{
-			ID:          msg.MessageID,
-			RoomID:      msg.RoomID,
-			UserID:      msg.Sender.ID,
-			UserAccount: msg.Sender.Account,
-			CreatedAt:   msg.CreatedAt,
-			UpdatedAt:   &actualDeletedAt,
+			ID:                    msg.MessageID,
+			RoomID:                msg.RoomID,
+			UserID:                msg.Sender.ID,
+			UserAccount:           msg.Sender.Account,
+			Content:               msg.Msg,
+			CreatedAt:             msg.CreatedAt,
+			UpdatedAt:             &actualDeletedAt,
+			ThreadParentMessageID: msg.ThreadParentID,
+			TShow:                 msg.TShow,
 		},
 		SiteID:    siteID,
 		Timestamp: deletedAtMs,
+		NewTCount: newTcount,
 	}
 	s.publishCanonicalBestEffort(c, subject.MsgCanonicalDeleted(siteID), &canonicalEvt)
 

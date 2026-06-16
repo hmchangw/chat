@@ -21,6 +21,56 @@ var (
 	errTimeout      = nats.ErrTimeout
 )
 
+// newTestHandler builds a handler whose every session resolves to the same hub,
+// so existing single-hub tests behave as before.
+func newTestHandler(hub Hub) *handler {
+	return newHandler(newSessionManager(func() Hub { return hub }, time.Hour))
+}
+
+func TestHandler_SetsSessionCookie(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := NewMockHub(ctrl)
+	m.EXPECT().Status().Return(ConnectionStatus{})
+
+	h := newTestHandler(m)
+	w := httptest.NewRecorder()
+	h.status(w, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName {
+			cookie = c
+		}
+	}
+	require.NotNil(t, cookie, "expected a session cookie on the response")
+	assert.True(t, cookie.HttpOnly)
+}
+
+func TestHandler_IsolatesSessions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	hubA := NewMockHub(ctrl)
+	hubB := NewMockHub(ctrl)
+	hubA.EXPECT().Status().Return(ConnectionStatus{SourceURL: "nats://a:4222"})
+	hubB.EXPECT().Status().Return(ConnectionStatus{SourceURL: "nats://b:4222"})
+
+	factory, calls := hubFactory(hubA, hubB)
+	h := newHandler(newSessionManager(factory, time.Hour))
+
+	// Two browsers with no cookie each get their own hub.
+	w1 := httptest.NewRecorder()
+	h.status(w1, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	w2 := httptest.NewRecorder()
+	h.status(w2, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+
+	var got1, got2 ConnectionStatus
+	require.NoError(t, json.NewDecoder(w1.Body).Decode(&got1))
+	require.NoError(t, json.NewDecoder(w2.Body).Decode(&got2))
+
+	assert.Equal(t, "nats://a:4222", got1.SourceURL)
+	assert.Equal(t, "nats://b:4222", got2.SourceURL)
+	assert.Equal(t, 2, *calls)
+}
+
 func TestHandler_Connect(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -74,7 +124,7 @@ func TestHandler_Connect(t *testing.T) {
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
 
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			var body bytes.Buffer
 			if s, ok := tc.body.(string); ok {
@@ -97,7 +147,7 @@ func TestHandler_Disconnect(t *testing.T) {
 	m := NewMockHub(ctrl)
 	m.EXPECT().Disconnect()
 
-	h := newHandler(m)
+	h := newTestHandler(m)
 	req := httptest.NewRequest(http.MethodPost, "/api/disconnect", nil)
 	w := httptest.NewRecorder()
 	h.disconnect(w, req)
@@ -113,7 +163,7 @@ func TestHandler_Status(t *testing.T) {
 		SourceURL: "nats://src:4222",
 	})
 
-	h := newHandler(m)
+	h := newTestHandler(m)
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	w := httptest.NewRecorder()
 	h.status(w, req)
@@ -171,7 +221,7 @@ func TestHandler_Subscribe(t *testing.T) {
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
 
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			var body bytes.Buffer
 			if s, ok := tc.body.(string); ok {
@@ -225,7 +275,7 @@ func TestHandler_Unsubscribe(t *testing.T) {
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
 
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			mux := http.NewServeMux()
 			h.registerRoutes(mux)
@@ -273,7 +323,7 @@ func TestHandler_ListSubscriptions(t *testing.T) {
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
 
-			h := newHandler(m)
+			h := newTestHandler(m)
 			req := httptest.NewRequest(http.MethodGet, "/api/subscriptions", nil)
 			w := httptest.NewRecorder()
 			h.listSubscriptions(w, req)
@@ -329,7 +379,7 @@ func TestHandler_Publish(t *testing.T) {
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
 
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			var body bytes.Buffer
 			if s, ok := tc.body.(string); ok {
@@ -360,7 +410,7 @@ func TestHandler_Events(t *testing.T) {
 	})
 	m.EXPECT().UnregisterSSEClient("client-1")
 
-	h := newHandler(m)
+	h := newTestHandler(m)
 
 	w := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 
@@ -440,7 +490,7 @@ func TestHandler_RequestConnect(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			var body bytes.Buffer
 			if s, ok := tc.body.(string); ok {
@@ -463,7 +513,7 @@ func TestHandler_RequestDisconnect(t *testing.T) {
 	m := NewMockHub(ctrl)
 	m.EXPECT().DisconnectRequest()
 
-	h := newHandler(m)
+	h := newTestHandler(m)
 	req := httptest.NewRequest(http.MethodPost, "/api/request/disconnect", nil)
 	w := httptest.NewRecorder()
 	h.requestDisconnect(w, req)
@@ -551,7 +601,7 @@ func TestHandler_Request(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			m := NewMockHub(ctrl)
 			tc.setupMock(m)
-			h := newHandler(m)
+			h := newTestHandler(m)
 
 			var body bytes.Buffer
 			if s, ok := tc.body.(string); ok {

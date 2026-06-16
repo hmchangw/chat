@@ -14,12 +14,14 @@ import (
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/userstore"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type config struct {
@@ -37,20 +39,28 @@ type config struct {
 	SubCacheTTL        time.Duration           `env:"GATEKEEPER_SUB_CACHE_TTL"   envDefault:"2m"`
 	RoomMetaCacheSize  int                     `env:"ROOM_META_CACHE_SIZE"       envDefault:"10000"`
 	RoomMetaCacheTTL   time.Duration           `env:"ROOM_META_CACHE_TTL"        envDefault:"2m"`
+	ValkeyAddrs        []string                `env:"VALKEY_ADDRS"               envSeparator:","`
+	ValkeyPassword     string                  `env:"VALKEY_PASSWORD"            envDefault:""`
+	RoomMetaL2TTL      time.Duration           `env:"ROOM_META_L2_TTL"           envDefault:"15m"`
 	UserCacheSize      int                     `env:"USER_CACHE_SIZE"            envDefault:"10000"`
 	UserCacheTTL       time.Duration           `env:"USER_CACHE_TTL"             envDefault:"5m"`
 	Consumer           stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap          bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	DebugLog           logctx.Config           `envPrefix:"DEBUG_LOG_"`
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// Wrap the base JSON handler so per-request X-Debug rungs can surface
+	// flow/debug/trace edges even though the floor stays at INFO; RenderLevelNames
+	// prints the custom FLOW/TRACE levels by name.
+	logctx.SetupDefault(os.Stdout)
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	ctx := context.Background()
 
@@ -78,7 +88,17 @@ func main() {
 	}
 	db := mongoClient.Database(cfg.MongoDB)
 
-	mongoStore := NewMongoStore(db)
+	var metaValkey valkeyutil.Client
+	if len(cfg.ValkeyAddrs) > 0 {
+		metaValkey, err = valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+		if err != nil {
+			slog.Error("valkey connect (room-meta L2) failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("room-meta L2 cache enabled", "ttl", cfg.RoomMetaL2TTL)
+	}
+
+	mongoStore := NewMongoStore(db, metaValkey, cfg.RoomMetaL2TTL)
 	withMeta, err := newCachedMetaStore(mongoStore, cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL)
 	if err != nil {
 		slog.Error("init room meta cache failed", "error", err)
@@ -151,6 +171,8 @@ func main() {
 					wg.Done()
 				}()
 				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+				handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+				logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
 				handler.HandleJetStreamMsg(handlerCtx, msg)
 			}()
 		}
@@ -176,6 +198,7 @@ func main() {
 		func(ctx context.Context) error { return tracerShutdown(ctx) },
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
+		func(_ context.Context) error { valkeyutil.Disconnect(metaValkey); return nil },
 	)
 }
 

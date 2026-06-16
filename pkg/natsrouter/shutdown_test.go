@@ -211,5 +211,6 @@ func TestRouter_Shutdown_StressUnderLoad(t *testing.T) {
 }
 
 func subjectf(i int) string {
+	// #nosec G115 -- inputs bounded by %26 and /26 within a fixed test loop; cannot overflow rune
 	return "test.concurrent.reg." + string(rune('a'+i%26)) + "." + string(rune('0'+i/26))
 }

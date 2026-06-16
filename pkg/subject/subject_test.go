@@ -55,6 +55,8 @@ func TestSubjectBuilders(t *testing.T) {
 			"chat.msg.canonical.site-a.deleted"},
 		{"RoomsInfoBatch", subject.RoomsInfoBatch("site-a"),
 			"chat.server.request.room.site-a.info.batch"},
+		{"ThreadUnreadSummary", subject.ThreadUnreadSummary("site-a"),
+			"chat.server.request.room.site-a.thread.unread.summary"},
 		{"RoomEvent", subject.RoomEvent("r1"), "chat.room.r1.event"},
 		{"UserRoomEvent", subject.UserRoomEvent("alice"), "chat.user.alice.event.room"},
 		{"RoomKeyUpdate", subject.RoomKeyUpdate("alice"),
@@ -270,6 +272,8 @@ func TestWildcardPatterns(t *testing.T) {
 			"chat.user.*.request.room.*.site-a.member.add"},
 		{"RoomsInfoBatchSubscribe", subject.RoomsInfoBatchSubscribe("site-a"),
 			"chat.server.request.room.site-a.info.batch"},
+		{"ThreadUnreadSummarySubscribe", subject.ThreadUnreadSummarySubscribe("site-a"),
+			"chat.server.request.room.site-a.thread.unread.summary"},
 		{"MsgThreadWild", subject.MsgThreadWildcard("site-a"),
 			"chat.user.*.request.room.*.site-a.msg.thread"},
 		{"MsgThreadParentWild", subject.MsgThreadParentWildcard("site-a"),
@@ -849,4 +853,15 @@ func TestRoomPatternsMatchWildcards(t *testing.T) {
 				"pattern with params replaced by * must equal the existing wildcard subscription subject")
 		})
 	}
+}
+
+func TestPresenceSubjects(t *testing.T) {
+	assert.Equal(t, "chat.user.{account}.event.presence.site-a.hello", subject.PresenceHelloPattern("site-a"))
+	assert.Equal(t, "chat.user.{account}.event.presence.site-a.ping", subject.PresencePingPattern("site-a"))
+	assert.Equal(t, "chat.user.{account}.event.presence.site-a.activity", subject.PresenceActivityPattern("site-a"))
+	assert.Equal(t, "chat.user.{account}.event.presence.site-a.bye", subject.PresenceByePattern("site-a"))
+	assert.Equal(t, "chat.user.{account}.request.presence.site-a.manual.set", subject.PresenceManualSetPattern("site-a"))
+	assert.Equal(t, "chat.user.presence.site-a.query.batch", subject.PresenceQueryBatch("site-a"))
+	assert.Equal(t, "chat.server.request.presence.site-a.query.batch", subject.PresenceQueryBatchPeer("site-a"))
+	assert.Equal(t, "chat.user.presence.state.alice", subject.PresenceState("alice"))
 }

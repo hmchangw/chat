@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,6 +195,22 @@ func TestThreadSubscriptionJSON(t *testing.T) {
 		UpdatedAt:       time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, &ts, &model.ThreadSubscription{})
+}
+
+func TestThreadUnreadSummaryResponseJSON(t *testing.T) {
+	ms := int64(1717000000000)
+	r := model.ThreadUnreadSummaryResponse{
+		Unread:              true,
+		UnreadDirectMessage: false,
+		UnreadMention:       true,
+		LastMessageAt:       &ms,
+	}
+	roundTrip(t, &r, &model.ThreadUnreadSummaryResponse{})
+}
+
+func TestThreadUnreadSummaryRequestJSON(t *testing.T) {
+	r := model.ThreadUnreadSummaryRequest{UserAccount: "alice@example.com"}
+	roundTrip(t, &r, &model.ThreadUnreadSummaryRequest{})
 }
 
 func TestMessageJSON(t *testing.T) {
@@ -936,6 +953,7 @@ func TestRoomKeyEventJSON(t *testing.T) {
 		Timestamp:  1735689600000,
 	}
 
+	// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 	data, err := json.Marshal(src)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1696,6 +1714,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			PrivateKey:       &pk,
 			KeyVersion:       &kv,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 		var dst model.RoomInfo
@@ -1710,6 +1729,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			RoomID: "r1",
 			Found:  false,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
@@ -1736,6 +1756,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			SiteID: "site-a",
 			Name:   "general",
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
@@ -1756,6 +1777,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			LastMsgAt:        nil,
 			LastMentionAllAt: &zero,
 		}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&src)
 		require.NoError(t, err)
 
@@ -2381,6 +2403,30 @@ func TestSubscriptionReadEventJSON(t *testing.T) {
 	if !reflect.DeepEqual(src, dst) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
 	}
+}
+
+func TestPresenceStatusValues(t *testing.T) {
+	assert.Equal(t, model.PresenceStatus("online"), model.StatusOnline)
+	assert.Equal(t, model.PresenceStatus("away"), model.StatusAway)
+	assert.Equal(t, model.PresenceStatus("busy"), model.StatusBusy)
+	assert.Equal(t, model.PresenceStatus("offline"), model.StatusOffline)
+	assert.Equal(t, model.PresenceStatus("appear_offline"), model.StatusAppearOffline)
+	assert.Equal(t, model.PresenceStatus(""), model.StatusNone)
+}
+
+func TestPresenceTypesJSON(t *testing.T) {
+	roundTrip(t, &model.Hello{ConnID: "c1", Timestamp: 1735689600000}, &model.Hello{})
+	roundTrip(t, &model.Ping{ConnID: "c1", Timestamp: 1735689600000}, &model.Ping{})
+	roundTrip(t, &model.Activity{ConnID: "c1", Away: true, Timestamp: 1735689600000}, &model.Activity{})
+	roundTrip(t, &model.ByeRequest{ConnID: "c1", Timestamp: 1735689600000}, &model.ByeRequest{})
+	roundTrip(t, &model.ManualStatusRequest{Status: model.StatusBusy, Timestamp: 1735689600000}, &model.ManualStatusRequest{})
+	roundTrip(t, &model.ManualStatusResponse{Account: "alice", Status: model.StatusBusy, SetAt: 1735689600000, Effective: model.StatusBusy}, &model.ManualStatusResponse{})
+	roundTrip(t, &model.PresenceQuery{Accounts: []string{"alice", "bob"}}, &model.PresenceQuery{})
+	roundTrip(t, &model.PresenceState{Account: "alice", SiteID: "site-a", Status: model.StatusOnline, Timestamp: 1735689600000}, &model.PresenceState{})
+	roundTrip(t, &model.PresenceQueryResponse{
+		States:    []model.PresenceState{{Account: "alice", SiteID: "site-a", Status: model.StatusOnline, Timestamp: 1735689600000}},
+		Timestamp: 1735689600000,
+	}, &model.PresenceQueryResponse{})
 }
 
 func TestOutboxSubscriptionReadConstant(t *testing.T) {
@@ -3047,32 +3093,54 @@ func TestSubscriptionRemovedEventOmitsZeroValueFields(t *testing.T) {
 	}
 }
 
-func TestPinRoomEventJSON(t *testing.T) {
+func TestPinStateRoomEventJSON_Pinned(t *testing.T) {
 	pinnedAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
-	evt := model.PinRoomEvent{
+	evt := model.PinStateRoomEvent{
 		Type:      model.RoomEventMessagePinned,
 		RoomID:    "r1",
 		SiteID:    "site-a",
 		Timestamp: pinnedAt.UnixMilli(),
 		MessageID: "msg-uuid",
-		PinnedBy:  &model.Participant{UserID: "u1", Account: "alice"},
-		PinnedAt:  pinnedAt,
+		Pinned:    true,
+		By:        &model.Participant{UserID: "u1", Account: "alice"},
+		At:        pinnedAt,
 	}
-	roundTrip(t, &evt, &model.PinRoomEvent{})
+	roundTrip(t, &evt, &model.PinStateRoomEvent{})
 }
 
-func TestUnpinRoomEventJSON(t *testing.T) {
+func TestPinStateRoomEventJSON_Unpinned(t *testing.T) {
 	unpinnedAt := time.Date(2026, 5, 14, 12, 20, 0, 0, time.UTC)
-	evt := model.UnpinRoomEvent{
-		Type:       model.RoomEventMessageUnpinned,
-		RoomID:     "r1",
-		SiteID:     "site-a",
-		Timestamp:  unpinnedAt.UnixMilli(),
-		MessageID:  "msg-uuid",
-		UnpinnedBy: &model.Participant{UserID: "u1", Account: "alice"},
-		UnpinnedAt: unpinnedAt,
+	evt := model.PinStateRoomEvent{
+		Type:      model.RoomEventMessageUnpinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: unpinnedAt.UnixMilli(),
+		MessageID: "msg-uuid",
+		Pinned:    false,
+		By:        &model.Participant{UserID: "u1", Account: "alice"},
+		At:        unpinnedAt,
 	}
-	roundTrip(t, &evt, &model.UnpinRoomEvent{})
+	roundTrip(t, &evt, &model.PinStateRoomEvent{})
+}
+
+func TestPinStateRoomEventJSON_PinnedFieldAlwaysPresent(t *testing.T) {
+	// pinned has no omitempty: the false (unpinned) state must serialize
+	// explicitly so clients never infer state from field absence.
+	evt := model.PinStateRoomEvent{
+		Type:      model.RoomEventMessageUnpinned,
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		Timestamp: 1747224000000,
+		MessageID: "msg-uuid",
+		Pinned:    false,
+	}
+	data, err := json.Marshal(&evt)
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	pinned, present := raw["pinned"]
+	require.True(t, present, "pinned must serialize even when false")
+	assert.Equal(t, "false", string(pinned))
 }
 
 // --- User.Roles ---
@@ -3317,4 +3385,126 @@ func TestAvatarJSON(t *testing.T) {
 		UpdatedAt:   time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
 	}
 	roundTrip(t, src, &model.Avatar{})
+}
+
+func TestMessageEvent_NewTCount(t *testing.T) {
+	t.Run("NewTCount nil is omitted from JSON", func(t *testing.T) {
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["newTcount"]
+		assert.False(t, present, "nil NewTCount must be omitted from JSON")
+	})
+
+	t.Run("NewTCount zero is included in JSON", func(t *testing.T) {
+		zero := 0
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &zero,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		val, present := raw["newTcount"]
+		assert.True(t, present, "non-nil zero NewTCount must be present in JSON")
+		assert.Equal(t, float64(0), val, "zero NewTCount must marshal as 0")
+
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.NewTCount)
+		assert.Equal(t, 0, *dst.NewTCount)
+	})
+
+	t.Run("NewTCount positive round-trips", func(t *testing.T) {
+		count := 3
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1", UserID: "u1", UserAccount: "alice", CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &count,
+		}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.NewTCount)
+		assert.Equal(t, 3, *dst.NewTCount)
+	})
+
+	t.Run("NewTCount zero in BSON round-trips — omitempty must not drop zero", func(t *testing.T) {
+		zero := 0
+		e := model.MessageEvent{
+			Message:   model.Message{ID: "m1", RoomID: "r1"},
+			SiteID:    "site-a",
+			Timestamp: 1735689600000,
+			NewTCount: &zero,
+		}
+		data, err := bson.Marshal(e)
+		require.NoError(t, err)
+		var raw bson.M
+		require.NoError(t, bson.Unmarshal(data, &raw))
+		val, present := raw["newTcount"]
+		assert.True(t, present, "zero NewTCount must be present in BSON — bson omitempty must not be used")
+		assert.EqualValues(t, 0, val, "zero BSON value must be 0, not missing")
+	})
+}
+func TestMessageReadEventJSON(t *testing.T) {
+	floor := time.Date(2026, 6, 9, 10, 30, 0, 0, time.UTC)
+
+	t.Run("floor present round-trips", func(t *testing.T) {
+		src := model.MessageReadEvent{
+			Type:              model.RoomEventMessageRead,
+			RoomID:            "room-1",
+			MinUserLastSeenAt: &floor,
+			Timestamp:         floor.UnixMilli(),
+		}
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var dst model.MessageReadEvent
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !reflect.DeepEqual(src, dst) {
+			t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", dst, src)
+		}
+	})
+
+	t.Run("nil floor omitted from wire", func(t *testing.T) {
+		src := model.MessageReadEvent{
+			Type:      model.RoomEventMessageRead,
+			RoomID:    "room-2",
+			Timestamp: floor.UnixMilli(),
+		}
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), "minUserLastSeenAt") {
+			t.Errorf("nil floor must be omitted, got %s", data)
+		}
+		var dst model.MessageReadEvent
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if dst.MinUserLastSeenAt != nil {
+			t.Errorf("expected nil floor, got %v", dst.MinUserLastSeenAt)
+		}
+	})
+}
+
+func TestRoomEventMessageReadValue(t *testing.T) {
+	if model.RoomEventMessageRead != "message_read" {
+		t.Errorf("RoomEventMessageRead = %q, want %q", model.RoomEventMessageRead, "message_read")
+	}
 }

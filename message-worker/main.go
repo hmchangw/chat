@@ -15,6 +15,8 @@ import (
 
 	"github.com/hmchangw/chat/pkg/atrest"
 	"github.com/hmchangw/chat/pkg/cassutil"
+	"github.com/hmchangw/chat/pkg/jobguard"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/msgbucket"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -46,16 +48,18 @@ type config struct {
 	Bootstrap          bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	Atrest             atrest.Config
 	Vault              atrest.VaultConfig
+	DebugLog           logctx.Config `envPrefix:"DEBUG_LOG_"`
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	logctx.SetupDefault(os.Stdout)
 
 	cfg, err := env.ParseAs[config]()
 	if err != nil {
 		slog.Error("parse config", "error", err)
 		os.Exit(1)
 	}
+	logctx.Configure(cfg.DebugLog)
 
 	if cfg.MessageBucketHours < 1 {
 		slog.Error("invalid config", "MESSAGE_BUCKET_HOURS", cfg.MessageBucketHours)
@@ -132,13 +136,16 @@ func main() {
 		os.Exit(1)
 	}
 	handler := NewHandler(store, us, threadStore, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
+		// NewMsg re-stamps X-Request-ID and X-Debug from ctx so correlation and
+		// verbose-tracing intent ride onto downstream badge/outbox events.
+		msg := natsutil.NewMsg(ctx, subj, data)
 		if msgID == "" {
-			if err := nc.Publish(ctx, subj, data); err != nil {
+			if err := nc.PublishMsg(ctx, msg); err != nil {
 				return fmt.Errorf("publish nats message to %s: %w", subj, err)
 			}
 			return nil
 		}
-		if _, err := js.Publish(ctx, subj, data, jetstream.WithMsgID(msgID)); err != nil {
+		if _, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(msgID)); err != nil {
 			return fmt.Errorf("publish jetstream message to %s with msgID %s: %w", subj, msgID, err)
 		}
 		return nil
@@ -179,8 +186,15 @@ func main() {
 					<-sem
 					wg.Done()
 				}()
-				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
-				handler.HandleJetStreamMsg(handlerCtx, msg)
+				// jobguard recovers handler panics — this goroutine runs outside
+				// natsrouter's Recovery middleware, so an unrecovered panic would
+				// crash the worker and crash-loop on JetStream redelivery.
+				jobguard.Run(msg, func() {
+					handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+					handlerCtx = logctx.Admit(handlerCtx, msg.Headers())
+					logctx.CapturePayload(handlerCtx, "consumed", msg.Subject(), msg.Data())
+					handler.HandleJetStreamMsg(handlerCtx, msg)
+				})
 			}()
 		}
 	}()

@@ -160,19 +160,20 @@ func (s *CassandraStore) saveMessageEncrypted(ctx context.Context, msg *model.Me
 	return nil
 }
 
-// SaveThreadMessage batches the two regular inserts (messages_by_id and
-// thread_messages_by_thread) into one round-trip via UnloggedBatch — same
-// rationale as SaveMessage. incrementParentTcount stays separate because
-// it uses Lightweight Transactions (CAS), which cannot be combined with
-// non-LWT statements in a single batch.
-func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+// SaveThreadMessage writes the reply to messages_by_id and then inserts into
+// thread_messages_by_thread. Both writes are plain INSERTs (no LWT): JetStream
+// MsgID dedup prevents double-delivery at the consumer level, so re-inserting
+// an identical row is safe and avoids the 5–10× Paxos overhead of IF NOT EXISTS.
+// countAndSetParentTcount derives tcount from a COUNT query and blind-SETs it,
+// which is idempotent on redelivery without any CAS.
+func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) (*int, error) {
 	if s.cipher != nil {
 		return s.saveThreadMessageEncrypted(ctx, msg, sender, siteID, threadRoomID)
 	}
+
 	mentions := toMentionSet(msg.Mentions)
 
-	batch := s.cassSession.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-	batch.Query(
+	if err := s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, msg, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message,
@@ -181,8 +182,11 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 		msg.Attachments, msg.Card, msg.CardAction, msg.File,
-	)
-	batch.Query(
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into messages_by_id: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg,
 		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message,
@@ -192,37 +196,56 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 		sender, msg.Content, siteID, msg.CreatedAt, mentions,
 		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
 		msg.Attachments, msg.Card, msg.CardAction, msg.File,
-	)
-	if err := s.cassSession.ExecuteBatch(batch); err != nil {
-		return fmt.Errorf("save thread message %s: %w", msg.ID, err)
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
 	}
 
-	if err := s.incrementParentTcount(ctx, msg); err != nil {
-		return err
+	// TShow ("also send to channel"): dual-write the reply into messages_by_room
+	// so it shows up in the parent room's channel timeline on history loads.
+	// A third plain INSERT — NOT a SaveMessage call, which would double-write
+	// messages_by_id. The row uses the reply's own created_at (interleaves
+	// correctly in the timeline) and the same bucket sizer as the channel path.
+	// tshow + thread_parent_id + thread_parent_created_at must be populated:
+	// history-service's quote access-window logic redacts TShow rows that lack
+	// the parent fields (legacyTShowMissingParentTime).
+	if msg.TShow {
+		if err := s.cassSession.Query(
+			`INSERT INTO messages_by_room
+			 (room_id, bucket, created_at, message_id, sender, msg, site_id, updated_at, mentions,
+			  thread_room_id, thread_parent_id, thread_parent_created_at, type, sys_msg_data, tshow, quoted_parent_message,
+			  attachments, card, card_action, file)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			msg.RoomID, s.bucket.Of(msg.CreatedAt), msg.CreatedAt, msg.ID, sender, msg.Content, siteID, msg.CreatedAt, mentions,
+			threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
+			msg.Attachments, msg.Card, msg.CardAction, msg.File,
+		).WithContext(ctx).Exec(); err != nil {
+			return nil, fmt.Errorf("insert tshow thread message %s into messages_by_room: %w", msg.ID, err)
+		}
 	}
 
-	return nil
+	return s.countAndSetParentTcount(ctx, msg, threadRoomID)
 }
 
 // saveThreadMessageEncrypted is the cipher-enabled counterpart to
-// SaveThreadMessage. The tcount increment at the end is shared with the
-// legacy path.
-func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) error {
+// SaveThreadMessage. Both writes are plain INSERTs — see SaveThreadMessage for
+// the rationale (JetStream MsgID dedup + idempotent countAndSetParentTcount).
+//
+// Encrypted body columns (msg, attachments, card, card_action, file) are bound
+// to NULL so a redelivered pre-encryption row cannot end up in a hybrid
+// plaintext+encrypted state. sys_msg_data is unencrypted and written as
+// plaintext in both rows.
+func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) (*int, error) {
 	cm := buildCassandraMessage(msg)
 	enc := atrest.SplitForEncryption(&cm)
 	payload, meta, err := s.cipher.Encrypt(ctx, cm.RoomID, enc)
 	if err != nil {
-		return fmt.Errorf("encrypt message %s in room %s: %w", cm.MessageID, cm.RoomID, err)
+		return nil, fmt.Errorf("encrypt message %s in room %s: %w", cm.MessageID, cm.RoomID, err)
 	}
 	atrest.StripEncryptedFields(&cm)
 	encMeta := &cassandra.EncMeta{Nonce: meta.Nonce}
 	mentions := toMentionSet(msg.Mentions)
 
-	// See saveMessageEncrypted: encrypted body columns are bound to NULL so a
-	// redelivered pre-rollout row can't end up in a hybrid plaintext+encrypted
-	// state. sys_msg_data is not encrypted and is written as plaintext.
-	batch := s.cassSession.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-	batch.Query(
+	if err = s.cassSession.Query(
 		`INSERT INTO messages_by_id
 		 (message_id, created_at, room_id, sender, site_id, updated_at, mentions,
 		  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow,
@@ -233,8 +256,11 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 		msg.ID, msg.CreatedAt, msg.RoomID, sender, siteID, msg.CreatedAt, mentions,
 		threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow,
 		cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
-	)
-	batch.Query(
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into messages_by_id: %w", msg.ID, err)
+	}
+
+	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id,
 		  sender, site_id, updated_at, mentions, type, quoted_parent_message, sys_msg_data,
@@ -244,16 +270,32 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage, msg.SysMsgData,
 		payload, encMeta,
-	)
-	if err := s.cassSession.ExecuteBatch(batch); err != nil {
-		return fmt.Errorf("save thread message %s: %w", msg.ID, err)
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
 	}
 
-	if err := s.incrementParentTcount(ctx, msg); err != nil {
-		return err
+	// TShow dual-write into messages_by_room — see SaveThreadMessage for the
+	// rationale. Reuses the same encrypted bundle (payload + nonce) the two
+	// writes above bind, matching saveMessageEncrypted's both-tables pattern;
+	// plaintext body columns are bound NULL for the same hybrid-state reason.
+	if msg.TShow {
+		if err := s.cassSession.Query(
+			`INSERT INTO messages_by_room
+			 (room_id, bucket, created_at, message_id, sender, site_id, updated_at, mentions,
+			  thread_room_id, thread_parent_id, thread_parent_created_at, type, tshow,
+			  quoted_parent_message, sys_msg_data,
+			  msg, attachments, card, card_action, file,
+			  enc_payload, enc_meta)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+			msg.RoomID, s.bucket.Of(msg.CreatedAt), msg.CreatedAt, msg.ID, sender, siteID, msg.CreatedAt, mentions,
+			threadRoomID, msg.ThreadParentMessageID, msg.ThreadParentMessageCreatedAt, msg.Type, msg.TShow,
+			cm.QuotedParentMessage, msg.SysMsgData, payload, encMeta,
+		).WithContext(ctx).Exec(); err != nil {
+			return nil, fmt.Errorf("insert tshow thread message %s into messages_by_room: %w", msg.ID, err)
+		}
 	}
 
-	return nil
+	return s.countAndSetParentTcount(ctx, msg, threadRoomID)
 }
 
 // buildCassandraMessage projects the user-authored fields of msg into a
@@ -282,94 +324,67 @@ func buildCassandraMessage(msg *model.Message) cassandra.Message {
 	return cm
 }
 
-// casMaxRetries is the maximum number of CAS attempts per tcount increment.
-// A conflict means another thread-reply landed between our read and write;
-// 16 attempts is sufficient for any realistic burst while preventing an
-// infinite loop if something unexpected keeps the row locked.
-const casMaxRetries = 16
-
-// casIncrement atomically increments the nullable INT counter starting at
-// initial by calling update(newVal, expected) in a retry loop. On conflict
-// (applied==false) it retries with the value returned by update.  Returns an
-// error after maxRetries consecutive failures.
-func casIncrement(maxRetries int, initial *int, update func(newVal int, expected *int) (applied bool, current *int, err error)) error {
-	tcount := initial
-	for range maxRetries {
-		newVal := 1
-		if tcount != nil {
-			newVal = *tcount + 1
+// countThreadReplies counts non-deleted rows in the thread_messages_by_thread
+// partition for threadRoomID. message-worker does not write the deleted column
+// on INSERT (it remains NULL), so the Go-side filter treats NULL the same as
+// false — only rows where deleted is explicitly true are excluded.
+func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID string) (int, error) {
+	iter := s.cassSession.Query(
+		`SELECT deleted FROM thread_messages_by_thread WHERE thread_room_id = ?`,
+		threadRoomID,
+	).WithContext(ctx).Iter()
+	var deleted *bool
+	n := 0
+	for iter.Scan(&deleted) {
+		if deleted == nil || !*deleted {
+			n++
 		}
-		applied, current, err := update(newVal, tcount)
-		if err != nil {
-			return err
-		}
-		if applied {
-			return nil
-		}
-		tcount = current
 	}
-	return fmt.Errorf("cas increment exceeded %d retries", maxRetries)
+	if err := iter.Close(); err != nil {
+		return 0, fmt.Errorf("count thread replies for thread %s: %w", threadRoomID, err)
+	}
+	return n, nil
 }
 
-// incrementParentTcount increments tcount on the parent message row in both
-// messages_by_id and messages_by_room using Cassandra Lightweight Transactions
-// (IF tcount = ?). Each table is incremented independently via casIncrement,
-// which retries up to casMaxRetries times on CAS conflict.
-// Binding a nil *int as the IF condition evaluates to IF tcount = null, which
-// handles the initial case where tcount has never been set on the parent row.
-// If ThreadParentMessageCreatedAt is nil the increment is silently skipped —
-// tcount cannot be updated without the full primary key of the parent row.
-func (s *CassandraStore) incrementParentTcount(ctx context.Context, msg *model.Message) error {
-	if msg.ThreadParentMessageCreatedAt == nil {
-		return nil
-	}
+// setParentTcount blind-SETs tcount on the parent row in both messages_by_id
+// and messages_by_room. No IF clause — the value is always derived from the
+// authoritative COUNT, so overwrites are idempotent on any redelivery.
+func (s *CassandraStore) setParentTcount(ctx context.Context, msg *model.Message, n int) error {
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 	parentBucket := s.bucket.Of(parentCreatedAt)
-
-	// CAS increment on messages_by_id (no bucket — table unchanged).
-	var tcount *int
 	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
-	).WithContext(ctx).Scan(&tcount); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read tcount for parent message %s: %w", parentID, err)
+		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
+		n, parentID, parentCreatedAt,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
 	}
-	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
-		var current *int
-		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ? IF tcount = ?`,
-			newVal, parentID, parentCreatedAt, expected,
-		).WithContext(ctx).ScanCAS(&current)
-		return applied, current, err
-	}); err != nil {
-		return fmt.Errorf("cas tcount in messages_by_id for parent %s: %w", parentID, err)
-	}
-
 	if err := s.cassSession.Query(
-		`SELECT tcount FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		msg.RoomID, parentBucket, parentCreatedAt, parentID,
-	).WithContext(ctx).Scan(&tcount); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read tcount in messages_by_room for parent %s: %w", parentID, err)
+		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		n, msg.RoomID, parentBucket, parentCreatedAt, parentID,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("set tcount on parent %s in messages_by_room: %w", parentID, err)
 	}
-	if err := casIncrement(casMaxRetries, tcount, func(newVal int, expected *int) (bool, *int, error) {
-		var current *int
-		applied, err := s.cassSession.Query(
-			`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ? IF tcount = ?`,
-			newVal, msg.RoomID, parentBucket, parentCreatedAt, parentID, expected,
-		).WithContext(ctx).ScanCAS(&current)
-		return applied, current, err
-	}); err != nil {
-		return fmt.Errorf("cas tcount in messages_by_room for parent %s: %w", parentID, err)
-	}
-
 	return nil
+}
+
+// countAndSetParentTcount derives tcount from the thread partition COUNT and
+// blind-SETs it on the parent row in both Cassandra tables. Returns (nil, nil)
+// when ThreadParentMessageCreatedAt is unset (no parent key available).
+// This approach is crash-safe: COUNT + blind SET is idempotent on redelivery,
+// avoiding the 2PC window of the old CAS increment.
+func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model.Message, threadRoomID string) (*int, error) {
+	if msg.ThreadParentMessageCreatedAt == nil {
+		return nil, nil
+	}
+	n, err := s.countThreadReplies(ctx, threadRoomID)
+	if err != nil {
+		return nil, fmt.Errorf("count thread replies: %w", err)
+	}
+	if err := s.setParentTcount(ctx, msg, n); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 // IF EXISTS prevents phantom rows on missing parents; misses log at ERROR

@@ -6,26 +6,131 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	vault "github.com/hashicorp/vault/api"
 	authapprole "github.com/hashicorp/vault/api/auth/approle"
 	authk8s "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
-// observeWatcher reads the lifetime watcher's terminal status and logs
-// + increments a metric on a renewal failure. Without this the goroutine
-// running watcher.Start() exits silently when Vault is unreachable
-// across a renewal window, the token hits max_ttl, or the role's
-// policy is revoked — every subsequent Wrap/Unwrap then returns 403
-// with no signal for operators. A clean Stop() (which we do during
-// graceful shutdown) emits a nil error and is not logged.
-func observeWatcher(watcher *vault.LifetimeWatcher) {
-	err := <-watcher.DoneCh()
-	if err == nil {
-		return
+// tokenLease is one authenticated token plus the means to observe and
+// release it: done fires when the token's lifetime watcher ends (renewal
+// hit max_ttl, renewal failed across the grace window, or the token is
+// non-renewable and near expiry), and stop tears the watcher down.
+type tokenLease struct {
+	done <-chan error
+	stop func()
+}
+
+// leaseFunc authenticates to Vault and returns a fresh tokenLease. It is
+// the re-authentication primitive the maintain loop calls whenever the
+// current token dies. Implemented by vaultLease for real auth; faked in
+// tests.
+type leaseFunc func(ctx context.Context) (tokenLease, error)
+
+// backoffFunc maps a 1-based failed-attempt count to a wait before the
+// next re-login try.
+type backoffFunc func(attempt int) time.Duration
+
+// vaultLease builds a leaseFunc that logs in via the given auth method and
+// starts a lifetime watcher for the issued token. Re-reading the credential
+// happens inside method.Login (the AppRole helper re-reads its secret-ID
+// file on each call), so a rotated secret ID is picked up automatically on
+// every re-auth.
+func vaultLease(client *vault.Client, method vault.AuthMethod) leaseFunc {
+	return func(ctx context.Context) (tokenLease, error) {
+		secret, err := client.Auth().Login(ctx, method)
+		if err != nil {
+			return tokenLease{}, fmt.Errorf("login: %w", err)
+		}
+		if secret == nil || secret.Auth == nil {
+			return tokenLease{}, errors.New("login returned empty auth")
+		}
+		watcher, err := client.NewLifetimeWatcher(&vault.LifetimeWatcherInput{Secret: secret})
+		if err != nil {
+			return tokenLease{}, fmt.Errorf("lifetime watcher: %w", err)
+		}
+		go watcher.Start()
+		return tokenLease{done: watcher.DoneCh(), stop: watcher.Stop}, nil
 	}
-	kekRenewalFailures.Inc()
-	slog.Error("atrest: vault token renewal stopped with error", "error", err)
+}
+
+// maintainToken keeps a long-lived process authenticated to Vault. It
+// watches the current token's lifetime; when that ends — for any reason —
+// it discards the dead token and authenticates again for a fresh one.
+// Renewal (handled by the lifetime watcher inside each lease) keeps a token
+// alive cheaply up to its max_ttl; this loop covers everything renewal
+// cannot — hitting max_ttl, a renewal window missed during a Vault outage,
+// or a non-renewable token — by re-logging-in. AppRole/Kubernetes
+// credentials are reusable, so recovery needs no operator action. The loop
+// runs until ctx is cancelled (via the wrapper's Close).
+func maintainToken(ctx context.Context, initial tokenLease, lease leaseFunc, backoff backoffFunc) {
+	current := initial
+	for {
+		select {
+		case <-ctx.Done():
+			current.stop()
+			return
+		case <-current.done:
+			current.stop()
+		}
+
+		next, ok := reauth(ctx, lease, backoff)
+		if !ok {
+			return // context cancelled while re-authenticating
+		}
+		current = next
+	}
+}
+
+// reauth retries lease until it succeeds, backing off between failures, and
+// returns the new lease. The bool is false when ctx is cancelled first (the
+// caller should then exit). Each failure increments kekRenewalFailures and
+// logs, so a sustained inability to obtain a token is visible to operators
+// while the old, now-expired token makes every Wrap/Unwrap fail.
+func reauth(ctx context.Context, lease leaseFunc, backoff backoffFunc) (tokenLease, bool) {
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return tokenLease{}, false
+		}
+		next, err := lease(ctx)
+		if err == nil {
+			// Debug, not Info: a successful re-auth is a routine event that
+			// recurs roughly every token max_ttl (e.g. every ~20 min), so it
+			// would otherwise be steady log noise. The failure path below
+			// stays at Error — that's the signal operators act on.
+			slog.Debug("atrest: vault re-authenticated for a fresh token")
+			return next, true
+		}
+		if ctx.Err() != nil {
+			return tokenLease{}, false // cancelled mid-login; not a real failure
+		}
+		kekRenewalFailures.Inc()
+		slog.Error("atrest: vault re-authentication failed; retrying", "attempt", attempt, "error", err)
+		select {
+		case <-ctx.Done():
+			return tokenLease{}, false
+		case <-time.After(backoff(attempt)):
+		}
+	}
+}
+
+// defaultBackoff is exponential (1s, 2s, 4s, …) capped at 30s, with a guard
+// against a non-positive attempt and against shift overflow.
+func defaultBackoff(attempt int) time.Duration {
+	const base = time.Second
+	const maxDelay = 30 * time.Second
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 30 {
+		return maxDelay
+	}
+	d := base << (attempt - 1)
+	if d > maxDelay {
+		return maxDelay
+	}
+	return d
 }
 
 // VaultConfig configures the Vault transit-engine KeyWrapper. It is
@@ -77,41 +182,43 @@ type vaultKeyWrapper struct {
 	client       *vault.Client
 	transitMount string
 	transitKey   string
-	watcher      *vault.LifetimeWatcher // nil when using a static token
+
+	// cancel stops the background maintainToken loop; nil when using a
+	// static token (no loop). loopDone is closed when that loop exits, so
+	// Close can wait for the lifetime watcher to be torn down.
+	cancel   context.CancelFunc
+	loopDone chan struct{}
 }
 
-// Close stops the background token-renewal goroutine if Kubernetes or
-// AppRole auth is in use. Safe to call repeatedly; safe to call when the
-// wrapper was constructed with a static token.
+// Close stops the background token-maintenance loop if Kubernetes or
+// AppRole auth is in use and waits for it to release its lifetime watcher.
+// Safe to call repeatedly; safe to call when the wrapper was constructed
+// with a static token.
 func (w *vaultKeyWrapper) Close() error {
-	if w.watcher != nil {
-		w.watcher.Stop()
+	if w.cancel != nil {
+		w.cancel()
+		<-w.loopDone
 	}
 	return nil
 }
 
-// loginWithRenewal performs an auth-method login and starts a background
-// lifetime watcher so a long-lived process keeps renewing its token instead
-// of dropping auth on TTL expiry. The returned watcher is stored on the
-// wrapper and stopped during graceful shutdown via Close. observeWatcher
-// surfaces a silently-stopped renewal in logs and metrics. Shared by the
-// Kubernetes and AppRole branches, which differ only in how they build the
-// vault.AuthMethod.
-func loginWithRenewal(ctx context.Context, client *vault.Client, method vault.AuthMethod) (*vault.LifetimeWatcher, error) {
-	secret, err := client.Auth().Login(ctx, method)
+// startTokenMaintenance performs the initial synchronous login (so a bad
+// credential fails the constructor rather than surfacing later) and then
+// launches the background maintainToken loop that re-authenticates on
+// expiry. It returns the cancel func and done channel for Close to drive.
+func startTokenMaintenance(ctx context.Context, lease leaseFunc) (context.CancelFunc, chan struct{}, error) {
+	initial, err := lease(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("login: %w", err)
+		return nil, nil, fmt.Errorf("initial token lease: %w", err)
 	}
-	if secret == nil || secret.Auth == nil {
-		return nil, errors.New("login returned empty auth")
-	}
-	watcher, err := client.NewLifetimeWatcher(&vault.LifetimeWatcherInput{Secret: secret})
-	if err != nil {
-		return nil, fmt.Errorf("lifetime watcher: %w", err)
-	}
-	go watcher.Start()
-	go observeWatcher(watcher)
-	return watcher, nil
+	// The loop outlives the constructor's ctx, so give it its own.
+	loopCtx, cancel := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		maintainToken(loopCtx, initial, lease, defaultBackoff)
+	}()
+	return cancel, loopDone, nil
 }
 
 // NewVaultKeyWrapper constructs a KeyWrapper backed by Vault's transit
@@ -134,17 +241,18 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		return nil, fmt.Errorf("vault: new client: %w", err)
 	}
 
-	var watcher *vault.LifetimeWatcher
+	// Each auth-method branch builds a leaseFunc; the shared
+	// startTokenMaintenance call below performs the initial login and starts
+	// the re-authentication loop. The static-token branch leaves lease nil —
+	// a static token has nothing to renew or re-issue.
+	var lease leaseFunc
 	switch {
 	case cfg.K8sRole != "":
 		k8sAuth, err := authk8s.NewKubernetesAuth(cfg.K8sRole, authk8s.WithMountPath(cfg.K8sAuthPath))
 		if err != nil {
 			return nil, fmt.Errorf("vault: configure kubernetes auth: %w", err)
 		}
-		watcher, err = loginWithRenewal(ctx, client, k8sAuth)
-		if err != nil {
-			return nil, fmt.Errorf("vault: kubernetes: %w", err)
-		}
+		lease = vaultLease(client, k8sAuth)
 	case cfg.AppRoleID != "":
 		// The secret ID is the sensitive half of the AppRole credential and
 		// is only ever sourced from a file — never an env var — so it stays
@@ -170,10 +278,7 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		if err != nil {
 			return nil, fmt.Errorf("vault: configure approle auth: %w", err)
 		}
-		watcher, err = loginWithRenewal(ctx, client, appRoleAuth)
-		if err != nil {
-			return nil, fmt.Errorf("vault: approle: %w", err)
-		}
+		lease = vaultLease(client, appRoleAuth)
 	case cfg.Token != "":
 		client.SetToken(cfg.Token)
 		// Validate the token + connectivity at construction time so a
@@ -187,12 +292,20 @@ func NewVaultKeyWrapper(ctx context.Context, cfg VaultConfig) (*vaultKeyWrapper,
 		return nil, errors.New("vault: one of VAULT_K8S_ROLE, VAULT_APPROLE_ROLE_ID, or VAULT_TOKEN must be set")
 	}
 
-	return &vaultKeyWrapper{
+	w := &vaultKeyWrapper{
 		client:       client,
 		transitMount: cfg.TransitMount,
 		transitKey:   cfg.TransitKey,
-		watcher:      watcher,
-	}, nil
+	}
+	if lease != nil {
+		cancel, loopDone, err := startTokenMaintenance(ctx, lease)
+		if err != nil {
+			return nil, fmt.Errorf("vault: %w", err)
+		}
+		w.cancel = cancel
+		w.loopDone = loopDone
+	}
+	return w, nil
 }
 
 // GenerateDataKey asks Vault to mint a fresh 256-bit DEK via the transit

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,24 +17,24 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hmchangw/chat/pkg/displayfmt"
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
+	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
 type Handler struct {
 	store RoomStore
-	// keyStore is set when VALKEY_ADDRS is configured (always in production; tests may pass nil).
+	// keyStore reads/writes room keys in the rooms collection (always wired in
+	// production; tests may pass nil).
 	keyStore RoomKeyStore
 	// dekProvisioner is set in main when ATREST_ENABLED; nil disables eager
 	// at-rest DEK creation at room-create time (message-worker's lazy create
@@ -98,6 +97,7 @@ func (h *Handler) Register(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.RoomRenamePattern(h.siteID), h.roomRename)
 	natsrouter.Register(r, subject.RoomRestricted(h.siteID), h.roomRestricted)
 	natsrouter.Register(r, subject.RoomsInfoBatchSubscribe(h.siteID), h.roomsInfoBatch)
+	natsrouter.Register(r, subject.ThreadUnreadSummarySubscribe(h.siteID), h.threadUnreadSummary)
 	natsrouter.Register(r, subject.RoomKeyEnsure(h.siteID), h.ensureRoomKey)
 	natsrouter.Register(r, subject.RoomCreatePattern(h.siteID), h.createRoom)
 }
@@ -110,6 +110,9 @@ func (h *Handler) createRoom(c *natsrouter.Context, req model.CreateRoomRequest)
 	if err != nil {
 		return nil, err
 	}
+	// debug: the classified room type drives all downstream routing.
+	slog.DebugContext(ctx, "room-service createRoom classified",
+		"request_id", natsutil.RequestIDFromContext(ctx), "type", roomType)
 
 	requester, err := h.store.GetUser(ctx, requesterAccount)
 	if err != nil {
@@ -206,6 +209,9 @@ func (h *Handler) handleCreateRoomDMOrBotDM(ctx context.Context, req *model.Crea
 	// the deterministic "open-or-create" contract for DMs.
 	existing, err := h.store.FindDMSubscription(ctx, requester.Account, other.Account)
 	if err == nil && existing != nil {
+		// debug: open-or-create short-circuit — the DM already exists.
+		slog.DebugContext(ctx, "room-service DM exists, returning existing",
+			"request_id", natsutil.RequestIDFromContext(ctx), "room_id", existing.RoomID)
 		// DM already exists: this is a success ("open-or-create"), not an error.
 		// Return the existing room ID so the client opens it. RoomType is left
 		// empty on this branch, matching the prior error-reply behaviour.
@@ -298,17 +304,9 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 		)
 	}
 
-	// Generate and store room key BEFORE canonical event so worker's Get gate succeeds.
-	if h.keyStore != nil {
-		pair, err := roomkeystore.GenerateKeyPair()
-		if err != nil {
-			return nil, fmt.Errorf("generate room key: %w", err)
-		}
-		if _, err := h.keyStore.Set(ctx, req.RoomID, *pair); err != nil {
-			roomkeymetrics.ValkeyErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("op", "Set")))
-			return nil, fmt.Errorf("store room key: %w", err)
-		}
-	}
+	// The room encryption key is a field of the room document and is provisioned
+	// by room-worker when it inserts the room, so room-service no longer
+	// pre-provisions it here.
 
 	// Provision the at-rest DEK BEFORE the canonical event so the first message
 	// write doesn't pay the create cost. Blocking, like the room key above;
@@ -327,6 +325,9 @@ func (h *Handler) publishCreateRoom(ctx context.Context, req *model.CreateRoomRe
 	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "create"), payload, ""); err != nil {
 		return nil, fmt.Errorf("publish canonical: %w", err)
 	}
+	// flow: the sync RPC accepted and handed the room create off to room-worker.
+	slog.Log(ctx, logctx.LevelFlow, "room-service create handoff", "phase", "published",
+		"request_id", natsutil.RequestIDFromContext(ctx), "room_id", req.RoomID, "type", roomType)
 	return &model.CreateRoomReply{
 		Status:   model.CreateRoomReplyAccepted,
 		RoomID:   req.RoomID,
@@ -707,7 +708,11 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 			return nil, errCannotDemoteLast
 		}
 	}
-	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner)
+	// One instant shared by the origin write and the published event: the doc's
+	// rolesUpdatedAt must equal the event timestamp so remote replicas guard against
+	// the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errTargetNotMember // defensive: target removed between validation and mutate
@@ -715,7 +720,6 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 		return nil, fmt.Errorf("set owner role: %w", err)
 	}
 
-	now := time.Now().UTC()
 	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, now)
 	if err != nil {
 		return nil, err
@@ -836,6 +840,12 @@ func (h *Handler) addMembers(c *natsrouter.Context, req model.AddMembersRequest)
 		return nil, fmt.Errorf("count new members: %w", err)
 	}
 
+	// debug: how the requested refs resolved and the capacity arithmetic.
+	slog.DebugContext(ctx, "room-service addMembers resolved",
+		"request_id", natsutil.RequestIDFromContext(ctx), "room_id", roomID,
+		"orgs", len(allOrgs), "users", len(allUsers), "new_count", newCount,
+		"current_count", room.UserCount, "max_size", h.maxRoomSize)
+
 	// 8. Capacity check — use room.UserCount (kept current by room-worker's
 	// ReconcileUserCount after each membership change) instead of issuing a
 	// separate CountSubscriptions query.
@@ -864,6 +874,9 @@ func (h *Handler) addMembers(c *natsrouter.Context, req model.AddMembersRequest)
 	if err := h.publishToStream(ctx, subject.RoomCanonical(h.siteID, "member.add"), normalized, ""); err != nil {
 		return nil, fmt.Errorf("publish to stream: %w", err)
 	}
+	// flow: accepted and handed the member-add off to room-worker.
+	slog.Log(ctx, logctx.LevelFlow, "room-service member.add handoff", "phase", "published",
+		"request_id", natsutil.RequestIDFromContext(ctx), "room_id", roomID, "new_count", newCount)
 
 	// 10. Reply accepted
 	return &model.StatusReply{Status: "accepted"}, nil
@@ -1076,6 +1089,51 @@ func (h *Handler) roomsInfoBatch(c *natsrouter.Context, req model.RoomsInfoBatch
 	return &model.RoomsInfoBatchResponse{Rooms: infos}, nil
 }
 
+func (h *Handler) threadUnreadSummary(c *natsrouter.Context, req model.ThreadUnreadSummaryRequest) (*model.ThreadUnreadSummaryResponse, error) {
+	var ctx context.Context = c
+	start := time.Now()
+	if req.UserAccount == "" {
+		return nil, errcode.BadRequest("userAccount must not be empty")
+	}
+
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(attribute.String("site_id", h.siteID))
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	summary, err := h.store.GetThreadUnreadSummary(ctx, req.UserAccount, h.siteID)
+	if err != nil {
+		return nil, fmt.Errorf("get thread unread summary: %w", err)
+	}
+
+	resp := &model.ThreadUnreadSummaryResponse{
+		Unread:              summary.Unread,
+		UnreadDirectMessage: summary.UnreadDirectMessage,
+		UnreadMention:       summary.UnreadMention,
+		LastMessageAt:       timePtrToMillis(summary.LastMessageAt),
+	}
+
+	slog.Debug("thread unread summary handled",
+		"site_id", h.siteID,
+		"unread", resp.Unread,
+		"latency_ms", time.Since(start).Milliseconds(),
+	)
+
+	return resp, nil
+}
+
+// timePtrToMillis converts a nullable timestamp to UnixMilli for wire responses,
+// returning nil for a nil or zero time so the field is omitted.
+func timePtrToMillis(t *time.Time) *int64 {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	ms := t.UTC().UnixMilli()
+	return &ms
+}
+
 func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[string]*roomkeystore.VersionedKeyPair) ([]model.RoomInfo, int, int) {
 	byID := make(map[string]*model.Room, len(rooms))
 	for i := range rooms {
@@ -1094,14 +1152,8 @@ func (h *Handler) aggregateRoomInfo(ids []string, rooms []model.Room, keys map[s
 		foundCount++
 		entry.SiteID = r.SiteID
 		entry.Name = r.Name
-		if r.LastMsgAt != nil && !r.LastMsgAt.IsZero() {
-			ms := r.LastMsgAt.UTC().UnixMilli()
-			entry.LastMsgAt = &ms
-		}
-		if r.LastMentionAllAt != nil && !r.LastMentionAllAt.IsZero() {
-			ms := r.LastMentionAllAt.UTC().UnixMilli()
-			entry.LastMentionAllAt = &ms
-		}
+		entry.LastMsgAt = timePtrToMillis(r.LastMsgAt)
+		entry.LastMentionAllAt = timePtrToMillis(r.LastMentionAllAt)
 		if kp, ok := keys[id]; ok && kp != nil {
 			enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
 			ver := kp.Version
@@ -1235,9 +1287,71 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 		if err := h.store.UpdateRoomMinUserLastSeenAt(ctx, roomID, minTime); err != nil {
 			return nil, fmt.Errorf("update room minUserLastSeenAt: %w", err)
 		}
+		// Fan out the read-floor advance to clients. Best-effort: the floor write
+		// above is the source of truth; a publish failure must not fail the RPC.
+		switch room.Type {
+		case model.RoomTypeChannel:
+			h.publishChannelEvent(ctx, roomID, minTime)
+		case model.RoomTypeDM:
+			h.publishDMEvents(ctx, roomID, minTime)
+		default:
+			// botDM (floor is always nil) and other types get no read-floor
+			// fan-out — only channel and dm rooms surface read receipts.
+		}
 	}
 
 	return &model.StatusReply{Status: "accepted"}, nil
+}
+
+// buildMessageReadEvent constructs the wire payload announcing that a room's
+// read floor advanced to floor (nil when no floor can be established).
+func (h *Handler) buildMessageReadEvent(roomID string, floor *time.Time) model.MessageReadEvent {
+	return model.MessageReadEvent{
+		Type:              model.RoomEventMessageRead,
+		RoomID:            roomID,
+		MinUserLastSeenAt: floor,
+		Timestamp:         time.Now().UTC().UnixMilli(),
+	}
+}
+
+// publishChannelEvent fans a read-floor advance out once to the channel's shared
+// room event subject. Best-effort: a marshal or publish failure is logged, not
+// returned. Used for RoomTypeChannel.
+func (h *Handler) publishChannelEvent(ctx context.Context, roomID string, floor *time.Time) {
+	evt := h.buildMessageReadEvent(roomID, floor)
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		slog.Error("marshal message_read channel event failed", "error", err, "roomId", roomID)
+		return
+	}
+	if err := h.publishCore(ctx, subject.RoomEvent(roomID), payload); err != nil {
+		slog.Error("publish message_read channel event failed", "error", err, "roomId", roomID)
+	}
+}
+
+// publishDMEvents fans a read-floor advance out to each DM member on their
+// per-user event subject. Mirrors broadcast-worker's publishDMEvents: it lists
+// the room's subscriptions and publishes once per subscriber. Best-effort per
+// account; a list, marshal, or publish failure is logged, not returned. Used
+// for RoomTypeDM.
+func (h *Handler) publishDMEvents(ctx context.Context, roomID string, floor *time.Time) {
+	subs, err := h.store.ListSubscriptionsByRoom(ctx, roomID)
+	if err != nil {
+		slog.Error("list subscriptions for message_read DM fan-out failed", "error", err, "roomId", roomID)
+		return
+	}
+	evt := h.buildMessageReadEvent(roomID, floor)
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		slog.Error("marshal message_read DM event failed", "error", err, "roomId", roomID)
+		return
+	}
+	for i := range subs {
+		account := subs[i].User.Account
+		if err := h.publishCore(ctx, subject.UserRoomEvent(account), payload); err != nil {
+			slog.Error("publish message_read DM event failed", "error", err, "roomId", roomID, "account", account)
+		}
+	}
 }
 
 func (h *Handler) messageReadReceipt(c *natsrouter.Context, req model.ReadReceiptRequest) (*model.ReadReceiptResponse, error) {
@@ -1328,15 +1442,14 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 	// Plain errgroup.Group (not WithContext) so a NotFound from one goroutine does NOT cancel
 	// the siblings — otherwise context.Canceled in subErr/userSiteErr would outrank tsubErr.
 	var (
-		sub                          *model.Subscription
 		tsub                         *model.ThreadSubscription
 		userSiteID                   string
 		subErr, tsubErr, userSiteErr error
 	)
 	var g errgroup.Group
 	g.Go(func() error {
-		s, err := h.store.GetSubscription(ctx, account, roomID)
-		sub, subErr = s, err
+		_, err := h.store.GetSubscription(ctx, account, roomID)
+		subErr = err
 		return err
 	})
 	g.Go(func() error {
@@ -1365,13 +1478,15 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 		return nil, fmt.Errorf("get user siteId: %w", userSiteErr)
 	}
 
-	newThreadUnread := slices.DeleteFunc(slices.Clone(sub.ThreadUnread), func(s string) bool { return s == req.ThreadID })
-	newAlert := sub.Alert && len(newThreadUnread) > 0
 	now := time.Now().UTC()
 
+	var newThreadUnread []string
+	var newAlert bool
 	wg, wctx := errgroup.WithContext(ctx)
 	wg.Go(func() error {
-		if err := h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, newThreadUnread, newAlert); err != nil {
+		var err error
+		newThreadUnread, newAlert, err = h.store.UpdateSubscriptionThreadRead(wctx, roomID, account, req.ThreadID)
+		if err != nil {
 			return fmt.Errorf("update subscription thread-read: %w", err)
 		}
 		return nil
@@ -1424,14 +1539,14 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 }
 
 // ensureRoomKey handles server-to-server requests to ensure a room
-// has an encryption key pair in Valkey. Generates and stores a new pair if
-// missing. The reply confirms the room and version but does not return key
-// bytes — encryption/decryption is performed by broadcast-worker and clients,
-// which read keys from Valkey directly.
+// has an encryption key pair stored in its room document. Generates and stores
+// a new pair if missing. The reply confirms the room and version but does not
+// return key bytes — encryption/decryption is performed by broadcast-worker and
+// clients, which read keys from the room store directly.
 func (h *Handler) ensureRoomKey(c *natsrouter.Context, req model.RoomKeyEnsureRequest) (*model.RoomKeyEnsureResponse, error) {
 	var ctx context.Context = c
 	if h.keyStore == nil {
-		// Local Valkey disabled — surfaces to peer sites as a transient outage
+		// Local key store disabled — surfaces to peer sites as a transient outage
 		// (symmetric with the timeout-class failures in :808/:819/:828).
 		return nil, errcode.Unavailable("room key store not configured")
 	}
@@ -1592,7 +1707,7 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 		}
 		return nil, fmt.Errorf("update room restricted: %w", err)
 	}
-	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount, time.UnixMilli(req.Timestamp).UTC()); err != nil {
 		if errors.Is(err, ErrOwnerNotSubscribed) {
 			return nil, errOwnerNotMember
 		}
@@ -1697,15 +1812,17 @@ func (h *Handler) muteToggle(c *natsrouter.Context) (*model.MuteToggleResponse, 
 		)
 	}
 
-	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account)
+	// One instant shared by the origin write and the published event: the doc's
+	// muteUpdatedAt must equal the event timestamp so remote replicas guard against
+	// the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
 		}
 		return nil, fmt.Errorf("toggle subscription mute: %w", err)
 	}
-
-	now := time.Now().UTC()
 
 	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, now); err != nil {
 		return nil, err
@@ -1772,15 +1889,17 @@ func (h *Handler) favoriteToggle(c *natsrouter.Context) (*model.FavoriteToggleRe
 		)
 	}
 
-	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account)
+	// One instant shared by the origin write and the published event: the doc's
+	// favoriteUpdatedAt must equal the event timestamp so remote replicas guard
+	// against the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
 		}
 		return nil, fmt.Errorf("toggle subscription favorite: %w", err)
 	}
-
-	now := time.Now().UTC()
 
 	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, now); err != nil {
 		return nil, err

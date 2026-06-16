@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
@@ -96,10 +97,14 @@ type SubscriptionStore interface {
 	// ListAddMemberCandidates: per-user {hasSub, hasIndividualRow} flags so the worker splits into needSub vs needIRM (org→individual upgrade).
 	ListAddMemberCandidates(ctx context.Context, orgIDs, directAccounts []string, roomID string) ([]AddMemberCandidate, error)
 
-	// CreateRoom inserts the room doc. Returns mongo.ErrDuplicateKey
-	// when the _id collides; the handler's idempotency logic handles
-	// matching-existing-room as success-on-redelivery.
-	CreateRoom(ctx context.Context, room *model.Room) error
+	// CreateRoom upserts the room doc. When key is non-nil it is written into the
+	// room's encKey field in the same write, so an encrypted (channel) room and
+	// its key are persisted atomically; a nil key (DM/botDM rooms, which are never
+	// encrypted) writes no encKey. Returns inserted=true when this call created
+	// the document and inserted=false when a document with the same _id already
+	// existed (a JetStream redelivery); on a match neither the room nor its key is
+	// modified, so the handler reconciles against the existing doc and reuses it.
+	CreateRoom(ctx context.Context, room *model.Room, key *roomkeystore.RoomKeyPair) (inserted bool, err error)
 
 	// ListNewMembersForNewRoom is the empty-roomID variant of the
 	// ListAddMemberCandidates candidate resolution — same dedup + bot filter,
@@ -117,7 +122,9 @@ type SubscriptionStore interface {
 	UpdateRoomName(ctx context.Context, roomID, newName string) error
 
 	// UpdateSubscriptionNamesForRoom updateMany on subscriptions matching {roomId: roomID}.
-	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error
+	// Stamps nameUpdatedAt so the origin doc carries the same high-water mark the
+	// federated rename event publishes (inbox-worker guards remote applies against it).
+	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, nameUpdatedAt time.Time) error
 
 	// ListByRoom returns all subscriptions for roomID across every site.
 	// Used by the rename processor to bucket accounts by remote site for
