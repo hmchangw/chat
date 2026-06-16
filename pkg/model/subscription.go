@@ -58,6 +58,14 @@ type Subscription struct {
 	LastMentionAllAt *time.Time `json:"-" bson:"lastMentionAllAt,omitempty"`
 	AppCount         int        `json:"-" bson:"appCount,omitempty"`
 	RoomName         string     `json:"-" bson:"roomName,omitempty"` // room canonical name (distinct from the sub's display Name)
+	// Read-time room E2E key baseline projected from the room's encKey sub-document
+	// by the rooms $lookup (current-slot priv/ver only). Internal (json:"-"); used to
+	// build sub.Room.PrivateKey/KeyVersion for LOCAL subs without a second key read.
+	// Cross-site subs carry zero values (the key arrives via the GetRoomsInfo RPC).
+	// Writers persisting a full Subscription doc MUST strip these — the room key must
+	// never be written into the subscriptions collection.
+	RoomKeyPriv []byte `json:"-" bson:"encKeyPriv,omitempty"`
+	RoomKeyVer  int    `json:"-" bson:"encKeyVer,omitempty"`
 
 	// Room carries all room-derived fields, populated at read time from room-service's
 	// RoomsInfoBatch RPC (baseline $lookup values when the RPC degrades). Never persisted.

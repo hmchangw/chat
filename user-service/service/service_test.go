@@ -14,17 +14,16 @@ import (
 	"github.com/hmchangw/chat/user-service/service/mocks"
 )
 
-func newSvc(t *testing.T) (*UserService, *mocks.MockSubscriptionRepository, *mocks.MockUserRepository, *mocks.MockAppRepository, *mocks.MockRoomClient, *mocks.MockRoomKeyReader, *mocks.MockEventPublisher) {
+func newSvc(t *testing.T) (*UserService, *mocks.MockSubscriptionRepository, *mocks.MockUserRepository, *mocks.MockAppRepository, *mocks.MockRoomClient, *mocks.MockEventPublisher) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	subs := mocks.NewMockSubscriptionRepository(ctrl)
 	users := mocks.NewMockUserRepository(ctrl)
 	apps := mocks.NewMockAppRepository(ctrl)
 	rooms := mocks.NewMockRoomClient(ctrl)
-	roomKeys := mocks.NewMockRoomKeyReader(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	cfg := &config.Config{SiteID: "site-a", AllSiteIDs: []string{"site-a", "site-b"}, MaxSubscriptionLimit: 1000, MaxAccountNames: 100}
-	return New(subs, users, apps, rooms, roomKeys, pub, cfg), subs, users, apps, rooms, roomKeys, pub
+	return New(subs, users, apps, rooms, pub, cfg), subs, users, apps, rooms, pub
 }
 
 // ctx builds a handler context. siteID is retained for readability but unused

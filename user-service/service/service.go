@@ -6,13 +6,12 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/user-service/config"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . SubscriptionRepository,UserRepository,AppRepository,RoomClient,EventPublisher,RoomKeyReader
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . SubscriptionRepository,UserRepository,AppRepository,RoomClient,EventPublisher
 
 // SubscriptionRepository is the consumer-defined interface for subscription persistence (botDM app-subscription rows included).
 type SubscriptionRepository interface {
@@ -46,13 +45,6 @@ type RoomClient interface {
 	CreateDMRoom(ctx context.Context, account, otherAccount string, roomType model.RoomType) (model.Subscription, error)
 }
 
-// RoomKeyReader is the consumer-defined interface for reading room encryption
-// keys from the local rooms collection — used to enrich LOCAL subscriptions
-// without a room-service RPC.
-type RoomKeyReader interface {
-	GetMany(ctx context.Context, roomIDs []string) (map[string]*roomkeystore.VersionedKeyPair, error)
-}
-
 // EventPublisher is the consumer-defined interface for fire-and-forget outbox publishing.
 // Core NATS only (no JetStream); status is last-write-wins so no msgID/dedup is needed.
 type EventPublisher interface {
@@ -65,7 +57,6 @@ type UserService struct {
 	users           UserRepository
 	apps            AppRepository
 	rooms           RoomClient
-	roomKeys        RoomKeyReader
 	pub             EventPublisher
 	siteID          string
 	allSiteIDs      []string
@@ -74,13 +65,12 @@ type UserService struct {
 }
 
 // New constructs a UserService with the given dependencies and configuration.
-func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, roomKeys RoomKeyReader, pub EventPublisher, cfg *config.Config) *UserService {
+func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, pub EventPublisher, cfg *config.Config) *UserService {
 	return &UserService{
 		subs:            subs,
 		users:           users,
 		apps:            apps,
 		rooms:           rooms,
-		roomKeys:        roomKeys,
 		pub:             pub,
 		siteID:          cfg.SiteID,
 		allSiteIDs:      cfg.AllSiteIDs,

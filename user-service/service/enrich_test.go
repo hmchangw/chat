@@ -11,14 +11,13 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
 
 // A cancelled client context must short-circuit the cross-site fan-out: each
 // site RPC takes ~5s, so firing them for a request nobody awaits is pure waste.
 // In-flight calls still fail fast via the ctx passed to GetRoomsInfo.
 func TestEnrichCrossSite_ContextCancelled_SkipsRPC(t *testing.T) {
-	svc, _, _, _, rooms, _, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	subs := []model.Subscription{
 		{ID: "b", RoomID: "r2", SiteID: "site-b"},
 	}
@@ -46,7 +45,7 @@ func key32(b byte) []byte {
 }
 
 func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
-	svc, _, _, _, rooms, roomKeys, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	localMsg := time.UnixMilli(150).UTC()
 	newer := int64(200)
@@ -59,8 +58,6 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},
 	}
 	// LOCAL path: one key read for the local rooms; NO GetRoomsInfo for site-a.
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
 		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops", UserCount: 3, LastMsgAt: &newer, LastMsgID: "m-3"}}, nil)
 
@@ -85,17 +82,15 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 }
 
 // TestEnrichWithRoomInfo_LocalKeyMaterial pins that a LOCAL sub whose room has a
-// key gets base64 PrivateKey + KeyVersion from roomKeys.GetMany, with NO RPC.
+// key gets base64 PrivateKey + KeyVersion from the $lookup baseline, with NO RPC.
 func TestEnrichWithRoomInfo_LocalKeyMaterial(t *testing.T) {
-	svc, _, _, _, _, roomKeys, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	subs := []model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-a", RoomName: "Eng", UserCount: 5},
+		// LOCAL sub carrying the room key in its $lookup baseline (current slot).
+		{ID: "a", RoomID: "r1", SiteID: "site-a", RoomName: "Eng", UserCount: 5,
+			RoomKeyPriv: key32(0xAB), RoomKeyVer: 4},
 	}
 	// No GetRoomsInfo expectation: an all-local input must never hit the RPC.
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{
-			"r1": {Version: 4, KeyPair: roomkeystore.RoomKeyPair{PrivateKey: key32(0xAB)}},
-		}, nil)
 
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 
@@ -112,12 +107,10 @@ func TestEnrichWithRoomInfo_LocalKeyMaterial(t *testing.T) {
 // TestEnrichWithRoomInfo_LocalNoKey pins that a LOCAL sub whose room has no key
 // still gets a baseline room object with no key material.
 func TestEnrichWithRoomInfo_LocalNoKey(t *testing.T) {
-	svc, _, _, _, _, roomKeys, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	subs := []model.Subscription{
 		{ID: "a", RoomID: "r1", SiteID: "site-a", RoomName: "Eng", UserCount: 5, LastMsgID: "m-base"},
 	}
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 
@@ -129,18 +122,19 @@ func TestEnrichWithRoomInfo_LocalNoKey(t *testing.T) {
 	assert.Nil(t, subs[0].Room.KeyVersion)
 }
 
-// TestEnrichWithRoomInfo_LocalKeyLookupDegrades pins that a key-read failure
-// degrades to no key material — the local room object is still built.
-func TestEnrichWithRoomInfo_LocalKeyLookupDegrades(t *testing.T) {
-	svc, _, _, _, _, roomKeys, _ := newSvc(t)
+// TestEnrichWithRoomInfo_LocalInvalidKeyLength pins that a baseline key whose
+// secret isn't 32 bytes is treated as absent — the local room object is still
+// built, just with no key material.
+func TestEnrichWithRoomInfo_LocalInvalidKeyLength(t *testing.T) {
+	svc, _, _, _, _, _ := newSvc(t)
 	subs := []model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-a", RoomName: "Eng", UserCount: 5},
+		{ID: "a", RoomID: "r1", SiteID: "site-a", RoomName: "Eng", UserCount: 5,
+			RoomKeyPriv: []byte("short"), RoomKeyVer: 2},
 	}
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(nil, errors.New("mongo down"))
 
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 
-	require.NotNil(t, subs[0].Room, "degraded key read still yields a baseline room object")
+	require.NotNil(t, subs[0].Room, "invalid-length key still yields a baseline room object")
 	assert.Equal(t, "Eng", subs[0].Room.Name)
 	assert.Equal(t, 5, subs[0].Room.UserCount)
 	assert.Nil(t, subs[0].Room.PrivateKey)
@@ -151,7 +145,7 @@ func TestEnrichWithRoomInfo_LocalKeyLookupDegrades(t *testing.T) {
 // room's RPC entry is authoritative for the room object even when fields are
 // zero; the internal baseline stays on the flattened sub fields only.
 func TestEnrichWithRoomInfo_CrossSiteRPCZeroFields(t *testing.T) {
-	svc, _, _, _, rooms, _, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	subs := []model.Subscription{{ID: "a", RoomID: "r2", SiteID: "site-b", UserCount: 5, LastMsgID: "m-base"}}
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
 		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops"}}, nil)
@@ -166,7 +160,7 @@ func TestEnrichWithRoomInfo_CrossSiteRPCZeroFields(t *testing.T) {
 // RPC reports as not-found yields NO room object — there is no local baseline to
 // fall back to for a remote room.
 func TestEnrichWithRoomInfo_CrossSiteNotFoundNoRoom(t *testing.T) {
-	svc, _, _, _, rooms, _, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	subs := []model.Subscription{{ID: "a", RoomID: "r2", SiteID: "site-b", UserCount: 5, LastMsgID: "m-base"}}
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
 		Return([]model.RoomInfo{{RoomID: "r2", Found: false}}, nil)
@@ -180,7 +174,7 @@ func TestEnrichWithRoomInfo_CrossSiteNotFoundNoRoom(t *testing.T) {
 // degradation: a failed site RPC leaves that site's subs without a room object,
 // while sibling sites are still enriched. The local sub is built from the baseline.
 func TestEnrichWithRoomInfo_CrossSiteRPCFailDegradesSiteKeepsOthers(t *testing.T) {
-	svc, _, _, _, rooms, roomKeys, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs := []model.Subscription{
@@ -188,8 +182,6 @@ func TestEnrichWithRoomInfo_CrossSiteRPCFailDegradesSiteKeepsOthers(t *testing.T
 		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen, Alert: true},
 		{ID: "c", RoomID: "r3", SiteID: "site-c", LastSeenAt: &seen},
 	}
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).Return(nil, errors.New("down"))
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-c", []string{"r3"}).
 		Return([]model.RoomInfo{{RoomID: "r3", Found: true, Name: "Ops", LastMsgAt: &newer}}, nil)
@@ -205,7 +197,7 @@ func TestEnrichWithRoomInfo_CrossSiteRPCFailDegradesSiteKeepsOthers(t *testing.T
 }
 
 func TestEnrichWithRoomInfo_Empty(t *testing.T) {
-	svc, _, _, _, _, _, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	// No GetRoomsInfo / GetMany expectations: empty input must short-circuit before any call.
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), nil)
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), []model.Subscription{})
@@ -215,7 +207,7 @@ func TestEnrichWithRoomInfo_Empty(t *testing.T) {
 // leaves alert/hasMention alone — they are stored subscription state, never
 // derived from room timestamps.
 func TestEnrichWithRoomInfo_LocalNeverRecomputesFlags(t *testing.T) {
-	svc, _, _, _, _, roomKeys, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := time.UnixMilli(999).UTC()
 	mentionAt := time.UnixMilli(999).UTC()
@@ -223,8 +215,6 @@ func TestEnrichWithRoomInfo_LocalNeverRecomputesFlags(t *testing.T) {
 		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, RoomName: "Eng",
 			LastMsgAt: &newer, LastMentionAllAt: &mentionAt, Alert: false, HasMention: false},
 	}
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	assert.False(t, subs[0].Alert, "room lastMsgAt newer than lastSeen must NOT flip stored alert")
 	assert.False(t, subs[0].HasMention, "room lastMentionAllAt newer than lastSeen must NOT flip stored hasMention")
@@ -258,15 +248,13 @@ func ptrInt64(v int64) *int64 { return &v }
 // TestEnrichWithRoomInfo_LocalDedupsRoomIDs pins that two local subs on the same
 // room cause a single deduped key read and both receive the baseline room.
 func TestEnrichWithRoomInfo_LocalDedupsRoomIDs(t *testing.T) {
-	svc, _, _, _, _, roomKeys, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	subs := []model.Subscription{
 		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, RoomName: "Eng"},
 		{ID: "b", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, RoomName: "Eng"}, // same room, second sub
 	}
 	// EXPECT exactly ["r1"], not ["r1","r1"] — gomock fails the call on arg mismatch.
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
 	require.NotNil(t, subs[0].Room)
 	require.NotNil(t, subs[1].Room)
@@ -276,7 +264,7 @@ func TestEnrichWithRoomInfo_LocalDedupsRoomIDs(t *testing.T) {
 
 // TestEnrichWithRoomInfo_CrossSiteDedupsRoomIDs pins the cross-site RPC also dedups.
 func TestEnrichWithRoomInfo_CrossSiteDedupsRoomIDs(t *testing.T) {
-	svc, _, _, _, rooms, _, _ := newSvc(t)
+	svc, _, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs := []model.Subscription{

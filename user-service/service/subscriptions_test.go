@@ -11,14 +11,13 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
 func TestListSubscriptions_Types(t *testing.T) {
 	for _, typ := range []string{"current", "rooms", "apps"} {
 		t.Run(typ, func(t *testing.T) {
-			svc, subs, _, _, rooms, _, _ := newSvc(t)
+			svc, subs, _, _, rooms, _ := newSvc(t)
 			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, gomock.Any(), 1000).
 				Return([]model.Subscription{{ID: "s1"}}, nil)
 			rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -32,7 +31,7 @@ func TestListSubscriptions_Types(t *testing.T) {
 func TestListSubscriptions_BadType(t *testing.T) {
 	for _, typ := range []string{"", "bogus"} {
 		t.Run(typ, func(t *testing.T) {
-			svc, _, _, _, _, _, _ := newSvc(t)
+			svc, _, _, _, _, _ := newSvc(t)
 			_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: typ})
 			requireCode(t, err, errcode.CodeBadRequest)
 		})
@@ -40,7 +39,7 @@ func TestListSubscriptions_BadType(t *testing.T) {
 }
 
 func TestListSubscriptions_NegativeWithinDays(t *testing.T) {
-	svc, _, _, _, _, _, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	neg := -1
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
 		models.SubscriptionListRequest{Type: "rooms", UpdatedWithinDays: &neg})
@@ -137,18 +136,17 @@ func TestApplyRoomInfo_NotFound_NoRoom(t *testing.T) {
 	assert.Equal(t, "general", sub.Name)
 }
 
-// A LOCAL sub is enriched entirely from the $lookup baseline + the local room key
-// read — no room-service RPC. A key-read failure degrades to no key material but
-// the baseline room object is still built.
-func TestListSubscriptions_LocalBaselineRoom_KeyDegrades(t *testing.T) {
-	svc, subs, _, _, _, roomKeys, _ := newSvc(t)
+// A LOCAL sub is enriched entirely from the single $lookup baseline (room
+// metadata + key) — no room-service RPC and no separate key read. A sub whose
+// baseline carries no key still yields the baseline room object, just keyless.
+func TestListSubscriptions_LocalBaselineRoom_NoKey(t *testing.T) {
+	svc, subs, _, _, _, _ := newSvc(t)
 	lastMsg := time.UnixMilli(400).UTC()
 	storeSubs := []model.Subscription{{
 		ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "general",
 		RoomType: model.RoomTypeChannel, RoomName: "General", UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1",
 	}}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(nil, errors.New("down"))
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
@@ -160,7 +158,7 @@ func TestListSubscriptions_LocalBaselineRoom_KeyDegrades(t *testing.T) {
 	assert.Equal(t, "m1", room.LastMsgID)
 	require.NotNil(t, room.LastMsgAt)
 	assert.Equal(t, lastMsg.UnixMilli(), *room.LastMsgAt)
-	assert.Nil(t, room.PrivateKey, "degraded key read ⇒ no key material")
+	assert.Nil(t, room.PrivateKey, "no baseline key ⇒ no key material")
 }
 
 func appHelper() *model.App {
@@ -175,7 +173,7 @@ func appHelper() *model.App {
 }
 
 func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
-	svc, subs, _, apps, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, apps, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot", RoomName: "bot-room-canonical"},
 		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general", RoomName: "general"},
@@ -183,8 +181,6 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), gomock.InAnyOrder([]string{"rb1", "rc1"})).
-		Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
@@ -208,7 +204,7 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 }
 
 func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
-	svc, subs, users, _, _, roomKeys, _ := newSvc(t)
+	svc, subs, users, _, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
 		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
@@ -216,7 +212,6 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).
 		Return(map[string]*model.SubscriptionHRInfo{"bob": {Account: "bob", Name: "鮑勃", EngName: "Bob Chen"}}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), gomock.Any()).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
@@ -230,13 +225,12 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 }
 
 func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
-	svc, subs, users, _, _, roomKeys, _ := newSvc(t)
+	svc, subs, users, _, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).Return(nil, errors.New("db down"))
-	roomKeys.EXPECT().GetMany(gomock.Any(), gomock.Any()).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err, "hr lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
@@ -249,7 +243,7 @@ func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
 // Two botDM subs sharing a bot account must dedup to a single GetAppsByAssistants
 // argument, and both rows get the resolved display name and overlay.
 func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
-	svc, subs, _, apps, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, apps, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 		{ID: "a2", RoomID: "rb2", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
@@ -258,7 +252,6 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	// Exactly ["helper.bot"], not duplicated — gomock fails the call on arg mismatch.
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), gomock.Any()).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
@@ -273,14 +266,13 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 }
 
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
-	svc, subs, _, apps, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, apps, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(nil, errors.New("db down"))
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"rb1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err, "app lookup failure must degrade, not fail the request")
 	require.Len(t, resp.Subscriptions, 1)
@@ -291,14 +283,13 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 }
 
 func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
-	svc, subs, _, apps, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, apps, _, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"orphan.bot"}).
 		Return(map[string]*model.App{}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"rb1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
 	require.NoError(t, err)
 	bot, ok := resp.Subscriptions[0].(*model.BotDMSubscription)
@@ -308,7 +299,7 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 }
 
 func TestListSubscriptions_StoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
 		Return(nil, errors.New("db down"))
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
@@ -316,7 +307,7 @@ func TestListSubscriptions_StoreError(t *testing.T) {
 }
 
 func TestListSubscriptions_Favorite(t *testing.T) {
-	svc, subs, users, _, rooms, _, _ := newSvc(t)
+	svc, subs, users, _, rooms, _ := newSvc(t)
 	storeSubs := []model.Subscription{
 		{ID: "ch1", RoomType: model.RoomTypeChannel, Name: "general", Favorite: false},
 		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true},
@@ -342,19 +333,19 @@ func ptrBool(b bool) *bool { return &b }
 
 func TestGetChannels_ExactlyOne(t *testing.T) {
 	t.Run("both_empty", func(t *testing.T) {
-		svc, _, _, _, _, _, _ := newSvc(t)
+		svc, _, _, _, _, _ := newSvc(t)
 		_, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{})
 		requireCode(t, err, errcode.CodeBadRequest)
 	})
 	t.Run("both_set", func(t *testing.T) {
-		svc, _, _, _, _, _, _ := newSvc(t)
+		svc, _, _, _, _, _ := newSvc(t)
 		_, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "x", AccountNames: []string{"y"}})
 		requireCode(t, err, errcode.CodeBadRequest)
 	})
 }
 
 func TestGetChannels_TooManyAccountNames(t *testing.T) {
-	svc, _, _, _, _, _, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	names := make([]string, 101) // over the configured cap (newSvc sets MaxAccountNames=100)
 	for i := range names {
 		names[i] = "u"
@@ -365,7 +356,7 @@ func TestGetChannels_TooManyAccountNames(t *testing.T) {
 }
 
 func TestGetChannels_AccountNamesAtCap(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	names := make([]string, 100) // exactly the configured cap (newSvc sets MaxAccountNames=100)
 	for i := range names {
 		names[i] = "u"
@@ -378,7 +369,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 }
 
 func TestGetChannels_ByMembersContain(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return([]model.Subscription{{ID: "c1"}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
@@ -387,7 +378,7 @@ func TestGetChannels_ByMembersContain(t *testing.T) {
 }
 
 func TestGetChannels_ByAccountNames(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol", "dave"}, 1000).Return([]model.Subscription{{ID: "c1"}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: []string{"carol", "dave"}})
@@ -396,14 +387,14 @@ func TestGetChannels_ByAccountNames(t *testing.T) {
 }
 
 func TestGetChannels_StoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return(nil, errors.New("db down"))
 	_, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestGetDM_Empty(t *testing.T) {
-	svc, _, _, _, _, _, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	_, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: ""})
 	requireCode(t, err, errcode.CodeBadRequest)
 }
@@ -411,7 +402,7 @@ func TestGetDM_Empty(t *testing.T) {
 func TestGetDM_InvalidTarget(t *testing.T) {
 	for _, target := range []string{"p_system", "helper.bot", "p_", ".bot", "p_.bot"} {
 		t.Run(target, func(t *testing.T) {
-			svc, _, _, _, _, _, _ := newSvc(t)
+			svc, _, _, _, _, _ := newSvc(t)
 			_, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: target})
 			requireCode(t, err, errcode.CodeBadRequest)
 			assert.True(t, errcode.HasReason(err, errcode.UserInvalidDMTarget))
@@ -420,7 +411,7 @@ func TestGetDM_InvalidTarget(t *testing.T) {
 }
 
 func TestGetDM_NotFound(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").Return(nil, nil)
 	_, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
 	requireCode(t, err, errcode.CodeNotFound)
@@ -428,7 +419,7 @@ func TestGetDM_NotFound(t *testing.T) {
 }
 
 func TestGetDM_OK(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").
 		Return(&model.DMSubscription{
 			Subscription: &model.Subscription{ID: "d1"},
@@ -442,14 +433,14 @@ func TestGetDM_OK(t *testing.T) {
 }
 
 func TestGetDM_StoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").Return(nil, errors.New("db down"))
 	_, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestGetDM_NilEmbeddedSubscription(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").Return(
 		&model.DMSubscription{Subscription: nil, HRInfo: &model.SubscriptionHRInfo{Account: "bob"}},
 		nil,
@@ -459,14 +450,13 @@ func TestGetDM_NilEmbeddedSubscription(t *testing.T) {
 }
 
 func TestGetDM_Enriched(t *testing.T) {
-	svc, subs, _, _, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").
 		Return(&model.DMSubscription{
 			// LOCAL sub: room view comes from the baseline (RoomName), not the RPC.
 			Subscription: &model.Subscription{ID: "d1", SiteID: "site-a", RoomID: "r1", Name: "bob", RoomName: "Renamed"},
 			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
 		}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
 	require.NoError(t, err)
 	assert.Equal(t, "bob", resp.Subscription.Name, "subscription name must survive enrichment")
@@ -477,13 +467,13 @@ func TestGetDM_Enriched(t *testing.T) {
 }
 
 func TestGetByRoomID_Empty(t *testing.T) {
-	svc, _, _, _, _, _, _ := newSvc(t)
+	svc, _, _, _, _, _ := newSvc(t)
 	_, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: ""})
 	requireCode(t, err, errcode.CodeBadRequest)
 }
 
 func TestGetByRoomID_NotFound(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "r1").Return(nil, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	require.NoError(t, err)
@@ -493,17 +483,16 @@ func TestGetByRoomID_NotFound(t *testing.T) {
 }
 
 func TestGetByRoomID_StoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "r1").Return(nil, errors.New("db down"))
 	_, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestGetByRoomID_OK_Enriched(t *testing.T) {
-	svc, subs, _, _, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{ID: "s1", SiteID: "site-a", RoomID: "r1", Name: "Stale", RoomName: "Renamed"}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, resp.Total)
@@ -518,7 +507,7 @@ func TestGetByRoomID_OK_Enriched(t *testing.T) {
 func TestGetChannels_Empty(t *testing.T) {
 	for _, name := range []string{"nil_slice", "empty_slice"} {
 		t.Run(name, func(t *testing.T) {
-			svc, subs, _, _, _, _, _ := newSvc(t)
+			svc, subs, _, _, _, _ := newSvc(t)
 			var returned []model.Subscription
 			if name == "empty_slice" {
 				returned = []model.Subscription{}
@@ -532,12 +521,11 @@ func TestGetChannels_Empty(t *testing.T) {
 }
 
 func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
-	svc, subs, _, apps, _, roomKeys, _ := newSvc(t)
+	svc, subs, _, apps, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "rb1").
 		Return(&model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
-	roomKeys.EXPECT().GetMany(gomock.Any(), []string{"rb1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "rb1"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
@@ -549,7 +537,7 @@ func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
 }
 
 func TestCount_Total(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(7, nil)
 	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{})
 	require.NoError(t, err)
@@ -557,14 +545,14 @@ func TestCount_Total(t *testing.T) {
 }
 
 func TestCount_StoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(0, errors.New("db down"))
 	_, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestCountUnread_Happy(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(2, nil)
@@ -579,7 +567,7 @@ func TestCountUnread_Happy(t *testing.T) {
 }
 
 func TestCountUnread_FallbackToTotal(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(5, nil)
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 5).
 		Return([]model.Subscription{{RoomID: "r1", SiteID: "site-a"}}, nil)
@@ -591,7 +579,7 @@ func TestCountUnread_FallbackToTotal(t *testing.T) {
 }
 
 func TestCountUnread_GetActiveStoreError(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(3, nil)
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 3).Return(nil, errors.New("db down"))
 	yes := true
@@ -600,7 +588,7 @@ func TestCountUnread_GetActiveStoreError(t *testing.T) {
 }
 
 func TestCountUnread_MultiSite(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(4, nil)
@@ -627,7 +615,7 @@ func TestCountUnread_MultiSite(t *testing.T) {
 }
 
 func TestCountUnread_AllRead(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(300).UTC()
 	older := int64(100) // older than seen → not unread
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(2, nil)
@@ -647,7 +635,7 @@ func TestCountUnread_AllRead(t *testing.T) {
 }
 
 func TestCountUnread_EmptyActive(t *testing.T) {
-	svc, subs, _, _, _, _, _ := newSvc(t)
+	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(0, nil)
 	// Zero active subs must short-circuit before GetActiveSubscriptions (min(0,maxSubs)=0 → rejected $limit:0).
 	yes := true
@@ -657,7 +645,7 @@ func TestCountUnread_EmptyActive(t *testing.T) {
 }
 
 func TestCountUnread_DedupsRoomIDs(t *testing.T) {
-	svc, subs, _, _, rooms, _, _ := newSvc(t)
+	svc, subs, _, _, rooms, _ := newSvc(t)
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).Return([]model.Subscription{
@@ -674,7 +662,7 @@ func TestCountUnread_DedupsRoomIDs(t *testing.T) {
 func TestCount_UnreadFalse(t *testing.T) {
 	for _, name := range []string{"nil", "false"} {
 		t.Run(name, func(t *testing.T) {
-			svc, subs, _, _, _, _, _ := newSvc(t)
+			svc, subs, _, _, _, _ := newSvc(t)
 			subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(9, nil)
 			// No GetActiveSubscriptions expectation — short-circuit must fire before calling it.
 			var unreadPtr *bool

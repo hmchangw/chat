@@ -3,6 +3,7 @@
 package mongorepo
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -18,11 +19,13 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 
 	now := time.Now().UTC()
 	old := now.AddDate(0, 0, -100)
+	engKey := bytes.Repeat([]byte{0xAB}, 32) // current-slot room secret for r-eng
 
 	// Seed rooms for every local sub that must survive.
 	seed(t, db, "rooms",
 		bson.M{"_id": "r-eng", "name": "Eng", "siteId": "site-a", "userCount": 5, "appCount": 2,
-			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now},
+			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now,
+			"encKey": bson.M{"priv": engKey, "ver": 3}},
 		// distinct room for the stale sub-old row (a user can't sub the same room twice)
 		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": old},
 		bson.M{"_id": "r-dm", "name": "DM-bob", "siteId": "site-a", "userCount": 2,
@@ -97,9 +100,12 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		require.NotNil(t, eng.LastMentionAllAt, "$lookup baseline must carry lastMentionAllAt for degraded-path hasMention")
 		assert.Equal(t, 2, eng.AppCount, "$lookup baseline must carry appCount")
 		assert.Equal(t, "Eng", eng.RoomName, "$lookup baseline must carry room canonical name")
+		assert.True(t, bytes.Equal(engKey, eng.RoomKeyPriv), "$lookup baseline must carry the room key (encKey.priv)")
+		assert.Equal(t, 3, eng.RoomKeyVer, "$lookup baseline must carry the key version (encKey.ver)")
 		xsite := subs[byID["sub-xsite"]]
 		assert.Equal(t, 0, xsite.UserCount, "cross-site has no local enrichment")
 		assert.Empty(t, xsite.LastMsgID)
+		assert.Nil(t, xsite.RoomKeyPriv, "cross-site sub carries no local key baseline")
 	})
 
 	t.Run("favorite sorts before non-favorite then by name", func(t *testing.T) {

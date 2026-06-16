@@ -15,7 +15,6 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
-	"github.com/hmchangw/chat/pkg/roomkeystore"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
@@ -164,34 +163,16 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 		idxBySite[subs[i].SiteID] = append(idxBySite[subs[i].SiteID], i)
 	}
 
-	s.enrichLocal(c, subs, localIdx)
+	s.enrichLocal(subs, localIdx)
 	s.enrichCrossSite(c, subs, idxBySite)
 }
 
-// enrichLocal builds sub.Room for LOCAL subs from the $lookup baseline and the
-// room key read from the local rooms collection. A key-read failure degrades to
-// no key material (the room object is still built); it never fails the request.
-func (s *UserService) enrichLocal(c *natsrouter.Context, subs []model.Subscription, localIdx []int) {
-	if len(localIdx) == 0 {
-		return
-	}
-	roomIDs := make([]string, 0, len(localIdx))
-	seen := make(map[string]struct{}, len(localIdx))
+// enrichLocal builds sub.Room for LOCAL subs entirely from the $lookup baseline —
+// room metadata plus the E2E key projected from the room's encKey sub-document —
+// so it needs no separate key store read.
+func (s *UserService) enrichLocal(subs []model.Subscription, localIdx []int) {
 	for _, j := range localIdx {
-		rid := subs[j].RoomID
-		if _, dup := seen[rid]; dup {
-			continue
-		}
-		seen[rid] = struct{}{}
-		roomIDs = append(roomIDs, rid)
-	}
-	keys, err := s.roomKeys.GetMany(c, roomIDs)
-	if err != nil {
-		slog.WarnContext(c, "local room key lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
-		keys = nil
-	}
-	for _, j := range localIdx {
-		subs[j].Room = buildLocalRoom(&subs[j], keys[subs[j].RoomID])
+		subs[j].Room = buildLocalRoom(&subs[j])
 	}
 }
 
@@ -263,11 +244,16 @@ func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscr
 	}
 }
 
-// buildLocalRoom builds a SubscriptionRoom for a LOCAL sub from its flat $lookup
-// baseline, attaching the room E2E key when kp is present. The baseline carries
-// *time.Time, but the wire room object is epoch millis, so LastMsgAt/
+// roomKeySecretLen is the AES-256-GCM key length. A baseline encKeyPriv of any
+// other length is treated as absent (mirrors roomkeystore's secret validation).
+const roomKeySecretLen = 32
+
+// buildLocalRoom builds a SubscriptionRoom for a LOCAL sub entirely from its flat
+// $lookup baseline — room metadata plus the E2E key projected from the room's
+// encKey sub-document — so no separate key store read is needed. The baseline
+// carries *time.Time, but the wire room object is epoch millis, so LastMsgAt/
 // LastMentionAllAt are converted here (matching the cross-site RPC path).
-func buildLocalRoom(sub *model.Subscription, kp *roomkeystore.VersionedKeyPair) *model.SubscriptionRoom {
+func buildLocalRoom(sub *model.Subscription) *model.SubscriptionRoom {
 	room := &model.SubscriptionRoom{
 		SiteID:           sub.SiteID,
 		Name:             sub.RoomName,
@@ -277,9 +263,9 @@ func buildLocalRoom(sub *model.Subscription, kp *roomkeystore.VersionedKeyPair) 
 		LastMsgID:        sub.LastMsgID,
 		LastMentionAllAt: timeToMillis(sub.LastMentionAllAt),
 	}
-	if kp != nil {
-		enc := base64.StdEncoding.EncodeToString(kp.KeyPair.PrivateKey)
-		ver := kp.Version
+	if len(sub.RoomKeyPriv) == roomKeySecretLen {
+		enc := base64.StdEncoding.EncodeToString(sub.RoomKeyPriv)
+		ver := sub.RoomKeyVer
 		room.PrivateKey = &enc
 		room.KeyVersion = &ver
 	}

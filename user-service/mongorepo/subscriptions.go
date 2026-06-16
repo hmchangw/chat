@@ -76,6 +76,10 @@ func roomsEnrichStages(windowCutoff *time.Time) bson.A {
 			"lastMentionAllAt": "$room.lastMentionAllAt",
 			"appCount":         "$room.appCount",
 			"roomName":         "$room.name",
+			// Room E2E key baseline (current slot) for local enrichment — folds the
+			// key read into this single $lookup, no separate keystore round-trip.
+			"encKeyPriv": "$room.encKey.priv",
+			"encKeyVer":  "$room.encKey.ver",
 		}},
 		bson.M{"$project": bson.M{"room": 0}},
 	)
@@ -145,6 +149,8 @@ func subscriptionProjection(extra bson.M) bson.M {
 		"lastMentionAllAt": 1,
 		"appCount":         1,
 		"roomName":         1,
+		"encKeyPriv":       1,
+		"encKeyVer":        1,
 	}
 	for k, v := range extra {
 		proj[k] = v
@@ -268,6 +274,9 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 			"lastMentionAllAt": bson.M{"$first": "$" + matchedRoomField + ".lastMentionAllAt"},
 			"appCount":         bson.M{"$first": "$" + matchedRoomField + ".appCount"},
 			"roomName":         bson.M{"$first": "$" + matchedRoomField + ".name"},
+			// Room E2E key baseline (current slot) — folds the key read into this join.
+			"encKeyPriv": bson.M{"$first": "$" + matchedRoomField + ".encKey.priv"},
+			"encKeyVer":  bson.M{"$first": "$" + matchedRoomField + ".encKey.ver"},
 		}},
 		bson.M{"$sort": bson.D{{Key: matchedRoomField + ".createdAt", Value: -1}}},
 		bson.M{"$limit": int64(limit)},
