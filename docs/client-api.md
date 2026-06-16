@@ -1913,6 +1913,8 @@ See [Error envelope](#6-error-envelope-reference).
 
 Creates a Microsoft Teams `onlineMeeting` via the Graph API and returns its join URL. **Idempotent per room, including under concurrency:** the meeting is created via Graph's `createOrGet` endpoint keyed on a stable per-room `externalId`, and a first-class `teams_meetings` record with a unique key on `(roomId, siteId)` guards local state. Repeated or concurrent calls for the same room return the same meeting and publish exactly one `teams_meet_started` system message. Attendee emails are derived as `account@TEAMS_EMAIL_DOMAIN`.
 
+> Graph client details (config env vars, app-only auth, the `createOrGet` idempotency key, the production application-access-policy requirement, and how to test without real credentials) are documented in [`docs/msgraph-client.md`](msgraph-client.md).
+
 External client label: `POST /api/v1/meetings`.
 
 **Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.teams.meeting`
