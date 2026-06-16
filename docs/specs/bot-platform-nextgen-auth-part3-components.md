@@ -39,7 +39,7 @@ Endpoints:
 - `POST /v1/bot/login` — new bot login API *(or the same legacy path, depending on the Istio `VirtualService` routing we choose — see §6 / Q11)*.
 - `GET/POST /changepwd` — HTML password change + API.
 - `POST /v1/auth/validate` — **token-validation endpoint the websocket server calls** (§4.2).
-- `/api/v2/*` (and legacy `/api/v1/*` as needed) — **authenticated proxy** to `botplatform-server:8080` (§4.1).
+- `/api/v2/*` — **authenticated proxy** to `botplatform-server:8080` (§4.1). *(Bots never call `/api/v1/*` data routes; `botplatform-server` exposes v2 and maps to legacy v1 internally — Q11.)*
 - Token validation backed by **Valkey cache + Mongo**.
 
 ---
@@ -106,8 +106,8 @@ keep both working through the transition
 ### Q10 — Is the new token format the same as legacy, or different?
 **Recommendation: same opaque wire format** (a random string in `X-Auth-Token`, stored as `base64(sha256(token))`). Bots and the WS server treat the token as opaque, so keeping the shape identical means **zero client/WS changes** and the hybrid validator just does *our-store-first, legacy-fallback* (no format sniffing). *Optional fast-path:* a fixed namespace prefix on new tokens (e.g. `bp1_…`) lets the validator skip the legacy lookup for known-new tokens — adopt only if profiling shows the fallback double-lookup matters. **Default: same format, store-based routing.**
 
-### Q11 — `/api/v1` support — login only, or other endpoints too?
-**Recommendation: `/api/v1/login` only** (a backward-compat login shim), with `/v1/bot/login` as the new path; route **all data calls via `/api/v2/*` → `botplatform-server`**. *Open:* confirm whether any existing bots still call **non-login** `/api/v1/*` data endpoints — if so, those must be proxied/mapped too. Whether the path is `/v1/bot/login` vs reusing `/api/v1/login` can be handled at the **Istio `VirtualService`** layer (same backend, different route), so bots needn't change URLs.
+### Q11 — `/api/v1` support — login only, or other endpoints too? ✅ resolved
+**`/api/v1/login` only** (a backward-compat login shim), with `/v1/bot/login` as the new path; **all data calls go via `/api/v2/*` → `botplatform-server`**. **Bots do not call `/api/v1/*` data endpoints directly** — `botplatform-server` is itself a reverse proxy that *exposes the `/api/v2/*` surface* and maps it onto the (now legacy) v1 code internally. So our service never proxies non-login `/api/v1/*`. Whether the login path is `/v1/bot/login` vs reusing `/api/v1/login` can be handled at the **Istio `VirtualService`** layer (same backend, different route), so bots needn't change URLs.
 
 ### Q12 — WebSocket auth: call our HTTP endpoint, or read shared Valkey directly?
 **Recommendation: call our HTTP `/v1/auth/validate` endpoint** (not direct Valkey). Reasons:

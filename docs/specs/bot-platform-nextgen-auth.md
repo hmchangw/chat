@@ -222,7 +222,7 @@ Subjects follow `chat.user.{account}.request.…` via `pkg/subject`. `docs/clien
 
 ### 9.1 Responsibilities
 1. **Web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies**, enforce **CSRF** on POST.
-2. **API proxy** — validate, then reverse-proxy `/api/v2/*` (and legacy `/api/v1/*` as needed) to `botplatform-server:8080` (`BOTPLATFORM_SERVER_URL`), carrying the validated principal in headers. *(`botplatform-server` does any REST→NATS bridging.)*
+2. **API proxy** — validate, then reverse-proxy `/api/v2/*` to `botplatform-server:8080` (`BOTPLATFORM_SERVER_URL`), carrying the validated principal in headers. *(`botplatform-server` exposes the `/api/v2/*` surface and does any REST→NATS bridging onto the legacy v1 code; bots never hit `/api/v1/*` data routes directly — Q11.)*
 3. **Authentication boundary** — validate the credential against the session store (§9.3): `X-Auth-Token`+`X-User-Id` for API, **session cookie** for web. Also exposes **`POST /v1/auth/validate`** for the websocket server (Part 3 §4.2). **Dual-token aware** — accepts legacy RC tokens (`scheme:"legacy"`) and new botplatform tokens (`scheme:"v1"`), §9.7. Reject with the RC-shaped 401 (API) / redirect-to-login (web).
 4. **Principal injection** — attach the validated `account`/`userId` + a request-id (`idgen.GenerateRequestID`) into the NATS request headers so downstream handlers know who is calling.
 5. **Connection management** — own a small pool of **long-lived** `*nats.Conn` (never connect-per-request); call `auth-service` to mint a NATS JWT only for native-bot logins.
@@ -289,7 +289,7 @@ These drive the design choices in §9.3 (pooled service-account connection, cach
 | API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
 | API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
 | API — WS validation | `/v1/auth/validate` | POST | JSON `{valid,account,userId}` | `{userId,authToken}` body | n/a |
-| API — authenticated proxy | `/api/v2/*` (+ legacy `/api/v1/*`) | * | JSON ← `botplatform-server:8080` | `X-Auth-Token`+`X-User-Id` | n/a |
+| API — authenticated proxy | `/api/v2/*` | * | JSON ← `botplatform-server:8080` | `X-Auth-Token`+`X-User-Id` | n/a |
 | Health | `/healthz` | GET | 200 | — | — |
 
 - **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
@@ -349,10 +349,10 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ### Integration decisions (Part 3) — recommended, pending confirmation
 - **Q10 — Token format.** Recommend **same opaque format** as legacy (indistinguishable to bots/WS); validate our-store-first then legacy-fallback. Optional `bp1_` prefix as a fast-path only if the fallback double-lookup is shown to matter. (Part 3 §7.)
-- **Q11 — `/api/v1` scope.** Recommend **`/api/v1/login` only** (compat shim) + `/v1/bot/login`; all data via `/api/v2/*` → `botplatform-server`. *Confirm:* do any bots still call **non-login** `/api/v1/*` data endpoints? (Part 3 §7.)
 - **Q12 — WebSocket validation.** Recommend the WS server **calls our `POST /v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. (Part 3 §7.)
 
 ### Confirmed — closed
+- **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; all data via `/api/v2/*` → `botplatform-server`. Bots **never** call `/api/v1/*` data endpoints — `botplatform-server` reverse-proxies the `/api/v2/*` surface onto the legacy v1 code, so our service never proxies non-login v1. *(confirmed 2026-06-16.)*
 - **Q5 — Architecture.** ✅ **Option B — dedicated `bot-gateway`** (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. `bot-gateway` owns `credentials`+`sessions`; `auth-service` keeps the signing key and mints JWTs on request (§7).
 - **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
 - **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
