@@ -119,3 +119,12 @@ func TestUpload_SetBotAvatarError_500(t *testing.T) {
 	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", pngBytes(t), "image/png"))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+func TestUpload_OversizeRejected_400(t *testing.T) {
+	r, store, _ := newTestRouter(t)
+	store.EXPECT().BotSite(gomock.Any(), "helper.bot").Return("s1", true, nil)
+	oversize := make([]byte, 1048576+1) // exceeds MaxUploadBytes
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, putReq("/avatar/v1/bot/helper.bot", oversize, "image/png"))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}

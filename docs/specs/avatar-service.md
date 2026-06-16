@@ -407,11 +407,7 @@ follow-up `GET`. (`200`+body rather than `204`, since the result is useful.)
   and polyglots are neutralized on serving by the correct `Content-Type` +
   `nosniff` + CSP (below), not by re-encoding. (Re-encode-to-normalize is a future
   option, §9.)
-- All served responses set `X-Content-Type-Options: nosniff` and
-  `Content-Security-Policy: default-src 'none'`, so a browser neither MIME-sniffs
-  the bytes into something executable nor runs any script if a generated SVG is
-  opened as a top-level document. Both are unconditional and cheap (harmless on
-  PNG/JPEG, meaningful for the generated SVG, §8.1).
+- GET image responses (streamed custom image and generated default SVG) set `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'`; redirects do not, and the upload sets `nosniff` only. This prevents MIME-sniffing and blocks script execution if a generated SVG is opened as a top-level document (§8.1).
 
 ### 7a.2 Storage
 

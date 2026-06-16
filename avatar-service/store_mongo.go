@@ -52,6 +52,9 @@ func (s *mongoStore) BotSite(ctx context.Context, account string) (string, bool,
 	if err != nil {
 		return "", false, fmt.Errorf("find bot site: %w", err)
 	}
+	if u.SiteID == "" {
+		return "", false, nil
+	}
 	return u.SiteID, true, nil
 }
 

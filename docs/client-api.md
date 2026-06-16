@@ -3690,12 +3690,7 @@ Compute the trigger as `reason ?? code` and branch on that. Use `code` for gener
 
 ## 7. Avatar Service
 
-Public HTTP endpoints served by `avatar-service`. All three endpoints apply these headers unconditionally:
-
-| Header | Value |
-|---|---|
-| `X-Content-Type-Options` | `nosniff` |
-| `Content-Security-Policy` | `default-src 'none'` |
+Public HTTP endpoints served by `avatar-service`. GET image responses (streamed custom image and generated default SVG) set `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'`; redirects do not, and the upload sets `nosniff` only.
 
 **Bot detection:** an account is a bot if it ends in `.bot` **or** begins with `p_`. Everything else is a user.
 
@@ -3790,7 +3785,7 @@ Uploads a custom PNG or JPEG avatar for a bot. The body is the raw image bytes; 
 |---|---|
 | Path | `:botName` — bare bot account (stray `@…` is stripped). Must satisfy the bot pattern (ends in `.bot` or begins with `p_`). |
 | Body | Raw image bytes (PNG or JPEG). SVG and non-image payloads are rejected. |
-| `Content-Type` header | `image/png` or `image/jpeg`. |
+| `Content-Type` header | Advisory. Validation is by decoding the body — a valid PNG or JPEG is accepted regardless of the declared header; non-images are rejected. |
 | Max size | `MAX_UPLOAD_BYTES` (default 1 MiB). |
 
 The service decodes the image bytes to verify they are a valid PNG or JPEG — malformed bytes are rejected even if `Content-Type` is correct.

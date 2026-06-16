@@ -66,7 +66,10 @@ func (f *fakeBlobStore) Put(_ context.Context, key string, r io.Reader, _ int64,
 		f.objects = map[string][]byte{}
 		f.info = map[string]blobInfo{}
 	}
-	b, _ := io.ReadAll(r)
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
 	f.objects[key] = b
 	f.info[key] = blobInfo{Size: int64(len(b)), ContentType: ct, ETag: "etag-" + key}
 	return "etag-" + key, nil

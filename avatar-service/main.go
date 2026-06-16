@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -31,12 +32,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	if cfg.EIDCacheCapacity <= 0 {
+		return fmt.Errorf("EID_CACHE_CAPACITY must be positive, got %d", cfg.EIDCacheCapacity)
+	}
+	if cfg.EIDCacheTTL <= 0 {
+		return fmt.Errorf("EID_CACHE_TTL must be positive, got %s", cfg.EIDCacheTTL)
+	}
 
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
 		return fmt.Errorf("connect mongo: %w", err)
 	}
 	store := newMongoStore(mongoClient.Database(cfg.MongoDB))
+	defer mongoutil.Disconnect(ctx, mongoClient)
 
 	minioClient, err := minioutil.Connect(ctx, cfg.MinioEndpoint, cfg.MinioUseSSL, cfg.MinioAccessKey, cfg.MinioSecretKey)
 	if err != nil {
@@ -61,16 +69,14 @@ func run() error {
 		WriteTimeout: 30 * time.Second,
 	}
 
-	go func() {
-		slog.Info("avatar-service listening", "port", cfg.Port, "site", cfg.SiteID)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
-		}
-	}()
-
-	shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
+	go shutdown.Wait(ctx, 25*time.Second, func(ctx context.Context) error {
 		slog.Info("shutting down avatar-service")
 		return srv.Shutdown(ctx)
 	})
+
+	slog.Info("avatar-service listening", "port", cfg.Port, "site", cfg.SiteID)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("listen and serve: %w", err)
+	}
 	return nil
 }

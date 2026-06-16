@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/hmchangw/chat/pkg/errcode/errhttp"
 	"github.com/hmchangw/chat/pkg/model"
 )
 
@@ -72,8 +73,7 @@ func (h *handler) serveStored(c *gin.Context, kind string, av *model.Avatar, fbS
 	}
 	if err != nil {
 		c.Set("avatar_outcome", "error")
-		_ = c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		errhttp.Write(c.Request.Context(), c, err)
 		return
 	}
 	defer rc.Close()
@@ -113,8 +113,7 @@ func (h *handler) HandleRoomAvatar(c *gin.Context) {
 	siteID, roomType, name, found, err := h.store.RoomSite(ctx, roomID)
 	if err != nil {
 		c.Set("avatar_outcome", "error")
-		_ = c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		errhttp.Write(c.Request.Context(), c, err)
 		return
 	}
 	if !found {
@@ -136,8 +135,7 @@ func (h *handler) serveRoomLocal(c *gin.Context, roomID, name string) {
 	av, found, err := h.store.Avatar(c.Request.Context(), model.AvatarSubjectRoom, roomID)
 	if err != nil {
 		c.Set("avatar_outcome", "error")
-		_ = c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		errhttp.Write(c.Request.Context(), c, err)
 		return
 	}
 	if found {
@@ -157,8 +155,7 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 			s, found, err := h.store.BotSite(ctx, account)
 			if err != nil {
 				c.Set("avatar_outcome", "error")
-				_ = c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				errhttp.Write(c.Request.Context(), c, err)
 				return
 			}
 			if !found {
@@ -173,8 +170,7 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 		av, found, err := h.store.Avatar(ctx, model.AvatarSubjectBot, account)
 		if err != nil {
 			c.Set("avatar_outcome", "error")
-			_ = c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			errhttp.Write(c.Request.Context(), c, err)
 			return
 		}
 		if found {
@@ -193,8 +189,7 @@ func (h *handler) HandleAccountAvatar(c *gin.Context) {
 		eid, found, err = h.store.EmployeeID(ctx, account)
 		if err != nil {
 			c.Set("avatar_outcome", "error")
-			_ = c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			errhttp.Write(c.Request.Context(), c, err)
 			return
 		}
 		if !found {
