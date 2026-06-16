@@ -212,11 +212,22 @@ func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscr
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxSiteFanout)
 	for i, site := range sites {
+		// Client already gone — stop firing further ~5s RPCs; the remaining sites
+		// would only waste round-trips. In-flight calls fail fast via the ctx we
+		// pass to GetRoomsInfo.
+		if c.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Re-check after parking on the semaphore: cancellation may have
+			// landed while this goroutine waited its turn behind earlier RPCs.
+			if c.Err() != nil {
+				return
+			}
 			roomIDs := make([]string, 0, len(idxBySite[site]))
 			seen := make(map[string]struct{}, len(idxBySite[site]))
 			for _, j := range idxBySite[site] {

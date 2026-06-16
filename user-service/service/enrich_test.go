@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -12,6 +13,28 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
 )
+
+// A cancelled client context must short-circuit the cross-site fan-out: each
+// site RPC takes ~5s, so firing them for a request nobody awaits is pure waste.
+// In-flight calls still fail fast via the ctx passed to GetRoomsInfo.
+func TestEnrichCrossSite_ContextCancelled_SkipsRPC(t *testing.T) {
+	svc, _, _, _, rooms, _, _ := newSvc(t)
+	subs := []model.Subscription{
+		{ID: "b", RoomID: "r2", SiteID: "site-b"},
+	}
+	idxBySite := map[string][]int{"site-b": {0}}
+
+	c := ctx("alice", "site-a")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.SetContext(cancelled)
+
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	svc.enrichCrossSite(c, subs, idxBySite)
+
+	assert.Nil(t, subs[0].Room, "cancelled fan-out leaves the sub without a room object")
+}
 
 // key32 builds a valid 32-byte room secret whose bytes are all b.
 func key32(b byte) []byte {
