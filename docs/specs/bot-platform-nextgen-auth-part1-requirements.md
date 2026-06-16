@@ -54,21 +54,20 @@ A would have shipped faster but mixes a web app's security model into the human-
 
 ## 3a. Interfaces & endpoint paths
 
-The `bot-gateway` exposes **three surfaces**:
+`botplatform-service` is the **auth provider** — it does **not** proxy `/api/v2/*` (the existing **ApiGW** routes that to `Server`, calling our validate endpoint for auth). All endpoints are **REST** (Q15):
 
 | Surface | Path | Method | Returns | Auth |
 |---|---|---|---|---|
-| Web — login form | `/dev-login` | `GET` | **HTML** form | — |
-| Web — login submit | `/dev-login` | `POST` | redirect + **session cookie** | CSRF token |
-| Web — change-pwd form | `/changepwd` | `GET` | **HTML** form | session cookie |
-| Web — change-pwd submit | `/changepwd` | `POST` | redirect | session cookie + CSRF |
-| API — legacy bot login | `/api/v1/login` | `POST` | **JSON** (`authToken`,`userId`,`me`) | — |
-| API — new bot login | `/v1/bot/login` | `POST` | **JSON** (new token) | — |
-| API — authenticated calls | `/v1/bot/*`, `/api/v1/*` | * | JSON | `X-Auth-Token` + `X-User-Id` |
+| Web — login form/submit | `/dev-login` | GET/POST | **HTML** / redirect + **cookie** | CSRF (POST) |
+| Web — change-pwd | `/changepwd` | GET/POST | **HTML** / redirect | session cookie + CSRF |
+| API — legacy bot login | `/api/v1/login` | POST | **JSON** (`authToken`,`userId`,`me`) | — |
+| API — new bot login | `/v1/bot/login` | POST | **JSON** (new token) | — |
+| API — token validation | `/v1/auth/validate` | POST | **JSON** (`valid`,principal) | `{userId,authToken}` |
+| Admin | `/v1/admin/bots…` | POST/GET/DELETE | JSON | admin session |
 
-- **Web routes** use **session cookies** (HttpOnly/Secure/SameSite) + **CSRF protection**.
-- **API routes** use **bearer tokens** (`X-Auth-Token`/`X-User-Id`) — no cookies, no CSRF.
-- **`/api/v1/login`** preserves the legacy contract verbatim (existing SDK bots). **`/v1/bot/login`** is the new path for the re-architected SDK.
+- **Web routes** use **session cookies** (HttpOnly/Secure/SameSite) + **CSRF**.
+- **`/v1/auth/validate`** is called by **ApiGW, the WebSocket server, and EventConsumer** to authenticate bot traffic (replacing legacy-proxy validation).
+- **`/api/v1/login`** preserves the legacy contract verbatim; **`/v1/bot/login`** is the new path. Both via Istio at the same hostnames so bots don't change URLs.
 
 ---
 

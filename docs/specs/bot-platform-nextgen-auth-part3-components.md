@@ -21,41 +21,42 @@
 | Component | Owner | Role |
 |---|---|---|
 | **Login web pages** (`/dev-login`, `/changepwd`) | **we build** | HTML forms + submit |
-| **Token validation** (Valkey + Mongo) | **we build** | dual-token, cache-fronted |
-| **New token issuance** | **we build** | our store issues session tokens |
-| **API proxy / routing** | **we build** | validate → forward to `botplatform-server:8080` |
-| Room / message APIs (`/api/v2/*`) | exists | `botplatform-server:8080` |
-| Webhook delivery (event consumer) | exists | NATS → webhook |
-| WebSocket transport + logic | exists | websocket server :8899 (**needs an auth hook**) |
+| **Token validation** (`/v1/auth/validate`, Valkey + Mongo) | **we build** | dual-token, cache-fronted authority |
+| **New token issuance** (login) | **we build** | our store issues session tokens |
+| **Admin REST** (`/v1/admin/bots…`) | **we build** | provision / rotate / revoke |
+| **ApiGW** (routing, rate-limit, metrics) | **exists** | **calls our `/v1/auth/validate`**, routes to `Server` |
+| Room / message APIs (`/api/v2/*`) | exists | `Server` (legacy v2 REST today) |
+| Webhook delivery (event consumer) | exists | NATS → webhook; **calls our validate** |
+| WebSocket transport + logic | exists | websocket server :8899 (**calls our validate**) |
 
-**Net:** we own **auth + web UI + token validation + proxy**; the data plane (rooms/messages), webhooks, and the WS transport already exist — we plug auth into them.
+**Net:** we own **auth** (login + validate + stores + web UI + admin). The **data plane is ApiGW → Server** (existing); we are **not** in it — every component just calls our `/v1/auth/validate` for auth (Q17).
 
 ---
 
-## 3. The new service — `botplatform-service`
+## 3. The new service — `botplatform-service` (auth provider)
 
-Endpoints:
+Endpoints (all REST):
 - `GET/POST /dev-login` — HTML login form + submit (session cookie, CSRF).
-- `POST /v1/bot/login` — new bot login API *(or the same legacy path, depending on the Istio `VirtualService` routing we choose — see §6 / Q11)*.
-- `GET/POST /changepwd` — HTML password change + API.
-- `POST /v1/auth/validate` — **token-validation endpoint the websocket server calls** (§4.2).
-- `/api/v2/*` — **authenticated proxy** to `botplatform-server:8080` (§4.1). *(`botplatform-server` reverse-proxies `/api/v2/*` to the REST APIs exposed by the legacy v2 code; no `/api/v1` data path — Q11.)*
-- Token validation backed by **Valkey cache + Mongo**.
+- `POST /api/v1/login` (legacy contract) + `POST /v1/bot/login` (new) — issue tokens.
+- `GET/POST /changepwd` — HTML password change.
+- `POST /v1/auth/validate` — **the dual-token validation authority** called by ApiGW / WS / EventConsumer (§4.1–§4.2).
+- `/v1/admin/bots…` — admin REST (provision / rotate / sessions).
+- Backed by **Valkey cache + Mongo** (`credentials` + `sessions`).
+
+**Not here:** the `/api/v2/*` proxy (ApiGW owns routing → `Server`), and any NATS surface.
 
 ---
 
 ## 4. Critical integration points
 
-### 4.1 API routing (all `/api/v2/*` calls)
+### 4.1 API routing (all `/api/v2/*` calls) — ApiGW validates, then routes
 Flow when a bot calls `GET /api/v2/rooms`:
-1. Request hits `botplatform-service` with headers `X-User-Id` + `X-Auth-Token`.
-2. **Validate the token** (Valkey → Mongo → legacy fallback, §4.3).
-3. **Forward** to `http://botplatform-server:8080/api/v2/rooms` (principal carried in headers).
-4. **Return** the response to the bot.
+1. Request hits **ApiGW** with `X-User-Id` + `X-Auth-Token`.
+2. ApiGW **calls `POST /v1/auth/validate`** on `botplatform-service` (Valkey → Mongo → legacy fallback, §4.3) — *the caching lives behind this API*.
+3. On success, ApiGW **routes to `Server`** with the validated principal in headers (`Server` trusts ApiGW via mTLS).
+4. ApiGW returns the response to the bot.
 
-Config: `BOTPLATFORM_SERVER_URL=http://botplatform-server:8080`.
-
-> **Reconciliation with Part 2 §9:** our service is a **transparent HTTP reverse-proxy** — it forwards `/api/v2/*` to `botplatform-server:8080` and doesn't care what's behind it. `botplatform-server` serves requests from the **legacy v2 REST code** today, and will **bridge REST→NATS** to the nextgen backend as the data plane migrates (a bridge is required since nextgen is NATS RPC and legacy was pure REST — Q13). **That bridge is owned by the data-plane track, not our auth service.** Our service is **auth + reverse-proxy + principal-header injection**; no `/api/v1` data path.
+> **Reconciliation with Part 2 §9 (Q17):** we are **not** a reverse-proxy. ApiGW (existing) keeps routing/rate-limit/metrics and just delegates auth to our `/v1/auth/validate` — replacing today's slow proxy-to-legacy validation. `Server` serves `/api/v2/*` from the legacy v2 REST code today and will bridge REST→NATS to nextgen later (owned by the data-plane track, Q13) — transparent to us.
 
 ### 4.2 WebSocket auth (security fix required)
 Today the WS connection is unauthenticated. Required flow:
@@ -93,15 +94,15 @@ keep both working through the transition
 |---|---|---|
 | Bot login (web) | legacy `/dev-login` | **our** `/dev-login` |
 | Bot login (API) | legacy `/api/v1/login` | **our** `/v1/bot/login` (and/or `/api/v1/login`, Q11) |
-| API gateway path | Istio → `botplatform-server` | Istio → **our service** → `botplatform-server` |
-| WebSocket | **not authenticated** | **our service auth** → websocket server |
+| API auth validation | ApiGW proxies to legacy `/login` | ApiGW **calls our `/v1/auth/validate`** |
+| WebSocket | **not authenticated** | WS server **calls our `/v1/auth/validate`** |
 
 ---
 
 ## 6. Data-flow summary
-- **`/dev-login`** → our service: show HTML form, validate (phase-appropriate), issue new token + set cookie.
-- **`/api/v2/*`** → our service: validate token (Valkey/Mongo + legacy fallback) → proxy to `botplatform-server:8080` → room/message logic runs there.
-- **WebSocket** → websocket server :8899: sends auth to our `/v1/auth/validate` → accept/reject.
+- **`/dev-login`** → our service: show HTML form, validate credentials, issue token + set cookie.
+- **`/api/v2/*`** → **ApiGW**: call our `/v1/auth/validate` (Valkey/Mongo + legacy fallback) → route to `Server` (with principal) → room/message logic runs there. *(We're not in this path beyond the validate call.)*
+- **WebSocket** → websocket server :8899: sends auth → calls our `/v1/auth/validate` → accept/reject.
 
 ---
 
@@ -134,8 +135,8 @@ Rule: **no trusted upstream → call validate; mTLS-fronted upstream → trust t
 ---
 
 ## 8. Month-end (July) deliverables
-- **Must:** `/dev-login` web + login APIs, token validation (Valkey+Mongo), `/api/v2/*` proxy, `/v1/auth/validate` for WS.
-- **Nice-to-have:** `/changepwd` UI, WebSocket auth integration.
+- **Must (validation-first, Q16):** session store + token import; **`/v1/auth/validate`** (Valkey+Mongo, dual-token) wired into **ApiGW + WS + EventConsumer**; login APIs (`/api/v1/login`, `/v1/bot/login`).
+- **Nice-to-have:** `/dev-login` + `/changepwd` web UI, full WebSocket auth integration.
 - **August:** Phase-3 legacy sunset.
 
 ---

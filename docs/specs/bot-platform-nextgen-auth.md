@@ -203,65 +203,60 @@ Istio ingress
 
 ---
 
-## 8. Operator UI + NATS request/reply handlers
-The operator UI is a **NATS-native frontend** (gets a JWT, issues request/reply) — the confirmed nextgen client pattern. Each op = one `pkg/natsrouter` handler returning a typed `*errcode.Error`, documented in `docs/client-api.md`.
+## 8. Operator UI + admin REST endpoints (Q15)
+The operator UI is a **web app talking to `botplatform-service` over REST** — *not* a NATS-native client. (The earlier "NATS-native operator UI" assumption is superseded: under Option B our service is an HTTP/web service that already owns `credentials`/`sessions` and serves the web UI, so admin ops are REST endpoints on it — bolting NATS handlers onto an HTTP service would serve no caller. NATS stays reserved for the nextgen chat backend's own comms.) Each op = one Gin handler returning a typed `*errcode.Error` via `errhttp.Write`; guarded by an admin session + `roles ∋ admin`.
 
-| Operation | Purpose | Writes |
+| Operation | Endpoint (§9.6) | Writes |
 |---|---|---|
-| admin login | Human admin password login | `sessions` |
-| create bot | Provision bot identity + initial password | `users` + `credentials` (`RequirePasswordChange:true`) |
-| set/rotate password | Change password, clear flag | `credentials`, revoke `sessions` |
-| list sessions | Show a bot's live sessions | reads `sessions` by `userId` |
-| revoke session / revoke all | Kill one/all sessions | `sessions` |
+| admin login | `POST /dev-login` (web) | `sessions` |
+| create bot | `POST /v1/admin/bots` | `users` + `credentials` (`RequirePasswordChange:true`) |
+| set/rotate password | `POST /v1/admin/bots/{id}/password` | `credentials`, revoke `sessions` |
+| list sessions | `GET /v1/admin/bots/{id}/sessions` | reads `sessions` by `userId` |
+| revoke session / revoke all | `DELETE /v1/admin/bots/{id}/sessions[/{sid}]` | `sessions` |
 
-Subjects follow `chat.user.{account}.request.…` via `pkg/subject`. `docs/client-api.md` updated in the same PR (project rule).
+`docs/client-api.md` is for `chat.user.` NATS RPCs and does **not** apply here; document these REST endpoints in `botplatform-service`'s own API doc (per repo HTTP-service convention).
 
 ---
 
-## 9. `bot-gateway` (a.k.a. `botplatform-service`) — web UI + auth + API proxy
+## 9. `botplatform-service` — the auth provider (login · validate · sessions · web UI · admin)
 
-`bot-gateway` (the §7 Option-B service; called **`botplatform-service`** in the integration guide, **Part 3**) is the stateless edge that serves the bot web UI and authenticates bot/admin traffic so bot code never changes.
+`botplatform-service` (the §7 Option-B service; Part 2's earlier "bot-gateway") is **not** a data-path proxy. It is the **auth provider**: it owns the `credentials`/`sessions` stores, issues and validates tokens, serves the bot/admin web UI, and exposes the admin surface. The existing **ApiGW** keeps routing/rate-limit/metrics and **delegates auth to us** (Q17).
 
-> **Data-plane reconciliation (Part 3 §4.1).** Our service validates, then reverse-proxies `/api/v2/*` over **HTTP to `botplatform-server:8080`** — a **transparent proxy** that does not care what serves the request downstream. `botplatform-server` (external-dev track) decides that: today it reverse-proxies to the **legacy v2 REST code**; as the data plane migrates it will **bridge REST→NATS request/reply to the nextgen backend** (nextgen RPCs are NATS, the legacy code was pure REST, so a bridge is genuinely required — Q13). **That bridge lives in the data plane, NOT in our auth service** — putting it here would couple auth to every `/api/v2/*` subject + schema, defeating Option B. Our service's data-plane job stays **validate → reverse-proxy (principal in headers)** over a **pooled HTTP client**; it uses **NATS only for its control plane** (JWT minting via `auth-service`, admin RPCs, §15).
+> **Topology (Part 3 §4.1).** `bot → ApiGW → Server(/api/v2/*)`. ApiGW validates each request by calling our **`POST /v1/auth/validate`** (replacing today's slow proxy-to-legacy validation), then routes to `Server` with the validated principal in headers; `Server` trusts ApiGW under **Istio mTLS**. The WebSocket server and EventConsumer likewise call `/v1/auth/validate`. So **we never sit in the `/api/v2/*` data path** — no reverse proxy, no REST→NATS bridge here (that's downstream, Q13). Our only NATS use is a possible control-plane JWT-mint call to `auth-service` for *native* bots (future).
 
 ### 9.1 Responsibilities
 1. **Web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies**, enforce **CSRF** on POST.
-2. **API proxy** — validate, then reverse-proxy `/api/v2/*` to `botplatform-server:8080` (`BOTPLATFORM_SERVER_URL`), carrying the validated principal in headers. **Transparent proxy:** our service doesn't know or care whether `botplatform-server` serves the request from legacy v2 REST or by a REST→NATS bridge to nextgen — that's the data-plane track's concern (Q13). No `/api/v1` data path (Q11).
-3. **Authentication boundary** — validate the credential against the session store (§9.3): `X-Auth-Token`+`X-User-Id` for API, **session cookie** for web. Also exposes **`POST /v1/auth/validate`** for the websocket server (Part 3 §4.2). **Dual-token aware** — accepts legacy RC tokens (`scheme:"legacy"`) and new botplatform tokens (`scheme:"v1"`), §9.7. Reject with the RC-shaped 401 (API) / redirect-to-login (web).
-4. **Principal injection** — attach the validated `account`/`userId` + a request-id (`idgen.GenerateRequestID`) into the NATS request headers so downstream handlers know who is calling.
-5. **Connection management** — own a small pool of **long-lived** `*nats.Conn` (never connect-per-request); call `auth-service` to mint a NATS JWT only for native-bot logins.
-6. **Deadline & backpressure** — map the HTTP context deadline onto `Conn.RequestMsgWithContext`; apply a concurrency limit / load-shed (503) under saturation.
-7. **Error mapping** — turn the `errcode` JSON envelope returned over NATS into the RC-shaped HTTP status/body (API) or a form error (web).
-8. **Observability** — propagate request-id, emit per-request metrics + traces (mirrors the HTTP middleware rule in CLAUDE.md).
-
-### 9.2 Recommended topology — two client trust models
+2. **Login** — `POST /api/v1/login` (legacy contract) + `POST /v1/bot/login` (new); verify credentials, issue a token into the `sessions` store, return the RC-compatible envelope.
+3. **Validation** — **`POST /v1/auth/validate`** (§9.8): the single dual-token (`legacy`+`v1`) authority, cache-fronted, called by ApiGW / WS / EventConsumer.
+4. **Stores** — own `credentials` + `sessions` (Mongo) and the Valkey validation cache.
+5. **Admin surface** — REST endpoints for bot provisioning / password rotation / session management (§9.6, §15), consumed by a web operator UI.
+### 9.2 Topology
 
 ```
-Legacy REST bot ──HTTP──▶ [Gateway pods] ──NATS (service-acct conn pool)──▶ handlers
-                              │ validates session, injects principal
-Operator UI / native ──NATS (per-user scoped JWT)──────────────────────────▶ handlers
-                              │ JWT pub/sub scoping enforces authz
+bot ──HTTP──▶ ApiGW ──(POST /v1/auth/validate)──▶ botplatform-service ──▶ Valkey/Mongo (sessions)
+              │ rate-limit, metrics                  │ login · validate · admin · web UI
+              └──route (principal in hdrs, mTLS)──▶ Server (/api/v2/*)
+WS server :8899 ──(POST /v1/auth/validate)──▶ botplatform-service
+EventConsumer    ──(POST /v1/auth/validate)──▶ botplatform-service
 ```
 
-- **Native NATS clients** (operator UI, future native bots): connect directly with a **per-user JWT** scoped to `chat.user.{self}.>`. NATS permissions *are* the authz; no gateway involved.
-- **Legacy REST bots**: HTTP → gateway → NATS over a **shared service-account connection** with broad publish rights. The gateway already authenticated the bot (step 2), so it injects the principal and the handler trusts it.
+ApiGW/WS/EventConsumer are the **callers**; `botplatform-service` is the **auth provider**. We are not on the `/api/v2/*` data path — `Server` sits behind ApiGW and trusts the principal ApiGW injects (mTLS).
 
-### 9.3 Why this is the most performant design
+### 9.3 Performance — the validation hot path
+The 1M/min hot path is **`/v1/auth/validate`**, so the whole design optimizes it:
 
-**(a) Shared service-account connection, not a NATS connection per bot.** The naïve alternative — mint a JWT per bot and open a NATS connection as that user per request — means a TCP+TLS handshake and JWT auth per call (or thousands of pinned connections). Instead the gateway keeps **O(pods)** long-lived connections; the nats.go request mux multiplexes *all* in-flight replies over a single shared `_INBOX` subscription, so concurrency costs almost nothing. Connection count is independent of bot count.
+**(a) Cache-fronted validation.** In-pod LRU + cross-pod **Valkey** in front of Mongo (same pattern as `pkg/userstore`). Login writes Mongo + warms the cache; revoke deletes Mongo + busts the cache (pub/sub invalidation or short TTL). Common case = a Valkey GET (<5 ms), not a Mongo round-trip. ApiGW may add an optional short-TTL micro-cache on top.
 
-- *Trust boundary:* only the gateway's service account is permitted to publish on behalf of arbitrary accounts; native user JWTs are scoped to `self`, so a bot connecting directly cannot forge another account's principal. Handlers accept the gateway-set principal **because NATS permissions guarantee only the gateway can set it.**
+**(b) Throttle `LastUsedAt`** (§12 Q4): writing per request would negate the cache and double as the sliding-expiry refresh (§5.5) — update only when stale > 5 min.
 
-**(b) Cache-fronted session validation — the real hot path.** Every REST call validates a token. A Mongo read per request is the bottleneck, so put a **read-through cache** in front (same pattern as `pkg/userstore`): in-pod LRU for the hottest tokens + a cross-pod **Valkey** layer. Login (auth-service) writes Mongo and warms the cache; revoke deletes from Mongo and busts the cache (pub/sub invalidation or short TTL). Common-case validation = a Valkey GET (sub-ms), not a Mongo round-trip. **This is where Valkey earns its place (§12 Q6): the validation hot path, not the durable store.**
+**(c) O(1) lookup, unlimited sessions** — keyed by `base64(sha256(token))` (§4.2); session count never affects validate cost.
 
-- *Single writer, many readers (Option B):* the bot-gateway reads the Valkey session entry directly and falls back to an `auth-service` `session.validate` NATS call only on a cold miss — bounding ownership while keeping the hop off the hot path. *Under Option A* the same service owns the store and the cache, so there is **no cross-service validate hop at all** — a Mongo miss reads the local store directly. (Another point in A's favor.)
+**(d) Stateless service** → horizontal scale; the validate endpoint is read-mostly so it scales out trivially.
 
-**(c) Throttle `LastUsedAt`** (§12 Q4): writing it per request would negate the cache. Update only when stale beyond a window (e.g. > 5 min), or drop the field.
-
-**(d) Stateless gateway** → horizontal scale and instant Istio weight-shift/rollback (§10).
+> Data-path connection pooling / principal injection to `Server` is **ApiGW's** concern, not ours — we just answer validate calls fast.
 
 ### 9.4 Build vs. buy
-Build a **thin Go/Gin gateway**, consistent with the repo (auth-service is already Gin; reuse `errcode`, `idgen`, `pkg/subject`, the userstore cache pattern). Off-the-shelf options don't fit: Envoy/Istio have no NATS request/reply transport; NATS's own HTTP tools are config proxies, not RPC bridges. A purpose-built Go edge gives pooled NATS, typed envelopes, and exact RC-shape fidelity with minimal code.
+Build a **thin Go/Gin service**, consistent with the repo (`auth-service` is already Gin; reuse `errcode`, `idgen`, the `userstore` cache pattern). It's a focused auth provider — login + validate + stores + server-rendered web UI + admin REST — no proxy, no NATS data bridge.
 
 ### 9.5 Performance targets (SLA) & load criteria
 
@@ -280,9 +275,9 @@ Build a **thin Go/Gin gateway**, consistent with the repo (auth-service is alrea
 - **100,000 active sessions**.
 - **1,000,000 token validations / minute**.
 
-These drive the design choices in §9.3 (pooled service-account connection, cache-fronted validation, throttled `LastUsedAt`) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `gw_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
+These drive the design choices in §9.3 (cache-fronted validation, throttled `LastUsedAt`) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `auth_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
 
-### 9.6 Endpoint inventory
+### 9.6 Endpoint inventory — all REST (Q15)
 
 | Surface | Path | Method | Returns | Credential | CSRF |
 |---|---|---|---|---|---|
@@ -292,9 +287,15 @@ These drive the design choices in §9.3 (pooled service-account connection, cach
 | Web — change-pwd submit | `/changepwd` | POST | redirect | session cookie | **yes** |
 | API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
 | API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
-| API — WS validation | `/v1/auth/validate` | POST | JSON `{valid,account,userId}` | `{userId,authToken}` body | n/a |
-| API — authenticated proxy | `/api/v2/*` | * | JSON ← `botplatform-server:8080` | `X-Auth-Token`+`X-User-Id` | n/a |
+| API — token validation | `/v1/auth/validate` | POST | JSON `{valid,account,userId}` | `{userId,authToken}` body | n/a |
+| Admin — create bot | `/v1/admin/bots` | POST | JSON | admin session | n/a |
+| Admin — set/rotate password | `/v1/admin/bots/{id}/password` | POST | JSON | admin session | n/a |
+| Admin — list sessions | `/v1/admin/bots/{id}/sessions` | GET | JSON | admin session | n/a |
+| Admin — revoke session(s) | `/v1/admin/bots/{id}/sessions[/{sid}]` | DELETE | JSON | admin session | n/a |
 | Health | `/healthz` | GET | 200 | — | — |
+
+- **There is no `/api/v2/*` here** — ApiGW (existing) routes that to `Server`; we only answer ApiGW's `/v1/auth/validate` calls (Q17).
+- **Admin endpoints are REST** (not NATS, Q15), guarded by an admin session (web operator UI) and an `roles ∋ admin` check.
 
 - **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
 - **API** = bearer tokens only; **no cookies, no CSRF** (no ambient credential to forge).
@@ -360,14 +361,17 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 ### Recommended — pending infra confirmation
 - **Q3 — Cutover source-of-truth.** Use the **real-time `users`-collection sync** (the identity-sync that preserves the 17-char `_id`), **extended to carry the bcrypt hash into nextgen `credentials`** — password changes on legacy then propagate automatically, **no freeze** (§6.3). One write-authority during the ~1-week ramp (legacy writes; nextgen-side changes off until cutover). *Confirm:* the sync can carry the credential field; a literal read-only freeze is the trivial fallback. **Tokens are a separate axis — see Q14.**
 
-### Integration decisions (Part 3) — recommended, pending confirmation
+### Integration decisions (Part 3) — recommended, pending external-team confirmation
 - **Q10 — Token format.** Recommend **same opaque format** as legacy (indistinguishable to bots/WS); validate our-store-first then legacy-fallback. Optional `bp1_` prefix as a fast-path only if the fallback double-lookup is shown to matter. (Part 3 §7.)
-- **Q12 — WebSocket validation.** Recommend the WS server **calls our `POST /v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. (Part 3 §7.)
-- **Q13 — REST→NATS bridge ownership.** A bridge is required (nextgen = NATS RPCs, legacy = pure REST). Recommend it lives in **`botplatform-server` / the data-plane track**, *downstream* of our transparent HTTP proxy — **not** in our auth service (which would couple auth to every data RPC's subject/schema). *Confirm with the external-dev team* that `botplatform-server` owns the bridge and our proxy stays transparent. (Part 3 §4.1.)
-- **Q14 — Downstream token validation.** `/v1/auth/validate` is the **single dual-token authority** (§9.8). WS server + any directly-reachable legacy v2 **call it** (no re-implemented token logic, no blind header trust). The gateway-fronted `/api/v2/*` path **trusts the mTLS-injected principal** (already validated once) to avoid double-validating the hot path. *Confirm:* legacy v2 can either call `/v1/auth/validate` or be put strictly behind our gateway with mTLS service-identity.
+- **Q12 — WebSocket validation.** WS server **calls `/v1/auth/validate`** (once per connection), not direct Valkey — single source of truth, no cold-miss false-rejects. *Confirm WS-team wiring.* (Part 3 §7.)
+- **Q13 — REST→NATS bridge ownership.** A bridge is required (nextgen = NATS RPCs, legacy = pure REST); it lives in **`Server`/`botplatform-server` (data-plane track)**, never in our auth service. *Confirm with the external-dev team.* (Part 3 §4.1.)
 
 ### Confirmed — closed
-- **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; all data via `/api/v2/*` → `botplatform-server`. The `/api/v2/*` endpoints are the REST APIs exposed by the **legacy v2 code**; `botplatform-server` reverse-proxies to **`/api/v2/`** (not `/api/v1`), so our service never proxies any `/api/v1/*` data route. *(confirmed 2026-06-16.)*
+- **Q17 — Service scope.** ✅ **`botplatform-service` is the auth provider, not a data-path proxy** (Option (b), 2026-06-16). ApiGW (existing) keeps routing/rate-limit/metrics and calls our `/v1/auth/validate`; `Server` serves `/api/v2/*`. We own login + validate + `credentials`/`sessions` + web UI + admin (§9).
+- **Q16 — Sequencing.** ✅ **Validation-first** (§19): move validation off the legacy proxy first (biggest win), then login, then sunset legacy. Login is phase-2.
+- **Q15 — Admin/auth surface protocol.** ✅ **REST, not NATS** (§8, §15). Every caller (bots, browsers, ApiGW, WS) speaks HTTP; NATS is reserved for the nextgen backend's own comms. Admin ops are REST endpoints on `botplatform-service`.
+- **Q14 — Downstream validation.** ✅ `/v1/auth/validate` is the single dual-token authority (§9.8); ApiGW/WS/EventConsumer call it; `Server` trusts ApiGW's mTLS-injected principal (no double-validate).
+- **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; data is `/api/v2/*` on `Server` (legacy v2 REST), never proxied by us. *(confirmed 2026-06-16.)*
 - **Q5 — Architecture.** ✅ **Option B — dedicated `bot-gateway`** (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. `bot-gateway` owns `credentials`+`sessions`; `auth-service` keeps the signing key and mints JWTs on request (§7).
 - **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
 - **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
@@ -465,38 +469,26 @@ return principal{account, userId}
 
 ---
 
-## 15. NATS subjects & error reasons
+## 15. Routes & error reasons (REST — Q15)
 
-**Server-internal (gateway/edge → auth-service; caller not yet user-scoped or is the trusted gateway):**
-- `chat.server.request.auth.login` — verify credentials, create session.
-- `chat.server.request.auth.session.validate` — token hash → principal (cold-miss).
-- `chat.server.request.auth.session.refresh` — session token → fresh JWT (HTTP-frontable for native clients).
+`botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`), and admin (`/v1/admin/bots…`). **No NATS subjects** are exposed by this service.
 
-**Operator, user-scoped (admin JWT; handler checks caller `roles ∋ admin` via `userstore`):**
-- `chat.user.{account}.request.admin.bot.create`
-- `chat.user.{account}.request.admin.bot.password.set`
-- `chat.user.{account}.request.admin.session.list`
-- `chat.user.{account}.request.admin.session.revoke`
-- `chat.user.{account}.request.admin.session.revokeAll`
+> **NATS is out of this service's surface.** It's reserved for the nextgen chat backend's internal service-to-service comms and native-client access. The *only* possible NATS use is a future control-plane call to `auth-service` to mint a NATS JWT for *native* bots — not part of the July scope.
 
-Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
-
-**Error reasons** (`codes_authservice.go`, attached via `errcode.WithReason`):
-`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`.
+**Error reasons** (attached via `errcode.WithReason`, surfaced through `errhttp.Write`):
+`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`, `rateLimited`.
 
 ---
 
 ## 16. Configuration (env, `caarlos0/env`)
 
-**auth-service** (additions): `SESSION_IDLE_WINDOW` (`envDefault:"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `JWT_TTL` (`"15m"`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `VALKEY_ADDRS` (required), Mongo URI/DB (required). Reuses existing `AUTH_SIGNING_KEY`.
-
-**`bot-gateway`** (the §7 Option-B service): `NATS_URL` + service-account creds (required), `GATEWAY_NATS_POOL_SIZE` (`"4"`), `GATEWAY_REQUEST_TIMEOUT` (`"10s"`), `GATEWAY_MAX_CONCURRENCY` (`"500"`), `VALKEY_ADDRS` (required), Mongo URI/DB (required, owns `credentials`+`sessions`), `SESSION_CACHE_TTL` (`"5m"`), `BCRYPT_COST` (`"10"`), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSION_IDLE_WINDOW` (`"4320h"`), `SESSION_LASTUSED_THROTTLE` (`"5m"`), and web-surface vars: `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), `AUTH_SERVICE_SUBJECT` (for JWT-mint calls). `PORT` (`"8080"`). Secrets never defaulted (house rule).
+**`botplatform-service`** (the §7 Option-B auth provider): Mongo URI/DB (required, owns `credentials`+`sessions`), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSION_IDLE_WINDOW` (`"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), web-surface vars `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), and `HTTP_MAX_CONCURRENCY` (`"500"`), `PORT` (`"8080"`). No NATS/proxy vars (not a data-path proxy). *Future native-bot JWT mint would add `AUTH_SERVICE_URL`.* Secrets never defaulted (house rule).
 
 ---
 
 ## 17. Observability (metrics)
-- `auth_login_total{result}`, `auth_login_lockouts_total`, `auth_session_validate_total{source=cache|mongo,result}`, `auth_session_validate_latency_seconds`, `auth_active_sessions` (gauge).
-- gateway: `gw_request_duration_seconds{route,status}`, `gw_nats_request_total{result=ok|timeout|err}`, `gw_session_cache_hits_total{hit}`.
+- `auth_login_total{result}`, `auth_login_lockouts_total`, `auth_session_validate_total{source=cache|mongo,result,scheme}`, `auth_session_validate_latency_seconds`, `auth_session_cache_hits_total{hit}`, `auth_active_sessions` (gauge).
+- HTTP middleware: `http_request_duration_seconds{route,status}`.
 - Logging: `log/slog` JSON, request-id propagated; **never** log tokens / password input / hashes.
 
 ---
@@ -510,23 +502,23 @@ Add builders to `pkg/subject` (never `fmt.Sprintf` at call sites).
 - **Dual-token** — `TestValidate_AcceptsLegacyAndV1`: both a `scheme:"legacy"` and a `scheme:"v1"` token validate via the same path.
 - **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
 - **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
-- **Gateway** (unit): principal-header injection, `errcode`→HTTP status mapping, timeout→503, deadline propagation.
+- **Validate endpoint** (unit): `/v1/auth/validate` happy/expired/unknown, `errhttp` status mapping, cache hit vs Mongo miss path.
 - **Integration** (`//go:build integration`, `pkg/testutil`): `credentials`/`sessions` Mongo store incl. partial-TTL index behavior; Valkey read-through + invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped docs (password + non-PAT `resume.loginTokens`). Assert 17-char `_id`s are preserved verbatim into `credentials._id`.
 
 ---
 
 ## 19. Implementation phases (each = TDD + own PR)
-*Architecture is decided: Option B — a new `bot-gateway` service (§7).*
-1. Scaffold `bot-gateway` service (per repo service template) + `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
-2. Password verify + session lifecycle + `POST /api/v1/login` + `POST /v1/bot/login` + JWT-refresh (service-to-service mint call to `auth-service`).
-3. Web UI: `/dev-login` + `/changepwd` HTML forms, session cookies, CSRF middleware.
-4. Valkey read-through cache + invalidation; dual-token (legacy + v1) validation.
-5. Migration script (credential + non-PAT live-token import) with `--dry-run` + verify mode.
-6. REST↔NATS edge (principal injection, error mapping, pooled conn, load-shed).
-7. Operator provisioning NATS handlers + admin authz + `docs/client-api.md`.
-8. **Load test** against the §9.5 SLAs/criteria — gate cutover on pass.
-9. Istio routing + canary runbook (separate from app PRs).
-10. Operator UI frontend (likely a separate repo/track).
+*Architecture: Option B — `botplatform-service` as the auth provider (§7, §9). **Validation-first** sequencing (Q16): the urgent win is moving validation off the legacy proxy.*
+
+1. Scaffold `botplatform-service` (repo service template) + `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
+2. **Migration script** (credential import — verbatim hashes; non-PAT live-token import) with `--dry-run` + verify; ensure existing tokens land in the new store (+ real-time token sync, or rely on legacy-fallback until login moves).
+3. **Validation (the win): `POST /v1/auth/validate`** — dual-token (legacy+v1), Valkey read-through cache + invalidation, throttled `LastUsedAt`. Wire **ApiGW + WS + EventConsumer** to call it (replacing legacy-proxy validation).
+4. **Login:** `POST /api/v1/login` + `POST /v1/bot/login` — verify credentials, issue v1 tokens into the new store. Reroute `/login` to us at the Istio layer (same URL).
+5. **Web UI:** `/dev-login` + `/changepwd` HTML forms, session cookies, CSRF middleware.
+6. **Admin REST** (`/v1/admin/bots…`) + admin authz + service API doc.
+7. **Load test** against the §9.5 SLAs/criteria — gate cutover on pass.
+8. Istio routing + canary runbook (validation cutover, then login); monitor → sunset legacy auth.
+9. Operator UI frontend + (future) native-bot `session.refresh` (Q1b) — likely separate tracks.
 
 ---
 
@@ -566,8 +558,10 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 **Infra / platform**
 - [x] **Valkey cluster available in prod** to the host service. *(confirmed 2026-06-15, Q6)*
 - [ ] Shared Istio ingress gateway + who owns the `VirtualService`/`DestinationRule`; the new namespace name; cert ownership. **(§10)**
-- [ ] A NATS **service account** for the REST edge with publish rights on `chat.user.*.request.>` (and that user JWTs remain scoped to self). **(§9.3)**
+- [ ] **ApiGW** can be wired to call `/v1/auth/validate`; **Server** trusts ApiGW's injected principal via mTLS. **(Q14/Q17)**
+- [ ] External-dev confirmations: **WS server** calls `/v1/auth/validate` (Q12); **Server/data-plane** owns the REST→NATS bridge (Q13).
+- [ ] Real-time `users`-collection sync can carry the bcrypt hash into `credentials` (Q3).
 
 **Decisions to sign off (§12)**
-- [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 freeze-legacy (dual-run window)
-- [x] **Q5 architecture = Option B (`bot-gateway`)** · [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey day-one · [x] Q7 idleWindow=180d · [x] Q8 password-only · [x] Q9 id-preserved
+- [ ] **Q1b** expose `session.refresh` now or defer · [ ] Q3 sync-not-freeze · [ ] Q10 token format · [ ] Q12/Q13 external confirms
+- [x] **Q5** Option B · [x] **Q14** validate authority · [x] **Q15** REST admin · [x] **Q16** validation-first · [x] **Q17** auth-provider-not-proxy · [x] Q1 contract · [x] Q2 sliding-infinite · [x] Q4 throttle=5m · [x] Q6 Valkey · [x] Q7 180d · [x] Q8 password-only · [x] Q9 id-preserved · [x] Q11 v1-login-only
