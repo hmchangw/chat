@@ -37,7 +37,12 @@ func startVaultDevBinary() (addr string, stop func(), err error) {
 	addr = "http://" + listenAddr
 
 	bgCtx, cancel := context.WithCancel(context.Background())
-	// #nosec G204 -- binPath is exec.LookPath of the literal "vault"; args are fixed
+	// Test-only fixture: binPath is exec.LookPath of the literal "vault"; argv
+	// is fully fixed (vaultRootToken is a package constant, listenAddr is
+	// 127.0.0.1:<freePort>). No taint from external input — both SAST rules
+	// below are false positives.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	// #nosec G204
 	cmd := exec.CommandContext(bgCtx, binPath, "server", "-dev",
 		"-dev-root-token-id="+vaultRootToken,
 		"-dev-listen-address="+listenAddr,
