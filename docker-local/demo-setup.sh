@@ -154,8 +154,7 @@ export PATH=$NATS_BIN_DIR:\$PATH
 ./docker-local/demo-pin-fav.sh list  $RID
 ./docker-local/demo-pin-fav.sh unpin $RID $MID
 ./docker-local/demo-pin-fav.sh react $RID $MID thumbsup   # toggle; run twice to add then remove
-./docker-local/demo-pin-fav.sh fav   $RID
-./docker-local/demo-pin-fav.sh unfav $RID
+./docker-local/demo-pin-fav.sh fav   $RID                 # toggle; run twice to flip back
 
 # live logs (or run ./docker-local/demo-logs.sh in another terminal):
 ./docker-local/demo-setup.sh --logs        # re-run with --logs to stream here

@@ -22,16 +22,12 @@ demo-pin-fav.sh <action> [args]
 | `unpin` | `<ROOM_ID> <MESSAGE_ID>` | `…msg.unpin` | history-service |
 | `list` | `<ROOM_ID>` | `…msg.pinned.list` | history-service |
 | `react` | `<ROOM_ID> <MESSAGE_ID> [EMOJI]` | `…msg.react` (toggle; default `thumbsup`) | history-service |
-| `fav` | `<ROOM_ID>` | `…favorite.toggle` → `favorite=true` | room-service |
-| `unfav` | `<ROOM_ID>` | `…favorite.toggle` → `favorite=false` | room-service |
-| `toggle` | `<ROOM_ID>` | `…favorite.toggle` (single flip) | room-service |
+| `fav` | `<ROOM_ID>` | `…favorite.toggle` (single flip) | room-service |
 | `all` | `<ROOM_ID> <MESSAGE_ID>` | the whole sequence, in order | both |
 
-`favorite.toggle` and `msg.react` are both pure server-side flips (no target state).
-`fav`/`unfav` make favorite **idempotent** by reading the returned `favorite` and
-toggling once more only if needed (≤2 RPCs); `toggle` flips once. `react` is a single
-toggle — the reply's `action` says which way it went (`added` / `removed`); run it
-twice to add then remove.
+`react` and `fav` are both **pure server-side toggles** — each call flips the state and
+the reply tells you which way it went (`react` → `action: added`/`removed`; `fav` →
+`favorite: true`/`false`). Run either twice to flip back.
 
 > **Reactions need a registered custom emoji.** `msg.react` validates the shortcode
 > against the `custom_emojis` collection (no built-in/unicode set), so an unregistered
@@ -67,20 +63,19 @@ export PATH=/home/codespace/.local/bin:$PATH
 / `/tmp/msg_id.txt`). The current ones are:
 
 ```
-ROOM_ID = okm5C3qYfbOGD839n
-MSG_ID  = 6AKWgB4dbacQCmhEtFkT
+ROOM_ID = VT0THDvXtYQUJGseg
+MSG_ID  = anljIir2cwl4aaDEtpXV
 ```
 
 Then fire whichever action you want (these run against the ids above):
 
 ```bash
-./docker-local/demo-pin-fav.sh pin    okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
-./docker-local/demo-pin-fav.sh list   okm5C3qYfbOGD839n
-./docker-local/demo-pin-fav.sh unpin  okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
-./docker-local/demo-pin-fav.sh react  okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT thumbsup  # toggle
-./docker-local/demo-pin-fav.sh fav    okm5C3qYfbOGD839n
-./docker-local/demo-pin-fav.sh unfav  okm5C3qYfbOGD839n
-./docker-local/demo-pin-fav.sh all    okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT   # whole sequence
+./docker-local/demo-pin-fav.sh pin    VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV
+./docker-local/demo-pin-fav.sh list   VT0THDvXtYQUJGseg
+./docker-local/demo-pin-fav.sh unpin  VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV
+./docker-local/demo-pin-fav.sh react  VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV thumbsup  # toggle
+./docker-local/demo-pin-fav.sh fav    VT0THDvXtYQUJGseg                                 # toggle
+./docker-local/demo-pin-fav.sh all    VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV   # whole sequence
 ```
 
 > The ids above are a live example from the last `demo-setup.sh` run. Re-running
@@ -143,7 +138,7 @@ A two-terminal workflow:
 | Terminal | Command |
 |----------|---------|
 | **1 — logs** | `./docker-local/demo-setup.sh --logs` (sets up, then streams logs here) |
-| **2 — drive** | `./docker-local/demo-pin-fav.sh pin okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT`, etc. |
+| **2 — drive** | `./docker-local/demo-pin-fav.sh pin VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV`, etc. |
 
 `--logs` runs the full setup and then `exec`s `demo-logs.sh` in the same terminal,
 so the setup terminal becomes your live log view.
@@ -170,23 +165,29 @@ Cassandra via `docker exec`.
 ./docker-local/demo-state.sh [ROOM_ID] [MESSAGE_ID]
 ```
 
-It prints:
+With no args it defaults to the last ids minted by `demo-setup.sh` (`/tmp/room_id.txt`
+/ `/tmp/msg_id.txt`), so a bare `./docker-local/demo-state.sh` targets the current
+room/message. It prints:
 1. **JetStream streams** — each stream's `msgs` / `bytes` / `last_seq` (sending a
    message bumps `MESSAGES_*` and `MESSAGES_CANONICAL_*`).
 2. **`pinned_messages_by_room`** for the room — a row appears on pin, disappears on unpin.
 3. **`messages_by_id` pin flag** for the message — `pinned_at` / `pinned_by` go
    `null` → set on pin, back to `null` on unpin.
+4. **reactions map** on the message — one `(emoji, user)` cell per reactor.
+5. **per-member favorites** (from Mongo subscriptions) — each member's `favorite`
+   flag + roles, so the `fav` toggle is visible (it lives in Mongo, not Cassandra).
 
 Typical loop:
 ```bash
-RID=okm5C3qYfbOGD839n ; MID=6AKWgB4dbacQCmhEtFkT
+RID=VT0THDvXtYQUJGseg ; MID=anljIir2cwl4aaDEtpXV
 ./docker-local/demo-state.sh   $RID $MID         # before — 0 pinned rows, pinned_at=null
 ./docker-local/demo-pin-fav.sh pin $RID $MID
 ./docker-local/demo-state.sh   $RID $MID         # after  — note the counts / pin flag
 ```
 
 Env overrides: `NATS_MON_URL` (default `http://localhost:8222`),
-`CASS_CONTAINER` (default `chat-local-cassandra`), `KEYSPACE` (default `chat`).
+`CASS_CONTAINER` (default `chat-local-cassandra`),
+`MONGO_CONTAINER` (default `chat-local-mongodb`), `KEYSPACE` (default `chat`).
 
 ## Configuration
 
@@ -210,23 +211,20 @@ local demo — no per-user JWT needed.
 Each subcommand prints one raw reply:
 
 ```bash
-$ ./demo-pin-fav.sh pin   okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
-{"messageId":"6AKWgB4dbacQCmhEtFkT","pinnedAt":1781057044222}
+$ ./demo-pin-fav.sh pin   VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV
+{"messageId":"anljIir2cwl4aaDEtpXV","pinnedAt":1781057044222}
 
-$ ./demo-pin-fav.sh list  okm5C3qYfbOGD839n
+$ ./demo-pin-fav.sh list  VT0THDvXtYQUJGseg
 {"messages":[{… "msg":"Pin me!" … "pinnedAt":"…","pinnedBy":{"id":"u-alice",…}}],"hasNext":false}
 
-$ ./demo-pin-fav.sh unpin okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT
-{"messageId":"6AKWgB4dbacQCmhEtFkT"}
+$ ./demo-pin-fav.sh unpin VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV
+{"messageId":"anljIir2cwl4aaDEtpXV"}
 
-$ ./demo-pin-fav.sh react okm5C3qYfbOGD839n 6AKWgB4dbacQCmhEtFkT thumbsup   # again → "removed"
-{"messageId":"6AKWgB4dbacQCmhEtFkT","shortcode":"thumbsup","action":"added","reactedAt":1781636442212}
+$ ./demo-pin-fav.sh react VT0THDvXtYQUJGseg anljIir2cwl4aaDEtpXV thumbsup   # again → "removed"
+{"messageId":"anljIir2cwl4aaDEtpXV","shortcode":"thumbsup","action":"added","reactedAt":1781636442212}
 
-$ ./demo-pin-fav.sh fav   okm5C3qYfbOGD839n
+$ ./demo-pin-fav.sh fav   VT0THDvXtYQUJGseg      # run again to flip back to false
 {"status":"ok","favorite":true}
-
-$ ./demo-pin-fav.sh unfav okm5C3qYfbOGD839n
-{"status":"ok","favorite":false}
 ```
 
 ## Feature reference
@@ -251,27 +249,27 @@ $NC req "<subject>" '<body>' --raw
 | react | `chat.user.{account}.request.room.{roomID}.{site}.msg.react` | `{"messageId":"<id>","shortcode":"<emoji>"}` |
 | favorite | `chat.user.{account}.request.room.{roomID}.{site}.favorite.toggle` | *(empty — no body)* |
 
-Concrete examples (account `alice`, room `okm5C3qYfbOGD839n`, message `6AKWgB4dbacQCmhEtFkT`):
+Concrete examples (account `alice`, room `VT0THDvXtYQUJGseg`, message `anljIir2cwl4aaDEtpXV`):
 
 ```bash
 # pin
-$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.pin" \
-  '{"messageId":"6AKWgB4dbacQCmhEtFkT"}' --raw
+$NC req "chat.user.alice.request.room.VT0THDvXtYQUJGseg.site-local.msg.pin" \
+  '{"messageId":"anljIir2cwl4aaDEtpXV"}' --raw
 
 # unpin
-$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.unpin" \
-  '{"messageId":"6AKWgB4dbacQCmhEtFkT"}' --raw
+$NC req "chat.user.alice.request.room.VT0THDvXtYQUJGseg.site-local.msg.unpin" \
+  '{"messageId":"anljIir2cwl4aaDEtpXV"}' --raw
 
 # list pinned (body REQUIRED — empty body is rejected)
-$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.pinned.list" \
+$NC req "chat.user.alice.request.room.VT0THDvXtYQUJGseg.site-local.msg.pinned.list" \
   '{}' --raw
 
 # react (toggle; shortcode must be a registered custom emoji)
-$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.msg.react" \
-  '{"messageId":"6AKWgB4dbacQCmhEtFkT","shortcode":"thumbsup"}' --raw
+$NC req "chat.user.alice.request.room.VT0THDvXtYQUJGseg.site-local.msg.react" \
+  '{"messageId":"anljIir2cwl4aaDEtpXV","shortcode":"thumbsup"}' --raw
 
 # favorite (no body; pure toggle)
-$NC req "chat.user.alice.request.room.okm5C3qYfbOGD839n.site-local.favorite.toggle" \
+$NC req "chat.user.alice.request.room.VT0THDvXtYQUJGseg.site-local.favorite.toggle" \
   '' --raw
 ```
 
@@ -334,8 +332,8 @@ Both `pin` and `unpin` share a pre-check: **kill-switch → subscription → mes
   site differs from this site, it also emits a cross-site **outbox** event
   (`subscription_favorite_toggled`) so the favorite state federates.
 - **Response.** `{status:"ok", favorite:<new bool>}`. There is no target-state input —
-  `demo-pin-fav.sh fav`/`unfav` reach a specific state by reading this `favorite` and
-  toggling again only if needed.
+  it's a pure flip, so `demo-pin-fav.sh fav` just reports the new value; run it again
+  to flip back.
 
 ### Reactions — history-service
 
