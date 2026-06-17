@@ -102,10 +102,8 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	// Fetch Cassandra page and minUserLastSeenAt from Mongo in parallel.
 	// Floor fetch failure is non-fatal: thread messages load normally and
 	// minUserLastSeenAt is simply omitted from the response.
-	var (
-		page          cassrepo.Page[models.Message]
-		threadFloor   *time.Time
-	)
+	var page cassrepo.Page[models.Message]
+	var threadFloor *time.Time
 	g, gctx := errgroup.WithContext(c)
 	g.Go(func() error {
 		var pErr error
