@@ -33,9 +33,10 @@ type config struct {
 	// different domains, so each site's URLs are listed explicitly.
 	SiteURLs string `env:"PORTAL_SITE_URLS,required"`
 
-	// CacheRefreshInterval matches the cadence of the daily HR cron that
-	// rewrites the hr_employee collection.
-	CacheRefreshInterval time.Duration `env:"PORTAL_CACHE_REFRESH_INTERVAL" envDefault:"24h"`
+	// CacheRefreshInterval drives how often the directory is reloaded (the
+	// hr_employee × users intersection via $lookup). Shorter than the daily HR
+	// cron so a newly provisioned user appears within a couple of hours.
+	CacheRefreshInterval time.Duration `env:"PORTAL_CACHE_REFRESH_INTERVAL" envDefault:"2h"`
 
 	MongoURI      string `env:"MONGO_URI,required"`
 	MongoDB       string `env:"MONGO_DB"       envDefault:"portal"`
@@ -87,7 +88,7 @@ func run() error {
 
 	slog.Info("directory config", "sites", len(sites), "refreshInterval", cfg.CacheRefreshInterval.String())
 
-	handler := NewPortalHandler(cache, store, cfg.DevMode,
+	handler := NewPortalHandler(cache, cfg.DevMode,
 		cfg.DevFallbackSiteID, cfg.DevFallbackNatsURL, sites)
 	if cfg.DevMode {
 		slog.Info("dev mode enabled — unknown accounts fall back to the dev site")

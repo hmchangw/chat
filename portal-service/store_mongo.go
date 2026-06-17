@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -12,31 +11,10 @@ import (
 
 type mongoDirectoryStore struct {
 	employees *mongo.Collection
-	users     *mongo.Collection
 }
 
 func newMongoDirectoryStore(db *mongo.Database) *mongoDirectoryStore {
-	return &mongoDirectoryStore{
-		employees: db.Collection("hr_employee"),
-		users:     db.Collection("users"),
-	}
-}
-
-// AccountProvisioned reports whether {account, siteId} exists in the users
-// collection — the canonical user record. It reads no fields, only existence
-// (projects _id), so it stays a cheap indexed point lookup per login.
-func (s *mongoDirectoryStore) AccountProvisioned(ctx context.Context, account, siteID string) (bool, error) {
-	err := s.users.FindOne(ctx,
-		bson.M{"account": account, "siteId": siteID},
-		options.FindOne().SetProjection(bson.M{"_id": 1}),
-	).Err()
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("query users for provisioning: %w", err)
-	}
-	return true, nil
+	return &mongoDirectoryStore{employees: db.Collection("hr_employee")}
 }
 
 // EnsureIndexes enforces account uniqueness on hr_employee so a buggy HR cron
@@ -51,16 +29,44 @@ func (s *mongoDirectoryStore) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
+// ListEmployees returns the intersection of hr_employee and the users
+// collection: every account in hr_employee that is also provisioned in users
+// for the same site, with the canonical users._id projected as userId. The
+// $lookup keyed on {account, siteId} performs the join in Mongo, so the
+// in-memory cache already means "employee AND provisioned" and the portal does
+// no per-request users query. users must live in the same database as
+// hr_employee — $lookup cannot cross databases.
 func (s *mongoDirectoryStore) ListEmployees(ctx context.Context) ([]employee, error) {
-	cur, err := s.employees.Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{
-		"_id":        0,
-		"account":    1,
-		"employeeId": 1,
-		"siteId":     1,
-		"natsUrl":    1,
-	}))
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "users"},
+			{Key: "let", Value: bson.D{
+				{Key: "acct", Value: "$account"},
+				{Key: "site", Value: "$siteId"},
+			}},
+			{Key: "pipeline", Value: mongo.Pipeline{
+				bson.D{{Key: "$match", Value: bson.D{{Key: "$expr", Value: bson.D{{Key: "$and", Value: bson.A{
+					bson.D{{Key: "$eq", Value: bson.A{"$account", "$$acct"}}},
+					bson.D{{Key: "$eq", Value: bson.A{"$siteId", "$$site"}}},
+				}}}}}}},
+				bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 1}}}},
+				bson.D{{Key: "$limit", Value: 1}},
+			}},
+			{Key: "as", Value: "provisioned"},
+		}}},
+		bson.D{{Key: "$match", Value: bson.D{{Key: "provisioned.0", Value: bson.D{{Key: "$exists", Value: true}}}}}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+			{Key: "account", Value: 1},
+			{Key: "employeeId", Value: 1},
+			{Key: "siteId", Value: 1},
+			{Key: "natsUrl", Value: 1},
+			{Key: "userId", Value: bson.D{{Key: "$arrayElemAt", Value: bson.A{"$provisioned._id", 0}}}},
+		}}},
+	}
+	cur, err := s.employees.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("find employees: %w", err)
+		return nil, fmt.Errorf("aggregate hr_employee with users lookup: %w", err)
 	}
 	var emps []employee
 	if err := cur.All(ctx, &emps); err != nil {

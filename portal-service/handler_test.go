@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -60,27 +58,10 @@ var testSites = map[string]siteURL{
 	"site-local": {AuthServiceURL: "https://auth.site-local.example.com", BaseURL: "http://localhost:3000"},
 }
 
-// fakeProvisionChecker is a hand-written provisionChecker stub; the real users
-// collection is exercised in integration_test.go.
-type fakeProvisionChecker struct {
-	provisioned bool
-	err         error
-}
-
-func (f fakeProvisionChecker) AccountProvisioned(_ context.Context, _, _ string) (bool, error) {
-	return f.provisioned, f.err
-}
-
-// newTestHandler builds a PortalHandler with the test site registry, the local
-// dev-fallback coordinates, and a provisioning check that always passes.
+// newTestHandler builds a PortalHandler with the test site registry and the
+// local dev-fallback coordinates.
 func newTestHandler(cache *directoryCache, devMode bool) *PortalHandler {
-	return newTestHandlerWithProvision(cache, devMode, fakeProvisionChecker{provisioned: true})
-}
-
-// newTestHandlerWithProvision builds a PortalHandler with an explicit
-// provisioning stub, for cases that assert on the users-collection check.
-func newTestHandlerWithProvision(cache *directoryCache, devMode bool, pc provisionChecker) *PortalHandler {
-	return NewPortalHandler(cache, pc, devMode, "site-local", "ws://localhost:9222", testSites)
+	return NewPortalHandler(cache, devMode, "site-local", "ws://localhost:9222", testSites)
 }
 
 func TestHandleUserInfo_HappyPath(t *testing.T) {
@@ -168,27 +149,6 @@ func TestHandleUserInfo_AccountNotReady(t *testing.T) {
 		errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeForbidden)
 		errtest.AssertReason(t, w.Body.Bytes(), errcode.PortalAccountNotReady)
 	})
-}
-
-func TestHandleUserInfo_NotProvisionedInUsers(t *testing.T) {
-	// The account is in the HR directory but absent from the users collection —
-	// not yet a real chat user, so the login is refused with the same reason as
-	// a directory miss.
-	h := newTestHandlerWithProvision(cacheWith(aliceEmployee), false, fakeProvisionChecker{provisioned: false})
-	w := getUserInfo(t, setupRouter(t, h), "alice")
-
-	assert.Equal(t, http.StatusForbidden, w.Code)
-	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeForbidden)
-	errtest.AssertReason(t, w.Body.Bytes(), errcode.PortalAccountNotReady)
-}
-
-func TestHandleUserInfo_ProvisionCheckError(t *testing.T) {
-	// A users-collection query failure fails closed as internal, not leaked.
-	h := newTestHandlerWithProvision(cacheWith(aliceEmployee), false, fakeProvisionChecker{err: errors.New("mongo down")})
-	w := getUserInfo(t, setupRouter(t, h), "alice")
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeInternal)
 }
 
 func TestHandleUserInfo_DevMode(t *testing.T) {

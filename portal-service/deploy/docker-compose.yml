@@ -1,9 +1,9 @@
 name: portal-service
 
 services:
-  # One-shot directory seed: an hr_employee stand-in for the daily HR cron —
-  # the demo accounts match the ones tools/seed-sample-data creates in the
-  # site DB.
+  # One-shot directory seed: hr_employee + a users stand-in in the portal DB so
+  # the ListEmployees $lookup (hr_employee × users on {account, siteId}) resolves
+  # the demo accounts. They match the ones tools/seed-sample-data creates.
   portal-seed:
     image: mongo:8.2.9
     entrypoint:
@@ -14,14 +14,19 @@ services:
       - --eval
       - |
         const p = db.getSiblingDB('portal');
-        [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) =>
+        [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) => {
           p.hr_employee.replaceOne(
             { account: account },
             { account: account, employeeId: employeeId, siteId: 'site-local', natsUrl: 'ws://localhost:9222' },
             { upsert: true },
-          ),
-        );
-        print('portal seed: hr_employee=' + p.hr_employee.countDocuments());
+          );
+          p.users.replaceOne(
+            { account: account, siteId: 'site-local' },
+            { _id: 'u-' + account, account: account, siteId: 'site-local' },
+            { upsert: true },
+          );
+        });
+        print('portal seed: hr_employee=' + p.hr_employee.countDocuments() + ' users=' + p.users.countDocuments());
     networks:
       - chat-local
 

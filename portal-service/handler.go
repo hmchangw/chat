@@ -51,21 +51,14 @@ type userInfoResponse struct {
 	SiteID         string `json:"siteId"`
 }
 
-// provisionChecker confirms an account has a record in the users collection —
-// the canonical user store every other service reads — for its home site.
-// hr_employee membership proves only that the account is an employee.
-type provisionChecker interface {
-	AccountProvisioned(ctx context.Context, account, siteID string) (bool, error)
-}
-
 // PortalHandler resolves a user's home-site coordinates from the in-memory
-// directory cache and confirms the account is provisioned in the users
-// collection. Discovery only: it serves non-secret directory data keyed by
-// account and validates no token. The authoritative gate is auth-service, which
-// validates the SSO token before minting a JWT.
+// directory cache. The cache holds only accounts present in both hr_employee
+// and the users collection (intersected at load time), so a cache hit already
+// means the account is a provisioned user. Discovery only: it serves non-secret
+// directory data keyed by account and validates no token. The authoritative
+// gate is auth-service, which validates the SSO token before minting a JWT.
 type PortalHandler struct {
 	cache              *directoryCache
-	store              provisionChecker
 	devMode            bool
 	devFallbackSiteID  string
 	devFallbackNatsURL string
@@ -74,13 +67,11 @@ type PortalHandler struct {
 
 // NewPortalHandler creates a PortalHandler. devMode synthesizes a dev-site
 // entry for accounts absent from the directory so local logins need no seeding.
-// store backs the per-request provisioning check against the users collection;
 // sites is the siteId → URL registry used to resolve each account's home-site
 // auth-service and base URLs.
-func NewPortalHandler(cache *directoryCache, store provisionChecker, devMode bool, devFallbackSiteID, devFallbackNatsURL string, sites map[string]siteURL) *PortalHandler {
+func NewPortalHandler(cache *directoryCache, devMode bool, devFallbackSiteID, devFallbackNatsURL string, sites map[string]siteURL) *PortalHandler {
 	return &PortalHandler{
 		cache:              cache,
-		store:              store,
 		devMode:            devMode,
 		devFallbackSiteID:  devFallbackSiteID,
 		devFallbackNatsURL: devFallbackNatsURL,
@@ -122,23 +113,6 @@ func (h *PortalHandler) resolve(ctx context.Context, c *gin.Context, account str
 			return
 		}
 		e = employee{Account: account, SiteID: h.devFallbackSiteID, NATSURL: h.devFallbackNatsURL}
-	}
-
-	// hr_employee proves the account is an employee; the users collection is the
-	// canonical record every other service reads. Confirm the account is
-	// provisioned there too before blessing the login. Dev mode skips it — the
-	// synthesized dev account has no users row.
-	if !h.devMode {
-		provisioned, err := h.store.AccountProvisioned(ctx, account, e.SiteID)
-		if err != nil {
-			errhttp.Write(ctx, c, fmt.Errorf("check account provisioning: %w", err))
-			return
-		}
-		if !provisioned {
-			errhttp.Write(ctx, c, errcode.Forbidden("account not ready for chat",
-				errcode.WithReason(errcode.PortalAccountNotReady)))
-			return
-		}
 	}
 
 	site, ok := h.sites[e.SiteID]

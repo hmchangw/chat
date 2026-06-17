@@ -24,31 +24,40 @@ func TestMongoDirectoryStore_ListEmployees(t *testing.T) {
 	for _, doc := range []bson.M{
 		{"account": "alice", "employeeId": "E001", "siteId": "site-a", "natsUrl": "wss://nats-3.site-a.example.com"},
 		{"account": "bob", "employeeId": "E002", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"},
+		{"account": "carol", "employeeId": "E003", "siteId": "site-a", "natsUrl": "wss://nats.site-a.example.com"},
+		{"account": "eve", "employeeId": "E004", "siteId": "site-a", "natsUrl": "wss://nats.site-a.example.com"},
 	} {
 		_, err := db.Collection("hr_employee").InsertOne(ctx, doc)
 		require.NoError(t, err)
 	}
+	// alice/bob are provisioned on their home site; carol has no users row; eve's
+	// users row is on a different site; dave is only in users.
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "u-alice", "account": "alice", "siteId": "site-a"},
+		bson.M{"_id": "u-bob", "account": "bob", "siteId": "site-b"},
+		bson.M{"_id": "u-eve", "account": "eve", "siteId": "site-b"},
+		bson.M{"_id": "u-dave", "account": "dave", "siteId": "site-a"},
+	})
+	require.NoError(t, err)
 
 	emps, err := store.ListEmployees(ctx)
 	require.NoError(t, err)
-	require.Len(t, emps, 2)
 
 	byAccount := make(map[string]employee, len(emps))
 	for _, e := range emps {
 		byAccount[e.Account] = e
 	}
+	// Only accounts present in BOTH collections for the same site survive the
+	// $lookup, with users._id projected as UserID.
 	assert.Equal(t, employee{
-		Account:    "alice",
-		EmployeeID: "E001",
-		SiteID:     "site-a",
-		NATSURL:    "wss://nats-3.site-a.example.com",
+		Account: "alice", EmployeeID: "E001", SiteID: "site-a",
+		NATSURL: "wss://nats-3.site-a.example.com", UserID: "u-alice",
 	}, byAccount["alice"])
 	assert.Equal(t, employee{
-		Account:    "bob",
-		EmployeeID: "E002",
-		SiteID:     "site-b",
-		NATSURL:    "wss://nats.site-b.example.com",
+		Account: "bob", EmployeeID: "E002", SiteID: "site-b",
+		NATSURL: "wss://nats.site-b.example.com", UserID: "u-bob",
 	}, byAccount["bob"])
+	require.Len(t, emps, 2, "carol (no users row), eve (site mismatch), and dave (users-only) must be excluded")
 }
 
 func TestMongoDirectoryStore_ListEmployees_Empty(t *testing.T) {
@@ -79,36 +88,4 @@ func TestMongoDirectoryStore_EnsureIndexes_UniqueAccount(t *testing.T) {
 	// A distinct account is unaffected by the unique index.
 	_, err = coll.InsertOne(ctx, bson.M{"account": "bob", "employeeId": "E002", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"})
 	require.NoError(t, err)
-}
-
-func TestMongoDirectoryStore_AccountProvisioned(t *testing.T) {
-	db := testutil.MongoDB(t, "portal")
-	store := newMongoDirectoryStore(db)
-	ctx := context.Background()
-
-	_, err := db.Collection("users").InsertMany(ctx, []any{
-		bson.M{"_id": "u-alice", "account": "alice", "siteId": "site-a"},
-		bson.M{"_id": "u-ivan", "account": "ivan", "siteId": "site-b"},
-	})
-	require.NoError(t, err)
-
-	tests := []struct {
-		name    string
-		account string
-		siteID  string
-		want    bool
-	}{
-		{"provisioned on this site", "alice", "site-a", true},
-		// ivan exists in users but is homed on site-b; the compound predicate
-		// must not match him for site-a.
-		{"homed on another site", "ivan", "site-a", false},
-		{"unknown account", "carol", "site-a", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := store.AccountProvisioned(ctx, tt.account, tt.siteID)
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
