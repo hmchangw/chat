@@ -73,7 +73,8 @@ org-sync-worker/
 Import path: `github.com/hmchangw/chat/org-sync-worker/internal/…`.
 Reused root packages: `natsutil`, `mongoutil`, `stream`, `subject`, `idgen`,
 `shutdown`, `errcode`, `model`, `health`, `otelutil`, `logctx`, `jobguard`,
-`testutil` (tests).
+`pipelines` (partial — see §14), `testutil` (tests). See §14 for the full
+package-reuse audit, including what was deliberately NOT reused.
 
 ## 2. Domain mapping (spec vocabulary → real model)
 
@@ -210,11 +211,22 @@ shared repository struct.
 - `room_member.go` — `RoomMemberRepo{ members *mongoutil.Collection[model.RoomMember] }`.
   `RoomIDsWithOrg` runs an aggregation: match `room_members{member.type:"org",
   member.id:orgID}`, `$lookup` rooms, filter `rooms.siteId == siteID`, project
-  `rid`. Individual upserts use `$setOnInsert`.
+  `rid` (net-new; `pkg/pipelines` does not cover the orgId→rooms direction).
+  Individual upserts use `$setOnInsert`. The org_disbanded "members via org"
+  enumeration and the `hasSubscription`/`hasIndividualRoomMember` derivation
+  reuse the conventions in `pkg/pipelines/member.go`
+  (`GetAddMemberCandidatesPipeline`, the `botOrPseudoAccountRegex` exclusion and
+  the sect/dept org match) so the worker stays consistent with room-worker's
+  membership semantics.
 - `room.go` — `RoomRepo{ rooms *mongoutil.Collection[model.Room] }`.
   `IncUserCount` → `UpdateOne(_id, {"$inc": {"userCount": delta}})` via `Raw()`.
 - `user.go` — `UserRepo{ users *mongoutil.Collection[model.User] }`.
-  `GetUserByAccount` → `FindOne(bson.M{"account": account})`.
+  `GetUserByAccount` → `FindOne(bson.M{"account": account})` with a projection
+  that **includes `sectId` and `deptId`** (plus `_id`, `account`). We do NOT
+  reuse `pkg/userstore.NewMongoStore` here: its `FindUserByAccount` projection
+  (`userstore.go:26`) omits `sectId`/`deptId`, which the member_removed /
+  org_disbanded "covered by another org" check requires. A hand-rolled
+  `UserRepo` with the right projection is the correct call.
 
 ## 7. Business logic
 
@@ -369,7 +381,40 @@ Fail fast on missing required vars and non-positive numeric knobs (history
    `$set` `BulkUpsert` shortcut).
 8. org-sync-worker reuses existing collections/indexes; owns no schema.
 
-## 14. Client API doc
+## 14. Package-reuse audit
+
+Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
+
+**Reused:**
+- `pkg/pipelines` — **partial.** `member.go` encodes the shared sect/dept org
+  match, the `botOrPseudoAccountRegex` exclusion, and the
+  `hasSubscription`/`hasIndividualRoomMember` derivation
+  (`GetNewMembersPipeline`, `GetAddMemberCandidatesPipeline`). Reused for the
+  org_disbanded "members via org" enumeration to stay consistent with
+  room-worker. Does NOT cover the worker's primary orgId→rooms query
+  (`RoomIDsWithOrg` is net-new).
+- Infra (already planned): `natsutil`, `mongoutil`, `stream`, `subject`,
+  `idgen`, `shutdown`, `errcode`, `model`, `health`, `otelutil`, `logctx`,
+  `jobguard`, `testutil`.
+
+**Deliberately NOT reused:**
+- `pkg/userstore` — its `FindUserByAccount` projection (`userstore.go:26`) omits
+  `sectId`/`deptId`, which the member_removed / org_disbanded org-coverage check
+  requires. A service-local `UserRepo` with the correct projection is used
+  instead. (The process-local LRU cache it offers is also unnecessary at the
+  worker's daily-batch volume.)
+- `pkg/roommetacache`, `pkg/roomsubcache`, `pkg/valkeyutil` — caching/L2
+  invalidation only valuable for read-serving, fan-out paths; not needed for a
+  low-volume write-only sync worker.
+- `pkg/displayfmt` — name-formatting for read-time enrichment; the worker writes
+  IDs/accounts, not display names.
+- Not applicable to this worker's domain: `cassutil`, `msgbucket`, `atrest`
+  (Cassandra/at-rest), `roomcrypto`, `roomkeystore`, `roomkeysender`,
+  `roomkeymetrics` (room encryption), `searchengine`, `searchindex` (search),
+  `natsrouter` (request-reply, not pull-consumer), `restyutil`, `drive`, `oidc`,
+  `minioutil`, `mention`, `emoji`.
+
+## 15. Client API doc
 
 Not applicable: `org-sync-worker` registers no `chat.user.…` client-facing
 handler and exposes no HTTP route (other than `/healthz`). No `docs/client-api.md`
