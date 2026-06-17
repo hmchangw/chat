@@ -14,6 +14,7 @@ type App struct {
 	Assistant     *AppAssistant     `json:"assistant,omitempty"     bson:"assistant,omitempty"`
 	ChannelTab    *AppChannelTab    `json:"channelTab,omitempty"    bson:"channelTab,omitempty"`
 	Sponsors      []AppSponsor      `json:"sponsors,omitempty"      bson:"sponsors,omitempty"`
+	Categories    []string          `json:"categories,omitempty"    bson:"categories,omitempty"`
 }
 
 // AppAssistant: Name is the bot user account (".bot" suffix); botDM requires Enabled==true.

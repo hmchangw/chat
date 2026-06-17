@@ -2563,6 +2563,7 @@ func TestAppRoundtrip_NewMetaFields(t *testing.T) {
 		UserManualURL: "https://upstream/meta/manual",
 		Version:       "1.2.3",
 		Sponsors:      []model.AppSponsor{{Name: "Acme", Phone: "555-0199"}},
+		Categories:    []string{"productivity", "ai"},
 	}
 	var dst model.App
 	roundTrip(t, &a, &dst)
@@ -2573,6 +2574,7 @@ func TestAppRoundtrip_NewMetaFields(t *testing.T) {
 	assert.Equal(t, "https://upstream/meta/forum", dst.ForumURL)
 	assert.Equal(t, "https://upstream/meta/manual", dst.UserManualURL)
 	assert.Equal(t, "1.2.3", dst.Version)
+	assert.Equal(t, []string{"productivity", "ai"}, dst.Categories)
 }
 
 func TestAppRoundtrip_NewMetaFields_OmitEmpty(t *testing.T) {
@@ -2581,7 +2583,7 @@ func TestAppRoundtrip_NewMetaFields_OmitEmpty(t *testing.T) {
 	require.NoError(t, err)
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(b, &raw))
-	for _, k := range []string{"appViewUrl", "reportUrl", "forumUrl", "userManualUrl", "version"} {
+	for _, k := range []string{"appViewUrl", "reportUrl", "forumUrl", "userManualUrl", "version", "categories"} {
 		_, present := raw[k]
 		assert.False(t, present, "empty %s must be omitted", k)
 	}

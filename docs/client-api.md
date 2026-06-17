@@ -3150,6 +3150,7 @@ See [Error envelope](#6-error-envelope-reference).
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab embedding config. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsors. |
+| `categories` | string[] | Optional. App category tags. |
 
 ###### AppChannelTab
 
@@ -3865,6 +3866,7 @@ Optional — an empty body returns the first page with defaults.
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's bot assistant. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab configuration. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsor list. |
+| `categories` | string[] | Optional. App category tags. |
 | `isSubscribed` | boolean | Whether the calling user is subscribed to this app's bot. |
 
 ```json
