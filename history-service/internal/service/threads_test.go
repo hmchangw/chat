@@ -389,6 +389,7 @@ func TestHistoryService_GetThreadMessages_NoRoomTimesDependency(t *testing.T) {
 	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
 	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+	threadRooms.EXPECT().GetMinThreadUserLastSeenAt(gomock.Any(), "tr-1").Return(nil, nil)
 
 	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
 	require.NoError(t, err)
@@ -879,4 +880,71 @@ func TestHistoryService_GetThreadMessages_ParentMessage_QuoteRedacted(t *testing
 	require.NotNil(t, resp.ParentMessage.QuotedParentMessage)
 	assert.Equal(t, service.UnavailableQuoteMsg, resp.ParentMessage.QuotedParentMessage.Msg)
 	assert.Empty(t, resp.ParentMessage.QuotedParentMessage.MessageID)
+}
+
+// --- GetThreadMessages floor (minUserLastSeenAt) tests ---
+
+// newServiceForFloor builds a HistoryService with strict thread-room mock (no AnyTimes default for
+// GetMinThreadUserLastSeenAt) so floor-specific tests can assert exact mock calls.
+func newServiceForFloor(t *testing.T) (*service.HistoryService, *mocks.MockMessageRepository, *mocks.MockSubscriptionRepository, *mocks.MockThreadRoomRepository) {
+	svc, msgs, subs, rooms, _, threadRooms, _, _ := newServiceWithRoomMock(t)
+	rooms.EXPECT().GetMinUserLastSeenAt(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	return svc, msgs, subs, threadRooms
+}
+
+// wireFloorGetThreadMessages sets up message + subscription expectations common to all
+// GetThreadMessages floor tests.
+func wireFloorGetThreadMessages(t *testing.T, msgs *mocks.MockMessageRepository, subs *mocks.MockSubscriptionRepository) {
+	t.Helper()
+	parent := &models.Message{
+		MessageID: "m-parent", RoomID: "r1",
+		CreatedAt:    joinTime.Add(5 * time.Minute),
+		ThreadRoomID: "tr-1", TCount: intPtr(2),
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(makePage(nil, false), nil)
+}
+
+func TestHistoryService_GetThreadMessages_FloorIncluded(t *testing.T) {
+	svc, msgs, subs, threadRooms := newServiceForFloor(t)
+	c := testContext()
+	wireFloorGetThreadMessages(t, msgs, subs)
+
+	floorTime := joinTime.Add(30 * time.Minute)
+	threadRooms.EXPECT().GetMinThreadUserLastSeenAt(gomock.Any(), "tr-1").Return(&floorTime, nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	require.NotNil(t, resp.MinUserLastSeenAt)
+	assert.Equal(t, floorTime.UTC().UnixMilli(), *resp.MinUserLastSeenAt)
+}
+
+func TestHistoryService_GetThreadMessages_FloorNilWhenNotSet(t *testing.T) {
+	svc, msgs, subs, threadRooms := newServiceForFloor(t)
+	c := testContext()
+	wireFloorGetThreadMessages(t, msgs, subs)
+
+	threadRooms.EXPECT().GetMinThreadUserLastSeenAt(gomock.Any(), "tr-1").Return(nil, nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Nil(t, resp.MinUserLastSeenAt)
+}
+
+func TestHistoryService_GetThreadMessages_FloorFetchError_NonFatal(t *testing.T) {
+	svc, msgs, subs, threadRooms := newServiceForFloor(t)
+	c := testContext()
+	wireFloorGetThreadMessages(t, msgs, subs)
+
+	threadRooms.EXPECT().GetMinThreadUserLastSeenAt(gomock.Any(), "tr-1").Return(nil, fmt.Errorf("mongo down"))
+
+	// Floor fetch failure must not prevent the messages from being returned.
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Nil(t, resp.MinUserLastSeenAt)
+	// Messages loads normally even when the floor fetch fails.
+	require.NotNil(t, resp)
+	assert.False(t, resp.HasNext)
 }

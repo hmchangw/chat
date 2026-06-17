@@ -29,6 +29,7 @@ type MongoStore struct {
 	rooms               *mongo.Collection
 	subscriptions       *mongo.Collection
 	threadSubscriptions *mongo.Collection
+	threadRooms         *mongo.Collection
 	roomMembers         *mongo.Collection
 	users               *mongo.Collection
 	apps                *mongo.Collection
@@ -40,6 +41,7 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:               db.Collection("rooms"),
 		subscriptions:       db.Collection("subscriptions"),
 		threadSubscriptions: db.Collection("thread_subscriptions"),
+		threadRooms:         db.Collection("thread_rooms"),
 		roomMembers:         db.Collection("room_members"),
 		users:               db.Collection("users"),
 		apps:                db.Collection("apps"),
@@ -145,6 +147,15 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "parentMessageId", Value: 1}, {Key: "userAccount", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,userAccount) index: %w", err)
+	}
+	// Backs MinThreadSubscriptionLastSeenByThreadRoomID: covered index seek on
+	// (threadRoomId, lastSeenAt ASC) returns the subscriber with the smallest
+	// lastSeenAt in one seek — same algorithm as the (roomId, lastSeenAt) index
+	// on subscriptions that backs MinSubscriptionLastSeenByRoomID.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "threadRoomId", Value: 1}, {Key: "lastSeenAt", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,lastSeenAt) index: %w", err)
 	}
 	// Backs GetThreadUnreadSummary's $match {userAccount, siteId}. No existing
 	// thread_subscriptions index has userAccount as a prefix.
@@ -1592,4 +1603,63 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 		return nil, fmt.Errorf("decode thread unread summary: %w", err)
 	}
 	return &result, nil
+}
+
+// GetThreadRoomByID returns the thread_rooms document for threadRoomID.
+// Returns (nil, nil) when no document matches.
+func (s *MongoStore) GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error) {
+	var tr model.ThreadRoom
+	err := s.threadRooms.FindOne(ctx, bson.M{"_id": threadRoomID}).Decode(&tr)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get thread room %q: %w", threadRoomID, err)
+	}
+	return &tr, nil
+}
+
+// MinThreadSubscriptionLastSeenByThreadRoomID returns the thread room's strict
+// read floor: the minimum lastSeenAt across ALL thread_subscriptions for
+// threadRoomID, but only when every subscriber has a usable lastSeenAt (> zero).
+// Returns nil when any subscriber has never read, or when there are no subscribers.
+// The (threadRoomId, lastSeenAt) index (non-sparse) returns the smallest value
+// first — a missing/null/zero lastSeenAt sorts before real dates, so the first
+// document answers both "is anyone unread?" and "what is the floor?" in one seek.
+func (s *MongoStore) MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	var doc struct {
+		LastSeenAt time.Time `bson:"lastSeenAt"`
+	}
+	err := s.threadSubscriptions.FindOne(ctx,
+		bson.M{"threadRoomId": threadRoomID},
+		options.FindOne().
+			SetSort(bson.D{{Key: "lastSeenAt", Value: 1}}).
+			SetProjection(bson.M{"lastSeenAt": 1, "_id": 0}),
+	).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find min lastSeenAt for thread room %q: %w", threadRoomID, err)
+	}
+	if !doc.LastSeenAt.After(time.Time{}) {
+		return nil, nil
+	}
+	minTime := doc.LastSeenAt
+	return &minTime, nil
+}
+
+// UpdateThreadRoomMinUserLastSeenAt sets or clears thread_rooms.minUserLastSeenAt
+// for threadRoomID. A nil value clears the field via $unset; non-nil writes via $set.
+func (s *MongoStore) UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error {
+	var update bson.M
+	if t == nil {
+		update = bson.M{"$unset": bson.M{"minUserLastSeenAt": ""}}
+	} else {
+		update = bson.M{"$set": bson.M{"minUserLastSeenAt": *t}}
+	}
+	if _, err := s.threadRooms.UpdateOne(ctx, bson.M{"_id": threadRoomID}, update); err != nil {
+		return fmt.Errorf("update minUserLastSeenAt for thread room %q: %w", threadRoomID, err)
+	}
+	return nil
 }

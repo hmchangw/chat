@@ -1352,7 +1352,8 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 - **Concurrent local writes:** the room-`Subscription` update and the `ThreadSubscription` update run in parallel inside an `errgroup`. Both must succeed before the handler proceeds.
 - **Cross-site federation:** if the user's home site differs from the handler's site, a `thread_read` event is published to `outbox.{handlerSite}.to.{userSite}.thread_read` with payload `{account, roomId, threadRoomId, parentMessageId, newThreadUnread, alert, lastSeenAt, timestamp}` (timestamps as `int64` UnixMilli). The destination `inbox-worker` applies the supplied `newThreadUnread`+`alert` to the local Subscription cache and applies `lastSeenAt`+`updatedAt`+`hasMention=false` to the local ThreadSubscription with an `$lt` order-safety guard so out-of-order delivery cannot regress the thread's read position.
 - **Defensive `roomId` filter:** the thread-subscription lookup additionally enforces that the supplied `threadId` belongs to the room named in the subject. Mismatches return `thread subscription not found` (rather than silently clearing an unrelated thread).
-- **No system message, no fan-out events:** thread reads are silent; only the requester receives the `accepted` reply.
+- **Thread-room read-floor recompute:** after both writes succeed, `room-service` recomputes `thread_rooms.minUserLastSeenAt` = `MIN(lastSeenAt)` across all `thread_subscriptions` for the thread room. The floor is set only when every subscriber has a usable `lastSeenAt`; otherwise it is cleared. The recompute is best-effort — a failure is logged but does not fail the RPC. Live fan-out of the floor advance to clients is deferred to a follow-up; the stored value is available immediately via [Get Thread Messages](#get-thread-messages).
+- **No system message:** thread reads are silent; only the requester receives the `accepted` reply.
 
 ##### Triggered events — success path
 
@@ -2757,6 +2758,7 @@ Returns the replies in a thread. The thread parent's `messageId` is supplied in 
 | `nextCursor` | string | Optional. Opaque cursor for the next page. |
 | `hasNext` | boolean | `true` if more replies exist beyond this page. |
 | `parentMessage` | [Message](#message-schema) | Optional. The thread-parent message. Present whenever the thread parent passes the access-window check. Absent only on error paths. The parent's `quotedParentMessage` is access-window-redacted by the same rules as replies. |
+| `minUserLastSeenAt` | number | Optional. UTC milliseconds since Unix epoch. The thread room's **strict read floor** — `MIN(lastSeenAt)` across all thread subscribers, present **only when every subscriber has read**. Absent when any subscriber has not yet read (including bots, which never call Mark Thread as Read), or when the value cannot be retrieved (best-effort; thread messages still load). |
 
 ```json
 {
@@ -2779,7 +2781,8 @@ Returns the replies in a thread. The thread parent's `messageId` is supplied in 
       "threadParentCreatedAt": "2026-05-06T07:55:00Z"
     }
   ],
-  "hasNext": false
+  "hasNext": false,
+  "minUserLastSeenAt": 1746518100000
 }
 ```
 

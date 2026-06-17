@@ -739,6 +739,21 @@ func (mr *MockThreadRoomRepositoryMockRecorder) GetFollowingThreadRooms(ctx, roo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFollowingThreadRooms", reflect.TypeOf((*MockThreadRoomRepository)(nil).GetFollowingThreadRooms), ctx, roomID, account, accessSince, req)
 }
 
+// GetMinThreadUserLastSeenAt mocks base method.
+func (m *MockThreadRoomRepository) GetMinThreadUserLastSeenAt(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMinThreadUserLastSeenAt", ctx, threadRoomID)
+	ret0, _ := ret[0].(*time.Time)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMinThreadUserLastSeenAt indicates an expected call of GetMinThreadUserLastSeenAt.
+func (mr *MockThreadRoomRepositoryMockRecorder) GetMinThreadUserLastSeenAt(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMinThreadUserLastSeenAt", reflect.TypeOf((*MockThreadRoomRepository)(nil).GetMinThreadUserLastSeenAt), ctx, threadRoomID)
+}
+
 // GetThreadRooms mocks base method.
 func (m *MockThreadRoomRepository) GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.ThreadRoom], error) {
 	m.ctrl.T.Helper()

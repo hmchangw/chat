@@ -89,3 +89,19 @@ func (r *ThreadRoomRepo) GetUnreadThreadRooms(ctx context.Context, roomID, accou
 	}
 	return page, nil
 }
+
+// GetMinThreadUserLastSeenAt reads thread_rooms.minUserLastSeenAt for threadRoomID.
+// Returns (nil, nil) when the field is unset or the document is missing.
+func (r *ThreadRoomRepo) GetMinThreadUserLastSeenAt(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	tr, err := r.threadRooms.FindOne(ctx,
+		bson.M{"_id": threadRoomID},
+		mongoutil.WithProjection(bson.M{"minUserLastSeenAt": 1, "_id": 0}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get thread room %s minUserLastSeenAt: %w", threadRoomID, err)
+	}
+	if tr == nil {
+		return nil, nil
+	}
+	return tr.MinUserLastSeenAt, nil
+}

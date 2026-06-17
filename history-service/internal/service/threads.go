@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
 	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
@@ -96,17 +99,45 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		ceiling = floor
 	}
 
-	page, err := s.msgReader.GetThreadMessages(c, msg.ThreadRoomID, ceiling, floor, pageReq)
-	if err != nil {
+	// Fetch Cassandra page and minUserLastSeenAt from Mongo in parallel.
+	// Floor fetch failure is non-fatal: thread messages load normally and
+	// minUserLastSeenAt is simply omitted from the response.
+	var (
+		page          cassrepo.Page[models.Message]
+		threadFloor   *time.Time
+	)
+	g, gctx := errgroup.WithContext(c)
+	g.Go(func() error {
+		var pErr error
+		page, pErr = s.msgReader.GetThreadMessages(gctx, msg.ThreadRoomID, ceiling, floor, pageReq)
+		return pErr
+	})
+	g.Go(func() error {
+		t, fErr := s.threadRooms.GetMinThreadUserLastSeenAt(gctx, msg.ThreadRoomID)
+		if fErr != nil {
+			slog.Warn("loading thread minUserLastSeenAt", "error", fErr, "thread_room_id", msg.ThreadRoomID)
+			return nil
+		}
+		threadFloor = t
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("loading thread messages: %w", err)
+	}
+
+	var minMs *int64
+	if threadFloor != nil {
+		ms := threadFloor.UTC().UnixMilli()
+		minMs = &ms
 	}
 
 	redactUnavailableQuotes(page.Data, accessSince)
 	return &models.GetThreadMessagesResponse{
-		Messages:      page.Data,
-		NextCursor:    page.NextCursor,
-		HasNext:       page.HasNext,
-		ParentMessage: msg,
+		Messages:          page.Data,
+		NextCursor:        page.NextCursor,
+		HasNext:           page.HasNext,
+		ParentMessage:     msg,
+		MinUserLastSeenAt: minMs,
 	}, nil
 }
 

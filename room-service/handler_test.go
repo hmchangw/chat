@@ -3295,6 +3295,13 @@ func newThreadReadFixture(t *testing.T) *threadReadFixture {
 	return f
 }
 
+// withNopFloor stubs the thread-floor store methods for tests that do not
+// exercise floor recompute — returns nil thread room so recomputeThreadFloor
+// exits early without further store calls.
+func withNopFloor(f *threadReadFixture) {
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+}
+
 func baseThreadSub(account, roomID, parent, threadRoomID string) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
 		ID:              "tsub-" + parent,
@@ -3385,6 +3392,7 @@ func TestHandler_MessageThreadRead_BothMiss_RoomNotMemberWins(t *testing.T) {
 
 func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3403,6 +3411,7 @@ func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
 
 func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3419,6 +3428,7 @@ func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
 
 func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3435,6 +3445,7 @@ func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
 
 func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, false), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3451,6 +3462,7 @@ func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
 
 func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3487,6 +3499,7 @@ func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 
 func TestHandler_MessageThreadRead_GetUserSiteID_Empty(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3570,6 +3583,107 @@ func TestHandler_MessageThreadRead_UpdateThreadSubscriptionError(t *testing.T) {
 	_, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
 	require.Error(t, err)
 	assert.Equal(t, 0, f.publishCalls)
+}
+
+// --- thread floor recompute tests ---
+
+// baseThreadRoomForFloor returns a minimal ThreadRoom with a non-zero LastMsgAt
+// so the floor-recompute skip guard does not trip.
+func baseThreadRoomForFloor(threadRoomID string) *model.ThreadRoom {
+	lastMsg := time.Now().UTC().Add(-30 * time.Minute)
+	return &model.ThreadRoom{
+		ID:        threadRoomID,
+		LastMsgAt: lastMsg,
+	}
+}
+
+func fullThreadReadSetup(f *threadReadFixture, tsub *model.ThreadSubscription) {
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(tsub, nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return(nil, false, nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), tsub.ThreadRoomID, "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+}
+
+func TestHandler_MessageThreadRead_FloorRecomputed_FloorChanges(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	tr := baseThreadRoomForFloor("tr1")
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	minT := time.Now().UTC().Add(-10 * time.Minute)
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&minT, nil)
+	f.store.EXPECT().UpdateThreadRoomMinUserLastSeenAt(gomock.Any(), "tr1", &minT).Return(nil)
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorUnchanged_NoWrite(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	existingFloor := time.Now().UTC().Add(-10 * time.Minute)
+	tr := baseThreadRoomForFloor("tr1")
+	tr.MinUserLastSeenAt = &existingFloor
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&existingFloor, nil)
+	// UpdateThreadRoomMinUserLastSeenAt must NOT be called when floor is unchanged.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorNilNoSubscribers_WritesNil(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	existingFloor := time.Now().UTC().Add(-10 * time.Minute)
+	tr := baseThreadRoomForFloor("tr1")
+	tr.MinUserLastSeenAt = &existingFloor
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	// Min returns nil — someone hasn't read yet.
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(nil, nil)
+	f.store.EXPECT().UpdateThreadRoomMinUserLastSeenAt(gomock.Any(), "tr1", (*time.Time)(nil)).Return(nil)
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_ThreadRoomMissing_SkipsFloor(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(nil, nil)
+	// No further floor calls expected.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorError_BestEffortAccepted(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(nil, fmt.Errorf("mongo down"))
+	// Floor failure must not fail the RPC.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
 }
 
 func TestHandler_MuteToggle_Success(t *testing.T) {
