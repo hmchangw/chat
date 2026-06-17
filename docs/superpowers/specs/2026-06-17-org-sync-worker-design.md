@@ -174,24 +174,29 @@ type SubscriptionRepository interface {
 type RoomMemberRepository interface {
     // AccountsViaOrg returns the accounts of users in orgID (sectId|deptId==orgID)
     // that currently hold a subscription in roomID — the org_disbanded /
-    // member_removed candidate set.
+    // member_removed candidate set. See §7 for the enumeration limitation.
     AccountsViaOrg(ctx context.Context, roomID, orgID, siteID string) ([]string, error)
-    RoomIDsWithOrg(ctx context.Context, orgID, siteID string) ([]string, error)
     HasIndividualRecord(ctx context.Context, roomID, account string) (bool, error)
     // HasOrgRecordExcept reports whether roomID has an org member-record whose
     // member.id ∈ orgIDs but ≠ excludeOrgID. Implemented as
     // {member.id: {$in: orgIDs, $ne: excludeOrgID}} so sectId==deptId==orgID
     // correctly resolves to "no other coverage".
     HasOrgRecordExcept(ctx context.Context, roomID string, orgIDs []string, excludeOrgID string) (bool, error)
-    UpsertIndividualRecord(ctx context.Context, rec model.RoomMember) error // $setOnInsert
+    // UpsertIndividualRecord upserts a model.RoomMember (ID via idgen.GenerateUUIDv7,
+    // Ts set, member.type:"individual"); $setOnInsert.
+    UpsertIndividualRecord(ctx context.Context, rec model.RoomMember) error
     DeleteIndividualRecord(ctx context.Context, roomID, account string) error
     DeleteOrgRecord(ctx context.Context, roomID, orgID string) error
 }
 
 type RoomRepository interface {
+    // RoomsWithOrg returns the local rooms (siteId==siteID) that have orgID as an
+    // org member-record, projected to the fields needed to build a subscription
+    // (_id, siteId, name, type). Net-new; pkg/pipelines covers only room→users.
+    RoomsWithOrg(ctx context.Context, orgID, siteID string) ([]model.Room, error)
     // ReconcileUserCount recomputes userCount (non-bot subs) + appCount (bot subs)
-    // and writes both with $set — idempotent under JetStream redelivery and
-    // convergent with room-worker's ReconcileMemberCounts (NOT $inc).
+    // and writes both with $set — idempotent under JetStream redelivery, same
+    // recompute discipline as room-worker's ReconcileMemberCounts (NOT $inc).
     ReconcileUserCount(ctx context.Context, roomID string) error
 }
 
@@ -227,20 +232,22 @@ shared repository struct.
   + `BulkWrite` (the `$set`-based `BulkUpsert` shortcut is NOT used — we must
   not overwrite `joinedAt` on retry).
 - `room_member.go` — `RoomMemberRepo{ members *mongoutil.Collection[model.RoomMember] }`.
-  `RoomIDsWithOrg` runs an aggregation: match `room_members{member.type:"org",
-  member.id:orgID}`, `$lookup` rooms, filter `rooms.siteId == siteID`, project
-  `rid` (net-new; `pkg/pipelines` does not cover the orgId→rooms direction).
   `AccountsViaOrg` aggregates the `users` collection — match `sectId|deptId ==
-  orgID`, `$lookup` subscriptions filtered to `roomID`, keep accounts with a
-  subscription — reusing the sect/dept org-match shape from
-  `pkg/pipelines/member.go` for consistency with room-worker. Individual upserts
-  use `$setOnInsert`.
+  orgID` (projection must include `sectId`/`deptId`), `$lookup` subscriptions
+  filtered to `roomID`, keep accounts with a subscription — reusing the sect/dept
+  org-match shape from `pkg/pipelines/member.go` for consistency with
+  room-worker. `UpsertIndividualRecord` stamps `ID: idgen.GenerateUUIDv7()`,
+  `Ts: now`, `Member: {type:"individual", id:user.ID, account}` and writes with
+  `$setOnInsert`.
 - `room.go` — `RoomRepo{ rooms *mongoutil.Collection[model.Room] }`.
+  `RoomsWithOrg` aggregates `room_members{member.type:"org", member.id:orgID}`,
+  `$lookup` rooms, filter `rooms.siteId == siteID`, replace-root to the room doc
+  projected to `_id, siteId, name, type` (everything `newSub` needs).
   `ReconcileUserCount` recomputes via `Raw().CountDocuments` — `total =
   count{roomId}`, `appCount = count{roomId, u.isBot:true}` — then
   `UpdateOne(_id, {"$set": {userCount: total-appCount, appCount, updatedAt}})`.
-  This mirrors `room-worker`'s `ReconcileMemberCounts` verbatim (idempotent
-  under redelivery; a transient count error must NOT fall through to a zero-count
+  This mirrors `room-worker`'s `ReconcileMemberCounts` (idempotent under
+  redelivery; a transient count error must NOT fall through to a zero-count
   `$set`).
 - `user.go` — `UserRepo{ users *mongoutil.Collection[model.User] }`.
   `GetUserByAccount` → `FindOne(bson.M{"account": account})` with a projection
@@ -256,46 +263,70 @@ All operations are scoped to the local site (`SITE_ID`) and are idempotent.
 `OrgSyncService.ProcessChange(ctx, change)` dispatches on `change.Type`.
 
 **Member-count discipline (applies to all three handlers):** member counts are
-NEVER adjusted with `$inc`. After a handler has finished mutating subscriptions
-in a room, it calls `rooms.ReconcileUserCount(room)` once, which recomputes
+NEVER adjusted with `$inc`. After a handler finishes mutating subscriptions in a
+room, it calls `rooms.ReconcileUserCount(room)` once, which recomputes
 `userCount`/`appCount` from the actual subscription state with `$set`. This is
-idempotent under JetStream redelivery and convergent with concurrent
-`room-worker` writes (both recompute-and-`$set` against the same source of
-truth, so there is no lost-update race on the counter). Bot/pseudo accounts are
-identified with `model.IsBotAccount(account)` and stamped onto `sub.u.isBot` at
-creation, so the recompute counts non-bots into `userCount` exactly as
-room-worker does.
+**idempotent under JetStream redelivery** (re-processing a batch recomputes the
+same value) and uses the **same recompute-and-`$set` discipline as room-worker**.
+It is NOT a hard mutual-exclusion: a count-then-`$set` interleaving window
+remains (two reconcilers can each count, then write, and a stale write can land)
+— the same residual race room-worker's `ReconcileMemberCounts` already has. It
+self-heals on the next reconcile of that room; the design accepts eventual
+consistency on the counter rather than introducing cross-service locking. Bot/
+pseudo accounts are identified with `model.IsBotAccount(account)` and stamped on
+`sub.u.isBot` at creation so the recompute counts non-bots into `userCount`
+exactly as room-worker does.
+
+(Source-spec note: `spec_from_me_to_claude.md` shows `incrementMemberCount` /
+`decrementMemberCount` pseudocode. This design intentionally substitutes
+recompute-and-`$set` for `$inc` to gain redelivery idempotency and room-worker
+convergence — a deliberate, documented deviation from the illustrative
+pseudocode, not the routing/contract.)
 
 **member_added** (`membership.go`):
-1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
-2. For each room: if `subs.GetSubscription(room, account) != nil` → skip
+1. `rooms := rooms.RoomsWithOrg(orgId, siteID)` (full `model.Room` docs).
+2. For each room: if `subs.GetSubscription(room.ID, account) != nil` → skip
    (already a member via another path).
 3. Else `user := users.GetUserByAccount(account)`; if not found → log + skip.
-4. `subs.UpsertSubscription` (`$setOnInsert`; `sub.u.isBot =
-   model.IsBotAccount(account)`), `members.UpsertIndividualRecord`
-   (`$setOnInsert`, `member.type:"individual", member.id:user.ID,
-   member.account:account`).
-5. `rooms.ReconcileUserCount(room)`.
+4. Build the subscription with the SAME field set as room-worker's `newSub`
+   (room-worker/handler.go:1229): `ID: idgen.GenerateUUIDv7()`,
+   `User: {ID:user.ID, Account:account, IsBot:model.IsBotAccount(account)}`,
+   `RoomID:room.ID`, `SiteID:room.SiteID`, `Roles:[]model.Role{model.RoleMember}`,
+   `Name:room.Name`, `RoomType:room.Type`, `JoinedAt: now`. `subs.UpsertSubscription`
+   (`$setOnInsert`).
+5. `members.UpsertIndividualRecord` (`ID: idgen.GenerateUUIDv7()`, `Ts: now`,
+   `member.type:"individual", member.id:user.ID, member.account:account`).
+6. `rooms.ReconcileUserCount(room.ID)`.
 
 **member_removed** (`membership.go`):
-1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
-2. For each room: keep (skip) if `members.HasIndividualRecord(room, account)`
+1. `rooms := rooms.RoomsWithOrg(orgId, siteID)`.
+2. For each room: keep (skip) if `members.HasIndividualRecord(room.ID, account)`
    (explicitly added).
 3. `user := users.GetUserByAccount(account)`; keep if
-   `members.HasOrgRecordExcept(room, [user.SectID, user.DeptID], orgId)` (still
-   covered by a different org in this room — `$in/$ne` semantics, see §5).
+   `members.HasOrgRecordExcept(room.ID, [user.SectID, user.DeptID], orgId)`
+   (still covered by a different org — `$in/$ne` semantics, see §5).
 4. Else `subs.DeleteSubscription`, `members.DeleteIndividualRecord`,
-   `rooms.ReconcileUserCount(room)`.
+   `rooms.ReconcileUserCount(room.ID)`.
 
 **org_disbanded** (`disband.go`):
-1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
-2. For each room: `accounts := members.AccountsViaOrg(room, orgId, siteID)`
-   (users in the org holding a subscription in the room). For each account
-   apply the same keep-checks as member_removed (`HasIndividualRecord`,
-   `HasOrgRecordExcept`); `DeleteSubscription` + `DeleteIndividualRecord` for the
-   non-covered ones.
-3. `members.DeleteOrgRecord(room, orgId)` (remove the org membership-source row).
-4. `rooms.ReconcileUserCount(room)` once per room (after all removals).
+1. `rooms := rooms.RoomsWithOrg(orgId, siteID)`.
+2. For each room: `accounts := members.AccountsViaOrg(room.ID, orgId, siteID)`.
+   For each account apply the same keep-checks as member_removed
+   (`HasIndividualRecord`, `HasOrgRecordExcept`); `DeleteSubscription` +
+   `DeleteIndividualRecord` for the non-covered ones.
+3. `members.DeleteOrgRecord(room.ID, orgId)` (remove the org membership-source row).
+4. `rooms.ReconcileUserCount(room.ID)` once per room (after all removals).
+
+**Enumeration limitation (org_disbanded / member_removed):** the data model does
+NOT record which org introduced an individual `room_members` row (individual
+rows carry `member.id:user.ID`, no back-link to the org). So "members via org X"
+is approximated by **current** users in org X (`sectId|deptId==orgID`) holding a
+subscription. A user who left org X *before* the disband is no longer matched
+here — they are expected to have been removed by their own earlier
+`member_removed` event. This is an accepted limitation, consistent with the
+source spec's reliance on the per-change event stream; it is not a silent
+divergence. `DeleteOrgRecord` always removes the single org member-source row
+regardless.
 
 **Validation (security, source spec §Message Validation):** a service-level
 `validateChange(change)` rejects malformed input before any DB work — `type` ∈
@@ -448,8 +479,10 @@ Fail fast on missing required vars and non-positive numeric knobs (history
    `$set` `BulkUpsert` shortcut).
 8. org-sync-worker reuses existing collections/indexes; owns no schema.
 9. Member counts use recompute-and-`$set` (`ReconcileUserCount`, mirroring
-   room-worker), NEVER `$inc` — idempotent under redelivery and race-free with
-   concurrent room-worker count writes. Bots flagged via `model.IsBotAccount`.
+   room-worker), NEVER `$inc` — idempotent under redelivery; eventually
+   consistent under concurrent room-worker writes (same residual count-then-set
+   window room-worker already has; self-heals on next reconcile). Bots flagged
+   via `model.IsBotAccount`.
 10. Poison messages use `msg.Term()` (not Ack-drop) to preserve the source
     spec's reject semantics; `Nats-Msg-Id` honored for JetStream dedup.
 11. Per-space rate limiting from the source spec is deliberately omitted (YAGNI
@@ -465,7 +498,7 @@ Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
 - `pkg/pipelines` — **partial.** `member.go` encodes the shared sect/dept org
   match shape (`sectId|deptId ∈ orgIDs`), reused for `AccountsViaOrg` and the
   org_disbanded enumeration to stay consistent with room-worker. Does NOT cover
-  the worker's primary orgId→rooms query (`RoomIDsWithOrg` is net-new).
+  the worker's primary orgId→rooms query (`RoomsWithOrg` is net-new).
 - `pkg/model.IsBotAccount` — the canonical bot/pseudo-account test, used to stamp
   `sub.u.isBot` at subscription creation so `ReconcileUserCount` counts non-bots
   into `userCount` exactly as room-worker does. (Avoids duplicating
