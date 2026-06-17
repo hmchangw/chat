@@ -257,6 +257,24 @@ shared repository struct.
   org_disbanded "covered by another org" check requires. A hand-rolled
   `UserRepo` with the right projection is the correct call.
 
+Pipeline shapes for the two net-new aggregations (for test authors):
+
+```
+// RoomsWithOrg(orgID, siteID) — source: room_members
+[ {$match: {"member.type":"org", "member.id":orgID}},
+  {$lookup: {from:"rooms", localField:"rid", foreignField:"_id", as:"r"}},
+  {$unwind:"$r"}, {$match: {"r.siteId":siteID}},
+  {$replaceRoot:{newRoot:"$r"}},
+  {$project: {_id:1, siteId:1, name:1, type:1}} ]
+
+// AccountsViaOrg(roomID, orgID, siteID) — source: users
+[ {$match: {$or:[{sectId:orgID},{deptId:orgID}], siteId:siteID}},
+  {$lookup: {from:"subscriptions", let:{a:"$account"},
+     pipeline:[{$match:{$expr:{$and:[{$eq:["$roomId",roomID]},{$eq:["$u.account","$$a"]}]}}},{$limit:1},{$project:{_id:1}}],
+     as:"sub"}},
+  {$match: {sub:{$ne:[]}}}, {$project:{_id:0, account:1}} ]
+```
+
 ## 7. Business logic
 
 All operations are scoped to the local site (`SITE_ID`) and are idempotent.
@@ -345,6 +363,15 @@ counting successes. Ack if ≥1 change succeeded; `NakWithDelay(30s)` if every
 change failed (transient); `Term` if the batch itself is undecodable (see §9).
 `Nats-Msg-Id` (source §Message Format) provides JetStream-level dedup; combined
 with reconcile-and-`$set` counts, redelivery is fully idempotent.
+
+**First-run / oversized-batch contract:** the source spec's first-run behavior
+publishes "all current org members as `member_added`". A batch with more than
+`MAX_BATCH_SIZE` (default 1000) changes is `Term`-ed as poison (§9) — so the HR
+**producer owns chunking**: first-run cohorts MUST be split into ≤`MAX_BATCH_SIZE`
+batches. An over-cap batch is treated as a producer-contract violation, not a
+worker bug; the worker logs `batch too large` (with `count`/`max`) so first-run
+deployments are observable. Operators should raise `MAX_BATCH_SIZE` only in
+lockstep with the producer's chunk size.
 
 ## 8. `internal/codec` — zstd decompression
 
@@ -529,3 +556,36 @@ Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
 Not applicable: `org-sync-worker` registers no `chat.user.…` client-facing
 handler and exposes no HTTP route (other than `/healthz`). No `docs/client-api.md`
 change required.
+
+## 16. `main.go` wiring
+
+Flat-root `main.go` (`package main`), mirroring `history-service/cmd/main.go` but
+at the service root. Sequence (fail-fast on every error → `os.Exit(1)`):
+
+1. `logctx.SetupDefault(os.Stdout)`; `cfg := config.Load()`; `logctx.Configure(cfg.DebugLog)`; validate positive numeric knobs (`MAX_BATCH_SIZE`, `HRSYNC_BATCH_MAX_COMPRESSED_SIZE`, `CONSUMER_*`).
+2. `tracerShutdown := otelutil.InitTracer(ctx, "org-sync-worker")`.
+3. `nc := natsutil.Connect(cfg.NATS.URL, cfg.NATS.CredsFile)`; `js := oteljetstream.New(nc)`.
+4. `mongoClient := mongoutil.Connect(ctx, cfg.Mongo.URI, …)`; `db := mongoClient.Database(cfg.Mongo.DB)`.
+5. Construct repos: `mongorepo.NewSubscriptionRepo(db)`, `NewRoomMemberRepo(db)`, `NewRoomRepo(db)`, `NewUserRepo(db)`.
+6. `dec := codec.New(cfg.MaxCompressed)`; `svc := service.New(subs, members, rooms, users, cfg.SiteID)` (decoder injected into the `service.ProcessBatch` path).
+7. `bootstrapStreams(ctx, js, cfg.SiteID, cfg.CentralSiteID, cfg.Bootstrap.Enabled)` (dev sets `Name`+`Subjects` only).
+8. `cons := consumer.New(js, stream.HR(cfg.SiteID, cfg.CentralSiteID).Name, subject.HRConsumerFilters(cfg.CentralSiteID, cfg.SiteID), svc.ProcessBatch)`; `cons.Run(ctx)` (sequential `Consume`).
+9. `healthStop := health.Serve(cfg.HealthAddr, 5*time.Second, natsutil.HealthCheck(nc))`.
+10. `shutdown.Wait(ctx, 25*time.Second, …)` in CLAUDE.md worker order: `cons.Stop()` (iterator) → drain in-flight (wg, timeout) → `nc.Drain()` → `tracerShutdown` → `mongoutil.Disconnect` → `healthStop`.
+
+## 17. Observability
+
+- **Logging:** `log/slog` JSON (via `logctx`). Per-batch lifecycle lines —
+  `processing batch` (`changes`, `request_id`), per-change errors (`type`,
+  `orgId`, `error`, `request_id`), `batch complete` (`processed`, `failed`,
+  `duration_ms`, `request_id`). Never log full batch bodies or accounts beyond
+  the `account` identifier. Request-id via `natsutil.StampRequestID(ctx,
+  msg.Headers(), msg.Subject())` on every message, propagated through `ctx`.
+- **Tracing:** OTel spans on the consume path via `oteljetstream` (consumer) +
+  `otelutil.InitTracer`.
+- **Metrics:** the source spec's §Alerting (error-rate, processing-time, lag)
+  is served for the MVP by structured-log aggregation; native Prometheus
+  counters/histograms (batch latency, ack/nak/term counts, per-type change
+  failures, reconcile latency) are a documented **post-launch** follow-up — not
+  a launch blocker at daily-batch volume, but the hooks live on the
+  `ProcessBatch` boundary when added.
