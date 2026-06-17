@@ -18,8 +18,7 @@ import (
 func seedApps(t *testing.T, db *mongo.Database) {
 	t.Helper()
 	seed(t, db, "apps",
-		bson.M{"_id": "app-helper", "name": "Helper", "assistant": bson.M{"enabled": true, "name": "helper.bot"},
-			"categories": []string{"productivity", "ai"}},
+		bson.M{"_id": "app-helper", "name": "Helper", "assistant": bson.M{"enabled": true, "name": "helper.bot"}},
 		bson.M{"_id": "app-other", "name": "Other", "assistant": bson.M{"enabled": true, "name": "other.bot"}},
 	)
 	// alice is subscribed to helper.bot only.
@@ -99,7 +98,6 @@ func TestListApps_Integration(t *testing.T) {
 	assert.Equal(t, int64(2), page.Total)
 	// Sorted by name: Helper, Other.
 	assert.Equal(t, "Helper", page.Data[0].Name)
-	assert.Equal(t, []string{"productivity", "ai"}, page.Data[0].Categories, "categories must surface on the apps.list item")
 	assert.True(t, page.Data[0].IsSubscribed, "helper.bot is subscribed")
 	assert.Equal(t, "Other", page.Data[1].Name)
 	assert.False(t, page.Data[1].IsSubscribed,

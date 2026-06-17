@@ -89,7 +89,6 @@ func TestSubscriptionItem_HeterogeneousRows(t *testing.T) {
 				ID:          "app-helper",
 				Name:        "Helper App",
 				Description: "does helpful things",
-				AvatarURL:   "https://cdn/helper.png",
 				Assistant:   &model.AppAssistant{Enabled: true, Name: "helper.bot", Username: "Helper"},
 				Version:     "1.0.0",
 			}),

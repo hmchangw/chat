@@ -5,7 +5,6 @@ type App struct {
 	ID            string            `json:"id"                      bson:"_id"`
 	Name          string            `json:"name"                    bson:"name"`
 	Description   string            `json:"description,omitempty"   bson:"description,omitempty"`
-	AvatarURL     string            `json:"avatarUrl,omitempty"     bson:"avatarUrl,omitempty"`
 	AppViewURL    map[string]string `json:"appViewUrl,omitempty"    bson:"appViewUrl,omitempty"`
 	ReportURL     string            `json:"reportUrl,omitempty"     bson:"reportUrl,omitempty"`
 	ForumURL      string            `json:"forumUrl,omitempty"      bson:"forumUrl,omitempty"`
@@ -14,7 +13,6 @@ type App struct {
 	Assistant     *AppAssistant     `json:"assistant,omitempty"     bson:"assistant,omitempty"`
 	ChannelTab    *AppChannelTab    `json:"channelTab,omitempty"    bson:"channelTab,omitempty"`
 	Sponsors      []AppSponsor      `json:"sponsors,omitempty"      bson:"sponsors,omitempty"`
-	Categories    []string          `json:"categories,omitempty"    bson:"categories,omitempty"`
 }
 
 // AppAssistant: Name is the bot user account (".bot" suffix); botDM requires Enabled==true.
@@ -85,7 +83,6 @@ type RoomApp struct {
 	Name      string        `json:"name"                bson:"-"` // = apps.channelTab.name
 	TabURL    string        `json:"tabUrl"              bson:"-"` // computed (scheme+host+path-prefix from SITE_URL, ${roomId}/${siteId} substituted)
 	Assistant *AppAssistant `json:"assistant,omitempty" bson:"-"`
-	AvatarURL string        `json:"avatarUrl,omitempty" bson:"-"`
 }
 
 // GetRoomAppTabsResponse is the response body for the

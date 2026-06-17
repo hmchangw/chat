@@ -2510,11 +2510,10 @@ func TestAppAssistantDisabledRoundtrip(t *testing.T) {
 	assert.False(t, dst.Assistant.Enabled)
 }
 
-func TestAppRoundtrip_WithChannelTabAndAvatar(t *testing.T) {
+func TestAppRoundtrip_WithChannelTab(t *testing.T) {
 	a := model.App{
 		ID:        "app1",
 		Name:      "Calendar",
-		AvatarURL: "https://cdn.example.com/avatars/calendar.png",
 		Assistant: &model.AppAssistant{Enabled: true, Name: "calendar.bot"},
 		ChannelTab: &model.AppChannelTab{
 			Enabled: true,
@@ -2533,7 +2532,6 @@ func TestAppRoundtrip_WithChannelTabAndAvatar(t *testing.T) {
 	assert.Equal(t, "Calendar", dst.ChannelTab.Name)
 	assert.Equal(t, "https://upstream.example.com/calendar/${roomId}/${siteId}/index",
 		dst.ChannelTab.URL.Default)
-	assert.Equal(t, "https://cdn.example.com/avatars/calendar.png", dst.AvatarURL)
 }
 
 func TestAppChannelTabRoundtrip(t *testing.T) {
@@ -2549,9 +2547,8 @@ func TestAppChannelTabRoundtrip(t *testing.T) {
 
 func TestAppRoundtrip_NewMetaFields(t *testing.T) {
 	a := model.App{
-		ID:        "app-meta",
-		Name:      "Meta Bot",
-		AvatarURL: "https://cdn.example.com/meta.png",
+		ID:   "app-meta",
+		Name: "Meta Bot",
 		Assistant: &model.AppAssistant{
 			Enabled:  true,
 			Name:     "meta.bot",
@@ -2563,7 +2560,6 @@ func TestAppRoundtrip_NewMetaFields(t *testing.T) {
 		UserManualURL: "https://upstream/meta/manual",
 		Version:       "1.2.3",
 		Sponsors:      []model.AppSponsor{{Name: "Acme", Phone: "555-0199"}},
-		Categories:    []string{"productivity", "ai"},
 	}
 	var dst model.App
 	roundTrip(t, &a, &dst)
@@ -2574,7 +2570,6 @@ func TestAppRoundtrip_NewMetaFields(t *testing.T) {
 	assert.Equal(t, "https://upstream/meta/forum", dst.ForumURL)
 	assert.Equal(t, "https://upstream/meta/manual", dst.UserManualURL)
 	assert.Equal(t, "1.2.3", dst.Version)
-	assert.Equal(t, []string{"productivity", "ai"}, dst.Categories)
 }
 
 func TestAppRoundtrip_NewMetaFields_OmitEmpty(t *testing.T) {
@@ -2583,7 +2578,7 @@ func TestAppRoundtrip_NewMetaFields_OmitEmpty(t *testing.T) {
 	require.NoError(t, err)
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(b, &raw))
-	for _, k := range []string{"appViewUrl", "reportUrl", "forumUrl", "userManualUrl", "version", "categories"} {
+	for _, k := range []string{"appViewUrl", "reportUrl", "forumUrl", "userManualUrl", "version"} {
 		_, present := raw[k]
 		assert.False(t, present, "empty %s must be omitted", k)
 	}
@@ -2627,7 +2622,6 @@ func TestAppSubscriptionFromApp(t *testing.T) {
 		ID:          "app-x",
 		Name:        "Display Name",
 		Description: "desc",
-		AvatarURL:   "https://cdn/x.png",
 		Assistant:   &model.AppAssistant{Enabled: true, Name: "x.bot", Username: "X"},
 		// ChannelTab is intentionally NOT carried onto the app object.
 		ChannelTab:    &model.AppChannelTab{Enabled: true, Name: "tab"},
@@ -2715,7 +2709,6 @@ func TestGetRoomAppTabsResponseRoundtrip(t *testing.T) {
 				Name:      "Calendar",
 				TabURL:    "https://chat.example.com/calendar/r1/site-a/index",
 				Assistant: &model.AppAssistant{Enabled: true, Name: "cal.bot"},
-				AvatarURL: "https://cdn/cal.png",
 			},
 		},
 	}

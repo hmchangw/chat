@@ -1702,7 +1702,6 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
 | `name` | string | `apps.channelTab.name`. |
 | `tabUrl` | string | Computed: `SITE_URL`'s scheme/host/path-prefix + `apps.channelTab.url.default`'s path; `${roomId}` and `${siteId}` are substituted. Apps whose template URL is empty or unparseable are silently skipped. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. `apps.assistant` subdocument if set. |
-| `avatarUrl` | string | Optional. `apps.avatarUrl` if set. |
 
 ```json
 {
@@ -1711,8 +1710,7 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
       "id": "app-weather",
       "name": "Weather",
       "tabUrl": "https://site-a.example.com/apps/weather?room=01970a4f8c2d7c9aQ",
-      "assistant": { "enabled": true, "name": "weather.bot" },
-      "avatarUrl": "https://site-a.example.com/avatars/weather.png"
+      "assistant": { "enabled": true, "name": "weather.bot" }
     }
   ]
 }
@@ -3146,11 +3144,9 @@ See [Error envelope](#6-error-envelope-reference).
 | `id` | string | App ID. |
 | `name` | string | App name. |
 | `description` | string | Optional. App description. |
-| `avatarUrl` | string | Optional. App avatar URL. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab embedding config. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsors. |
-| `categories` | string[] | Optional. App category tags. |
 
 ###### AppChannelTab
 
@@ -3181,7 +3177,6 @@ See [Error envelope](#6-error-envelope-reference).
       "id": "a1",
       "name": "Weather",
       "description": "Local forecasts",
-      "avatarUrl": "https://site-a.example.com/avatars/weather.png",
       "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "https://site-a.example.com/apps/weather/settings" },
       "channelTab": { "enabled": true, "default": false, "name": "Weather", "url": { "default": "https://site-a.example.com/apps/weather?room=${roomId}&site=${siteId}" } },
       "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
@@ -3862,11 +3857,9 @@ Optional — an empty body returns the first page with defaults.
 | `id` | string | App ID. |
 | `name` | string | App display name. |
 | `description` | string | Optional. App description. |
-| `avatarUrl` | string | Optional. App avatar image URL. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's bot assistant. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab configuration. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsor list. |
-| `categories` | string[] | Optional. App category tags. |
 | `isSubscribed` | boolean | Whether the calling user is subscribed to this app's bot. |
 
 ```json
@@ -3876,7 +3869,6 @@ Optional — an empty body returns the first page with defaults.
       "id": "calendar-app",
       "name": "Calendar",
       "description": "Meeting and calendar integration",
-      "avatarUrl": "https://example.com/calendar.png",
       "assistant": { "enabled": true, "name": "calendar.bot" },
       "isSubscribed": true
     }
