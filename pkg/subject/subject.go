@@ -52,10 +52,8 @@ func MsgGet(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
 }
 
-// MsgGetIDs returns the concrete subject for issuing a GetMessagesByIDs batch
-// request to history-service on behalf of a given user/room. Pair with
-// MsgGetIDsPattern, which is the natsrouter pattern used by history-service to
-// register the handler.
+// MsgGetIDs returns the concrete subject for a GetMessagesByIDs batch request.
+// Pair with MsgGetIDsPattern, which history-service uses to register the handler.
 func MsgGetIDs(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get.ids", account, roomID, siteID)
 }
@@ -407,9 +405,8 @@ func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
 
-// MsgGetIDsPattern is the natsrouter pattern history-service uses to register
-// its GetMessagesByIDs batch handler. Pair with MsgGetIDs for the
-// concrete-subject form callers publish on.
+// MsgGetIDsPattern is the natsrouter pattern for the GetMessagesByIDs batch handler.
+// Pair with MsgGetIDs for the concrete-subject form callers publish on.
 func MsgGetIDsPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get.ids", siteID)
 }

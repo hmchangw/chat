@@ -278,16 +278,11 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	return msg, nil
 }
 
-// maxGetByIDsBatchSize is the server-side cap on the number of IDs in a single
-// GetMessagesByIDs request. Matches the repo-level maxConcurrentIDReads concurrency
-// bound and aligns with the maxPageSize cap on other paginated reads (Load History,
-// Load Next Messages, etc.). Callers needing more results should issue multiple requests.
+// maxGetByIDsBatchSize caps the number of IDs per msg.get.ids request.
 const maxGetByIDsBatchSize = 100
 
 // GetMessagesByIDs handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.get.ids.
-// It batch-fetches up to maxGetByIDsBatchSize messages by their IDs, applying the same
-// access-window check as GetMessageByID. Results are returned in input order; IDs not
-// found in the store or outside the access window are silently omitted.
+// Returns messages in input order; IDs not found or outside the access window are silently omitted.
 func (s *HistoryService) GetMessagesByIDs(c *natsrouter.Context, req models.GetMessagesByIDsRequest) (*models.GetMessagesByIDsResponse, error) {
 	account := c.Param("account")
 	roomID := c.Param("roomID")
@@ -310,7 +305,6 @@ func (s *HistoryService) GetMessagesByIDs(c *natsrouter.Context, req models.GetM
 		return nil, fmt.Errorf("fetching messages by IDs: %w", err)
 	}
 
-	// Filter out messages that fall outside the caller's access window.
 	kept := fetched[:0]
 	for i := range fetched {
 		if accessSince == nil || !fetched[i].CreatedAt.Before(*accessSince) {

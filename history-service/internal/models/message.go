@@ -68,8 +68,6 @@ type GetMessagesByIDsRequest struct {
 }
 
 // GetMessagesByIDsResponse is the response body for the msg.get.ids batch RPC.
-// Messages are returned in the same order as the input MessageIDs; IDs not
-// found or outside the caller's access window are silently omitted.
 type GetMessagesByIDsResponse struct {
 	Messages []Message `json:"messages"`
 }
