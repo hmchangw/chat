@@ -76,7 +76,9 @@ type Subscription struct {
 	// (e.g. room-worker's $setOnInsert) never persists a zero-time placeholder.
 	AvatarURL   string     `json:"avatarUrl,omitempty"   bson:"avatarUrl,omitempty"`
 	FavoritedAt *time.Time `json:"favoritedAt,omitempty" bson:"favoritedAt,omitempty"`
-	UpdatedAt   *time.Time `json:"updatedAt,omitempty"   bson:"updatedAt,omitempty"`
+	// Stored as `_updatedAt` in Mongo (matches the canonical subscriptions schema);
+	// serialized on the wire as `updatedAt`. Rooms keep the plain `updatedAt` field.
+	UpdatedAt *time.Time `json:"updatedAt,omitempty" bson:"_updatedAt,omitempty"`
 }
 
 // SubscriptionRoom is the room-derived view nested on an enriched subscription.
