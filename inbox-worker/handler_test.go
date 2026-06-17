@@ -336,7 +336,7 @@ func TestHandleEvent_MemberAdded(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -405,7 +405,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 			{ID: "uid-carol", Account: "carol", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	joinedAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
@@ -454,7 +454,7 @@ func TestHandleEvent_MemberAdded_SetsTimestamps(t *testing.T) {
 
 func TestHandleEvent_RoomSync(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	room := model.Room{
 		ID:        "room-1",
@@ -510,7 +510,7 @@ func TestHandleEvent_RoomSync(t *testing.T) {
 
 func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	// Insert initial room
 	room1 := model.Room{
@@ -555,7 +555,7 @@ func TestHandleEvent_RoomSync_Upsert(t *testing.T) {
 
 func TestHandleEvent_UnknownType(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt := model.OutboxEvent{
 		Type:       "unknown_type",
@@ -584,7 +584,7 @@ func TestHandleEvent_UnknownType(t *testing.T) {
 
 func TestHandleEvent_InvalidJSON(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	err := h.HandleEvent(context.Background(), []byte("not json"))
 	if err == nil {
@@ -594,7 +594,7 @@ func TestHandleEvent_InvalidJSON(t *testing.T) {
 
 func TestHandleEvent_MemberAdded_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt := model.OutboxEvent{
 		Type:       "member_added",
@@ -621,7 +621,7 @@ func TestHandleEvent_MemberAdded_AccountRoutedSubject(t *testing.T) {
 			{ID: "uid-bob", Account: "account-bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	hssMillis := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	change := model.MemberAddEvent{
@@ -678,7 +678,7 @@ func TestHandleEvent_MemberAdded_EventSourcedFields(t *testing.T) {
 			{ID: "uid-bob", Account: "bob", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	joinedAt := time.Date(2026, 4, 5, 10, 30, 0, 0, time.UTC)
 	historyShared := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -756,7 +756,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 			{ID: "uid-dave", Account: "dave", SiteID: "site-a"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type:     "member_added",
@@ -792,7 +792,7 @@ func TestHandleEvent_MemberAdded_HistoryAll(t *testing.T) {
 
 func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt := model.OutboxEvent{
 		Type:       "room_sync",
@@ -815,7 +815,7 @@ func TestHandleEvent_RoomSync_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID: "u2",
 		Subscription: model.Subscription{
@@ -854,7 +854,7 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 
 func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	evt := model.OutboxEvent{
 		Type: "role_updated", SiteID: "site-a", DestSiteID: "site-b",
 		Payload: []byte("not valid json"),
@@ -874,7 +874,7 @@ func TestHandleEvent_RoleUpdated_InvalidPayload(t *testing.T) {
 // Store is not called.
 func TestHandleEvent_RoleUpdated_EmptyRoles(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	subEvt := model.SubscriptionUpdateEvent{
 		Subscription: model.Subscription{
 			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -903,7 +903,7 @@ func TestHandleEvent_RoleUpdated_EmptyRoles(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	store.mu.Lock()
 	store.subscriptions = append(store.subscriptions, model.Subscription{
@@ -931,7 +931,7 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt := model.OutboxEvent{
 		Type: "member_removed", SiteID: "site-a", DestSiteID: "site-b",
@@ -945,7 +945,7 @@ func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	// Pre-populate subscriptions for both accounts
 	store.mu.Lock()
@@ -978,7 +978,7 @@ func TestHandleEvent_MemberRemoved_MultipleAccounts(t *testing.T) {
 
 func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
@@ -998,7 +998,7 @@ func (s *errorDeleteStore) DeleteSubscriptionsByAccounts(_ context.Context, _ st
 
 func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 	store := &errorDeleteStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
@@ -1012,7 +1012,7 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	inner := model.SubscriptionReadEvent{
 		Account:    "alice",
@@ -1045,15 +1045,123 @@ func TestHandler_HandleEvent_SubscriptionRead_HappyPath(t *testing.T) {
 
 func TestHandler_HandleEvent_SubscriptionRead_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: []byte("not-json")}
 	data, _ := json.Marshal(evt)
 	require.Error(t, h.HandleEvent(context.Background(), data))
 }
 
+// handleSubscriptionRead must publish a subscription.update (action "read") after the store write.
+func TestHandler_HandleEvent_SubscriptionRead_PublishesSubscriptionUpdate(t *testing.T) {
+	store := &stubInboxStore{}
+	var publishedSubj string
+	var publishedData []byte
+	publishCore := func(_ context.Context, subj string, data []byte) error {
+		publishedSubj = subj
+		publishedData = data
+		return nil
+	}
+	h := NewHandler(store, publishCore)
+
+	lastSeenAt := time.Now().UTC()
+	inner := model.SubscriptionReadEvent{
+		Account:    "alice",
+		RoomID:     "r1",
+		LastSeenAt: lastSeenAt.UnixMilli(),
+		Alert:      false,
+		Timestamp:  lastSeenAt.UnixMilli(),
+	}
+	innerData, err := json.Marshal(inner)
+	require.NoError(t, err)
+	evt := model.OutboxEvent{
+		Type:       model.OutboxSubscriptionRead,
+		SiteID:     "site-a",
+		DestSiteID: "site-b",
+		Payload:    innerData,
+		Timestamp:  inner.Timestamp,
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+
+	assert.Equal(t, "chat.user.alice.event.subscription.update", publishedSubj)
+	var subEvt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(publishedData, &subEvt))
+	assert.Equal(t, "read", subEvt.Action)
+	assert.Equal(t, lastSeenAt.UTC().Truncate(time.Millisecond), subEvt.Subscription.LastSeenAt.UTC().Truncate(time.Millisecond))
+}
+
+// Bot accounts must not receive a subscription.update from inbox-worker.
+func TestHandler_HandleEvent_SubscriptionRead_BotSkipped(t *testing.T) {
+	store := &stubInboxStore{}
+	var published bool
+	publishCore := func(_ context.Context, _ string, _ []byte) error {
+		published = true
+		return nil
+	}
+	h := NewHandler(store, publishCore)
+
+	inner := model.SubscriptionReadEvent{
+		Account:    "svc.bot",
+		RoomID:     "r1",
+		LastSeenAt: time.Now().UTC().UnixMilli(),
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	innerData, _ := json.Marshal(inner)
+	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: innerData}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+	assert.False(t, published, "bot account must not receive subscription.update")
+}
+
+// publishCore failure in handleSubscriptionRead must be logged and not propagate.
+func TestHandler_HandleEvent_SubscriptionRead_PublishFailure_NonFatal(t *testing.T) {
+	store := &stubInboxStore{}
+	publishCore := func(_ context.Context, _ string, _ []byte) error {
+		return fmt.Errorf("nats down")
+	}
+	h := NewHandler(store, publishCore)
+
+	inner := model.SubscriptionReadEvent{
+		Account:    "alice",
+		RoomID:     "r1",
+		LastSeenAt: time.Now().UTC().UnixMilli(),
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	innerData, _ := json.Marshal(inner)
+	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: innerData}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data), "publishCore failure must not return an error")
+}
+
+// No publishCore wired (nil) — store write must still succeed without panic.
+func TestHandler_HandleEvent_SubscriptionRead_NilPublishCore_StoreStillUpdates(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store, nil)
+
+	inner := model.SubscriptionReadEvent{
+		Account:    "alice",
+		RoomID:     "r1",
+		LastSeenAt: time.Now().UTC().UnixMilli(),
+		Alert:      true,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+	innerData, _ := json.Marshal(inner)
+	evt := model.OutboxEvent{Type: model.OutboxSubscriptionRead, Payload: innerData}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+	reads := store.getSubReads()
+	require.Len(t, reads, 1)
+	assert.Equal(t, "alice", reads[0].account)
+}
+
 func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -1090,7 +1198,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_Insert(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// SiteID is the room's home site (site-a), preserved across federation.
@@ -1124,7 +1232,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_MonotonicHasMention(t *testing.T
 
 func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt := model.OutboxEvent{
 		Type: "thread_subscription_upserted", SiteID: "site-a", DestSiteID: "site-b",
@@ -1138,7 +1246,7 @@ func TestHandleEvent_ThreadSubscriptionUpserted_InvalidPayload(t *testing.T) {
 
 func TestHandleEvent_ThreadSubscriptionUpserted_StoreError(t *testing.T) {
 	store := &errorThreadSubStore{stubInboxStore: &stubInboxStore{}}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	sub := model.ThreadSubscription{
@@ -1190,7 +1298,7 @@ func TestHandleMemberAdded_DM_BuildsRecipientSubWithCounterpartName(t *testing.T
 			{ID: "u_bob", Account: "bob", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type:             "member_added",
@@ -1229,7 +1337,7 @@ func TestHandleMemberAdded_BotDM_BuildsBotSub(t *testing.T) {
 			{ID: "u_weather", Account: "weather.bot", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type:             "member_added",
@@ -1263,7 +1371,7 @@ func TestHandleMemberAdded_Channel_BuildsChannelSub(t *testing.T) {
 			{ID: "u_ian", Account: "ian", SiteID: "site-B"},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type:             "member_added",
@@ -1298,7 +1406,7 @@ func TestHandleMemberAdded_EmptyRoomType_DefaultsToChannel(t *testing.T) {
 	store := &stubInboxStore{
 		users: []model.User{{ID: "u_bob", Account: "bob", SiteID: "site-B"}},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type:      "member_added",
@@ -1327,7 +1435,7 @@ func TestHandleMemberAdded_DuplicateKey_IsIdempotent(t *testing.T) {
 		users:         []model.User{{ID: "u_bob", Account: "bob", SiteID: "site-B"}},
 		bulkCreateErr: mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000, Message: "duplicate key"}}},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type: "member_added", RoomID: "r1", RoomType: model.RoomTypeChannel,
@@ -1346,7 +1454,7 @@ func TestHandleMemberAdded_BulkCreate_NonDuplicateError_ReturnsError(t *testing.
 		users:         []model.User{{ID: "u_bob", Account: "bob", SiteID: "site-B"}},
 		bulkCreateErr: fmt.Errorf("connection refused"),
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	change := model.MemberAddEvent{
 		Type: "member_added", RoomID: "r1", RoomType: model.RoomTypeChannel,
@@ -1362,7 +1470,7 @@ func TestHandleMemberAdded_BulkCreate_NonDuplicateError_ReturnsError(t *testing.
 
 func TestHandler_HandleEvent_ThreadRead_Happy(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	payload := model.ThreadReadEvent{
 		Account:         "alice",
 		RoomID:          "r1",
@@ -1398,7 +1506,7 @@ func TestHandler_HandleEvent_ThreadRead_Happy(t *testing.T) {
 
 func TestHandler_HandleEvent_ThreadRead_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	outer := model.OutboxEvent{Type: model.OutboxThreadRead, Payload: []byte("{")}
 	data, err := json.Marshal(&outer)
 	require.NoError(t, err)
@@ -1409,7 +1517,7 @@ func TestHandler_HandleEvent_ThreadRead_MalformedPayload(t *testing.T) {
 
 func TestHandler_HandleEvent_ThreadRead_StoreError(t *testing.T) {
 	store := &stubInboxStore{applyThreadReadErr: fmt.Errorf("boom")}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 	payload := model.ThreadReadEvent{Account: "a", RoomID: "r", ThreadRoomID: "tr", ParentMessageID: "p"}
 	inner, _ := json.Marshal(&payload)
 	outer := model.OutboxEvent{Type: model.OutboxThreadRead, Payload: inner}
@@ -1428,7 +1536,7 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.SubscriptionMuteToggledEvent{
 		Account: "alice", RoomID: "r1", Muted: true, Timestamp: 12345,
@@ -1455,7 +1563,7 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 
 func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.SubscriptionMuteToggledEvent{
 		Account: "ghost", RoomID: "r1", Muted: true, Timestamp: 12345,
@@ -1472,7 +1580,7 @@ func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {
 
 func TestHandler_SubscriptionMuteToggled_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt, err := json.Marshal(model.OutboxEvent{
 		Type:    model.OutboxSubscriptionMuteToggled,
@@ -1493,7 +1601,7 @@ func TestHandler_SubscriptionFavoriteToggled(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
 		Account: "alice", RoomID: "r1", Favorite: true, Timestamp: 12345,
@@ -1520,7 +1628,7 @@ func TestHandler_SubscriptionFavoriteToggled(t *testing.T) {
 
 func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.SubscriptionFavoriteToggledEvent{
 		Account: "ghost", RoomID: "r1", Favorite: true, Timestamp: 12345,
@@ -1537,7 +1645,7 @@ func TestHandler_SubscriptionFavoriteToggled_MissingSubscriptionNoOp(t *testing.
 
 func TestHandler_SubscriptionFavoriteToggled_MalformedPayload(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	evt, err := json.Marshal(model.OutboxEvent{
 		Type:    model.OutboxSubscriptionFavoriteToggled,
@@ -1550,7 +1658,7 @@ func TestHandler_SubscriptionFavoriteToggled_MalformedPayload(t *testing.T) {
 
 func TestHandler_RoomRenamed_ForwardsEventTimestamp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.RoomRenamedOutboxPayload{
 		RoomID: "r1", NewName: "renamed", Timestamp: 12345,
@@ -1573,7 +1681,7 @@ func TestHandler_RoomRenamed_ForwardsEventTimestamp(t *testing.T) {
 
 func TestHandler_RoomVisibilityChanged_ForwardsEventTimestamp(t *testing.T) {
 	store := &stubInboxStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	payload, err := json.Marshal(model.RoomRestrictedOutboxPayload{
 		RoomID: "r1", Restricted: true, ExternalAccess: false, OwnerAccount: "bob", Timestamp: 12345,
