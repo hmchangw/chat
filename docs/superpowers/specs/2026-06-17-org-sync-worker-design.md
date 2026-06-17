@@ -19,9 +19,9 @@ This document adapts the external `spec_from_me_to_claude.md` (written for a
 standalone `cmd/`+`internal/` external repo) onto this monorepo: flat-root
 `main.go` (no `cmd/`), the `internal/` layout of `history-service`, the root
 `go.mod`, and reuse of the existing `pkg/` libraries. **The stream/subject/
-consumer-filter design is copied verbatim from the source spec and is not
-redesigned** — it matches the already-shipped sibling routing pattern
-(`chat.{hr|jos}.{central}.to.{site}.>`).
+consumer design follows the real `hr-syncer`: HR is broadcast-only on
+`chat.hr.{siteID}.org.membership.changed`, consumed via the single filter
+`chat.hr.{central}.>` (no `.to.{site}` routing — see §3).**
 
 ## 1. Package structure
 
@@ -95,38 +95,39 @@ structs:
   collections and their indexes are owned by `room-service`/`room-worker`.
   `org-sync-worker` reuses them and MUST NOT create indexes or own schema.
 
-## 3. Stream / subject / consumer — LOCKED (verbatim from source spec)
+## 3. Stream / subject / consumer — aligned to the actual hr-syncer
 
-Copied directly from `spec_from_me_to_claude.md`; not redesigned.
+HR events are **broadcast-only**. The real publisher (`hr-syncer`, in its own
+repo) publishes to `chat.hr.{siteID}.org.membership.changed`, where `{siteID}` is
+the central HR site. There is **no `.to.{site}` routing for HR** — that pattern
+belongs to other (non-HR) services that do not exist in this repo. The source
+spec (`spec_from_me_to_claude.md`) lists a second `chat.hr.{central}.to.{site}.>`
+filter; that filter is **unused for HR** and is intentionally dropped here.
 
-- **Stream:** `HR_{siteID}` (e.g. `HR_00302000`). The dev-only `bootstrap.go`
-  sets only `Name` + `Subjects` from `pkg/stream`. Federation config
-  (`Sources` + `SubjectTransforms` for cross-site sourcing from the central HR
-  site) is owned by ops/IaC and MUST NOT appear in `bootstrap.go` (INBOX
-  ownership convention).
-- **Consumer filters** (source spec §Consumer Filters). The two filter strings
-  are these (broadcast-to-all + site-specific):
+- **Stream:** `HR_{siteID}`. The authoritative stream config (name, subjects,
+  federation sourcing) is owned by `hr-syncer`/ops — org-sync-worker MUST source
+  from the actual `pkg/stream` HR config rather than redefining it. The dev-only
+  `bootstrap.go` sets only `Name` + `Subjects`; `Sources`/`SubjectTransforms`
+  are ops/IaC-owned (INBOX convention).
+- **Consumer filter — single subject:**
   ```
-  chat.hr.{central}.>          // broadcast to all sites
-  chat.hr.{central}.to.{site}.> // site-specific
+  chat.hr.{central}.>   // catches all HR events (incl. org.membership.changed)
   ```
-  Example: site-a → `["chat.hr.hr-site.>", "chat.hr.hr-site.to.site-a.>"]`.
-  The consumer MUST build these via the `pkg/subject` builder
-  (`subject.HRConsumerFilters(centralSiteID, siteID)`), **never** raw
-  `fmt.Sprintf` (CLAUDE.md §3 NATS Subject Naming). The source spec shows
-  `fmt.Sprintf` only as illustration; the emitted strings are identical.
+  This is the ONLY filter required; `{central}` = `CENTRAL_SITE_ID` (the HR
+  publishing site). It matches the real `chat.hr.{central}.org.membership.changed`
+  subject. Built via `subject.HRConsumerFilters(centralSiteID)` — never raw
+  `fmt.Sprintf` (CLAUDE.md §3 NATS Subject Naming).
 - **Consumer:** durable `org-sync-worker-{site-id}`, `AckPolicy=Explicit`,
   `DeliverPolicy=All`, `MaxDeliver=5`, `AckWait=30m`, via
   `stream.ConsumerSettings` (env-tunable `CONSUMER_*`).
-- **`pkg/subject` additions** (emit the exact spec strings — no routing change):
+- **`pkg/subject` additions:**
   - `HROrgMembershipBroadcast(central) = chat.hr.{central}.org.membership.changed`
-  - `HROrgMembershipForSite(central, dest) = chat.hr.{central}.to.{dest}.org.membership.changed`
-  - `HRConsumerFilters(central, site) = []string{ "chat.hr."+central+".>", "chat.hr."+central+".to."+site+".>" }`
-- **`pkg/stream` addition:** `HR(siteID, centralSiteID) Config` → `Name: "HR_"+siteID`,
-  `Subjects: []string{"chat.hr."+centralSiteID+".>"}` umbrella so the stream
-  carries both filter shapes. **Signature takes both** the local `siteID` (stream
-  name) and `centralSiteID` (subject token); `bootstrap.go` passes both from
-  config. In dev `central == local`.
+    (the real subject; used by the integration test publisher)
+  - `HRConsumerFilters(central) = []string{ "chat.hr."+central+".>" }`
+- **`pkg/stream`:** use the existing/owned HR config if present; otherwise
+  org-sync-worker adds `HR(siteID, centralSiteID) Config` → `Name: "HR_"+siteID`,
+  `Subjects: []string{"chat.hr."+centralSiteID+".>"}`. Verify the exact name and
+  subjects against hr-syncer before implementing — do not diverge from it.
 
 ## 4. Event model (`pkg/model/orgsync.go`)
 
@@ -491,8 +492,10 @@ Fail fast on missing required vars and non-positive numeric knobs (history
 ## 13. Locked decisions
 
 1. Flat-root `main.go` (no `cmd/`); `internal/` layout per history-service.
-2. Stream/subject/consumer filters copied verbatim from the source spec — not
-   redesigned (matches sibling `chat.{hr|jos}.{central}.to.{site}.>` routing).
+2. HR is broadcast-only. Consumer uses the SINGLE filter `chat.hr.{central}.>`
+   (matches the real `hr-syncer` subject `chat.hr.{siteID}.org.membership.changed`).
+   The source spec's `.to.{site}` filter is unused for HR and is dropped. Stream
+   `HR_{siteID}` is sourced from hr-syncer's owned config, not redesigned here.
 3. One `mongoutil.Collection[T]` per collection file; no composing repository
    struct; interfaces defined in `service.go` with compile-time checks.
 4. zstd decompression isolated in `internal/codec` (`Decoder` struct +
@@ -569,7 +572,7 @@ at the service root. Sequence (fail-fast on every error → `os.Exit(1)`):
 5. Construct repos: `mongorepo.NewSubscriptionRepo(db)`, `NewRoomMemberRepo(db)`, `NewRoomRepo(db)`, `NewUserRepo(db)`.
 6. `dec := codec.New(cfg.MaxCompressed)`; `svc := service.New(subs, members, rooms, users, cfg.SiteID)` (decoder injected into the `service.ProcessBatch` path).
 7. `bootstrapStreams(ctx, js, cfg.SiteID, cfg.CentralSiteID, cfg.Bootstrap.Enabled)` (dev sets `Name`+`Subjects` only).
-8. `cons := consumer.New(js, stream.HR(cfg.SiteID, cfg.CentralSiteID).Name, subject.HRConsumerFilters(cfg.CentralSiteID, cfg.SiteID), svc.ProcessBatch)`; `cons.Run(ctx)` (sequential `Consume`).
+8. `cons := consumer.New(js, stream.HR(cfg.SiteID, cfg.CentralSiteID).Name, subject.HRConsumerFilters(cfg.CentralSiteID), svc.ProcessBatch)`; `cons.Run(ctx)` (sequential `Consume`).
 9. `healthStop := health.Serve(cfg.HealthAddr, 5*time.Second, natsutil.HealthCheck(nc))`.
 10. `shutdown.Wait(ctx, 25*time.Second, …)` in CLAUDE.md worker order: `cons.Stop()` (iterator) → drain in-flight (wg, timeout) → `nc.Drain()` → `tracerShutdown` → `mongoutil.Disconnect` → `healthStop`.
 
