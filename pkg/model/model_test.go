@@ -1685,6 +1685,7 @@ func TestSubscriptionRoomJSON(t *testing.T) {
 	})
 
 	t.Run("zero value omits all fields", func(t *testing.T) {
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&model.SubscriptionRoom{})
 		require.NoError(t, err)
 		assert.JSONEq(t, `{}`, string(data))
