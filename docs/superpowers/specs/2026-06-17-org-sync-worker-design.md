@@ -129,13 +129,16 @@ filter; that filter is **unused for HR** and is intentionally dropped here.
   `Subjects: []string{"chat.hr."+centralSiteID+".>"}`. Verify the exact name and
   subjects against hr-syncer before implementing — do not diverge from it.
 
-## 4. Event model (`pkg/model/orgsync.go`)
+## 4. Event model (`pkg/model/event.go`)
 
 Inbound DTOs produced by the external HR system. These are **shared NATS event
-structs consumed by multiple services**, so they live in root `pkg/model`
-(not service-local `internal/models`), per the CLAUDE.md rule that every NATS
-event struct lives in `pkg/model`, carries a `Timestamp` field, and is
-round-trip tested by `pkg/model/model_test.go`. JSON only.
+structs consumed by multiple services**, so they live in root `pkg/model` —
+specifically appended to the existing `event.go` (the established home for
+cross-service NATS event DTOs: `MessageEvent`, `InboxMemberEvent`, `OutboxEvent`,
+`NotificationEvent`, …), not a service-local `internal/models` and not a new
+one-off file. Per the CLAUDE.md rule, every NATS event struct lives in
+`pkg/model`, carries a `Timestamp` field, and is round-trip tested by
+`pkg/model/model_test.go`. JSON only.
 
 ```go
 type OrgMembershipChange struct {
@@ -501,7 +504,7 @@ Fail fast on missing required vars and non-positive numeric knobs (history
 4. zstd decompression isolated in `internal/codec` (`Decoder` struct +
    `Decompressor` interface), with both the 64KB compressed and 16MB
    decompressed caps enforced; orchestration stays in `service/process.go`.
-5. Event DTOs in root `pkg/model/orgsync.go` (shared by multiple services;
+5. Event DTOs appended to root `pkg/model/event.go` (shared by multiple services;
    round-trip tested by `pkg/model/model_test.go`).
 6. Sequential consume (ordering safety); `MAX_WORKERS` retained but unused by
    default.
