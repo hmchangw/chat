@@ -41,7 +41,7 @@ org-sync-worker/
 │   ├── codec/
 │   │   ├── codec.go                          # Decoder struct + Decompressor interface (zstd, bomb-defended)
 │   │   └── codec_test.go
-│   ├── nats/
+│   ├── consumer/
 │   │   └── consumer.go                        # pull-iterator + wg + Stop/Wait; maps result → Ack/Nak/Term
 │   ├── service/
 │   │   ├── service.go                         # interfaces + OrgSyncService + New() + //go:generate + compile-time checks
@@ -56,7 +56,7 @@ org-sync-worker/
 │   └── mongorepo/                             # one collection → one file, thin over mongoutil.Collection[T]
 │       ├── subscription.go                    # SubscriptionRepo  (subscriptions)
 │       ├── room_member.go                     # RoomMemberRepo    (room_members)
-│       ├── room.go                            # RoomRepo          (rooms — UserCount $inc, RoomIDsWithOrg)
+│       ├── room.go                            # RoomRepo          (rooms — ReconcileUserCount recompute-and-$set)
 │       ├── user.go                            # UserRepo          (users — GetUserByAccount)
 │       ├── main_test.go                       # TestMain → testutil.RunTests
 │       ├── setup_test.go                      # setupMongo(t) → testutil.MongoDB(t,"org_sync_test")
@@ -104,14 +104,17 @@ Copied directly from `spec_from_me_to_claude.md`; not redesigned.
   (`Sources` + `SubjectTransforms` for cross-site sourcing from the central HR
   site) is owned by ops/IaC and MUST NOT appear in `bootstrap.go` (INBOX
   ownership convention).
-- **Consumer filters** (source spec §Consumer Filters):
-  ```go
-  filters := []string{
-      fmt.Sprintf("chat.hr.%s.>",       centralSiteID),          // broadcast to all
-      fmt.Sprintf("chat.hr.%s.to.%s.>", centralSiteID, siteID),  // site-specific
-  }
+- **Consumer filters** (source spec §Consumer Filters). The two filter strings
+  are these (broadcast-to-all + site-specific):
+  ```
+  chat.hr.{central}.>          // broadcast to all sites
+  chat.hr.{central}.to.{site}.> // site-specific
   ```
   Example: site-a → `["chat.hr.hr-site.>", "chat.hr.hr-site.to.site-a.>"]`.
+  The consumer MUST build these via the `pkg/subject` builder
+  (`subject.HRConsumerFilters(centralSiteID, siteID)`), **never** raw
+  `fmt.Sprintf` (CLAUDE.md §3 NATS Subject Naming). The source spec shows
+  `fmt.Sprintf` only as illustration; the emitted strings are identical.
 - **Consumer:** durable `org-sync-worker-{site-id}`, `AckPolicy=Explicit`,
   `DeliverPolicy=All`, `MaxDeliver=5`, `AckWait=30m`, via
   `stream.ConsumerSettings` (env-tunable `CONSUMER_*`).
@@ -119,10 +122,11 @@ Copied directly from `spec_from_me_to_claude.md`; not redesigned.
   - `HROrgMembershipBroadcast(central) = chat.hr.{central}.org.membership.changed`
   - `HROrgMembershipForSite(central, dest) = chat.hr.{central}.to.{dest}.org.membership.changed`
   - `HRConsumerFilters(central, site) = []string{ "chat.hr."+central+".>", "chat.hr."+central+".to."+site+".>" }`
-- **`pkg/stream` addition:** `HR(siteID) Config` → `Name: "HR_"+siteID`,
+- **`pkg/stream` addition:** `HR(siteID, centralSiteID) Config` → `Name: "HR_"+siteID`,
   `Subjects: []string{"chat.hr."+centralSiteID+".>"}` umbrella so the stream
-  carries both filter shapes. (Central site id is supplied to the bootstrap
-  helper; in dev `central == local`.)
+  carries both filter shapes. **Signature takes both** the local `siteID` (stream
+  name) and `centralSiteID` (subject token); `bootstrap.go` passes both from
+  config. In dev `central == local`.
 
 ## 4. Event model (`pkg/model/orgsync.go`)
 
@@ -160,13 +164,24 @@ concrete `mongorepo` structs via compile-time checks.
 
 type SubscriptionRepository interface {
     GetSubscription(ctx context.Context, roomID, account string) (*model.Subscription, error)
-    UpsertSubscription(ctx context.Context, sub model.Subscription) error // $setOnInsert
+    // UpsertSubscription is $setOnInsert; a duplicate-key (E11000) on the
+    // (roomId, u.account) unique index under concurrency is treated as success
+    // (the doc already exists), NOT a poison error.
+    UpsertSubscription(ctx context.Context, sub model.Subscription) error
     DeleteSubscription(ctx context.Context, roomID, account string) error
 }
 
 type RoomMemberRepository interface {
+    // AccountsViaOrg returns the accounts of users in orgID (sectId|deptId==orgID)
+    // that currently hold a subscription in roomID — the org_disbanded /
+    // member_removed candidate set.
+    AccountsViaOrg(ctx context.Context, roomID, orgID, siteID string) ([]string, error)
     RoomIDsWithOrg(ctx context.Context, orgID, siteID string) ([]string, error)
     HasIndividualRecord(ctx context.Context, roomID, account string) (bool, error)
+    // HasOrgRecordExcept reports whether roomID has an org member-record whose
+    // member.id ∈ orgIDs but ≠ excludeOrgID. Implemented as
+    // {member.id: {$in: orgIDs, $ne: excludeOrgID}} so sectId==deptId==orgID
+    // correctly resolves to "no other coverage".
     HasOrgRecordExcept(ctx context.Context, roomID string, orgIDs []string, excludeOrgID string) (bool, error)
     UpsertIndividualRecord(ctx context.Context, rec model.RoomMember) error // $setOnInsert
     DeleteIndividualRecord(ctx context.Context, roomID, account string) error
@@ -174,7 +189,10 @@ type RoomMemberRepository interface {
 }
 
 type RoomRepository interface {
-    IncUserCount(ctx context.Context, roomID string, delta int) error
+    // ReconcileUserCount recomputes userCount (non-bot subs) + appCount (bot subs)
+    // and writes both with $set — idempotent under JetStream redelivery and
+    // convergent with room-worker's ReconcileMemberCounts (NOT $inc).
+    ReconcileUserCount(ctx context.Context, roomID string) error
 }
 
 type UserRepository interface {
@@ -212,14 +230,18 @@ shared repository struct.
   `RoomIDsWithOrg` runs an aggregation: match `room_members{member.type:"org",
   member.id:orgID}`, `$lookup` rooms, filter `rooms.siteId == siteID`, project
   `rid` (net-new; `pkg/pipelines` does not cover the orgId→rooms direction).
-  Individual upserts use `$setOnInsert`. The org_disbanded "members via org"
-  enumeration and the `hasSubscription`/`hasIndividualRoomMember` derivation
-  reuse the conventions in `pkg/pipelines/member.go`
-  (`GetAddMemberCandidatesPipeline`, the `botOrPseudoAccountRegex` exclusion and
-  the sect/dept org match) so the worker stays consistent with room-worker's
-  membership semantics.
+  `AccountsViaOrg` aggregates the `users` collection — match `sectId|deptId ==
+  orgID`, `$lookup` subscriptions filtered to `roomID`, keep accounts with a
+  subscription — reusing the sect/dept org-match shape from
+  `pkg/pipelines/member.go` for consistency with room-worker. Individual upserts
+  use `$setOnInsert`.
 - `room.go` — `RoomRepo{ rooms *mongoutil.Collection[model.Room] }`.
-  `IncUserCount` → `UpdateOne(_id, {"$inc": {"userCount": delta}})` via `Raw()`.
+  `ReconcileUserCount` recomputes via `Raw().CountDocuments` — `total =
+  count{roomId}`, `appCount = count{roomId, u.isBot:true}` — then
+  `UpdateOne(_id, {"$set": {userCount: total-appCount, appCount, updatedAt}})`.
+  This mirrors `room-worker`'s `ReconcileMemberCounts` verbatim (idempotent
+  under redelivery; a transient count error must NOT fall through to a zero-count
+  `$set`).
 - `user.go` — `UserRepo{ users *mongoutil.Collection[model.User] }`.
   `GetUserByAccount` → `FindOne(bson.M{"account": account})` with a projection
   that **includes `sectId` and `deptId`** (plus `_id`, `account`). We do NOT
@@ -233,14 +255,27 @@ shared repository struct.
 All operations are scoped to the local site (`SITE_ID`) and are idempotent.
 `OrgSyncService.ProcessChange(ctx, change)` dispatches on `change.Type`.
 
+**Member-count discipline (applies to all three handlers):** member counts are
+NEVER adjusted with `$inc`. After a handler has finished mutating subscriptions
+in a room, it calls `rooms.ReconcileUserCount(room)` once, which recomputes
+`userCount`/`appCount` from the actual subscription state with `$set`. This is
+idempotent under JetStream redelivery and convergent with concurrent
+`room-worker` writes (both recompute-and-`$set` against the same source of
+truth, so there is no lost-update race on the counter). Bot/pseudo accounts are
+identified with `model.IsBotAccount(account)` and stamped onto `sub.u.isBot` at
+creation, so the recompute counts non-bots into `userCount` exactly as
+room-worker does.
+
 **member_added** (`membership.go`):
 1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
 2. For each room: if `subs.GetSubscription(room, account) != nil` → skip
    (already a member via another path).
 3. Else `user := users.GetUserByAccount(account)`; if not found → log + skip.
-4. `subs.UpsertSubscription` (`$setOnInsert`), `members.UpsertIndividualRecord`
+4. `subs.UpsertSubscription` (`$setOnInsert`; `sub.u.isBot =
+   model.IsBotAccount(account)`), `members.UpsertIndividualRecord`
    (`$setOnInsert`, `member.type:"individual", member.id:user.ID,
-   member.account:account`), `rooms.IncUserCount(room, +1)`.
+   member.account:account`).
+5. `rooms.ReconcileUserCount(room)`.
 
 **member_removed** (`membership.go`):
 1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
@@ -248,27 +283,37 @@ All operations are scoped to the local site (`SITE_ID`) and are idempotent.
    (explicitly added).
 3. `user := users.GetUserByAccount(account)`; keep if
    `members.HasOrgRecordExcept(room, [user.SectID, user.DeptID], orgId)` (still
-   covered by a different org in this room).
+   covered by a different org in this room — `$in/$ne` semantics, see §5).
 4. Else `subs.DeleteSubscription`, `members.DeleteIndividualRecord`,
-   `rooms.IncUserCount(room, -1)`.
+   `rooms.ReconcileUserCount(room)`.
 
 **org_disbanded** (`disband.go`):
 1. `rooms := members.RoomIDsWithOrg(orgId, siteID)`.
-2. For each room: enumerate members that joined via this org (users in the org
-   with a subscription in the room); for each, apply the same keep-checks as
-   member_removed; remove the non-covered ones (`DeleteSubscription` +
-   `DeleteIndividualRecord` + `IncUserCount(-1)` each).
+2. For each room: `accounts := members.AccountsViaOrg(room, orgId, siteID)`
+   (users in the org holding a subscription in the room). For each account
+   apply the same keep-checks as member_removed (`HasIndividualRecord`,
+   `HasOrgRecordExcept`); `DeleteSubscription` + `DeleteIndividualRecord` for the
+   non-covered ones.
 3. `members.DeleteOrgRecord(room, orgId)` (remove the org membership-source row).
+4. `rooms.ReconcileUserCount(room)` once per room (after all removals).
 
 **Validation (security, source spec §Message Validation):** a service-level
-`validateChange(change)` rejects malformed `orgId`/`account` (charset/length
-allowlist) before any DB work; a validation failure is a per-change skip
-(logged), not a batch failure.
+`validateChange(change)` rejects malformed input before any DB work — `type` ∈
+{member_added, member_removed, org_disbanded}; `orgId` non-empty and matching
+`^[A-Za-z0-9._-]{1,128}$`; `account` (required except for org_disbanded) matching
+the same allowlist. A validation failure is a per-change skip (logged with
+`type`/`orgId`), not a batch failure. The allowlist blocks operator/regex
+injection into the Mongo filters built from these values.
+
+**Within-batch ordering:** changes are applied in array order; because every
+write is idempotent and counts are reconciled (not incremented), a duplicated or
+out-of-order pair for the same `(account, orgId)` converges to the correct state.
 
 **Partial-batch semantics:** `ProcessBatch` continues on per-change errors,
 counting successes. Ack if ≥1 change succeeded; `NakWithDelay(30s)` if every
-change failed (transient) ; `Term`/Ack-poison if the batch itself is
-undecodable (see §9).
+change failed (transient); `Term` if the batch itself is undecodable (see §9).
+`Nats-Msg-Id` (source §Message Format) provides JetStream-level dedup; combined
+with reconcile-and-`$set` counts, redelivery is fully idempotent.
 
 ## 8. `internal/codec` — zstd decompression
 
@@ -280,20 +325,30 @@ type Decompressor interface {
     Decompress(data []byte) ([]byte, error)
 }
 
-type Decoder struct { d *zstd.Decoder }
+type Decoder struct {
+    d           *zstd.Decoder
+    maxCompressed int // HRSYNC_BATCH_MAX_COMPRESSED_SIZE (64KB default)
+}
 
-// New builds a reusable decoder with single-thread concurrency and a 16MB
-// decoded-size cap (decompression-bomb defense).
-func New() (*Decoder, error) // zstd.NewReader(nil, WithDecoderConcurrency(1), WithDecoderMaxMemory(16<<20))
+// New builds a reusable decoder with single-thread concurrency, a 16MB
+// decoded-size cap (decompression-bomb defense), checksum verification
+// disabled (perf), and a compressed-input cap.
+func New(maxCompressed int) (*Decoder, error)
+// zstd.NewReader(nil, WithDecoderConcurrency(1), WithDecoderMaxMemory(16<<20), IgnoreChecksum(true))
 
-func (d *Decoder) Decompress(data []byte) ([]byte, error) // d.DecodeAll(data, nil); empty input → error
+// Decompress rejects empty input and input larger than maxCompressed BEFORE
+// decoding (the 64KB compressed cap from source §Compression), then
+// d.DecodeAll(data, nil). Over-cap / decode errors return a sentinel the
+// consumer maps to Term (poison).
+func (d *Decoder) Decompress(data []byte) ([]byte, error)
 ```
 
 `github.com/klauspost/compress` is already a (transitive) dependency; this
 promotes it to direct use — no new third-party dependency. `service` depends on
-the `Decompressor` interface so `process_test.go` can inject a fake.
+the `Decompressor` interface so `process_test.go` can inject a fake. Both the
+16MB decompressed cap and the 64KB compressed cap are enforced.
 
-## 9. Consumer + error handling (`internal/nats/consumer.go`)
+## 9. Consumer + error handling (`internal/consumer/consumer.go`)
 
 Reuses the inbox-worker pull-consumer pattern (OTel via `oteljetstream`,
 `jobguard.Guard` panic recovery per message, `natsutil.StampRequestID` →
@@ -305,13 +360,21 @@ calls `service.ProcessBatch(ctx, msg.Data()) (acked int, err error)`.
   `member_removed` ahead of an earlier `member_added` for the same user.
   `MAX_WORKERS` is retained in config for forward-compat but the default path is
   sequential.
-- **Term / Ack-poison** (no retry): decompress failure, JSON parse failure,
-  batch size > `MAX_BATCH_SIZE`. Surfaced as `errcode.Permanent`; the consumer
-  Acks (poison-drop) per the repo idiom (equivalent to the spec's `Term`).
+- **Dedup:** the consumer honors the `Nats-Msg-Id` header (source §Message
+  Format). With JetStream dedup plus reconcile-and-`$set` counts, redelivery is
+  idempotent at both layers.
+- **Term** (no retry, poison): decompress failure, compressed input over
+  `HRSYNC_BATCH_MAX_COMPRESSED_SIZE`, JSON parse failure, batch size >
+  `MAX_BATCH_SIZE`. The service returns these as `errcode.Permanent`; the
+  consumer calls `msg.Term()` (preserves the source spec's reject-not-processed
+  semantics; `oteljetstream` supports `Term`).
 - **Nak / NakWithDelay(30s)** (retry): Mongo timeout/contention and other
-  transient infra errors (`errcode.IsPermanent` == false).
-- Graceful shutdown via `shutdown.Wait(25s)`: stop iterator → drain in-flight
-  (wg, with timeout) → `nc.Drain()` → tracer shutdown →
+  transient infra errors (`errcode.IsPermanent` == false), and the all-changes
+  -failed batch case.
+- **E11000 on `UpsertSubscription`** (concurrent insert race with room-worker)
+  is treated as success, not poison — the document already exists.
+- Graceful shutdown via `shutdown.Wait(25s)`, CLAUDE.md worker order:
+  `iter.Stop()` → `wg.Wait()` (timeout) → `nc.Drain()` → tracer shutdown →
   `mongoutil.Disconnect` → health stop.
 
 ## 10. Configuration (`internal/config`, caarlos0/env)
@@ -347,10 +410,13 @@ Fail fast on missing required vars and non-positive numeric knobs (history
   "org_sync_test")`; split per collection: `subscription_integration_test.go`,
   `room_member_integration_test.go`, `room_integration_test.go`,
   `user_integration_test.go`. An end-to-end JetStream flow test (publish a
-  zstd batch → assert subscription/count) under `internal/nats` or
-  `internal/service` using `testutil.NATS(t)`.
+  zstd batch → assert subscription/count) under `internal/consumer` or
+  `internal/service` using `testutil.NATS(t)`. Count-reconciliation and
+  redelivery-idempotency (re-deliver the same batch, assert `userCount`
+  unchanged) get explicit integration cases.
 - `make generate` regenerates `internal/service/mocks/mock_repository.go` before
-  testing. `-race` always (Makefile).
+  testing. All tests run with `-race` (`make test` / `make test-integration`
+  pass the flag).
 
 ## 12. Deployment
 
@@ -372,7 +438,8 @@ Fail fast on missing required vars and non-positive numeric knobs (history
 3. One `mongoutil.Collection[T]` per collection file; no composing repository
    struct; interfaces defined in `service.go` with compile-time checks.
 4. zstd decompression isolated in `internal/codec` (`Decoder` struct +
-   `Decompressor` interface); orchestration stays in `service/process.go`.
+   `Decompressor` interface), with both the 64KB compressed and 16MB
+   decompressed caps enforced; orchestration stays in `service/process.go`.
 5. Event DTOs in root `pkg/model/orgsync.go` (shared by multiple services;
    round-trip tested by `pkg/model/model_test.go`).
 6. Sequential consume (ordering safety); `MAX_WORKERS` retained but unused by
@@ -380,6 +447,15 @@ Fail fast on missing required vars and non-positive numeric knobs (history
 7. `$setOnInsert` upserts via `mongoutil.UpsertModel` + `BulkWrite` (not the
    `$set` `BulkUpsert` shortcut).
 8. org-sync-worker reuses existing collections/indexes; owns no schema.
+9. Member counts use recompute-and-`$set` (`ReconcileUserCount`, mirroring
+   room-worker), NEVER `$inc` — idempotent under redelivery and race-free with
+   concurrent room-worker count writes. Bots flagged via `model.IsBotAccount`.
+10. Poison messages use `msg.Term()` (not Ack-drop) to preserve the source
+    spec's reject semantics; `Nats-Msg-Id` honored for JetStream dedup.
+11. Per-space rate limiting from the source spec is deliberately omitted (YAGNI
+    at daily-batch volume); revisit only if batch sizes/cadence grow.
+12. Consumer package is `internal/consumer` (not `internal/nats`, which would
+    shadow the `nats.go` import).
 
 ## 14. Package-reuse audit
 
@@ -387,12 +463,13 @@ Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
 
 **Reused:**
 - `pkg/pipelines` — **partial.** `member.go` encodes the shared sect/dept org
-  match, the `botOrPseudoAccountRegex` exclusion, and the
-  `hasSubscription`/`hasIndividualRoomMember` derivation
-  (`GetNewMembersPipeline`, `GetAddMemberCandidatesPipeline`). Reused for the
-  org_disbanded "members via org" enumeration to stay consistent with
-  room-worker. Does NOT cover the worker's primary orgId→rooms query
-  (`RoomIDsWithOrg` is net-new).
+  match shape (`sectId|deptId ∈ orgIDs`), reused for `AccountsViaOrg` and the
+  org_disbanded enumeration to stay consistent with room-worker. Does NOT cover
+  the worker's primary orgId→rooms query (`RoomIDsWithOrg` is net-new).
+- `pkg/model.IsBotAccount` — the canonical bot/pseudo-account test, used to stamp
+  `sub.u.isBot` at subscription creation so `ReconcileUserCount` counts non-bots
+  into `userCount` exactly as room-worker does. (Avoids duplicating
+  `pipelines`' unexported `botOrPseudoAccountRegex`.)
 - Infra (already planned): `natsutil`, `mongoutil`, `stream`, `subject`,
   `idgen`, `shutdown`, `errcode`, `model`, `health`, `otelutil`, `logctx`,
   `jobguard`, `testutil`.
