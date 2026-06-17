@@ -1778,12 +1778,13 @@ func TestCassandraStore_SaveThreadMessage_TShowPersistedInThread(t *testing.T) {
 		_, err := store.SaveThreadMessage(ctx, msg, sender, "site-a", "tr-tshow-thread-2")
 		require.NoError(t, err)
 
-		var gotTShow *bool
+		var gotTShow bool
 		require.NoError(t, cassSession.Query(
 			`SELECT tshow FROM thread_messages_by_thread WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`,
 			"tr-tshow-thread-2", noShowAt, "m-tshow-thread-2",
 		).Scan(&gotTShow))
-		// tshow=false binds as the boolean false value; Cassandra may return nil (null) or false.
-		assert.True(t, gotTShow == nil || !*gotTShow, "tshow=false reply must not have tshow=true in thread_messages_by_thread")
+		// The write path always binds tshow, so a tshow=false reply persists an
+		// explicit false (not null) — assert that, so a missing-write regression fails.
+		assert.False(t, gotTShow, "tshow=false must be persisted as false in thread_messages_by_thread")
 	})
 }
