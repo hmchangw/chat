@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nkeys"
 
+	"github.com/hmchangw/chat/pkg/ginutil"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
@@ -51,11 +52,13 @@ func run() error {
 
 	ctx := context.Background()
 
+	opts := []Option{WithJitter(cfg.NATSJWTExpiryJitter)}
+
 	var handler *AuthHandler
 
 	if cfg.DevMode {
-		slog.Info("dev mode enabled — OIDC validation disabled")
-		handler = NewAuthHandler(nil, signingKP, cfg.NATSJWTExpiry, true, WithJitter(cfg.NATSJWTExpiryJitter))
+		slog.Warn("dev mode enabled — OIDC validation disabled")
+		handler = NewAuthHandler(nil, signingKP, cfg.NATSJWTExpiry, true, opts...)
 	} else {
 		if cfg.OIDCIssuerURL == "" || len(cfg.OIDCAudiences) == 0 {
 			return fmt.Errorf("OIDC_ISSUER_URL and OIDC_AUDIENCES are required when DEV_MODE is false")
@@ -71,15 +74,15 @@ func run() error {
 			return fmt.Errorf("create oidc validator: %w", err)
 		}
 		slog.Info("oidc validator initialized", "issuer", cfg.OIDCIssuerURL)
-		handler = NewAuthHandler(oidcValidator, signingKP, cfg.NATSJWTExpiry, false, WithJitter(cfg.NATSJWTExpiryJitter))
+		handler = NewAuthHandler(oidcValidator, signingKP, cfg.NATSJWTExpiry, false, opts...)
 	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(requestIDMiddleware())
-	r.Use(accessLogMiddleware())
-	r.Use(corsMiddleware())
+	r.Use(ginutil.RequestID())
+	r.Use(ginutil.AccessLog())
+	r.Use(ginutil.CORS())
 	registerRoutes(r, handler)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)

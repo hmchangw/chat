@@ -16,6 +16,8 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 // fakeValidator is defined in handler_test.go (same package). The integration
@@ -63,3 +65,5 @@ func TestAuthHandler_Integration(t *testing.T) {
 	assert.Contains(t, []string(claims.Pub.Allow), "chat.user.testuser.>")
 	assert.Contains(t, []string(claims.Sub.Allow), "chat.room.>")
 }
+
+func TestMain(m *testing.M) { testutil.RunTests(m) }
