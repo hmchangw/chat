@@ -250,7 +250,8 @@ func (h *Handler) handleSubscriptionRead(ctx context.Context, evt *model.OutboxE
 			Alert:      e.Alert,
 		}
 		subEvt := model.SubscriptionUpdateEvent{
-			UserID:       e.Account,
+			// UserID (u._id) is unavailable on the cross-site path; omit it.
+			// Clients route by subject, not this field.
 			Subscription: sub,
 			Action:       "read",
 			Timestamp:    evt.Timestamp,
