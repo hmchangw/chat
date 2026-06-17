@@ -750,3 +750,133 @@ func TestHistoryService_GetThreadParentMessages_PostHydrationAccessCheck(t *test
 	// Total reflects MongoDB's pre-hydration count, not the post-filter result.
 	assert.Equal(t, int64(1), resp.Total)
 }
+
+// --- GetThreadMessages — parentMessage field (issue #321) ---
+
+// Happy path: parentMessage is present alongside replies.
+func TestHistoryService_GetThreadMessages_ParentMessageIncluded(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{
+		MessageID:    "m-parent",
+		RoomID:       "r1",
+		CreatedAt:    parentCreatedAt,
+		ThreadRoomID: "tr-1",
+		TCount:       intPtr(2),
+		Msg:          "the thread starter",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	replies := []models.Message{
+		{MessageID: "reply-1", RoomID: "r1", ThreadParentID: "m-parent", CreatedAt: parentCreatedAt.Add(time.Minute)},
+	}
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(replies, false), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 1)
+	require.NotNil(t, resp.ParentMessage, "parentMessage must be present in the response")
+	assert.Equal(t, "m-parent", resp.ParentMessage.MessageID)
+	assert.Equal(t, "the thread starter", resp.ParentMessage.Msg)
+}
+
+// Zero replies (TCount==0 short-circuit): parentMessage is still returned.
+func TestHistoryService_GetThreadMessages_ParentMessageIncluded_TCountZero(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{
+		MessageID:    "m-parent",
+		RoomID:       "r1",
+		CreatedAt:    parentCreatedAt,
+		ThreadRoomID: "tr-1",
+		TCount:       intPtr(0),
+		Msg:          "no replies yet",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+	require.NotNil(t, resp.ParentMessage, "parentMessage must be present even when TCount==0")
+	assert.Equal(t, "m-parent", resp.ParentMessage.MessageID)
+}
+
+// Empty ThreadRoomID short-circuit: parentMessage is still returned.
+func TestHistoryService_GetThreadMessages_ParentMessageIncluded_EmptyThreadRoomID(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	parent := &models.Message{
+		MessageID:    "m-parent",
+		RoomID:       "r1",
+		CreatedAt:    parentCreatedAt,
+		ThreadRoomID: "",
+		Msg:          "no thread room stamped",
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Messages)
+	require.NotNil(t, resp.ParentMessage, "parentMessage must be present even when ThreadRoomID is empty")
+	assert.Equal(t, "m-parent", resp.ParentMessage.MessageID)
+}
+
+// Access-window excluded parent: returns Forbidden (parentMessage absent — error path).
+func TestHistoryService_GetThreadMessages_ParentOutsideAccessWindow_NoParentMessage(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	// parent created before the access window — must be rejected with Forbidden
+	parent := &models.Message{
+		MessageID: "m-parent",
+		RoomID:    "r1",
+		CreatedAt: joinTime.Add(-1 * time.Hour),
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.Error(t, err)
+	var ecErr *errcode.Error
+	require.ErrorAs(t, err, &ecErr)
+	assert.Equal(t, errcode.CodeForbidden, ecErr.Code)
+}
+
+// Parent's quoted message before access window must be redacted in the parentMessage field.
+func TestHistoryService_GetThreadMessages_ParentMessage_QuoteRedacted(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	parentCreatedAt := joinTime.Add(5 * time.Minute)
+	quoteCreatedAt := joinTime.Add(-1 * time.Hour) // before accessSince
+	parent := &models.Message{
+		MessageID:    "m-parent",
+		RoomID:       "r1",
+		CreatedAt:    parentCreatedAt,
+		ThreadRoomID: "tr-1",
+		TCount:       intPtr(1),
+		Msg:          "thread starter with quote",
+		QuotedParentMessage: &models.QuotedParentMessage{
+			MessageID: "old-msg", Msg: "secret content", CreatedAt: quoteCreatedAt,
+		},
+	}
+	msgs.EXPECT().GetMessageByID(gomock.Any(), "m-parent").Return(parent, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetThreadMessages(gomock.Any(), "tr-1", gomock.Any(), gomock.Any(), gomock.Any()).Return(makePage(nil, false), nil)
+
+	resp, err := svc.GetThreadMessages(c, models.GetThreadMessagesRequest{ThreadMessageID: "m-parent"})
+	require.NoError(t, err)
+	require.NotNil(t, resp.ParentMessage)
+	require.NotNil(t, resp.ParentMessage.QuotedParentMessage)
+	assert.Equal(t, service.UnavailableQuoteMsg, resp.ParentMessage.QuotedParentMessage.Msg)
+	assert.Empty(t, resp.ParentMessage.QuotedParentMessage.MessageID)
+}

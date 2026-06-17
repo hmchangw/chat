@@ -2753,12 +2753,21 @@ Returns the replies in a thread. The thread parent's `messageId` is supplied in 
 
 | Field | Type | Notes |
 |---|---|---|
-| `messages` | array<Message> | Replies in the thread, oldest-first within the page. See [Message schema](#message-schema). |
+| `messages` | array<[Message](#message-schema)> | Replies in the thread, oldest-first within the page. |
 | `nextCursor` | string | Optional. Opaque cursor for the next page. |
 | `hasNext` | boolean | `true` if more replies exist beyond this page. |
+| `parentMessage` | [Message](#message-schema) | Optional. The thread-parent message. Present whenever the thread parent passes the access-window check. Absent only on error paths. The parent's `quotedParentMessage` is access-window-redacted by the same rules as replies. |
 
 ```json
 {
+  "parentMessage": {
+    "roomId": "01970a4f8c2d7c9aQ",
+    "createdAt": "2026-05-06T07:55:00Z",
+    "messageId": "01970a4f8c2d7c9aQRST",
+    "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+    "msg": "anyone have thoughts on the new design?",
+    "tcount": 1
+  },
   "messages": [
     {
       "roomId": "01970a4f8c2d7c9aQ",
