@@ -1728,3 +1728,62 @@ func TestCassandraStore_SaveThreadMessage_TShowDualWrite_Encrypted(t *testing.T)
 	assert.Equal(t, "m-enc-tshow-parent", gotThreadParentID)
 	assert.Equal(t, parentCreatedAt, gotThreadParentCreatedAt.UTC())
 }
+
+// TestCassandraStore_SaveThreadMessage_TShowPersistedInThread verifies that
+// tshow is written into thread_messages_by_thread for both TShow=true and
+// TShow=false replies. The read path (GetThreadMessages) returns this column;
+// clients use it to distinguish "also send to channel" replies in thread context.
+func TestCassandraStore_SaveThreadMessage_TShowPersistedInThread(t *testing.T) {
+	cassSession := setupCassandra(t)
+	bucket := msgbucket.New(24 * time.Hour)
+	store := NewCassandraStore(cassSession, bucket, nil)
+	ctx := context.Background()
+
+	parentCreatedAt := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	replyCreatedAt := parentCreatedAt.Add(30 * time.Second)
+	sender := &cassParticipant{ID: "u-1", Account: "alice", EngName: "Alice Wang"}
+
+	t.Run("tshow=true persisted in thread_messages_by_thread", func(t *testing.T) {
+		msg := &model.Message{
+			ID:                           "m-tshow-thread-1",
+			RoomID:                       "r-tshow-thread-1",
+			Content:                      "tshow thread reply",
+			CreatedAt:                    replyCreatedAt,
+			ThreadParentMessageID:        "m-tshow-thread-parent",
+			ThreadParentMessageCreatedAt: &parentCreatedAt,
+			TShow:                        true,
+		}
+		_, err := store.SaveThreadMessage(ctx, msg, sender, "site-a", "tr-tshow-thread-1")
+		require.NoError(t, err)
+
+		var gotTShow bool
+		require.NoError(t, cassSession.Query(
+			`SELECT tshow FROM thread_messages_by_thread WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			"tr-tshow-thread-1", replyCreatedAt, "m-tshow-thread-1",
+		).Scan(&gotTShow))
+		assert.True(t, gotTShow, "tshow=true must be persisted in thread_messages_by_thread")
+	})
+
+	t.Run("tshow=false persisted in thread_messages_by_thread", func(t *testing.T) {
+		noShowAt := replyCreatedAt.Add(time.Second)
+		msg := &model.Message{
+			ID:                           "m-tshow-thread-2",
+			RoomID:                       "r-tshow-thread-2",
+			Content:                      "plain thread reply",
+			CreatedAt:                    noShowAt,
+			ThreadParentMessageID:        "m-tshow-thread-parent-2",
+			ThreadParentMessageCreatedAt: &parentCreatedAt,
+			TShow:                        false,
+		}
+		_, err := store.SaveThreadMessage(ctx, msg, sender, "site-a", "tr-tshow-thread-2")
+		require.NoError(t, err)
+
+		var gotTShow *bool
+		require.NoError(t, cassSession.Query(
+			`SELECT tshow FROM thread_messages_by_thread WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`,
+			"tr-tshow-thread-2", noShowAt, "m-tshow-thread-2",
+		).Scan(&gotTShow))
+		// tshow=false binds as the boolean false value; Cassandra may return nil (null) or false.
+		assert.True(t, gotTShow == nil || !*gotTShow, "tshow=false reply must not have tshow=true in thread_messages_by_thread")
+	})
+}

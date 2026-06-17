@@ -189,12 +189,12 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg,
-		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message,
+		  site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message,
 		  attachments, card, card_action, file)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, msg.Content, siteID, msg.CreatedAt, mentions,
-		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+		msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 		msg.Attachments, msg.Card, msg.CardAction, msg.File,
 	).WithContext(ctx).Exec(); err != nil {
 		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
@@ -263,12 +263,12 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id,
-		  sender, site_id, updated_at, mentions, type, quoted_parent_message, sys_msg_data,
+		  sender, site_id, updated_at, mentions, type, tshow, quoted_parent_message, sys_msg_data,
 		  msg, attachments, card, card_action, file,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, null, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
-		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage, msg.SysMsgData,
+		sender, siteID, msg.CreatedAt, mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData,
 		payload, encMeta,
 	).WithContext(ctx).Exec(); err != nil {
 		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
