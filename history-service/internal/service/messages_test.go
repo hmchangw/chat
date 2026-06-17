@@ -2041,3 +2041,134 @@ func TestHistoryService_TShow_ThreadParentCreatedAtNil_ConservativeRedaction(t *
 	// ThreadParentCreatedAt nil → conservative redaction applied.
 	assert.Equal(t, service.UnavailableQuoteMsg, resp.Messages[0].QuotedParentMessage.Msg)
 }
+
+// --- GetMessagesByIDs ---
+
+const maxGetByIDsBatchSize = 100
+
+func TestHistoryService_GetMessagesByIDs_Success(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	m1 := models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)}
+	m2 := models.Message{MessageID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(2 * time.Minute)}
+	m3 := models.Message{MessageID: "m3", RoomID: "r1", CreatedAt: joinTime.Add(3 * time.Minute)}
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1", "m2", "m3"}).Return([]models.Message{m1, m2, m3}, nil)
+
+	result, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1", "m2", "m3"}})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 3)
+	assert.Equal(t, "m1", result.Messages[0].MessageID)
+	assert.Equal(t, "m2", result.Messages[1].MessageID)
+	assert.Equal(t, "m3", result.Messages[2].MessageID)
+}
+
+func TestHistoryService_GetMessagesByIDs_PartialResult_MissingIDsSilentlyOmitted(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	m1 := models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)}
+	// m2 not found — store returns only [m1]
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1", "m2"}).Return([]models.Message{m1}, nil)
+
+	result, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1", "m2"}})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "m1", result.Messages[0].MessageID)
+}
+
+func TestHistoryService_GetMessagesByIDs_EmptyMessageIDs_BadRequest(t *testing.T) {
+	svc, _, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	_, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{}})
+	require.Error(t, err)
+	assertBadRequestErr(t, err, "messageIds must not be empty")
+}
+
+func TestHistoryService_GetMessagesByIDs_OverCap_BadRequest(t *testing.T) {
+	svc, _, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	ids := make([]string, maxGetByIDsBatchSize+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("m%d", i)
+	}
+	_, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: ids})
+	require.Error(t, err)
+	assertBadRequestErr(t, err, "too many messageIds")
+}
+
+func TestHistoryService_GetMessagesByIDs_AccessWindowFiltering(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	// m1 is before the access window; m2 is within it.
+	m1 := models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(-1 * time.Hour)}
+	m2 := models.Message{MessageID: "m2", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)}
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1", "m2"}).Return([]models.Message{m1, m2}, nil)
+
+	result, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1", "m2"}})
+	require.NoError(t, err)
+	// m1 silently omitted; only m2 returned.
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "m2", result.Messages[0].MessageID)
+}
+
+func TestHistoryService_GetMessagesByIDs_StoreError_Internal(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1"}).Return(nil, fmt.Errorf("cassandra unavailable"))
+
+	_, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1"}})
+	require.Error(t, err)
+	assertInternalErr(t, err, "fetching messages by IDs")
+}
+
+func TestHistoryService_GetMessagesByIDs_NotSubscribed_Forbidden(t *testing.T) {
+	svc, _, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, nil)
+
+	_, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1"}})
+	require.Error(t, err)
+	assertForbiddenErr(t, err, "not subscribed to room")
+}
+
+func TestHistoryService_GetMessagesByIDs_QuoteRedaction(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	// m1 has a quoted message that falls before the access window — should be redacted.
+	m1 := models.Message{
+		MessageID: "m1",
+		RoomID:    "r1",
+		CreatedAt: joinTime.Add(1 * time.Minute),
+		QuotedParentMessage: &models.QuotedParentMessage{
+			MessageID: "q1",
+			Msg:       "secret old message",
+			CreatedAt: joinTime.Add(-1 * time.Hour), // before access window
+		},
+	}
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1"}).Return([]models.Message{m1}, nil)
+
+	result, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1"}})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, service.UnavailableQuoteMsg, result.Messages[0].QuotedParentMessage.Msg)
+}
