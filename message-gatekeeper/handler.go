@@ -424,7 +424,7 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 		return nil, fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
 	case snap.ThreadParentID != newMessageThreadID &&
 		// Thread-root quote: starter is a main-room msg (ThreadParentID=="") whose ID is the thread parent — allowed.
-		!(snap.ThreadParentID == "" && quotedParentMessageID == newMessageThreadID):
+		(snap.ThreadParentID != "" || quotedParentMessageID != newMessageThreadID):
 		return nil, errcode.BadRequest(fmt.Sprintf("quoted parent %s thread context mismatch: parent thread %q, new message thread %q",
 			quotedParentMessageID, snap.ThreadParentID, newMessageThreadID))
 	default:
