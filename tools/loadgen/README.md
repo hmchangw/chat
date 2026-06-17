@@ -61,11 +61,15 @@ the run binary itself never touches ciphertext.
 
 - `loadgen seed --preset=<name> [--seed=42]` — idempotently populate
   MongoDB with fixtures, including a per-room key in each room document.
+  Indexes are owned by the services (`EnsureIndexes`), not the seeder: it
+  preserves whatever indexes already exist, so bring the services up first
+  (`make up`) for the seeded data to be indexed as in production.
 - `loadgen run --preset=<name> [flags]` — open-loop publish at `--rate`
   msgs/sec for `--duration`, print a summary at the end. Flags:
   `--seed`, `--warmup`, `--inject=frontdoor|canonical`, `--csv=<path>`.
-- `loadgen teardown --preset=<name> [--seed=42]` — drop the seeded
-  Mongo collections (the per-room keys go with the room documents).
+- `loadgen teardown --preset=<name> [--seed=42]` — clear the seeded
+  Mongo data (the per-room keys go with the room documents), preserving
+  the services' indexes so a following seed starts indexed.
 
 ## Reading the summary
 
