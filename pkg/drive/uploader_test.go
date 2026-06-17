@@ -37,7 +37,7 @@ func TestClient_UploadGroupImages(t *testing.T) {
 		gotFileName = r.FormValue("files[0].fileName")
 		gotMode = r.FormValue("files[0].mode")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `[{"status":"Success","object":{"objectId":"f1","groupId":"r1","fileName":"a.png"}}]`)
+		_, _ = io.WriteString(w, `[{"status":"success","object":{"tObjectId":"f1","groupId":"r1","fileName":"a.png"}}]`)
 	}))
 	defer srv.Close()
 
@@ -47,7 +47,7 @@ func TestClient_UploadGroupImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp) != 1 || resp[0].Status != "Success" || resp[0].File.FileID != "f1" {
+	if len(resp) != 1 || resp[0].Status != "success" || resp[0].File.FileID != "f1" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if gotPath != "/api/v1/groups/r1/files/bulk" {

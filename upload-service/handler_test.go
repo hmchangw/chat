@@ -225,7 +225,7 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 	fd := &fakeDrive{
 		baseURL: "https://drive.example.com",
 		uploadResp: []drive.UploadGroupImageResponse{
-			{Status: "Success", File: drive.GroupImageObject{FileID: "img-xyz", GroupID: "r1", Filename: "a.png"}},
+			{Status: "success", File: drive.GroupImageObject{FileID: "img-xyz", GroupID: "r1", Filename: "a.png"}},
 		},
 	}
 	h := newHandler(store, fd)
@@ -248,7 +248,7 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 	require.Len(t, got.Results, 2)
 	var success, failure uploadResultItem
 	for _, r := range got.Results {
-		if r.Status == "Success" {
+		if r.Status == "success" {
 			success = r
 		} else {
 			failure = r

@@ -15,7 +15,7 @@ var AllowedImageFileTypes = map[string]bool{
 
 // GroupImageObject is Drive's per-file descriptor in a bulk-upload response.
 type GroupImageObject struct {
-	FileID   string `json:"objectId"`
+	FileID   string `json:"tObjectId"`
 	GroupID  string `json:"groupId"`
 	Filename string `json:"fileName"`
 }

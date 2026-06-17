@@ -26,7 +26,7 @@ func TestImagesFormData_AddCountClearFiles(t *testing.T) {
 }
 
 func TestUploadGroupImageResponse_JSONTags(t *testing.T) {
-	// File must marshal under "object"; GroupImageObject fields under objectId/groupId/fileName.
+	// File must marshal under "object"; GroupImageObject fields under tObjectId/groupId/fileName.
 	in := UploadGroupImageResponse{
 		Status: "Success",
 		File:   GroupImageObject{FileID: "f1", GroupID: "r1", Filename: "a.png"},
@@ -36,7 +36,7 @@ func TestUploadGroupImageResponse_JSONTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, want := range []string{`"object":`, `"objectId":"f1"`, `"groupId":"r1"`, `"fileName":"a.png"`} {
+	for _, want := range []string{`"object":`, `"tObjectId":"f1"`, `"groupId":"r1"`, `"fileName":"a.png"`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("marshaled JSON %s missing %s", s, want)
 		}
