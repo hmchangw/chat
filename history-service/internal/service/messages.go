@@ -307,9 +307,14 @@ func (s *HistoryService) GetMessagesByIDs(c *natsrouter.Context, req models.GetM
 
 	kept := fetched[:0]
 	for i := range fetched {
-		if accessSince == nil || !fetched[i].CreatedAt.Before(*accessSince) {
-			kept = append(kept, fetched[i])
+		// Scope to the subject's room — fetch is by ID alone, so drop any cross-room match.
+		if fetched[i].RoomID != roomID {
+			continue
 		}
+		if accessSince != nil && fetched[i].CreatedAt.Before(*accessSince) {
+			continue
+		}
+		kept = append(kept, fetched[i])
 	}
 
 	redactUnavailableQuotes(kept, accessSince)

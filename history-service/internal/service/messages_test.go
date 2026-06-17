@@ -2107,6 +2107,22 @@ func TestHistoryService_GetMessagesByIDs_OverCap_BadRequest(t *testing.T) {
 	assertBadRequestErr(t, err, "too many messageIds")
 }
 
+func TestHistoryService_GetMessagesByIDs_DropsCrossRoomMessages(t *testing.T) {
+	svc, msgs, subs, _, _ := newService(t)
+	c := testContext()
+
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(&joinTime, true, nil)
+
+	inRoom := models.Message{MessageID: "m1", RoomID: "r1", CreatedAt: joinTime.Add(1 * time.Minute)}
+	crossRoom := models.Message{MessageID: "m2", RoomID: "r-other", CreatedAt: joinTime.Add(2 * time.Minute)}
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), []string{"m1", "m2"}).Return([]models.Message{inRoom, crossRoom}, nil)
+
+	result, err := svc.GetMessagesByIDs(c, models.GetMessagesByIDsRequest{MessageIDs: []string{"m1", "m2"}})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "m1", result.Messages[0].MessageID)
+}
+
 func TestHistoryService_GetMessagesByIDs_AccessWindowFiltering(t *testing.T) {
 	svc, msgs, subs, _, _ := newService(t)
 	c := testContext()
