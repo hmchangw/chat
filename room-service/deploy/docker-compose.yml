@@ -61,6 +61,10 @@ services:
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=dev-only-token
       - ATREST_VAULT_TRANSIT_KEY=chat-kek
+      # Dev-only X-Debug verbose logging. DEBUG_LOG_PAYLOADS gates full
+      # request/reply/consumed body capture (pair with the X-Debug-Payload header).
+      - DEBUG_LOG_PAYLOADS=${DEBUG_LOG_PAYLOADS:-false}
+      - DEBUG_LOG_RATE=${DEBUG_LOG_RATE:-50}
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:
