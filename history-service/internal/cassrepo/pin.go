@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	pinMsgByID   = `UPDATE messages_by_id SET pinned_at = ?, pinned_by = ? WHERE message_id = ? AND created_at = ?`
-	unpinMsgByID = `UPDATE messages_by_id SET pinned_at = null, pinned_by = null WHERE message_id = ? AND created_at = ?`
+	pinMsgByID   = `UPDATE messages_by_id SET pinned_at = ?, pinned_by = ? WHERE message_id = ?`
+	unpinMsgByID = `UPDATE messages_by_id SET pinned_at = null, pinned_by = null WHERE message_id = ?`
 
 	// messages_by_room mirrors pinned_at only (the timeline indicator needs no
 	// more); pinned_by stays a point lookup on messages_by_id.
@@ -62,7 +62,7 @@ func pinBatchTables(withRoomRow bool) string {
 // service/pin.go).
 func (r *Repository) PinMessage(ctx context.Context, msg *models.Message, pinnedAt time.Time, pinnedBy models.Participant) error { //nolint:gocritic // hugeParam: Participant is passed by value to match the service.MessageWriter interface
 	batch := r.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-	batch.Query(pinMsgByID, pinnedAt, pinnedBy, msg.MessageID, msg.CreatedAt)
+	batch.Query(pinMsgByID, pinnedAt, pinnedBy, msg.MessageID)
 	batch.Query(insertPinnedMsg,
 		msg.RoomID, pinnedAt, msg.MessageID, msg.Sender, msg.Msg, msg.Mentions,
 		msg.Attachments, msg.File, msg.Card, msg.CardAction, msg.QuotedParentMessage, msg.VisibleTo,
@@ -85,7 +85,7 @@ func (r *Repository) UnpinMessage(ctx context.Context, msg *models.Message) erro
 		return fmt.Errorf("unpin message %s: PinnedAt is nil", msg.MessageID)
 	}
 	batch := r.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
-	batch.Query(unpinMsgByID, msg.MessageID, msg.CreatedAt)
+	batch.Query(unpinMsgByID, msg.MessageID)
 	batch.Query(deletePinnedRow, msg.RoomID, *msg.PinnedAt, msg.MessageID)
 	withRoomRow := hasRoomTimelineRow(msg)
 	if withRoomRow {

@@ -354,8 +354,8 @@ func (s *CassandraStore) setParentTcount(ctx context.Context, msg *model.Message
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 	parentBucket := s.bucket.Of(parentCreatedAt)
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
-		n, parentID, parentCreatedAt,
+		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ?`,
+		n, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
 	}
@@ -393,17 +393,16 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	parentBucket := s.bucket.Of(parentCreatedAt)
 
 	applied, err := s.cassSession.Query(
-		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? AND created_at = ? IF EXISTS`,
-		threadRoomID, parentMessageID, parentCreatedAt,
+		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? IF EXISTS`,
+		threadRoomID, parentMessageID,
 	).WithContext(ctx).ScanCAS()
 	if err != nil {
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_id: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found for message_id",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"messageID", parentMessageID,
-			"parentCreatedAt", parentCreatedAt,
 			"threadRoomID", threadRoomID,
 		)
 	}

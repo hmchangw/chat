@@ -51,8 +51,8 @@ func TestRepository_UpdateMessageContent_TopLevel(t *testing.T) {
 	var gotMsg string
 	var gotEditedAt time.Time
 	require.NoError(t, session.Query(
-		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg)
 	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
@@ -107,8 +107,8 @@ func TestRepository_UpdateMessageContent_ThreadReply(t *testing.T) {
 	var gotMsg string
 	var gotEditedAt time.Time
 	require.NoError(t, session.Query(
-		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg)
 	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
@@ -171,8 +171,8 @@ func TestRepository_UpdateMessageContent_Pinned(t *testing.T) {
 	var gotEditedAt time.Time
 
 	require.NoError(t, session.Query(
-		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg, "messages_by_id should reflect the edit")
 	assert.WithinDuration(t, editedAt, gotEditedAt, time.Second)
@@ -229,8 +229,8 @@ func TestRepository_SoftDeleteMessage_TopLevel(t *testing.T) {
 	var gotMsg string
 	var gotUpdatedAt time.Time
 	require.NoError(t, session.Query(
-		`SELECT deleted, msg, updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT deleted, msg, updated_at FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotDeleted, &gotMsg, &gotUpdatedAt))
 	assert.True(t, gotDeleted, "messages_by_id.deleted should be true")
 	assert.Equal(t, "original", gotMsg, "msg content must be preserved")
@@ -302,8 +302,8 @@ func TestRepository_SoftDeleteMessage_ThreadReply(t *testing.T) {
 	// messages_by_id: reply now deleted
 	var gotDeleted bool
 	require.NoError(t, session.Query(
-		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		replyID, replyCreatedAt,
+		`SELECT deleted FROM messages_by_id WHERE message_id = ?`,
+		replyID,
 	).Scan(&gotDeleted))
 	assert.True(t, gotDeleted)
 
@@ -375,8 +375,8 @@ func TestRepository_SoftDeleteMessage_Pinned(t *testing.T) {
 	var gotDeleted bool
 
 	require.NoError(t, session.Query(
-		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT deleted FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotDeleted))
 	assert.True(t, gotDeleted, "messages_by_id should be deleted")
 
@@ -459,8 +459,8 @@ func TestRepository_SoftDeleteMessage_DecrementsParentTcount(t *testing.T) {
 	// Both tables' tcount should now be 2.
 	var gotTcount int
 	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
+		`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+		parentID,
 	).Scan(&gotTcount))
 	assert.Equal(t, 2, gotTcount, "messages_by_id.tcount = count-based 2")
 
@@ -538,8 +538,8 @@ func TestRepository_UpdateMessageContent_MissingThreadRoomID_ReturnsError(t *tes
 	var gotMsg string
 	var gotEditedAt *time.Time
 	require.NoError(t, session.Query(
-		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		"m-no-tr", createdAt,
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ?`,
+		"m-no-tr",
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "original", gotMsg, "msg must not be updated on validation failure")
 	assert.Nil(t, gotEditedAt, "edited_at must remain nil on validation failure")
@@ -572,8 +572,8 @@ func TestRepository_SoftDeleteMessage_MissingThreadRoomID_ReturnsError(t *testin
 	var gotDeleted bool
 	var gotUpdatedAt *time.Time
 	require.NoError(t, session.Query(
-		`SELECT deleted, updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		"m-no-tr-del", createdAt,
+		`SELECT deleted, updated_at FROM messages_by_id WHERE message_id = ?`,
+		"m-no-tr-del",
 	).Scan(&gotDeleted, &gotUpdatedAt))
 	assert.False(t, gotDeleted, "deleted must remain false on validation failure")
 	assert.Nil(t, gotUpdatedAt, "updated_at must remain nil on validation failure")
@@ -640,8 +640,8 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 	// Confirm tcount went 1 -> 0 on both parent rows.
 	var tcount int
 	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
+		`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+		parentID,
 	).Scan(&tcount))
 	assert.Equal(t, 0, tcount, "first delete should have decremented messages_by_id.tcount")
 	require.NoError(t, session.Query(
@@ -663,8 +663,8 @@ func TestRepository_SoftDeleteMessage_LWTGatesDoubleDecrement(t *testing.T) {
 	// tcount must still be 0 (not -1 / not double-decremented). casDecrement
 	// also clamps at zero, but the LWT gate is the proper defense.
 	require.NoError(t, session.Query(
-		`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
+		`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+		parentID,
 	).Scan(&tcount))
 	assert.Equal(t, 0, tcount, "second delete must not double-decrement messages_by_id.tcount")
 	require.NoError(t, session.Query(
@@ -820,8 +820,8 @@ func TestRepository_SoftDeleteMessage_ThreadParent_SetsTypeRemoved(t *testing.T)
 	var gotDeleted bool
 	var gotType string
 	require.NoError(t, session.Query(
-		`SELECT deleted, type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT deleted, type FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotDeleted, &gotType))
 	assert.True(t, gotDeleted)
 	assert.Equal(t, MessageTypeRemoved, gotType, "messages_by_id must have type='message_removed' for thread parent")
@@ -873,8 +873,8 @@ func TestRepository_SoftDeleteMessage_NonThreadParent_NoTypeChange(t *testing.T)
 	// type column should be empty (not set).
 	var gotType string
 	require.NoError(t, session.Query(
-		`SELECT type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT type FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotType))
 	assert.Empty(t, gotType, "regular message delete must NOT set type")
 }
@@ -927,8 +927,8 @@ func TestRepository_SoftDeleteMessage_ReplyThreadParent_SetsTypeRemoved(t *testi
 	// Verify messages_by_id: type = 'message_removed'.
 	var gotType string
 	require.NoError(t, session.Query(
-		`SELECT type FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT type FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotType))
 	assert.Equal(t, MessageTypeRemoved, gotType, "messages_by_id must have type='message_removed'")
 
@@ -1180,8 +1180,8 @@ func TestUpdateMessageContent_NonExistent_CipherEnabled_ReturnsErrMessageNotFoun
 	// No ghost row was materialised.
 	var got string
 	err = session.Query(
-		`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		"m-ghost-enc", now,
+		`SELECT msg FROM messages_by_id WHERE message_id = ?`,
+		"m-ghost-enc",
 	).Scan(&got)
 	require.ErrorIs(t, err, gocql.ErrNotFound, "no row must be upserted by the failed edit")
 }
@@ -1235,8 +1235,8 @@ func TestEditMessage_Encrypted_NullsLegacyPlaintextColumns(t *testing.T) {
 		},
 		{
 			name: "messages_by_id",
-			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_id WHERE message_id=? AND created_at=?`,
-			args: []any{"m-null", now},
+			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_id WHERE message_id=?`,
+			args: []any{"m-null"},
 		},
 	} {
 		var (
@@ -1303,8 +1303,8 @@ func TestEditMessage_Plaintext_NullsEncryptedColumns(t *testing.T) {
 		},
 		{
 			name: "messages_by_id",
-			q:    `SELECT msg, enc_payload, enc_meta FROM messages_by_id WHERE message_id=? AND created_at=?`,
-			args: []any{"m-rb", now},
+			q:    `SELECT msg, enc_payload, enc_meta FROM messages_by_id WHERE message_id=?`,
+			args: []any{"m-rb"},
 		},
 	} {
 		var (
@@ -1376,8 +1376,8 @@ func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
 		},
 		{
 			name: "messages_by_id",
-			q:    `SELECT quoted_parent_message FROM messages_by_id WHERE message_id=? AND created_at=?`,
-			args: []any{"m-q", now},
+			q:    `SELECT quoted_parent_message FROM messages_by_id WHERE message_id=?`,
+			args: []any{"m-q"},
 		},
 	} {
 		var got *cassmodel.QuotedParentMessage
@@ -1441,8 +1441,8 @@ func TestRepository_UpdateMessageContent_TShowThreadReply(t *testing.T) {
 	var gotEditedAt time.Time
 
 	require.NoError(t, session.Query(
-		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msgID, createdAt,
+		`SELECT msg, edited_at FROM messages_by_id WHERE message_id = ?`,
+		msgID,
 	).Scan(&gotMsg, &gotEditedAt))
 	assert.Equal(t, "edited", gotMsg)
 
@@ -1521,8 +1521,8 @@ func TestRepository_SoftDeleteMessage_TShowThreadReply(t *testing.T) {
 
 	var gotDeleted bool
 	require.NoError(t, session.Query(
-		`SELECT deleted FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		replyID, replyCreatedAt,
+		`SELECT deleted FROM messages_by_id WHERE message_id = ?`,
+		replyID,
 	).Scan(&gotDeleted))
 	assert.True(t, gotDeleted)
 

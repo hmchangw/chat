@@ -20,7 +20,7 @@ const (
 	// are plain (non-LWT) UPDATEs: the service layer's findMessage already
 	// gates existence and the not-deleted check before this is reached, and
 	// messages are only edited by their owner, so a CAS gate isn't warranted.
-	editMsgByID   = `UPDATE messages_by_id SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
+	editMsgByID   = `UPDATE messages_by_id SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE message_id = ?`
 	editMsgByRoom = `UPDATE messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	editThreadMsg = `UPDATE thread_messages_by_thread SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
@@ -30,12 +30,12 @@ const (
 	// buildEditPayload has already promoted those into the new bundle; leaving
 	// any plaintext column behind would defeat the rollout's at-rest goal on
 	// edited legacy rows. sys_msg_data is NOT encrypted, so it is preserved.
-	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE message_id = ? AND created_at = ?`
+	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE message_id = ?`
 	editMsgByRoomEncrypted = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	editThreadMsgEncrypted = `UPDATE thread_messages_by_thread SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, file = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 
-	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true`
+	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? IF deleted != true`
 	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
 	deleteThreadMsg  = `UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
 	deletePinnedMsg  = `UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
@@ -56,7 +56,7 @@ const MessageTypeRemoved = "message_removed"
 // Thread-parent delete queries — identical to the regular delete queries but also
 // set type = MessageTypeRemoved. Used when msg.TCount != nil && *msg.TCount > 0.
 const (
-	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? AND created_at = ? IF deleted != true"
+	deleteThreadParentMsgByIDCAS = "UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE message_id = ? IF deleted != true"
 	deleteThreadParentMsgByRoom  = "UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?"
 	deleteThreadParentThreadMsg  = "UPDATE thread_messages_by_thread SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?"
 	deleteThreadParentPinnedMsg  = "UPDATE pinned_messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, type = '" + MessageTypeRemoved + "', updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?"
@@ -123,8 +123,8 @@ func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Messag
 	)
 	err := r.session.Query(
 		`SELECT enc_payload, enc_meta, msg, attachments, card, card_action, file, quoted_parent_message
-		 FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		msg.MessageID, msg.CreatedAt,
+		 FROM messages_by_id WHERE message_id = ?`,
+		msg.MessageID,
 	).WithContext(ctx).Scan(&encPayload, &encMeta, &msgText, &attachments, &card, &cardAction, &file, &quoted)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
@@ -181,7 +181,7 @@ func (r *Repository) editOne(ctx context.Context, plainQ, encQ string, ep editPa
 // not-deleted check are already enforced by the service layer's findMessage,
 // so this is a plain UPDATE rather than an LWT.
 func (r *Repository) editInMessagesByID(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
-	return r.editOne(ctx, editMsgByID, editMsgByIDEncrypted, ep, editedAt, msg.MessageID, msg.CreatedAt)
+	return r.editOne(ctx, editMsgByID, editMsgByIDEncrypted, ep, editedAt, msg.MessageID)
 }
 
 func (r *Repository) editInMessagesByRoom(ctx context.Context, msg *models.Message, ep editPayload, editedAt time.Time) error {
@@ -277,7 +277,7 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 	var current bool
 	applied, err := r.session.Query(
 		casQuery,
-		deletedAt, msg.MessageID, msg.CreatedAt,
+		deletedAt, msg.MessageID,
 	).WithContext(ctx).ScanCAS(&current)
 	if err != nil {
 		return time.Time{}, false, nil, fmt.Errorf("cas update messages_by_id for message %s: %w", msg.MessageID, err)
@@ -287,8 +287,8 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 		// can return an accurate response timestamp.
 		var existing time.Time
 		if err := r.session.Query(
-			`SELECT updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			msg.MessageID, msg.CreatedAt,
+			`SELECT updated_at FROM messages_by_id WHERE message_id = ?`,
+			msg.MessageID,
 		).WithContext(ctx).Scan(&existing); err != nil {
 			if errors.Is(err, gocql.ErrNotFound) {
 				// Row vanished between the CAS and the follow-up SELECT — abnormal race.
@@ -373,8 +373,8 @@ func (r *Repository) setParentTcount(ctx context.Context, msg *models.Message, n
 	parentID := msg.ThreadParentID
 	parentCreatedAt := *msg.ThreadParentCreatedAt
 	if err := r.session.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
-		n, parentID, parentCreatedAt,
+		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ?`,
+		n, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
 	}
