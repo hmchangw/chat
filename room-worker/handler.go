@@ -66,6 +66,10 @@ type Handler struct {
 	// after authoritative writes. nil disables invalidation (best-effort).
 	valkey           valkeyutil.Client
 	keyFanoutWorkers int
+	// reconcileTTL bounds how often the add-member hot path runs a full
+	// O(room) member-count recompute; see config.MemberCountReconcileTTL.
+	// Zero means recompute on every add (the pre-optimisation behaviour).
+	reconcileTTL time.Duration
 }
 
 func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, keyStore RoomKeyStore, keySender *roomkeysender.Sender) *Handler {
@@ -1019,11 +1023,28 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 	}
 
-	// 6. Reconcile userCount. Idempotent $set converges to the correct value
-	// even under JetStream redelivery; an upstream log-and-continue would
-	// leave the counter drifted forever, so we propagate the error.
-	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
-		return fmt.Errorf("reconcile member counts: %w", err)
+	// 6. Update member counts. The hot path applies the delta incrementally
+	// ($inc, O(1)); a full O(room) recompute runs only once the per-room TTL
+	// elapses (drift safety net). subs is exactly the net-new subscriptions
+	// (needSub, recomputed from live state each delivery), so the delta is
+	// redelivery-safe. Errors propagate — log-and-continue would drift the
+	// counter.
+	var userDelta, appDelta int
+	for _, sub := range subs {
+		if sub.User.IsBot {
+			appDelta++
+		} else {
+			userDelta++
+		}
+	}
+	reconcileDue, err := h.store.ApplyMemberCountDelta(ctx, req.RoomID, userDelta, appDelta, h.reconcileTTL)
+	if err != nil {
+		return fmt.Errorf("apply member count delta: %w", err)
+	}
+	if reconcileDue {
+		if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
+			return fmt.Errorf("reconcile member counts: %w", err)
+		}
 	}
 	h.bustRoomMeta(ctx, req.RoomID)
 

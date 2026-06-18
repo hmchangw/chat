@@ -43,6 +43,21 @@ func (m *MockSubscriptionStore) EXPECT() *MockSubscriptionStoreMockRecorder {
 	return m.recorder
 }
 
+// ApplyMemberCountDelta mocks base method.
+func (m *MockSubscriptionStore) ApplyMemberCountDelta(ctx context.Context, roomID string, userDelta, appDelta int, ttl time.Duration) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ApplyMemberCountDelta", ctx, roomID, userDelta, appDelta, ttl)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ApplyMemberCountDelta indicates an expected call of ApplyMemberCountDelta.
+func (mr *MockSubscriptionStoreMockRecorder) ApplyMemberCountDelta(ctx, roomID, userDelta, appDelta, ttl any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyMemberCountDelta", reflect.TypeOf((*MockSubscriptionStore)(nil).ApplyMemberCountDelta), ctx, roomID, userDelta, appDelta, ttl)
+}
+
 // BulkCreateRoomMembers mocks base method.
 func (m *MockSubscriptionStore) BulkCreateRoomMembers(ctx context.Context, members []*model.RoomMember) error {
 	m.ctrl.T.Helper()

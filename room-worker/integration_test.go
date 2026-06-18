@@ -128,6 +128,43 @@ func TestMongoStore_Integration(t *testing.T) {
 	}
 }
 
+// TestMongoStore_ApplyMemberCountDelta covers the add-member hot path: the $inc
+// applies the delta atomically, and reconcileDue follows the per-room TTL —
+// true when never reconciled or once the TTL has elapsed, false within it.
+func TestMongoStore_ApplyMemberCountDelta(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{ID: "rd", Name: "delta", UserCount: 5, AppCount: 1})
+	require.NoError(t, err)
+
+	// Never reconciled → due; $inc applies userDelta/appDelta.
+	due, err := store.ApplyMemberCountDelta(ctx, "rd", 3, 2, time.Minute)
+	require.NoError(t, err)
+	assert.True(t, due, "a room never reconciled should be due")
+	room, err := store.GetRoom(ctx, "rd")
+	require.NoError(t, err)
+	assert.Equal(t, 8, room.UserCount, "userCount incremented by 3")
+	assert.Equal(t, 3, room.AppCount, "appCount incremented by 2")
+
+	// ReconcileMemberCounts stamps countsReconciledAt → not due within the TTL.
+	require.NoError(t, store.ReconcileMemberCounts(ctx, "rd"))
+	due, err = store.ApplyMemberCountDelta(ctx, "rd", 0, 0, time.Minute)
+	require.NoError(t, err)
+	assert.False(t, due, "within TTL the recompute should not be due")
+
+	// ttl=0 forces a recompute every time (legacy behaviour).
+	due, err = store.ApplyMemberCountDelta(ctx, "rd", 0, 0, 0)
+	require.NoError(t, err)
+	assert.True(t, due, "ttl=0 is always due")
+
+	// Missing room: no-op, not due, no error (matches ReconcileMemberCounts).
+	due, err = store.ApplyMemberCountDelta(ctx, "missing", 1, 0, time.Minute)
+	require.NoError(t, err)
+	assert.False(t, due)
+}
+
 func TestMongoStore_GetSubscription_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)

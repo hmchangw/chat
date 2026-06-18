@@ -70,16 +70,51 @@ func (s *MongoStore) ReconcileMemberCounts(ctx context.Context, roomID string) e
 		return fmt.Errorf("count app subscriptions: %w", err)
 	}
 
+	now := time.Now().UTC()
 	if _, err := s.rooms.UpdateOne(ctx, bson.M{"_id": roomID}, bson.M{
 		"$set": bson.M{
-			"userCount": total - appCount,
-			"appCount":  appCount,
-			"updatedAt": time.Now().UTC(),
+			"userCount":          total - appCount,
+			"appCount":           appCount,
+			"countsReconciledAt": now,
+			"updatedAt":          now,
 		},
 	}); err != nil {
 		return fmt.Errorf("update room counts: %w", err)
 	}
 	return nil
+}
+
+// ApplyMemberCountDelta atomically $inc's userCount/appCount and reports whether
+// a full recompute is now due. The $inc is O(1); the delta is the actual number
+// of subscriptions created/removed by the caller, so it stays correct under
+// JetStream redelivery (net-new is recomputed from live state each delivery) and
+// concurrent adds ($inc is atomic). The returned countsReconciledAt drives the
+// per-room TTL: a crash between the subscription write and this $inc, or a rare
+// racing duplicate, can leave the counter slightly drifted until the next
+// reconcile, which this method schedules once the TTL elapses.
+func (s *MongoStore) ApplyMemberCountDelta(ctx context.Context, roomID string, userDelta, appDelta int, ttl time.Duration) (bool, error) {
+	var doc struct {
+		CountsReconciledAt time.Time `bson:"countsReconciledAt"`
+	}
+	err := s.rooms.FindOneAndUpdate(ctx,
+		bson.M{"_id": roomID},
+		bson.M{
+			"$inc": bson.M{"userCount": userDelta, "appCount": appDelta},
+			"$set": bson.M{"updatedAt": time.Now().UTC()},
+		},
+		options.FindOneAndUpdate().
+			SetReturnDocument(options.After).
+			SetProjection(bson.M{"countsReconciledAt": 1}),
+	).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// No such room — nothing to count, nothing to reconcile (matches
+			// ReconcileMemberCounts' no-op-on-missing UpdateOne).
+			return false, nil
+		}
+		return false, fmt.Errorf("apply member count delta for room %q: %w", roomID, err)
+	}
+	return doc.CountsReconciledAt.IsZero() || time.Since(doc.CountsReconciledAt) > ttl, nil
 }
 
 func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {

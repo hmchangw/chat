@@ -48,6 +48,13 @@ type config struct {
 	// Grace window during which a rotated-out previous key remains valid for decrypt.
 	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD" envDefault:"24h"`
 
+	// MemberCountReconcileTTL bounds how often the add-member hot path runs a
+	// full O(room) recompute of userCount/appCount. Between recomputes the
+	// counts are maintained incrementally ($inc by the actual delta); a full
+	// reconcile runs at most once per room per TTL as a drift safety net. 0
+	// forces a recompute on every add (legacy behaviour).
+	MemberCountReconcileTTL time.Duration `env:"MEMBER_COUNT_RECONCILE_TTL" envDefault:"60s"`
+
 	// Valkey backs best-effort room-meta L2 cache invalidation. Optional: when
 	// VALKEY_ADDRS is empty the bust is a no-op (the L2 TTL reconciles).
 	ValkeyAddrs    []string `env:"VALKEY_ADDRS"    envSeparator:","`
@@ -162,6 +169,7 @@ func main() {
 	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
 	handler.dekProvisioner = dekProvisioner
 	handler.valkey = metaValkey
+	handler.reconcileTTL = cfg.MemberCountReconcileTTL
 
 	router := natsrouter.New(nc, "room-worker")
 	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
