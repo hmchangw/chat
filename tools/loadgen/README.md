@@ -90,7 +90,9 @@ the run binary itself never touches ciphertext.
 
 Benchmarks the add-member pipeline:
 `room-service.handleAddMembers` → `chat.room.canonical.{siteID}.member.add`
-(ROOMS stream) → `room-worker` → `chat.room.{roomID}.event.member` broadcast.
+(ROOMS stream) → `room-worker` → `chat.room.{roomID}.event.member` event. E2 is
+the emission of that event, gated by room-worker's ROOMS-consumer throughput —
+not a broadcast fan-out.
 
 ### Quick start
 

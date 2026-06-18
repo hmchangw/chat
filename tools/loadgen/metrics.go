@@ -82,7 +82,7 @@ func NewMetrics() *Metrics {
 		[]string{"preset", "inject"},
 	)
 	m.MemberE2Latency = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{Name: "loadgen_member_e2_latency_seconds", Help: "Member-add broadcast-visible latency.", Buckets: buckets},
+		prometheus.HistogramOpts{Name: "loadgen_member_e2_latency_seconds", Help: "Member-add event-emission latency: publish until room-worker emits RoomMemberEvent (reflects room-worker ROOMS-consumer throughput, not a broadcast fan-out).", Buckets: buckets},
 		[]string{"preset", "inject"},
 	)
 	m.MemberRoomSize = prometheus.NewGaugeVec(

@@ -327,7 +327,7 @@ func (g *CapacityMembersGenerator) Run(ctx context.Context) error {
 	for i := range g.cfg.Fixtures.Rooms {
 		perRoom[g.cfg.Fixtures.Rooms[i].ID] = make(chan struct{}, 1)
 	}
-	g.cfg.Collector.OnBroadcast(func(roomID string, _ []string) {
+	g.cfg.Collector.OnMemberEvent(func(roomID string, _ []string) {
 		if ch, ok := perRoom[roomID]; ok {
 			select {
 			case ch <- struct{}{}:
