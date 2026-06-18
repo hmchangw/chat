@@ -34,13 +34,10 @@ func (s *UserService) GetStatusByName(c *natsrouter.Context, req models.StatusGe
 	}, nil
 }
 
-// GetProfileByName is the profile lookup. It behaves identically to
-// GetStatusByName today, but is kept as its own handler with its own body
-// (not a delegate) because the internal repo overrides it: this endpoint
-// should fetch data from the HR collection before querying the Mongo users
-// collection for statusIsShow and statusText. That HR step is not implemented
-// here — it needs to be done in the internal repo — so the two handlers must
-// be free to diverge.
+// GetProfileByName is the profile lookup. It returns the same shape as
+// GetStatusByName and currently shares its logic, but is its own handler so
+// the profile path can later diverge (e.g. enrich from an HR directory)
+// without touching status.
 func (s *UserService) GetProfileByName(c *natsrouter.Context, req models.StatusGetByNameRequest) (*models.StatusView, error) {
 	c.WithLogValues("account", c.Param("account"), "target", req.Name)
 	u, err := s.users.GetUserStatus(c, req.Name)
@@ -65,16 +62,23 @@ func (s *UserService) SetStatus(c *natsrouter.Context, req models.StatusSetReque
 	if len(req.Text) > maxStatusBytes {
 		return nil, errcode.BadRequest("status text too long")
 	}
-	matched, err := s.users.SetUserStatus(c, account, req.Text, req.IsShow)
+	u, err := s.users.SetUserStatus(c, account, req.Text, req.IsShow)
 	if err != nil {
 		return nil, fmt.Errorf("set status: %w", err)
 	}
-	if !matched {
+	if u == nil {
 		// No active user doc matched — don't broadcast a status nobody owns.
 		return nil, errcode.NotFound("user not found")
 	}
 	s.publishStatus(c, account, req.Text, req.IsShow)
-	return s.GetStatusByName(c, models.StatusGetByNameRequest{Name: account})
+	// The FindOneAndUpdate already returned the updated doc — no second read.
+	return &models.StatusView{
+		Account:      u.Account,
+		StatusText:   u.StatusText,
+		StatusIsShow: u.StatusIsShow,
+		ChineseName:  u.ChineseName,
+		EngName:      u.EngName,
+	}, nil
 }
 
 // publishStatus broadcasts via core NATS to every configured site except self; errors are logged, not returned.
@@ -91,7 +95,8 @@ func (s *UserService) publishStatus(c *natsrouter.Context, account, text string,
 			continue
 		}
 		if err := s.pub.Publish(c, subject.Outbox(s.siteID, dest, model.OutboxUserStatusUpdated), data); err != nil {
-			slog.ErrorContext(c, "publish status outbox", "error", err, "site", s.siteID, "dest", dest, "account", account, "request_id", natsutil.RequestIDFromContext(c))
+			// Non-fatal: status is last-write-wins, the next SetStatus re-broadcasts.
+			slog.WarnContext(c, "publish status outbox", "error", err, "site", s.siteID, "dest", dest, "account", account, "request_id", natsutil.RequestIDFromContext(c))
 		}
 	}
 }

@@ -28,14 +28,15 @@ type SubscriptionRepository interface {
 // UserRepository is the consumer-defined interface for user status persistence.
 type UserRepository interface {
 	GetUserStatus(ctx context.Context, account string) (*model.User, error)
-	SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error)
+	SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error)
+	GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error)
 }
 
 // AppRepository is the consumer-defined interface for app catalog reads.
 type AppRepository interface {
 	GetApp(ctx context.Context, appID string) (*model.App, error)
 	ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error)
-	GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error)
+	GetAppsByAssistants(ctx context.Context, botAccounts []string) (map[string]*model.App, error)
 }
 
 // RoomClient is the consumer-defined interface for room-service RPC calls.
@@ -52,27 +53,29 @@ type EventPublisher interface {
 
 // UserService handles all user-related NATS request/reply endpoints.
 type UserService struct {
-	subs       SubscriptionRepository
-	users      UserRepository
-	apps       AppRepository
-	rooms      RoomClient
-	pub        EventPublisher
-	siteID     string
-	allSiteIDs []string
-	maxSubs    int
+	subs            SubscriptionRepository
+	users           UserRepository
+	apps            AppRepository
+	rooms           RoomClient
+	pub             EventPublisher
+	siteID          string
+	allSiteIDs      []string
+	maxSubs         int
+	maxAccountNames int
 }
 
 // New constructs a UserService with the given dependencies and configuration.
 func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, pub EventPublisher, cfg *config.Config) *UserService {
 	return &UserService{
-		subs:       subs,
-		users:      users,
-		apps:       apps,
-		rooms:      rooms,
-		pub:        pub,
-		siteID:     cfg.SiteID,
-		allSiteIDs: cfg.AllSiteIDs,
-		maxSubs:    cfg.MaxSubscriptionLimit,
+		subs:            subs,
+		users:           users,
+		apps:            apps,
+		rooms:           rooms,
+		pub:             pub,
+		siteID:          cfg.SiteID,
+		allSiteIDs:      cfg.AllSiteIDs,
+		maxSubs:         cfg.MaxSubscriptionLimit,
+		maxAccountNames: cfg.MaxAccountNames,
 	}
 }
 

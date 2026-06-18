@@ -492,6 +492,8 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
 | `hasMention` | boolean | Whether the user has an unread mention. Authoritative subscription state maintained by the write path (set when the user is @-mentioned, cleared on read); **not** modified by read enrichment. |
+| `hasGroupMention` | boolean | Whether the user has an unread room-wide (@all) mention. Authoritative subscription state; **not** modified by read enrichment. |
+| `hasUnread` | boolean | Whether the room has unread messages for the user. Authoritative subscription state; **not** modified by read enrichment. |
 | `alert` | boolean | Whether the room has an unread alert for the user. Authoritative subscription state maintained by the write path (set on new message, cleared on read receipt); **not** modified by read enrichment. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
@@ -502,14 +504,18 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `restricted` | boolean | Optional. Denormalized room restricted flag. |
 | `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
 | `room` | [SubscriptionRoom](#subscriptionroom) | Optional. Room-derived view (read-time enrichment; user-service endpoints only). |
+| `avatarUrl` | string | Optional. Subscription avatar URL. |
+| `favoritedAt` | RFC3339 timestamp | Optional. When the user favorited the room. |
+| `updatedAt` | RFC3339 timestamp | Optional. When the subscription was last updated. |
 
 #### SubscriptionRoom
 
 The room-derived view nested on an enriched [Subscription](#subscription).
-Fully populated from room-service's `GetRoomsInfo` RPC; when that RPC fails or
-the room is unknown, a baseline object (`siteId` plus whatever the local DB
-knows: `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no name, no
-key) is returned instead. All fields are optional (omitted when zero/unset).
+**Local** rooms are populated from the Mongo `$lookup` baseline (room metadata
+plus the E2E key) with no RPC. **Cross-site** rooms are populated from
+room-service's `GetRoomsInfo` RPC; if that RPC fails or the room isn't found, the
+`room` object is **omitted entirely** — the subscription still carries its own
+top-level `siteId`. All fields are optional (omitted when zero/unset).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -517,11 +523,31 @@ key) is returned instead. All fields are optional (omitted when zero/unset).
 | `name` | string | The room's canonical name (may differ from the subscription `name`). |
 | `userCount` | number | Member count. |
 | `appCount` | number | App (bot) count. |
-| `lastMsgAt` | RFC3339 timestamp | Time of the room's last message. |
+| `lastMsgAt` | number | Epoch millis of the room's last message. |
 | `lastMsgId` | string | Last message ID. |
-| `lastMentionAllAt` | RFC3339 timestamp | Time of the last room-wide mention. |
-| `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Only present when the caller's site holds the key. |
+| `lastMentionAllAt` | number | Epoch millis of the last room-wide mention. |
+| `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Present only for encrypted (channel) rooms whose key the caller's site holds; omitted otherwise. |
 | `keyVersion` | number | Version of `privateKey`. |
+
+#### AppSubscription
+
+The nested `app` object carried on **botDM** subscription rows in
+`subscription.list`. The botDM's base `Subscription.name` is the **app's display
+name**; the `app` object also carries its own `name`. All app fields are optional
+(omitted when unset).
+
+| Field | Type | Notes |
+|---|---|---|
+| `appId` | string | The app's ID. |
+| `name` | string | The app's display name. |
+| `description` | string | App description. |
+| `assistant` | [AppAssistant](#appassistant) | The app's assistant subdocument. |
+| `appViewUrl` | map<string, string> | App-view URLs keyed by view name. |
+| `reportUrl` | string | App report URL. |
+| `forumUrl` | string | App forum URL. |
+| `userManualUrl` | string | App user-manual URL. |
+| `version` | string | App version. |
+| `sponsors` | [AppSponsor](#appsponsor)[] | App sponsors. |
 
 #### HrInfo
 
@@ -539,17 +565,18 @@ The `hrInfo` field on a [DMSubscription](#subscription) — the DM counterpart's
 | Field | Type | Notes |
 |---|---|---|
 | `account` | string | Counterpart's account. |
-| `name` | string | Counterpart's display name. |
+| `name` | string | Counterpart's native (Chinese) name. |
 | `engName` | string | Counterpart's English name. |
 
 #### AppAssistant
 
-An app's assistant (bot) subdocument. `name` and `enabled` are always present; `settingsUrl` is optional.
+An app's assistant (bot) subdocument. `name` and `enabled` are always present; `username` and `settingsUrl` are optional.
 
 | Field | Type | Notes |
 |---|---|---|
-| `name` | string | Assistant/bot name. |
+| `name` | string | Assistant/bot name (bot account). |
 | `enabled` | boolean | Whether the assistant is enabled. |
+| `username` | string | Optional. Assistant display username. |
 | `settingsUrl` | string | Optional. Assistant settings URL. |
 
 #### AsyncJobResult
@@ -1741,7 +1768,6 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
 | `name` | string | `apps.channelTab.name`. |
 | `tabUrl` | string | Computed: `SITE_URL`'s scheme/host/path-prefix + `apps.channelTab.url.default`'s path; `${roomId}` and `${siteId}` are substituted. Apps whose template URL is empty or unparseable are silently skipped. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. `apps.assistant` subdocument if set. |
-| `avatarUrl` | string | Optional. `apps.avatarUrl` if set. |
 
 ```json
 {
@@ -1750,8 +1776,7 @@ Empty body (`{}` is tolerated). All inputs come from the subject.
       "id": "app-weather",
       "name": "Weather",
       "tabUrl": "https://site-a.example.com/apps/weather?room=01970a4f8c2d7c9aQ",
-      "assistant": { "enabled": true, "name": "weather.bot" },
-      "avatarUrl": "https://site-a.example.com/avatars/weather.png"
+      "assistant": { "enabled": true, "name": "weather.bot" }
     }
   ]
 }
@@ -3349,7 +3374,11 @@ See [Error envelope](#6-error-envelope-reference).
 | `id` | string | App ID. |
 | `name` | string | App name. |
 | `description` | string | Optional. App description. |
-| `avatarUrl` | string | Optional. App avatar URL. |
+| `appViewUrl` | map<string, string> | Optional. App-view URLs keyed by view name (e.g. `{"main": "..."}`). |
+| `reportUrl` | string | Optional. App report URL. |
+| `forumUrl` | string | Optional. App forum URL. |
+| `userManualUrl` | string | Optional. App user-manual URL. |
+| `version` | string | Optional. App version. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's assistant subdocument. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab embedding config. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsors. |
@@ -3383,7 +3412,6 @@ See [Error envelope](#6-error-envelope-reference).
       "id": "a1",
       "name": "Weather",
       "description": "Local forecasts",
-      "avatarUrl": "https://site-a.example.com/avatars/weather.png",
       "assistant": { "enabled": true, "name": "weather.bot", "settingsUrl": "https://site-a.example.com/apps/weather/settings" },
       "channelTab": { "enabled": true, "default": false, "name": "Weather", "url": { "default": "https://site-a.example.com/apps/weather?room=${roomId}&site=${siteId}" } },
       "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
@@ -3465,6 +3493,19 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 
 > **Events:** these endpoints emit no client-facing events. (`status.set` triggers a server-side cross-site federation update, which is internal and not delivered to clients.)
 
+| RPC subject | Method |
+|---|---|
+| `chat.user.{account}.request.user.{siteID}.status.getByName` | [`status.getByName`](#statusgetbyname) |
+| `chat.user.{account}.request.user.{siteID}.profile.getByName` | [`profile.getByName`](#profilegetbyname) |
+| `chat.user.{account}.request.user.{siteID}.status.set` | [`status.set`](#statusset) |
+| `chat.user.{account}.request.user.{siteID}.subscription.list` | [`subscription.list`](#subscriptionlist) |
+| `chat.user.{account}.request.user.{siteID}.subscription.getChannels` | [`subscription.getChannels`](#subscriptiongetchannels) |
+| `chat.user.{account}.request.user.{siteID}.subscription.getDM` | [`subscription.getDM`](#subscriptiongetdm) |
+| `chat.user.{account}.request.user.{siteID}.subscription.getByRoomID` | [`subscription.getByRoomID`](#subscriptiongetbyroomid) |
+| `chat.user.{account}.request.user.{siteID}.subscription.count` | [`subscription.count`](#subscriptioncount) |
+| `chat.user.{account}.request.user.{siteID}.subscription.setAppSubscription` | [`subscription.setAppSubscription`](#subscriptionsetappsubscription) |
+| `chat.user.{account}.request.user.{siteID}.apps.list` | [`apps.list`](#appslist) |
+
 #### status.getByName
 
 **Subject:** `chat.user.{account}.request.user.{siteID}.status.getByName`
@@ -3476,7 +3517,7 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 
 | Field  | Type   | Required | Notes |
 |--------|--------|----------|-------|
-| `name` | string | yes      | Account name of the user whose status to fetch. |
+| `name` | string | no       | Account name of the user whose status to fetch. |
 
 ```json
 { "name": "alice" }
@@ -3516,13 +3557,13 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 **Subject:** `chat.user.{account}.request.user.{siteID}.profile.getByName`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It exists as a separate subject so the profile path can later be extended to fetch HR-collection profile data before the status fields (internal-repo implementation); until then both endpoints return the same payload.
+The profile lookup for a named user. **Identical to [status.getByName](#statusgetbyname) by design** — same request body, same response fields, same error cases; it queries the same users collection. It is exposed as a separate subject.
 
 ##### Request body
 
 | Field  | Type   | Required | Notes |
 |--------|--------|----------|-------|
-| `name` | string | yes      | Account name of the user whose profile to fetch. |
+| `name` | string | no       | Account name of the user whose profile to fetch. |
 
 ```json
 { "name": "alice" }
@@ -3562,7 +3603,7 @@ Sets the calling user's status and returns the updated status view.
 
 | Field    | Type    | Required | Notes |
 |----------|---------|----------|-------|
-| `text`   | string  | yes      | New status text. Must be ≤ 512 bytes (UTF-8). Empty string clears the status. |
+| `text`   | string  | no       | Empty string clears the status. Maximum 512 bytes. |
 | `isShow` | boolean | no       | Whether the status is displayed. |
 
 ```json
@@ -3606,7 +3647,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 |---------------------|---------|----------|-------|
 | `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
 | `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
-| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose room had a message within the last N days** (whole-room activity, `room.lastMsgAt`). **Ignored for `current`** (always returns the full active set) and for `apps`. Cross-site rooms are kept regardless (their activity isn't known locally). Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose own `updatedAt` is within the last N days** (the subscription record's last-update time, not room activity). **Ignored for `current`** (always returns the full active set) and for `apps`. Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
 
 ```json
 { "type": "current", "favorite": true }
@@ -3617,26 +3658,28 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 | Field           | Type              | Notes |
 |-----------------|-------------------|-------|
 | `subscriptions` | array<[Subscription](#subscription)> | Room-info-enriched subscription records. |
-| `total`         | number            | Total count (after filtering). |
+| `total`         | number            | The number of records **actually returned** in `subscriptions` (i.e. `subscriptions.length`) — **not** the user's total subscription count. Use `subscription.count` for the true active total. |
 
-`subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
+`subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below. Ordered by the room's `lastMsgAt` descending (rooms with no messages fall back to the room's `createdAt`); favorites are **not** pinned by this ordering.
+
+The result set is capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`) server-side; a user with more matching subscriptions than the cap receives the top N by the ordering above, and `total` reflects that capped count rather than the full match count.
 
 <a id="enrichment"></a>
 **Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
-- Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)), populated from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too). The subscription's own fields are never overwritten by room data.
+- Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)): **local** rows from the Mongo `$lookup` baseline (no RPC), **cross-site** rows from room-service's per-site `GetRoomsInfo` RPC. The subscription's own fields are never overwritten by room data.
 - `alert` and `hasMention` are **subscription** state, not room state: they are returned as stored on the subscription (maintained by the write path — `message-worker` sets `hasMention` when the user is @-mentioned, read receipts clear `alert`) and are **never** overwritten or recomputed by enrichment.
-- `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
-- Rooms with a `Del-` name prefix are filtered out before enrichment.
-- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
+- `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member when the room has one (the initial key bootstrap on (re)connect; see §5). Both fields are omitted for rooms with no key.
+- Subscriptions whose room is soft-deleted (a `Del-` name prefix) are **kept** but returned with **no `room` object** (the `room` field is omitted). `subscription.count` (the active set) still excludes them.
+- **Local** rows carry the full room object (metadata + E2E key) from the `$lookup` baseline. **Cross-site** rows are fetched per remote site in parallel; if a site's RPC fails or a room isn't found, those rows are returned with **no `room` object** (the field is omitted) — the subscription still carries its own top-level `siteId`. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
 
-**Per-room-type record shape.** All three kinds returned by `subscription.list` (`channel`, `dm`, `botDM`) use the single [Subscription](#subscription) schema (§3.0) with the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the five below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, and the rest of `room`). Type-specific fields:
+**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows add a nested `app` object ([AppSubscription](#appsubscription), §3.0). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, `hasGroupMention`, `hasUnread`, `updatedAt`, and the rest of `room`). `isSubscribed` is a **base [Subscription](#subscription) field** (boolean, optional — omitted unless stored `true`) shared by all three types, not a type-specific field. Type-specific fields:
 
 | Field | `channel` | `dm` | `botDM` |
 |---|---|---|---|
 | `name` | Channel name. | Counterpart's account. | App display name (falls back to the bot account when the app record is unavailable). |
-| `isSubscribed` | absent | absent | `true` — botDM rows are returned only while subscribed. |
-| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — **`subscription.getDM` only**, never present in `subscription.list`. | absent |
-| `room.name` | Canonical channel name. | Server-generated DM room name. | Server-generated botDM room name. |
+| `hrInfo` | absent | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)) — returned in both `subscription.list` and `subscription.getDM`. | absent |
+| `app` | absent | absent | Nested app-metadata object — see [AppSubscription](#appsubscription). |
+| `room.name` | Canonical channel name. | Omitted (DM rooms have no canonical name). | Omitted (botDM rooms have no canonical name; the app name is the top-level `name`). |
 | `room.appCount` | Bot/app count in the channel (omitted when 0). | omitted (0). | ≥ 1. |
 
 The example below shows one record of each type in order (`channel`, `dm`, `botDM`):
@@ -3654,17 +3697,20 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": true,
       "alert": true,
       "muted": false,
       "favorite": true,
+      "updatedAt": "2026-06-01T10:00:05Z",
       "room": {
         "siteId": "siteA",
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgAt": 1780308000000,
         "lastMsgId": "01970a4f8c2d7c9aBB",
-        "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "lastMentionAllAt": 1780128000000,
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
       }
@@ -3679,17 +3725,16 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "bob",
       "joinedAt": "2026-04-01T09:00:00Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "alert": false,
       "muted": false,
       "favorite": false,
+      "updatedAt": "2026-05-20T15:30:00Z",
+      "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
       "room": {
         "siteId": "siteA",
-        "name": "alice_bob",
-        "userCount": 2,
-        "lastMsgAt": "2026-05-20T15:30:00Z",
-        "lastMsgId": "01970a4f8c2d7c9aCC",
-        "privateKey": "cXdlcnR5...base64...dWlvcD09",
-        "keyVersion": 1
+        "lastMsgAt": 1779291000000
       }
     },
     {
@@ -3703,15 +3748,26 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "isSubscribed": true,
       "joinedAt": "2026-03-15T11:00:00Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "alert": false,
       "muted": false,
       "favorite": false,
+      "updatedAt": "2026-05-01T08:00:10Z",
+      "app": {
+        "appId": "app_helper",
+        "name": "Helper",
+        "description": "Your friendly helper bot",
+        "assistant": { "name": "helper.bot", "enabled": true, "username": "Helper" },
+        "appViewUrl": { "main": "https://apps.example.com/helper" },
+        "version": "1.4.2",
+        "sponsors": [{ "name": "Acme Corp", "phone": "+1-555-0100" }]
+      },
       "room": {
         "siteId": "siteA",
-        "name": "alice_helper.bot",
         "userCount": 1,
         "appCount": 1,
-        "lastMsgAt": "2026-05-01T08:00:00Z",
+        "lastMsgAt": 1777622400000,
         "lastMsgId": "01970a4f8c2d7c9aDD"
       }
     }
@@ -3735,16 +3791,16 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
 **Subject:** `chat.user.{account}.request.user.{siteID}.subscription.getChannels`
 **Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
 
-Returns the channel subscriptions for the calling user that share at least one member from the requested set. Exactly one of `membersContain` or `accountNames` must be provided. The reply is **room-info-enriched** (same behavior as `subscription.list`).
+Returns the channel subscriptions for the calling user — rooms containing the requester AND all members listed in `accountNames` (exact match). Bot accounts are excluded from the membership check: accounts ending in `.bot` are ignored in the match even if listed. Exactly one of `membersContain` or `accountNames` must be provided. The reply is **room-info-enriched** (same behavior as `subscription.list`).
 
 ##### Request body
 
-Exactly one of the two fields must be set:
+Exactly one of the two fields must be set. The requester's own account is implicitly included in the membership check — it does not need to be listed in `accountNames`.
 
 | Field            | Type     | Required | Notes |
 |------------------|----------|----------|-------|
 | `membersContain` | string   | one-of   | Return channels that contain this single account as a member. |
-| `accountNames`   | string[] | one-of   | Return channels where ALL of the given accounts are members. |
+| `accountNames`   | string[] | one-of   | Return channels where ALL of the given accounts (plus the requester) are members. Accounts ending in `.bot` are ignored in the match even if listed. |
 
 ```json
 { "membersContain": "bob" }
@@ -3767,15 +3823,18 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": true,
       "alert": true,
       "muted": false,
       "favorite": true,
+      "updatedAt": "2026-06-01T10:00:05Z",
       "room": {
         "siteId": "siteA",
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgAt": 1780308000000,
         "lastMsgId": "01970a4f8c2d7c9aBB",
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
@@ -3819,7 +3878,7 @@ Returns the calling user's DM subscription with the named counterpart. The reply
 |----------------|----------------|-------|
 | `subscription` | [DMSubscription](#subscription) | The enriched DM subscription. |
 
-`DMSubscription` is a [Subscription](#subscription) plus one extra top-level field:
+`DMSubscription` is a [Subscription](#subscription) with one additional field, `hrInfo`, nested inside the `subscription` object alongside the base fields:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -3838,17 +3897,15 @@ Returns the calling user's DM subscription with the named counterpart. The reply
     "joinedAt": "2026-04-01T09:00:00Z",
     "alert": false,
     "hasMention": false,
+    "hasGroupMention": false,
+    "hasUnread": false,
     "muted": false,
     "favorite": false,
+    "updatedAt": "2026-05-20T15:30:00Z",
     "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
     "room": {
       "siteId": "siteA",
-      "name": "alice_bob",
-      "userCount": 2,
-      "lastMsgAt": "2026-05-20T15:30:00Z",
-      "lastMsgId": "01970a4f8c2d7c9aCC",
-      "privateKey": "cXdlcnR5...base64...dWlvcD09",
-      "keyVersion": 1
+      "lastMsgAt": 1779291000000
     }
   }
 }
@@ -3905,16 +3962,15 @@ Same shape as `subscription.list` — a (here, at most one) list:
       "joinedAt": "2026-04-01T09:00:00Z",
       "alert": false,
       "hasMention": false,
+      "hasGroupMention": false,
+      "hasUnread": false,
       "muted": false,
       "favorite": false,
+      "updatedAt": "2026-05-20T15:30:00Z",
       "room": {
         "siteId": "siteA",
-        "name": "alice_bob",
-        "userCount": 2,
-        "lastMsgAt": "2026-05-20T15:30:00Z",
-        "lastMsgId": "01970a4f8c2d7c9aCC",
-        "privateKey": "cXdlcnR5...base64...dWlvcD09",
-        "keyVersion": 1
+        "lastMsgAt": 1779291000000,
+        "lastMsgId": "01970a4f8c2d7c9aCC"
       }
     }
   ],
@@ -3938,11 +3994,13 @@ Same shape as `subscription.list` — a (here, at most one) list:
 
 Returns the count of active subscriptions, optionally filtered to unread rooms only.
 
+**Active set:** an active subscription is a non-muted DM or channel, **or** a botDM that is both non-muted **and** subscribed (`isSubscribed: true`). Unsubscribed botDMs and muted rooms of any type are excluded from the count. Rooms that have been soft-deleted (renamed with a `Del-` prefix) are also excluded.
+
 ##### Request body
 
 | Field    | Type    | Required | Notes |
 |----------|---------|----------|-------|
-| `unread` | boolean | no       | When `true`, returns the number of rooms with unread messages (uses room-info enrichment). When `false` or absent, returns the total active-subscription count. |
+| `unread` | boolean | no       | When `true`, returns the number of active rooms with unread messages. When `false` or absent, returns the total active-subscription count. |
 
 ```json
 { "unread": true }
@@ -3958,7 +4016,7 @@ Returns the count of active subscriptions, optionally filtered to unread rooms o
 { "count": 5 }
 ```
 
-**Unread count behavior:** when `unread: true`, the service fetches all active subscriptions and calls `GetRoomsInfo` per site in **parallel** using `errgroup` (fail-fast). If **any** site's RPC fails, the entire unread count falls back to the total active-subscription count (logged as a warning). This is intentionally different from `subscription.list` enrichment, which degrades per-site — a partial unread count would be misleading.
+**Unread count behavior:** when `unread: true`, the service fetches the active subscriptions and splits them by site. **Local** subscriptions are counted directly from the room baseline carried on the `$lookup` (comparing the room's `lastMsgAt` against the subscription's `lastSeenAt`) — no RPC is made. Only **cross-site** subscriptions trigger a per-site `GetRoomsInfo` RPC, run in **parallel** using `errgroup` (fail-fast). If **any** cross-site RPC fails, the entire unread count falls back to the total active-subscription count (logged as a warning). This is intentionally all-or-nothing and differs from `subscription.list` enrichment, which degrades per-site — a partial unread count would be misleading.
 
 ##### Error response
 
@@ -4009,7 +4067,7 @@ PUT-like idempotent endpoint to subscribe or unsubscribe the calling user from a
 |-----------|--------|----------|-------|
 | `appId` missing | `bad_request` | — | `"appId required"` |
 | App not found | `not_found` | `app_not_found` | `"app not found"` |
-| App has no enabled assistant | `bad_request` | `app_disabled` | `"app has no enabled assistant"` |
+| App has no assistant | `bad_request` | `app_disabled` | `"app has no assistant"` |
 | Internal failure | `internal` | — | — |
 
 ---
@@ -4048,7 +4106,11 @@ Optional — an empty body returns the first page with defaults.
 | `id` | string | App ID. |
 | `name` | string | App display name. |
 | `description` | string | Optional. App description. |
-| `avatarUrl` | string | Optional. App avatar image URL. |
+| `appViewUrl` | map<string, string> | Optional. App-view URLs keyed by view name (e.g. `{"main": "..."}`). |
+| `reportUrl` | string | Optional. App report URL. |
+| `forumUrl` | string | Optional. App forum URL. |
+| `userManualUrl` | string | Optional. App user-manual URL. |
+| `version` | string | Optional. App version. |
 | `assistant` | [AppAssistant](#appassistant) | Optional. The app's bot assistant. |
 | `channelTab` | [AppChannelTab](#appchanneltab) | Optional. Channel-tab configuration. |
 | `sponsors` | [AppSponsor](#appsponsor)[] | Optional. App sponsor list. |
@@ -4061,7 +4123,11 @@ Optional — an empty body returns the first page with defaults.
       "id": "calendar-app",
       "name": "Calendar",
       "description": "Meeting and calendar integration",
-      "avatarUrl": "https://example.com/calendar.png",
+      "appViewUrl": { "main": "https://apps.example.com/calendar" },
+      "reportUrl": "https://apps.example.com/calendar/report",
+      "forumUrl": "https://apps.example.com/calendar/forum",
+      "userManualUrl": "https://apps.example.com/calendar/manual",
+      "version": "2.1.0",
       "assistant": { "enabled": true, "name": "calendar.bot" },
       "isSubscribed": true
     }
@@ -4428,7 +4494,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 #### When clients receive `RoomKeyEvent`s
 
-- **Room creation (all room types):** sent to every initial member.
+- **Room creation (channels only):** sent to every initial member. DM/botDM rooms carry no key, so creation fires no `RoomKeyEvent`.
 - **Add member (channels only):** sent to each newly-added account; existing members do not receive a duplicate event.
 - **Remove member (channels only):** the server rotates the room key. Surviving members receive a new `RoomKeyEvent` with an incremented `version`. The removed account stops receiving events for the room.
 
@@ -4570,7 +4636,7 @@ Every error response — NATS reply subjects, JetStream async results, and HTTP 
 | `missing_fields` | bad_request | auth-service (ssoToken/account/natsPublicKey missing); portal-service `GET /api/userInfo` (account missing) |
 | `account_not_ready` | forbidden | portal-service `GET /api/userInfo` (account absent from the HR directory cache, or not provisioned in the users collection) |
 | `app_not_found` | not_found | user-service `subscription.setAppSubscription` (appId does not resolve to any app) |
-| `app_disabled` | bad_request | user-service `subscription.setAppSubscription` (app exists but has no enabled assistant) |
+| `app_disabled` | bad_request | user-service `subscription.setAppSubscription` (app exists but has no assistant) |
 | `invalid_dm_target` | bad_request | user-service `subscription.getDM` (target is a bot or platform account) |
 | `subscription_not_found` | not_found | user-service `subscription.getDM` (no DM subscription exists for the account pair) |
 

@@ -11,9 +11,12 @@ type SubscriptionListRequest struct {
 }
 
 // SubscriptionListResponse is returned by subscription.list and subscription.getChannels.
+// Subscriptions is a heterogeneous slice of per-room-type rows ([model.SubscriptionItem]):
+// channel ([model.ChannelSubscription]), dm ([model.DMSubscription], adds hrInfo), and
+// botDM ([model.BotDMSubscription], adds a nested app object).
 type SubscriptionListResponse struct {
-	Subscriptions []model.Subscription `json:"subscriptions"`
-	Total         int                  `json:"total"`
+	Subscriptions []model.SubscriptionItem `json:"subscriptions"`
+	Total         int                      `json:"total"`
 }
 
 // GetChannelsRequest is the body of subscription.getChannels (exactly one of the two set).

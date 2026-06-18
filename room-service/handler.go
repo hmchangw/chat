@@ -2069,7 +2069,6 @@ func (h *Handler) getRoomAppTabs(c *natsrouter.Context) (*model.GetRoomAppTabsRe
 			Name:      app.ChannelTab.Name,
 			TabURL:    tabURL,
 			Assistant: app.Assistant,
-			AvatarURL: app.AvatarURL,
 		})
 	}
 	return boundedReply(h, &model.GetRoomAppTabsResponse{Apps: out})

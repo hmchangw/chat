@@ -23,8 +23,8 @@ func (s *UserService) SetAppSubscription(c *natsrouter.Context, req models.SetAp
 	if app == nil {
 		return nil, errcode.NotFound("app not found", errcode.WithReason(errcode.UserAppNotFound))
 	}
-	if app.Assistant == nil || !app.Assistant.Enabled {
-		return nil, errcode.BadRequest("app has no enabled assistant", errcode.WithReason(errcode.UserAppDisabled))
+	if app.Assistant == nil {
+		return nil, errcode.BadRequest("app has no assistant", errcode.WithReason(errcode.UserAppDisabled))
 	}
 	botName := app.Assistant.Name
 

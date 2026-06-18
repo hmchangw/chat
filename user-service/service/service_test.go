@@ -22,7 +22,7 @@ func newSvc(t *testing.T) (*UserService, *mocks.MockSubscriptionRepository, *moc
 	apps := mocks.NewMockAppRepository(ctrl)
 	rooms := mocks.NewMockRoomClient(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
-	cfg := &config.Config{SiteID: "site-a", AllSiteIDs: []string{"site-a", "site-b"}, MaxSubscriptionLimit: 1000}
+	cfg := &config.Config{SiteID: "site-a", AllSiteIDs: []string{"site-a", "site-b"}, MaxSubscriptionLimit: 1000, MaxAccountNames: 100}
 	return New(subs, users, apps, rooms, pub, cfg), subs, users, apps, rooms, pub
 }
 

@@ -4963,7 +4963,6 @@ func newTabsTestHandler(t *testing.T, siteURL string) (*Handler, *MockRoomStore,
 func mockTabApp(id, tabName, urlTemplate string) model.App {
 	return model.App{
 		ID:        id,
-		AvatarURL: "https://cdn/" + id + ".png",
 		Assistant: &model.AppAssistant{Enabled: true, Name: id + ".bot"},
 		ChannelTab: &model.AppChannelTab{
 			Enabled: true, Default: true, Name: tabName,
@@ -5051,7 +5050,6 @@ func TestHandler_handleGetRoomAppTabs_MemberAllowed(t *testing.T) {
 	assert.Equal(t, "app1", resp.Apps[0].ID)
 	assert.Equal(t, "Calendar", resp.Apps[0].Name)
 	assert.Equal(t, "https://chat.example.com/cal/r1/site-a/index", resp.Apps[0].TabURL)
-	assert.Equal(t, "https://cdn/app1.png", resp.Apps[0].AvatarURL)
 	require.NotNil(t, resp.Apps[0].Assistant)
 	assert.Equal(t, "app1.bot", resp.Apps[0].Assistant.Name)
 }
@@ -5172,7 +5170,7 @@ func TestHandler_handleGetRoomAppTabs_SkipsAppWithNilChannelTab(t *testing.T) {
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1"}, nil)
 	// One app has nil ChannelTab (invalid data), one is valid — only the valid one should appear.
-	appNoTab := model.App{ID: "notab", AvatarURL: "https://cdn/notab.png", ChannelTab: nil}
+	appNoTab := model.App{ID: "notab", ChannelTab: nil}
 	store.EXPECT().ListDefaultChannelTabApps(gomock.Any()).Return([]model.App{
 		appNoTab,
 		mockTabApp("ok1", "OK1", "https://upstream/ok1/${roomId}"),

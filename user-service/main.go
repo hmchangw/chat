@@ -68,6 +68,10 @@ func main() {
 		slog.Error("ensure indexes failed", "error", err)
 		os.Exit(1)
 	}
+	if err := appRepo.EnsureIndexes(ctx); err != nil {
+		slog.Error("ensure indexes failed", "error", err)
+		os.Exit(1)
+	}
 
 	svc := service.New(subRepo, userRepo, appRepo, roomclient.New(nc, cfg.SiteID), publisher.New(nc), &cfg)
 

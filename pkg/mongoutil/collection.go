@@ -55,8 +55,8 @@ func (c *Collection[T]) FindMany(ctx context.Context, filter any, opts ...QueryO
 
 func (c *Collection[T]) Raw() *mongo.Collection { return c.col }
 
-func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A, opts ...QueryOption) ([]T, error) {
-	cursor, err := c.col.Aggregate(ctx, pipeline, apply(opts).aggregateOpts())
+func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A) ([]T, error) {
+	cursor, err := c.col.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregating %s: %w", c.name, err)
 	}
@@ -70,8 +70,8 @@ func (c *Collection[T]) Aggregate(ctx context.Context, pipeline bson.A, opts ...
 	return results, nil
 }
 
-// AggregatePaged appends a $facet stage; pass WithAllowDiskUse for pipelines that may exceed the 16 MB limit.
-func (c *Collection[T]) AggregatePaged(ctx context.Context, pipeline bson.A, req OffsetPageRequest, opts ...QueryOption) (OffsetPage[T], error) {
+// AggregatePaged appends a $facet stage to page the aggregation results.
+func (c *Collection[T]) AggregatePaged(ctx context.Context, pipeline bson.A, req OffsetPageRequest) (OffsetPage[T], error) {
 	facet := bson.D{{Key: "$facet", Value: bson.M{
 		"data": bson.A{
 			bson.D{{Key: "$skip", Value: req.Offset}},
@@ -85,7 +85,7 @@ func (c *Collection[T]) AggregatePaged(ctx context.Context, pipeline bson.A, req
 	full = append(full, pipeline...)
 	full = append(full, facet)
 
-	cursor, err := c.col.Aggregate(ctx, full, apply(opts).aggregateOpts())
+	cursor, err := c.col.Aggregate(ctx, full)
 	if err != nil {
 		return OffsetPage[T]{}, fmt.Errorf("aggregating %s: %w", c.name, err)
 	}

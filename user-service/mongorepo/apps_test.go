@@ -54,27 +54,36 @@ func TestGetApp_Integration(t *testing.T) {
 	})
 }
 
-func TestGetAppNamesByAssistants_Integration(t *testing.T) {
+func TestGetAppsByAssistants_Integration(t *testing.T) {
 	r, db := newTestAppRepo(t)
 	ctx := context.Background()
 	seedApps(t, db)
 
-	t.Run("maps bot accounts to display names", func(t *testing.T) {
-		names, err := r.GetAppNamesByAssistants(ctx, []string{"helper.bot", "other.bot"})
+	t.Run("maps bot accounts to full app docs", func(t *testing.T) {
+		apps, err := r.GetAppsByAssistants(ctx, []string{"helper.bot", "other.bot"})
 		require.NoError(t, err)
-		assert.Equal(t, map[string]string{"helper.bot": "Helper", "other.bot": "Other"}, names)
+		require.Len(t, apps, 2)
+		require.NotNil(t, apps["helper.bot"])
+		assert.Equal(t, "app-helper", apps["helper.bot"].ID, "AppID must come from the doc _id")
+		assert.Equal(t, "Helper", apps["helper.bot"].Name)
+		require.NotNil(t, apps["helper.bot"].Assistant)
+		assert.Equal(t, "helper.bot", apps["helper.bot"].Assistant.Name)
+		require.NotNil(t, apps["other.bot"])
+		assert.Equal(t, "Other", apps["other.bot"].Name)
 	})
 
 	t.Run("unknown bot omitted", func(t *testing.T) {
-		names, err := r.GetAppNamesByAssistants(ctx, []string{"helper.bot", "ghost.bot"})
+		apps, err := r.GetAppsByAssistants(ctx, []string{"helper.bot", "ghost.bot"})
 		require.NoError(t, err)
-		assert.Equal(t, map[string]string{"helper.bot": "Helper"}, names)
+		require.Len(t, apps, 1)
+		require.NotNil(t, apps["helper.bot"])
+		assert.Equal(t, "Helper", apps["helper.bot"].Name)
 	})
 
 	t.Run("empty input yields empty map", func(t *testing.T) {
-		names, err := r.GetAppNamesByAssistants(ctx, []string{})
+		apps, err := r.GetAppsByAssistants(ctx, []string{})
 		require.NoError(t, err)
-		assert.Empty(t, names)
+		assert.Empty(t, apps)
 	})
 }
 

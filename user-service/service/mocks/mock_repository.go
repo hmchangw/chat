@@ -186,6 +186,21 @@ func (m *MockUserRepository) EXPECT() *MockUserRepositoryMockRecorder {
 	return m.recorder
 }
 
+// GetHRInfoByAccounts mocks base method.
+func (m *MockUserRepository) GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetHRInfoByAccounts", ctx, accounts)
+	ret0, _ := ret[0].(map[string]*model.SubscriptionHRInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetHRInfoByAccounts indicates an expected call of GetHRInfoByAccounts.
+func (mr *MockUserRepositoryMockRecorder) GetHRInfoByAccounts(ctx, accounts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetHRInfoByAccounts", reflect.TypeOf((*MockUserRepository)(nil).GetHRInfoByAccounts), ctx, accounts)
+}
+
 // GetUserStatus mocks base method.
 func (m *MockUserRepository) GetUserStatus(ctx context.Context, account string) (*model.User, error) {
 	m.ctrl.T.Helper()
@@ -202,10 +217,10 @@ func (mr *MockUserRepositoryMockRecorder) GetUserStatus(ctx, account any) *gomoc
 }
 
 // SetUserStatus mocks base method.
-func (m *MockUserRepository) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {
+func (m *MockUserRepository) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SetUserStatus", ctx, account, text, isShow)
-	ret0, _ := ret[0].(bool)
+	ret0, _ := ret[0].(*model.User)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -255,19 +270,19 @@ func (mr *MockAppRepositoryMockRecorder) GetApp(ctx, appID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApp", reflect.TypeOf((*MockAppRepository)(nil).GetApp), ctx, appID)
 }
 
-// GetAppNamesByAssistants mocks base method.
-func (m *MockAppRepository) GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error) {
+// GetAppsByAssistants mocks base method.
+func (m *MockAppRepository) GetAppsByAssistants(ctx context.Context, botAccounts []string) (map[string]*model.App, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAppNamesByAssistants", ctx, botAccounts)
-	ret0, _ := ret[0].(map[string]string)
+	ret := m.ctrl.Call(m, "GetAppsByAssistants", ctx, botAccounts)
+	ret0, _ := ret[0].(map[string]*model.App)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetAppNamesByAssistants indicates an expected call of GetAppNamesByAssistants.
-func (mr *MockAppRepositoryMockRecorder) GetAppNamesByAssistants(ctx, botAccounts any) *gomock.Call {
+// GetAppsByAssistants indicates an expected call of GetAppsByAssistants.
+func (mr *MockAppRepositoryMockRecorder) GetAppsByAssistants(ctx, botAccounts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAppNamesByAssistants", reflect.TypeOf((*MockAppRepository)(nil).GetAppNamesByAssistants), ctx, botAccounts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAppsByAssistants", reflect.TypeOf((*MockAppRepository)(nil).GetAppsByAssistants), ctx, botAccounts)
 }
 
 // ListApps mocks base method.

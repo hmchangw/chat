@@ -1226,13 +1226,12 @@ func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, a
 
 // ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
 // channelTab.default are both true, sorted by channelTab.name asc.
-// Projection: _id, avatarUrl, assistant, channelTab. Empty result is ([], nil).
+// Projection: _id, assistant, channelTab. Empty result is ([], nil).
 func (s *MongoStore) ListDefaultChannelTabApps(ctx context.Context) ([]model.App, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "channelTab.name", Value: 1}}).
 		SetProjection(bson.M{
 			"_id":        1,
-			"avatarUrl":  1,
 			"assistant":  1,
 			"channelTab": 1,
 		})

@@ -2,13 +2,12 @@ package mongoutil
 
 import "go.mongodb.org/mongo-driver/v2/mongo/options"
 
-// queryOptions: WithSort/Limit/Skip only affect FindMany; allowDiskUse only affects Aggregate.
+// queryOptions: WithSort/Limit/Skip only affect FindMany.
 type queryOptions struct {
-	projection   any
-	sort         any
-	limit        *int64
-	skip         *int64
-	allowDiskUse bool
+	projection any
+	sort       any
+	limit      *int64
+	skip       *int64
 }
 
 func (qo *queryOptions) findOneOpts() *options.FindOneOptionsBuilder {
@@ -36,14 +35,6 @@ func (qo *queryOptions) findOpts() *options.FindOptionsBuilder {
 	return opts
 }
 
-func (qo *queryOptions) aggregateOpts() *options.AggregateOptionsBuilder {
-	opts := options.Aggregate()
-	if qo.allowDiskUse {
-		opts.SetAllowDiskUse(true)
-	}
-	return opts
-}
-
 type QueryOption func(*queryOptions)
 
 func WithProjection(projection any) QueryOption {
@@ -60,11 +51,6 @@ func WithLimit(limit int64) QueryOption {
 
 func WithSkip(skip int64) QueryOption {
 	return func(o *queryOptions) { o.skip = &skip }
-}
-
-// WithAllowDiskUse lets an aggregation spill to disk when it exceeds MongoDB's 100 MB in-memory limit.
-func WithAllowDiskUse() QueryOption {
-	return func(o *queryOptions) { o.allowDiskUse = true }
 }
 
 func apply(opts []QueryOption) *queryOptions {

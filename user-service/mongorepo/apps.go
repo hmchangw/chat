@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -28,6 +29,21 @@ func NewAppRepo(db *mongo.Database) *AppRepo {
 		apps:  mongoutil.NewCollection[model.App](col),
 		items: mongoutil.NewCollection[models.AppListItem](col),
 	}
+}
+
+// EnsureIndexes creates the apps index that backs assistant.name lookups
+// (GetAppsByAssistants and the bot-DM $lookup), removing the COLLSCAN. The name
+// matches room-service's so the two services' CreateOne calls agree instead of
+// colliding with IndexOptionsConflict — each service declares the index it needs.
+func (r *AppRepo) EnsureIndexes(ctx context.Context) error {
+	appsIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "assistant.name", Value: 1}},
+		Options: options.Index().SetName("assistant_name_idx"),
+	}
+	if _, err := r.apps.Raw().Indexes().CreateOne(ctx, appsIndex); err != nil {
+		return fmt.Errorf("ensure apps index: %w", err)
+	}
+	return nil
 }
 
 // GetApp returns the app by id, or (nil, nil) when none matches.
@@ -54,26 +70,24 @@ func (r *AppRepo) ListApps(ctx context.Context, account string, page mongoutil.O
 		bson.M{"$project": bson.M{"sub": 0}},
 		bson.M{"$sort": bson.M{"name": 1}},
 	}
-	out, err := r.items.AggregatePaged(ctx, pipeline, page, mongoutil.WithAllowDiskUse())
+	out, err := r.items.AggregatePaged(ctx, pipeline, page)
 	if err != nil {
 		return mongoutil.OffsetPage[models.AppListItem]{}, fmt.Errorf("aggregate apps page: %w", err)
 	}
 	return out, nil
 }
 
-// GetAppNamesByAssistants maps bot account (assistant.name) → app display name for the given accounts.
-func (r *AppRepo) GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error) {
-	apps, err := r.apps.FindMany(ctx,
-		bson.M{"assistant.name": bson.M{"$in": botAccounts}},
-		mongoutil.WithProjection(bson.M{"_id": 0, "name": 1, "assistant.name": 1}),
-	)
+// GetAppsByAssistants maps bot account (assistant.name) → the full app document for the given accounts.
+func (r *AppRepo) GetAppsByAssistants(ctx context.Context, botAccounts []string) (map[string]*model.App, error) {
+	apps, err := r.apps.FindMany(ctx, bson.M{"assistant.name": bson.M{"$in": botAccounts}})
 	if err != nil {
 		return nil, fmt.Errorf("find apps by assistant names: %w", err)
 	}
-	out := make(map[string]string, len(apps))
+	out := make(map[string]*model.App, len(apps))
 	for i := range apps {
 		if apps[i].Assistant != nil {
-			out[apps[i].Assistant.Name] = apps[i].Name
+			app := apps[i]
+			out[app.Assistant.Name] = &app
 		}
 	}
 	return out, nil

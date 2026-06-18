@@ -32,21 +32,23 @@ func TestSetAppSubscription_NotFound(t *testing.T) {
 	assert.True(t, errcode.HasReason(err, errcode.UserAppNotFound))
 }
 
-func TestSetAppSubscription_Disabled(t *testing.T) {
-	t.Run("assistant_disabled", func(t *testing.T) {
-		svc, _, _, apps, _, _ := newSvc(t)
-		apps.EXPECT().GetApp(gomock.Any(), "app1").Return(appWith(false), nil)
-		_, err := svc.SetAppSubscription(ctx("alice", "site-a"), models.SetAppSubscriptionRequest{AppID: "app1", Subscribed: true})
-		requireCode(t, err, errcode.CodeBadRequest)
-		assert.True(t, errcode.HasReason(err, errcode.UserAppDisabled))
-	})
-	t.Run("nil_assistant", func(t *testing.T) {
-		svc, _, _, apps, _, _ := newSvc(t)
-		apps.EXPECT().GetApp(gomock.Any(), "app1").Return(&model.App{ID: "app1", Name: "NoAssistant"}, nil)
-		_, err := svc.SetAppSubscription(ctx("alice", "site-a"), models.SetAppSubscriptionRequest{AppID: "app1", Subscribed: true})
-		requireCode(t, err, errcode.CodeBadRequest)
-		assert.True(t, errcode.HasReason(err, errcode.UserAppDisabled))
-	})
+func TestSetAppSubscription_NilAssistant(t *testing.T) {
+	svc, _, _, apps, _, _ := newSvc(t)
+	apps.EXPECT().GetApp(gomock.Any(), "app1").Return(&model.App{ID: "app1", Name: "NoAssistant"}, nil)
+	_, err := svc.SetAppSubscription(ctx("alice", "site-a"), models.SetAppSubscriptionRequest{AppID: "app1", Subscribed: true})
+	requireCode(t, err, errcode.CodeBadRequest)
+	assert.True(t, errcode.HasReason(err, errcode.UserAppDisabled))
+}
+
+// A disabled assistant (Enabled=false) is now subscribable — the enabled check was removed.
+func TestSetAppSubscription_DisabledAssistantAllowed(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	apps.EXPECT().GetApp(gomock.Any(), "app1").Return(appWith(false), nil)
+	subs.EXPECT().GetAppSubscription(gomock.Any(), "alice", "helper.bot").Return(nil, nil)
+	rooms.EXPECT().CreateDMRoom(gomock.Any(), "alice", "helper.bot", model.RoomTypeBotDM).Return(model.Subscription{ID: "new"}, nil)
+	resp, err := svc.SetAppSubscription(ctx("alice", "site-a"), models.SetAppSubscriptionRequest{AppID: "app1", Subscribed: true})
+	require.NoError(t, err)
+	assert.True(t, resp.Success)
 }
 
 func TestSetAppSubscription_GetAppStoreError(t *testing.T) {

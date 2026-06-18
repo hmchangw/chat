@@ -73,24 +73,62 @@ func TestGetUserStatus_ProjectsOnlyStatusFields_Integration(t *testing.T) {
 	assert.Empty(t, u.Roles, "roles are outside the status projection")
 }
 
+func TestGetHRInfoByAccounts_Integration(t *testing.T) {
+	r, db := newTestUserRepo(t)
+	ctx := context.Background()
+	seed(t, db, "users",
+		bson.M{"_id": "u-bob", "account": "bob", "active": true, "chineseName": "鮑勃", "engName": "Bob Chen",
+			// Outside the projection — must not leak into the result.
+			"statusText": "deep work", "deptId": "dept-1"},
+		bson.M{"_id": "u-carol", "account": "carol", "active": true, "chineseName": "卡蘿", "engName": "Carol"},
+	)
+
+	t.Run("maps accounts to HR records (name = chineseName)", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{"bob", "carol"})
+		require.NoError(t, err)
+		require.Len(t, hr, 2)
+		require.NotNil(t, hr["bob"])
+		assert.Equal(t, "bob", hr["bob"].Account)
+		assert.Equal(t, "鮑勃", hr["bob"].Name, "hrInfo.name must mirror chineseName")
+		assert.Equal(t, "Bob Chen", hr["bob"].EngName)
+		require.NotNil(t, hr["carol"])
+		assert.Equal(t, "卡蘿", hr["carol"].Name)
+	})
+
+	t.Run("unknown account omitted", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{"bob", "ghost"})
+		require.NoError(t, err)
+		require.Len(t, hr, 1)
+		require.NotNil(t, hr["bob"])
+	})
+
+	t.Run("empty input yields empty map", func(t *testing.T) {
+		hr, err := r.GetHRInfoByAccounts(ctx, []string{})
+		require.NoError(t, err)
+		assert.Empty(t, hr)
+	})
+}
+
 func TestSetUserStatus_Integration(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("updates text and isShow", func(t *testing.T) {
+	t.Run("updates text and isShow, returns the updated doc", func(t *testing.T) {
 		r, db := newTestUserRepo(t)
 		seed(t, db, "users",
-			bson.M{"_id": "u-bob", "account": "bob", "active": true, "statusText": "hi"},
+			bson.M{"_id": "u-bob", "account": "bob", "active": true, "statusText": "hi",
+				"chineseName": "鮑勃", "engName": "Bob"},
 		)
 
 		show := true
-		matched, err := r.SetUserStatus(ctx, "bob", "busy", &show)
+		u, err := r.SetUserStatus(ctx, "bob", "busy", &show)
 		require.NoError(t, err)
-		assert.True(t, matched, "existing active user must match")
-		u, err := r.GetUserStatus(ctx, "bob")
-		require.NoError(t, err)
-		require.NotNil(t, u)
+		require.NotNil(t, u, "existing active user must be returned")
+		// ReturnDocument:After ⇒ the returned doc is the persisted post-update state.
+		assert.Equal(t, "bob", u.Account)
 		assert.Equal(t, "busy", u.StatusText)
 		assert.True(t, u.StatusIsShow)
+		assert.Equal(t, "鮑勃", u.ChineseName)
+		assert.Equal(t, "Bob", u.EngName)
 	})
 
 	t.Run("nil isShow leaves flag untouched", func(t *testing.T) {
@@ -99,30 +137,27 @@ func TestSetUserStatus_Integration(t *testing.T) {
 			bson.M{"_id": "u-bob", "account": "bob", "active": true, "statusText": "hi", "statusIsShow": true},
 		)
 
-		matched, err := r.SetUserStatus(ctx, "bob", "away", nil)
-		require.NoError(t, err)
-		assert.True(t, matched)
-		u, err := r.GetUserStatus(ctx, "bob")
+		u, err := r.SetUserStatus(ctx, "bob", "away", nil)
 		require.NoError(t, err)
 		require.NotNil(t, u)
 		assert.Equal(t, "away", u.StatusText)
 		assert.True(t, u.StatusIsShow, "previously-set flag must survive a text-only update")
 	})
 
-	t.Run("unknown account does not match", func(t *testing.T) {
+	t.Run("unknown account returns nil", func(t *testing.T) {
 		r, _ := newTestUserRepo(t)
-		matched, err := r.SetUserStatus(ctx, "nobody", "busy", nil)
+		u, err := r.SetUserStatus(ctx, "nobody", "busy", nil)
 		require.NoError(t, err)
-		assert.False(t, matched, "no active user doc ⇒ matched=false")
+		assert.Nil(t, u, "no active user doc ⇒ nil")
 	})
 
-	t.Run("explicitly inactive account does not match", func(t *testing.T) {
+	t.Run("explicitly inactive account returns nil", func(t *testing.T) {
 		r, db := newTestUserRepo(t)
 		seed(t, db, "users",
 			bson.M{"_id": "u-ghost", "account": "ghost", "active": false, "statusText": "gone"},
 		)
-		matched, err := r.SetUserStatus(ctx, "ghost", "busy", nil)
+		u, err := r.SetUserStatus(ctx, "ghost", "busy", nil)
 		require.NoError(t, err)
-		assert.False(t, matched, "active:false user is excluded by the filter ⇒ matched=false")
+		assert.Nil(t, u, "active:false user is excluded by the filter ⇒ nil")
 	})
 }

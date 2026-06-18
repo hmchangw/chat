@@ -65,19 +65,55 @@ func (r *UserRepo) GetUserStatus(ctx context.Context, account string) (*model.Us
 	)
 }
 
-// SetUserStatus updates status fields; isShow is only written when non-nil.
-// Returns matched=false when no active user doc matched so callers can skip the cross-site broadcast.
-func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (bool, error) {
+// GetHRInfoByAccounts maps account → the counterpart's HR-directory record for DM
+// sidebar/header rendering. hrInfo.name mirrors the chineseName field, matching the
+// hrUser $lookup in GetDMSubscription. Accounts with no users doc are omitted.
+func (r *UserRepo) GetHRInfoByAccounts(ctx context.Context, accounts []string) (map[string]*model.SubscriptionHRInfo, error) {
+	type hrUser struct {
+		Account     string `bson:"account"`
+		ChineseName string `bson:"chineseName"`
+		EngName     string `bson:"engName"`
+	}
+	col := mongoutil.NewCollection[hrUser](r.users.Raw())
+	rows, err := col.FindMany(ctx,
+		bson.M{"account": bson.M{"$in": accounts}},
+		mongoutil.WithProjection(bson.M{"_id": 0, "account": 1, "chineseName": 1, "engName": 1}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find hr info by accounts: %w", err)
+	}
+	out := make(map[string]*model.SubscriptionHRInfo, len(rows))
+	for i := range rows {
+		out[rows[i].Account] = &model.SubscriptionHRInfo{
+			Account: rows[i].Account,
+			Name:    rows[i].ChineseName,
+			EngName: rows[i].EngName,
+		}
+	}
+	return out, nil
+}
+
+// SetUserStatus updates status fields (isShow only written when non-nil) and
+// returns the updated user in one round-trip via FindOneAndUpdate(After),
+// projected to the StatusView fields; returns (nil, nil) when no active user matched.
+func (r *UserRepo) SetUserStatus(ctx context.Context, account, text string, isShow *bool) (*model.User, error) {
 	set := bson.M{"statusText": text}
 	if isShow != nil {
 		set["statusIsShow"] = *isShow
 	}
-	res, err := r.users.Raw().UpdateOne(ctx,
-		activeUserFilter(account),
-		bson.M{"$set": set},
-	)
-	if err != nil {
-		return false, fmt.Errorf("update user status: %w", err)
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.After).
+		SetProjection(bson.M{"_id": 0, "account": 1, "statusText": 1, "statusIsShow": 1, "chineseName": 1, "engName": 1})
+	res := r.users.Raw().FindOneAndUpdate(ctx, activeUserFilter(account), bson.M{"$set": set}, opts)
+	if err := res.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("update user status: %w", err)
 	}
-	return res.MatchedCount > 0, nil
+	var u model.User
+	if err := res.Decode(&u); err != nil {
+		return nil, fmt.Errorf("decode updated user status: %w", err)
+	}
+	return &u, nil
 }

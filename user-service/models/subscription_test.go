@@ -21,19 +21,101 @@ func TestSubscriptionListRequest_RoundTrip(t *testing.T) {
 	require.Equal(t, in, out)
 }
 
-func TestSubscriptionListResponse_RoundTrip(t *testing.T) {
+func TestSubscriptionListResponse_Marshal(t *testing.T) {
+	// Subscriptions is a []model.SubscriptionItem (interface) — a server-only
+	// response type, so this verifies the marshaled wire shape (it is never
+	// unmarshaled back into the interface slice).
 	joined := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	in := SubscriptionListResponse{
-		Subscriptions: []model.Subscription{
-			{ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "General", JoinedAt: joined},
+		Subscriptions: []model.SubscriptionItem{
+			&model.ChannelSubscription{Subscription: &model.Subscription{
+				ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "General", JoinedAt: joined, RoomType: model.RoomTypeChannel,
+			}},
 		},
 		Total: 1,
 	}
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
-	var out SubscriptionListResponse
+	var out struct {
+		Subscriptions []map[string]any `json:"subscriptions"`
+		Total         int              `json:"total"`
+	}
 	require.NoError(t, json.Unmarshal(b, &out))
-	require.Equal(t, in, out)
+	require.Len(t, out.Subscriptions, 1)
+	require.Equal(t, "s1", out.Subscriptions[0]["id"])
+	require.Equal(t, "General", out.Subscriptions[0]["name"])
+	_, hasApp := out.Subscriptions[0]["app"]
+	require.False(t, hasApp, "channel row carries no app object")
+	_, hasHR := out.Subscriptions[0]["hrInfo"]
+	require.False(t, hasHR, "channel row carries no hrInfo")
+	require.Equal(t, 1, out.Total)
+}
+
+// TestSubscriptionItem_HeterogeneousRows pins the wire shape per room type:
+// channel = base only; dm adds top-level hrInfo; botDM adds a nested app object
+// (appId/name/description/assistant/…) and carries NO hrInfo.
+func TestSubscriptionItem_HeterogeneousRows(t *testing.T) {
+	t.Run("channel row is base only", func(t *testing.T) {
+		item := &model.ChannelSubscription{
+			Subscription: &model.Subscription{ID: "c1", RoomID: "rc1", SiteID: "site-a", Name: "general", RoomType: model.RoomTypeChannel},
+		}
+		raw := marshalToMap(t, item)
+		require.Equal(t, "general", raw["name"])
+		_, hasHR := raw["hrInfo"]
+		require.False(t, hasHR, "channel row must not carry hrInfo")
+		_, hasApp := raw["app"]
+		require.False(t, hasApp, "channel row must not carry an app object")
+	})
+
+	t.Run("dm row adds top-level hrInfo", func(t *testing.T) {
+		item := &model.DMSubscription{
+			Subscription: &model.Subscription{ID: "d1", RoomID: "rd1", SiteID: "site-a", Name: "bob", RoomType: model.RoomTypeDM},
+			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "鮑勃", EngName: "Bob Chen"},
+		}
+		raw := marshalToMap(t, item)
+		require.Equal(t, "bob", raw["name"])
+		hr, ok := raw["hrInfo"].(map[string]any)
+		require.True(t, ok, "dm row must carry a top-level hrInfo object")
+		require.Equal(t, "鮑勃", hr["name"])
+		require.Equal(t, "Bob Chen", hr["engName"])
+		_, hasApp := raw["app"]
+		require.False(t, hasApp, "dm row must not carry an app object")
+	})
+
+	t.Run("botDM row nests app metadata under app and carries no hrInfo", func(t *testing.T) {
+		item := &model.BotDMSubscription{
+			Subscription: &model.Subscription{ID: "b1", RoomID: "rb1", SiteID: "site-a", Name: "Helper App", RoomType: model.RoomTypeBotDM},
+			App: model.AppSubscriptionFromApp(&model.App{
+				ID:          "app-helper",
+				Name:        "Helper App",
+				Description: "does helpful things",
+				Assistant:   &model.AppAssistant{Enabled: true, Name: "helper.bot", Username: "Helper"},
+				Version:     "1.0.0",
+			}),
+		}
+		raw := marshalToMap(t, item)
+		require.Equal(t, "Helper App", raw["name"], "base subscription name carries the app display name")
+		app, ok := raw["app"].(map[string]any)
+		require.True(t, ok, "botDM row must carry a nested app object")
+		require.Equal(t, "app-helper", app["appId"])
+		require.Equal(t, "Helper App", app["name"], "app object carries its own display name")
+		require.Equal(t, "does helpful things", app["description"])
+		require.Equal(t, "1.0.0", app["version"])
+		assistant, ok := app["assistant"].(map[string]any)
+		require.True(t, ok, "assistant nests inside the app object")
+		require.Equal(t, "helper.bot", assistant["name"])
+		_, hasHR := raw["hrInfo"]
+		require.False(t, hasHR, "botDM row must not carry hrInfo")
+	})
+}
+
+func marshalToMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(b, &raw))
+	return raw
 }
 
 func TestGetChannelsRequest_RoundTrip(t *testing.T) {
