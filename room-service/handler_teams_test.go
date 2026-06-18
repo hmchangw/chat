@@ -275,6 +275,7 @@ func TestTeamsMeeting_CreatesAndPublishes(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice"), indMember("bob")}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", EngName: "Alice"}, nil)
 
 	graph := &fakeGraphClient{meeting: &msgraph.OnlineMeeting{ID: "mtg-1", JoinURL: "https://teams.example/join/1"}}
 
@@ -321,6 +322,7 @@ func TestTeamsMeeting_CreatesAndPublishes(t *testing.T) {
 	var evt model.MessageEvent
 	require.NoError(t, json.Unmarshal(publishedData, &evt))
 	assert.Equal(t, model.MessageTypeTeamsMeetStarted, evt.Message.Type)
+	assert.Equal(t, `"Alice" started a Teams meeting`, evt.Message.Content)
 	var sys model.TeamsMeetStartedSysData
 	require.NoError(t, json.Unmarshal(evt.Message.SysMsgData, &sys))
 	assert.Equal(t, "mtg-1", sys.MeetingID)
@@ -431,6 +433,7 @@ func TestTeamsMeeting_Concurrent_SingleCreateSingleMessage(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil).AnyTimes()
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice")}, nil).AnyTimes()
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice", EngName: "Alice"}, nil).AnyTimes()
 
 	graph := newCreateOrGetGraphStub()
 	meetingStore := newStubTeamsMeetingStore()
