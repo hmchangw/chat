@@ -511,6 +511,37 @@ func mustInsertUser(t *testing.T, db *mongo.Database, u *model.User) {
 	require.NoError(t, err)
 }
 
+// TestMongoStore_UserCache covers the cached user-read path: EnableUserCache
+// wraps the reader without breaking reads, and a missing account still maps to
+// the store's ErrUserNotFound sentinel that handlers branch on.
+func TestMongoStore_UserCache(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnableUserCache(100, time.Minute))
+	ctx := context.Background()
+
+	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u1", Account: "alice", SiteID: "site-a", EngName: "Alice"})
+	require.NoError(t, err)
+
+	// Read through the cache twice; both return the seeded user.
+	for range 2 {
+		u, err := store.GetUser(ctx, "alice")
+		require.NoError(t, err)
+		assert.Equal(t, "u1", u.ID)
+		assert.Equal(t, "alice", u.Account)
+	}
+
+	// Missing account maps to the store's ErrUserNotFound (not userstore's).
+	_, err = store.GetUser(ctx, "ghost")
+	assert.ErrorIs(t, err, ErrUserNotFound)
+
+	// Batch lookup returns only existing users (negative results not cached).
+	users, err := store.FindUsersByAccounts(ctx, []string{"alice", "ghost"})
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, "alice", users[0].Account)
+}
+
 func TestMongoStore_ListAddMemberCandidates_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)

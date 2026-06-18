@@ -39,6 +39,8 @@ type config struct {
 	MongoPassword    string                  `env:"MONGO_PASSWORD"  envDefault:""`
 	MaxWorkers       int                     `env:"MAX_WORKERS"        envDefault:"100"`
 	KeyFanoutWorkers int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
+	UserCacheSize    int                     `env:"USER_CACHE_SIZE"    envDefault:"10000"`
+	UserCacheTTL     time.Duration           `env:"USER_CACHE_TTL"     envDefault:"5m"`
 	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 	HealthAddr       string                  `env:"HEALTH_ADDR" envDefault:":8081"`
@@ -151,6 +153,17 @@ func main() {
 	streamCfg := stream.Rooms(cfg.SiteID)
 
 	store := NewMongoStore(mongoClient.Database(cfg.MongoDB))
+	// User cache is on by default; a non-positive size disables it cleanly rather
+	// than failing startup (the LRU constructor rejects size<=0).
+	if cfg.UserCacheSize > 0 {
+		if err := store.EnableUserCache(cfg.UserCacheSize, cfg.UserCacheTTL); err != nil {
+			slog.Error("failed to enable user cache", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
+	} else {
+		slog.Info("user-cache disabled", "size", cfg.UserCacheSize)
+	}
 	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
 		msg := natsutil.NewMsg(ctx, subj, data)
 		if msgID == "" {

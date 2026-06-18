@@ -14,6 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/pipelines"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/userstore"
 )
 
 type MongoStore struct {
@@ -22,6 +23,12 @@ type MongoStore struct {
 	roomMembers   *mongo.Collection
 	users         *mongo.Collection
 	apps          *mongo.Collection
+	// userReader serves point lookups (GetUser, FindUsersByAccounts) and the
+	// direct-account candidate fast path. Defaults to an uncached read of the
+	// users collection; EnableUserCache wraps it in an LRU+TTL cache. The
+	// `users` collection above is still used directly for the org-expansion
+	// candidate query, which the by-account reader cannot serve.
+	userReader userstore.UserStore
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -31,7 +38,21 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		roomMembers:   db.Collection("room_members"),
 		users:         db.Collection("users"),
 		apps:          db.Collection("apps"),
+		userReader:    userstore.NewMongoStore(db.Collection("users")),
 	}
+}
+
+// EnableUserCache wraps the store's user reader in an in-process LRU+TTL cache.
+// Call once at startup; user docs are near-static (account→id and isBot are
+// immutable, org fields change rarely) so a short TTL bounds staleness. Reads
+// fall through to Mongo on miss; ErrUserNotFound is not negatively cached.
+func (s *MongoStore) EnableUserCache(size int, ttl time.Duration) error {
+	cache, err := userstore.NewCache(s.userReader, size, ttl)
+	if err != nil {
+		return fmt.Errorf("enable user cache: %w", err)
+	}
+	s.userReader = cache
+	return nil
 }
 
 // ListByRoom returns all subscriptions for roomID across every site. Not part
@@ -126,15 +147,14 @@ func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, e
 }
 
 func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, error) {
-	var u model.User
-	err := s.users.FindOne(ctx, bson.M{"account": account}).Decode(&u)
-	if errors.Is(err, mongo.ErrNoDocuments) {
+	u, err := s.userReader.FindUserByAccount(ctx, account)
+	if errors.Is(err, userstore.ErrUserNotFound) {
 		return nil, ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user %q: %w", account, err)
 	}
-	return &u, nil
+	return u, nil
 }
 
 // GetApp reads the apps collection, which room-service owns and indexes
@@ -449,18 +469,7 @@ func (s *MongoStore) BulkCreateRoomMembers(ctx context.Context, members []*model
 }
 
 func (s *MongoStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
-	if len(accounts) == 0 {
-		return nil, nil
-	}
-	cursor, err := s.users.Find(ctx, bson.M{"account": bson.M{"$in": accounts}})
-	if err != nil {
-		return nil, fmt.Errorf("find users by accounts: %w", err)
-	}
-	var users []model.User
-	if err := cursor.All(ctx, &users); err != nil {
-		return nil, fmt.Errorf("decode users: %w", err)
-	}
-	return users, nil
+	return s.userReader.FindUsersByAccounts(ctx, accounts)
 }
 
 func (s *MongoStore) HasOrgRoomMembers(ctx context.Context, roomID string) (bool, error) {
@@ -475,19 +484,40 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return nil, nil
 	}
-	// 1. Resolve the candidate users (account + id) with one indexed find on
-	// users, instead of a correlated-$lookup aggregation.
-	filter := pipelines.MatchCandidatesFilter(orgIDs, directAccounts, "")
-	cursor, err := s.users.Find(ctx, filter, options.Find().SetProjection(bson.M{"account": 1, "_id": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("find add-member candidates: %w", err)
-	}
-	var candidates []struct {
-		ID      string `bson:"_id"`
-		Account string `bson:"account"`
-	}
-	if err := cursor.All(ctx, &candidates); err != nil {
-		return nil, fmt.Errorf("decode add-member candidates: %w", err)
+	// 1. Resolve the candidate users (account + id).
+	type candidate struct{ ID, Account string }
+	var candidates []candidate
+	if len(orgIDs) == 0 {
+		// Direct accounts only: resolve via the user reader (cache-friendly) and
+		// filter bots in Go — avoids the users query and the $not regex entirely.
+		users, err := s.userReader.FindUsersByAccounts(ctx, directAccounts)
+		if err != nil {
+			return nil, fmt.Errorf("find add-member candidate users: %w", err)
+		}
+		for i := range users {
+			if model.IsBot(users[i].Account) || model.IsPlatformAdminAccount(users[i].Account) {
+				continue
+			}
+			candidates = append(candidates, candidate{ID: users[i].ID, Account: users[i].Account})
+		}
+	} else {
+		// Org expansion needs the sectId/deptId query on the users collection,
+		// which the by-account reader cannot serve.
+		filter := pipelines.MatchCandidatesFilter(orgIDs, directAccounts, "")
+		cursor, err := s.users.Find(ctx, filter, options.Find().SetProjection(bson.M{"account": 1, "_id": 1}))
+		if err != nil {
+			return nil, fmt.Errorf("find add-member candidates: %w", err)
+		}
+		var rows []struct {
+			ID      string `bson:"_id"`
+			Account string `bson:"account"`
+		}
+		if err := cursor.All(ctx, &rows); err != nil {
+			return nil, fmt.Errorf("decode add-member candidates: %w", err)
+		}
+		for _, r := range rows {
+			candidates = append(candidates, candidate{ID: r.ID, Account: r.Account})
+		}
 	}
 	if len(candidates) == 0 {
 		return nil, nil
