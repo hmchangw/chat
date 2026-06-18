@@ -157,32 +157,34 @@ func (s *MongoStore) CreateRoom(ctx context.Context, room *model.Room, key *room
 }
 
 func (s *MongoStore) ListNewMembersForNewRoom(ctx context.Context, orgIDs, accounts []string, excludeAccount string) ([]string, error) {
-	pipe := pipelines.GetNewMembersPipeline(orgIDs, accounts, "", excludeAccount)
-	pipe = append(pipe, bson.M{"$group": bson.M{
-		"_id":      nil,
-		"accounts": bson.M{"$addToSet": "$account"},
-	}})
-	cur, err := s.users.Aggregate(ctx, pipe)
+	if len(orgIDs) == 0 && len(accounts) == 0 {
+		return nil, nil
+	}
+	filter := pipelines.MatchCandidatesFilter(orgIDs, accounts, excludeAccount)
+	cur, err := s.users.Find(ctx, filter, options.Find().SetProjection(bson.M{"account": 1, "_id": 0}))
 	if err != nil {
 		return nil, fmt.Errorf("list new members for new room: %w", err)
 	}
 	defer cur.Close(ctx)
-	if !cur.Next(ctx) {
-		// Distinguish a true empty result from a cursor/read failure — the
-		// caller must not proceed to room creation when membership resolution
-		// silently failed.
-		if err := cur.Err(); err != nil {
-			return nil, fmt.Errorf("iterate aggregation result: %w", err)
-		}
+	var rows []struct {
+		Account string `bson:"account"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("decode new members for new room: %w", err)
+	}
+	if len(rows) == 0 {
 		return nil, nil
 	}
-	var doc struct {
-		Accounts []string `bson:"accounts"`
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if _, dup := seen[r.Account]; dup {
+			continue
+		}
+		seen[r.Account] = struct{}{}
+		out = append(out, r.Account)
 	}
-	if err := cur.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("decode aggregation result: %w", err)
-	}
-	return doc.Accounts, nil
+	return out, nil
 }
 
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
@@ -438,20 +440,96 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 	if len(orgIDs) == 0 && len(directAccounts) == 0 {
 		return nil, nil
 	}
-	pipeline, err := pipelines.GetAddMemberCandidatesPipeline(orgIDs, directAccounts, roomID, "")
+	// 1. Resolve the candidate users (account + id) with one indexed find on
+	// users, instead of a correlated-$lookup aggregation.
+	filter := pipelines.MatchCandidatesFilter(orgIDs, directAccounts, "")
+	cursor, err := s.users.Find(ctx, filter, options.Find().SetProjection(bson.M{"account": 1, "_id": 1}))
 	if err != nil {
-		return nil, fmt.Errorf("build add-member candidates pipeline: %w", err)
+		return nil, fmt.Errorf("find add-member candidates: %w", err)
 	}
-	cursor, err := s.users.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("aggregate add-member candidates: %w", err)
+	var candidates []struct {
+		ID      string `bson:"_id"`
+		Account string `bson:"account"`
 	}
-	defer cursor.Close(ctx)
-	var out []AddMemberCandidate
-	if err := cursor.All(ctx, &out); err != nil {
+	if err := cursor.All(ctx, &candidates); err != nil {
 		return nil, fmt.Errorf("decode add-member candidates: %w", err)
 	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	accounts := make([]string, len(candidates))
+	ids := make([]string, len(candidates))
+	for i, c := range candidates {
+		accounts[i] = c.Account
+		ids[i] = c.ID
+	}
+	// 2 & 3. Per-candidate membership state via two indexed reads scoped to the
+	// candidate set ($in), so examined keys stay bounded by the request size
+	// rather than the room size.
+	subbed, err := s.subscribedAccounts(ctx, roomID, accounts)
+	if err != nil {
+		return nil, err
+	}
+	irm, err := s.individualMemberIDs(ctx, roomID, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AddMemberCandidate, len(candidates))
+	for i, c := range candidates {
+		_, hasSub := subbed[c.Account]
+		_, hasIRM := irm[c.ID]
+		out[i] = AddMemberCandidate{Account: c.Account, HasSubscription: hasSub, HasIndividualRoomMember: hasIRM}
+	}
 	return out, nil
+}
+
+// subscribedAccounts returns the subset of accounts that already have a
+// subscription to roomID. Indexed point reads on (roomId, u.account).
+func (s *MongoStore) subscribedAccounts(ctx context.Context, roomID string, accounts []string) (map[string]struct{}, error) {
+	cursor, err := s.subscriptions.Find(ctx,
+		bson.M{"roomId": roomID, "u.account": bson.M{"$in": accounts}},
+		options.Find().SetProjection(bson.M{"u.account": 1, "_id": 0}))
+	if err != nil {
+		return nil, fmt.Errorf("find existing subscriptions for room %q: %w", roomID, err)
+	}
+	var rows []struct {
+		User struct {
+			Account string `bson:"account"`
+		} `bson:"u"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("decode existing subscriptions: %w", err)
+	}
+	set := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		set[r.User.Account] = struct{}{}
+	}
+	return set, nil
+}
+
+// individualMemberIDs returns the subset of user ids that already have an
+// individual room_members row for roomID. Indexed on
+// (rid, member.type, member.id).
+func (s *MongoStore) individualMemberIDs(ctx context.Context, roomID string, ids []string) (map[string]struct{}, error) {
+	cursor, err := s.roomMembers.Find(ctx,
+		bson.M{"rid": roomID, "member.type": string(model.RoomMemberIndividual), "member.id": bson.M{"$in": ids}},
+		options.Find().SetProjection(bson.M{"member.id": 1, "_id": 0}))
+	if err != nil {
+		return nil, fmt.Errorf("find existing room members for room %q: %w", roomID, err)
+	}
+	var rows []struct {
+		Member struct {
+			ID string `bson:"id"`
+		} `bson:"member"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("decode existing room members: %w", err)
+	}
+	set := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		set[r.Member.ID] = struct{}{}
+	}
+	return set, nil
 }
 
 func (s *MongoStore) GetSubscriptionAccounts(ctx context.Context, roomID string) ([]string, error) {
