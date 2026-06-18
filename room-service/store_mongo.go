@@ -199,14 +199,11 @@ func (s *MongoStore) GetTeamsMeeting(ctx context.Context, roomID, siteID string)
 
 // InsertTeamsMeeting inserts the meeting record. The (roomId, siteId) unique
 // index makes this the idempotency gate: a concurrent second insert returns a
-// duplicate-key error, surfaced unwrapped to the handler so it can detect the
-// race via mongo.IsDuplicateKeyError and read back the winner's record.
+// duplicate-key error the handler detects via mongo.IsDuplicateKeyError (which
+// unwraps with errors.As) and reads back the winner's record.
 func (s *MongoStore) InsertTeamsMeeting(ctx context.Context, record model.TeamsMeetingRecord) error {
 	if _, err := s.teamsMeetings.InsertOne(ctx, record); err != nil {
-		// Surface the raw error so the handler's mongo.IsDuplicateKeyError check
-		// works (fmt.Errorf-wrapping would still satisfy errors.As, but keeping
-		// it raw matches the room-worker bulk-insert dup-key convention).
-		return err
+		return fmt.Errorf("insert teams meeting record: %w", err)
 	}
 	return nil
 }
