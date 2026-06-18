@@ -333,11 +333,11 @@ type PinStateRoomEvent struct {
 // thread reply is added or deleted, so clients can update the reply-count badge
 // on the parent message without re-fetching the full message.
 type ThreadMetadataUpdatedEvent struct {
-	Type            RoomEventType `json:"type" bson:"type"`
-	RoomID          string        `json:"roomId" bson:"roomId"`
-	SiteID          string        `json:"siteId" bson:"siteId"`
-	Timestamp       int64         `json:"timestamp" bson:"timestamp"`
-	EventTimestamp  int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	Type               RoomEventType `json:"type" bson:"type"`
+	RoomID             string        `json:"roomId" bson:"roomId"`
+	SiteID             string        `json:"siteId" bson:"siteId"`
+	Timestamp          int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp     int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
 	ParentMessageID    string        `json:"parentMessageId" bson:"parentMessageId"`
 	ReplyMessageID     string        `json:"replyMessageId" bson:"replyMessageId"`
 	NewTCount          int           `json:"newTcount" bson:"newTcount"`
