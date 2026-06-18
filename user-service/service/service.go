@@ -35,6 +35,7 @@ type UserRepository interface {
 type AppRepository interface {
 	GetApp(ctx context.Context, appID string) (*model.App, error)
 	ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error)
+	GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error)
 }
 
 // RoomClient is the consumer-defined interface for room-service RPC calls.
@@ -79,6 +80,7 @@ func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, 
 // siteID is a literal token in each pattern — this instance only subscribes to its own siteID subjects.
 func (s *UserService) RegisterHandlers(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.UserStatusGetByNamePattern(s.siteID), s.GetStatusByName)
+	natsrouter.Register(r, subject.UserProfileGetByNamePattern(s.siteID), s.GetProfileByName)
 	natsrouter.Register(r, subject.UserStatusSetPattern(s.siteID), s.SetStatus)
 	natsrouter.Register(r, subject.UserSubscriptionListPattern(s.siteID), s.ListSubscriptions)
 	natsrouter.Register(r, subject.UserSubscriptionGetChannelsPattern(s.siteID), s.GetChannels)
