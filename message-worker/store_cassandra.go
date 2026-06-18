@@ -328,7 +328,6 @@ func buildCassandraMessage(msg *model.Message) cassandra.Message {
 // partition for threadRoomID. message-worker does not write the deleted column
 // on INSERT (it remains NULL), so the Go-side filter treats NULL the same as
 // false — only rows where deleted is explicitly true are excluded.
-// Returns the count of surviving replies (used on the add path; tlm = reply.CreatedAt directly).
 func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID string) (int, error) {
 	iter := s.cassSession.Query(
 		`SELECT deleted FROM thread_messages_by_thread WHERE thread_room_id = ?`,
