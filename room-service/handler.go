@@ -834,29 +834,38 @@ func (h *Handler) addMembers(c *natsrouter.Context, req model.AddMembersRequest)
 		return nil, err
 	}
 
-	// 7. Count net-new members (count-only — actual list materialized in room-worker)
-	newCount, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID, "")
-	if err != nil {
-		return nil, fmt.Errorf("count new members: %w", err)
-	}
+	// 7/8. Capacity check. Short-circuit: with no orgs, the request adds at most
+	// len(allUsers) new individuals (bot/dup/already-subscribed pruning can only
+	// make it fewer), so when the room has headroom for that upper bound we
+	// accept without the costlier CountNewMembers resolution. room.UserCount is
+	// kept current by room-worker; a rare transient undercount can only
+	// over-admit by the drift, and only matters near the cap — where the
+	// condition below falls through to the exact count. Org requests have no
+	// cheap upper bound, so they always take the precise path.
+	newCount := -1 // -1 records the short-circuited case (capacity satisfied by the upper bound, not counted)
+	if len(allOrgs) > 0 || room.UserCount+len(allUsers) > h.maxRoomSize {
+		// Count net-new members (count-only — actual list materialized in room-worker).
+		n, err := h.store.CountNewMembers(ctx, allOrgs, allUsers, roomID, "")
+		if err != nil {
+			return nil, fmt.Errorf("count new members: %w", err)
+		}
+		newCount = n
 
-	// debug: how the requested refs resolved and the capacity arithmetic.
-	slog.DebugContext(ctx, "room-service addMembers resolved",
-		"request_id", natsutil.RequestIDFromContext(ctx), "room_id", roomID,
-		"orgs", len(allOrgs), "users", len(allUsers), "new_count", newCount,
-		"current_count", room.UserCount, "max_size", h.maxRoomSize)
+		// debug: how the requested refs resolved and the capacity arithmetic.
+		slog.DebugContext(ctx, "room-service addMembers resolved",
+			"request_id", natsutil.RequestIDFromContext(ctx), "room_id", roomID,
+			"orgs", len(allOrgs), "users", len(allUsers), "new_count", newCount,
+			"current_count", room.UserCount, "max_size", h.maxRoomSize)
 
-	// 8. Capacity check — use room.UserCount (kept current by room-worker's
-	// ReconcileUserCount after each membership change) instead of issuing a
-	// separate CountSubscriptions query.
-	if room.UserCount+newCount > h.maxRoomSize {
-		return nil, errcode.Conflict(
-			fmt.Sprintf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount),
-			errcode.WithReason(errcode.RoomMaxSizeReached),
-			errcode.WithMetadata("maxRoomSize", strconv.Itoa(h.maxRoomSize),
-				"currentUserCount", strconv.Itoa(room.UserCount),
-				"attempted", strconv.Itoa(room.UserCount+newCount)),
-		)
+		if room.UserCount+newCount > h.maxRoomSize {
+			return nil, errcode.Conflict(
+				fmt.Sprintf("room is at maximum capacity (%d): cannot add %d members to room with %d existing", h.maxRoomSize, newCount, room.UserCount),
+				errcode.WithReason(errcode.RoomMaxSizeReached),
+				errcode.WithMetadata("maxRoomSize", strconv.Itoa(h.maxRoomSize),
+					"currentUserCount", strconv.Itoa(room.UserCount),
+					"attempted", strconv.Itoa(room.UserCount+newCount)),
+			)
+		}
 	}
 
 	// 9. Normalize and publish — Users and Orgs ship as merged-but-unresolved.
