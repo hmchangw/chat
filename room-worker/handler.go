@@ -1024,13 +1024,13 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	h.bustRoomMeta(ctx, req.RoomID)
 
 	// Publish subscription.update BEFORE room.key so clients have a sub entry to store the key under.
-	// Channel-only handler: resolveSubUpdateRoomName takes the default arm, so the nil map is safe.
+	// Channel-only handler: roomName is the already-fetched channel name.
 	for _, sub := range subs {
 		subEvt := model.SubscriptionUpdateEvent{
 			UserID:       sub.User.ID,
 			Subscription: *sub,
 			Action:       "added",
-			RoomName:     h.resolveSubUpdateRoomName(ctx, sub, nil),
+			RoomName:     room.Name,
 			Timestamp:    now.UnixMilli(),
 		}
 		subEvtData, _ := json.Marshal(subEvt)

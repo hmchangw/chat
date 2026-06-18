@@ -736,7 +736,8 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 		return nil, fmt.Errorf("set owner role: %w", err)
 	}
 
-	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, now)
+	// Role updates are channel-only (guarded above); the channel name is already in hand.
+	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, room.Name, now)
 	if err != nil {
 		return nil, err
 	}
@@ -765,49 +766,14 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 	return &model.StatusReply{Status: "ok"}, nil
 }
 
-// resolveSubUpdateRoomName computes a subscription.update's roomName: the room name for
-// channels; for dm/botDM, app.Name when the counterpart is a bot account, else its display name.
-func (h *Handler) resolveSubUpdateRoomName(ctx context.Context, sub *model.Subscription) string {
-	switch sub.RoomType {
-	case model.RoomTypeDM, model.RoomTypeBotDM:
-		cp := sub.Name
-		// Platform-admin (p_) accounts are users, not bots, for naming — only .bot takes the app path.
-		if model.IsBot(cp) {
-			app, err := h.store.GetApp(ctx, cp)
-			if err == nil && app.Name != "" {
-				return app.Name
-			}
-			if err != nil && !errors.Is(err, ErrAppNotFound) {
-				slog.WarnContext(ctx, "resolve roomName: GetApp failed, using account fallback",
-					"request_id", natsutil.RequestIDFromContext(ctx), "botAccount", cp, "error", err)
-			}
-			return cp
-		}
-		user, err := h.store.GetUser(ctx, cp)
-		if err == nil {
-			return displayfmt.CombineWithFallback(user.EngName, user.ChineseName, cp)
-		}
-		if !errors.Is(err, ErrUserNotFound) {
-			slog.WarnContext(ctx, "resolve roomName: GetUser failed, using account fallback",
-				"request_id", natsutil.RequestIDFromContext(ctx), "account", cp, "error", err)
-		}
-		return cp
-	default:
-		return sub.Name
-	}
-}
-
-// publishSubscriptionUpdate marshals a SubscriptionUpdateEvent for sub with the
-// given action and best-effort publishes it to the account's subscription.update
-// subject over core NATS. A publish failure is logged, not returned — the DB
-// write is the source of truth; clients reconcile on next refetch. Returns the
-// marshaled event so callers can reuse it (e.g. as a cross-site outbox payload).
-func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action string, sub *model.Subscription, ts time.Time) ([]byte, error) {
+// publishSubscriptionUpdate best-effort publishes a SubscriptionUpdateEvent (sub, action,
+// roomName) over core NATS; a publish failure is logged, not returned. Returns the marshaled event.
+func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action string, sub *model.Subscription, roomName string, ts time.Time) ([]byte, error) {
 	subEvt := model.SubscriptionUpdateEvent{
 		UserID:       sub.User.ID,
 		Subscription: *sub,
 		Action:       action,
-		RoomName:     h.resolveSubUpdateRoomName(ctx, sub),
+		RoomName:     roomName,
 		Timestamp:    ts.UnixMilli(),
 	}
 	data, err := json.Marshal(subEvt)
@@ -815,7 +781,8 @@ func (h *Handler) publishSubscriptionUpdate(ctx context.Context, account, action
 		return nil, fmt.Errorf("marshal subscription update event: %w", err)
 	}
 	if err := h.publishCore(ctx, subject.SubscriptionUpdate(account), data); err != nil {
-		slog.Error("subscription update publish failed", "error", err, "account", account)
+		slog.ErrorContext(ctx, "subscription update publish failed",
+			"request_id", natsutil.RequestIDFromContext(ctx), "error", err, "account", account)
 	}
 	return data, nil
 }
@@ -1331,7 +1298,8 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 		updatedSub := *sub
 		updatedSub.LastSeenAt = &now
 		updatedSub.Alert = newAlert
-		if _, err := h.publishSubscriptionUpdate(ctx, account, "read", &updatedSub, now); err != nil {
+		// roomName omitted: clients don't use it on read events.
+		if _, err := h.publishSubscriptionUpdate(ctx, account, "read", &updatedSub, "", now); err != nil {
 			slog.Error("subscription update on read failed", "error", err,
 				"request_id", natsutil.RequestIDFromContext(ctx), "account", account)
 		}
@@ -1927,7 +1895,8 @@ func (h *Handler) muteToggle(c *natsrouter.Context) (*model.MuteToggleResponse, 
 		return nil, fmt.Errorf("toggle subscription mute: %w", err)
 	}
 
-	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, now); err != nil {
+	// roomName omitted: the frontend doesn't use it for mute, so we avoid an extra lookup.
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, "", now); err != nil {
 		return nil, err
 	}
 
@@ -2004,7 +1973,8 @@ func (h *Handler) favoriteToggle(c *natsrouter.Context) (*model.FavoriteToggleRe
 		return nil, fmt.Errorf("toggle subscription favorite: %w", err)
 	}
 
-	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, now); err != nil {
+	// roomName omitted: the frontend doesn't use it for favorite, so we avoid an extra lookup.
+	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, "", now); err != nil {
 		return nil, err
 	}
 

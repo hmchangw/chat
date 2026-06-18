@@ -3954,8 +3954,8 @@ func TestSubscriptionUpdateEvent_RoomNameRoundTrips(t *testing.T) {
 	assert.Equal(t, "Alice Wang", dst.RoomName)
 }
 
-func TestSubscriptionUpdateEvent_RoomNameAlwaysEmitted(t *testing.T) {
-	data, err := json.Marshal(&model.SubscriptionUpdateEvent{Action: "added"})
+func TestSubscriptionUpdateEvent_RoomNameOmittedWhenEmpty(t *testing.T) {
+	data, err := json.Marshal(&model.SubscriptionUpdateEvent{Action: "mute_toggled"})
 	require.NoError(t, err)
-	assert.Contains(t, string(data), `"roomName":""`)
+	assert.NotContains(t, string(data), "roomName")
 }

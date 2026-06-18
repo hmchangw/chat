@@ -104,9 +104,11 @@ func (s *MongoStore) GetUser(ctx context.Context, account string) (*model.User, 
 
 // GetApp reads the apps collection, which room-service owns and indexes
 // (assistant.name); room-worker only reads it and creates no index of its own.
+// Projects only name — the one field callers use (the botDM roomName).
 func (s *MongoStore) GetApp(ctx context.Context, botAccount string) (*model.App, error) {
 	var a model.App
-	err := s.apps.FindOne(ctx, bson.M{"assistant.name": botAccount}).Decode(&a)
+	err := s.apps.FindOne(ctx, bson.M{"assistant.name": botAccount},
+		options.FindOne().SetProjection(bson.M{"name": 1})).Decode(&a)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, ErrAppNotFound
 	}

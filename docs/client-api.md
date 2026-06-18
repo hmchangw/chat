@@ -801,10 +801,10 @@ Shared by Add Members, Remove Member, and Update Member Role.
 | `userId` | string | The affected user's internal user ID. Omitted on the org-removal path (only `subscription.u.account` is set there). |
 | `subscription` | [Subscription](#subscription) | For `added` / `role_updated`: the full Subscription record. For `removed`: a [RemovedSubscriptionRef](#removedsubscriptionref) lean ref (see Remove Member). |
 | `action` | string | `"added"`, `"removed"`, `"role_updated"`, `"mute_toggled"`, or `"favorite_toggled"`. |
-| `roomName` | string | Per-subscriber display label. `channel`: the room name. `dm`: the counterpart's display name (`engName` + `chineseName`, falling back to account). `botDM`: the bot's app name. Falls back to the counterpart account when the user/app can't be resolved (including a not-yet-replicated cross-site counterpart). Absent on `removed` events. |
+| `roomName` | string | Per-subscriber display label, set only where the server already has the name. On `added`: `channel` → room name; `dm` → counterpart's display name (`engName` + `chineseName`, falling back to account); `botDM` → the bot's app name. On `role_updated`: the channel name. Omitted (`omitempty`) on `mute_toggled` / `favorite_toggled` / `read`, and absent on `removed`. |
 | `timestamp` | number | Epoch ms (UTC). |
 
-On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present — and the envelope's `roomName` is always present. `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
+On `added` / `role_updated` / `mute_toggled` / `favorite_toggled` the embedded `Subscription` serializes its ID as `id` (not `_id`) and the user under `u` (not `user`). Non-`omitempty` fields (`id`, `u`, `roomId`, `siteId`, `roles`, `name`, `roomType`, `joinedAt`, `hasMention`, `alert`, `muted`, `favorite`) are always present — and the envelope's `roomName` is always present as a field (empty on `mute_toggled` / `favorite_toggled`). `removed` events use a dedicated lean payload (`SubscriptionRemovedEvent`) whose `subscription` carries **only** `roomId`, `roomType`, and `u` — no zero-valued `Subscription` fields are sent.
 
 ```json
 {
@@ -1242,7 +1242,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only room me
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `limit` | number | no | When omitted, the server uses `min(3, room.userCount)` (so a 2-member room returns 2 rows, an empty room returns an empty list). When supplied, must be `> 0` and `<= room.userCount`. |
+| `limit` | number | no | Upper bound on returned rows. When omitted, the server uses `min(3, room.userCount)` (an empty room returns an empty list); when supplied, must be `> 0` and `<= room.userCount`. Fewer rows may come back — members with an empty `statusText` are omitted (see `members`). |
 
 ```json
 { "limit": 5 }
@@ -1252,7 +1252,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only room me
 
 | Field | Type | Notes |
 |---|---|---|
-| `members` | array<MemberStatus> | One entry per room subscription, projected from the joined `users` document. |
+| `members` | array<MemberStatus> | One entry per room subscription **with a non-empty `statusText`**, projected from the joined `users` document. Members without a status set are omitted. |
 
 `MemberStatus`:
 
@@ -1262,7 +1262,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors: `"only room me
 | `engName` | string | English display name. |
 | `chineseName` | string | Chinese display name. |
 | `statusIsShow` | boolean | Whether the user has chosen to surface their status text. |
-| `statusText` | string | Free-form presence text (e.g. `"available"`, `"in a meeting"`). Empty for users who have never set a status. |
+| `statusText` | string | Free-form presence text (e.g. `"available"`, `"in a meeting"`); always non-empty — members without a status are omitted from `members`. |
 
 ```json
 {
@@ -1547,7 +1547,6 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | [Subscription](#subscription) | The Subscription record with the updated `muted`. |
 | `action` | string | `"mute_toggled"`. |
-| `roomName` | string | Per-subscriber display label; for a DM/botDM the counterpart's name / app name. See the [subscription.update schema](#subscriptionupdate-event). |
 | `timestamp` | number | Epoch ms (UTC). |
 
 ##### Behaviour notes
@@ -1598,7 +1597,6 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 | `userId` | string | The requester's internal user ID. |
 | `subscription` | [Subscription](#subscription) | The Subscription record with the updated `favorite`. |
 | `action` | string | `"favorite_toggled"`. |
-| `roomName` | string | Per-subscriber display label; for a DM/botDM the counterpart's name / app name. See the [subscription.update schema](#subscriptionupdate-event). |
 | `timestamp` | number | Epoch ms (UTC). |
 
 ##### Cross-site behaviour
