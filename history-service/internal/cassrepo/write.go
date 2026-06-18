@@ -345,10 +345,8 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 	return deletedAt, true, newTcount, nil
 }
 
-// countThreadReplies counts non-deleted rows in the thread_messages_by_thread
-// partition for threadRoomID, and also returns the MAX created_at among surviving
-// rows (nil when none survive). Used on the delete path to recompute both tcount
-// and tlm from the authoritative surviving set in a single scan.
+// countThreadReplies returns the surviving-row count and the MAX created_at among
+// them (nil when none survive) — one scan feeds both tcount and tlm on delete.
 func (r *Repository) countThreadReplies(ctx context.Context, threadRoomID string) (int, *time.Time, error) {
 	iter := r.session.Query(
 		`SELECT deleted, created_at FROM thread_messages_by_thread WHERE thread_room_id = ?`,
@@ -373,9 +371,8 @@ func (r *Repository) countThreadReplies(ctx context.Context, threadRoomID string
 	return n, maxCreatedAt, nil
 }
 
-// setParentTcountAndTlm blind-SETs tcount and tlm on the parent row in both
-// messages_by_id and messages_by_room in a single UPDATE (atomic per row).
-// tlm is nil when the last reply is deleted (clears the column to NULL).
+// setParentTcountAndTlm co-SETs tcount and tlm on the parent row in both tables
+// (one UPDATE). tlm nil → clears the column (last reply deleted).
 func (r *Repository) setParentTcountAndTlm(ctx context.Context, msg *models.Message, n int, tlm *time.Time) error {
 	parentID := msg.ThreadParentID
 	parentCreatedAt := *msg.ThreadParentCreatedAt
@@ -395,9 +392,8 @@ func (r *Repository) setParentTcountAndTlm(ctx context.Context, msg *models.Mess
 	return nil
 }
 
-// countAndSetParentTcount derives tcount and tlm from the surviving rows in the
-// thread partition and blind-SETs both on the parent row. Returns (nil, nil)
-// when ThreadParentCreatedAt is unset. tlm is nil (cleared) when no replies survive.
+// countAndSetParentTcount recomputes tcount+tlm from the surviving rows and sets both.
+// Returns (nil, nil) when ThreadParentCreatedAt is unset; tlm nil when no replies survive.
 func (r *Repository) countAndSetParentTcount(ctx context.Context, msg *models.Message) (*int, error) {
 	if msg.ThreadParentCreatedAt == nil {
 		return nil, nil

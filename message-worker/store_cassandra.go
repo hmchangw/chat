@@ -346,11 +346,9 @@ func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID st
 	return n, nil
 }
 
-// setParentTcountAndTlm blind-SETs tcount and tlm on the parent row in both
-// messages_by_id and messages_by_room in a single UPDATE (atomic per row).
-// No IF clause — values are always derived from the authoritative COUNT/tlm,
-// so overwrites are idempotent on any redelivery.
-// tlm is the reply's own CreatedAt on the add path (the new reply is always the newest).
+// setParentTcountAndTlm co-SETs tcount and tlm on the parent row in both tables
+// (one UPDATE). Blind-SET from the authoritative COUNT → idempotent on redelivery.
+// On the add path tlm is the reply's own CreatedAt (always the newest).
 func (s *CassandraStore) setParentTcountAndTlm(ctx context.Context, msg *model.Message, n int, tlm *time.Time) error {
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
@@ -370,10 +368,9 @@ func (s *CassandraStore) setParentTcountAndTlm(ctx context.Context, msg *model.M
 	return nil
 }
 
-// countAndSetParentTcount derives tcount from the thread partition COUNT and
-// blind-SETs tcount and tlm on the parent row in both Cassandra tables.
+// countAndSetParentTcount recomputes tcount from the partition COUNT and co-sets
+// tcount+tlm on the parent (tlm = the reply's CreatedAt, newest on the add path).
 // Returns (nil, nil) when ThreadParentMessageCreatedAt is unset.
-// tlm = msg.CreatedAt (the reply being added is always the newest on the add path).
 func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model.Message, threadRoomID string) (*int, error) {
 	if msg.ThreadParentMessageCreatedAt == nil {
 		return nil, nil
