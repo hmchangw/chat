@@ -346,62 +346,67 @@ func (r *Repository) SoftDeleteMessage(ctx context.Context, msg *models.Message,
 }
 
 // countThreadReplies counts non-deleted rows in the thread_messages_by_thread
-// partition for threadRoomID. The deleted column may be NULL (message-worker
-// doesn't write it on INSERT), so Go-side filtering treats NULL as not-deleted.
-func (r *Repository) countThreadReplies(ctx context.Context, threadRoomID string) (int, error) {
+// partition for threadRoomID, and also returns the MAX created_at among surviving
+// rows (nil when none survive). Used on the delete path to recompute both tcount
+// and tlm from the authoritative surviving set in a single scan.
+func (r *Repository) countThreadReplies(ctx context.Context, threadRoomID string) (int, *time.Time, error) {
 	iter := r.session.Query(
-		`SELECT deleted FROM thread_messages_by_thread WHERE thread_room_id = ?`,
+		`SELECT deleted, created_at FROM thread_messages_by_thread WHERE thread_room_id = ?`,
 		threadRoomID,
 	).WithContext(ctx).Iter()
 	var deleted *bool
+	var createdAt time.Time
 	n := 0
-	for iter.Scan(&deleted) {
+	var maxCreatedAt *time.Time
+	for iter.Scan(&deleted, &createdAt) {
 		if deleted == nil || !*deleted {
 			n++
+			if maxCreatedAt == nil || createdAt.After(*maxCreatedAt) {
+				t := createdAt
+				maxCreatedAt = &t
+			}
 		}
 	}
 	if err := iter.Close(); err != nil {
-		return 0, fmt.Errorf("count thread replies for thread %s: %w", threadRoomID, err)
+		return 0, nil, fmt.Errorf("count thread replies for thread %s: %w", threadRoomID, err)
 	}
-	return n, nil
+	return n, maxCreatedAt, nil
 }
 
-// setParentTcount blind-SETs tcount on the parent row in both messages_by_id
-// and messages_by_room. No IF clause — the value is always derived from the
-// authoritative COUNT, so overwrites are idempotent on any redelivery.
-func (r *Repository) setParentTcount(ctx context.Context, msg *models.Message, n int) error {
+// setParentTcountAndTlm blind-SETs tcount and tlm on the parent row in both
+// messages_by_id and messages_by_room in a single UPDATE (atomic per row).
+// tlm is nil when the last reply is deleted (clears the column to NULL).
+func (r *Repository) setParentTcountAndTlm(ctx context.Context, msg *models.Message, n int, tlm *time.Time) error {
 	parentID := msg.ThreadParentID
 	parentCreatedAt := *msg.ThreadParentCreatedAt
 	if err := r.session.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ?`,
-		n, parentID,
+		`UPDATE messages_by_id SET tcount = ?, tlm = ? WHERE message_id = ?`,
+		n, tlm, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_id: %w", parentID, err)
 	}
 	parentBucket := r.bucket.Of(parentCreatedAt)
 	if err := r.session.Query(
-		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		n, msg.RoomID, parentBucket, parentCreatedAt, parentID,
+		`UPDATE messages_by_room SET tcount = ?, tlm = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		n, tlm, msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_room: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_room: %w", parentID, err)
 	}
 	return nil
 }
 
-// countAndSetParentTcount derives tcount from the thread partition COUNT and
-// blind-SETs it on the parent row in both Cassandra tables. Returns (nil, nil)
-// when ThreadParentCreatedAt is unset (no parent key available).
-// This approach is crash-safe: COUNT + blind SET is idempotent on redelivery,
-// avoiding the 2PC window of the old CAS decrement.
+// countAndSetParentTcount derives tcount and tlm from the surviving rows in the
+// thread partition and blind-SETs both on the parent row. Returns (nil, nil)
+// when ThreadParentCreatedAt is unset. tlm is nil (cleared) when no replies survive.
 func (r *Repository) countAndSetParentTcount(ctx context.Context, msg *models.Message) (*int, error) {
 	if msg.ThreadParentCreatedAt == nil {
 		return nil, nil
 	}
-	n, err := r.countThreadReplies(ctx, msg.ThreadRoomID)
+	n, tlm, err := r.countThreadReplies(ctx, msg.ThreadRoomID)
 	if err != nil {
 		return nil, fmt.Errorf("count thread replies: %w", err)
 	}
-	if err := r.setParentTcount(ctx, msg, n); err != nil {
+	if err := r.setParentTcountAndTlm(ctx, msg, n, tlm); err != nil {
 		return nil, err
 	}
 	return &n, nil

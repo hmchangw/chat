@@ -328,6 +328,7 @@ func buildCassandraMessage(msg *model.Message) cassandra.Message {
 // partition for threadRoomID. message-worker does not write the deleted column
 // on INSERT (it remains NULL), so the Go-side filter treats NULL the same as
 // false — only rows where deleted is explicitly true are excluded.
+// Returns the count of surviving replies (used on the add path; tlm = reply.CreatedAt directly).
 func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID string) (int, error) {
 	iter := s.cassSession.Query(
 		`SELECT deleted FROM thread_messages_by_thread WHERE thread_room_id = ?`,
@@ -346,33 +347,34 @@ func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID st
 	return n, nil
 }
 
-// setParentTcount blind-SETs tcount on the parent row in both messages_by_id
-// and messages_by_room. No IF clause — the value is always derived from the
-// authoritative COUNT, so overwrites are idempotent on any redelivery.
-func (s *CassandraStore) setParentTcount(ctx context.Context, msg *model.Message, n int) error {
+// setParentTcountAndTlm blind-SETs tcount and tlm on the parent row in both
+// messages_by_id and messages_by_room in a single UPDATE (atomic per row).
+// No IF clause — values are always derived from the authoritative COUNT/tlm,
+// so overwrites are idempotent on any redelivery.
+// tlm is the reply's own CreatedAt on the add path (the new reply is always the newest).
+func (s *CassandraStore) setParentTcountAndTlm(ctx context.Context, msg *model.Message, n int, tlm *time.Time) error {
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 	parentBucket := s.bucket.Of(parentCreatedAt)
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ?`,
-		n, parentID,
+		`UPDATE messages_by_id SET tcount = ?, tlm = ? WHERE message_id = ?`,
+		n, tlm, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_id: %w", parentID, err)
 	}
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		n, msg.RoomID, parentBucket, parentCreatedAt, parentID,
+		`UPDATE messages_by_room SET tcount = ?, tlm = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		n, tlm, msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_room: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_room: %w", parentID, err)
 	}
 	return nil
 }
 
 // countAndSetParentTcount derives tcount from the thread partition COUNT and
-// blind-SETs it on the parent row in both Cassandra tables. Returns (nil, nil)
-// when ThreadParentMessageCreatedAt is unset (no parent key available).
-// This approach is crash-safe: COUNT + blind SET is idempotent on redelivery,
-// avoiding the 2PC window of the old CAS increment.
+// blind-SETs tcount and tlm on the parent row in both Cassandra tables.
+// Returns (nil, nil) when ThreadParentMessageCreatedAt is unset.
+// tlm = msg.CreatedAt (the reply being added is always the newest on the add path).
 func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model.Message, threadRoomID string) (*int, error) {
 	if msg.ThreadParentMessageCreatedAt == nil {
 		return nil, nil
@@ -381,7 +383,8 @@ func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model
 	if err != nil {
 		return nil, fmt.Errorf("count thread replies: %w", err)
 	}
-	if err := s.setParentTcount(ctx, msg, n); err != nil {
+	tlm := msg.CreatedAt
+	if err := s.setParentTcountAndTlm(ctx, msg, n, &tlm); err != nil {
 		return nil, err
 	}
 	return &n, nil
