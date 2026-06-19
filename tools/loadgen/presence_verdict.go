@@ -95,3 +95,75 @@ func evaluatePresenceStep(in presenceStepInputs, th presenceThresholds) presence
 	r.Kind = verdictPass
 	return r
 }
+
+// stormThresholds are the per-storm-step SLO cutoffs.
+type stormThresholds struct {
+	RecoverySLO         time.Duration
+	P99Ms               float64
+	ErrorRate           float64
+	GCPauseInconclusive float64
+}
+
+func defaultStormThresholds() stormThresholds {
+	return stormThresholds{RecoverySLO: 10 * time.Second, P99Ms: 1000, ErrorRate: 0.05, GCPauseInconclusive: 50}
+}
+
+type stormStepInputs struct {
+	Fraction          float64
+	StormUsers        int
+	RecoveryComplete  bool
+	RecoveryElapsed   time.Duration
+	RecoveryRemaining int
+	SpikeLatencyMs    []float64
+	Attempted         int64
+	Failed            int64
+	Self              SelfMetrics
+}
+
+type stormStepResult struct {
+	Fraction         float64
+	StormUsers       int
+	RecoveryComplete bool
+	RecoveryMs       float64
+	P99Ms            float64
+	ErrorRate        float64
+	Kind             verdictKind
+	Reasons          []string
+}
+
+//nolint:gocritic // hugeParam: pure-function copy cost negligible per step.
+func evaluateStormStep(in stormStepInputs, th stormThresholds) stormStepResult {
+	r := stormStepResult{
+		Fraction: in.Fraction, StormUsers: in.StormUsers,
+		RecoveryComplete: in.RecoveryComplete,
+		RecoveryMs:       float64(in.RecoveryElapsed.Milliseconds()),
+		P99Ms:            percentile(in.SpikeLatencyMs, 0.99),
+	}
+	if in.Attempted > 0 {
+		r.ErrorRate = float64(in.Failed) / float64(in.Attempted)
+	}
+	if in.Self.GCPauseP99Ms > th.GCPauseInconclusive {
+		r.Kind = verdictInconclusive
+		r.Reasons = []string{fmt.Sprintf("inconclusive: loadgen gc pause p99=%.1fms > %.0f", in.Self.GCPauseP99Ms, th.GCPauseInconclusive)}
+		return r
+	}
+	var reasons []string
+	if !in.RecoveryComplete {
+		reasons = append(reasons, fmt.Sprintf("recovery incomplete: %d users never observed back online within SLO", in.RecoveryRemaining))
+	} else if in.RecoveryElapsed > th.RecoverySLO {
+		reasons = append(reasons, fmt.Sprintf("recovery=%s > %s", in.RecoveryElapsed.Round(time.Millisecond), th.RecoverySLO))
+	}
+	if r.P99Ms > th.P99Ms {
+		reasons = append(reasons, fmt.Sprintf("spike p99=%.0fms > %.0f", r.P99Ms, th.P99Ms))
+	}
+	if r.ErrorRate > th.ErrorRate {
+		reasons = append(reasons, fmt.Sprintf("error_rate=%.4f > %.4f", r.ErrorRate, th.ErrorRate))
+	}
+	if len(reasons) > 0 {
+		r.Kind = verdictTrip
+		r.Reasons = reasons
+		return r
+	}
+	r.Kind = verdictPass
+	return r
+}

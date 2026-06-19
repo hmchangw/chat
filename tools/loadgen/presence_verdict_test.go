@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -61,5 +62,49 @@ func TestEvaluatePresenceStep_InconclusiveActivationShortfall(t *testing.T) {
 		LatencySamples: []float64{10}, Attempted: 100,
 	}
 	r := evaluatePresenceStep(in, presenceTestThresholds())
+	assert.Equal(t, verdictInconclusive, r.Kind)
+}
+
+var _ = defaultStormThresholds // compile guard; remove when storm orchestration consumes it
+
+func stormTestThresholds() stormThresholds {
+	return stormThresholds{RecoverySLO: 10 * time.Second, P99Ms: 1000, ErrorRate: 0.05, GCPauseInconclusive: 50}
+}
+
+func TestEvaluateStormStep_Pass(t *testing.T) {
+	in := stormStepInputs{
+		Fraction: 0.5, StormUsers: 500,
+		RecoveryComplete: true, RecoveryElapsed: 3 * time.Second,
+		SpikeLatencyMs: []float64{100, 200, 300}, Attempted: 500, Failed: 0,
+	}
+	r := evaluateStormStep(in, stormTestThresholds())
+	assert.Equal(t, verdictPass, r.Kind)
+}
+
+func TestEvaluateStormStep_TripSlowRecovery(t *testing.T) {
+	in := stormStepInputs{
+		Fraction: 1.0, StormUsers: 1000,
+		RecoveryComplete: true, RecoveryElapsed: 20 * time.Second,
+		SpikeLatencyMs: []float64{100}, Attempted: 1000,
+	}
+	r := evaluateStormStep(in, stormTestThresholds())
+	assert.Equal(t, verdictTrip, r.Kind)
+}
+
+func TestEvaluateStormStep_TripIncompleteRecovery(t *testing.T) {
+	in := stormStepInputs{
+		Fraction: 1.0, StormUsers: 1000, RecoveryComplete: false,
+		RecoveryRemaining: 12, SpikeLatencyMs: []float64{100}, Attempted: 1000,
+	}
+	r := evaluateStormStep(in, stormTestThresholds())
+	assert.Equal(t, verdictTrip, r.Kind)
+}
+
+func TestEvaluateStormStep_InconclusiveGC(t *testing.T) {
+	in := stormStepInputs{
+		Fraction: 0.5, StormUsers: 500, RecoveryComplete: true, RecoveryElapsed: time.Second,
+		SpikeLatencyMs: []float64{10}, Attempted: 500, Self: SelfMetrics{GCPauseP99Ms: 80},
+	}
+	r := evaluateStormStep(in, stormTestThresholds())
 	assert.Equal(t, verdictInconclusive, r.Kind)
 }
