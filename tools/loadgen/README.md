@@ -708,3 +708,57 @@ preset; run e.g. `make -C tools/loadgen/deploy run-capacity PRESET=members-capac
   (cold-cache penalty).
 - Live N-connection pool to measure NATS core delivery fan-out to real member
   connections.
+
+## Presence workload
+
+Two subcommands that benchmark `user-presence-service` over NATS. No
+Mongo seeding is required: both use synthetic accounts (`u-NNNNNN`) that
+the service accepts via the JWT self-token on `hello`/`ping`/`activity`/`bye`
+without looking them up in any store.
+
+**NATS credentials.** Both subcommands read the same `NATS_URL`,
+`NATS_CREDS_FILE`, and `SITE_ID` env vars as every other loadgen subcommand.
+The credentials must permit publishing on `chat.user.*` and subscribing to
+`chat.user.presence.state.*`. The docker-local `backend.creds` covers both.
+
+**In-repo tests** use an embedded NATS server with a fake presence responder,
+so no Docker stack is needed for unit testing. Integration coverage against
+the real `user-presence-service` (which needs Docker + Valkey) is a CI
+concern.
+
+### presence-sustained — find max sustainable population
+
+Finds the maximum presence population N that the service can sustain
+within SLO. It ramps N through `--steps`: at each step it activates
+the delta of new users (each sends `hello`), warms up, then holds while
+users heartbeat (`ping`, a no-op at the service) and churn (activity
+flips and reconnects). Graded on:
+
+- state-publish latency p95/p99 (`--p95-ms` / `--p99-ms`)
+- error rate: missing observations + publish failures (`--error-rate`)
+- loadgen self-saturation INCONCLUSIVE guard (GC pause)
+
+Reports the largest N where every signal passed.
+
+```
+loadgen presence-sustained --steps=1k,2k,5k,10k --hold=120s --csv=presence.csv
+```
+
+### presence-storm — find largest survivable reconnect storm
+
+At a fixed warmed population (`--users`), ramps the dropped-and-reconnected
+fraction through `--storm-steps`. Two storm modes:
+
+- `--storm-mode=graceful` — drops users via `bye` then re-`hello`s; pure
+  thundering-herd.
+- `--storm-mode=silent` — stops pinging until the sweeper marks users
+  offline, then re-`hello`s; models a gateway blip and also exercises
+  the offline sweeper.
+
+Per fraction it grades recovery time vs `--recovery-slo`, spike p99
+(`--p99-ms`), and error rate (`--error-rate`). Reports the largest fraction
+that recovered within SLO.
+
+```
+loadgen presence-storm --users=20000 --storm-steps=0.1,0.25,0.5,1.0 --storm-mode=graceful
+```
