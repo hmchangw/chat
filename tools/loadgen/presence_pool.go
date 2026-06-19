@@ -100,7 +100,10 @@ func (p *presencePool) Publish(subj string, data []byte) error {
 	})
 }
 
-// Close drains all connections.
+// Close drains all connections. The slice fields are deliberately left intact
+// (not set to nil): emitter/warm goroutines may still call Publish concurrently
+// during shutdown, and mutating the slice header here would be a data race.
+// PublishMsg on a drained conn returns an error, which callers already handle.
 func (p *presencePool) Close() {
 	for _, nc := range p.pubConns {
 		_ = nc.Drain()
@@ -108,6 +111,4 @@ func (p *presencePool) Close() {
 	for _, nc := range p.obsConns {
 		_ = nc.Drain()
 	}
-	p.pubConns = nil
-	p.obsConns = nil
 }
