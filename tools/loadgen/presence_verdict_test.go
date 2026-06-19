@@ -65,8 +65,6 @@ func TestEvaluatePresenceStep_InconclusiveActivationShortfall(t *testing.T) {
 	assert.Equal(t, verdictInconclusive, r.Kind)
 }
 
-var _ = defaultStormThresholds // compile guard; remove when storm orchestration consumes it
-
 func stormTestThresholds() stormThresholds {
 	return stormThresholds{RecoverySLO: 10 * time.Second, P99Ms: 1000, ErrorRate: 0.05, GCPauseInconclusive: 50}
 }

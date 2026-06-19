@@ -73,7 +73,7 @@ type config struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|members-sustained|members-capacity|history-sustained|max-rps|daily|max-room-size|presence-sustained> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: loadgen <seed|run|teardown|members-sustained|members-capacity|history-sustained|max-rps|daily|max-room-size|presence-sustained|presence-storm> [flags]")
 		os.Exit(2)
 	}
 	cfg, err := env.ParseAs[config]()
@@ -118,6 +118,8 @@ func dispatch(ctx context.Context, cfg *config) int {
 		return runMaxRoomSize(ctx, cfg, os.Args[2:])
 	case "presence-sustained":
 		return runPresenceSustained(ctx, cfg, os.Args[2:])
+	case "presence-storm":
+		return runPresenceStorm(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		return 2
