@@ -330,13 +330,13 @@ func runPresenceStorm(ctx context.Context, baseCfg *config, args []string) int {
 		return 2
 	}
 	env := (&prodStormFactory{baseCfg: baseCfg}).Build(cfg)
+	if env.pool != nil {
+		defer env.pool.Close()
+	}
 	warmStormPopulation(ctx, env)
 	_ = waitOrCancel(ctx, cfg.Warmup)
 
 	results := runStormSteps(ctx, cfg, env)
-	if env.pool != nil {
-		env.pool.Close()
-	}
 	renderStormConsole(os.Stdout, results)
 	if cfg.CSVPath != "" {
 		if err := writeStormCSV(cfg.CSVPath, results); err != nil {
