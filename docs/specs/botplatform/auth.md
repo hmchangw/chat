@@ -904,12 +904,28 @@ return principal{account, userId}
 
 ## 15. Routes & error reasons (REST — Q15)
 
-`botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`), and admin (`/v1/admin/bots…`). **No NATS subjects** are exposed by this service.
+`botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`), and admin (`/admin/bots…`). **No NATS subjects** are exposed by this service.
 
 > **NATS is out of this service's surface.** It's reserved for the nextgen chat backend's internal service-to-service comms and native-client access. The *only* possible NATS use is a future control-plane call to `auth-service` to mint a NATS JWT for *native* bots — not part of the July scope.
 
+### 15.1 Transport choice — why HTTP, not NATS RPC
+
+Reviewer FAQ: this codebase uses NATS request/reply for synchronous operations (CLAUDE.md §6), so why is `/v1/auth/validate` HTTP and not `nc.Request("chat.auth.validate", …)`? Both are synchronous — the question is operational fit. We chose HTTP because:
+
+1. **Web UI forces HTTP on this service anyway.** `/dev-login`, `/changepwd`, `/admin/bots…` are HTML + CSRF + session cookies — inherently HTTP. Adding a parallel NATS handler for `/v1/auth/validate` is more operational surface (second transport, second observability story, second auth model) for marginal gain.
+2. **ApiGW is Envoy-native.** ApiGW is the highest-volume validate caller. HTTP routing is its native skill; calling NATS from inside an Envoy filter is awkward (custom Lua/WASM or sidecar). HTTP keeps ApiGW simple.
+3. **Latency is well inside SLA.** In-mesh HTTP hop is ~1 ms; §9.5 SLA is `<5 ms cached`. The NATS-RPC latency saving (~0.5 ms) doesn't move the dial at our throughput target.
+
+**For non-ApiGW callers** (WS server, EventConsumer): also HTTP. They're already HTTP-speaking in this codebase; one more HTTP call is trivial, validation is once-per-connect (WS) or once-per-event (EventConsumer), so volume is bounded.
+
+**Reversible if metrics ever justify it.** Adding a NATS-RPC sidecar handler on `botplatform-service` later is cheap — same in-process session store, second transport. Shipping NATS-only and discovering ApiGW can't consume it cleanly is not. Defer the call until production data says it's needed.
+
+Sync vs async is **not** the differentiator here. Both HTTP and NATS request/reply are synchronous request/reply patterns; either fits the caller's "block on response" expectation. Pub/sub and JetStream would be wrong (no reply value), but NATS request/reply would have worked — just at higher operational cost for the reasons above.
+
+---
+
 **Error reasons** (attached via `errcode.WithReason`, surfaced through `errhttp.Write`):
-`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`, `rateLimited`.
+`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`, `rateLimited`, `account_not_provisioned`.
 
 ---
 
@@ -1143,7 +1159,34 @@ Bots still treat the token as opaque (no client change) — the `bp1_` prefix do
 Use direct-Valkey only if per-connection latency ever becomes a measured problem (it won't, at once-per-connect).
 
 ### Q13 — Where does the REST→NATS bridge live?
-A bridge **is** required: nextgen is all **NATS request/reply RPCs**; the legacy v2 code was **pure REST**. So bot REST `/api/v2/*` calls must, eventually, become NATS RPCs against the nextgen backend. **Recommendation: the bridge lives in `botplatform-server` / the data-plane track — downstream of our auth proxy — never in our auth service.** Our service stays a **transparent HTTP reverse-proxy** that doesn't know whether `botplatform-server` is hitting legacy v2 REST or bridging to nextgen NATS. Putting the bridge in our auth service would couple auth to every `/api/v2/*` subject + request/response schema — the entire data API surface — which is exactly what Option B (§Part I §3) avoids. *Confirm ownership with the external-dev team.*
+A bridge **is** required: nextgen is all **NATS request/reply RPCs**; the legacy v2 code was **pure REST**. So bot REST `/api/v2/*` calls must, eventually, become NATS RPCs against the nextgen backend. **Recommendation: the bridge lives in `botplatform-server` / the data-plane track — downstream of our auth proxy — never in our auth service.** Our service stays a **transparent HTTP reverse-proxy** that doesn't know whether `botplatform-server` is hitting legacy v2 REST or bridging to nextgen NATS. Putting the bridge in our auth service would couple auth to every `/api/v2/*` subject + request/response schema — the entire data API surface — which is exactly what Option B (Part I §3) avoids. *Confirm ownership with the external-dev team.*
+
+**Bridge shape — synchronous NATS request/reply, NOT pub/sub or JetStream.** The bot's HTTP call expects a response value, so the bridge translates:
+
+```
+HTTP request  →  nc.Request(subject, payload, timeout)  →  reply  →  HTTP response
+```
+
+Both legs are synchronous. The bot blocks on the outer HTTP; the bridge blocks on the inner `nc.Request`; the nextgen-service handler blocks on its own work before replying. End-to-end sync semantics, two transport hops.
+
+**Patterns + helpers (already in this repo):**
+- Bridge side (caller): `nc.Request(subj, payload, timeout)` directly; subjects from `pkg/subject` builders, never hand-written.
+- Nextgen-service side (receiver): `pkg/natsrouter` for routing subjects to handlers; reply via `natsutil.ReplyJSON`; errors via `errnats.Reply` + `pkg/errcode`.
+
+**Timeout pyramid (must be monotonically decreasing — outer > inner):**
+```
+bot HTTP client        30 s   (Resty default)
+ApiGW → Server         25 s   (Envoy route timeout)
+bridge HTTP server     20 s   (Gin middleware)
+nc.Request             5-10 s (per RPC, tune per workload)
+nextgen handler        < inner timeout (else cascading 504s)
+```
+
+**Wrong shapes for this bridge:**
+- `nc.Publish` / core pub/sub — fire-and-forget, no reply value to return.
+- JetStream publish — durable streams; ack on write, not on logical completion. Wrong semantics for a `GET /api/v2/rooms` that needs the room list back.
+
+**Why this matters:** an implementer reading the spec could pick pub/sub or JetStream and silently break the bot's response expectation. Pinning the shape here prevents that.
 
 ### Q14 — How does the legacy v2 backend (and WS) accept the new tokens?
 New `v1` tokens don't exist in the legacy store, so a downstream that re-validates a bearer token would 401 them. **Don't have legacy v2 invent its own check or blindly trust `X-User-Id`** — instead make **`/v1/auth/validate` the single dual-token authority** (it checks legacy + `v1`):
