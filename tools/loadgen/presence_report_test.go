@@ -42,11 +42,3 @@ func TestWritePresenceCSV(t *testing.T) {
 	assert.Contains(t, lines[1], "1000")
 	assert.Contains(t, lines[1], "PASS")
 }
-
-// Compile-time assertions: ensure renderPresenceConsole and writePresenceCSV are
-// reachable (they are consumed by the presence run loop in Task 6; this prevents
-// the unused linter from rejecting the incremental build).
-var (
-	_ = renderPresenceConsole
-	_ = writePresenceCSV
-)

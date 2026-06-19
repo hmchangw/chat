@@ -13,7 +13,6 @@ type presenceThresholds struct {
 	GCPauseInconclusive float64 // loadgen self-saturation guard (ms)
 }
 
-//nolint:unused // consumed by the presence run loop and report tasks (future tasks)
 func defaultPresenceThresholds() presenceThresholds {
 	return presenceThresholds{P95Ms: 200, P99Ms: 500, ErrorRate: 0.01, GCPauseInconclusive: 50}
 }

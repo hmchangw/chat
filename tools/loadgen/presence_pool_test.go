@@ -36,11 +36,3 @@ func TestDecodePresenceState(t *testing.T) {
 	_, _, ok = decodePresenceState([]byte(`not json`))
 	assert.False(t, ok)
 }
-
-// Compile-time assertions: ensure presencePool and its constructor are
-// reachable (they are consumed by later tasks; this prevents the unused
-// linter from rejecting the incremental build).
-var (
-	_ = newPresencePool
-	_ *presencePool
-)
