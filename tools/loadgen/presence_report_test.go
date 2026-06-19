@@ -42,3 +42,28 @@ func TestWritePresenceCSV(t *testing.T) {
 	assert.Contains(t, lines[1], "1000")
 	assert.Contains(t, lines[1], "PASS")
 }
+
+func TestRenderStormConsole_Answer(t *testing.T) {
+	results := []stormStepResult{
+		{Fraction: 0.5, StormUsers: 500, RecoveryComplete: true, RecoveryMs: 3000, P99Ms: 200, Kind: verdictPass},
+		{Fraction: 1.0, StormUsers: 1000, RecoveryComplete: true, RecoveryMs: 20000, P99Ms: 300, Kind: verdictTrip, Reasons: []string{"recovery=20s > 10s"}},
+	}
+	var buf bytes.Buffer
+	renderStormConsole(&buf, results)
+	out := buf.String()
+	assert.Contains(t, out, "ANSWER: max survivable storm = 0.50")
+	assert.Contains(t, out, "Next limit: recovery=20s > 10s")
+}
+
+func TestWriteStormCSV(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "storm.csv")
+	require.NoError(t, writeStormCSV(path, []stormStepResult{
+		{Fraction: 0.5, StormUsers: 500, RecoveryComplete: true, RecoveryMs: 3000, P99Ms: 200, ErrorRate: 0, Kind: verdictPass},
+	}))
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	assert.Equal(t, "fraction,storm_users,recovery_complete,recovery_ms,p99_ms,error_rate,verdict,reasons", lines[0])
+	assert.Contains(t, lines[1], "0.50")
+}

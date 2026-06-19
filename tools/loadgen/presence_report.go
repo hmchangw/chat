@@ -70,3 +70,61 @@ func writePresenceCSV(path string, results []presenceStepResult) error {
 	}
 	return nil
 }
+
+func renderStormConsole(w io.Writer, results []stormStepResult) {
+	fmt.Fprintln(w, "fraction users  recovery   p99    err%    verdict")
+	var lastPass float64
+	for i := range results {
+		r := &results[i]
+		if r.Kind == verdictPass {
+			lastPass = r.Fraction
+		}
+		rec := fmt.Sprintf("%.0fms", r.RecoveryMs)
+		if !r.RecoveryComplete {
+			rec = "INCOMPLETE"
+		}
+		fmt.Fprintf(w, "%-8.2f %-6d %-10s %-6.0f %-7.3f%% %s\n",
+			r.Fraction, r.StormUsers, rec, r.P99Ms, r.ErrorRate*100, r.Kind)
+		if r.Kind != verdictPass && len(r.Reasons) > 0 {
+			fmt.Fprintf(w, "    reasons: %s\n", joinReasons(r.Reasons))
+		}
+	}
+	fmt.Fprintln(w)
+	if lastPass > 0 {
+		fmt.Fprintf(w, "ANSWER: max survivable storm = %.2f (largest passing fraction)\n", lastPass)
+		for i := range results {
+			if results[i].Kind == verdictTrip {
+				fmt.Fprintf(w, "        Next limit: %s\n", joinReasons(results[i].Reasons))
+				break
+			}
+		}
+	} else {
+		fmt.Fprintln(w, "ANSWER: no storm fraction survived")
+	}
+}
+
+func writeStormCSV(path string, results []stormStepResult) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create csv: %w", err)
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"fraction", "storm_users", "recovery_complete", "recovery_ms", "p99_ms", "error_rate", "verdict", "reasons"}); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for i := range results {
+		r := &results[i]
+		row := []string{
+			fmt.Sprintf("%.2f", r.Fraction), strconv.Itoa(r.StormUsers),
+			strconv.FormatBool(r.RecoveryComplete), fmt.Sprintf("%.0f", r.RecoveryMs),
+			fmt.Sprintf("%.0f", r.P99Ms), fmt.Sprintf("%.6f", r.ErrorRate),
+			r.Kind.String(), joinReasons(r.Reasons),
+		}
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("write csv row: %w", err)
+		}
+	}
+	return nil
+}
