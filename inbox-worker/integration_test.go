@@ -35,7 +35,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store)
 
 	// Seed user for lookup
 	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u2", Account: "u2", SiteID: "site-b"})
@@ -83,7 +83,7 @@ func TestInboxWorker_RoomSync_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store)
 
 	room := model.Room{ID: "r1", Name: "synced-room", Type: model.RoomTypeChannel, UserCount: 5}
 	roomData, _ := json.Marshal(room)
@@ -114,7 +114,7 @@ func TestInboxWorker_RoleUpdated_Integration(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store)
 
 	_, err := db.Collection("subscriptions").InsertOne(ctx, model.Subscription{
 		ID: "s1", User: model.SubscriptionUser{ID: "u2", Account: "bob"},
@@ -227,7 +227,7 @@ func TestInboxWorker_MemberRemoved_Integration(t *testing.T) {
 		subCol:  db.Collection("subscriptions"),
 		roomCol: db.Collection("rooms"),
 	}
-	h := NewHandler(store, nil)
+	h := NewHandler(store)
 
 	ctx := context.Background()
 
@@ -362,7 +362,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store)
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription.SiteID is the room's home site (site-a). Bob's home is site-b
@@ -406,7 +406,7 @@ func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *
 	}
 	require.NoError(t, store.ensureIndexes(ctx))
 
-	handler := NewHandler(store, nil)
+	handler := NewHandler(store)
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 
 	// First event: HasMention=true. Subscription.SiteID is the room's site (site-a).
@@ -484,7 +484,7 @@ func newIntegrationHandler(t *testing.T, db *mongo.Database) *Handler {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	return NewHandler(store, nil)
+	return NewHandler(store)
 }
 
 func TestHandleMemberAdded_Channel_PersistsRemoteSubs(t *testing.T) {
@@ -909,7 +909,7 @@ func TestIntegration_HandleRoomRenamed(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	h := NewHandler(store, nil)
+	h := NewHandler(store)
 
 	// Seed two subscription mirrors for room r1 with old name.
 	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{
@@ -957,7 +957,7 @@ func TestIntegration_HandleRoomVisibilityChanged(t *testing.T) {
 		roomCol: db.Collection("rooms"),
 		userCol: db.Collection("users"),
 	}
-	h := NewHandler(store, nil)
+	h := NewHandler(store)
 
 	// Seed: alice=owner, bob=member, carol=member.
 	_, err := db.Collection("subscriptions").InsertMany(ctx, []any{

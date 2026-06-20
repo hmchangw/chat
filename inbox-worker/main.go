@@ -442,12 +442,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := NewHandler(store, func(ctx context.Context, subj string, data []byte) error {
-		if err := nc.PublishMsg(ctx, natsutil.NewMsg(ctx, subj, data)); err != nil {
-			return fmt.Errorf("publish core to %q: %w", subj, err)
-		}
-		return nil
-	})
+	handler := NewHandler(store)
 
 	// Two-lane pull pattern over the single INBOX aggregate consumer:
 	//

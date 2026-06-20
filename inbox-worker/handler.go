@@ -13,7 +13,6 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/idgen"
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // InboxStore abstracts the data store operations needed by the inbox worker.
@@ -64,13 +63,12 @@ type InboxStore interface {
 
 // Handler processes cross-site OutboxEvent messages; replicates only subscription/room metadata, never room keys.
 type Handler struct {
-	store       InboxStore
-	publishCore func(ctx context.Context, subj string, data []byte) error
+	store InboxStore
 }
 
-// NewHandler creates a Handler. publishCore may be nil (disables subscription.update fan-out).
-func NewHandler(store InboxStore, publishCore func(ctx context.Context, subj string, data []byte) error) *Handler {
-	return &Handler{store: store, publishCore: publishCore}
+// NewHandler creates a Handler with the given store.
+func NewHandler(store InboxStore) *Handler {
+	return &Handler{store: store}
 }
 
 // HandleEvent processes a single JetStream message payload.
@@ -241,28 +239,6 @@ func (h *Handler) handleSubscriptionRead(ctx context.Context, evt *model.OutboxE
 	lastSeenAt := time.UnixMilli(e.LastSeenAt).UTC()
 	if err := h.store.UpdateSubscriptionRead(ctx, e.RoomID, e.Account, lastSeenAt, e.Alert); err != nil {
 		return fmt.Errorf("update subscription read for %q in room %q: %w", e.Account, e.RoomID, err)
-	}
-	if !isBot(e.Account) && h.publishCore != nil {
-		sub := model.Subscription{
-			User:       model.SubscriptionUser{Account: e.Account},
-			RoomID:     e.RoomID,
-			LastSeenAt: &lastSeenAt,
-			Alert:      e.Alert,
-		}
-		subEvt := model.SubscriptionUpdateEvent{
-			// UserID (u._id) is unavailable on the cross-site path; omit it.
-			// Clients route by subject, not this field.
-			Subscription: sub,
-			Action:       "read",
-			Timestamp:    evt.Timestamp,
-		}
-		data, err := json.Marshal(subEvt)
-		if err != nil {
-			return fmt.Errorf("marshal subscription_update event: %w", err)
-		}
-		if err := h.publishCore(ctx, subject.SubscriptionUpdate(e.Account), data); err != nil {
-			slog.Error("subscription update publish failed", "error", err, "account", e.Account)
-		}
 	}
 	return nil
 }
