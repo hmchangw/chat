@@ -49,7 +49,7 @@ paths.
      - [Mark Messages Read](#mark-messages-read) · [Mark Thread as Read](#mark-thread-as-read) · [Read Message Receipts](#read-message-receipts) · [Toggle Mute](#toggle-mute) · [Toggle Favorite](#toggle-favorite)
      - [Get Room App Tabs](#get-room-app-tabs) · [Get Room App Command Menu](#get-room-app-command-menu)
    - [3.2 history-service](#32-history-service)
-     - [Load History](#load-history) · [Load Next Messages](#load-next-messages) · [Load Surrounding Messages](#load-surrounding-messages) · [Get Message By ID](#get-message-by-id)
+     - [Load History](#load-history) · [Load Next Messages](#load-next-messages) · [Load Surrounding Messages](#load-surrounding-messages) · [Get Message By ID](#get-message-by-id) · [Get Messages By IDs](#get-messages-by-ids)
      - [Edit Message](#edit-message) · [Delete Message](#delete-message) · [Pin Message](#pin-message) · [Unpin Message](#unpin-message) · [List Pinned Messages](#list-pinned-messages) · [React to Message](#react-to-message)
      - [Get Thread Messages](#get-thread-messages) · [Get Thread Parent Messages](#get-thread-parent-messages)
    - [3.3 search-service](#33-search-service)
@@ -2045,6 +2045,7 @@ On idempotent repeat calls that return cached meeting details, no additional sys
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.next` | [Load Next Messages](#load-next-messages) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.surrounding` | [Load Surrounding Messages](#load-surrounding-messages) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get` | [Get Message By ID](#get-message-by-id) |
+| `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get.ids` | [Get Messages By IDs](#get-messages-by-ids) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit` | [Edit Message](#edit-message) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.delete` | [Delete Message](#delete-message) |
 | `chat.user.{account}.request.room.{roomID}.{siteID}.msg.pin` | [Pin Message](#pin-message) |
@@ -2432,6 +2433,65 @@ See [Error envelope](#6-error-envelope-reference).
 ```json
 { "code": "not_found", "error": "message not found" }
 ```
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
+
+---
+
+#### Get Messages By IDs
+
+**Subject:** `chat.user.{account}.request.room.{roomID}.{siteID}.msg.get.ids`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` must be the room's **origin `siteID`** (the site that owns the room), not the caller's own site.
+- All requested IDs must belong to the same room (the room is identified by `{roomID}` in the subject).
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `messageIds` | string[] | yes | IDs of the messages to fetch. Must be non-empty; maximum 100. |
+
+```json
+{ "messageIds": ["01970a4f8c2d7c9aQRST", "01970a4f8c2d7c9aABCD"] }
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|---|---|---|
+| `messages` | [Message](#message-schema)[] | Results in the same order as the input `messageIds`. IDs not found in the store or outside the caller's access window are silently omitted. |
+
+```json
+{
+  "messages": [
+    {
+      "roomId": "01970a4f8c2d7c9aQ",
+      "createdAt": "2026-05-06T07:55:00Z",
+      "messageId": "01970a4f8c2d7c9aQRST",
+      "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+      "msg": "morning team"
+    }
+  ]
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference).
+
+| Condition | `code` | `error` |
+|---|---|---|
+| Empty `messageIds` | `bad_request` | `messageIds must not be empty` |
+| `messageIds` length exceeds 100 | `bad_request` | `too many messageIds` |
+| Caller not subscribed to the room | `forbidden` | `not subscribed to room` |
+| Store failure | `internal` | `internal error` |
 
 ##### Triggered events — success path
 

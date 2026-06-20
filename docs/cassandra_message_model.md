@@ -276,8 +276,8 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
-  PRIMARY KEY(message_id,created_at)
-)WITH CLUSTERING ORDER BY (created_at DESC);
+  PRIMARY KEY(message_id)  -- message_id is unique per message; sole partition key
+);
 ```
 
 ## Encryption (at rest)

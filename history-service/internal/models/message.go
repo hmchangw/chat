@@ -62,6 +62,16 @@ type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
 }
 
+// GetMessagesByIDsRequest is the request body for the msg.get.ids batch RPC.
+type GetMessagesByIDsRequest struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+// GetMessagesByIDsResponse is the response body for the msg.get.ids batch RPC.
+type GetMessagesByIDsResponse struct {
+	Messages []Message `json:"messages"`
+}
+
 type EditMessageRequest struct {
 	MessageID string `json:"messageId"`
 	NewMsg    string `json:"newMsg"`

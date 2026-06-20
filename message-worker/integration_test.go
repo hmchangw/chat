@@ -138,8 +138,8 @@ func setupCassandra(t *testing.T) *gocql.Session {
 			quoted_parent_message    FROZEN<"QuotedParentMessage">,
 			enc_payload              BLOB,
 			enc_meta                 FROZEN<"EncMeta">,
-			PRIMARY KEY (message_id, created_at)
-		) WITH CLUSTERING ORDER BY (created_at DESC)`, keyspace),
+			PRIMARY KEY (message_id)
+		)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_thread (
 			thread_room_id        TEXT,
 			created_at            TIMESTAMP,
@@ -247,8 +247,8 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 		var gotMsg, gotSiteID string
 		var gotUpdatedAt time.Time
 		err := cassSession.Query(
-			`SELECT msg, site_id, updated_at FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-1", now,
+			`SELECT msg, site_id, updated_at FROM messages_by_id WHERE message_id = ?`,
+			"m-1",
 		).Scan(&gotMsg, &gotSiteID, &gotUpdatedAt)
 		require.NoError(t, err)
 		assert.Equal(t, "hello @bob", gotMsg)
@@ -259,8 +259,8 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 	t.Run("messages_by_id mentions persisted", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
-			`SELECT mentions FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-1", now,
+			`SELECT mentions FROM messages_by_id WHERE message_id = ?`,
+			"m-1",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
@@ -272,8 +272,8 @@ func TestCassandraStore_SaveMessage(t *testing.T) {
 	t.Run("messages_by_id room_id persisted", func(t *testing.T) {
 		var gotRoomID string
 		err := cassSession.Query(
-			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-1", now,
+			`SELECT room_id FROM messages_by_id WHERE message_id = ?`,
+			"m-1",
 		).Scan(&gotRoomID)
 		require.NoError(t, err)
 		assert.Equal(t, "r-1", gotRoomID)
@@ -329,8 +329,8 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	t.Run("messages_by_id mentions persisted for thread", func(t *testing.T) {
 		var gotMentions []*cassParticipant
 		err := cassSession.Query(
-			`SELECT mentions FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-2", now,
+			`SELECT mentions FROM messages_by_id WHERE message_id = ?`,
+			"m-2",
 		).Scan(&gotMentions)
 		require.NoError(t, err)
 		require.Len(t, gotMentions, 1)
@@ -342,8 +342,8 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	t.Run("messages_by_id thread fields persisted", func(t *testing.T) {
 		var gotThreadRoomID, gotThreadParentID string
 		err := cassSession.Query(
-			`SELECT thread_room_id, thread_parent_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-2", now,
+			`SELECT thread_room_id, thread_parent_id FROM messages_by_id WHERE message_id = ?`,
+			"m-2",
 		).Scan(&gotThreadRoomID, &gotThreadParentID)
 		require.NoError(t, err)
 		assert.Equal(t, threadRoomID, gotThreadRoomID)
@@ -353,8 +353,8 @@ func TestCassandraStore_SaveThreadMessage(t *testing.T) {
 	t.Run("messages_by_id room_id persisted for thread message", func(t *testing.T) {
 		var gotRoomID string
 		err := cassSession.Query(
-			`SELECT room_id FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-2", now,
+			`SELECT room_id FROM messages_by_id WHERE message_id = ?`,
+			"m-2",
 		).Scan(&gotRoomID)
 		require.NoError(t, err)
 		assert.Equal(t, "r-1", gotRoomID)
@@ -950,8 +950,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 1 in messages_by_id", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 1, tcount)
@@ -984,8 +984,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 	t.Run("tcount incremented to 2 in messages_by_id after second reply", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, tcount)
@@ -1017,8 +1017,8 @@ func TestCassandraStore_SaveThreadMessage_IncrementsParentTcount(t *testing.T) {
 		// tcount must stay at 2 — nil timestamp skips the increment
 		var tcount int
 		err = cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"tcount-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"tcount-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, tcount)
@@ -1066,8 +1066,8 @@ func TestCassandraStore_SaveThreadMessage_IdempotentOnRedelivery(t *testing.T) {
 	t.Run("tcount stays at 1 in messages_by_id after redelivery", func(t *testing.T) {
 		var tcount int
 		err := cassSession.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"idem-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"idem-parent",
 		).Scan(&tcount)
 		require.NoError(t, err)
 		assert.Equal(t, 1, tcount)
@@ -1145,8 +1145,8 @@ func TestCassandraStore_SaveMessage_WithQuotedParent(t *testing.T) {
 	t.Run("messages_by_id round-trips QuotedParentMessage including thread context", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
-			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-quote-1", now,
+			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ?`,
+			"m-quote-1",
 		).Scan(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
@@ -1179,8 +1179,8 @@ func TestCassandraStore_SaveMessage_NilQuotedParent(t *testing.T) {
 
 	var got *cassandra.QuotedParentMessage
 	err := cassSession.Query(
-		`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		"m-no-quote", now,
+		`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ?`,
+		"m-no-quote",
 	).Scan(&got)
 	require.NoError(t, err)
 	assert.Nil(t, got, "nil pointer must round-trip as null UDT")
@@ -1374,8 +1374,8 @@ func TestCassandraStore_SaveThreadMessage_WithQuotedParent(t *testing.T) {
 	t.Run("messages_by_id round-trips QuotedParentMessage for thread message", func(t *testing.T) {
 		var got cassandra.QuotedParentMessage
 		err := cassSession.Query(
-			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-thread-quote", now,
+			`SELECT quoted_parent_message FROM messages_by_id WHERE message_id = ?`,
+			"m-thread-quote",
 		).Scan(&got)
 		require.NoError(t, err)
 		assert.Equal(t, "parent-msg-uuid", got.MessageID)
@@ -1497,8 +1497,8 @@ func TestSaveMessage_RedeliveryOverLegacyRow_NullsPlaintextColumns(t *testing.T)
 		},
 		{
 			name: "messages_by_id",
-			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_id WHERE message_id=? AND created_at=? LIMIT 1`,
-			args: []any{msgID, now},
+			q:    `SELECT msg, attachments, sys_msg_data FROM messages_by_id WHERE message_id=? LIMIT 1`,
+			args: []any{msgID},
 		},
 	} {
 		var (
@@ -1562,8 +1562,8 @@ func TestSaveThreadMessage_EncryptedPath_SkipsTcountOnRedelivery(t *testing.T) {
 	t.Run("tcount 1 after first delivery", func(t *testing.T) {
 		var tcount int
 		require.NoError(t, session.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"enc-tcount-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"enc-tcount-parent",
 		).Scan(&tcount))
 		assert.Equal(t, 1, tcount)
 	})
@@ -1575,8 +1575,8 @@ func TestSaveThreadMessage_EncryptedPath_SkipsTcountOnRedelivery(t *testing.T) {
 	t.Run("tcount still 1 after redelivery — no double-increment", func(t *testing.T) {
 		var tcount int
 		require.NoError(t, session.Query(
-			`SELECT tcount FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"enc-tcount-parent", parentCreatedAt,
+			`SELECT tcount FROM messages_by_id WHERE message_id = ?`,
+			"enc-tcount-parent",
 		).Scan(&tcount))
 		assert.Equal(t, 1, tcount, "redelivery must not double-increment tcount")
 	})
@@ -1644,8 +1644,8 @@ func TestCassandraStore_SaveThreadMessage_TShowDualWrite(t *testing.T) {
 	t.Run("messages_by_id and thread_messages_by_thread still written", func(t *testing.T) {
 		var gotMsg string
 		require.NoError(t, cassSession.Query(
-			`SELECT msg FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-			"m-tshow-1", replyCreatedAt,
+			`SELECT msg FROM messages_by_id WHERE message_id = ?`,
+			"m-tshow-1",
 		).Scan(&gotMsg))
 		assert.Equal(t, "tshow reply", gotMsg)
 		require.NoError(t, cassSession.Query(

@@ -91,8 +91,8 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		pinned_by FROZEN<"Participant">,
 		enc_payload BLOB,
 		enc_meta FROZEN<"EncMeta">,
-		PRIMARY KEY (message_id, created_at)
-	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
+		PRIMARY KEY (message_id)
+	)`)).Exec())
 
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_thread (
 		thread_room_id TEXT,
