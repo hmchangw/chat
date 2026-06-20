@@ -3036,6 +3036,7 @@ func TestHandler_MessageRead_PublishesSubscriptionUpdate_Local(t *testing.T) {
 	assert.Equal(t, "read", evt.Action)
 	assert.Equal(t, "u1", evt.UserID)
 	assert.NotNil(t, evt.Subscription.LastSeenAt, "published subscription must carry updated lastSeenAt")
+	assert.False(t, evt.Subscription.Alert, "published subscription carries updated alert")
 }
 
 // A bot account must NOT receive a subscription.update on messageRead.
