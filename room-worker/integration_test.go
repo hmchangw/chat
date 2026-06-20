@@ -542,6 +542,84 @@ func TestMongoStore_UserCache(t *testing.T) {
 	assert.Equal(t, "alice", users[0].Account)
 }
 
+// TestMongoStore_RoomMetaCache covers the cached GetRoomMeta path: it serves the
+// room's stable fields from the in-process cache and still errors on a miss.
+func TestMongoStore_RoomMetaCache(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnableRoomMetaCache(100, time.Minute))
+	ctx := context.Background()
+
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "rm", Name: "general", Type: model.RoomTypeChannel, SiteID: "site-a", UserCount: 7,
+	})
+	require.NoError(t, err)
+
+	// Two reads (miss then hit) both return the stable fields.
+	for range 2 {
+		room, err := store.GetRoomMeta(ctx, "rm")
+		require.NoError(t, err)
+		assert.Equal(t, "rm", room.ID)
+		assert.Equal(t, "general", room.Name)
+		assert.Equal(t, model.RoomTypeChannel, room.Type)
+		assert.Equal(t, "site-a", room.SiteID)
+	}
+
+	_, err = store.GetRoomMeta(ctx, "nope")
+	require.Error(t, err)
+}
+
+// TestMongoStore_GetRoom_FullDocumentWithCacheEnabled guards the regression
+// where enabling the meta cache made GetRoom serve a partial (Meta-only) room
+// with a zero CreatedAt. GetRoom must always return the full document — the DM
+// idempotency path (serverCreateDM) depends on existing.CreatedAt — regardless
+// of whether the add-path meta cache is enabled.
+func TestMongoStore_GetRoom_FullDocumentWithCacheEnabled(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnableRoomMetaCache(100, time.Minute))
+	ctx := context.Background()
+
+	createdAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := db.Collection("rooms").InsertOne(ctx, model.Room{
+		ID: "rfull", Name: "general", Type: model.RoomTypeDM, SiteID: "site-a",
+		UserCount: 2, CreatedAt: createdAt, UpdatedAt: createdAt,
+	})
+	require.NoError(t, err)
+
+	room, err := store.GetRoom(ctx, "rfull")
+	require.NoError(t, err)
+	assert.Equal(t, "rfull", room.ID)
+	assert.Equal(t, model.RoomTypeDM, room.Type)
+	assert.Equal(t, createdAt, room.CreatedAt, "GetRoom must return the persisted CreatedAt, not a zero value")
+}
+
+// TestMongoStore_ListAddMemberCandidates_SkipsIRMForDirectAdds asserts the
+// no-org optimization: the room_members read is skipped, so
+// HasIndividualRoomMember is false even when an individual row exists.
+func TestMongoStore_ListAddMemberCandidates_SkipsIRMForDirectAdds(t *testing.T) {
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	_, err := db.Collection("users").InsertOne(ctx, model.User{ID: "u9", Account: "dave", SiteID: "site-a"})
+	require.NoError(t, err)
+	// An individual room_members row exists for dave in room rx.
+	_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+		ID: idgen.GenerateUUIDv7(), RoomID: "rx",
+		Member: model.RoomMemberEntry{ID: "u9", Type: model.RoomMemberIndividual, Account: "dave"},
+	})
+	require.NoError(t, err)
+
+	// Direct (no-org) add: the IRM read is skipped, so the flag is false despite
+	// the existing row (the handler never reads it on the no-org path).
+	cands, err := store.ListAddMemberCandidates(ctx, nil, []string{"dave"}, "rx")
+	require.NoError(t, err)
+	require.Len(t, cands, 1)
+	assert.Equal(t, "dave", cands[0].Account)
+	assert.False(t, cands[0].HasIndividualRoomMember, "no-org add skips the room_members read")
+}
+
 func TestMongoStore_ListAddMemberCandidates_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)

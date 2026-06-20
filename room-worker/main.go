@@ -30,22 +30,24 @@ import (
 )
 
 type config struct {
-	NatsURL          string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
-	NatsCredsFile    string                  `env:"NATS_CREDS_FILE" envDefault:""`
-	SiteID           string                  `env:"SITE_ID"         envDefault:"site-local"`
-	MongoURI         string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
-	MongoDB          string                  `env:"MONGO_DB"        envDefault:"chat"`
-	MongoUsername    string                  `env:"MONGO_USERNAME"  envDefault:""`
-	MongoPassword    string                  `env:"MONGO_PASSWORD"  envDefault:""`
-	MaxWorkers       int                     `env:"MAX_WORKERS"        envDefault:"100"`
-	KeyFanoutWorkers int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
-	UserCacheSize    int                     `env:"USER_CACHE_SIZE"    envDefault:"10000"`
-	UserCacheTTL     time.Duration           `env:"USER_CACHE_TTL"     envDefault:"5m"`
-	Consumer         stream.ConsumerSettings `envPrefix:"CONSUMER_"`
-	Bootstrap        bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
-	HealthAddr       string                  `env:"HEALTH_ADDR" envDefault:":8081"`
-	PProfEnabled     bool                    `env:"PPROF_ENABLED" envDefault:"false"`
-	DebugLog         logctx.Config           `envPrefix:"DEBUG_LOG_"`
+	NatsURL           string                  `env:"NATS_URL"        envDefault:"nats://localhost:4222"`
+	NatsCredsFile     string                  `env:"NATS_CREDS_FILE" envDefault:""`
+	SiteID            string                  `env:"SITE_ID"         envDefault:"site-local"`
+	MongoURI          string                  `env:"MONGO_URI"       envDefault:"mongodb://localhost:27017"`
+	MongoDB           string                  `env:"MONGO_DB"        envDefault:"chat"`
+	MongoUsername     string                  `env:"MONGO_USERNAME"  envDefault:""`
+	MongoPassword     string                  `env:"MONGO_PASSWORD"  envDefault:""`
+	MaxWorkers        int                     `env:"MAX_WORKERS"        envDefault:"100"`
+	KeyFanoutWorkers  int                     `env:"KEY_FANOUT_WORKERS" envDefault:"32"` // see defaultKeyFanoutWorkers in handler.go
+	UserCacheSize     int                     `env:"USER_CACHE_SIZE"    envDefault:"10000"`
+	UserCacheTTL      time.Duration           `env:"USER_CACHE_TTL"     envDefault:"5m"`
+	RoomMetaCacheSize int                     `env:"ROOM_META_CACHE_SIZE" envDefault:"10000"`
+	RoomMetaCacheTTL  time.Duration           `env:"ROOM_META_CACHE_TTL"  envDefault:"60s"`
+	Consumer          stream.ConsumerSettings `envPrefix:"CONSUMER_"`
+	Bootstrap         bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
+	HealthAddr        string                  `env:"HEALTH_ADDR" envDefault:":8081"`
+	PProfEnabled      bool                    `env:"PPROF_ENABLED" envDefault:"false"`
+	DebugLog          logctx.Config           `envPrefix:"DEBUG_LOG_"`
 
 	// Grace window during which a rotated-out previous key remains valid for decrypt.
 	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD" envDefault:"24h"`
@@ -163,6 +165,17 @@ func main() {
 		slog.Info("user-cache enabled", "size", cfg.UserCacheSize, "ttl", cfg.UserCacheTTL)
 	} else {
 		slog.Info("user-cache disabled", "size", cfg.UserCacheSize)
+	}
+	// Room-meta cache is on by default; a non-positive size disables it cleanly
+	// rather than failing startup (the LRU constructor rejects size<=0).
+	if cfg.RoomMetaCacheSize > 0 {
+		if err := store.EnableRoomMetaCache(cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL); err != nil {
+			slog.Error("failed to enable room-meta cache", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("room-meta-cache enabled", "size", cfg.RoomMetaCacheSize, "ttl", cfg.RoomMetaCacheTTL)
+	} else {
+		slog.Info("room-meta-cache disabled", "size", cfg.RoomMetaCacheSize)
 	}
 	handler := NewHandler(store, cfg.SiteID, func(ctx context.Context, subj string, data []byte, msgID string) error {
 		msg := natsutil.NewMsg(ctx, subj, data)

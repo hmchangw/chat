@@ -740,7 +740,7 @@ type addMemberInputs struct {
 	hadOrgsBefore bool
 }
 
-// loadAddMemberInputs runs GetRoom, ListAddMemberCandidates, and
+// loadAddMemberInputs runs GetRoomMeta, ListAddMemberCandidates, and
 // HasOrgRoomMembers concurrently, collapsing three serial Mongo round trips into
 // one. A plain errgroup.Group (not WithContext) is used deliberately: these are
 // independent reads, so a failure in one need not cancel the others — matching
@@ -754,7 +754,7 @@ func (h *Handler) loadAddMemberInputs(ctx context.Context, req *model.AddMembers
 		g   errgroup.Group
 	)
 	g.Go(func() error {
-		room, err := h.store.GetRoom(ctx, req.RoomID)
+		room, err := h.store.GetRoomMeta(ctx, req.RoomID)
 		if err != nil {
 			return fmt.Errorf("get room: %w", err)
 		}

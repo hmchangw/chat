@@ -14,6 +14,7 @@ import (
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/pipelines"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 	"github.com/hmchangw/chat/pkg/userstore"
 )
 
@@ -29,6 +30,10 @@ type MongoStore struct {
 	// `users` collection above is still used directly for the org-expansion
 	// candidate query, which the by-account reader cannot serve.
 	userReader userstore.UserStore
+	// roomMeta, when non-nil (EnableRoomMetaCache), fronts GetRoom with an
+	// in-process LRU+TTL cache of the room's stable fields. Nil means GetRoom
+	// reads Mongo directly.
+	roomMeta *roommetacache.Cache
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -52,6 +57,27 @@ func (s *MongoStore) EnableUserCache(size int, ttl time.Duration) error {
 		return fmt.Errorf("enable user cache: %w", err)
 	}
 	s.userReader = cache
+	return nil
+}
+
+// EnableRoomMetaCache fronts GetRoomMeta with an in-process LRU+TTL cache. The
+// add-member hot path (loadAddMemberInputs) reads only the stable fields
+// (Type/Name/SiteID/ID/UserCount), so caching them is safe; a rename is
+// reflected after at most the TTL. GetRoom is deliberately left uncached so the
+// DM idempotency path still sees the room's real CreatedAt. Call once at startup.
+func (s *MongoStore) EnableRoomMetaCache(size int, ttl time.Duration) error {
+	rooms := s.rooms // capture only the collection, not the whole store
+	cache, err := roommetacache.New(size, ttl, func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
+		var room model.Room
+		if err := rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&room); err != nil {
+			return roommetacache.Meta{}, fmt.Errorf("room %q not found: %w", roomID, err)
+		}
+		return roommetacache.Meta{ID: room.ID, Type: room.Type, Name: room.Name, SiteID: room.SiteID, UserCount: room.UserCount}, nil
+	})
+	if err != nil {
+		return fmt.Errorf("enable room meta cache: %w", err)
+	}
+	s.roomMeta = cache
 	return nil
 }
 
@@ -138,9 +164,35 @@ func (s *MongoStore) ApplyMemberCountDelta(ctx context.Context, roomID string, u
 	return doc.CountsReconciledAt.IsZero() || time.Since(doc.CountsReconciledAt) > ttl, nil
 }
 
+// GetRoom returns the full room document from Mongo. It is never cache-served:
+// callers such as serverCreateDM's idempotency path read time-sensitive fields
+// (CreatedAt) that the meta cache does not carry. The add-member hot path uses
+// GetRoomMeta instead, which only needs the stable fields.
 func (s *MongoStore) GetRoom(ctx context.Context, roomID string) (*model.Room, error) {
 	var room model.Room
 	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID}).Decode(&room); err != nil {
+		return nil, fmt.Errorf("room %q not found: %w", roomID, err)
+	}
+	return &room, nil
+}
+
+// GetRoomMeta returns a room populated with only its stable fields
+// (ID/Type/Name/SiteID/UserCount) — the subset the add-member hot path reads.
+// When the meta cache is enabled it is served from the in-process LRU+TTL cache;
+// otherwise it falls through to a direct Mongo read. The returned room's
+// CreatedAt/UpdatedAt are zero — callers needing those must use GetRoom.
+func (s *MongoStore) GetRoomMeta(ctx context.Context, roomID string) (*model.Room, error) {
+	if s.roomMeta != nil {
+		meta, err := s.roomMeta.Get(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		return &model.Room{ID: meta.ID, Type: meta.Type, Name: meta.Name, SiteID: meta.SiteID, UserCount: meta.UserCount}, nil
+	}
+	var room model.Room
+	if err := s.rooms.FindOne(ctx, bson.M{"_id": roomID},
+		options.FindOne().SetProjection(bson.M{"name": 1, "type": 1, "siteId": 1, "userCount": 1}),
+	).Decode(&room); err != nil {
 		return nil, fmt.Errorf("room %q not found: %w", roomID, err)
 	}
 	return &room, nil
@@ -528,16 +580,24 @@ func (s *MongoStore) ListAddMemberCandidates(ctx context.Context, orgIDs, direct
 		accounts[i] = c.Account
 		ids[i] = c.ID
 	}
-	// 2 & 3. Per-candidate membership state via two indexed reads scoped to the
-	// candidate set ($in), so examined keys stay bounded by the request size
-	// rather than the room size.
+	// 2. Already-subscribed candidates (always needed).
 	subbed, err := s.subscribedAccounts(ctx, roomID, accounts)
 	if err != nil {
 		return nil, err
 	}
-	irm, err := s.individualMemberIDs(ctx, roomID, ids)
-	if err != nil {
-		return nil, err
+	// 3. Existing individual room_members rows — only consulted when the room
+	// tracks individuals, which the worker gates on writeIndividuals (orgs in
+	// the request OR pre-existing org rows). With no orgs the handler never
+	// reads HasIndividualRoomMember, so skip this room_members read entirely;
+	// for an org-bearing request it always runs. (A no-org add to a room that
+	// formerly had orgs may re-attempt a few individual inserts, which
+	// BulkCreateRoomMembers absorbs as idempotent dup-key no-ops.)
+	var irm map[string]struct{}
+	if len(orgIDs) > 0 {
+		irm, err = s.individualMemberIDs(ctx, roomID, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make([]AddMemberCandidate, len(candidates))
 	for i, c := range candidates {

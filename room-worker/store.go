@@ -77,6 +77,11 @@ type SubscriptionStore interface {
 	// periodic recompute (the drift safety net) restores convergence.
 	ApplyMemberCountDelta(ctx context.Context, roomID string, userDelta, appDelta int, ttl time.Duration) (reconcileDue bool, err error)
 	GetRoom(ctx context.Context, roomID string) (*model.Room, error)
+	// GetRoomMeta returns a room populated with only its stable fields
+	// (ID/Type/Name/SiteID/UserCount); CreatedAt/UpdatedAt are zero. It is the
+	// add-member hot path's read and is served from the meta cache when enabled.
+	// Callers needing time-sensitive fields (e.g. CreatedAt) must use GetRoom.
+	GetRoomMeta(ctx context.Context, roomID string) (*model.Room, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
 	GetUser(ctx context.Context, account string) (*model.User, error)
 	// GetApp returns the app whose Assistant.Name == botAccount, or ErrAppNotFound.

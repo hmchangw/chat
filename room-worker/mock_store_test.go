@@ -221,6 +221,21 @@ func (mr *MockSubscriptionStoreMockRecorder) GetRoom(ctx, roomID any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoom", reflect.TypeOf((*MockSubscriptionStore)(nil).GetRoom), ctx, roomID)
 }
 
+// GetRoomMeta mocks base method.
+func (m *MockSubscriptionStore) GetRoomMeta(ctx context.Context, roomID string) (*model.Room, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRoomMeta", ctx, roomID)
+	ret0, _ := ret[0].(*model.Room)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetRoomMeta indicates an expected call of GetRoomMeta.
+func (mr *MockSubscriptionStoreMockRecorder) GetRoomMeta(ctx, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRoomMeta", reflect.TypeOf((*MockSubscriptionStore)(nil).GetRoomMeta), ctx, roomID)
+}
+
 // GetSubscription mocks base method.
 func (m *MockSubscriptionStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	m.ctrl.T.Helper()

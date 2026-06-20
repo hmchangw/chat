@@ -321,7 +321,7 @@ func TestHandler_ProcessAddMembers_FallsBackToNowOnInvalidTimestamp(t *testing.T
 	// rejection.
 	ctrl := gomock.NewController(t)
 	store := NewMockSubscriptionStore(ctrl)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(nil, fmt.Errorf("db error"))
 	// The three up-front reads now run concurrently, so candidates/has-orgs are
 	// issued alongside GetRoom; their results are discarded once GetRoom errors.
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").Return(nil, nil).AnyTimes()
@@ -353,7 +353,7 @@ func TestHandler_ProcessAddMembers(t *testing.T) {
 	}
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
 		Return([]AddMemberCandidate{
 			{Account: "bob", HasSubscription: false, HasIndividualRoomMember: false},
@@ -431,7 +431,7 @@ func TestHandler_ProcessAddMembers_PublishesSubscriptionUpdateBeforeRoomKey(t *t
 	}
 	h := NewHandler(store, "site-a", publish, testKeyStore, roomkeysender.NewSender(pub))
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
 		Return([]AddMemberCandidate{
 			{Account: "bob", HasSubscription: false, HasIndividualRoomMember: false},
@@ -485,7 +485,7 @@ func TestHandler_ProcessAddMembers_HistoryAll(t *testing.T) {
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -549,7 +549,7 @@ func TestHandler_ProcessAddMembers_RestrictedPropagatesPointer(t *testing.T) {
 	}
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob", "charlie"}, "r1").
 		Return([]AddMemberCandidate{
 			{Account: "bob"}, {Account: "charlie"},
@@ -615,7 +615,7 @@ func TestHandler_ProcessAddMembers_UnrestrictedOmitsFieldFromWire(t *testing.T) 
 	}
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -654,7 +654,7 @@ func TestHandler_ProcessAddMembers_WithOrgs(t *testing.T) {
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -713,7 +713,7 @@ func TestHandler_ProcessAddMembers_BackfillUserMissing(t *testing.T) {
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
 	// Org-only add on a room with no prior orgs → backfill fires.
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, nil, "r1").
 		Return([]AddMemberCandidate{}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -755,7 +755,7 @@ func TestHandler_ProcessAddMembers_UserNotFound(t *testing.T) {
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob", "ghost"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}, {Account: "ghost"}}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -793,7 +793,7 @@ func TestHandler_ProcessAddMembers_MultipleSiteInbox(t *testing.T) {
 	}
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"alice", "bob", "charlie"}, "r1").
 		Return([]AddMemberCandidate{
 			{Account: "alice"}, {Account: "bob"}, {Account: "charlie"},
@@ -1108,7 +1108,7 @@ func TestHandler_ProcessAddMembers_ExistingOrgsWritesIndividuals(t *testing.T) {
 	publish := func(_ context.Context, _ string, _ []byte, _ string) error { return nil }
 	h := NewHandler(store, "site-a", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), nil, []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -1157,7 +1157,7 @@ func TestHandler_ProcessAddMembers_OrgToIndividualUpgrade(t *testing.T) {
 	requestID := idgen.GenerateRequestID()
 	ctx := natsutil.WithRequestID(context.Background(), requestID)
 
-	store.EXPECT().GetRoom(ctx, roomID).Return(&model.Room{
+	store.EXPECT().GetRoomMeta(ctx, roomID).Return(&model.Room{
 		ID: roomID, Type: model.RoomTypeChannel, SiteID: "site-a", Name: "Room 1",
 	}, nil)
 	// Alice has a subscription (added earlier via org) but no individual row.
@@ -1316,7 +1316,7 @@ func TestHandler_processAddMembers_PublishesSuccessEventToRequesterSubject(t *te
 	}
 	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).Return([]model.User{
@@ -1366,7 +1366,7 @@ func TestHandler_processAddMembers_PublishesFailureEventOnError(t *testing.T) {
 	h := NewHandler(store, "site1", publish, testKeyStore, testKeySender)
 
 	// Mock store to fail on FindUsersByAccounts (first store operation after candidate resolution)
-	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site1"}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), []string{"bob"}, "r1").
 		Return([]AddMemberCandidate{{Account: "bob"}}, nil)
 	store.EXPECT().HasOrgRoomMembers(gomock.Any(), "r1").Return(false, nil)
@@ -1479,7 +1479,7 @@ func newAddMembersTestHandler(t *testing.T) (*Handler, *MockSubscriptionStore, f
 // All users are on site-A (no cross-site inbox). HasOrgRoomMembers returns false.
 func setupAddMembersHappyPath(t *testing.T, mockStore *MockSubscriptionStore, accounts []string) {
 	t.Helper()
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
 	}, nil)
 	candidates := make([]AddMemberCandidate, len(accounts))
@@ -1536,7 +1536,7 @@ func TestProcessAddMembers_PopulatesSubName(t *testing.T) {
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	// Use a custom BulkCreateSubscriptions expectation to capture subs.
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -1576,7 +1576,7 @@ func TestProcessAddMembers_HistoryNone_NoTimestamp(t *testing.T) {
 	const reqTimestampMs = int64(1740000000000)
 	acceptedAt := time.UnixMilli(reqTimestampMs).UTC()
 
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -1616,7 +1616,7 @@ func TestProcessAddMembers_NoHistoryConfig_LeavesNil(t *testing.T) {
 	h, mockStore, _ := newAddMembersTestHandler(t)
 	ctx := natsutil.WithRequestID(context.Background(), "0193abcd-0193-7abc-89ab-0193abcd0003")
 
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -1656,7 +1656,7 @@ func TestProcessAddMembers_InboxCarriesRoomName(t *testing.T) {
 	ctx := natsutil.WithRequestID(context.Background(), reqID)
 
 	// Cross-site member: bob lives on site-B.
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-A",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -3509,7 +3509,7 @@ func TestProcessAddMembers_FansOutKeyToNewAccountsOnly(t *testing.T) {
 	pub := &mockPublisher{}
 	keySender := roomkeysender.NewSender(pub)
 
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-a",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -3551,7 +3551,7 @@ func TestProcessAddMembers_PermanentErrorWhenKeyMissing(t *testing.T) {
 	mockStore := NewMockSubscriptionStore(ctrl)
 	keyStore := NewMockRoomKeyStore(ctrl)
 
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-a",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -3587,7 +3587,7 @@ func TestProcessAddMembers_TransientErrorWhenValkeyFails(t *testing.T) {
 	mockStore := NewMockSubscriptionStore(ctrl)
 	keyStore := NewMockRoomKeyStore(ctrl)
 
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Name: "deal team", Type: model.RoomTypeChannel, SiteID: "site-a",
 	}, nil)
 	mockStore.EXPECT().ListAddMemberCandidates(gomock.Any(), gomock.Any(), gomock.Any(), "r1").
@@ -3619,7 +3619,7 @@ func TestProcessAddMembers_TransientErrorWhenValkeyFails(t *testing.T) {
 func TestProcessAddMembers_RejectsNonChannel(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockStore := NewMockSubscriptionStore(ctrl)
-	mockStore.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+	mockStore.EXPECT().GetRoomMeta(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeDM, SiteID: "site-a",
 	}, nil)
 	// The up-front reads run concurrently, so candidates/has-orgs fire before the
@@ -3683,7 +3683,7 @@ func TestHandler_ProcessAddMembers_BackfillRunsOnFirstOrgTransition(t *testing.T
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
@@ -3722,7 +3722,7 @@ func TestHandler_ProcessAddMembers_BackfillSubscriptionAccountsErrorFailsHard(t 
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
@@ -3753,7 +3753,7 @@ func TestHandler_ProcessAddMembers_BackfillFindUsersErrorFailsHard(t *testing.T)
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
@@ -3785,7 +3785,7 @@ func TestHandler_ProcessAddMembers_BackfillSkippedWhenRoomAlreadyHasOrgs(t *test
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o_new"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u_new"}}, nil)
@@ -3823,7 +3823,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_DirectAndOrgOverlap(t *testi
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}, {Account: "u2"}}, nil)
@@ -3877,7 +3877,7 @@ func TestHandler_ProcessAddMembers_IndividualFilter_OrgOnly(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"o1"}, []string(nil), roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
@@ -3973,7 +3973,7 @@ func TestHandler_ProcessAddMembers_RequesterNotFound(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
@@ -4033,7 +4033,7 @@ func TestHandler_ProcessAddMembers_Content_Single(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
@@ -4070,7 +4070,7 @@ func TestHandler_ProcessAddMembers_Content_Multi(t *testing.T) {
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1", "u2"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}, {Account: "u2"}}, nil)
@@ -4460,7 +4460,7 @@ func TestHandler_ProcessAddMembers_Content_OrgAddWithOneMember_UsesMulti(t *test
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	// req.Users is empty; org "eng" expands to one user "u1".
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string{"eng"}, []string(nil), roomID).
@@ -4500,7 +4500,7 @@ func TestHandler_ProcessAddMembers_HasOrgRoomMembersError_FailsClosed(t *testing
 	store := NewMockSubscriptionStore(ctrl)
 
 	roomID := "r1"
-	store.EXPECT().GetRoom(gomock.Any(), roomID).
+	store.EXPECT().GetRoomMeta(gomock.Any(), roomID).
 		Return(&model.Room{ID: roomID, Name: "Chan", SiteID: "site-a", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListAddMemberCandidates(gomock.Any(), []string(nil), []string{"u1"}, roomID).
 		Return([]AddMemberCandidate{{Account: "u1"}}, nil)
