@@ -525,8 +525,8 @@ func TestRepository_SoftDeleteMessage_UpdatesParentTlm(t *testing.T) {
 	// tlm must equal survivorAt (the max created_at among surviving replies).
 	var gotTlm *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
+		`SELECT tlm FROM messages_by_id WHERE message_id = ?`,
+		parentID,
 	).Scan(&gotTlm))
 	require.NotNil(t, gotTlm, "tlm must be set to surviving max after delete")
 	assert.True(t, gotTlm.Equal(survivorAt), "tlm must equal the newest surviving reply's createdAt")
@@ -591,8 +591,8 @@ func TestRepository_SoftDeleteMessage_ClearsTlmOnLastReplyDelete(t *testing.T) {
 	// tlm must be NULL on the parent.
 	var gotTlm *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_id WHERE message_id = ? AND created_at = ?`,
-		parentID, parentCreatedAt,
+		`SELECT tlm FROM messages_by_id WHERE message_id = ?`,
+		parentID,
 	).Scan(&gotTlm))
 	assert.Nil(t, gotTlm, "tlm must be NULL after last reply is deleted (count→0)")
 
