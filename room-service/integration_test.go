@@ -2029,6 +2029,81 @@ func TestMongoStore_UpdateRoomMinUserLastSeenAt_Integration(t *testing.T) {
 	assert.Nil(t, r.MinUserLastSeenAt)
 }
 
+func mustInsertThreadSub(t *testing.T, db *mongo.Database, ts *model.ThreadSubscription) {
+	t.Helper()
+	_, err := db.Collection("thread_subscriptions").InsertOne(context.Background(), ts)
+	require.NoError(t, err)
+}
+
+func mustInsertThreadRoom(t *testing.T, db *mongo.Database, tr *model.ThreadRoom) {
+	t.Helper()
+	_, err := db.Collection("thread_rooms").InsertOne(context.Background(), tr)
+	require.NoError(t, err)
+}
+
+func TestMongoStore_MinThreadSubscriptionLastSeenByThreadRoomID_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	earliest := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	mid := earliest.Add(15 * time.Minute)
+	latest := earliest.Add(45 * time.Minute)
+
+	// "all-read": every subscriber has read → floor is the minimum.
+	mustInsertThreadSub(t, db, &model.ThreadSubscription{ID: "ts1", ThreadRoomID: "all-read", UserAccount: "alice", LastSeenAt: &mid})
+	mustInsertThreadSub(t, db, &model.ThreadSubscription{ID: "ts2", ThreadRoomID: "all-read", UserAccount: "bob", LastSeenAt: &latest})
+	got, err := store.MinThreadSubscriptionLastSeenByThreadRoomID(ctx, "all-read")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.WithinDuration(t, mid, *got, time.Second)
+
+	// "one-unread": one subscriber has never read → nil.
+	mustInsertThreadSub(t, db, &model.ThreadSubscription{ID: "ts3", ThreadRoomID: "one-unread", UserAccount: "carol", LastSeenAt: &mid})
+	mustInsertThreadSub(t, db, &model.ThreadSubscription{ID: "ts4", ThreadRoomID: "one-unread", UserAccount: "dave"})
+	got, err = store.MinThreadSubscriptionLastSeenByThreadRoomID(ctx, "one-unread")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// "none-read": single subscriber who has never read → nil.
+	mustInsertThreadSub(t, db, &model.ThreadSubscription{ID: "ts5", ThreadRoomID: "none-read", UserAccount: "erin"})
+	got, err = store.MinThreadSubscriptionLastSeenByThreadRoomID(ctx, "none-read")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// "no-subs": no subscriptions at all → nil.
+	got, err = store.MinThreadSubscriptionLastSeenByThreadRoomID(ctx, "no-subs")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestMongoStore_UpdateThreadRoomMinUserLastSeenAt_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	mustInsertThreadRoom(t, db, &model.ThreadRoom{
+		ID: "tr1", RoomID: "r1", LastMsgAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Set the floor.
+	require.NoError(t, store.UpdateThreadRoomMinUserLastSeenAt(ctx, "tr1", &now))
+	tr, err := store.GetThreadRoomByID(ctx, "tr1")
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.NotNil(t, tr.MinUserLastSeenAt)
+	assert.WithinDuration(t, now, *tr.MinUserLastSeenAt, time.Second)
+
+	// Clear the floor.
+	require.NoError(t, store.UpdateThreadRoomMinUserLastSeenAt(ctx, "tr1", nil))
+	tr, err = store.GetThreadRoomByID(ctx, "tr1")
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.Nil(t, tr.MinUserLastSeenAt)
+}
+
 func TestMongoStore_CountNewMembers_OrgOnlyUserCountsZero_Integration(t *testing.T) {
 	ctx := context.Background()
 	db := setupMongo(t)

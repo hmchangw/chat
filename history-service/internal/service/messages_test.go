@@ -50,6 +50,8 @@ func newService(t *testing.T) (*service.HistoryService, *mocks.MockMessageReposi
 		GetRoomTimes(gomock.Any(), gomock.Any()).
 		Return(defaultRoomLastMsgAt, defaultRoomCreatedAt, nil).
 		MinTimes(0)
+	// Permissive default: existing GetThreadMessages tests don't verify the floor field.
+	threadRooms.EXPECT().GetMinThreadUserLastSeenAt(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	return svc, msgs, subs, pub, threadRooms
 }
 

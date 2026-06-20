@@ -222,6 +222,21 @@ func (mr *MockRoomStoreMockRecorder) GetSubscriptionWithMembership(ctx, roomID, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscriptionWithMembership", reflect.TypeOf((*MockRoomStore)(nil).GetSubscriptionWithMembership), ctx, roomID, account)
 }
 
+// GetThreadRoomByID mocks base method.
+func (m *MockRoomStore) GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetThreadRoomByID", ctx, threadRoomID)
+	ret0, _ := ret[0].(*model.ThreadRoom)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetThreadRoomByID indicates an expected call of GetThreadRoomByID.
+func (mr *MockRoomStoreMockRecorder) GetThreadRoomByID(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetThreadRoomByID", reflect.TypeOf((*MockRoomStore)(nil).GetThreadRoomByID), ctx, threadRoomID)
+}
+
 // GetThreadSubscriptionByParent mocks base method.
 func (m *MockRoomStore) GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error) {
 	m.ctrl.T.Helper()
@@ -447,6 +462,21 @@ func (mr *MockRoomStoreMockRecorder) MinSubscriptionLastSeenByRoomID(ctx, roomID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MinSubscriptionLastSeenByRoomID", reflect.TypeOf((*MockRoomStore)(nil).MinSubscriptionLastSeenByRoomID), ctx, roomID)
 }
 
+// MinThreadSubscriptionLastSeenByThreadRoomID mocks base method.
+func (m *MockRoomStore) MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MinThreadSubscriptionLastSeenByThreadRoomID", ctx, threadRoomID)
+	ret0, _ := ret[0].(*time.Time)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MinThreadSubscriptionLastSeenByThreadRoomID indicates an expected call of MinThreadSubscriptionLastSeenByThreadRoomID.
+func (mr *MockRoomStoreMockRecorder) MinThreadSubscriptionLastSeenByThreadRoomID(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MinThreadSubscriptionLastSeenByThreadRoomID", reflect.TypeOf((*MockRoomStore)(nil).MinThreadSubscriptionLastSeenByThreadRoomID), ctx, threadRoomID)
+}
+
 // SetOwnerRole mocks base method.
 func (m *MockRoomStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool, rolesUpdatedAt time.Time) (*model.Subscription, error) {
 	m.ctrl.T.Helper()
@@ -548,6 +578,20 @@ func (m *MockRoomStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID
 func (mr *MockRoomStoreMockRecorder) UpdateSubscriptionThreadRead(ctx, roomID, account, threadID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionThreadRead", reflect.TypeOf((*MockRoomStore)(nil).UpdateSubscriptionThreadRead), ctx, roomID, account, threadID)
+}
+
+// UpdateThreadRoomMinUserLastSeenAt mocks base method.
+func (m *MockRoomStore) UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateThreadRoomMinUserLastSeenAt", ctx, threadRoomID, t)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateThreadRoomMinUserLastSeenAt indicates an expected call of UpdateThreadRoomMinUserLastSeenAt.
+func (mr *MockRoomStoreMockRecorder) UpdateThreadRoomMinUserLastSeenAt(ctx, threadRoomID, t any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomMinUserLastSeenAt", reflect.TypeOf((*MockRoomStore)(nil).UpdateThreadRoomMinUserLastSeenAt), ctx, threadRoomID, t)
 }
 
 // UpdateThreadSubscriptionRead mocks base method.

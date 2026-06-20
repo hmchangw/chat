@@ -1554,7 +1554,47 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 		}
 	}
 
+	// Recompute the thread-room read floor, mirroring the room read-floor logic
+	// in messageRead. Best-effort: a failure here must not fail the RPC.
+	if err := h.recomputeThreadFloor(ctx, tsub.ThreadRoomID); err != nil {
+		slog.ErrorContext(ctx, "recompute thread floor failed", "error", err,
+			"request_id", natsutil.RequestIDFromContext(ctx), "threadRoomId", tsub.ThreadRoomID)
+	}
+
 	return &model.StatusReply{Status: "accepted"}, nil
+}
+
+// recomputeThreadFloor fetches the thread room document, applies the
+// skip-guard (if the thread room has no messages yet, skip), computes
+// MIN(lastSeenAt) across all thread_subscriptions, and writes the result
+// to thread_rooms.minUserLastSeenAt when the floor changes.
+// Live fan-out event deferred to a follow-up; stored floor only for now.
+func (h *Handler) recomputeThreadFloor(ctx context.Context, threadRoomID string) error {
+	tr, err := h.store.GetThreadRoomByID(ctx, threadRoomID)
+	if err != nil {
+		return fmt.Errorf("get thread room: %w", err)
+	}
+	if tr == nil {
+		// Thread room not yet persisted — nothing to update.
+		return nil
+	}
+	// Skip when the thread room has never received a message (mirrors
+	// the room.LastMsgAt == nil guard in messageRead).
+	if tr.LastMsgAt.IsZero() {
+		return nil
+	}
+
+	minTime, err := h.store.MinThreadSubscriptionLastSeenByThreadRoomID(ctx, threadRoomID)
+	if err != nil {
+		return fmt.Errorf("min thread subscription lastSeenAt: %w", err)
+	}
+	if sameFloor(minTime, tr.MinUserLastSeenAt) {
+		return nil
+	}
+	if err := h.store.UpdateThreadRoomMinUserLastSeenAt(ctx, threadRoomID, minTime); err != nil {
+		return fmt.Errorf("update thread room minUserLastSeenAt: %w", err)
+	}
+	return nil
 }
 
 // ensureRoomKey handles server-to-server requests to ensure a room

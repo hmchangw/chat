@@ -181,6 +181,20 @@ type RoomStore interface {
 
 	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
 
+	// GetThreadRoomByID returns the thread room document for threadRoomID.
+	// Returns (nil, nil) when no document matches.
+	GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error)
+	// MinThreadSubscriptionLastSeenByThreadRoomID returns the thread room's strict
+	// read floor: MIN(lastSeenAt) across ALL thread_subscriptions for threadRoomID,
+	// but only when every subscriber has a usable lastSeenAt (> zero). Returns nil
+	// if any subscriber has never read or if there are no subscriptions.
+	// Bots are counted as ordinary subscribers — a bot subscriber pins the floor to
+	// nil since bots never call Mark Thread as Read.
+	MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error)
+	// UpdateThreadRoomMinUserLastSeenAt sets or clears thread_rooms.minUserLastSeenAt
+	// for threadRoomID. A nil value clears the field via $unset; non-nil writes via $set.
+	UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error
+
 	// UpdateRoomVisibility sets rooms.{restricted, externalAccess, updatedAt}.
 	// Returns ErrRoomNotFound when no room matches.
 	UpdateRoomVisibility(ctx context.Context, roomID string, restricted, externalAccess bool) error
