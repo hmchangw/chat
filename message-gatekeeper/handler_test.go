@@ -1142,6 +1142,49 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
+			// #336: quoting the thread-starter (quotedParentMessageId == threadParentMessageId).
+			name: "thread T msg quoting its own thread root (P==P) — snapshot embedded",
+			buildData: func() []byte {
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadID,
+				))
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				// single fetch; resolveThreadParentCreatedAt short-circuits via snapshot.
+				threadRootSnapshot := &cassandra.QuotedParentMessage{
+					MessageID:   threadID,
+					RoomID:      validRoomID,
+					Sender:      cassandra.Participant{ID: "u-carol", Account: "carol", EngName: "Carol Wu"},
+					CreatedAt:   threadParentTS,
+					Msg:         "the thread-starting message",
+					MessageLink: "http://localhost:3000/" + validRoomID + "/" + threadID,
+					// ThreadParentID intentionally empty — thread-starters are main-room msgs.
+				}
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadID).
+					Return(threadRootSnapshot, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				assert.Equal(t, threadID, msg.ThreadParentMessageID)
+				require.NotNil(t, msg.ThreadParentMessageCreatedAt,
+					"createdAt must be resolved from quote snapshot (short-circuit path)")
+				assert.Equal(t, threadParentTS, msg.ThreadParentMessageCreatedAt.UTC())
+				require.NotNil(t, msg.QuotedParentMessage)
+				assert.Equal(t, threadID, msg.QuotedParentMessage.MessageID)
+				assert.Equal(t, "the thread-starting message", msg.QuotedParentMessage.Msg)
+				assert.Empty(t, msg.QuotedParentMessage.ThreadParentID,
+					"thread root has no ThreadParentID (it is a main-room message)")
+			},
+		},
+		{
 			name: "main-room msg quoting a thread reply — request fails (cross-thread)",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{

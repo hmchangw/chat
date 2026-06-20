@@ -4260,6 +4260,20 @@ The same subject and request body cover three send variants: plain message, thre
 }
 ```
 
+##### Thread reply quoting the thread-starter
+
+A thread reply may quote the thread's own parent message (the message that started the thread) by setting both `threadParentMessageId` and `quotedParentMessageId` to the same ID. The quoted snapshot is embedded in the response like any other quote.
+
+```json
+{
+  "id": "01970a4f8c2d7c9aQUV2",
+  "content": "to your original point…",
+  "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789c",
+  "threadParentMessageId": "01970a4f8c2d7c9aQRST",
+  "quotedParentMessageId": "01970a4f8c2d7c9aQRST"
+}
+```
+
 #### Success response
 
 Delivered on `chat.user.{account}.response.{requestId}`. The body is the persisted `Message` as the gatekeeper builds it. Only the fields below are populated — the same shape for plain, thread, and quoted sends (the optional fields appear only for their variant):
