@@ -113,7 +113,9 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 	g.Go(func() error {
 		t, fErr := s.threadRooms.GetMinThreadUserLastSeenAt(gctx, msg.ThreadRoomID)
 		if fErr != nil {
-			slog.Warn("loading thread minUserLastSeenAt", "error", fErr, "thread_room_id", msg.ThreadRoomID)
+			slog.Warn("loading thread minUserLastSeenAt", "error", fErr,
+				"request_id", natsutil.RequestIDFromContext(c),
+				"account", account, "room_id", roomID, "thread_room_id", msg.ThreadRoomID)
 			return nil
 		}
 		threadFloor = t

@@ -1538,7 +1538,8 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 	// Recompute the thread-room read floor, mirroring the room read-floor logic
 	// in messageRead. Best-effort: a failure here must not fail the RPC.
 	if err := h.recomputeThreadFloor(ctx, tsub.ThreadRoomID); err != nil {
-		slog.Error("recompute thread floor failed", "error", err, "threadRoomId", tsub.ThreadRoomID)
+		slog.ErrorContext(ctx, "recompute thread floor failed", "error", err,
+			"request_id", natsutil.RequestIDFromContext(ctx), "threadRoomId", tsub.ThreadRoomID)
 	}
 
 	return &model.StatusReply{Status: "accepted"}, nil

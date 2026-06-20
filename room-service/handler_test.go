@@ -3633,8 +3633,10 @@ func TestHandler_MessageThreadRead_FloorUnchanged_NoWrite(t *testing.T) {
 	existingFloor := time.Now().UTC().Add(-10 * time.Minute)
 	tr := baseThreadRoomForFloor("tr1")
 	tr.MinUserLastSeenAt = &existingFloor
+	// Distinct pointer to the same value: asserts value-equality, not pointer-identity.
+	computedFloor := existingFloor
 	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
-	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&existingFloor, nil)
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&computedFloor, nil)
 	// UpdateThreadRoomMinUserLastSeenAt must NOT be called when floor is unchanged.
 
 	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})

@@ -1605,11 +1605,15 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 	return &result, nil
 }
 
-// GetThreadRoomByID returns the thread_rooms document for threadRoomID.
-// Returns (nil, nil) when no document matches.
+// GetThreadRoomByID returns the thread_rooms document for threadRoomID,
+// projected to lastMsgAt + minUserLastSeenAt for the floor-recompute path.
+// Other ThreadRoom fields are NOT populated. Returns (nil, nil) when no
+// document matches.
 func (s *MongoStore) GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error) {
 	var tr model.ThreadRoom
-	err := s.threadRooms.FindOne(ctx, bson.M{"_id": threadRoomID}).Decode(&tr)
+	err := s.threadRooms.FindOne(ctx, bson.M{"_id": threadRoomID},
+		options.FindOne().SetProjection(bson.M{"lastMsgAt": 1, "minUserLastSeenAt": 1, "_id": 0}),
+	).Decode(&tr)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil
