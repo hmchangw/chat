@@ -200,6 +200,8 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  tshow BOOLEAN,                    // "also send to channel" flag; set when the reply was dual-written into
+                                    //   messages_by_room as well. Null/false for legacy rows (backfill out of scope).
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows

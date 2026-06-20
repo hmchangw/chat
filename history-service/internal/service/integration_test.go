@@ -79,6 +79,7 @@ func setupCassandra(t *testing.T) *gocql.Session {
 		mentions SET<FROZEN<"Participant">>, attachments LIST<BLOB>,
 		file FROZEN<"File">, card FROZEN<"Card">, card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
+		tshow BOOLEAN,
 		quoted_parent_message FROZEN<"QuotedParentMessage">, visible_to TEXT,
 		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,

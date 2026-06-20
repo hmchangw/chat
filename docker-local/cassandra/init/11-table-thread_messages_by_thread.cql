@@ -25,3 +25,4 @@ CREATE TABLE IF NOT EXISTS chat.thread_messages_by_thread (
 
 ALTER TABLE chat.thread_messages_by_thread ADD enc_payload BLOB;
 ALTER TABLE chat.thread_messages_by_thread ADD enc_meta FROZEN<"EncMeta">;
+ALTER TABLE chat.thread_messages_by_thread ADD tshow BOOLEAN;
