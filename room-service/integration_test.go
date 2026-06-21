@@ -128,6 +128,29 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Error(t, err, "expected error for missing subscription")
 }
 
+// TestMongoStore_CheckMembership_Integration verifies the projected existence
+// check: nil when subscribed, model.ErrSubscriptionNotFound when not.
+func TestMongoStore_CheckMembership_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertSub(t, db, &model.Subscription{
+		ID:     "s1",
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1",
+		Roles:  []model.Role{model.RoleMember},
+	})
+
+	assert.NoError(t, store.CheckMembership(ctx, "alice", "r1"))
+
+	err := store.CheckMembership(ctx, "bob", "r1")
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+
+	err = store.CheckMembership(ctx, "alice", "r2")
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
 // TestMongoStore_GetRoom_ProjectionFields_Integration pins the field set that
 // GetRoom's projection must return: every Room field read by any handler call
 // site. Dropping one from the projection would silently zero it here, so this

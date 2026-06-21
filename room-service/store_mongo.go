@@ -284,6 +284,23 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 	return &sub, nil
 }
 
+// membershipExistsProjection returns only _id so the existence check decodes
+// essentially nothing — the cheapest form of GetSubscription for call sites
+// that use the result solely as a membership gate.
+var membershipExistsProjection = bson.D{{Key: "_id", Value: 1}}
+
+func (s *MongoStore) CheckMembership(ctx context.Context, account, roomID string) error {
+	filter := bson.M{"u.account": account, "roomId": roomID}
+	opts := options.FindOne().SetProjection(membershipExistsProjection)
+	if err := s.subscriptions.FindOne(ctx, filter, opts).Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
+		}
+		return fmt.Errorf("check membership for %q in room %q: %w", account, roomID, err)
+	}
+	return nil
+}
+
 // GetSubscriptionWithMembership loads the target subscription joined with their
 // individual and org membership sources. Used by the remove-member validation
 // flow to decide whether a user can leave or be removed individually.

@@ -64,6 +64,13 @@ type RoomStore interface {
 	ListRoomsByIDs(ctx context.Context, ids []string) ([]model.Room, error)
 	GetThreadUnreadSummary(ctx context.Context, account, siteID string) (*ThreadUnreadSummary, error)
 	GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error)
+	// CheckMembership verifies (account, roomID) has a subscription without
+	// decoding the document — an {_id:1}-projected existence check for the
+	// many call sites that only need the membership gate, not the sub's fields.
+	// Returns nil when subscribed, model.ErrSubscriptionNotFound (wrapped) when
+	// not, or a wrapped infra error otherwise. Same error contract as
+	// GetSubscription so callers branch identically on errors.Is.
+	CheckMembership(ctx context.Context, account, roomID string) error
 	// ListMemberStatuses returns up to `limit` members of roomID, each
 	// projected from the corresponding users document as {account, engName,
 	// chineseName, statusIsShow, statusText}. Subscriptions whose user
