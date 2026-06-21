@@ -207,7 +207,7 @@ func TestSpotlightCollection_BuildAction_RestrictedRoomIndexedLikeAnyOther(t *te
 func TestSpotlightCollection_BuildAction_Errors(t *testing.T) {
 	coll := newSpotlightCollection("spotlight-site-a-v1-chat")
 
-	t.Run("malformed outbox event", func(t *testing.T) {
+	t.Run("malformed inbox event", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))
 		assert.Error(t, err)
 	})

@@ -306,7 +306,7 @@ func TestUserRoomCollection_BuildAction_BulkInvite(t *testing.T) {
 func TestUserRoomCollection_BuildAction_Errors(t *testing.T) {
 	coll := newUserRoomCollection("user-room-site-a")
 
-	t.Run("malformed outbox event", func(t *testing.T) {
+	t.Run("malformed inbox event", func(t *testing.T) {
 		_, err := coll.BuildAction([]byte("{invalid"))
 		assert.Error(t, err)
 	})

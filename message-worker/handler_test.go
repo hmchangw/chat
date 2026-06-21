@@ -992,14 +992,14 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			},
 		},
 		{
-			name:   "first reply — parent user not found in userStore — still inserts parent + replier locally, skips outbox",
+			name:   "first reply — parent user not found in userStore — still inserts parent + replier locally, skips inbox",
 			msg:    msg,
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").Return(parentSender, nil)
 				// Parent insert still runs (independent of owner-site lookup) —
-				// only the cross-site outbox publish is gated on the lookup.
+				// only the cross-site inbox publish is gated on the lookup.
 				ts.EXPECT().InsertThreadSubscription(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "u-parent", sub.UserID, "parent insert must still happen on missing owner-site")
@@ -1013,7 +1013,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 			expectReplierInsert: true,
 		},
 		{
-			name:   "subsequent reply — parent user not found in userStore — still upserts parent + replier locally, skips parent outbox",
+			name:   "subsequent reply — parent user not found in userStore — still upserts parent + replier locally, skips parent inbox",
 			msg:    msg,
 			siteID: "site-a",
 			setupMocks: func(store *MockStore, ts *MockThreadStore) {
@@ -1024,7 +1024,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
 					Return(parentSender, nil)
 				// Parent upsert still runs (independent of owner-site lookup);
-				// only the cross-site outbox publish is gated.
+				// only the cross-site inbox publish is gated.
 				ts.EXPECT().UpsertThreadSubscription(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, sub *model.ThreadSubscription) error {
 						assert.Equal(t, "u-parent", sub.UserID)
@@ -1107,7 +1107,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 	}
 }
 
-func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
+func TestHandler_PublishThreadSubInboxIfRemote(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	// Subscription's SiteID is the room's site (here, site-a — the local handler).
 	baseSub := &model.ThreadSubscription{
@@ -1131,7 +1131,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return nil
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-a", "msg-1")
+		err := h.publishThreadSubInboxIfRemote(context.Background(), baseSub, "site-a", "msg-1")
 		require.NoError(t, err)
 		assert.False(t, called, "publish must not be called when ownerSiteID == h.siteID")
 	})
@@ -1145,7 +1145,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return nil
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "", "msg-1")
+		err := h.publishThreadSubInboxIfRemote(context.Background(), baseSub, "", "msg-1")
 		require.NoError(t, err)
 		assert.False(t, called, "publish must not be called when ownerSiteID is empty")
 	})
@@ -1167,7 +1167,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return nil
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
+		err := h.publishThreadSubInboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
 		require.NoError(t, err)
 		require.Equal(t, 1, captured.callCnt)
 		assert.Equal(t, "chat.inbox.site-b.external.thread_subscription_upserted", captured.subj)
@@ -1180,7 +1180,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				second = msgID
 				return nil
 			})
-		require.NoError(t, h2.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1"))
+		require.NoError(t, h2.publishThreadSubInboxIfRemote(context.Background(), baseSub, "site-b", "msg-1"))
 		assert.Equal(t, captured.msgID, second, "dedup ID must be deterministic for the same (threadRoomID, userID, msgID) seed")
 
 		// Different msgID → different dedup ID.
@@ -1190,7 +1190,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				third = msgID
 				return nil
 			})
-		require.NoError(t, h3.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-2"))
+		require.NoError(t, h3.publishThreadSubInboxIfRemote(context.Background(), baseSub, "site-b", "msg-2"))
 		assert.NotEqual(t, captured.msgID, third)
 
 		// Payload is an InboxEvent whose inner Payload decodes back to the ThreadSubscription
@@ -1216,13 +1216,13 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 				return boom
 			})
 
-		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
+		err := h.publishThreadSubInboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, boom)
 	})
 }
 
-func TestHandler_FirstReply_OutboxPublishes(t *testing.T) {
+func TestHandler_FirstReply_InboxPublishes(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	parentSender := &cassParticipant{ID: "u-parent", Account: "parent-user"}
@@ -1317,7 +1317,7 @@ func TestHandler_FirstReply_OutboxPublishes(t *testing.T) {
 	}
 }
 
-func TestHandler_FirstReply_OutboxPublishError_NAKs(t *testing.T) {
+func TestHandler_FirstReply_InboxPublishError_NAKs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
@@ -1347,7 +1347,7 @@ func TestHandler_FirstReply_OutboxPublishError_NAKs(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
-func TestHandler_FirstReply_ReplierOutboxPublishError_NAKs(t *testing.T) {
+func TestHandler_FirstReply_ReplierInboxPublishError_NAKs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
@@ -1379,7 +1379,7 @@ func TestHandler_FirstReply_ReplierOutboxPublishError_NAKs(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
-func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
+func TestHandler_SubsequentReply_InboxPublishes(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	parentSender := &cassParticipant{ID: "u-parent", Account: "parent-user"}
@@ -1473,7 +1473,7 @@ func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
 	}
 }
 
-func TestHandler_SubsequentReply_OutboxPublishError_NAKs(t *testing.T) {
+func TestHandler_SubsequentReply_InboxPublishError_NAKs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
@@ -1504,7 +1504,7 @@ func TestHandler_SubsequentReply_OutboxPublishError_NAKs(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
-func TestHandler_MarkThreadMentions_OutboxPublishes(t *testing.T) {
+func TestHandler_MarkThreadMentions_InboxPublishes(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -1606,7 +1606,7 @@ func TestHandler_MarkThreadMentions_OutboxPublishes(t *testing.T) {
 	}
 }
 
-func TestHandler_MarkThreadMentions_OutboxPublishError_NAKs(t *testing.T) {
+func TestHandler_MarkThreadMentions_InboxPublishError_NAKs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	ctrl := gomock.NewController(t)
 	ts := NewMockThreadStore(ctrl)
@@ -1652,7 +1652,7 @@ func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
 	require.NoError(t, json.Unmarshal(captured, &outer))
 	var sub model.ThreadSubscription
 	require.NoError(t, json.Unmarshal(outer.Payload, &sub))
-	assert.True(t, sub.HasMention, "outbox-emitted ThreadSubscription must carry HasMention=true")
+	assert.True(t, sub.HasMention, "inbox-emitted ThreadSubscription must carry HasMention=true")
 	assert.Equal(t, "u-bob", sub.UserID)
 	assert.Equal(t, "site-a", sub.SiteID, "Subscription.SiteID is the room's site, not the mentionee's owner site")
 }

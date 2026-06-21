@@ -1010,10 +1010,10 @@ func TestHandleEvent_MemberRemoved_EmptyAccountsNoOp(t *testing.T) {
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{}}
 	payload, _ := json.Marshal(memberEvt)
-	outboxPayload, _ := json.Marshal(model.InboxEvent{
+	inboxPayload, _ := json.Marshal(model.InboxEvent{
 		Type: "member_removed", SiteID: "a", DestSiteID: "b", Payload: payload,
 	})
-	require.NoError(t, h.HandleEvent(context.Background(), outboxPayload))
+	require.NoError(t, h.HandleEvent(context.Background(), inboxPayload))
 }
 
 type errorDeleteStore struct {
@@ -1030,10 +1030,10 @@ func TestHandleEvent_MemberRemoved_DeleteError(t *testing.T) {
 
 	memberEvt := model.MemberRemoveEvent{RoomID: "r1", Accounts: []string{"alice"}}
 	payload, _ := json.Marshal(memberEvt)
-	outboxPayload, _ := json.Marshal(model.InboxEvent{
+	inboxPayload, _ := json.Marshal(model.InboxEvent{
 		Type: "member_removed", SiteID: "a", DestSiteID: "b", Payload: payload,
 	})
-	err := h.HandleEvent(context.Background(), outboxPayload)
+	err := h.HandleEvent(context.Background(), inboxPayload)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete subscriptions")
 }

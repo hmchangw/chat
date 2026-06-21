@@ -3403,7 +3403,7 @@ func TestRoomRestrictedRequest_OwnerOmittedWhenEmpty(t *testing.T) {
 	assert.False(t, has)
 }
 
-// --- Sys message + outbox payloads ---
+// --- Sys message + inbox payloads ---
 
 func TestRoomRenamedSysDataJSON(t *testing.T) {
 	d := model.RoomRenamedSysData{NewName: "renamed", ByAccount: "alice"}
@@ -3460,7 +3460,7 @@ func TestRoomRestrictedInboxPayloadJSON(t *testing.T) {
 
 // --- Constants ---
 
-func TestMessageAndOutboxAndAsyncOpConstants(t *testing.T) {
+func TestMessageAndInboxAndAsyncOpConstants(t *testing.T) {
 	assert.Equal(t, "room_renamed", model.MessageTypeRoomRenamed)
 	assert.Equal(t, "room_restricted", model.MessageTypeRoomRestricted)
 	assert.Equal(t, "room_renamed", model.InboxRoomRenamed)

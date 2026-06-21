@@ -68,7 +68,7 @@ func TestSetStatus_TooLong(t *testing.T) {
 	requireCode(t, err, errcode.CodeBadRequest)
 }
 
-func TestSetStatus_OutboxExcludesSelf(t *testing.T) {
+func TestSetStatus_InboxExcludesSelf(t *testing.T) {
 	svc, _, users, _, _, pub := newSvc(t)
 	users.EXPECT().SetUserStatus(gomock.Any(), "alice", "busy", gomock.Any()).Return(&model.User{Account: "alice", StatusText: "busy"}, nil)
 	pub.EXPECT().Publish(gomock.Any(), subject.InboxExternal("site-b", model.InboxUserStatusUpdated), gomock.Any()).Return(nil)

@@ -43,7 +43,7 @@ func TestInboxWorker_MemberAdded_Integration(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	// Create outbox event for member_added
+	// Create inbox event for member_added
 	hssMillis := time.Now().UTC().UnixMilli()
 	change := model.MemberAddEvent{
 		Type: "member_added", RoomID: "r1", Accounts: []string{"u2"}, SiteID: "site-b",
@@ -185,7 +185,7 @@ func TestInboxWorker_BulkCreateSubscriptions_IdempotentUpsert(t *testing.T) {
 	require.NoError(t, store.BulkCreateSubscriptions(ctx, []*model.Subscription{original}))
 
 	// Re-issue with a "fresher" copy that has no LastSeenAt — simulates a
-	// redelivered outbox event materializing the same sub.
+	// redelivered inbox event materializing the same sub.
 	redelivered := &model.Subscription{
 		ID:       "sub-redelivered",
 		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -918,7 +918,7 @@ func TestIntegration_HandleRoomRenamed(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Construct and marshal the outbox event.
+	// Construct and marshal the inbox event.
 	renamePayload := model.RoomRenamedInboxPayload{
 		RoomID:    "r1",
 		NewName:   "renamed",
@@ -967,7 +967,7 @@ func TestIntegration_HandleRoomVisibilityChanged(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Construct and marshal the outbox event: bob becomes new owner.
+	// Construct and marshal the inbox event: bob becomes new owner.
 	visPayload := model.RoomRestrictedInboxPayload{
 		RoomID:         "r1",
 		Restricted:     true,
