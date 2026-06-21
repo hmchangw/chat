@@ -128,6 +128,71 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Error(t, err, "expected error for missing subscription")
 }
 
+// TestMongoStore_GetRoom_ProjectionFields_Integration pins the field set that
+// GetRoom's projection must return: every Room field read by any handler call
+// site. Dropping one from the projection would silently zero it here, so this
+// test is the guard for the projected read path.
+func TestMongoStore_GetRoom_ProjectionFields_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	lastMsg := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	minSeen := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	mustInsertRoom(t, db, &model.Room{
+		ID: "rproj", Name: "proj-room", Type: model.RoomTypeChannel, SiteID: "site-a",
+		UserCount: 7, AppCount: 3, Restricted: true, ExternalAccess: true,
+		LastMsgAt: &lastMsg, MinUserLastSeenAt: &minSeen, LastMsgID: "m123",
+	})
+
+	got, err := store.GetRoom(ctx, "rproj")
+	require.NoError(t, err)
+	assert.Equal(t, "rproj", got.ID)
+	assert.Equal(t, "proj-room", got.Name)
+	assert.Equal(t, model.RoomTypeChannel, got.Type)
+	assert.Equal(t, 7, got.UserCount)
+	assert.Equal(t, 3, got.AppCount)
+	assert.True(t, got.Restricted)
+	assert.True(t, got.ExternalAccess)
+	require.NotNil(t, got.LastMsgAt)
+	assert.WithinDuration(t, lastMsg, *got.LastMsgAt, time.Second)
+	require.NotNil(t, got.MinUserLastSeenAt)
+	assert.WithinDuration(t, minSeen, *got.MinUserLastSeenAt, time.Second)
+}
+
+// TestMongoStore_GetSubscription_ProjectionFields_Integration pins the field
+// set that GetSubscription's projection must return: every Subscription field
+// read by any handler call site. Same guard rationale as the GetRoom variant.
+func TestMongoStore_GetSubscription_ProjectionFields_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	lastSeen := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Millisecond)
+	mustInsertSub(t, db, &model.Subscription{
+		ID:           "sproj",
+		User:         model.SubscriptionUser{ID: "u9", Account: "carol", IsBot: true},
+		RoomID:       "rproj",
+		SiteID:       "site-a",
+		Roles:        []model.Role{model.RoleOwner, model.RoleMember},
+		Alert:        true,
+		ThreadUnread: []string{"t1", "t2"},
+		LastSeenAt:   &lastSeen,
+	})
+
+	got, err := store.GetSubscription(ctx, "carol", "rproj")
+	require.NoError(t, err)
+	assert.Equal(t, "u9", got.User.ID)
+	assert.Equal(t, "carol", got.User.Account)
+	assert.Equal(t, "rproj", got.RoomID)
+	assert.Equal(t, "site-a", got.SiteID)
+	assert.Equal(t, []model.Role{model.RoleOwner, model.RoleMember}, got.Roles)
+	assert.True(t, got.Alert)
+	assert.Equal(t, []string{"t1", "t2"}, got.ThreadUnread)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, lastSeen, *got.LastSeenAt, time.Second)
+}
+
 func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)

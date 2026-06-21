@@ -238,9 +238,34 @@ func (s *MongoStore) InsertTeamsMeeting(ctx context.Context, record model.TeamsM
 	return nil
 }
 
+// roomReadProjection is the field set GetRoom returns — the union of every
+// Room field read by a handler call site. The full Room doc is never needed on
+// these read paths, and projecting trims the BSON decode (a top CPU consumer in
+// profiling) plus the wire payload. Keep in sync with the Room field reads in
+// handler.go; the projection-field integration test guards drift.
+var roomReadProjection = bson.D{
+	{Key: "_id", Value: 1}, {Key: "type", Value: 1}, {Key: "name", Value: 1},
+	{Key: "userCount", Value: 1}, {Key: "appCount", Value: 1},
+	{Key: "restricted", Value: 1}, {Key: "externalAccess", Value: 1},
+	{Key: "lastMsgAt", Value: 1}, {Key: "minUserLastSeenAt", Value: 1},
+}
+
+// subscriptionReadProjection is the field set GetSubscription returns — the
+// union of every Subscription field read by a handler call site. The fat
+// Subscription doc (~30 fields incl. byte arrays and time pointers) is never
+// needed here; projecting trims the reflection-heavy BSON decode. Keep in sync
+// with the Subscription field reads in handler.go; the projection-field
+// integration test guards drift.
+var subscriptionReadProjection = bson.D{
+	{Key: "_id", Value: 1}, {Key: "u", Value: 1}, {Key: "roomId", Value: 1},
+	{Key: "siteId", Value: 1}, {Key: "roles", Value: 1}, {Key: "alert", Value: 1},
+	{Key: "threadUnread", Value: 1}, {Key: "lastSeenAt", Value: 1},
+}
+
 func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error) {
 	var room model.Room
-	if err := s.rooms.FindOne(ctx, bson.M{"_id": id}).Decode(&room); err != nil {
+	opts := options.FindOne().SetProjection(roomReadProjection)
+	if err := s.rooms.FindOne(ctx, bson.M{"_id": id}, opts).Decode(&room); err != nil {
 		return nil, fmt.Errorf("room %q not found: %w", id, err)
 	}
 	return &room, nil
@@ -249,7 +274,8 @@ func (s *MongoStore) GetRoom(ctx context.Context, id string) (*model.Room, error
 func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string) (*model.Subscription, error) {
 	var sub model.Subscription
 	filter := bson.M{"u.account": account, "roomId": roomID}
-	if err := s.subscriptions.FindOne(ctx, filter).Decode(&sub); err != nil {
+	opts := options.FindOne().SetProjection(subscriptionReadProjection)
+	if err := s.subscriptions.FindOne(ctx, filter, opts).Decode(&sub); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("%q in room %q: %w", account, roomID, model.ErrSubscriptionNotFound)
 		}
