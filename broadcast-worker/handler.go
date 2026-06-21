@@ -130,14 +130,6 @@ func (h *Handler) handleCreated(ctx context.Context, evt *model.MessageEvent) er
 		return h.handleThreadCreated(ctx, evt)
 	}
 
-	// Channel-rename: emit the flat RoomRenamedRoomEvent on chat.room.{roomID}.event
-	// before the normal sys-message fan-out (which continues below for scrollback).
-	if msg.Type == model.MessageTypeRoomRenamed {
-		if err := h.publishRoomRenamedEvent(ctx, evt); err != nil {
-			return err
-		}
-	}
-
 	// One user-store round-trip covers both mention enrichment and sender
 	// enrichment: parse mentions, dedupe with the sender, fetch once, then
 	// hand the resulting map to ResolveFromParsed (skips a second parse) and
@@ -675,32 +667,6 @@ func (h *Handler) publishMutation(ctx context.Context, room *model.Room, roomEvt
 			"request_id", natsutil.RequestIDFromContext(ctx))
 		return nil
 	}
-}
-
-// publishRoomRenamedEvent publishes a flat RoomRenamedRoomEvent to
-// chat.room.{roomID}.event so live clients update their local subscription name
-// without waiting for a re-fetch. The caller still fans out the sys message
-// (room_renamed new_message event) for scrollback — both are needed.
-func (h *Handler) publishRoomRenamedEvent(ctx context.Context, evt *model.MessageEvent) error {
-	msg := evt.Message
-	var sysData model.RoomRenamedSysData
-	if err := json.Unmarshal(msg.SysMsgData, &sysData); err != nil {
-		return fmt.Errorf("unmarshal room_renamed sys data for %s: %w", msg.RoomID, err)
-	}
-	renamed := model.RoomRenamedRoomEvent{
-		Type:      model.RoomEventRoomRenamed,
-		RoomID:    msg.RoomID,
-		SiteID:    evt.SiteID,
-		Timestamp: time.Now().UTC().UnixMilli(),
-		NewName:   sysData.NewName,
-		ByAccount: sysData.ByAccount,
-		RenamedAt: msg.CreatedAt,
-	}
-	payload, err := json.Marshal(renamed)
-	if err != nil {
-		return fmt.Errorf("marshal room_renamed event for %s: %w", msg.RoomID, err)
-	}
-	return h.pub.Publish(ctx, subject.RoomEvent(msg.RoomID), payload)
 }
 
 func buildEditRoomEvent(room *model.Room, evt *model.MessageEvent) model.EditRoomEvent {

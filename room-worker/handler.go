@@ -2019,6 +2019,24 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 			return fmt.Errorf("publish rename outbox to %s: %w", remoteSiteID, err)
 		}
 	}
+
+	// Best-effort live event so connected clients update the channel name
+	// without a re-fetch; a failure here must not fail the rename RPC, whose
+	// DB writes have already committed.
+	roomEvt := model.RoomRenamedRoomEvent{
+		Type:      model.RoomEventRoomRenamed,
+		RoomID:    req.RoomID,
+		SiteID:    h.siteID,
+		Timestamp: time.Now().UTC().UnixMilli(),
+		NewName:   req.NewName,
+		ByAccount: req.Account,
+		RenamedAt: time.UnixMilli(req.Timestamp).UTC(),
+	}
+	if payload, mErr := json.Marshal(roomEvt); mErr != nil {
+		slog.Error("marshal room_renamed event failed", "error", mErr, "room_id", req.RoomID)
+	} else if pErr := h.publish(ctx, subject.RoomEvent(req.RoomID), payload, ""); pErr != nil {
+		slog.Error("publish room_renamed event failed", "error", pErr, "room_id", req.RoomID)
+	}
 	return nil
 }
 

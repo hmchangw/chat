@@ -943,7 +943,7 @@ See [Error envelope](#6-error-envelope-reference). Returned synchronously when v
 
 ##### Triggered events — success path
 
-**1. `chat.room.{roomID}.event`** — a `RoomRenamedRoomEvent` fanned out by `broadcast-worker` to every client subscribed to the room.
+**1. `chat.room.{roomID}.event`** — a `RoomRenamedRoomEvent` published by `room-worker` to every client subscribed to the room.
 
 Recipients: all room members on all sites.
 
