@@ -289,7 +289,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
   - **Messages**: 20-char base62 via `idgen.GenerateMessageID()` for new IDs (or client-supplied for user messages). `idgen.IsValidMessageID` accepts **either 17 or 20 char** base62 — 17 is the legacy length retained for backward compatibility with messages written before the 20-char cutover (federation replays, JetStream redeliveries, historical records).
 - Check `mongo.ErrNoDocuments` explicitly when a missing record is expected
 - Create indexes in the store constructor or a dedicated `EnsureIndexes` method at startup
-- **No `$lookup`**: server-side joins (`$lookup` in aggregation pipelines) are forbidden unless there is a very good, documented reason — prefer separate queries or denormalized data, and justify any exception in the PR
+- **No `$lookup`**: server-side joins (`$lookup` in aggregation pipelines) are forbidden unless there is a very good, documented reason — prefer separate queries or denormalized data, and justify any exception in the PR. Pre-existing `$lookup` sites are grandfathered; when you touch one, add an inline `// $lookup justification: …` comment explaining why a join is unavoidable
 - **Always project precisely**: every find/aggregation MUST specify an explicit projection that selects only the fields the caller needs — never fetch whole documents when a subset suffices
 
 ### Cassandra
