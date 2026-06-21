@@ -377,14 +377,14 @@ func (r *Repository) setParentTcountAndTlm(ctx context.Context, msg *models.Mess
 	parentID := msg.ThreadParentID
 	parentCreatedAt := *msg.ThreadParentCreatedAt
 	if err := r.session.Query(
-		`UPDATE messages_by_id SET tcount = ?, tlm = ? WHERE message_id = ?`,
+		`UPDATE messages_by_id SET tcount = ?, thread_last_msg_at = ? WHERE message_id = ?`,
 		n, tlm, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_id: %w", parentID, err)
 	}
 	parentBucket := r.bucket.Of(parentCreatedAt)
 	if err := r.session.Query(
-		`UPDATE messages_by_room SET tcount = ?, tlm = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		`UPDATE messages_by_room SET tcount = ?, thread_last_msg_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		n, tlm, msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_room: %w", parentID, err)

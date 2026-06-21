@@ -525,7 +525,7 @@ func TestRepository_SoftDeleteMessage_UpdatesParentTlm(t *testing.T) {
 	// tlm must equal survivorAt (the max created_at among surviving replies).
 	var gotTlm *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_id WHERE message_id = ?`,
+		`SELECT thread_last_msg_at FROM messages_by_id WHERE message_id = ?`,
 		parentID,
 	).Scan(&gotTlm))
 	require.NotNil(t, gotTlm, "tlm must be set to surviving max after delete")
@@ -533,7 +533,7 @@ func TestRepository_SoftDeleteMessage_UpdatesParentTlm(t *testing.T) {
 
 	var gotTlmRoom *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		`SELECT thread_last_msg_at FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
 	).Scan(&gotTlmRoom))
 	require.NotNil(t, gotTlmRoom, "messages_by_room.tlm must be set to surviving max after delete")
@@ -591,14 +591,14 @@ func TestRepository_SoftDeleteMessage_ClearsTlmOnLastReplyDelete(t *testing.T) {
 	// tlm must be NULL on the parent.
 	var gotTlm *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_id WHERE message_id = ?`,
+		`SELECT thread_last_msg_at FROM messages_by_id WHERE message_id = ?`,
 		parentID,
 	).Scan(&gotTlm))
 	assert.Nil(t, gotTlm, "tlm must be NULL after last reply is deleted (count→0)")
 
 	var gotTlmRoom *time.Time
 	require.NoError(t, session.Query(
-		`SELECT tlm FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		`SELECT thread_last_msg_at FROM messages_by_room WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		roomID, msgbucket.New(24*time.Hour).Of(parentCreatedAt), parentCreatedAt, parentID,
 	).Scan(&gotTlmRoom))
 	assert.Nil(t, gotTlmRoom, "messages_by_room.tlm must be NULL after last reply is deleted")

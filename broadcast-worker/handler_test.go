@@ -1784,7 +1784,8 @@ func TestHandleServerBroadcast_ThreadReplyAdded_PropagatesNewTlm(t *testing.T) {
 			CreatedAt:             msgTime,
 		},
 	}
-	data, _ := json.Marshal(evt)
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
 
 	h := NewHandler(store, us, pub, keyStore, false)
 	h.HandleServerBroadcast(context.Background(), data)
@@ -1822,7 +1823,8 @@ func TestHandleServerBroadcast_ThreadReplyAdded_NilNewTlm_NoFieldInOutput(t *tes
 			CreatedAt:             msgTime,
 		},
 	}
-	data, _ := json.Marshal(evt)
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
 
 	h := NewHandler(store, us, pub, keyStore, false)
 	h.HandleServerBroadcast(context.Background(), data)
@@ -1831,11 +1833,11 @@ func TestHandleServerBroadcast_ThreadReplyAdded_NilNewTlm_NoFieldInOutput(t *tes
 	var tmEvt model.ThreadMetadataUpdatedEvent
 	require.NoError(t, json.Unmarshal(pub.records[0].data, &tmEvt))
 	assert.Nil(t, tmEvt.NewThreadLastMsgAt, "nil NewThreadLastMsgAt must not appear in downstream event")
-	// Also verify via raw JSON — no newTlm key.
+	// Also verify via raw JSON — no newThreadLastMsgAt key.
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(pub.records[0].data, &raw))
-	_, present := raw["newTlm"]
-	assert.False(t, present, "newTlm must be absent from JSON when nil")
+	_, present := raw["newThreadLastMsgAt"]
+	assert.False(t, present, "newThreadLastMsgAt must be absent from JSON when nil")
 }
 
 func TestHandleServerBroadcast_ThreadReplyAdded_MissingNewTCount_Skips(t *testing.T) {

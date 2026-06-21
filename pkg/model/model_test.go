@@ -3595,7 +3595,7 @@ func TestMessageEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
+		_, present := raw["newThreadLastMsgAt"]
 		assert.False(t, present, "nil NewThreadLastMsgAt must be omitted from JSON")
 	})
 
@@ -3610,8 +3610,8 @@ func TestMessageEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
-		assert.True(t, present, "non-nil NewThreadLastMsgAt must appear in JSON as newTlm")
+		_, present := raw["newThreadLastMsgAt"]
+		assert.True(t, present, "non-nil NewThreadLastMsgAt must appear in JSON as newThreadLastMsgAt")
 		var dst model.MessageEvent
 		require.NoError(t, json.Unmarshal(data, &dst))
 		require.NotNil(t, dst.NewThreadLastMsgAt)
@@ -3629,8 +3629,8 @@ func TestMessageEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw bson.M
 		require.NoError(t, bson.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
-		assert.True(t, present, "non-nil NewThreadLastMsgAt must be present in BSON as newTlm")
+		_, present := raw["newThreadLastMsgAt"]
+		assert.True(t, present, "non-nil NewThreadLastMsgAt must be present in BSON as newThreadLastMsgAt")
 	})
 
 	t.Run("nil NewThreadLastMsgAt omitted from BSON", func(t *testing.T) {
@@ -3643,7 +3643,7 @@ func TestMessageEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw bson.M
 		require.NoError(t, bson.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
+		_, present := raw["newThreadLastMsgAt"]
 		assert.False(t, present, "nil NewThreadLastMsgAt must be omitted from BSON")
 	})
 }
@@ -3666,7 +3666,7 @@ func TestThreadMetadataUpdatedEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
+		_, present := raw["newThreadLastMsgAt"]
 		assert.False(t, present, "nil NewThreadLastMsgAt must be omitted from JSON")
 	})
 
@@ -3686,8 +3686,8 @@ func TestThreadMetadataUpdatedEvent_NewThreadLastMsgAt(t *testing.T) {
 		require.NoError(t, err)
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
-		_, present := raw["newTlm"]
-		assert.True(t, present, "non-nil NewThreadLastMsgAt must appear as newTlm in JSON")
+		_, present := raw["newThreadLastMsgAt"]
+		assert.True(t, present, "non-nil NewThreadLastMsgAt must appear as newThreadLastMsgAt in JSON")
 		var dst model.ThreadMetadataUpdatedEvent
 		require.NoError(t, json.Unmarshal(data, &dst))
 		require.NotNil(t, dst.NewThreadLastMsgAt)

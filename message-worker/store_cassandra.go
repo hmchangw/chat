@@ -354,13 +354,13 @@ func (s *CassandraStore) setParentTcountAndTlm(ctx context.Context, msg *model.M
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 	parentBucket := s.bucket.Of(parentCreatedAt)
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_id SET tcount = ?, tlm = ? WHERE message_id = ?`,
+		`UPDATE messages_by_id SET tcount = ?, thread_last_msg_at = ? WHERE message_id = ?`,
 		n, tlm, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_id: %w", parentID, err)
 	}
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_room SET tcount = ?, tlm = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		`UPDATE messages_by_room SET tcount = ?, thread_last_msg_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
 		n, tlm, msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_room: %w", parentID, err)
@@ -381,7 +381,7 @@ func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model
 	}
 	tlm := msg.CreatedAt
 	if err := s.setParentTcountAndTlm(ctx, msg, n, &tlm); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("set parent tcount/tlm: %w", err)
 	}
 	return &n, nil
 }
