@@ -2368,3 +2368,25 @@ func TestPublishToThreadAccounts_Empty_NoOp(t *testing.T) {
 	require.NoError(t, h.publishToThreadAccounts(context.Background(), nil, []byte(`{}`), "parent-1"))
 	assert.Empty(t, pub.records)
 }
+
+func TestHandleCreated_NonRename_NoRoomRenamedEvent(t *testing.T) {
+	// Regression: a normal created message must NOT publish a RoomRenamedRoomEvent.
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime)))
+
+	require.Len(t, pub.records, 1, "normal message: exactly one publish")
+	var evt model.RoomEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &evt))
+	assert.Equal(t, model.RoomEventNewMessage, evt.Type, "normal message must publish new_message, not room_renamed")
+}

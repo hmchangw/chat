@@ -4909,6 +4909,48 @@ func TestProcessRoomRename_TransientSubscriptionUpdateError(t *testing.T) {
 	assert.False(t, errors.Is(err, errPermanent), "expected transient (non-permanent) error, got %v", err)
 }
 
+func TestProcessRoomRename_PublishesRoomRenamedEvent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockSubscriptionStore(ctrl)
+
+	const roomID, newName = "r1", "renamed"
+	requestID := testRequestID
+	ts := int64(1700000000000)
+
+	store.EXPECT().UpdateRoomName(gomock.Any(), roomID, newName).Return(nil)
+	store.EXPECT().UpdateSubscriptionNamesForRoom(gomock.Any(), roomID, newName, gomock.Any()).Return(nil)
+	store.EXPECT().GetUser(gomock.Any(), "alice").Return(&model.User{Account: "alice"}, nil)
+	store.EXPECT().ListByRoom(gomock.Any(), roomID).Return(nil, nil)
+
+	var roomEvts [][]byte
+	publish := func(_ context.Context, subj string, data []byte, _ string) error {
+		if subj == subject.RoomEvent(roomID) {
+			roomEvts = append(roomEvts, data)
+		}
+		return nil
+	}
+
+	h := &Handler{store: store, siteID: "site-a", publish: publish}
+	ctx := natsutil.WithRequestID(context.Background(), requestID)
+	body, _ := json.Marshal(model.RenameRoomRequest{
+		RoomID: roomID, NewName: newName, Account: "alice", Timestamp: ts,
+	})
+
+	require.NoError(t, h.processRoomRename(ctx, body))
+
+	require.Len(t, roomEvts, 1, "exactly one live event on the room-event subject")
+	var renamed model.RoomRenamedRoomEvent
+	require.NoError(t, json.Unmarshal(roomEvts[0], &renamed))
+	assert.Equal(t, model.RoomEventRoomRenamed, renamed.Type)
+	assert.Equal(t, roomID, renamed.RoomID)
+	assert.Equal(t, "site-a", renamed.SiteID)
+	assert.Equal(t, newName, renamed.NewName)
+	assert.Equal(t, "alice", renamed.ByAccount)
+	assert.True(t, renamed.RenamedAt.Equal(time.UnixMilli(ts).UTC()))
+	assert.Positive(t, renamed.Timestamp)
+}
+
 // Test 7: Happy path no remote sites.
 func TestProcessRoomRename_HappyPathNoRemoteSites(t *testing.T) {
 	ctrl := gomock.NewController(t)
