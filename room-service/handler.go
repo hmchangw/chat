@@ -1280,7 +1280,8 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 		updatedSub.LastSeenAt = &now
 		updatedSub.Alert = newAlert
 		if _, err := h.publishSubscriptionUpdate(ctx, account, "read", &updatedSub, now); err != nil {
-			return nil, err
+			slog.Error("subscription update on read failed", "error", err,
+				"request_id", natsutil.RequestIDFromContext(ctx), "account", account)
 		}
 	}
 
