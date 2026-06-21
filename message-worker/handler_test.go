@@ -1170,7 +1170,7 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 		err := h.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-1")
 		require.NoError(t, err)
 		require.Equal(t, 1, captured.callCnt)
-		assert.Equal(t, "outbox.site-a.to.site-b.thread_subscription_upserted", captured.subj)
+		assert.Equal(t, "chat.inbox.site-b.external.thread_subscription_upserted", captured.subj)
 		assert.NotEmpty(t, captured.msgID, "dedup ID must be set")
 
 		// Same inputs → same dedup ID (stable across redeliveries).
@@ -1193,11 +1193,11 @@ func TestHandler_PublishThreadSubOutboxIfRemote(t *testing.T) {
 		require.NoError(t, h3.publishThreadSubOutboxIfRemote(context.Background(), baseSub, "site-b", "msg-2"))
 		assert.NotEqual(t, captured.msgID, third)
 
-		// Payload is an OutboxEvent whose inner Payload decodes back to the ThreadSubscription
+		// Payload is an InboxEvent whose inner Payload decodes back to the ThreadSubscription
 		// — and the inner SiteID is unchanged (still the room's site, "site-a").
-		var outer model.OutboxEvent
+		var outer model.InboxEvent
 		require.NoError(t, json.Unmarshal(captured.data, &outer))
-		assert.Equal(t, model.OutboxThreadSubscriptionUpserted, outer.Type)
+		assert.Equal(t, model.InboxThreadSubscriptionUpserted, outer.Type)
 		assert.Equal(t, "site-a", outer.SiteID)
 		assert.Equal(t, "site-b", outer.DestSiteID)
 		assert.Greater(t, outer.Timestamp, int64(0))
@@ -1307,9 +1307,9 @@ func TestHandler_FirstReply_OutboxPublishes(t *testing.T) {
 
 			gotByDest := map[string]int{}
 			for _, c := range calls {
-				var outer model.OutboxEvent
+				var outer model.InboxEvent
 				require.NoError(t, json.Unmarshal(c.data, &outer))
-				assert.Equal(t, model.OutboxThreadSubscriptionUpserted, outer.Type)
+				assert.Equal(t, model.InboxThreadSubscriptionUpserted, outer.Type)
 				gotByDest[outer.DestSiteID]++
 			}
 			assert.Equal(t, tt.wantPublishToSite, gotByDest)
@@ -1442,7 +1442,7 @@ func TestHandler_SubsequentReply_OutboxPublishes(t *testing.T) {
 
 			var publishedDests []string
 			h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, data []byte, _ string) error {
-				var outer model.OutboxEvent
+				var outer model.InboxEvent
 				if err := json.Unmarshal(data, &outer); err != nil {
 					return err
 				}
@@ -1577,7 +1577,7 @@ func TestHandler_MarkThreadMentions_OutboxPublishes(t *testing.T) {
 			var publishedDests []string
 			h := NewHandler(NewMockStore(ctrl), NewMockUserStore(ctrl), ts, "site-a",
 				func(_ context.Context, _ string, data []byte, _ string) error {
-					var outer model.OutboxEvent
+					var outer model.InboxEvent
 					if err := json.Unmarshal(data, &outer); err != nil {
 						return err
 					}
@@ -1648,7 +1648,7 @@ func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
 	}
 	require.NoError(t, h.markThreadMentions(context.Background(), msg, "tr-1", "site-a"))
 
-	var outer model.OutboxEvent
+	var outer model.InboxEvent
 	require.NoError(t, json.Unmarshal(captured, &outer))
 	var sub model.ThreadSubscription
 	require.NoError(t, json.Unmarshal(outer.Payload, &sub))

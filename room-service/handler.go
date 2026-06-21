@@ -747,7 +747,7 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 		return nil, fmt.Errorf("get user siteId: %w", err)
 	}
 	if userSiteID != "" && userSiteID != h.siteID {
-		outbox := model.OutboxEvent{
+		outbox := model.InboxEvent{
 			Type:       "role_updated",
 			SiteID:     h.siteID,
 			DestSiteID: userSiteID,
@@ -758,7 +758,7 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, "role_updated"), outboxData, ""); err != nil {
+		if err := h.publishToStream(ctx, subject.InboxExternal(userSiteID, "role_updated"), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish role-updated outbox: %w", err)
 		}
 	}
@@ -1268,8 +1268,8 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 		if err != nil {
 			return nil, fmt.Errorf("marshal subscription_read payload: %w", err)
 		}
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxSubscriptionRead,
+		outbox := model.InboxEvent{
+			Type:       model.InboxSubscriptionRead,
 			SiteID:     h.siteID,
 			DestSiteID: userSiteID,
 			Payload:    payloadData,
@@ -1279,7 +1279,7 @@ func (h *Handler) messageRead(c *natsrouter.Context) (*model.StatusReply, error)
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionRead), outboxData, ""); err != nil {
+		if err := h.publishToStream(ctx, subject.InboxExternal(userSiteID, model.InboxSubscriptionRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish subscription_read outbox: %w", err)
 		}
 	}
@@ -1550,8 +1550,8 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 		if err != nil {
 			return nil, fmt.Errorf("marshal thread_read payload: %w", err)
 		}
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxThreadRead,
+		outbox := model.InboxEvent{
+			Type:       model.InboxThreadRead,
 			SiteID:     h.siteID,
 			DestSiteID: userSiteID,
 			Payload:    payloadData,
@@ -1561,7 +1561,7 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxThreadRead), outboxData, ""); err != nil {
+		if err := h.publishToStream(ctx, subject.InboxExternal(userSiteID, model.InboxThreadRead), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish thread_read outbox: %w", err)
 		}
 	}
@@ -1843,7 +1843,7 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 		remoteSites = append(remoteSites, users[i].SiteID)
 	}
 	if len(remoteSites) > 0 {
-		payload, err := json.Marshal(model.RoomRestrictedOutboxPayload{
+		payload, err := json.Marshal(model.RoomRestrictedInboxPayload{
 			RoomID:         req.RoomID,
 			Restricted:     req.Restricted,
 			ExternalAccess: req.ExternalAccess,
@@ -1854,15 +1854,15 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 			return nil, fmt.Errorf("marshal restricted outbox payload: %w", err)
 		}
 		for _, remoteSiteID := range remoteSites {
-			evt := model.OutboxEvent{
-				Type: model.OutboxRoomRestricted, SiteID: h.siteID, DestSiteID: remoteSiteID,
+			evt := model.InboxEvent{
+				Type: model.InboxRoomRestricted, SiteID: h.siteID, DestSiteID: remoteSiteID,
 				Payload: payload, Timestamp: time.Now().UTC().UnixMilli(),
 			}
 			evtData, mErr := json.Marshal(evt)
 			if mErr != nil {
 				return nil, fmt.Errorf("marshal restricted outbox event: %w", mErr)
 			}
-			if err := h.publishToStream(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRestricted), evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
+			if err := h.publishToStream(ctx, subject.InboxExternal(remoteSiteID, model.InboxRoomRestricted), evtData, natsutil.InboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
 				return nil, fmt.Errorf("publish restricted outbox to %s: %w", remoteSiteID, err)
 			}
 		}
@@ -1930,8 +1930,8 @@ func (h *Handler) muteToggle(c *natsrouter.Context) (*model.MuteToggleResponse, 
 		if err != nil {
 			return nil, fmt.Errorf("marshal mute-toggled payload: %w", err)
 		}
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxSubscriptionMuteToggled,
+		outbox := model.InboxEvent{
+			Type:       model.InboxSubscriptionMuteToggled,
 			SiteID:     h.siteID,
 			DestSiteID: userSiteID,
 			Payload:    payloadData,
@@ -1941,7 +1941,7 @@ func (h *Handler) muteToggle(c *natsrouter.Context) (*model.MuteToggleResponse, 
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionMuteToggled), outboxData, ""); err != nil {
+		if err := h.publishToStream(ctx, subject.InboxExternal(userSiteID, model.InboxSubscriptionMuteToggled), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish mute-toggled outbox: %w", err)
 		}
 	}
@@ -1993,8 +1993,8 @@ func (h *Handler) favoriteToggle(c *natsrouter.Context) (*model.FavoriteToggleRe
 		if err != nil {
 			return nil, fmt.Errorf("marshal favorite-toggled payload: %w", err)
 		}
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxSubscriptionFavoriteToggled,
+		outbox := model.InboxEvent{
+			Type:       model.InboxSubscriptionFavoriteToggled,
 			SiteID:     h.siteID,
 			DestSiteID: userSiteID,
 			Payload:    payloadData,
@@ -2004,7 +2004,7 @@ func (h *Handler) favoriteToggle(c *natsrouter.Context) (*model.FavoriteToggleRe
 		if err != nil {
 			return nil, fmt.Errorf("marshal outbox event: %w", err)
 		}
-		if err := h.publishToStream(ctx, subject.Outbox(h.siteID, userSiteID, model.OutboxSubscriptionFavoriteToggled), outboxData, ""); err != nil {
+		if err := h.publishToStream(ctx, subject.InboxExternal(userSiteID, model.InboxSubscriptionFavoriteToggled), outboxData, ""); err != nil {
 			return nil, fmt.Errorf("publish favorite-toggled outbox: %w", err)
 		}
 	}

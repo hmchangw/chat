@@ -447,8 +447,8 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	if err != nil {
 		return fmt.Errorf("marshal thread subscription: %w", err)
 	}
-	outbox := model.OutboxEvent{
-		Type:       model.OutboxThreadSubscriptionUpserted,
+	outbox := model.InboxEvent{
+		Type:       model.InboxThreadSubscriptionUpserted,
 		SiteID:     h.siteID,
 		DestSiteID: ownerSiteID,
 		Payload:    payload,
@@ -464,7 +464,7 @@ func (h *Handler) publishThreadSubOutboxIfRemote(ctx context.Context, sub *model
 	// produces the same dedup ID. Different users on the same destination get
 	// different dedup IDs because their userIDs differ in the seed.
 	dedupID := fmt.Sprintf("thread-sub-outbox:%s:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID, ownerSiteID)
-	subj := subject.Outbox(h.siteID, ownerSiteID, model.OutboxThreadSubscriptionUpserted)
+	subj := subject.InboxExternal(ownerSiteID, model.InboxThreadSubscriptionUpserted)
 	if err := h.publish(ctx, subj, data, dedupID); err != nil {
 		return fmt.Errorf("publish thread subscription outbox to %s: %w", ownerSiteID, err)
 	}

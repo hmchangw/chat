@@ -651,17 +651,17 @@ func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
 		assert.Equal(t, "site-A", s.SiteID, "sub %s siteID", s.User.Account)
 	}
 
-	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", "")),
+	assert.Empty(t, cap.outboxOnPrefix(subject.InboxExternal("site-A", "")),
 		"no outbox to home site-A")
 
 	// One member_added outbox per remote site — carries all the info
 	// inbox-worker needs for sub creation AND search-sync-worker for MV update.
-	memberB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", model.OutboxMemberAdded))
-	memberC := cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", model.OutboxMemberAdded))
+	memberB := cap.outboxOnPrefix(subject.InboxExternal("site-B", model.InboxMemberAdded))
+	memberC := cap.outboxOnPrefix(subject.InboxExternal("site-C", model.InboxMemberAdded))
 	require.Len(t, memberB, 1, "exactly one member_added outbox to site-B")
 	require.Len(t, memberC, 1, "exactly one member_added outbox to site-C")
 
-	var memberEnvB model.OutboxEvent
+	var memberEnvB model.InboxEvent
 	require.NoError(t, json.Unmarshal(memberB[0].data, &memberEnvB))
 	var memberPayloadB model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(memberEnvB.Payload, &memberPayloadB))
@@ -673,7 +673,7 @@ func TestProcessCreateRoomChannel_OutboxPerRemoteSite(t *testing.T) {
 	assert.Nil(t, memberPayloadB.HistorySharedSince)
 	assert.Equal(t, reqID+":site-B", memberB[0].msgID)
 
-	var memberEnvC model.OutboxEvent
+	var memberEnvC model.InboxEvent
 	require.NoError(t, json.Unmarshal(memberC[0].data, &memberEnvC))
 	var memberPayloadC model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(memberEnvC.Payload, &memberPayloadC))
@@ -723,14 +723,14 @@ func TestProcessCreateRoomDM_OutboxToCounterpartSite(t *testing.T) {
 		assert.Equal(t, "site-A", s.SiteID, "sub %s siteID", s.User.Account)
 	}
 
-	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", "")))
-	assert.Empty(t, cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", "")))
+	assert.Empty(t, cap.outboxOnPrefix(subject.InboxExternal("site-A", "")))
+	assert.Empty(t, cap.outboxOnPrefix(subject.InboxExternal("site-C", "")))
 
 	// One member_added outbox to the recipient's site — carries everything
 	// inbox-worker needs to build the DM recipient's sub with the right shape.
-	memberB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", model.OutboxMemberAdded))
+	memberB := cap.outboxOnPrefix(subject.InboxExternal("site-B", model.InboxMemberAdded))
 	require.Len(t, memberB, 1)
-	var memberEnv model.OutboxEvent
+	var memberEnv model.InboxEvent
 	require.NoError(t, json.Unmarshal(memberB[0].data, &memberEnv))
 	var memberPayload model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(memberEnv.Payload, &memberPayload))
@@ -805,9 +805,9 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), newSubs)
 
-	pubsB := cap.outboxOnPrefix(subject.Outbox("site-A", "site-B", "member_added"))
-	pubsC := cap.outboxOnPrefix(subject.Outbox("site-A", "site-C", "member_added"))
-	pubsA := cap.outboxOnPrefix(subject.Outbox("site-A", "site-A", "member_added"))
+	pubsB := cap.outboxOnPrefix(subject.InboxExternal("site-B", "member_added"))
+	pubsC := cap.outboxOnPrefix(subject.InboxExternal("site-C", "member_added"))
+	pubsA := cap.outboxOnPrefix(subject.InboxExternal("site-A", "member_added"))
 	require.Len(t, pubsB, 1)
 	require.Len(t, pubsC, 1)
 	assert.Empty(t, pubsA, "no member_added outbox to home site-A")
@@ -815,7 +815,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	// Each remote site receives only its own homed accounts — bob (site-B) and
 	// ian (site-C) are partitioned by the userMap[].SiteID filter at the publish
 	// site so we never ship cross-site account identities over the wire.
-	var envB model.OutboxEvent
+	var envB model.InboxEvent
 	require.NoError(t, json.Unmarshal(pubsB[0].data, &envB))
 	var evtB model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envB.Payload, &evtB))
@@ -824,7 +824,7 @@ func TestProcessAddMembers_OutboxPerRemoteSite(t *testing.T) {
 	assert.Equal(t, "site-A", evtB.SiteID)
 	assert.Equal(t, reqID+":site-B", pubsB[0].msgID)
 
-	var envC model.OutboxEvent
+	var envC model.InboxEvent
 	require.NoError(t, json.Unmarshal(pubsC[0].data, &envC))
 	var evtC model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(envC.Payload, &evtC))
@@ -909,10 +909,10 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, h.processAddMembers(ctx, body))
 
-	pubs := cap.outboxOnPrefix(subject.InboxMemberAdded("site-A"))
+	pubs := cap.outboxOnPrefix(subject.InboxInternal("site-A", model.InboxMemberAdded))
 	require.Len(t, pubs, 1, "exactly one local INBOX member_added publish per add-members call")
 
-	var outboxEvt model.OutboxEvent
+	var outboxEvt model.InboxEvent
 	require.NoError(t, json.Unmarshal(pubs[0].data, &outboxEvt))
 	assert.Equal(t, "member_added", outboxEvt.Type)
 	assert.Equal(t, "site-A", outboxEvt.SiteID)
@@ -926,7 +926,7 @@ func TestProcessAddMembers_PublishesLocalInbox_Integration(t *testing.T) {
 	assert.ElementsMatch(t, []string{"charlie", "bob"}, inner.Accounts,
 		"local INBOX must carry full add set — same-site (charlie) + remote (bob)")
 	assert.Equal(t, reqID+":site-A", pubs[0].msgID,
-		"Nats-Msg-Id must be natsutil.OutboxDedupID(ctx, originSite, payloadSeed) so JetStream dedups self-loop replays")
+		"Nats-Msg-Id must be natsutil.InboxDedupID(ctx, originSite, payloadSeed) so JetStream dedups self-loop replays")
 
 	// members_added sys-message: requester is the sender, Content is server-rendered.
 	sysPubs := cap.outboxOnPrefix(subject.MsgCanonicalCreated("site-A"))
@@ -978,10 +978,10 @@ func TestProcessRemoveIndividual_PublishesLocalInbox_Integration(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, h.processRemoveMember(ctx, body))
 
-	pubs := cap.outboxOnPrefix(subject.InboxMemberRemoved("site-A"))
+	pubs := cap.outboxOnPrefix(subject.InboxInternal("site-A", model.InboxMemberRemoved))
 	require.Len(t, pubs, 1)
 
-	var outboxEvt model.OutboxEvent
+	var outboxEvt model.InboxEvent
 	require.NoError(t, json.Unmarshal(pubs[0].data, &outboxEvt))
 	assert.Equal(t, "member_removed", outboxEvt.Type)
 	assert.Equal(t, "site-A", outboxEvt.SiteID)
@@ -1129,7 +1129,7 @@ func TestSyncCreateDM_BotDM_CrossSiteOutbox(t *testing.T) {
 	_, err := handler.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
 
-	pubs := cap.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	pubs := cap.outboxOnPrefix(subject.InboxExternal("site-B", model.InboxMemberAdded))
 	assert.Len(t, pubs, 1, "exactly one outbox to site-B")
 }
 
@@ -1165,7 +1165,7 @@ func TestSyncCreateDM_RetryIdempotent(t *testing.T) {
 	assert.Equal(t, int64(2), subCount, "redelivery must not create duplicate subs")
 }
 
-// Federation convergence: the cross-site OUTBOX payload carries the deterministic
+// Federation convergence: the cross-site inbox payload carries the deterministic
 // BuildDMRoomID, so the remote inbox-worker (and any replay) writes to the SAME
 // room ID as the home site. The payload-derived dedup key (room id + requester
 // account + createdAt + dest) is identical across replays, so JetStream dedup
@@ -1192,10 +1192,10 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, wantRoomID, persisted.ID)
 
-	// 2. OUTBOX payload carries the same RoomID + the dedup key includes destSiteID.
-	pubs := cap1.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	// 2. External-lane payload carries the same RoomID + the dedup key includes destSiteID.
+	pubs := cap1.outboxOnPrefix(subject.InboxExternal("site-B", model.InboxMemberAdded))
 	require.Len(t, pubs, 1)
-	var env model.OutboxEvent
+	var env model.InboxEvent
 	require.NoError(t, json.Unmarshal(pubs[0].data, &env))
 	var payload model.MemberAddEvent
 	require.NoError(t, json.Unmarshal(env.Payload, &payload))
@@ -1209,12 +1209,12 @@ func TestSyncCreateDM_CrossSite_OutboxPayloadConverges(t *testing.T) {
 
 	// 3. Replay produces the same Nats-Msg-Id because the dedup key is derived
 	//    from the (stable) payload seed — room id + requester account + createdAt +
-	//    dest — not the request ID. JetStream OUTBOX dedup rejects the second emit.
+	//    dest — not the request ID. JetStream INBOX dedup rejects the second emit.
 	cap2 := &publishCapture{}
 	handler2 := NewHandler(store, siteID, cap2.fn(), testKeyStore, testKeySender)
 	_, err = handler2.serverCreateDM(newIntegSyncDMCtx(), req)
 	require.NoError(t, err)
-	pubs2 := cap2.outboxOnPrefix(subject.Outbox(siteID, "site-B", model.OutboxMemberAdded))
+	pubs2 := cap2.outboxOnPrefix(subject.InboxExternal("site-B", model.InboxMemberAdded))
 	require.Len(t, pubs2, 1)
 	assert.Equal(t, pubs[0].msgID, pubs2[0].msgID,
 		"replay must produce identical Nats-Msg-Id so broker dedup blocks duplicate cross-site events")
@@ -1902,11 +1902,11 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	cap.mu.Unlock()
 
 	// One outbox publish to remote site-b.
-	outboxPubs := cap.outboxOnPrefix(subject.Outbox(siteID, remoteSite, model.OutboxRoomRenamed))
+	outboxPubs := cap.outboxOnPrefix(subject.InboxExternal(remoteSite, model.InboxRoomRenamed))
 	require.Len(t, outboxPubs, 1, "exactly one outbox publish to remote site-b")
-	var outboxEvt model.OutboxEvent
+	var outboxEvt model.InboxEvent
 	require.NoError(t, json.Unmarshal(outboxPubs[0].data, &outboxEvt))
-	var outboxPayload model.RoomRenamedOutboxPayload
+	var outboxPayload model.RoomRenamedInboxPayload
 	require.NoError(t, json.Unmarshal(outboxEvt.Payload, &outboxPayload))
 	assert.Equal(t, roomID, outboxPayload.RoomID)
 	assert.Equal(t, newName, outboxPayload.NewName)

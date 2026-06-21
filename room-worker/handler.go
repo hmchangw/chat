@@ -432,8 +432,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 
 	// Wrapper Type collapses to member_removed even for self-leave so
 	// search-sync-worker dispatches on one MV op; inner Type is preserved.
-	inboxOutbox := model.OutboxEvent{
-		Type:       model.OutboxMemberRemoved,
+	inboxOutbox := model.InboxEvent{
+		Type:       model.InboxMemberRemoved,
 		SiteID:     h.siteID,
 		DestSiteID: h.siteID,
 		Payload:    memberEvtData,
@@ -441,7 +441,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	}
 	inboxData, _ := json.Marshal(inboxOutbox)
 	inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
-	if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), inboxData, natsutil.OutboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
+	if err := h.publish(ctx, subject.InboxInternal(h.siteID, model.InboxMemberRemoved), inboxData, natsutil.InboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
 		slog.ErrorContext(ctx, "local inbox member_removed publish failed", "error", err, "room_id", req.RoomID)
 	}
 
@@ -498,8 +498,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 
 	// Cross-site outbox for federated users
 	if user.SiteID != h.siteID {
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxMemberRemoved,
+		outbox := model.InboxEvent{
+			Type:       model.InboxMemberRemoved,
 			SiteID:     h.siteID,
 			DestSiteID: user.SiteID,
 			Payload:    memberEvtData,
@@ -507,8 +507,8 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		}
 		outboxData, _ := json.Marshal(outbox)
 		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.Account, req.Timestamp)
-		dedupID := natsutil.OutboxDedupID(ctx, user.SiteID, payloadSeed)
-		if err := h.publish(ctx, subject.Outbox(h.siteID, user.SiteID, model.OutboxMemberRemoved), outboxData, dedupID); err != nil {
+		dedupID := natsutil.InboxDedupID(ctx, user.SiteID, payloadSeed)
+		if err := h.publish(ctx, subject.InboxExternal(user.SiteID, model.InboxMemberRemoved), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", user.SiteID, err)
 		}
 	}
@@ -627,7 +627,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	// Member change event with all removed accounts
 	if len(accounts) > 0 {
 		memberEvt := model.MemberRemoveEvent{
-			Type:      model.OutboxMemberRemoved,
+			Type:      model.InboxMemberRemoved,
 			RoomID:    req.RoomID,
 			Accounts:  accounts,
 			SiteID:    h.siteID,
@@ -639,8 +639,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 			slog.ErrorContext(ctx, "member event publish failed", "error", err, "room_id", req.RoomID)
 		}
 
-		inboxOutbox := model.OutboxEvent{
-			Type:       model.OutboxMemberRemoved,
+		inboxOutbox := model.InboxEvent{
+			Type:       model.InboxMemberRemoved,
 			SiteID:     h.siteID,
 			DestSiteID: h.siteID,
 			Payload:    memberEvtData,
@@ -648,7 +648,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 		inboxData, _ := json.Marshal(inboxOutbox)
 		inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
-		if err := h.publish(ctx, subject.InboxMemberRemoved(h.siteID), inboxData, natsutil.OutboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
+		if err := h.publish(ctx, subject.InboxInternal(h.siteID, model.InboxMemberRemoved), inboxData, natsutil.InboxDedupID(ctx, h.siteID, inboxSeed)); err != nil {
 			slog.ErrorContext(ctx, "local inbox member_removed publish failed", "error", err, "room_id", req.RoomID)
 		}
 	}
@@ -698,15 +698,15 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	}
 	for destSiteID, accounts := range siteAccounts {
 		evt := model.MemberRemoveEvent{
-			Type:      model.OutboxMemberRemoved,
+			Type:      model.InboxMemberRemoved,
 			RoomID:    req.RoomID,
 			Accounts:  accounts,
 			SiteID:    h.siteID,
 			OrgID:     req.OrgID,
 			Timestamp: now.UnixMilli(),
 		}
-		outbox := model.OutboxEvent{
-			Type:       model.OutboxMemberRemoved,
+		outbox := model.InboxEvent{
+			Type:       model.InboxMemberRemoved,
 			SiteID:     h.siteID,
 			DestSiteID: destSiteID,
 			Payload:    mustMarshal(evt),
@@ -714,8 +714,8 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		}
 		outboxData, _ := json.Marshal(outbox)
 		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.OrgID, req.Timestamp)
-		dedupID := natsutil.OutboxDedupID(ctx, destSiteID, payloadSeed)
-		if err := h.publish(ctx, subject.Outbox(h.siteID, destSiteID, model.OutboxMemberRemoved), outboxData, dedupID); err != nil {
+		dedupID := natsutil.InboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.InboxExternal(destSiteID, model.InboxMemberRemoved), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s: %w", destSiteID, err)
 		}
 	}
@@ -1067,7 +1067,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	historySharedSince := historySharedSincePtr(req.History, req.Timestamp, req.RoomID)
 	if len(actualAccounts) > 0 || len(req.Orgs) > 0 {
 		memberAddEvt := model.MemberAddEvent{
-			Type:               model.OutboxMemberAdded,
+			Type:               model.InboxMemberAdded,
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
@@ -1088,8 +1088,8 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 		}
 
 		if len(actualAccounts) > 0 {
-			inboxOutbox := model.OutboxEvent{
-				Type:       model.OutboxMemberAdded,
+			inboxOutbox := model.InboxEvent{
+				Type:       model.InboxMemberAdded,
 				SiteID:     room.SiteID,
 				DestSiteID: room.SiteID,
 				Payload:    memberAddData,
@@ -1097,7 +1097,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			}
 			inboxData, _ := json.Marshal(inboxOutbox)
 			inboxSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
-			if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), inboxData, natsutil.OutboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
+			if err := h.publish(ctx, subject.InboxInternal(room.SiteID, model.InboxMemberAdded), inboxData, natsutil.InboxDedupID(ctx, room.SiteID, inboxSeed)); err != nil {
 				slog.ErrorContext(ctx, "local inbox member_added publish failed",
 					"error", err,
 					"room_id", req.RoomID,
@@ -1160,7 +1160,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	}
 	for destSiteID, siteAccounts := range accountsBySite {
 		siteEvt := model.MemberAddEvent{
-			Type:               model.OutboxMemberAdded,
+			Type:               model.InboxMemberAdded,
 			RoomID:             req.RoomID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
@@ -1172,14 +1172,14 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 			Timestamp:          now.UnixMilli(),
 		}
 		siteEvtData, _ := json.Marshal(siteEvt)
-		outbox := model.OutboxEvent{
-			Type: model.OutboxMemberAdded, SiteID: room.SiteID, DestSiteID: destSiteID,
+		outbox := model.InboxEvent{
+			Type: model.InboxMemberAdded, SiteID: room.SiteID, DestSiteID: destSiteID,
 			Payload: siteEvtData, Timestamp: now.UnixMilli(),
 		}
 		outboxData, _ := json.Marshal(outbox)
 		payloadSeed := fmt.Sprintf("%s:%s:%d", req.RoomID, req.RequesterAccount, req.Timestamp)
-		dedupID := natsutil.OutboxDedupID(ctx, destSiteID, payloadSeed)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.OutboxMemberAdded), outboxData, dedupID); err != nil {
+		dedupID := natsutil.InboxDedupID(ctx, destSiteID, payloadSeed)
+		if err := h.publish(ctx, subject.InboxExternal(destSiteID, model.InboxMemberAdded), outboxData, dedupID); err != nil {
 			return fmt.Errorf("outbox publish to %s failed: %w", destSiteID, err)
 		}
 	}
@@ -1533,7 +1533,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		accounts = append(accounts, sub.User.Account)
 	}
 	inner := model.MemberAddEvent{
-		Type:               model.OutboxMemberAdded,
+		Type:               model.InboxMemberAdded,
 		RoomID:             room.ID,
 		RoomName:           room.Name,
 		RoomType:           room.Type,
@@ -1545,8 +1545,8 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		Timestamp:          now.UnixMilli(),
 	}
 	innerData, _ := json.Marshal(inner)
-	outbox := model.OutboxEvent{
-		Type:       model.OutboxMemberAdded,
+	outbox := model.InboxEvent{
+		Type:       model.InboxMemberAdded,
 		SiteID:     room.SiteID,
 		DestSiteID: room.SiteID,
 		Payload:    innerData,
@@ -1554,7 +1554,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	}
 	outboxData, _ := json.Marshal(outbox)
 	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, req.Timestamp)
-	if err := h.publish(ctx, subject.InboxMemberAdded(room.SiteID), outboxData, natsutil.OutboxDedupID(ctx, room.SiteID, payloadSeed)); err != nil {
+	if err := h.publish(ctx, subject.InboxInternal(room.SiteID, model.InboxMemberAdded), outboxData, natsutil.InboxDedupID(ctx, room.SiteID, payloadSeed)); err != nil {
 		slog.ErrorContext(ctx, "local inbox member_added publish failed", "error", err, "room_id", room.ID, "request_id", requestID)
 	}
 
@@ -1569,7 +1569,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	}
 	for destSiteID, accounts := range remoteSiteAccounts {
 		memberEvt := model.MemberAddEvent{
-			Type:               model.OutboxMemberAdded,
+			Type:               model.InboxMemberAdded,
 			RoomID:             room.ID,
 			RoomName:           room.Name,
 			RoomType:           room.Type,
@@ -1581,8 +1581,8 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 			Timestamp:          now.UnixMilli(),
 		}
 		memberData, _ := json.Marshal(memberEvt)
-		memberEnvelope := model.OutboxEvent{
-			Type:       model.OutboxMemberAdded,
+		memberEnvelope := model.InboxEvent{
+			Type:       model.InboxMemberAdded,
 			SiteID:     room.SiteID,
 			DestSiteID: destSiteID,
 			Payload:    memberData,
@@ -1590,7 +1590,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 		}
 		memberOutboxData, _ := json.Marshal(memberEnvelope)
 		memberSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, req.Timestamp)
-		if err := h.publish(ctx, subject.Outbox(room.SiteID, destSiteID, model.OutboxMemberAdded), memberOutboxData, natsutil.OutboxDedupID(ctx, destSiteID, memberSeed)); err != nil {
+		if err := h.publish(ctx, subject.InboxExternal(destSiteID, model.InboxMemberAdded), memberOutboxData, natsutil.InboxDedupID(ctx, destSiteID, memberSeed)); err != nil {
 			return fmt.Errorf("publish member_added outbox to %s: %w", destSiteID, err)
 		}
 	}
@@ -2037,23 +2037,23 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 	if err != nil {
 		return fmt.Errorf("find remote sites for outbox fan-out: %w", err)
 	}
-	renamedPayload, err := json.Marshal(model.RoomRenamedOutboxPayload{
+	renamedPayload, err := json.Marshal(model.RoomRenamedInboxPayload{
 		RoomID: req.RoomID, NewName: req.NewName, Timestamp: req.Timestamp,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal rename outbox payload: %w", err)
 	}
 	for _, remoteSiteID := range remoteSites {
-		evt := model.OutboxEvent{
-			Type: model.OutboxRoomRenamed, SiteID: h.siteID, DestSiteID: remoteSiteID,
+		evt := model.InboxEvent{
+			Type: model.InboxRoomRenamed, SiteID: h.siteID, DestSiteID: remoteSiteID,
 			Payload: renamedPayload, Timestamp: time.Now().UTC().UnixMilli(),
 		}
 		evtData, mErr := json.Marshal(evt)
 		if mErr != nil {
 			return fmt.Errorf("marshal rename outbox event: %w", mErr)
 		}
-		if err = h.publish(ctx, subject.Outbox(h.siteID, remoteSiteID, model.OutboxRoomRenamed),
-			evtData, natsutil.OutboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
+		if err = h.publish(ctx, subject.InboxExternal(remoteSiteID, model.InboxRoomRenamed),
+			evtData, natsutil.InboxDedupID(ctx, remoteSiteID, requestID)); err != nil {
 			return fmt.Errorf("publish rename outbox to %s: %w", remoteSiteID, err)
 		}
 	}
@@ -2085,7 +2085,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 
 	now := time.Now().UTC().UnixMilli()
 	memberEvt := model.MemberAddEvent{
-		Type:             model.OutboxMemberAdded,
+		Type:             model.InboxMemberAdded,
 		RoomID:           room.ID,
 		RoomName:         "",
 		RoomType:         room.Type,
@@ -2099,8 +2099,8 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	if err != nil {
 		return fmt.Errorf("marshal member_added outbox payload: %w", err)
 	}
-	envelope := model.OutboxEvent{
-		Type:       model.OutboxMemberAdded,
+	envelope := model.InboxEvent{
+		Type:       model.InboxMemberAdded,
 		SiteID:     room.SiteID,
 		DestSiteID: other.SiteID,
 		Payload:    pData,
@@ -2118,7 +2118,7 @@ func (h *Handler) publishSyncDMOutbox(ctx context.Context, room *model.Room, req
 	// joinedAt would break dedup because botDM re-subscribes carry a fresh value.
 	payloadSeed := fmt.Sprintf("%s:%s:%d", room.ID, requester.Account, room.CreatedAt.UnixMilli())
 	return h.publish(ctx,
-		subject.Outbox(room.SiteID, other.SiteID, model.OutboxMemberAdded),
+		subject.InboxExternal(other.SiteID, model.InboxMemberAdded),
 		eData,
 		payloadSeed+":"+other.SiteID,
 	)

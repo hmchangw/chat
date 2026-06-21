@@ -324,8 +324,8 @@ func TestHandler_UpdateRole_CrossSiteOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NotNil(t, outboxData, "cross-site target must publish a role_updated outbox event")
-	assert.Equal(t, subject.Outbox("site-a", "site-b", "role_updated"), outboxSubj)
-	var outbox model.OutboxEvent
+	assert.Equal(t, subject.InboxExternal("site-b", "role_updated"), outboxSubj)
+	var outbox model.InboxEvent
 	require.NoError(t, json.Unmarshal(outboxData, &outbox))
 	assert.Equal(t, "role_updated", outbox.Type)
 	assert.Equal(t, "site-a", outbox.SiteID)
@@ -2791,11 +2791,11 @@ func TestHandler_MessageRead_CrossSite_PublishesOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, f.publishCalls)
-	assert.Equal(t, "outbox.site-a.to.site-b.subscription_read", f.publishedSubj)
+	assert.Equal(t, "chat.inbox.site-b.external.subscription_read", f.publishedSubj)
 
-	var outbox model.OutboxEvent
+	var outbox model.InboxEvent
 	require.NoError(t, json.Unmarshal(f.publishedData, &outbox))
-	assert.Equal(t, model.OutboxSubscriptionRead, outbox.Type)
+	assert.Equal(t, model.InboxSubscriptionRead, outbox.Type)
 	assert.Equal(t, "site-a", outbox.SiteID)
 	assert.Equal(t, "site-b", outbox.DestSiteID)
 
@@ -3646,11 +3646,11 @@ func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, 1, f.publishCalls)
-	assert.Equal(t, "outbox.site-a.to.site-b.thread_read", f.publishedSubj)
+	assert.Equal(t, "chat.inbox.site-b.external.thread_read", f.publishedSubj)
 
-	var outer model.OutboxEvent
+	var outer model.InboxEvent
 	require.NoError(t, json.Unmarshal(f.publishedData, &outer))
-	assert.Equal(t, model.OutboxThreadRead, outer.Type)
+	assert.Equal(t, model.InboxThreadRead, outer.Type)
 	assert.Equal(t, "site-a", outer.SiteID)
 	assert.Equal(t, "site-b", outer.DestSiteID)
 
@@ -3962,11 +3962,11 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	_, err := h.muteToggle(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err)
 
-	assert.Equal(t, subject.Outbox("site-a", "site-b", model.OutboxSubscriptionMuteToggled), streamSubj)
+	assert.Equal(t, subject.InboxExternal("site-b", model.InboxSubscriptionMuteToggled), streamSubj)
 
-	var outbox model.OutboxEvent
+	var outbox model.InboxEvent
 	require.NoError(t, json.Unmarshal(streamData, &outbox))
-	assert.Equal(t, model.OutboxSubscriptionMuteToggled, outbox.Type)
+	assert.Equal(t, model.InboxSubscriptionMuteToggled, outbox.Type)
 	assert.Equal(t, "site-a", outbox.SiteID)
 	assert.Equal(t, "site-b", outbox.DestSiteID)
 
@@ -4912,11 +4912,11 @@ func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	_, err := h.favoriteToggle(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err)
 
-	assert.Equal(t, subject.Outbox("site-a", "site-b", model.OutboxSubscriptionFavoriteToggled), streamSubj)
+	assert.Equal(t, subject.InboxExternal("site-b", model.InboxSubscriptionFavoriteToggled), streamSubj)
 
-	var outbox model.OutboxEvent
+	var outbox model.InboxEvent
 	require.NoError(t, json.Unmarshal(streamData, &outbox))
-	assert.Equal(t, model.OutboxSubscriptionFavoriteToggled, outbox.Type)
+	assert.Equal(t, model.InboxSubscriptionFavoriteToggled, outbox.Type)
 	assert.Equal(t, "site-a", outbox.SiteID)
 	assert.Equal(t, "site-b", outbox.DestSiteID)
 
