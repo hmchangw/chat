@@ -249,7 +249,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - **Tier 3 — specialist, you'll know when.** Don't use these in ordinary request/reply handlers:
   - `errcode.Permanent` / `IsPermanent` — JetStream **workers only**, to Ack-poison vs Nak-retry.
   - `errcode.Parse` — **cross-site consumers** decoding a remote envelope (e.g. `memberlist_client.go`).
-  - `errnats.Marshal` / `MarshalQuiet` / `ReplyQuiet` — outbox/already-logged paths; the plain `Reply` already classifies-and-logs once, so `Quiet` exists only to avoid a double-log.
+  - `errnats.Marshal` / `MarshalQuiet` / `ReplyQuiet` — already-logged paths; the plain `Reply` already classifies-and-logs once, so `Quiet` exists only to avoid a double-log.
   - `errcode.Classify`, `WithLogger`, `WithLogValues` — boundary/observability plumbing; handlers get request-id logging for free from the router middleware.
 - **Never log AND return.** `Reply`/`Write` run `Classify`, which logs once at a category-aware level. A `slog.Error(...)` before returning the same error double-logs.
 - **`WithCause` wraps an infra error, never another `*errcode.Error`** (one-errcode-per-chain; it panics otherwise, and semgrep guards it). Never put a raw token/body/subject in a cause or message — it reaches the server log.

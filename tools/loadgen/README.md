@@ -213,7 +213,7 @@ make -C tools/loadgen/deploy teardown-roomread PRESET=medium
 - Synchronous request/reply: gated on p95/p99 latency and error rate only
   (no consumer-pending signal). Defaults: `--slo-p95=100ms`, `--slo-p99=250ms`,
   `--slo-error-rate=0.001`; override via the shared `max-rps` flags.
-- Single-site only: all seeded users are local, so no cross-site outbox event is
+- Single-site only: all seeded users are local, so no cross-site inbox event is
   published on the read path.
 - Presets are the messages presets (`small`/`medium`/`large`/`realistic`); room
   size distribution drives floor-write contention.
@@ -644,7 +644,7 @@ run:
 - **Service-error signal is dormant.** The verdict's `service_errors > 0 → trip` arm is wired but the URL map is empty because backend services don't expose `/metrics`. To enable: add a Prometheus endpoint per service and populate `svcURLs` in `prodEnvFactory.Build`.
 - **CPU% in self-metrics is disabled.** The earlier goroutine-count-as-CPU proxy made the tool unusable at scale (every step INCONCLUSIVE above ~4000 users). Real CPU measurement (gopsutil) is a follow-up. The GC pause p99 signal still fires the loadgen-saturation INCONCLUSIVE branch.
 - **Reconnect / presence storms are out of scope.** That's a separate scenario PR.
-- **Cross-site federation (OUTBOX / INBOX) is out of scope.** Single-site only.
+- **Cross-site federation (INBOX) is out of scope.** Single-site only.
 - **Not a CI gate.** Invoked manually for capacity work; the deploy harness produces a CSV the operator interprets.
 
 ### Design references

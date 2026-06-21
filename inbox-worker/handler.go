@@ -51,7 +51,7 @@ type InboxStore interface {
 	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room,
 	// each guarded by its own nameUpdatedAt so an out-of-order rename cannot regress
 	// a sub to a stale name. Used when a channel is renamed — replicated via the
-	// outbox to remote sites.
+	// cross-site inbox to remote sites.
 	UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, nameUpdatedAt time.Time) error
 	// ApplySubscriptionVisibility writes {restricted, externalAccess, roles} to all subs
 	// in the room, each guarded by its own visibilityUpdatedAt so an out-of-order
@@ -80,7 +80,7 @@ func NewHandler(store InboxStore) *Handler {
 func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 	var evt model.InboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return fmt.Errorf("unmarshal outbox event: %w", err)
+		return fmt.Errorf("unmarshal inbox event: %w", err)
 	}
 
 	switch evt.Type {

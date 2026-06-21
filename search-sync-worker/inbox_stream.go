@@ -59,7 +59,7 @@ func (b *inboxMemberCollection) StoredScripts() map[string]json.RawMessage {
 func parseMemberEvent(data []byte) (*model.InboxEvent, *model.InboxMemberEvent, error) {
 	var evt model.InboxEvent
 	if err := json.Unmarshal(data, &evt); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal outbox event: %w", err)
+		return nil, nil, fmt.Errorf("unmarshal inbox event: %w", err)
 	}
 	if evt.Timestamp <= 0 {
 		return nil, nil, fmt.Errorf("parse member event: missing timestamp")

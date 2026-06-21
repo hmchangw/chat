@@ -17,7 +17,7 @@ const (
 	EventThreadReplyAdded EventType = "thread_reply_added"
 )
 
-// UserStatusUpdated is the cross-site outbox event user-service publishes on
+// UserStatusUpdated is the cross-site inbox event user-service publishes on
 // status.set; the remote inbox-worker applies it. Timestamp is the event-level
 // time set at publish via time.Now().UTC().UnixMilli().
 type UserStatusUpdated struct {
