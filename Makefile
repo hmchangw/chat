@@ -1,6 +1,6 @@
 .PHONY: lint fmt test test-integration generate build deps-up deps-down \
         require-deps up up-detached down dev \
-        obs-up obs-down tools sast sast-gosec sast-vuln sast-semgrep
+        obs-up obs-down profile tools sast sast-gosec sast-vuln sast-semgrep
 
 DEPS_COMPOSE     := docker-local/compose.deps.yaml
 SERVICES_COMPOSE := docker-local/compose.services.yaml
@@ -162,6 +162,28 @@ obs-up:
 # Stop the observability stack.
 obs-down:
 	docker compose -f $(OBS_COMPOSE) down
+
+# --- Profiling capture --------------------------------------------------------
+# Snapshot pprof profiles (cpu/heap/goroutine) from every message-pipeline
+# service into profiles/<UTC-timestamp>[-<label>]/. Requires the stack running
+# with profiling enabled (`PPROF_ENABLED=true make up`) and the chat-local
+# network (`make deps-up`). Fans out over the network from a one-shot curl
+# container — no host ports are published. Tunables:
+#   DURATION=<seconds>  CPU profile window (default 30)
+#   LABEL=<tag>         appended to the run folder name
+#   SERVICES="a b c"    override the default nine-service manifest
+PROFILE_IMAGE := curlimages/curl:8.11.1
+
+profile:
+	@docker network inspect chat-local >/dev/null 2>&1 || { \
+	  echo "chat-local network missing. Run 'make deps-up' first."; exit 1; \
+	}
+	@mkdir -p profiles
+	docker run --rm --network chat-local \
+	  -e DURATION="$(DURATION)" -e LABEL="$(LABEL)" -e SERVICES="$(SERVICES)" \
+	  -v "$(PWD)/tools/profilecapture/capture.sh:/capture.sh:ro" \
+	  -v "$(PWD)/profiles:/out" \
+	  --entrypoint sh $(PROFILE_IMAGE) /capture.sh
 
 # --- SAST -------------------------------------------------------------------
 # Install pinned dev/SAST tooling. Go tools install into $(GOBIN_DIR) with
