@@ -45,7 +45,7 @@ var seededCollections = []string{"users", "rooms", "subscriptions"}
 func resetData(ctx context.Context, coll *mongo.Collection) error {
 	specs, err := captureIndexSpecs(ctx, coll)
 	if err != nil {
-		return err
+		return fmt.Errorf("capture index specs for %s: %w", coll.Name(), err)
 	}
 	if err := coll.Drop(ctx); err != nil {
 		return fmt.Errorf("drop %s: %w", coll.Name(), err)
@@ -106,7 +106,7 @@ func captureIndexSpecs(ctx context.Context, coll *mongo.Collection) ([]interface
 func Seed(ctx context.Context, db *mongo.Database, f *Fixtures) error {
 	for _, c := range seededCollections {
 		if err := resetData(ctx, db.Collection(c)); err != nil {
-			return err
+			return fmt.Errorf("reset %s before seed: %w", c, err)
 		}
 	}
 	if err := insertDocs(ctx, db.Collection("users"), f.Users); err != nil {
