@@ -9,11 +9,8 @@ import (
 
 // pretouchTypes are the hot types whose sonic codecs are warmed at startup.
 // SendMessageRequest is the untrusted client-input decode; MessageEvent is the
-// canonical publish.
-//
-// cassandra.Message is intentionally absent: it embeds the marshal-only Reactions
-// map (struct-keyed, no UnmarshalJSON) whose decoder sonic rejects.
-// fetcher_history.go keeps that one unmarshal on encoding/json.
+// canonical publish. The quoted-parent fetch (fetcher_history.go) decodes a
+// narrow projection, not the full cassandra.Message, so it needs no warm-up here.
 var pretouchTypes = []reflect.Type{
 	reflect.TypeOf(model.SendMessageRequest{}),
 	reflect.TypeOf(model.MessageEvent{}),
