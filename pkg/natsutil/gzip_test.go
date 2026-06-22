@@ -77,6 +77,38 @@ func TestNewGzipMsg_SetsHeadersAndCompresses(t *testing.T) {
 	assert.Equal(t, in, decoded)
 }
 
+func TestNewMaybeGzipMsg(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      []byte
+		minGzipBytes int
+		wantGzip     bool
+	}{
+		{"below threshold sent verbatim", []byte(`{"hello":"world"}`), 1024, false},
+		{"at threshold compresses", []byte(strings.Repeat("x", 1024)), 1024, true},
+		{"zero threshold always compresses", []byte("tiny"), 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, err := NewMaybeGzipMsg("foo.bar", tt.payload, "", tt.minGzipBytes)
+			require.NoError(t, err)
+			assert.Equal(t, "application/json", msg.Header.Get(HeaderContentType), "default content type set either way")
+
+			if tt.wantGzip {
+				assert.Equal(t, ContentEncodingGzip, msg.Header.Get(HeaderContentEncoding))
+				assert.NotEqual(t, tt.payload, msg.Data, "gzipped data differs from input")
+			} else {
+				assert.Empty(t, msg.Header.Get(HeaderContentEncoding), "small payload must not be gzip-encoded")
+				assert.Equal(t, tt.payload, msg.Data, "payload sent verbatim when below threshold")
+			}
+
+			decoded, err := DecodePayload(msg)
+			require.NoError(t, err)
+			assert.Equal(t, tt.payload, decoded, "payload round-trips via the shared decoder")
+		})
+	}
+}
+
 func TestNewGzipMsg_CustomContentType(t *testing.T) {
 	msg, err := NewGzipMsg("foo.bar", []byte("hi"), "text/plain")
 	require.NoError(t, err)
