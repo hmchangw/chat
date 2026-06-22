@@ -28,17 +28,16 @@ stream's retention policy — the worker publishes and moves on.
 | Namespace | `chat.server.*` — server-only; client JWTs have no subscribe permission |
 | Delivery model | fire-and-forget async publish; durability via JetStream PubAck |
 | Granularity | one event per **batch of up to `PUSH_RECIPIENT_BATCH_SIZE`** recipients (default `100`, configurable per deploy) |
-| Payload encoding | JSON, **gzip-compressed only when the batch is at least `PUSH_GZIP_MIN_BYTES`** (default `1024`); smaller batches are published uncompressed with no `Content-Encoding` header. Consumers MUST branch on the `Content-Encoding` header — decompress when it is `gzip`, otherwise `json.Unmarshal` the raw payload (use `natsutil.DecodePayloadWithLimit`, which handles both) |
-| Stream storage compression | `S2` — transparent server-side, layered with gzip on top for inter-replica + on-disk savings |
+| Payload encoding | JSON, **uncompressed** (raw `application/json`); consumers `json.Unmarshal(msg.Data, …)` directly — **no `Content-Encoding` header is set** |
+| Stream storage compression | `S2` — transparent server-side; the only compression layer (publisher sends raw JSON) |
 
 The `.send` leaf is the only current event type; the `.>` filter leaves room
 for future siblings (`.silent`, `.priority`) without restructuring the stream.
 
 ### Event schema
 
-`PushNotificationEvent` (JSON; `pkg/model/push.go`). The wire payload is gzip-compressed
-only when the batch meets `PUSH_GZIP_MIN_BYTES` (see § Payload decoding); the shape
-(after decompression, when compressed) is:
+`PushNotificationEvent` (JSON; `pkg/model/push.go`). The wire payload is raw JSON
+(no compression); the shape is:
 
 ```json
 {
@@ -75,29 +74,28 @@ Field notes:
 
 ### Payload decoding
 
-The publisher always sets `Content-Type: application/json`, and sets
-`Content-Encoding: gzip` **only on compressed events** (batches at least
-`PUSH_GZIP_MIN_BYTES`); smaller batches are published raw with no `Content-Encoding`.
-Consumers must branch on the header — gunzip when it is `gzip`, otherwise
-`json.Unmarshal` the raw payload. The shared helper
-`pkg/natsutil.DecodePayload(*nats.Msg)` implements this — it returns `msg.Data`
-verbatim for absent/`identity` encoding, gunzips for `gzip`, and errors loudly on
-any other encoding to keep silent mis-parses out.
+The publisher sets only `Content-Type: application/json`; **no `Content-Encoding`
+header is set** and payloads are never compressed. Consumers `json.Unmarshal(msg.Data, …)`
+directly — no gzip-aware decoder is needed.
+
+> **Push-notification service — required update.** Earlier revisions of this
+> contract had the worker publish gzip-compressed payloads, and the push service
+> decoded via `natsutil.DecodePayload(msg)`. That helper has been removed.
+> Consumers MUST switch to `json.Unmarshal(msg.Data, &evt)` directly and drop any
+> `Content-Encoding`/gzip branching. Until this update lands, the push service
+> will fail to decode events published by the new worker.
 
 ### Payload size cap
 
-The final wire payload (gzipped or raw) is bounded by the broker's `max_payload`. The
-worker reads `NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB) and **rejects any
-batch whose wire size exceeds the cap before publishing** — the emitter surfaces a
+The wire payload is bounded by the broker's `max_payload`. The worker reads
+`NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB) and **rejects any batch
+whose JSON wire size exceeds the cap before publishing** — the emitter surfaces a
 clear `exceeds NATS max_payload` error instead of letting the broker NACK with a
 less informative one. The `PUSH_RECIPIENT_BATCH_SIZE=100` default leaves a wide
 margin under 256 KiB for typical recipient/metadata sizes; the cap exists as a
 last-resort guard against pathological events (huge bodies, oversized metadata).
 
-Set `NATS_MAX_PAYLOAD_BYTES` to match your broker's configured `max_payload`. The
-push service should decode with `natsutil.DecodePayloadWithLimit(msg, <same value>)`
-(or rely on the default 256 KiB) so the gzip-bomb defense matches the producer's
-commitment.
+Set `NATS_MAX_PAYLOAD_BYTES` to match your broker's configured `max_payload`.
 
 ### Routing predicate notes
 
@@ -175,8 +173,8 @@ and bounded by the per-recipient HTTP retry below.
   one batch = one HTTP).
 - A push for a bot account never arrives (the worker filters bots), so no
   bot-device handling is needed.
-- Decode the payload via `natsutil.DecodePayload(msg)` (or equivalent
-  gzip-aware decoder); never `json.Unmarshal(msg.Data, …)` directly.
+- Decode the payload via `json.Unmarshal(msg.Data, &evt)` directly — payloads
+  are raw JSON with no `Content-Encoding`.
 
 **Why no NAK / no MaxDeliver > 1**: the only failure modes that would benefit
 from JetStream redelivery are (a) the push-service pod crashing before ack —
@@ -277,7 +275,6 @@ Required before a production rollout:
    - `LARGE_ROOM_THRESHOLD` (default `500` — same knob as message-gatekeeper)
    - `PUSH_RECIPIENT_BATCH_SIZE` (default `100` — recipients per push event; tune toward provider multicast caps)
    - `NATS_MAX_PAYLOAD_BYTES` (default `262144` = 256 KiB — must match broker `max_payload`; see §1 Payload size cap)
-   - `PUSH_GZIP_MIN_BYTES` (default `1024` — batches smaller than this are published uncompressed to save CPU; `0` always compresses; consumers must branch on `Content-Encoding`)
    - `ROOM_META_CACHE_SIZE` (default `10000`), `ROOM_META_CACHE_TTL` (default `2m`) — fronts `rooms` collection lookups for title resolution
    - `PUSH_ASYNC_MAX_PENDING` (default `1024`)
 
