@@ -15,7 +15,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
-	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomsubcache"
 	"github.com/hmchangw/chat/pkg/subject"
 	"github.com/hmchangw/chat/pkg/testutil"
@@ -44,7 +43,7 @@ func TestNotificationWorker_CacheBackedFanOut(t *testing.T) {
 
 	pushSub := subscribePush(t, nc, "site-a")
 
-	emitter := newMobileEmitter(&directNATSAsyncPub{nc: nc}, "site-a", 0, 0)
+	emitter := newMobileEmitter(&directNATSAsyncPub{nc: nc}, "site-a", 0)
 	handler := NewHandler(HandlerDeps{
 		Members:            lookup,
 		Followers:          newMongoThreadFollowers(threadRoomCol),
@@ -92,13 +91,8 @@ func subscribePush(t *testing.T, nc *nats.Conn, siteID string) *pushCollector {
 	t.Helper()
 	c := &pushCollector{got: make(chan struct{}, 256)}
 	sub, err := nc.Subscribe(subject.PushNotification(siteID), func(msg *nats.Msg) {
-		payload, err := natsutil.DecodePayload(msg)
-		if err != nil {
-			t.Logf("decode payload: %v", err)
-			return
-		}
 		var evt model.PushNotificationEvent
-		if err := json.Unmarshal(payload, &evt); err != nil {
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			t.Logf("decode push: %v", err)
 			return
 		}
