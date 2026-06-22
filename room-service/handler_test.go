@@ -989,6 +989,38 @@ func TestHandler_AddMembers_CapacityExceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "maximum capacity")
 }
 
+func TestHandler_AddMembers_CapacityShortCircuit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+
+	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:  model.SubscriptionUser{ID: "u1", Account: "alice"},
+		Roles: []model.Role{model.RoleOwner},
+	}, nil)
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
+		ID: "r1", Name: "general", Type: model.RoomTypeChannel, UserCount: 3,
+	}, nil)
+	expectAllAccountsExist(store)
+	// Intentionally NO CountNewMembers expectation: with no orgs and ample
+	// headroom (3 + 2 candidates ≤ maxRoomSize 1000), the upper bound alone
+	// satisfies the capacity check, so the costly resolution query must be
+	// skipped. gomock fails the test if CountNewMembers is called.
+
+	published := false
+	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
+		publishToStream: func(_ context.Context, _ string, _ []byte, _ string) error {
+			published = true
+			return nil
+		},
+	}
+	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob", "carol"}}
+
+	resp, err := h.addMembers(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), req)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+	assert.True(t, published, "add must be published when the short-circuit accepts")
+}
+
 func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
@@ -1002,9 +1034,10 @@ func TestHandler_AddMembers_RestrictedOwnerAllowed(t *testing.T) {
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
 		ID: "r1", Type: model.RoomTypeChannel, Restricted: true, UserCount: 1,
 	}, nil)
+	// No CountNewMembers expectation: the capacity short-circuit (no orgs,
+	// UserCount 1 + 1 candidate ≤ maxRoomSize 100) accepts without it. gomock
+	// fails the test if it is called.
 	expectAllAccountsExist(store)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1", gomock.Any()).
-		Return(1, nil)
 
 	req := model.AddMembersRequest{RoomID: "r1", Users: []string{"bob"}}
 
@@ -1023,8 +1056,11 @@ func TestHandler_AddMembers_EmptyAfterResolve(t *testing.T) {
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
 		Roles: []model.Role{model.RoleMember},
 	}, nil)
+	// UserCount at the cap so the short-circuit does NOT fire (1 candidate would
+	// exceed it) and we exercise the precise path: CountNewMembers resolves to 0
+	// new members (alice already a member), so the add is still accepted.
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{
-		ID: "r1", Type: model.RoomTypeChannel, UserCount: 5,
+		ID: "r1", Type: model.RoomTypeChannel, UserCount: 100,
 	}, nil)
 	expectAllAccountsExist(store)
 	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), gomock.Any(), "r1", gomock.Any()).
@@ -1082,10 +1118,10 @@ func TestHandler_AddMembers_SilentlyFiltersBotsFromChannelRefs(t *testing.T) {
 		{Member: model.RoomMemberEntry{Type: model.RoomMemberIndividual, Account: "weather.bot"}},
 	}, nil)
 
-	// CountNewMembers must be called with bob only — the bot is filtered before counting.
+	// The bot is filtered before publishing. The capacity short-circuit (no orgs,
+	// UserCount 1 + 1 candidate ≤ 1000) skips CountNewMembers, so the filtering
+	// is asserted on the published payload below rather than on the count args.
 	expectAllAccountsExist(store)
-	store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(),
-		[]string{"bob"}, "r1", gomock.Any()).Return(1, nil)
 
 	var publishedPayload []byte
 	h := &Handler{
@@ -1168,7 +1204,8 @@ func TestHandler_AddMembers_PhantomValidation(t *testing.T) {
 			setupMocks: func(store *MockRoomStore) {
 				// No FindExistingOrgIDs expectation: gomock fails if called.
 				store.EXPECT().FindExistingAccounts(gomock.Any(), []string{"bob"}).Return([]string{"bob"}, nil)
-				store.EXPECT().CountNewMembers(gomock.Any(), gomock.Any(), []string{"bob"}, "r1", gomock.Any()).Return(1, nil)
+				// No CountNewMembers: the capacity short-circuit (no orgs,
+				// UserCount 1 + 1 candidate ≤ 1000) accepts without it.
 			},
 			wantErr: false, wantPublish: true,
 		},
