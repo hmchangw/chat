@@ -474,11 +474,11 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomMemberEventWildcard(), func(m *nats.Msg) {
-		roomID, accounts, ok := ParseMemberAddBroadcast(m.Data)
+		roomID, accounts, ok := ParseMemberAddEvent(m.Data)
 		if !ok {
 			return
 		}
-		collector.RecordBroadcast(roomID, accounts, time.Now())
+		collector.RecordMemberEvent(roomID, accounts, time.Now())
 	})
 	if err != nil {
 		slog.Error("subscribe e2", "error", err)
@@ -534,9 +534,9 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 	runCtx, cancelRun := context.WithTimeout(ctx, *duration)
 	defer cancelRun()
 	genErr := gen.Run(runCtx)
-	time.Sleep(2 * time.Second) // drain trailing replies/broadcasts
+	time.Sleep(2 * time.Second) // drain trailing replies/member events
 	collector.DiscardBefore(warmupDeadline)
-	missingReplies, missingBroadcasts := collector.Finalize()
+	missingReplies, missingEvents := collector.Finalize()
 
 	cancelSamplers()
 	samplerWG.Wait()
@@ -570,7 +570,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 		Duration: *duration, Warmup: *warmup, UsersPerAdd: *usersPerAdd,
 		Sent: sent, SentMeasured: sentMeasured,
 		PublishErrors: pubErrs, RoomServiceErrors: rsErrs,
-		MissingReplies: missingReplies, MissingBroadcasts: missingBroadcasts,
+		MissingReplies: missingReplies, MissingEvents: missingEvents,
 		E1:      ComputePercentiles(collector.E1Samples()),
 		E2:      ComputePercentiles(collector.E2Samples()),
 		E1Count: collector.E1Count(), E2Count: collector.E2Count(),
@@ -584,7 +584,7 @@ func runMembersSustained(ctx context.Context, cfg *config, args []string) int {
 			slog.Error("csv export", "error", err)
 		}
 	}
-	totalErrs := summary.PublishErrors + summary.RoomServiceErrors + summary.MissingReplies + summary.MissingBroadcasts
+	totalErrs := summary.PublishErrors + summary.RoomServiceErrors + summary.MissingReplies + summary.MissingEvents
 	return DetermineExitCode(summary.SentMeasured, totalErrs)
 }
 
@@ -613,7 +613,7 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 	usersPerAdd := fs.Int("users-per-add", 10, "users per add request")
 	targetSize := fs.Int("target-size", 0, "stop each room when its member count >= target-size (required)")
 	maxRate := fs.Int("max-rate", 0, "optional cap on per-room req/sec; 0 = sequential pacing only")
-	e2Timeout := fs.Duration("e2-timeout", 30*time.Second, "max wait for broadcast per add")
+	e2Timeout := fs.Duration("e2-timeout", 30*time.Second, "max wait for member event per add")
 	csvPath := fs.String("csv", "", "optional CSV output path")
 	_ = fs.Parse(args)
 
@@ -685,11 +685,11 @@ func runMembersCapacity(ctx context.Context, cfg *config, args []string) int {
 	collector := NewMemberCollector(metrics, p.Name, injectMode)
 
 	e2Sub, err := nc.NatsConn().Subscribe(subject.RoomMemberEventWildcard(), func(m *nats.Msg) {
-		roomID, accounts, ok := ParseMemberAddBroadcast(m.Data)
+		roomID, accounts, ok := ParseMemberAddEvent(m.Data)
 		if !ok {
 			return
 		}
-		collector.RecordBroadcast(roomID, accounts, time.Now())
+		collector.RecordMemberEvent(roomID, accounts, time.Now())
 	})
 	if err != nil {
 		slog.Error("subscribe e2", "error", err)
