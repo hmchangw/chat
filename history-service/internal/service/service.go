@@ -75,6 +75,10 @@ type ThreadRoomRepository interface {
 	GetThreadRooms(ctx context.Context, roomID string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 	GetFollowingThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
 	GetUnreadThreadRooms(ctx context.Context, roomID, account string, accessSince *time.Time, req mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[pkgmodel.ThreadRoom], error)
+	// GetMinThreadUserLastSeenAt returns thread_rooms.minUserLastSeenAt for
+	// threadRoomID. Returns (nil, nil) when the field is unset or the document
+	// is missing — both mean "not everyone has read yet".
+	GetMinThreadUserLastSeenAt(ctx context.Context, threadRoomID string) (*time.Time, error)
 }
 
 // UserStore resolves the calling user's full profile for ReactorInfo and the Participant on the canonical event.
@@ -135,6 +139,7 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MsgNextPattern(siteID), s.LoadNextMessages)
 	natsrouter.Register(r, subject.MsgSurroundingPattern(siteID), s.LoadSurroundingMessages)
 	natsrouter.Register(r, subject.MsgGetPattern(siteID), s.GetMessageByID)
+	natsrouter.Register(r, subject.MsgGetIDsPattern(siteID), s.GetMessagesByIDs)
 	natsrouter.Register(r, subject.MsgEditPattern(siteID), func(c *natsrouter.Context, req models.EditMessageRequest) (*models.EditMessageResponse, error) {
 		return s.EditMessage(c, siteID, req)
 	})

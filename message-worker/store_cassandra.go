@@ -189,12 +189,12 @@ func (s *CassandraStore) SaveThreadMessage(ctx context.Context, msg *model.Messa
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg,
-		  site_id, updated_at, mentions, type, sys_msg_data, quoted_parent_message,
+		  site_id, updated_at, mentions, type, sys_msg_data, tshow, quoted_parent_message,
 		  attachments, card, card_action)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
 		sender, msg.Content, siteID, msg.CreatedAt, mentions,
-		msg.Type, msg.SysMsgData, msg.QuotedParentMessage,
+		msg.Type, msg.SysMsgData, msg.TShow, msg.QuotedParentMessage,
 		msg.Attachments, msg.Card, msg.CardAction,
 	).WithContext(ctx).Exec(); err != nil {
 		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
@@ -263,12 +263,12 @@ func (s *CassandraStore) saveThreadMessageEncrypted(ctx context.Context, msg *mo
 	if err := s.cassSession.Query(
 		`INSERT INTO thread_messages_by_thread
 		 (thread_room_id, created_at, message_id, room_id, thread_parent_id,
-		  sender, site_id, updated_at, mentions, type, quoted_parent_message, sys_msg_data,
+		  sender, site_id, updated_at, mentions, type, tshow, quoted_parent_message, sys_msg_data,
 		  msg, attachments, card, card_action,
 		  enc_payload, enc_meta)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?, ?)`,
 		threadRoomID, msg.CreatedAt, msg.ID, msg.RoomID, msg.ThreadParentMessageID,
-		sender, siteID, msg.CreatedAt, mentions, msg.Type, cm.QuotedParentMessage, msg.SysMsgData,
+		sender, siteID, msg.CreatedAt, mentions, msg.Type, msg.TShow, cm.QuotedParentMessage, msg.SysMsgData,
 		payload, encMeta,
 	).WithContext(ctx).Exec(); err != nil {
 		return nil, fmt.Errorf("insert thread message %s into thread_messages_by_thread: %w", msg.ID, err)
@@ -345,33 +345,31 @@ func (s *CassandraStore) countThreadReplies(ctx context.Context, threadRoomID st
 	return n, nil
 }
 
-// setParentTcount blind-SETs tcount on the parent row in both messages_by_id
-// and messages_by_room. No IF clause — the value is always derived from the
-// authoritative COUNT, so overwrites are idempotent on any redelivery.
-func (s *CassandraStore) setParentTcount(ctx context.Context, msg *model.Message, n int) error {
+// setParentTcountAndTlm co-SETs tcount and tlm on the parent row in both tables
+// (one UPDATE). Blind-SET from the authoritative COUNT → idempotent on redelivery.
+// On the add path tlm is the reply's own CreatedAt (always the newest).
+func (s *CassandraStore) setParentTcountAndTlm(ctx context.Context, msg *model.Message, n int, tlm *time.Time) error {
 	parentID := msg.ThreadParentMessageID
 	parentCreatedAt := *msg.ThreadParentMessageCreatedAt
 	parentBucket := s.bucket.Of(parentCreatedAt)
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_id SET tcount = ? WHERE message_id = ? AND created_at = ?`,
-		n, parentID, parentCreatedAt,
+		`UPDATE messages_by_id SET tcount = ?, thread_last_msg_at = ? WHERE message_id = ?`,
+		n, tlm, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_id: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_id: %w", parentID, err)
 	}
 	if err := s.cassSession.Query(
-		`UPDATE messages_by_room SET tcount = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
-		n, msg.RoomID, parentBucket, parentCreatedAt, parentID,
+		`UPDATE messages_by_room SET tcount = ?, thread_last_msg_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`,
+		n, tlm, msg.RoomID, parentBucket, parentCreatedAt, parentID,
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set tcount on parent %s in messages_by_room: %w", parentID, err)
+		return fmt.Errorf("set tcount/tlm on parent %s in messages_by_room: %w", parentID, err)
 	}
 	return nil
 }
 
-// countAndSetParentTcount derives tcount from the thread partition COUNT and
-// blind-SETs it on the parent row in both Cassandra tables. Returns (nil, nil)
-// when ThreadParentMessageCreatedAt is unset (no parent key available).
-// This approach is crash-safe: COUNT + blind SET is idempotent on redelivery,
-// avoiding the 2PC window of the old CAS increment.
+// countAndSetParentTcount recomputes tcount from the partition COUNT and co-sets
+// tcount+tlm on the parent (tlm = the reply's CreatedAt, newest on the add path).
+// Returns (nil, nil) when ThreadParentMessageCreatedAt is unset.
 func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model.Message, threadRoomID string) (*int, error) {
 	if msg.ThreadParentMessageCreatedAt == nil {
 		return nil, nil
@@ -380,8 +378,9 @@ func (s *CassandraStore) countAndSetParentTcount(ctx context.Context, msg *model
 	if err != nil {
 		return nil, fmt.Errorf("count thread replies: %w", err)
 	}
-	if err := s.setParentTcount(ctx, msg, n); err != nil {
-		return nil, err
+	tlm := msg.CreatedAt
+	if err := s.setParentTcountAndTlm(ctx, msg, n, &tlm); err != nil {
+		return nil, fmt.Errorf("set parent tcount/tlm: %w", err)
 	}
 	return &n, nil
 }
@@ -392,17 +391,16 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	parentBucket := s.bucket.Of(parentCreatedAt)
 
 	applied, err := s.cassSession.Query(
-		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? AND created_at = ? IF EXISTS`,
-		threadRoomID, parentMessageID, parentCreatedAt,
+		`UPDATE messages_by_id SET thread_room_id = ? WHERE message_id = ? IF EXISTS`,
+		threadRoomID, parentMessageID,
 	).WithContext(ctx).ScanCAS()
 	if err != nil {
 		return fmt.Errorf("set thread_room_id on parent %s in messages_by_id: %w", parentMessageID, err)
 	}
 	if !applied {
-		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found at the given (message_id, created_at) coordinates",
+		slog.Error("thread_room_id stamp on messages_by_id missed: parent row not found for message_id",
 			"request_id", natsutil.RequestIDFromContext(ctx),
 			"messageID", parentMessageID,
-			"parentCreatedAt", parentCreatedAt,
 			"threadRoomID", threadRoomID,
 		)
 	}

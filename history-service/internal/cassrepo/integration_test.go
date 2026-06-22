@@ -43,6 +43,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		card_action FROZEN<"CardAction">,
 		tshow BOOLEAN,
 		tcount INT,
+		thread_last_msg_at TIMESTAMP,
 		thread_parent_id TEXT,
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
@@ -72,6 +73,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		card_action FROZEN<"CardAction">,
 		tshow BOOLEAN,
 		tcount INT,
+		thread_last_msg_at TIMESTAMP,
 		thread_parent_id TEXT,
 		thread_parent_created_at TIMESTAMP,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
@@ -88,8 +90,8 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		pinned_by FROZEN<"Participant">,
 		enc_payload BLOB,
 		enc_meta FROZEN<"EncMeta">,
-		PRIMARY KEY (message_id, created_at)
-	) WITH CLUSTERING ORDER BY (created_at DESC)`)).Exec())
+		PRIMARY KEY (message_id)
+	)`)).Exec())
 
 	require.NoError(t, adminSession.Query(cql(`CREATE TABLE IF NOT EXISTS %s.thread_messages_by_thread (
 		thread_room_id TEXT,
@@ -103,6 +105,7 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		card FROZEN<"Card">,
 		card_action FROZEN<"CardAction">,
 		thread_parent_id TEXT,
+		tshow BOOLEAN,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
 		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
@@ -129,7 +132,6 @@ func setupCassandra(t testing.TB) *gocql.Session {
 		card_action FROZEN<"CardAction">,
 		quoted_parent_message FROZEN<"QuotedParentMessage">,
 		visible_to TEXT,
-		reactions MAP<FROZEN<reaction_key>, FROZEN<reactor_info>>,
 		deleted BOOLEAN,
 		type TEXT,
 		sys_msg_data BLOB,

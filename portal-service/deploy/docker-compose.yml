@@ -1,0 +1,62 @@
+name: portal-service
+
+services:
+  # One-shot directory seed: hr_employee + a users stand-in in the portal DB so
+  # the ListEmployees $lookup (hr_employee × users on {account, siteId}) resolves
+  # the demo accounts. They match the ones tools/seed-sample-data creates.
+  portal-seed:
+    image: mongo:8.2.9
+    entrypoint:
+      - mongosh
+      - --host
+      - mongodb
+      - --quiet
+      - --eval
+      - |
+        const p = db.getSiblingDB('portal');
+        [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) => {
+          p.hr_employee.replaceOne(
+            { account: account },
+            { account: account, employeeId: employeeId, siteId: 'site-local', natsUrl: 'ws://localhost:9222' },
+            { upsert: true },
+          );
+          p.users.replaceOne(
+            { account: account, siteId: 'site-local' },
+            { _id: 'u-' + account, account: account, siteId: 'site-local' },
+            { upsert: true },
+          );
+        });
+        print('portal seed: hr_employee=' + p.hr_employee.countDocuments() + ' users=' + p.users.countDocuments());
+    networks:
+      - chat-local
+
+  portal-service:
+    build:
+      context: ../..
+      dockerfile: portal-service/deploy/Dockerfile
+    pull_policy: build
+    depends_on:
+      portal-seed:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8081
+      # Dev fallback: accounts absent from the directory resolve to the local site.
+      - DEV_MODE=${DEV_MODE:-true}
+      - PORTAL_DEV_FALLBACK_SITE_ID=site-local
+      - PORTAL_DEV_FALLBACK_NATS_URL=ws://localhost:9222
+      # Per-site URL registry (JSON): siteId -> {authServiceUrl, baseUrl}.
+      # baseUrl is the site's own origin, distinct from the auth-service URL.
+      - 'PORTAL_SITE_URLS={"site-local":{"authServiceUrl":"http://localhost:8080","baseUrl":"http://localhost:3000"}}'
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=portal
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true

@@ -1760,6 +1760,88 @@ func TestHandleServerBroadcast_ThreadReplyAdded_FansOutBadge(t *testing.T) {
 	assert.Equal(t, msgTime.UnixMilli(), tmEvt.EventTimestamp)
 }
 
+func TestHandleServerBroadcast_ThreadReplyAdded_PropagatesNewTlm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	tcount := 1
+	room := &model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(room, nil)
+
+	evt := model.MessageEvent{
+		Event:              model.EventThreadReplyAdded,
+		SiteID:             "site-a",
+		Timestamp:          msgTime.UnixMilli(),
+		NewTCount:          &tcount,
+		NewThreadLastMsgAt: &msgTime,
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			ThreadParentMessageID: "parent-1",
+			CreatedAt:             msgTime,
+		},
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	h.HandleServerBroadcast(context.Background(), data)
+
+	require.Len(t, pub.records, 1)
+	var tmEvt model.ThreadMetadataUpdatedEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &tmEvt))
+	require.NotNil(t, tmEvt.NewThreadLastMsgAt, "NewThreadLastMsgAt must be forwarded to ThreadMetadataUpdatedEvent")
+	assert.True(t, tmEvt.NewThreadLastMsgAt.Equal(msgTime))
+}
+
+func TestHandleServerBroadcast_ThreadReplyAdded_NilNewTlm_NoFieldInOutput(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	tcount := 1
+	room := &model.Room{ID: "r1", Type: model.RoomTypeChannel, SiteID: "site-a"}
+	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(room, nil)
+
+	evt := model.MessageEvent{
+		Event:     model.EventThreadReplyAdded,
+		SiteID:    "site-a",
+		Timestamp: msgTime.UnixMilli(),
+		NewTCount: &tcount,
+		// NewThreadLastMsgAt intentionally nil
+		Message: model.Message{
+			ID:                    "reply-1",
+			RoomID:                "r1",
+			UserAccount:           "alice",
+			ThreadParentMessageID: "parent-1",
+			CreatedAt:             msgTime,
+		},
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	h.HandleServerBroadcast(context.Background(), data)
+
+	require.Len(t, pub.records, 1)
+	var tmEvt model.ThreadMetadataUpdatedEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &tmEvt))
+	assert.Nil(t, tmEvt.NewThreadLastMsgAt, "nil NewThreadLastMsgAt must not appear in downstream event")
+	// Also verify via raw JSON — no newThreadLastMsgAt key.
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &raw))
+	_, present := raw["newThreadLastMsgAt"]
+	assert.False(t, present, "newThreadLastMsgAt must be absent from JSON when nil")
+}
+
 func TestHandleServerBroadcast_ThreadReplyAdded_MissingNewTCount_Skips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
@@ -2394,4 +2476,26 @@ func TestBuildClientMessage_DecodesAttachments(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `"id":"f1"`)
 	assert.NotContains(t, string(out), base64.StdEncoding.EncodeToString(blob))
+}
+
+func TestHandleCreated_NonRename_NoRoomRenamedEvent(t *testing.T) {
+	// Regression: a normal created message must NOT publish a RoomRenamedRoomEvent.
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	msgTime := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime)))
+
+	require.Len(t, pub.records, 1, "normal message: exactly one publish")
+	var evt model.RoomEvent
+	require.NoError(t, json.Unmarshal(pub.records[0].data, &evt))
+	assert.Equal(t, model.RoomEventNewMessage, evt.Type, "normal message must publish new_message, not room_renamed")
 }

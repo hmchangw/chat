@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS messages_by_room(
   card_action FROZEN<"CardAction">,
   tshow BOOLEAN, // means from thread [also send to channel]
   tcount INT, // message reply thread count
+  thread_last_msg_at TIMESTAMP, // timestamp of most recent thread reply; null until first reply
   thread_parent_id TEXT,
   thread_parent_created_at TIMESTAMP, // for FE to query thread parent message when also sent to channel (tshow=true)
   quoted_parent_message FROZEN<"QuotedParentMessage">,
@@ -190,6 +191,8 @@ CREATE TABLE IF NOT EXISTS thread_messages_by_thread(
   site_id TEXT,
   edited_at TIMESTAMP,
   updated_at TIMESTAMP,
+  tshow BOOLEAN,                    // "also send to channel" flag; set when the reply was dual-written into
+                                    //   messages_by_room as well. Null/false for legacy rows (backfill out of scope).
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
@@ -245,6 +248,7 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   card_action FROZEN<"CardAction">,
   tshow BOOLEAN,
   tcount INT, // message reply thread count
+  thread_last_msg_at TIMESTAMP, // timestamp of most recent thread reply; null until first reply
   thread_parent_id TEXT,
   thread_parent_created_at TIMESTAMP,
   quoted_parent_message FROZEN<"QuotedParentMessage">,
@@ -262,8 +266,8 @@ CREATE TABLE IF NOT EXISTS messages_by_id(
   enc_payload BLOB,                 // bundled JSON ciphertext of user-authored content; non-null for rows
                                     //   written after the at-rest encryption rollout
   enc_meta FROZEN<"EncMeta">,       // 12-byte AES-GCM nonce; null for legacy plaintext rows
-  PRIMARY KEY(message_id,created_at)
-)WITH CLUSTERING ORDER BY (created_at DESC);
+  PRIMARY KEY(message_id)  -- message_id is unique per message; sole partition key
+);
 ```
 
 ## Encryption (at rest)

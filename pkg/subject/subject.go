@@ -3,7 +3,22 @@ package subject
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
+
+// IsValidAccountToken reports whether s can serve as the {account} token of a
+// NATS subject: non-empty, no '.'/'*'/'>' runes, no whitespace or control runes.
+func IsValidAccountToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r == '.' || r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 // ParseUserRoomSubject extracts the user account and roomID from subjects
 // matching the pattern "chat.user.{account}.*.room.{roomID}.…".
@@ -50,6 +65,12 @@ func MsgSend(account, roomID, siteID string) string {
 // handler.
 func MsgGet(account, roomID, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get", account, roomID, siteID)
+}
+
+// MsgGetIDs returns the concrete subject for a GetMessagesByIDs batch request.
+// Pair with MsgGetIDsPattern, which history-service uses to register the handler.
+func MsgGetIDs(account, roomID, siteID string) string {
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.msg.get.ids", account, roomID, siteID)
 }
 
 func UserResponse(account, requestID string) string {
@@ -399,6 +420,12 @@ func MsgGetPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get", siteID)
 }
 
+// MsgGetIDsPattern is the natsrouter pattern for the GetMessagesByIDs batch handler.
+// Pair with MsgGetIDs for the concrete-subject form callers publish on.
+func MsgGetIDsPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.msg.get.ids", siteID)
+}
+
 // MsgEditPattern is the natsrouter pattern for editing a message.
 // The {account} and {roomID} placeholders are extracted by natsrouter.
 func MsgEditPattern(siteID string) string {
@@ -744,11 +771,62 @@ func RoomAppCmdMenuPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.app.cmd-menu", siteID)
 }
 
-// isValidAccountToken rejects empty tokens and tokens containing NATS wildcard
-// characters ('*' or '>'). Subject parsers use it as the boundary guard for the
-// account token so wildcard semantics never leak into identity parsing.
+// --- Microsoft Teams integration ---
+//
+// TeamsRoomCall + TeamsMeeting are room-scoped (the roomID rides the subject so
+// membership can be checked), matching every other room RPC. TeamsUserCall is a
+// 1:1 deep-link builder with no room; the target account travels in the body.
+
+// TeamsRoomCall returns the concrete subject for the room-call deep-link RPC.
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12), so this returns the error rather than panicking
+// like the older sibling builders (e.g. RoomAppTabs, MsgHistory).
+func TeamsRoomCall(account, roomID, siteID string) (string, error) {
+	if !isValidAccountToken(account) {
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.call", account, roomID, siteID), nil
+}
+
+// TeamsRoomCallPattern is the natsrouter registration pattern for the room-call RPC.
+func TeamsRoomCallPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.teams.call", siteID)
+}
+
+// TeamsMeeting returns the concrete subject for the Graph onlineMeeting RPC.
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12).
+func TeamsMeeting(account, roomID, siteID string) (string, error) {
+	if !isValidAccountToken(account) {
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.room.%s.%s.teams.meeting", account, roomID, siteID), nil
+}
+
+// TeamsMeetingPattern is the natsrouter registration pattern for the meetings RPC.
+func TeamsMeetingPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.teams.meeting", siteID)
+}
+
+// TeamsUserCall returns the concrete subject for the 1:1 user-call deep-link RPC.
+// Returns an error if account contains a NATS wildcard. Shared pkg/ code must
+// not panic on bad input (F12).
+func TeamsUserCall(account, siteID string) (string, error) {
+	if !isValidAccountToken(account) {
+		return "", fmt.Errorf("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.teams.%s.call.user", account, siteID), nil
+}
+
+// TeamsUserCallPattern is the natsrouter registration pattern for the user-call RPC.
+func TeamsUserCallPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.teams.%s.call.user", siteID)
+}
+
+// isValidAccountToken is the parsers' boundary guard for the account token so
+// wildcard semantics never leak into identity parsing.
 func isValidAccountToken(token string) bool {
-	return token != "" && !strings.ContainsAny(token, "*>")
+	return IsValidAccountToken(token)
 }
 
 // ParseRoomCreateSubject extracts the account from chat.user.{account}.request.room.{siteID}.create.
@@ -784,20 +862,13 @@ func RoomCanonicalOperation(s string) (string, bool) {
 	return op, true
 }
 
-// --- mock-user-service / future user-service builders ---
+// --- user-service builders ---
 
 func UserStatusGetByName(account, siteID string) string {
 	if !isValidAccountToken(account) {
 		panic("invalid account token: contains NATS wildcard characters")
 	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.status.getByName", account, siteID)
-}
-
-func UserStatusSet(account, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.status.set", account, siteID)
 }
 
 func UserProfileGetByName(account, siteID string) string {
@@ -807,18 +878,11 @@ func UserProfileGetByName(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.user.%s.profile.getByName", account, siteID)
 }
 
-func UserSubscriptionGetCurrent(account, siteID string) string {
+func UserStatusSet(account, siteID string) string {
 	if !isValidAccountToken(account) {
 		panic("invalid account token: contains NATS wildcard characters")
 	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getCurrent", account, siteID)
-}
-
-func UserSubscriptionGetRooms(account, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getRooms", account, siteID)
+	return fmt.Sprintf("chat.user.%s.request.user.%s.status.set", account, siteID)
 }
 
 func UserSubscriptionGetChannels(account, siteID string) string {
@@ -835,39 +899,11 @@ func UserSubscriptionGetDM(account, siteID string) string {
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getDM", account, siteID)
 }
 
-func UserSubscriptionGetApps(account, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getApps", account, siteID)
-}
-
 func UserSubscriptionCount(account, siteID string) string {
 	if !isValidAccountToken(account) {
 		panic("invalid account token: contains NATS wildcard characters")
 	}
 	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.count", account, siteID)
-}
-
-func UserSubscriptionSubscribeApp(account, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.subscribeApp", account, siteID)
-}
-
-func UserSubscriptionUnsubscribeApp(account, siteID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.unsubscribeApp", account, siteID)
-}
-
-func UserRoomSubscriptionGet(account, siteID, roomID string) string {
-	if !isValidAccountToken(account) {
-		panic("invalid account token: contains NATS wildcard characters")
-	}
-	return fmt.Sprintf("chat.user.%s.request.user.%s.room.%s.subscription.get", account, siteID, roomID)
 }
 
 func UserAppsList(account, siteID string) string {
@@ -883,20 +919,12 @@ func UserStatusGetByNamePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.getByName", siteID)
 }
 
-func UserStatusSetPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.set", siteID)
-}
-
 func UserProfileGetByNamePattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.profile.getByName", siteID)
 }
 
-func UserSubscriptionGetCurrentPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getCurrent", siteID)
-}
-
-func UserSubscriptionGetRoomsPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getRooms", siteID)
+func UserStatusSetPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.status.set", siteID)
 }
 
 func UserSubscriptionGetChannelsPattern(siteID string) string {
@@ -907,28 +935,45 @@ func UserSubscriptionGetDMPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getDM", siteID)
 }
 
-func UserSubscriptionGetAppsPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getApps", siteID)
-}
-
 func UserSubscriptionCountPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.count", siteID)
 }
 
-func UserSubscriptionSubscribeAppPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.subscribeApp", siteID)
-}
-
-func UserSubscriptionUnsubscribeAppPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.unsubscribeApp", siteID)
-}
-
-func UserRoomSubscriptionGetPattern(siteID string) string {
-	return fmt.Sprintf("chat.user.{account}.request.user.%s.room.{roomID}.subscription.get", siteID)
-}
-
 func UserAppsListPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.apps.list", siteID)
+}
+
+func UserSubscriptionList(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.list", account, siteID)
+}
+
+func UserSubscriptionListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.list", siteID)
+}
+
+func UserSubscriptionSetAppSubscription(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.setAppSubscription", account, siteID)
+}
+
+func UserSubscriptionSetAppSubscriptionPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.setAppSubscription", siteID)
+}
+
+func UserSubscriptionGetByRoomID(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.user.%s.subscription.getByRoomID", account, siteID)
+}
+
+func UserSubscriptionGetByRoomIDPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.getByRoomID", siteID)
 }
 
 // ParseUserSubject parses any 8-token subject of the form
@@ -967,14 +1012,6 @@ func ParseStatusSubject(subj string) (account, action string, ok bool) {
 func ParseSubscriptionSubject(subj string) (account, action string, ok bool) {
 	a, _, area, act, k := ParseUserSubject(subj)
 	if !k || area != "subscription" {
-		return "", "", false
-	}
-	return a, act, true
-}
-
-func ParseProfileSubject(subj string) (account, action string, ok bool) {
-	a, _, area, act, k := ParseUserSubject(subj)
-	if !k || area != "profile" {
 		return "", "", false
 	}
 	return a, act, true

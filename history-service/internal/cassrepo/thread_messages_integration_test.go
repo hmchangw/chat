@@ -265,11 +265,37 @@ func TestRepository_GetThreadMessages_ColumnScan(t *testing.T) {
 	require.NotNil(t, msg.UpdatedAt)
 	assert.Equal(t, updatedAt.UTC(), msg.UpdatedAt.UTC())
 
-	// Columns that DON'T exist on thread_messages_by_thread must remain at zero value.
+	// tshow was not set in the seeded row; must come back false (column default).
 	assert.False(t, msg.TShow)
+	// Columns absent from thread_messages_by_thread must remain at zero value.
 	assert.Nil(t, msg.ThreadParentCreatedAt)
 	assert.Nil(t, msg.PinnedAt)
 	assert.Nil(t, msg.PinnedBy)
+}
+
+func TestRepository_GetThreadMessages_ReturnsTShow(t *testing.T) {
+	session := setupCassandra(t)
+	repo := NewRepository(session, msgbucket.New(24*time.Hour), 365, nil)
+	ctx := context.Background()
+
+	ts := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	tshow := true
+	err := session.Query(
+		`INSERT INTO thread_messages_by_thread
+		 (thread_room_id, created_at, message_id, room_id, thread_parent_id, sender, msg, site_id, updated_at, type, tshow)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tr-tshow-read", ts, "m-tshow-read", "r-tshow-read", "m-parent-tshow",
+		map[string]interface{}{"id": "u1", "account": "alice"},
+		"tshow reply", "site-A", ts, "text", tshow,
+	).Exec()
+	require.NoError(t, err)
+
+	q, err := ParsePageRequest("", 10)
+	require.NoError(t, err)
+	page, err := repo.GetThreadMessages(ctx, "tr-tshow-read", ts.Add(time.Hour), ts.AddDate(0, 0, -1), q)
+	require.NoError(t, err)
+	require.Len(t, page.Data, 1)
+	assert.True(t, page.Data[0].TShow, "GetThreadMessages must return tshow=true for a row seeded with tshow=true")
 }
 
 func TestGetThreadMessages_AcrossMultipleDays(t *testing.T) {

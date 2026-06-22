@@ -17,6 +17,16 @@ const (
 	EventThreadReplyAdded EventType = "thread_reply_added"
 )
 
+// UserStatusUpdated is the cross-site outbox event user-service publishes on
+// status.set; the remote inbox-worker applies it. Timestamp is the event-level
+// time set at publish via time.Now().UTC().UnixMilli().
+type UserStatusUpdated struct {
+	Account      string `json:"account"                bson:"account"`
+	StatusText   string `json:"statusText"             bson:"statusText"`
+	StatusIsShow *bool  `json:"statusIsShow,omitempty" bson:"statusIsShow,omitempty"`
+	Timestamp    int64  `json:"timestamp"              bson:"timestamp"`
+}
+
 type MessageEvent struct {
 	Event   EventType `json:"event,omitempty" bson:"event,omitempty"`
 	Message Message   `json:"message"`
@@ -29,6 +39,9 @@ type MessageEvent struct {
 	// ThreadParentMessageID set). Nil for all other event types.
 	// bson tag omits omitempty — zero is a valid count when the last reply is deleted.
 	NewTCount *int `json:"newTcount,omitempty" bson:"newTcount"`
+	// NewThreadLastMsgAt is the timestamp of the most recent surviving thread reply
+	// after this operation (nil when no replies remain).
+	NewThreadLastMsgAt *time.Time `json:"newThreadLastMsgAt,omitempty" bson:"newThreadLastMsgAt,omitempty"`
 }
 
 // ReactionAction is the toggle direction on ReactionDelta.Action; defined
@@ -60,7 +73,7 @@ type RoomMetadataUpdateEvent struct {
 type SubscriptionUpdateEvent struct {
 	UserID       string       `json:"userId"`
 	Subscription Subscription `json:"subscription"`
-	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled" | "favorite_toggled"
+	Action       string       `json:"action"` // "added" | "removed" | "role_updated" | "mute_toggled" | "favorite_toggled" | "read"
 	Timestamp    int64        `json:"timestamp" bson:"timestamp"`
 }
 
@@ -133,6 +146,7 @@ const (
 	OutboxThreadRead                  OutboxEventType = "thread_read"
 	OutboxRoomRenamed                 OutboxEventType = "room_renamed"
 	OutboxRoomRestricted              OutboxEventType = "room_restricted"
+	OutboxUserStatusUpdated           OutboxEventType = "user_status_updated"
 )
 
 // SubscriptionReadEvent is the OutboxEvent.Payload for type
@@ -320,15 +334,16 @@ type PinStateRoomEvent struct {
 // thread reply is added or deleted, so clients can update the reply-count badge
 // on the parent message without re-fetching the full message.
 type ThreadMetadataUpdatedEvent struct {
-	Type            RoomEventType `json:"type" bson:"type"`
-	RoomID          string        `json:"roomId" bson:"roomId"`
-	SiteID          string        `json:"siteId" bson:"siteId"`
-	Timestamp       int64         `json:"timestamp" bson:"timestamp"`
-	EventTimestamp  int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
-	ParentMessageID string        `json:"parentMessageId" bson:"parentMessageId"`
-	ReplyMessageID  string        `json:"replyMessageId" bson:"replyMessageId"`
-	NewTCount       int           `json:"newTcount" bson:"newTcount"`
-	Action          ThreadAction  `json:"action" bson:"action"`
+	Type               RoomEventType `json:"type" bson:"type"`
+	RoomID             string        `json:"roomId" bson:"roomId"`
+	SiteID             string        `json:"siteId" bson:"siteId"`
+	Timestamp          int64         `json:"timestamp" bson:"timestamp"`
+	EventTimestamp     int64         `json:"eventTimestamp,omitempty" bson:"eventTimestamp,omitempty"`
+	ParentMessageID    string        `json:"parentMessageId" bson:"parentMessageId"`
+	ReplyMessageID     string        `json:"replyMessageId" bson:"replyMessageId"`
+	NewTCount          int           `json:"newTcount" bson:"newTcount"`
+	NewThreadLastMsgAt *time.Time    `json:"newThreadLastMsgAt,omitempty" bson:"newThreadLastMsgAt,omitempty"`
+	Action             ThreadAction  `json:"action" bson:"action"`
 }
 
 // RoomRenamedRoomEvent is the live event published when a channel is renamed.
@@ -512,6 +527,11 @@ const (
 	// MessageTypeRoomRestricted is the system-message type emitted when a
 	// channel's Restricted/ExternalAccess flags change.
 	MessageTypeRoomRestricted = "room_restricted"
+	// MessageTypeTeamsMeetStarted is the system-message type emitted when a
+	// Microsoft Teams online meeting is created for a room. Its SysMsgData
+	// carries the meeting ID + join URL (TeamsMeetStartedSysData) and is read
+	// back per-room to make the meetings RPC idempotent.
+	MessageTypeTeamsMeetStarted = "teams_meet_started"
 )
 
 const (

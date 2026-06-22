@@ -18,6 +18,7 @@ import (
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errhttp"
 	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
+	"github.com/hmchangw/chat/pkg/subject"
 )
 
 // TokenValidator validates an SSO token and returns OIDC claims.
@@ -149,14 +150,15 @@ func (h *AuthHandler) HandleAuth(c *gin.Context) {
 		return
 	}
 
-	account := claims.PreferredUsername
-	if account == "" {
-		account = claims.Name
-	}
+	account := claims.Account()
 	if account == "" {
 		// Blank account would mint a JWT with chat.user..> permissions — refuse.
 		errhttp.Write(ctx, c, errcode.Unauthenticated("token missing account claim",
 			errcode.WithReason(errcode.AuthInvalidToken)))
+		return
+	}
+	if !subject.IsValidAccountToken(account) {
+		errhttp.Write(ctx, c, errcode.BadRequest("account must be a single NATS subject token (no '.', '*', '>' or whitespace)"))
 		return
 	}
 	ctx = errcode.WithLogValues(ctx, "account", account)
@@ -204,6 +206,10 @@ func (h *AuthHandler) handleDevAuth(c *gin.Context) {
 		return
 	}
 
+	if !subject.IsValidAccountToken(req.Account) {
+		errhttp.Write(ctx, c, errcode.BadRequest("account must be a single NATS subject token (no '.', '*', '>' or whitespace)"))
+		return
+	}
 	ctx = errcode.WithLogValues(ctx, "account", req.Account)
 
 	natsJWT, err := h.signNATSJWT(req.NATSPublicKey, req.Account)

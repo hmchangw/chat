@@ -419,3 +419,100 @@ func TestSignNATSJWT_LifetimeJitter(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleAuth_MissingAccountClaim(t *testing.T) {
+	// Prod-mode guard: a token with no usable account claim must be refused
+	// before minting — the JWT would otherwise grant chat.user..> permissions.
+	handler := NewAuthHandler(&fakeValidator{}, mustAccountKP(t), 2*time.Hour, false)
+	router := setupRouter(t, handler)
+
+	body := `{"ssoToken":"valid-token","natsPublicKey":"` + mustUserNKey(t) + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeUnauthenticated)
+	errtest.AssertReason(t, w.Body.Bytes(), errcode.AuthInvalidToken)
+}
+
+func TestHandleAuth_InvalidAccountFormat(t *testing.T) {
+	// The account becomes a NATS subject token (chat.user.{account}.>): dots
+	// nest namespaces, wildcards broaden grants — refuse before gate and sign.
+	signingKP := mustAccountKP(t)
+	cases := []struct{ name, account string }{
+		{"dotted account nests subjects", "john.doe"},
+		{"single-token wildcard", "mal*ory"},
+		{"multi-token wildcard", "mal>ory"},
+		{"whitespace", "mal ory"},
+	}
+	for _, tt := range cases {
+		t.Run("prod: "+tt.name, func(t *testing.T) {
+			handler := NewAuthHandler(&fakeValidator{account: tt.account}, signingKP, 2*time.Hour, false)
+			router := setupRouter(t, handler)
+
+			body := `{"ssoToken":"valid-token","natsPublicKey":"` + mustUserNKey(t) + `"}`
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
+		})
+		t.Run("dev: "+tt.name, func(t *testing.T) {
+			handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
+			router := setupRouter(t, handler)
+
+			payload, err := json.Marshal(map[string]string{"account": tt.account, "natsPublicKey": mustUserNKey(t)})
+			require.NoError(t, err)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(string(payload)))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeBadRequest)
+		})
+	}
+
+	// Any account the routing layer can serve must pass the mint gate too:
+	// the rule is exactly pkg/subject's token invariant, not an ASCII allowlist.
+	for _, account := range []string{"alice@corp", "júlio"} {
+		t.Run("routable account accepted: "+account, func(t *testing.T) {
+			handler := NewAuthHandler(nil, signingKP, 2*time.Hour, true)
+			router := setupRouter(t, handler)
+
+			payload, err := json.Marshal(map[string]string{"account": account, "natsPublicKey": mustUserNKey(t)})
+			require.NoError(t, err)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(string(payload)))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
+	}
+}
+
+func TestHandleAuth_TokenGenerationFailure(t *testing.T) {
+	// Prod-mode twin of the dev-mode test: a user key cannot sign, so the prod path returns 500.
+	userKP, err := nkeys.CreateUser()
+	require.NoError(t, err, "create user key")
+
+	validator := &fakeValidator{account: "alice", subject: "uuid-alice"}
+	handler := NewAuthHandler(validator, userKP, 2*time.Hour, false)
+	router := setupRouter(t, handler)
+
+	userPub := mustUserNKey(t)
+	body := `{"ssoToken":"valid-token","natsPublicKey":"` + userPub + `"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	errtest.AssertCode(t, w.Body.Bytes(), errcode.CodeInternal)
+	assert.NotContains(t, w.Body.String(), "generating NATS token")
+}

@@ -222,6 +222,21 @@ func (mr *MockRoomStoreMockRecorder) GetSubscriptionWithMembership(ctx, roomID, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSubscriptionWithMembership", reflect.TypeOf((*MockRoomStore)(nil).GetSubscriptionWithMembership), ctx, roomID, account)
 }
 
+// GetThreadRoomByID mocks base method.
+func (m *MockRoomStore) GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetThreadRoomByID", ctx, threadRoomID)
+	ret0, _ := ret[0].(*model.ThreadRoom)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetThreadRoomByID indicates an expected call of GetThreadRoomByID.
+func (mr *MockRoomStoreMockRecorder) GetThreadRoomByID(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetThreadRoomByID", reflect.TypeOf((*MockRoomStore)(nil).GetThreadRoomByID), ctx, threadRoomID)
+}
+
 // GetThreadSubscriptionByParent mocks base method.
 func (m *MockRoomStore) GetThreadSubscriptionByParent(ctx context.Context, account, parentMessageID, roomID string) (*model.ThreadSubscription, error) {
 	m.ctrl.T.Helper()
@@ -447,6 +462,21 @@ func (mr *MockRoomStoreMockRecorder) MinSubscriptionLastSeenByRoomID(ctx, roomID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MinSubscriptionLastSeenByRoomID", reflect.TypeOf((*MockRoomStore)(nil).MinSubscriptionLastSeenByRoomID), ctx, roomID)
 }
 
+// MinThreadSubscriptionLastSeenByThreadRoomID mocks base method.
+func (m *MockRoomStore) MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MinThreadSubscriptionLastSeenByThreadRoomID", ctx, threadRoomID)
+	ret0, _ := ret[0].(*time.Time)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MinThreadSubscriptionLastSeenByThreadRoomID indicates an expected call of MinThreadSubscriptionLastSeenByThreadRoomID.
+func (mr *MockRoomStoreMockRecorder) MinThreadSubscriptionLastSeenByThreadRoomID(ctx, threadRoomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MinThreadSubscriptionLastSeenByThreadRoomID", reflect.TypeOf((*MockRoomStore)(nil).MinThreadSubscriptionLastSeenByThreadRoomID), ctx, threadRoomID)
+}
+
 // SetOwnerRole mocks base method.
 func (m *MockRoomStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool, rolesUpdatedAt time.Time) (*model.Subscription, error) {
 	m.ctrl.T.Helper()
@@ -548,6 +578,20 @@ func (m *MockRoomStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID
 func (mr *MockRoomStoreMockRecorder) UpdateSubscriptionThreadRead(ctx, roomID, account, threadID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubscriptionThreadRead", reflect.TypeOf((*MockRoomStore)(nil).UpdateSubscriptionThreadRead), ctx, roomID, account, threadID)
+}
+
+// UpdateThreadRoomMinUserLastSeenAt mocks base method.
+func (m *MockRoomStore) UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateThreadRoomMinUserLastSeenAt", ctx, threadRoomID, t)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateThreadRoomMinUserLastSeenAt indicates an expected call of UpdateThreadRoomMinUserLastSeenAt.
+func (mr *MockRoomStoreMockRecorder) UpdateThreadRoomMinUserLastSeenAt(ctx, threadRoomID, t any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateThreadRoomMinUserLastSeenAt", reflect.TypeOf((*MockRoomStore)(nil).UpdateThreadRoomMinUserLastSeenAt), ctx, threadRoomID, t)
 }
 
 // UpdateThreadSubscriptionRead mocks base method.
@@ -726,4 +770,58 @@ func (m *MockMessageReader) GetMessageRoomAndCreatedAt(ctx context.Context, mess
 func (mr *MockMessageReaderMockRecorder) GetMessageRoomAndCreatedAt(ctx, messageID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMessageRoomAndCreatedAt", reflect.TypeOf((*MockMessageReader)(nil).GetMessageRoomAndCreatedAt), ctx, messageID)
+}
+
+// MockTeamsMeetingStore is a mock of TeamsMeetingStore interface.
+type MockTeamsMeetingStore struct {
+	ctrl     *gomock.Controller
+	recorder *MockTeamsMeetingStoreMockRecorder
+	isgomock struct{}
+}
+
+// MockTeamsMeetingStoreMockRecorder is the mock recorder for MockTeamsMeetingStore.
+type MockTeamsMeetingStoreMockRecorder struct {
+	mock *MockTeamsMeetingStore
+}
+
+// NewMockTeamsMeetingStore creates a new mock instance.
+func NewMockTeamsMeetingStore(ctrl *gomock.Controller) *MockTeamsMeetingStore {
+	mock := &MockTeamsMeetingStore{ctrl: ctrl}
+	mock.recorder = &MockTeamsMeetingStoreMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockTeamsMeetingStore) EXPECT() *MockTeamsMeetingStoreMockRecorder {
+	return m.recorder
+}
+
+// GetTeamsMeeting mocks base method.
+func (m *MockTeamsMeetingStore) GetTeamsMeeting(ctx context.Context, roomID, siteID string) (*model.TeamsMeetingRecord, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetTeamsMeeting", ctx, roomID, siteID)
+	ret0, _ := ret[0].(*model.TeamsMeetingRecord)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// GetTeamsMeeting indicates an expected call of GetTeamsMeeting.
+func (mr *MockTeamsMeetingStoreMockRecorder) GetTeamsMeeting(ctx, roomID, siteID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTeamsMeeting", reflect.TypeOf((*MockTeamsMeetingStore)(nil).GetTeamsMeeting), ctx, roomID, siteID)
+}
+
+// InsertTeamsMeeting mocks base method.
+func (m *MockTeamsMeetingStore) InsertTeamsMeeting(ctx context.Context, record model.TeamsMeetingRecord) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertTeamsMeeting", ctx, record)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InsertTeamsMeeting indicates an expected call of InsertTeamsMeeting.
+func (mr *MockTeamsMeetingStoreMockRecorder) InsertTeamsMeeting(ctx, record any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertTeamsMeeting", reflect.TypeOf((*MockTeamsMeetingStore)(nil).InsertTeamsMeeting), ctx, record)
 }

@@ -156,7 +156,7 @@ type RoomStore interface {
 	GetApp(ctx context.Context, botAccount string) (*model.App, error)
 	// ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
 	// channelTab.default are both true, sorted by channelTab.name asc.
-	// Projection: _id, avatarUrl, assistant, channelTab. Empty result is
+	// Projection: _id, assistant, channelTab. Empty result is
 	// ([], nil).
 	ListDefaultChannelTabApps(ctx context.Context) ([]model.App, error)
 	// ListRoomBotApps returns one entry per bot subscribed to roomID,
@@ -180,6 +180,20 @@ type RoomStore interface {
 	UpdateSubscriptionThreadRead(ctx context.Context, roomID, account, threadID string) (newThreadUnread []string, newAlert bool, err error)
 
 	UpdateThreadSubscriptionRead(ctx context.Context, threadRoomID, account string, lastSeenAt time.Time) error
+
+	// GetThreadRoomByID returns the thread room document for threadRoomID.
+	// Returns (nil, nil) when no document matches.
+	GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error)
+	// MinThreadSubscriptionLastSeenByThreadRoomID returns the thread room's strict
+	// read floor: MIN(lastSeenAt) across ALL thread_subscriptions for threadRoomID,
+	// but only when every subscriber has a usable lastSeenAt (> zero). Returns nil
+	// if any subscriber has never read or if there are no subscriptions.
+	// Bots are counted as ordinary subscribers — a bot subscriber pins the floor to
+	// nil since bots never call Mark Thread as Read.
+	MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error)
+	// UpdateThreadRoomMinUserLastSeenAt sets or clears thread_rooms.minUserLastSeenAt
+	// for threadRoomID. A nil value clears the field via $unset; non-nil writes via $set.
+	UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error
 
 	// UpdateRoomVisibility sets rooms.{restricted, externalAccess, updatedAt}.
 	// Returns ErrRoomNotFound when no room matches.
@@ -226,4 +240,22 @@ type MessageReader interface {
 	GetMessageRoomAndCreatedAt(ctx context.Context, messageID string) (
 		roomID string, createdAt time.Time, senderAccount string, found bool, err error,
 	)
+}
+
+// TeamsMeetingStore is the first-class idempotency record for a room's Teams
+// meeting. It replaces the message-bucket marker scan with a dedicated Mongo
+// document keyed unique on (roomId, siteId), mirroring the unique-index +
+// IsDuplicateKeyError retry-safe-write convention room-service already uses for
+// room_members and subscriptions (see store_mongo.go EnsureIndexes).
+type TeamsMeetingStore interface {
+	// GetTeamsMeeting fast-path reads the room's existing meeting record.
+	// found=false with err=nil means the room has no meeting yet.
+	GetTeamsMeeting(ctx context.Context, roomID, siteID string) (
+		record *model.TeamsMeetingRecord, found bool, err error,
+	)
+	// InsertTeamsMeeting inserts the meeting record. The (roomId, siteId)
+	// unique index makes this the idempotency gate: a concurrent second insert
+	// returns a duplicate-key error (mongo.IsDuplicateKeyError), which the
+	// handler treats as "a concurrent winner already wrote it" and reads back.
+	InsertTeamsMeeting(ctx context.Context, record model.TeamsMeetingRecord) error
 }

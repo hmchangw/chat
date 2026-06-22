@@ -1954,7 +1954,7 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			req:  model.RoomsInfoBatchRequest{RoomIDs: []string{"r1", "r2", "r3"}},
 			setupStore: func(s *MockRoomStore) {
 				s.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1", "r2", "r3"}).Return([]model.Room{
-					{ID: "r1", Name: "general", SiteID: "site-a"},
+					{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 42, LastMsgID: "m-100"},
 					{ID: "r2", Name: "random", SiteID: "site-a"},
 					{ID: "r3", Name: "help", SiteID: "site-b"},
 				}, nil)
@@ -1968,10 +1968,12 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			assertResp: func(t *testing.T, resp model.RoomsInfoBatchResponse) {
 				require.Len(t, resp.Rooms, 3)
 
-				// r1: found, keyed
+				// r1: found, keyed, room-doc denorm fields forwarded
 				assert.Equal(t, "r1", resp.Rooms[0].RoomID)
 				assert.True(t, resp.Rooms[0].Found)
 				assert.Equal(t, "general", resp.Rooms[0].Name)
+				assert.Equal(t, 42, resp.Rooms[0].UserCount)
+				assert.Equal(t, "m-100", resp.Rooms[0].LastMsgID)
 				require.NotNil(t, resp.Rooms[0].PrivateKey)
 				assert.Equal(t, privB64, *resp.Rooms[0].PrivateKey)
 				require.NotNil(t, resp.Rooms[0].KeyVersion)
@@ -2141,6 +2143,25 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_handleRoomsInfoBatch_ForwardsCounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{
+		{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 5, AppCount: 2},
+	}, nil)
+	keyStore.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxBatchSize: 100}
+
+	resp, err := h.roomsInfoBatch(ctxParams(map[string]string{}), model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}})
+	require.NoError(t, err)
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, 5, resp.Rooms[0].UserCount)
+	assert.Equal(t, 2, resp.Rooms[0].AppCount)
 }
 
 func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
@@ -3004,6 +3025,153 @@ func TestHandler_MessageRead_FloorChanged_Writes(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- subscription.update (action "read") tests for messageRead ---
+
+// After a successful same-site messageRead, the handler must publish exactly one
+// subscription.update (action "read") to the reader's own account via core NATS.
+func TestHandler_MessageRead_PublishesSubscriptionUpdate_Local(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-2 * time.Hour)
+	lastSeen := joined.Add(time.Hour)
+	lastMsg := lastSeen.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(&lastSeen, nil)
+	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", gomock.Any()).Return(nil)
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
+	require.NoError(t, err)
+
+	// Exactly one core NATS publish to the reader's subscription.update subject.
+	require.Len(t, f.coreSubjects, 1, "expected exactly one core NATS publish")
+	assert.Equal(t, "chat.user.alice.event.subscription.update", f.coreSubjects[0])
+
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(f.coreData[0], &evt))
+	assert.Equal(t, "read", evt.Action)
+	assert.Equal(t, "u1", evt.UserID)
+	assert.NotNil(t, evt.Subscription.LastSeenAt, "published subscription must carry updated lastSeenAt")
+	assert.False(t, evt.Subscription.Alert, "published subscription carries updated alert")
+}
+
+// A bot account must NOT receive a subscription.update on messageRead.
+func TestHandler_MessageRead_NoPublish_BotAccount(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-time.Hour)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "bot.bot", "r1").Return(&model.Subscription{
+		User:   model.SubscriptionUser{ID: "b1", Account: "bot.bot"},
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "bot.bot", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "bot.bot").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1"}, nil)
+	// Room has no LastMsgAt → early return; no floor recompute calls expected.
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "bot.bot", "roomID": "r1"}))
+	require.NoError(t, err)
+
+	assert.Empty(t, f.coreSubjects, "bot account must not receive a subscription.update")
+}
+
+// On the early-return path (room has no content), no subscription.update is fired.
+func TestHandler_MessageRead_NoPublish_EarlyReturnNoContent(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-time.Hour)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1", JoinedAt: joined,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: nil}, nil)
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
+	require.NoError(t, err)
+
+	assert.Empty(t, f.coreSubjects, "no subscription.update on early-return (no content)")
+}
+
+// On the early-return path (user already past lastMsgAt), no subscription.update is fired.
+func TestHandler_MessageRead_NoPublish_EarlyReturnAlreadyRead(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-3 * time.Hour)
+	lastMsg := joined.Add(time.Hour)
+	lastSeen := lastMsg.Add(time.Hour) // user already read past the last message
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
+		JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
+	require.NoError(t, err)
+
+	assert.Empty(t, f.coreSubjects, "no subscription.update on early-return (already past lastMsgAt)")
+}
+
+// publishCore failure on subscription.update must be logged but must NOT fail the RPC.
+func TestHandler_MessageRead_PublishFailure_NonFatal(t *testing.T) {
+	f := newMessageReadFixture(t)
+	f.coreErr = fmt.Errorf("nats down")
+	joined := time.Now().UTC().Add(-2 * time.Hour)
+	lastSeen := joined.Add(time.Hour)
+	lastMsg := lastSeen.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(&lastSeen, nil)
+	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", gomock.Any()).Return(nil)
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
+	require.NoError(t, err, "publishCore failure on subscription.update must not fail the RPC")
+}
+
+// Cross-site messageRead: outbox publish fires for the floor fan-out, AND the
+// subscription.update still goes to core NATS for the reader's own account.
+func TestHandler_MessageRead_CrossSite_AlsoPublishesSubscriptionUpdate(t *testing.T) {
+	f := newMessageReadFixture(t)
+	joined := time.Now().UTC().Add(-2 * time.Hour)
+	lastSeen := joined.Add(time.Hour)
+	lastMsg := lastSeen.Add(30 * time.Minute)
+
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1", SiteID: "site-a", JoinedAt: joined, LastSeenAt: &lastSeen,
+	}, nil)
+	f.store.EXPECT().UpdateSubscriptionRead(gomock.Any(), "r1", "alice", gomock.Any(), false).Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-b", nil)
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", LastMsgAt: &lastMsg}, nil)
+	f.store.EXPECT().MinSubscriptionLastSeenByRoomID(gomock.Any(), "r1").Return(&lastSeen, nil)
+	f.store.EXPECT().UpdateRoomMinUserLastSeenAt(gomock.Any(), "r1", gomock.Any()).Return(nil)
+
+	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
+	require.NoError(t, err)
+
+	// Outbox publish for cross-site floor fan-out.
+	assert.Equal(t, 1, f.publishCalls)
+	// subscription.update via core NATS.
+	require.Len(t, f.coreSubjects, 1)
+	assert.Equal(t, "chat.user.alice.event.subscription.update", f.coreSubjects[0])
+	var evt model.SubscriptionUpdateEvent
+	require.NoError(t, json.Unmarshal(f.coreData[0], &evt))
+	assert.Equal(t, "read", evt.Action)
+}
+
 func TestHandler_handleMessageReadReceipt(t *testing.T) {
 	const (
 		siteID    = "site-a"
@@ -3295,6 +3463,13 @@ func newThreadReadFixture(t *testing.T) *threadReadFixture {
 	return f
 }
 
+// withNopFloor stubs the thread-floor store methods for tests that do not
+// exercise floor recompute — returns nil thread room so recomputeThreadFloor
+// exits early without further store calls.
+func withNopFloor(f *threadReadFixture) {
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+}
+
 func baseThreadSub(account, roomID, parent, threadRoomID string) *model.ThreadSubscription {
 	return &model.ThreadSubscription{
 		ID:              "tsub-" + parent,
@@ -3385,6 +3560,7 @@ func TestHandler_MessageThreadRead_BothMiss_RoomNotMemberWins(t *testing.T) {
 
 func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3403,6 +3579,7 @@ func TestHandler_MessageThreadRead_HappyAlertClears(t *testing.T) {
 
 func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3419,6 +3596,7 @@ func TestHandler_MessageThreadRead_HappyAlertStays(t *testing.T) {
 
 func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3435,6 +3613,7 @@ func TestHandler_MessageThreadRead_IdempotentIDNotInArray(t *testing.T) {
 
 func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, false), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3451,6 +3630,7 @@ func TestHandler_MessageThreadRead_AlertAlreadyFalse(t *testing.T) {
 
 func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1", "p2"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3487,6 +3667,7 @@ func TestHandler_MessageThreadRead_CrossSite_PublishesOutbox(t *testing.T) {
 
 func TestHandler_MessageThreadRead_GetUserSiteID_Empty(t *testing.T) {
 	f := newThreadReadFixture(t)
+	withNopFloor(f)
 	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
 	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
@@ -3570,6 +3751,109 @@ func TestHandler_MessageThreadRead_UpdateThreadSubscriptionError(t *testing.T) {
 	_, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
 	require.Error(t, err)
 	assert.Equal(t, 0, f.publishCalls)
+}
+
+// --- thread floor recompute tests ---
+
+// baseThreadRoomForFloor returns a minimal ThreadRoom with a non-zero LastMsgAt
+// so the floor-recompute skip guard does not trip.
+func baseThreadRoomForFloor(threadRoomID string) *model.ThreadRoom {
+	lastMsg := time.Now().UTC().Add(-30 * time.Minute)
+	return &model.ThreadRoom{
+		ID:        threadRoomID,
+		LastMsgAt: lastMsg,
+	}
+}
+
+func fullThreadReadSetup(f *threadReadFixture, tsub *model.ThreadSubscription) {
+	f.store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
+		Return(baseSubForThreadRead("alice", "r1", []string{"p1"}, true), nil)
+	f.store.EXPECT().GetThreadSubscriptionByParent(gomock.Any(), "alice", "p1", "r1").
+		Return(tsub, nil)
+	f.store.EXPECT().UpdateSubscriptionThreadRead(gomock.Any(), "r1", "alice", "p1").
+		Return(nil, false, nil)
+	f.store.EXPECT().UpdateThreadSubscriptionRead(gomock.Any(), tsub.ThreadRoomID, "alice", gomock.Any()).
+		Return(nil)
+	f.store.EXPECT().GetUserSiteID(gomock.Any(), "alice").Return("site-a", nil)
+}
+
+func TestHandler_MessageThreadRead_FloorRecomputed_FloorChanges(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	tr := baseThreadRoomForFloor("tr1")
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	minT := time.Now().UTC().Add(-10 * time.Minute)
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&minT, nil)
+	f.store.EXPECT().UpdateThreadRoomMinUserLastSeenAt(gomock.Any(), "tr1", &minT).Return(nil)
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorUnchanged_NoWrite(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	existingFloor := time.Now().UTC().Add(-10 * time.Minute)
+	tr := baseThreadRoomForFloor("tr1")
+	tr.MinUserLastSeenAt = &existingFloor
+	// Distinct pointer to the same value: asserts value-equality, not pointer-identity.
+	computedFloor := existingFloor
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(&computedFloor, nil)
+	// UpdateThreadRoomMinUserLastSeenAt must NOT be called when floor is unchanged.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorNilNoSubscribers_WritesNil(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	existingFloor := time.Now().UTC().Add(-10 * time.Minute)
+	tr := baseThreadRoomForFloor("tr1")
+	tr.MinUserLastSeenAt = &existingFloor
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(tr, nil)
+	// Min returns nil — someone hasn't read yet.
+	f.store.EXPECT().MinThreadSubscriptionLastSeenByThreadRoomID(gomock.Any(), "tr1").Return(nil, nil)
+	f.store.EXPECT().UpdateThreadRoomMinUserLastSeenAt(gomock.Any(), "tr1", (*time.Time)(nil)).Return(nil)
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_ThreadRoomMissing_SkipsFloor(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(nil, nil)
+	// No further floor calls expected.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
+}
+
+func TestHandler_MessageThreadRead_FloorError_BestEffortAccepted(t *testing.T) {
+	f := newThreadReadFixture(t)
+	tsub := baseThreadSub("alice", "r1", "p1", "tr1")
+	fullThreadReadSetup(f, tsub)
+
+	f.store.EXPECT().GetThreadRoomByID(gomock.Any(), "tr1").Return(nil, fmt.Errorf("mongo down"))
+	// Floor failure must not fail the RPC.
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", resp.Status)
 }
 
 func TestHandler_MuteToggle_Success(t *testing.T) {
@@ -4942,7 +5226,6 @@ func newTabsTestHandler(t *testing.T, siteURL string) (*Handler, *MockRoomStore,
 func mockTabApp(id, tabName, urlTemplate string) model.App {
 	return model.App{
 		ID:        id,
-		AvatarURL: "https://cdn/" + id + ".png",
 		Assistant: &model.AppAssistant{Enabled: true, Name: id + ".bot"},
 		ChannelTab: &model.AppChannelTab{
 			Enabled: true, Default: true, Name: tabName,
@@ -5030,7 +5313,6 @@ func TestHandler_handleGetRoomAppTabs_MemberAllowed(t *testing.T) {
 	assert.Equal(t, "app1", resp.Apps[0].ID)
 	assert.Equal(t, "Calendar", resp.Apps[0].Name)
 	assert.Equal(t, "https://chat.example.com/cal/r1/site-a/index", resp.Apps[0].TabURL)
-	assert.Equal(t, "https://cdn/app1.png", resp.Apps[0].AvatarURL)
 	require.NotNil(t, resp.Apps[0].Assistant)
 	assert.Equal(t, "app1.bot", resp.Apps[0].Assistant.Name)
 }
@@ -5151,7 +5433,7 @@ func TestHandler_handleGetRoomAppTabs_SkipsAppWithNilChannelTab(t *testing.T) {
 	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
 		Return(&model.Subscription{User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1"}, nil)
 	// One app has nil ChannelTab (invalid data), one is valid — only the valid one should appear.
-	appNoTab := model.App{ID: "notab", AvatarURL: "https://cdn/notab.png", ChannelTab: nil}
+	appNoTab := model.App{ID: "notab", ChannelTab: nil}
 	store.EXPECT().ListDefaultChannelTabApps(gomock.Any()).Return([]model.App{
 		appNoTab,
 		mockTabApp("ok1", "OK1", "https://upstream/ok1/${roomId}"),
@@ -5595,10 +5877,12 @@ func TestHandler_MessageRead_ChannelFloorMoves_PublishesRoomEvent(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "accepted", resp.Status)
 
-	require.Len(t, f.coreSubjects, 1)
-	assert.Equal(t, subject.RoomEvent("r1"), f.coreSubjects[0])
+	// coreSubjects[0] = subscription.update for the reader; coreSubjects[1] = room floor event.
+	require.Len(t, f.coreSubjects, 2)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), f.coreSubjects[0])
+	assert.Equal(t, subject.RoomEvent("r1"), f.coreSubjects[1])
 	var evt model.MessageReadEvent
-	require.NoError(t, json.Unmarshal(f.coreData[0], &evt))
+	require.NoError(t, json.Unmarshal(f.coreData[1], &evt))
 	assert.Equal(t, model.RoomEventMessageRead, evt.Type)
 	assert.Equal(t, "r1", evt.RoomID)
 	require.NotNil(t, evt.MinUserLastSeenAt)
@@ -5630,11 +5914,13 @@ func TestHandler_MessageRead_DMFloorMoves_PublishesPerSubscriber(t *testing.T) {
 	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err)
 
-	require.Len(t, f.coreSubjects, 2)
-	assert.Equal(t, subject.UserRoomEvent("alice"), f.coreSubjects[0])
-	assert.Equal(t, subject.UserRoomEvent("bob"), f.coreSubjects[1])
+	// coreSubjects[0] = subscription.update for alice; coreSubjects[1,2] = DM room events.
+	require.Len(t, f.coreSubjects, 3)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), f.coreSubjects[0])
+	assert.Equal(t, subject.UserRoomEvent("alice"), f.coreSubjects[1])
+	assert.Equal(t, subject.UserRoomEvent("bob"), f.coreSubjects[2])
 	var evt model.MessageReadEvent
-	require.NoError(t, json.Unmarshal(f.coreData[1], &evt))
+	require.NoError(t, json.Unmarshal(f.coreData[2], &evt))
 	assert.Equal(t, model.RoomEventMessageRead, evt.Type)
 	assert.Equal(t, "r1", evt.RoomID)
 }
@@ -5662,8 +5948,10 @@ func TestHandler_MessageRead_ChannelNilFloor_OmitsFloorField(t *testing.T) {
 	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err)
 
-	require.Len(t, f.coreSubjects, 1)
-	assert.NotContains(t, string(f.coreData[0]), "minUserLastSeenAt")
+	// coreSubjects[0] = subscription.update; coreSubjects[1] = floor event (nil floor).
+	require.Len(t, f.coreSubjects, 2)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), f.coreSubjects[0])
+	assert.NotContains(t, string(f.coreData[1]), "minUserLastSeenAt")
 }
 
 func TestHandler_MessageRead_ChannelPublishError_StillAccepted(t *testing.T) {
@@ -5710,7 +5998,9 @@ func TestHandler_MessageRead_DMListSubscriptionsError_StillAccepted(t *testing.T
 	resp, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err, "DM subscription-list failure must not fail the RPC")
 	assert.Equal(t, "accepted", resp.Status)
-	assert.Empty(t, f.coreSubjects, "no events published when subscription list fails")
+	// subscription.update fires before the DM fan-out; the DM list failure only suppresses floor events.
+	require.Len(t, f.coreSubjects, 1)
+	assert.Equal(t, subject.SubscriptionUpdate("alice"), f.coreSubjects[0])
 }
 
 func TestHandler_threadUnreadSummary(t *testing.T) {

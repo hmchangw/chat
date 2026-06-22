@@ -29,10 +29,12 @@ type MongoStore struct {
 	rooms               *mongo.Collection
 	subscriptions       *mongo.Collection
 	threadSubscriptions *mongo.Collection
+	threadRooms         *mongo.Collection
 	roomMembers         *mongo.Collection
 	users               *mongo.Collection
 	apps                *mongo.Collection
 	botCmdMenus         *mongo.Collection
+	teamsMeetings       *mongo.Collection
 }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
@@ -40,10 +42,12 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 		rooms:               db.Collection("rooms"),
 		subscriptions:       db.Collection("subscriptions"),
 		threadSubscriptions: db.Collection("thread_subscriptions"),
+		threadRooms:         db.Collection("thread_rooms"),
 		roomMembers:         db.Collection("room_members"),
 		users:               db.Collection("users"),
 		apps:                db.Collection("apps"),
 		botCmdMenus:         db.Collection("bot_cmd_menu"),
+		teamsMeetings:       db.Collection("teams_meetings"),
 	}
 }
 
@@ -75,10 +79,29 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure subscriptions (roomId,u.account) unique index: %w", err)
 	}
+	// Unique: account is a user's identity, so at most one users doc per account.
+	// findUsersForDisplay already folds results into a map keyed by account, and
+	// user-service declares this index unique on the shared collection — both must
+	// agree or the second service's CreateOne hits IndexOptionsConflict.
 	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "account", Value: 1}},
+		Keys:    bson.D{{Key: "account", Value: 1}},
+		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure users (account) index: %w", err)
+		// E11000 here means pre-existing duplicate account values (populated env
+		// pre-rollout) — point operators at the one-time dedupe preflight.
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("ensure users (account) unique index: duplicate account values exist in the users "+
+				"collection — run the one-time dedupe preflight (group users by account, resolve n>1) before "+
+				"starting this service: %w", err)
+		}
+		// A pre-existing non-unique account_1 conflicts (85 IndexOptionsConflict /
+		// 86 IndexKeySpecsConflict); Mongo won't upgrade it — the operator must drop it.
+		if se := mongo.ServerError(nil); errors.As(err, &se) && (se.HasErrorCode(85) || se.HasErrorCode(86)) {
+			return fmt.Errorf("ensure users (account) unique index: a non-unique account_1 index already exists on "+
+				"the users collection — drop the old non-unique account_1 index (db.users.dropIndex(\"account_1\")) "+
+				"before starting this service so it can be recreated as unique: %w", err)
+		}
+		return fmt.Errorf("ensure users (account) unique index: %w", err)
 	}
 	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "sectId", Value: 1}, {Key: "account", Value: 1}},
@@ -146,6 +169,15 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure thread_subscriptions (parentMessageId,userAccount) index: %w", err)
 	}
+	// Backs MinThreadSubscriptionLastSeenByThreadRoomID: covered index seek on
+	// (threadRoomId, lastSeenAt ASC) returns the subscriber with the smallest
+	// lastSeenAt in one seek — same algorithm as the (roomId, lastSeenAt) index
+	// on subscriptions that backs MinSubscriptionLastSeenByRoomID.
+	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "threadRoomId", Value: 1}, {Key: "lastSeenAt", Value: 1}},
+	}); err != nil {
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,lastSeenAt) index: %w", err)
+	}
 	// Backs GetThreadUnreadSummary's $match {userAccount, siteId}. No existing
 	// thread_subscriptions index has userAccount as a prefix.
 	if _, err := s.threadSubscriptions.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -166,6 +198,42 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 		Keys: bson.D{{Key: "activeStatus", Value: 1}, {Key: "name", Value: 1}},
 	}); err != nil {
 		return fmt.Errorf("ensure bot_cmd_menu (activeStatus,name) index: %w", err)
+	}
+	// Unique logical key for teams_meetings — the per-room idempotency record for
+	// the meetings RPC. A concurrent second create hits this constraint and the
+	// loser reads back the winner's record instead of inserting a duplicate (and
+	// thus publishing a second teams_meet_started system message). Same retry-safe
+	// rationale as the room_members / subscriptions unique indexes above.
+	if _, err := s.teamsMeetings.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "roomId", Value: 1}, {Key: "siteId", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("ensure teams_meetings (roomId,siteId) unique index: %w", err)
+	}
+	return nil
+}
+
+// GetTeamsMeeting fast-path reads the room's existing Teams meeting record.
+// found=false with err=nil means the room has no meeting yet.
+func (s *MongoStore) GetTeamsMeeting(ctx context.Context, roomID, siteID string) (*model.TeamsMeetingRecord, bool, error) {
+	var rec model.TeamsMeetingRecord
+	err := s.teamsMeetings.FindOne(ctx, bson.M{"roomId": roomID, "siteId": siteID}).Decode(&rec)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("get teams meeting for room %q: %w", roomID, err)
+	}
+	return &rec, true, nil
+}
+
+// InsertTeamsMeeting inserts the meeting record. The (roomId, siteId) unique
+// index makes this the idempotency gate: a concurrent second insert returns a
+// duplicate-key error the handler detects via mongo.IsDuplicateKeyError (which
+// unwraps with errors.As) and reads back the winner's record.
+func (s *MongoStore) InsertTeamsMeeting(ctx context.Context, record model.TeamsMeetingRecord) error {
+	if _, err := s.teamsMeetings.InsertOne(ctx, record); err != nil {
+		return fmt.Errorf("insert teams meeting record: %w", err)
 	}
 	return nil
 }
@@ -1169,13 +1237,12 @@ func (s *MongoStore) UpdateSubscriptionThreadRead(ctx context.Context, roomID, a
 
 // ListDefaultChannelTabApps returns apps whose channelTab.enabled AND
 // channelTab.default are both true, sorted by channelTab.name asc.
-// Projection: _id, avatarUrl, assistant, channelTab. Empty result is ([], nil).
+// Projection: _id, assistant, channelTab. Empty result is ([], nil).
 func (s *MongoStore) ListDefaultChannelTabApps(ctx context.Context) ([]model.App, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "channelTab.name", Value: 1}}).
 		SetProjection(bson.M{
 			"_id":        1,
-			"avatarUrl":  1,
 			"assistant":  1,
 			"channelTab": 1,
 		})
@@ -1592,4 +1659,67 @@ func (s *MongoStore) GetThreadUnreadSummary(ctx context.Context, account, siteID
 		return nil, fmt.Errorf("decode thread unread summary: %w", err)
 	}
 	return &result, nil
+}
+
+// GetThreadRoomByID returns the thread_rooms document for threadRoomID,
+// projected to lastMsgAt + minUserLastSeenAt for the floor-recompute path.
+// Other ThreadRoom fields are NOT populated. Returns (nil, nil) when no
+// document matches.
+func (s *MongoStore) GetThreadRoomByID(ctx context.Context, threadRoomID string) (*model.ThreadRoom, error) {
+	var tr model.ThreadRoom
+	err := s.threadRooms.FindOne(ctx, bson.M{"_id": threadRoomID},
+		options.FindOne().SetProjection(bson.M{"lastMsgAt": 1, "minUserLastSeenAt": 1, "_id": 0}),
+	).Decode(&tr)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get thread room %q: %w", threadRoomID, err)
+	}
+	return &tr, nil
+}
+
+// MinThreadSubscriptionLastSeenByThreadRoomID returns the thread room's strict
+// read floor: the minimum lastSeenAt across ALL thread_subscriptions for
+// threadRoomID, but only when every subscriber has a usable lastSeenAt (> zero).
+// Returns nil when any subscriber has never read, or when there are no subscribers.
+// The (threadRoomId, lastSeenAt) index (non-sparse) returns the smallest value
+// first — a missing/null/zero lastSeenAt sorts before real dates, so the first
+// document answers both "is anyone unread?" and "what is the floor?" in one seek.
+func (s *MongoStore) MinThreadSubscriptionLastSeenByThreadRoomID(ctx context.Context, threadRoomID string) (*time.Time, error) {
+	var doc struct {
+		LastSeenAt time.Time `bson:"lastSeenAt"`
+	}
+	err := s.threadSubscriptions.FindOne(ctx,
+		bson.M{"threadRoomId": threadRoomID},
+		options.FindOne().
+			SetSort(bson.D{{Key: "lastSeenAt", Value: 1}}).
+			SetProjection(bson.M{"lastSeenAt": 1, "_id": 0}),
+	).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find min lastSeenAt for thread room %q: %w", threadRoomID, err)
+	}
+	if !doc.LastSeenAt.After(time.Time{}) {
+		return nil, nil
+	}
+	minTime := doc.LastSeenAt
+	return &minTime, nil
+}
+
+// UpdateThreadRoomMinUserLastSeenAt sets or clears thread_rooms.minUserLastSeenAt
+// for threadRoomID. A nil value clears the field via $unset; non-nil writes via $set.
+func (s *MongoStore) UpdateThreadRoomMinUserLastSeenAt(ctx context.Context, threadRoomID string, t *time.Time) error {
+	var update bson.M
+	if t == nil {
+		update = bson.M{"$unset": bson.M{"minUserLastSeenAt": ""}}
+	} else {
+		update = bson.M{"$set": bson.M{"minUserLastSeenAt": *t}}
+	}
+	if _, err := s.threadRooms.UpdateOne(ctx, bson.M{"_id": threadRoomID}, update); err != nil {
+		return fmt.Errorf("update minUserLastSeenAt for thread room %q: %w", threadRoomID, err)
+	}
+	return nil
 }

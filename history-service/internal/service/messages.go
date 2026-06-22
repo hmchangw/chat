@@ -282,6 +282,49 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	return msg, nil
 }
 
+// maxGetByIDsBatchSize caps the number of IDs per msg.get.ids request.
+const maxGetByIDsBatchSize = 100
+
+// GetMessagesByIDs handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.get.ids.
+// Returns messages in input order; IDs not found or outside the access window are silently omitted.
+func (s *HistoryService) GetMessagesByIDs(c *natsrouter.Context, req models.GetMessagesByIDsRequest) (*models.GetMessagesByIDsResponse, error) {
+	account := c.Param("account")
+	roomID := c.Param("roomID")
+	c.WithLogValues("account", account, "room_id", roomID)
+
+	accessSince, err := s.getAccessSince(c, account, roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(req.MessageIDs) == 0 {
+		return nil, errcode.BadRequest("messageIds must not be empty")
+	}
+	if len(req.MessageIDs) > maxGetByIDsBatchSize {
+		return nil, errcode.BadRequest("too many messageIds")
+	}
+
+	fetched, err := s.msgReader.GetMessagesByIDs(c, req.MessageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("fetching messages by IDs: %w", err)
+	}
+
+	kept := fetched[:0]
+	for i := range fetched {
+		// Scope to the subject's room — fetch is by ID alone, so drop any cross-room match.
+		if fetched[i].RoomID != roomID {
+			continue
+		}
+		if accessSince != nil && fetched[i].CreatedAt.Before(*accessSince) {
+			continue
+		}
+		kept = append(kept, fetched[i])
+	}
+
+	redactUnavailableQuotes(kept, accessSince)
+	return &models.GetMessagesByIDsResponse{Messages: kept}, nil
+}
+
 // EditMessage handles chat.user.{account}.request.room.{roomID}.{siteID}.msg.edit.
 // Cassandra is the source of truth; canonical publish failures are logged and swallowed.
 func (s *HistoryService) EditMessage(c *natsrouter.Context, siteID string, req models.EditMessageRequest) (*models.EditMessageResponse, error) {

@@ -61,6 +61,16 @@ type GetMessageByIDRequest struct {
 	MessageID string `json:"messageId"`
 }
 
+// GetMessagesByIDsRequest is the request body for the msg.get.ids batch RPC.
+type GetMessagesByIDsRequest struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+// GetMessagesByIDsResponse is the response body for the msg.get.ids batch RPC.
+type GetMessagesByIDsResponse struct {
+	Messages []Message `json:"messages"`
+}
+
 type EditMessageRequest struct {
 	MessageID string `json:"messageId"`
 	NewMsg    string `json:"newMsg"`
@@ -129,8 +139,9 @@ type GetThreadMessagesRequest struct {
 }
 
 type GetThreadMessagesResponse struct {
-	Messages      []Message `json:"messages"`
-	NextCursor    string    `json:"nextCursor,omitempty"`
-	HasNext       bool      `json:"hasNext"`
-	ParentMessage *Message  `json:"parentMessage,omitempty"`
+	Messages          []Message `json:"messages"`
+	NextCursor        string    `json:"nextCursor,omitempty"`
+	HasNext           bool      `json:"hasNext"`
+	ParentMessage     *Message  `json:"parentMessage,omitempty"`
+	MinUserLastSeenAt *int64    `json:"minUserLastSeenAt,omitempty"`
 }
