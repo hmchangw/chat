@@ -33,8 +33,16 @@ const (
 
 // gzipWriterPool amortises gzip.Writer allocations across publishers; the writer holds
 // a ~64 KB internal buffer that would otherwise churn the GC under sustained publish load.
+// BestSpeed (level 1) is used deliberately: on the per-message publish hot path the CPU
+// cost of the default level 6 dominated profiles, while the ~10-20% larger output stays
+// well within the NATS max_payload headroom (push events decompress to ≤ ~25 KB vs a
+// 256 KiB cap). Decoders are level-agnostic, so this is transparent to consumers.
 var gzipWriterPool = sync.Pool{
-	New: func() any { return gzip.NewWriter(nil) },
+	New: func() any {
+		// NewWriterLevel only errors on an invalid level; BestSpeed is a valid constant.
+		w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+		return w
+	},
 }
 
 // GzipPayload returns a gzip-compressed copy of payload. Allocates a fresh slice

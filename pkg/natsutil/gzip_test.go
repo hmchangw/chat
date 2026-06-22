@@ -27,6 +27,28 @@ func TestGzipPayload_RoundTrip(t *testing.T) {
 	assert.Equal(t, in, buf.Bytes())
 }
 
+func TestGzipPayload_UsesBestSpeed(t *testing.T) {
+	// A push-batch-shaped payload: repetitive enough that level 1 and level 6
+	// produce different bytes, so byte-for-byte equality with a BestSpeed
+	// reference encoder fails if GzipPayload uses any other level.
+	in := []byte(strings.Repeat(`{"account":"alice","muted":false},`, 200))
+
+	var ref bytes.Buffer
+	gz, err := gzip.NewWriterLevel(&ref, gzip.BestSpeed)
+	require.NoError(t, err)
+	_, err = gz.Write(in)
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+
+	encoded, err := GzipPayload(in)
+	require.NoError(t, err)
+
+	// XFL byte (gzip header offset 8) is 4 when the fastest algorithm was used.
+	require.GreaterOrEqual(t, len(encoded), 10, "gzip output has a 10-byte header")
+	assert.Equal(t, byte(4), encoded[8], "XFL byte must signal BestSpeed")
+	assert.Equal(t, ref.Bytes(), encoded, "output must match a BestSpeed encoder byte-for-byte")
+}
+
 func TestGzipPayload_EmptyInput(t *testing.T) {
 	encoded, err := GzipPayload(nil)
 	require.NoError(t, err)
