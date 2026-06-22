@@ -103,7 +103,11 @@ func (s *UserService) publishStatus(c *natsrouter.Context, account, text string,
 			Payload:    payload,
 			Timestamp:  now,
 		}
-		data, _ := json.Marshal(evt)
+		data, err := json.Marshal(evt)
+		if err != nil {
+			slog.WarnContext(c, "marshal status inbox event", "error", err, "site", s.siteID, "dest", dest, "account", account, "request_id", natsutil.RequestIDFromContext(c))
+			continue
+		}
 		if err := s.pub.Publish(c, subject.InboxExternal(dest, model.InboxUserStatusUpdated), data); err != nil {
 			// Non-fatal: status is last-write-wins, the next SetStatus re-broadcasts.
 			slog.WarnContext(c, "publish status inbox event", "error", err, "site", s.siteID, "dest", dest, "account", account, "request_id", natsutil.RequestIDFromContext(c))

@@ -496,8 +496,10 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 		return fmt.Errorf("publish individual removal system message: %w", err)
 	}
 
-	// Cross-site inbox for federated users
-	if user.SiteID != h.siteID {
+	// Cross-site inbox for federated users. Skip blank destination sites
+	// (missing/legacy metadata) so we never build an invalid subject path,
+	// matching the add/create/DM paths.
+	if user.SiteID != "" && user.SiteID != h.siteID {
 		externalEvt := model.InboxEvent{
 			Type:       model.InboxMemberRemoved,
 			SiteID:     h.siteID,
@@ -689,10 +691,12 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 		return fmt.Errorf("publish org removal system message: %w", err)
 	}
 
-	// Cross-site inbox grouped by destination site
+	// Cross-site inbox grouped by destination site. Skip blank destination
+	// sites (missing/legacy metadata) so an empty SiteID never becomes a map
+	// key and an invalid subject path.
 	siteAccounts := make(map[string][]string)
 	for _, m := range toRemove {
-		if m.SiteID != h.siteID {
+		if m.SiteID != "" && m.SiteID != h.siteID {
 			siteAccounts[m.SiteID] = append(siteAccounts[m.SiteID], m.Account)
 		}
 	}
