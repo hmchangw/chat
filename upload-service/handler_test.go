@@ -257,7 +257,7 @@ func TestUpload_MixedSuccessAndFailure_Merges(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "a.png", success.Name)
-	assert.Equal(t, "api/v1/rooms/r1/image/img-xyz?drive_host=https://drive.example.com", success.RelativePath)
+	assert.Equal(t, "api/v1/rooms/r1/file/img-xyz?drive_host=https://drive.example.com", success.RelativePath)
 	assert.Equal(t, "big.exe", failure.Name)
 	assert.Equal(t, "file has an invalid file type", failure.Error)
 }
@@ -317,7 +317,7 @@ func TestRegisterRoutes_HealthAndAuthGuard(t *testing.T) {
 
 	// the api group rejects a request with no ssoToken header (401).
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/rooms/r1/image/f1?drive_host=h", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/rooms/r1/file/f1?drive_host=h", nil))
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
@@ -330,7 +330,7 @@ func newDownloadCtx(t *testing.T, roomID, fileID, driveHost string, user *Authen
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	url := "/api/v1/rooms/" + roomID + "/image/" + fileID
+	url := "/api/v1/rooms/" + roomID + "/file/" + fileID
 	if driveHost != "" {
 		url += "?drive_host=" + driveHost
 	}
@@ -353,7 +353,7 @@ func TestDownload_MissingRoomID_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
@@ -362,7 +362,7 @@ func TestDownload_MissingFileID_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "", "https://d.example.com", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
@@ -371,7 +371,7 @@ func TestDownload_MissingDriveHost_400(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Equal(t, "bad_request", decodeErr(t, w).Code)
 }
@@ -380,7 +380,7 @@ func TestDownload_NoUser_500(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", nil)
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Equal(t, "internal", decodeErr(t, w).Code)
 }
@@ -391,7 +391,7 @@ func TestDownload_NotMember_403(t *testing.T) {
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(false, nil)
 	h := newHandler(store, &fakeDrive{})
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	env := decodeErr(t, w)
 	assert.Equal(t, "forbidden", env.Code)
@@ -405,7 +405,7 @@ func TestDownload_DriveError_503(t *testing.T) {
 	fd := &fakeDrive{getErr: errors.New("image not found")}
 	h := newHandler(store, fd)
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Equal(t, "unavailable", decodeErr(t, w).Code)
 }
@@ -421,7 +421,7 @@ func TestDownload_Success_StreamsBinary(t *testing.T) {
 	}}
 	h := newHandler(store, fd)
 	c, w := newDownloadCtx(t, "r1", "f1", "https://d.example.com", okUser())
-	h.HandleDownloadImage(c)
+	h.HandleDownloadFile(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))

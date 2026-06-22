@@ -92,8 +92,8 @@ import (
 func TestAttachment_RoundTrip(t *testing.T) {
 	att := Attachment{
 		ID: "drive-file-1", Title: "photo.png", Type: "file", Description: "team photo",
-		TitleLink: "api/v1/rooms/r1/image/drive-file-1?drive_host=h", TitleLinkDownload: true,
-		ImageURL: "api/v1/rooms/r1/image/drive-file-1?drive_host=h", ImageType: "image/png",
+		TitleLink: "api/v1/rooms/r1/file/drive-file-1?drive_host=h", TitleLinkDownload: true,
+		ImageURL: "api/v1/rooms/r1/file/drive-file-1?drive_host=h", ImageType: "image/png",
 		ImageSize: 1234, ImageDimensions: &ImageDimensions{Width: 800, Height: 600}, ImagePreview: "b64",
 	}
 	data, err := json.Marshal(att)
@@ -570,7 +570,7 @@ import (
 )
 
 func TestFileURL(t *testing.T) {
-	assert.Equal(t, "api/v1/rooms/room-1/image/f1?drive_host=http://drive",
+	assert.Equal(t, "api/v1/rooms/room-1/file/f1?drive_host=http://drive",
 		fileURL("room-1", "f1", "http://drive"))
 }
 
@@ -645,9 +645,9 @@ type fileMeta struct {
 	size int64
 }
 
-// fileURL builds the relative download URL, reusing the protected image route.
+// fileURL builds the relative download URL for the protected file-download route.
 func fileURL(roomID, fileID, driveHost string) string {
-	return fmt.Sprintf("api/v1/rooms/%s/image/%s?drive_host=%s", roomID, fileID, driveHost)
+	return fmt.Sprintf("api/v1/rooms/%s/file/%s?drive_host=%s", roomID, fileID, driveHost)
 }
 
 // buildAttachment assembles the render-ready attachment, adding media-specific
@@ -1201,6 +1201,78 @@ In `upload-service/deploy/docker-compose.yml`, add to the upload-service `enviro
 make fmt
 git add upload-service/main.go upload-service/deploy/docker-compose.yml
 git commit -m "feat(upload-service): wire file-upload config"
+```
+
+---
+
+## Task A9: rename the protected download endpoint `/image/:fileId` → `/file/:fileId`
+
+The single download endpoint already serves arbitrary uploaded files (the handler
+streams raw bytes with the stored content-type), and `fileURL` (Task A5) now
+points at `/file/`. Rename the route + handler to match. **Hard rename — `/image/`
+is dropped (no alias).** `pkg/drive.GetGroupImage` keeps its name (out of scope);
+the image *upload* route is unchanged (only its `relativePath` shifts to `/file/`
+via the shared `fileURL`).
+
+**Files:**
+- Modify: `upload-service/routes.go`, `upload-service/handler.go`
+- Modify: `upload-service/handler_test.go`, `upload-service/attachment_test.go`
+- Modify: `docs/client-api.md`
+
+- [ ] **Step 1: Update the failing tests (Red)**
+
+In `upload-service/handler_test.go`: rename every `h.HandleDownloadImage(c)` call
+to `h.HandleDownloadFile(c)`; change `/image/` → `/file/` in `newDownloadCtx`'s
+URL and in the route-auth `ServeHTTP` request path; update the image-upload
+`relativePath` assertion (`…/image/img-xyz…` → `…/file/img-xyz…`).
+In `upload-service/attachment_test.go`: `TestFileURL` already expects `/file/`
+(Task A5) — no change.
+
+Run: `go test ./upload-service/ -run 'TestDownload|TestRoute|TestUpload_Mixed' -v`
+Expected: FAIL — `h.HandleDownloadFile` undefined; route serves 404 at `/file/`.
+
+- [ ] **Step 2: Rename the route**
+
+In `upload-service/routes.go`:
+
+```go
+	api.GET("/rooms/:roomId/file/:fileId", h.HandleDownloadFile)
+```
+
+(replaces the `/rooms/:roomId/image/:fileId` + `HandleDownloadImage` line.)
+
+- [ ] **Step 3: Rename the handler**
+
+In `upload-service/handler.go`, rename `HandleDownloadImage` → `HandleDownloadFile`
+(signature/body unchanged). Update its doc-comment ("proxies a protected image" →
+"…file") and the client-facing error string:
+
+```go
+		errhttp.Write(ctx, c, errcode.Unavailable("failed to retrieve file", errcode.WithCause(err)))
+```
+
+- [ ] **Step 4: Run tests (Green)**
+
+Run: `make test SERVICE=upload-service`
+Expected: PASS.
+
+- [ ] **Step 5: Update `docs/client-api.md`**
+
+- §2.3 GET endpoint: rename the heading and `**Endpoint:**` line to
+  `GET /api/v1/rooms/:roomId/file/:fileId`; change "protected image" wording in
+  that block to "file".
+- Update the two example JSONs to `/file/`: the image-upload `relativePath`
+  example and the file-upload `titleLink` example.
+- Update the image-upload `relativePath` field note ("download the image via the
+  GET endpoint below" → "…file…").
+- Adjust the §2.3 section title so it covers file (not only image) upload/download.
+
+- [ ] **Step 6: Commit**
+
+```bash
+make fmt
+git add upload-service/routes.go upload-service/handler.go upload-service/handler_test.go docs/client-api.md
+git commit -m "feat(upload-service): rename protected download endpoint /image to /file"
 ```
 
 ---

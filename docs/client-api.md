@@ -295,11 +295,11 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 
 ---
 
-### 2.4 HTTP — Protected image upload/download
+### 2.4 HTTP — Protected file/image upload/download
 
-Two HTTP endpoints on `upload-service` for protected inline images, proxied
-to/from an internal Drive. Both require the `ssoToken` header (validated via
-OIDC) and that the caller is a member (has a subscription) of `:roomId`. Errors
+HTTP endpoints on `upload-service` for protected file uploads and downloads,
+proxied to/from an internal Drive. All require the `ssoToken` header (validated
+via OIDC) and that the caller is a member (has a subscription) of `:roomId`. Errors
 use the standard [§6](#6-error-envelope-reference) envelope `{ code, reason?, error }`.
 
 #### POST /api/v1/rooms/:roomId/upload/images
@@ -336,12 +336,12 @@ success/failure in a single `200` (partial success).
 | `name` | string | The file name. |
 | `status` | string | `success` for an uploaded file, `failure` for a rejected one. |
 | `error` | string | Present on failure: `file size exceeds limit`, `file has an invalid file type`, or `failed to open file`. |
-| `relativePath` | string | Present on success: path to download the image via the GET endpoint below, including the `drive_host` query param. |
+| `relativePath` | string | Present on success: path to download the file via the GET endpoint below, including the `drive_host` query param. |
 
 ```json
 {
   "results": [
-    { "name": "pic1.png", "status": "success", "relativePath": "api/v1/rooms/abc123/image/img-xyz?drive_host=https://drive.example.com" },
+    { "name": "pic1.png", "status": "success", "relativePath": "api/v1/rooms/abc123/file/img-xyz?drive_host=https://drive.example.com" },
     { "name": "big.exe", "status": "failure", "error": "file has an invalid file type" }
   ]
 }
@@ -409,7 +409,7 @@ pure-HTTP endpoint — it does **not** publish a message.
       "title": "report.pdf",
       "type": "file",
       "description": "Q2 report",
-      "titleLink": "api/v1/rooms/abc123/image/drive-file-1?drive_host=https://drive.example.com",
+      "titleLink": "api/v1/rooms/abc123/file/drive-file-1?drive_host=https://drive.example.com",
       "titleLinkDownload": true
     }
   ]
@@ -439,14 +439,15 @@ Uses the [§6](#6-error-envelope-reference) envelope. HTTP statuses:
 
 ---
 
-#### GET /api/v1/rooms/:roomId/image/:fileId
+#### GET /api/v1/rooms/:roomId/file/:fileId
 
-**Endpoint:** `GET /api/v1/rooms/:roomId/image/:fileId`
-**Reply:** synchronous HTTP response (raw image bytes, not JSON)
+**Endpoint:** `GET /api/v1/rooms/:roomId/file/:fileId`
+**Reply:** synchronous HTTP response (raw file bytes, not JSON)
 
-Downloads a protected image. The service proxies the bytes from Drive: it
-fetches a signed URL, streams the body, and pipes it straight back. Typically
-called with the `relativePath` returned by the upload endpoint.
+Downloads a protected file (any type — image/audio/video/document). The service
+proxies the bytes from Drive: it fetches a signed URL, streams the body, and
+pipes it straight back. Typically called with the `relativePath` (image upload)
+or `titleLink` (file upload) returned by the upload endpoints.
 
 #### Request
 
@@ -472,7 +473,7 @@ See [Error envelope](#6-error-envelope-reference). HTTP statuses:
 | 401 | `unauthenticated` | `invalid_sso_token` / `sso_token_expired` / `missing_fields` | `{ "code": "unauthenticated", "reason": "invalid_sso_token", "error": "invalid sso token" }` |
 | 403 | `forbidden` | `not_room_member` | `{ "code": "forbidden", "reason": "not_room_member", "error": "user alice is not in room abc123" }` |
 | 500 | `internal` | — | `{ "code": "internal", "error": "internal error" }` — user missing in context. |
-| 503 | `unavailable` | — | `{ "code": "unavailable", "error": "failed to retrieve image" }` — Drive signer/download failure. |
+| 503 | `unavailable` | — | `{ "code": "unavailable", "error": "failed to retrieve file" }` — Drive signer/download failure. |
 
 #### Triggered events — success path
 

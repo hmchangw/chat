@@ -145,7 +145,7 @@ type Attachment struct {
 
 ## 5. Attachment construction (`buildAttachment`)
 
-- **fileURL** = `api/v1/rooms/{roomId}/image/{fileId}?drive_host={driveHost}`
+- **fileURL** = `api/v1/rooms/{roomId}/file/{fileId}?drive_host={driveHost}`
   (reuses the existing protected download route; `driveHost` from
   `drive.GetBaseURLFromRoomOrigin(siteID)`).
 - Base fields: `id`=fileId, `title`=file name, `type`=`"file"`, `description`
@@ -288,8 +288,34 @@ rewritten by this PR.
 ## 11. Assumptions
 
 - Single file per request → `attachments` is a one-element array.
-- The download URL reuses the existing `/image/:fileId` route for all file types.
+- The download URL uses the protected download route (see §12) for all file types.
 - `description` is the only non-file form field upload-service reads; `content`,
   thread, and `tshow` belong to the frontend's later `msg.send`.
 - Generic (non-media) files carry no MIME field on the attachment (only `type:
   "file"`); media MIME lives in `imageType`/`audioType`/`videoType`.
+
+## 12. Protected download endpoint — rename `/image/:fileId` → `/file/:fileId`
+
+The single protected-download endpoint already serves arbitrary uploaded files
+(`HandleDownloadImage` streams raw bytes with the stored content-type, defaulting
+to `application/octet-stream`; it is not image-specific), and the upload-file
+attachment links (`fileURL`, §5) point at it. Rename the path so it reflects what
+it serves. **Hard rename — the `/image/` route is dropped (no alias).**
+
+- **Route + handler:** `GET /api/v1/rooms/:roomId/file/:fileId` replaces
+  `…/image/:fileId`; `HandleDownloadImage` → `HandleDownloadFile` (behavior
+  unchanged; doc-comment and the client-facing error string `"failed to retrieve
+  image"` → `"failed to retrieve file"`).
+- **URL builder:** `fileURL` (§5) emits `/file/`. This one builder feeds both the
+  file-upload attachment links and the image-upload `relativePath`, so both point
+  at the new route.
+- **Out of scope:** `pkg/drive.GetGroupImage` keeps its name (a Drive-side "group
+  image" concept; the handler still calls it). The image *upload* route
+  (`POST …/upload/images`, `HandleUploadImages`) is unchanged — only its emitted
+  download URL shifts to `/file/`.
+- **Docs (`docs/client-api.md`):** rename the GET endpoint heading/path and its
+  "protected image" wording to "file"; update the two example JSONs (image-upload
+  `relativePath`, file-upload `titleLink`) to `/file/`; adjust the §2.3 section
+  title to cover file (not only image) download.
+- **Backward compatibility:** accepted tradeoff — any `/image/` download URLs
+  already persisted in stored messages will 404 after this change.

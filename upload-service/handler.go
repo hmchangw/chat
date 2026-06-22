@@ -261,9 +261,9 @@ func (h *Handler) HandleUploadFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "attachments": []model.Attachment{att}})
 }
 
-// HandleDownloadImage proxies a protected image: it resolves a signed URL from
+// HandleDownloadFile proxies a protected file: it resolves a signed URL from
 // Drive, fetches the bytes, and streams them straight to the client.
-func (h *Handler) HandleDownloadImage(c *gin.Context) {
+func (h *Handler) HandleDownloadFile(c *gin.Context) {
 	ctx := logCtx(c)
 
 	roomID := c.Param("roomId")
@@ -294,7 +294,7 @@ func (h *Handler) HandleDownloadImage(c *gin.Context) {
 
 	img, err := h.drive.GetGroupImage(driveHost, roomID, fileID)
 	if err != nil {
-		errhttp.Write(ctx, c, errcode.Unavailable("failed to retrieve image", errcode.WithCause(err)))
+		errhttp.Write(ctx, c, errcode.Unavailable("failed to retrieve file", errcode.WithCause(err)))
 		return
 	}
 	defer img.Reader.Close()
