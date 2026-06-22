@@ -459,11 +459,15 @@ func (h *Handler) publishThreadSubInboxIfRemote(ctx context.Context, sub *model.
 		return fmt.Errorf("marshal inbox event: %w", err)
 	}
 	// Dedup ID format: {payloadSeed}:{destSiteID}, where payloadSeed encodes
-	// per-publish uniqueness (threadRoomID + userID + msg.ID). msg.ID is
-	// stable across MESSAGES_CANONICAL redeliveries → same publish always
-	// produces the same dedup ID. Different users on the same destination get
-	// different dedup IDs because their userIDs differ in the seed.
-	dedupID := fmt.Sprintf("thread-sub-inbox:%s:%s:%s:%s", sub.ThreadRoomID, sub.UserID, msgID, ownerSiteID)
+	// per-publish uniqueness (threadRoomID + userID + msg.ID + hasMention).
+	// msg.ID is stable across MESSAGES_CANONICAL redeliveries → same publish
+	// always produces the same dedup ID. Different users on the same destination
+	// get different dedup IDs because their userIDs differ in the seed.
+	// hasMention is in the seed so a HasMention=false upsert and a later
+	// HasMention=true mention update for the same (thread, user, message) get
+	// distinct dedup IDs — otherwise JetStream would drop the mention update and
+	// the flag would never cross sites.
+	dedupID := fmt.Sprintf("thread-sub-inbox:%s:%s:%s:%t:%s", sub.ThreadRoomID, sub.UserID, msgID, sub.HasMention, ownerSiteID)
 	subj := subject.InboxExternal(ownerSiteID, model.InboxThreadSubscriptionUpserted)
 	if err := h.publish(ctx, subj, data, dedupID); err != nil {
 		return fmt.Errorf("publish thread subscription inbox to %s: %w", ownerSiteID, err)
