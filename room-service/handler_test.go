@@ -3142,7 +3142,7 @@ func TestHandler_MessageRead_PublishFailure_NonFatal(t *testing.T) {
 	require.NoError(t, err, "publishCore failure on subscription.update must not fail the RPC")
 }
 
-// Cross-site messageRead: outbox publish fires for the floor fan-out, AND the
+// Cross-site messageRead: inbox publish fires for the floor fan-out, AND the
 // subscription.update still goes to core NATS for the reader's own account.
 func TestHandler_MessageRead_CrossSite_AlsoPublishesSubscriptionUpdate(t *testing.T) {
 	f := newMessageReadFixture(t)
@@ -3163,7 +3163,7 @@ func TestHandler_MessageRead_CrossSite_AlsoPublishesSubscriptionUpdate(t *testin
 	_, err := f.handler.messageRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}))
 	require.NoError(t, err)
 
-	// Outbox publish for cross-site floor fan-out.
+	// Inbox publish for cross-site floor fan-out.
 	assert.Equal(t, 1, f.publishCalls)
 	// subscription.update via core NATS.
 	require.Len(t, f.coreSubjects, 1)
