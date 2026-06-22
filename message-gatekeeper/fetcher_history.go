@@ -63,6 +63,10 @@ func (f *historyParentFetcher) FetchQuotedParent(
 		return nil, ee
 	}
 
+	// NB: encoding/json (not sonic) — cassandra.Message embeds the marshal-only
+	// Reactions map[ReactionKey]ReactorInfo (struct-keyed, no UnmarshalJSON).
+	// sonic rejects that type's decoder outright; stdlib tolerates it when the
+	// field is absent (which it is for quoted-parent snapshots).
 	var parent cassandra.Message
 	if err := json.Unmarshal(msg.Data, &parent); err != nil {
 		return nil, fmt.Errorf("unmarshal parent message: %w", err)
