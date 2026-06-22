@@ -61,7 +61,7 @@ func htmlContentMessageEvent() model.MessageEvent {
 
 // TestSonicSemanticEquivalence: sonic default output must parse to the same
 // value as stdlib output, even though the bytes differ.
-func TestSonicSemanticEquivalence(t *testing.T) {
+func TestSonic_SemanticEquivalence(t *testing.T) {
 	fixtures := map[string]any{
 		"roomEvent":    htmlContentRoomEvent(),
 		"messageEvent": htmlContentMessageEvent(),
@@ -88,7 +88,7 @@ func TestSonicSemanticEquivalence(t *testing.T) {
 // TestSonicCrossCodecRoundTrip: a consumer on either codec decodes the other's
 // bytes to an equal value — i.e. clients (stdlib/JSON.parse) read sonic output
 // losslessly, and broadcast-worker (sonic) reads stdlib-produced inbound events.
-func TestSonicCrossCodecRoundTrip(t *testing.T) {
+func TestSonic_CrossCodecRoundTrip(t *testing.T) {
 	t.Run("roomEvent", func(t *testing.T) {
 		orig := htmlContentRoomEvent()
 		son, err := sonic.Marshal(orig)
@@ -111,7 +111,7 @@ func TestSonicCrossCodecRoundTrip(t *testing.T) {
 // is a json.RawMessage ([]byte). sonic must splice it in as raw JSON, not
 // base64-encode it like an ordinary byte slice. Covers a real wire risk of the
 // trial (per review feedback).
-func TestSonicEncryptedRawMessageEmbedding(t *testing.T) {
+func TestSonic_EncryptedRawMessageEmbedding(t *testing.T) {
 	ev := htmlContentRoomEvent()
 	ev.Message = nil
 	ev.EncryptedMessage = stdjson.RawMessage(`{"ciphertext":"abcdef","version":7}`)

@@ -15,7 +15,7 @@ import (
 // SendMessageRequest with their own (stdlib-class) encoder, and gatekeeper now
 // decodes it with sonic. Assert sonic decodes a client request to the same value
 // stdlib does, including HTML-metachar content.
-func TestSonicDecodesClientRequest(t *testing.T) {
+func TestSonic_DecodesClientRequest(t *testing.T) {
 	orig := model.SendMessageRequest{
 		ID:                    "01H8XGJ9ABCDEF01234567",
 		Content:               `if a < b && c > d then "x" else <tag>`,
