@@ -8,6 +8,24 @@
 #   MIGRATION_IMAGE     Full image ref, e.g. registry.example.com/chat-migration:v1.0.0
 #   NAMESPACE           Kubernetes namespace (default: migration)
 #
+# ── Vault secret management — choose ONE approach ────────────────────────────
+#
+#   Option A: External Secrets Operator (recommended — no CI changes needed)
+#     ESO syncs Vault → K8s Secret automatically before the pipeline runs.
+#     Apply once: kubectl apply -f vault-secretstore.yaml -f vault-external-secret.yaml
+#     No CI variables needed for Vault. The setup stage only applies the ConfigMap.
+#
+#   Option B: GitLab CI Vault JWT (pipeline fetches secrets at run time)
+#     GitLab authenticates to Vault using its OIDC id_token, fetches the secrets,
+#     and creates the K8s Secret in the setup stage.
+#     Required additional CI variables:
+#       VAULT_ADDR      Vault server URL, e.g. https://vault.example.com
+#     Required Vault config:
+#       - JWT auth method enabled: vault auth enable jwt
+#       - JWT auth configured with GitLab OIDC issuer
+#       - Role "gitlab-migration" with policy allowing read on kv/data/migration/*
+#     To use Option B: uncomment setup:sync-vault-secrets and comment out setup:apply-configmap.
+#
 # ── Pipeline flow ────────────────────────────────────────────────────────────
 #
 #   setup         → apply ConfigMap to the cluster (manual start)
@@ -63,8 +81,10 @@ variables:
     -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
 
 # ── Stage: setup ──────────────────────────────────────────────────────────────
-# Applies the ConfigMap so all subsequent jobs have the correct env vars.
-# The Secret must be applied separately (fill real credentials, do not commit).
+
+# ── Option A (default): ESO manages the K8s Secret from Vault ─────────────────
+# ESO must already be running in the cluster with vault-secretstore.yaml and
+# vault-external-secret.yaml applied. This job only applies the ConfigMap.
 setup:apply-configmap:
   extends: .kubectl
   stage: setup
@@ -75,6 +95,53 @@ setup:apply-configmap:
     - kubectl apply -f $MIGRATION_DIR/configmap.yaml
     - echo "ConfigMap applied. Verify CUTOFF_TIMESTAMP and MESSAGE_START_DATE_MS are correct:"
     - kubectl get configmap migration-config -n $NAMESPACE -o yaml
+
+# ── Option B (alternative): GitLab CI fetches from Vault and creates K8s Secret ─
+# Uncomment this job and comment out setup:apply-configmap above to use this approach.
+# GitLab authenticates to Vault using a short-lived OIDC id_token (no static token needed).
+# Uses the Vault HTTP API directly (curl + jq) — no vault CLI binary required.
+#
+# setup:sync-vault-secrets:
+#   image: bitnami/kubectl:latest   # has curl and jq
+#   stage: setup
+#   when: manual
+#   allow_failure: false
+#   id_tokens:
+#     VAULT_ID_TOKEN:
+#       aud: $VAULT_ADDR             # audience must match Vault JWT auth config
+#   script:
+#     # 1. Exchange GitLab OIDC token for a Vault token
+#     - |
+#       VAULT_TOKEN=$(curl -sf "$VAULT_ADDR/v1/auth/jwt/login" \
+#         -d "{\"jwt\":\"$VAULT_ID_TOKEN\",\"role\":\"gitlab-migration\"}" \
+#         | jq -r .auth.client_token)
+#       if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then
+#         echo "Vault authentication failed"; exit 1
+#       fi
+#
+#     # 2. Fetch each secret field from Vault KV v2
+#     - |
+#       fetch() { curl -sf -H "X-Vault-Token: $VAULT_TOKEN" \
+#         "$VAULT_ADDR/v1/kv/data/migration/prod" | jq -r ".data.data.$1"; }
+#       SOURCE_MONGO_URI=$(fetch source_mongo_uri)
+#       TARGET_MONGO_URI=$(fetch target_mongo_uri)
+#       CASSANDRA_HOSTS=$(fetch cassandra_hosts)
+#       CASSANDRA_USER=$(fetch cassandra_user)
+#       CASSANDRA_PASSWORD=$(fetch cassandra_password)
+#
+#     # 3. Apply namespace + ConfigMap
+#     - kubectl apply -f $MIGRATION_DIR/namespace.yaml
+#     - kubectl apply -f $MIGRATION_DIR/configmap.yaml
+#
+#     # 4. Create or update the K8s Secret from Vault values
+#     - |
+#       kubectl create secret generic migration-secrets -n $NAMESPACE \
+#         --from-literal=SOURCE_MONGO_URI="$SOURCE_MONGO_URI" \
+#         --from-literal=TARGET_MONGO_URI="$TARGET_MONGO_URI" \
+#         --from-literal=CASSANDRA_HOSTS="$CASSANDRA_HOSTS" \
+#         --from-literal=CASSANDRA_USER="$CASSANDRA_USER" \
+#         --from-literal=CASSANDRA_PASSWORD="$CASSANDRA_PASSWORD" \
+#         --dry-run=client -o yaml | kubectl apply -f -
 
 # ── Stage: phase-1 ────────────────────────────────────────────────────────────
 # All four jobs run in parallel. Stage completes when ALL four are done.
