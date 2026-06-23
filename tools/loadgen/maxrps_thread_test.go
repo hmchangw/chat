@@ -132,3 +132,19 @@ func TestThreadWorkload_Label(t *testing.T) {
 	w := &threadWorkload{}
 	assert.Equal(t, "thread", w.Label())
 }
+
+func TestRunMaxRPS_ThreadRequiresPreset(t *testing.T) {
+	code := runMaxRPS(context.Background(), &config{}, []string{"--workload=thread"})
+	assert.Equal(t, 2, code)
+}
+
+func TestRunMaxRPS_ThreadUnknownPreset(t *testing.T) {
+	code := runMaxRPS(context.Background(), &config{}, []string{"--workload=thread", "--preset=nope"})
+	assert.Equal(t, 2, code)
+}
+
+func TestRunMaxRPS_ThreadRequiresCassandra(t *testing.T) {
+	// valid preset but no CassandraHosts → fast-fail with code 2
+	code := runMaxRPS(context.Background(), &config{}, []string{"--workload=thread", "--preset=medium"})
+	assert.Equal(t, 2, code)
+}
