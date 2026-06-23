@@ -128,19 +128,18 @@ within that phase.
 k8s/migration/
   jobs/
     01-users.yaml
-    02-rooms.yaml
-    02-avatars.yaml
-    03-subscriptions.yaml
-    03-room-members.yaml
-    03-uploads.yaml
+    01-rooms.yaml
+    01-subscriptions.yaml
+    01-avatars.yaml
+    02-room-members.yaml
+    02-thread-subscriptions.yaml
+    02-thread-rooms.yaml
     03-cassandra-messages-by-id.yaml
     03-cassandra-messages-by-room.yaml
     03-cassandra-pinned-messages.yaml
-    04-thread-rooms.yaml
-    04-cassandra-thread-messages.yaml
-    05-thread-subscriptions.yaml
-    06-backfill-rooms-lastmsg.yaml
-    06-backfill-thread-rooms-lastmsg.yaml
+    03-cassandra-thread-messages.yaml
+    04-backfill-rooms-lastmsg.yaml
+    04-backfill-thread-rooms-lastmsg.yaml
   run-migration.sh
   configmap.yaml       # source/target connection strings
 ```
@@ -164,93 +163,76 @@ Secrets.
 
 ---
 
-### Phase 1 — Foundation (no dependencies)
+### Phase 1 — Foundation (all parallel, source deps only)
 
-**Estimated duration: ~1 minute (PROD)**
+**Estimated duration: ~25 minutes (PROD) — dominated by subscriptions**
 
-| Job | Source | Target | Count (PROD est.) |
-|---|---|---|---|
-| `01-users` | `users` | `users` | ~90K |
+None of these jobs have a target dependency. They all read from source collections only
+and can run fully in parallel.
 
-`users` is the root entity referenced by nearly every other collection.
-It runs alone and must complete before Phase 2 begins.
+| Job | Source Collections Read | Target | Count (PROD est.) | Est. Duration |
+|---|---|---|---|---|
+| `01-users` | `users` | `users` | ~90K | <1 min |
+| `01-rooms` | `rocketchat_room` + `rocketchat_subscription` | `rooms` | ~1,000,000 | ~3–4 min |
+| `01-subscriptions` | `rocketchat_subscription` + `rocketchat_room` | `subscriptions` | ~7,400,000 | ~25 min |
+| `01-avatars` | `rocketchat_avatars` | `rocketchat_avatars` | negligible | <1 min |
 
----
-
-### Phase 2 — Room Shell (parallel)
-
-**Estimated duration: ~3–4 minutes (PROD)**
-
-| Job | Source | Target | Count (PROD est.) |
-|---|---|---|---|
-| `02-rooms` | `rocketchat_room` | `rooms` | ~1,000,000 |
-| `02-avatars` | `rocketchat_avatars` | `rocketchat_avatars` | negligible |
-
-`rooms` is migrated without `lastMsgId` / `lastMsgAt` — these denormalized
-fields are backfilled in Phase 6 after messages exist.
-
-> Rooms is the largest MongoDB collection in PROD at ~1M documents. At 5,000 writes/sec
-> this takes ~3–4 minutes — still fast enough that it does not affect the overall timeline.
+`rooms` is migrated without `lastMsgId` / `lastMsgAt` — backfilled in Phase 4.
 
 ---
 
-### Phase 3 — Membership + Messages (parallel)
+### Phase 2 — Derived + Dependent Collections (all parallel, need target `users`)
 
-**Estimated duration: ~3–6 hours (PROD) — dominated by Cassandra message writes**
+**Estimated duration: ~30–60 minutes (PROD) — dominated by `thread_rooms` derivation**
 
-All Phase 3 jobs run in parallel:
+All three jobs need `users` from Phase 1. They run in parallel with each other.
+`thread_rooms` is the critical gate: Phase 3 cannot start until it completes.
+
+| Job | Source Collections Read | Target | Target Dep | Count (PROD est.) | Est. Duration |
+|---|---|---|---|---|---|
+| `02-room-members` | `tsmc_room_members` | `room_members` | `users` | ~1,450,000 | ~5 min |
+| `02-thread-subscriptions` | `tsmc_thread_subscriptions` + `rocketchat_room` | `thread_subscriptions` | `users` | ~2,400,000 | ~8 min |
+| `02-thread-rooms` | `rocketchat_message` + `tsmc_thread_subscriptions` + `rocketchat_room` | `thread_rooms` *(derived)* | `users` | scan of 216M | ~30–60 min |
+
+**`thread_rooms` derivation:** Scans all 216M source messages where `tcount > 0`
+(thread root messages) and constructs one `thread_rooms` document per root.
+Skips `lastMsgId` / `lastMsgAt` — backfilled in Phase 4.
+
+Before Phase 3 starts: create an index on `thread_rooms.parentMessageId` in the
+target — every Phase 3 Cassandra write for a thread message hits this lookup.
+
+---
+
+### Phase 3 — Cassandra Message Tables (all parallel, need target `thread_rooms`)
+
+**Estimated duration: ~3–6 hours (PROD) — the dominant phase**
+
+All four Cassandra tables need `thread_room_id`, which is resolved by looking up
+`thread_rooms.parentMessageId` in the target for each thread-related message.
+All four jobs run in parallel.
 
 | Job | Source | Target | Count (PROD est.) | Est. Duration |
 |---|---|---|---|---|
-| `03-subscriptions` | `rocketchat_subscription` | `subscriptions` | ~7,400,000 | ~25 min |
-| `03-room-members` | `tsmc_room_members` | `room_members` | ~1,450,000 | ~5 min |
-| `03-uploads` | `rocketchat_uploads` | `rocketchat_uploads` | ~14K | <1 min |
-| `03-cassandra-messages-by-id` | `rocketchat_message` | `messages_by_id` | 216M | ~3 hours |
-| `03-cassandra-messages-by-room` | `rocketchat_message` | `messages_by_room` | 216M | ~3 hours |
+| `03-cassandra-messages-by-id` | `rocketchat_message` | `messages_by_id` | 216M | ~3 hrs |
+| `03-cassandra-messages-by-room` | `rocketchat_message` | `messages_by_room` | 216M | ~3 hrs |
 | `03-cassandra-pinned-messages` | `rocketchat_message` (pinned) | `pinned_messages_by_room` | small subset | <30 min |
+| `03-cassandra-thread-messages` | `rocketchat_message` (where `tmid` set) | `thread_messages_by_thread` | subset of 216M | ~1–2 hrs |
 
-> The two Cassandra message jobs (`messages_by_id` and `messages_by_room`) read the same
-> source collection but write to different tables. They run in parallel — each writing
-> a different Cassandra table — cutting the wall-clock time roughly in half vs sequential.
+> `messages_by_id` and `messages_by_room` read the same source but write to
+> different Cassandra tables — parallel jobs halve the wall-clock time.
 >
-> Messages are inserted in ascending `created_at` order so that any self-referential
-> quoted message IDs always point to an already-written row.
+> All jobs insert messages in ascending `created_at` order.
 
 ---
 
-### Phase 4 — Thread Structure (parallel)
-
-**Estimated duration: ~30–60 minutes (PROD)**
-
-| Job | Source | Target | Notes |
-|---|---|---|---|
-| `04-thread-rooms` | `rocketchat_message` (where `tcount > 0`) | `thread_rooms` *(derived)* | One `thread_rooms` document per thread root message |
-| `04-cassandra-thread-messages` | `rocketchat_message` (where `tmid` is set) | `thread_messages_by_thread` | Thread reply messages only |
-
-`thread_rooms` skips `lastMsgId` / `lastMsgAt` — backfilled in Phase 6.
-
----
-
-### Phase 5 — Thread Subscriptions
-
-**Estimated duration: ~55 minutes (PROD)**
-
-| Job | Source | Target | Count (PROD est.) |
-|---|---|---|---|
-| `05-thread-subscriptions` | `tsmc_thread_subscriptions` | `thread_subscriptions` | ~2,400,000 |
-
-Deepest dependency node — requires `thread_rooms`, `rooms`, and `users` to all exist.
-
----
-
-### Phase 6 — Denormalized Backfill (parallel)
+### Phase 4 — Denormalized Backfill (parallel)
 
 **Estimated duration: ~10 minutes (PROD)**
 
 | Job | Updates |
 |---|---|
-| `06-backfill-rooms-lastmsg` | Sets `rooms.lastMsgId` and `rooms.lastMsgAt` from Cassandra `messages_by_room` |
-| `06-backfill-thread-rooms-lastmsg` | Sets `thread_rooms.lastMsgId` and `thread_rooms.lastMsgAt` from Cassandra `thread_messages_by_thread` |
+| `04-backfill-rooms-lastmsg` | Sets `rooms.lastMsgId` and `rooms.lastMsgAt` from Cassandra `messages_by_room` |
+| `04-backfill-thread-rooms-lastmsg` | Sets `thread_rooms.lastMsgId` and `thread_rooms.lastMsgAt` from Cassandra `thread_messages_by_thread` |
 
 ---
 
@@ -259,13 +241,11 @@ Deepest dependency node — requires `thread_rooms`, `rooms`, and `users` to all
 | Phase | Jobs | Est. Duration | Running Total |
 |---|---|---|---|
 | Pre-Migration | Dry-run, baseline counts | ~1 hour | 1 hr |
-| Phase 1 | users (~90K) | ~1 min | ~1 hr |
-| Phase 2 | rooms (~1M), avatars | ~3–4 min | ~1 hr 5 min |
-| Phase 3 | subscriptions (~7.4M), room_members (~1.45M), uploads, Cassandra messages (216M × 2) | **3–6 hours** | ~4–7 hrs |
-| Phase 4 | thread_rooms (derived), Cassandra thread messages | ~30–60 min | ~4.5–8 hrs |
-| Phase 5 | thread_subscriptions (~2.4M) | ~8 min | ~4.5–8 hrs |
-| Phase 6 | backfill | ~10 min | ~5–8.5 hrs |
-| Connector catch-up | Replay events since resume token | ~30–60 min | **~6–10 hrs total** |
+| Phase 1 | users, rooms, subscriptions, avatars | ~25 min | ~1 hr 25 min |
+| Phase 2 | room_members, thread_subscriptions, **thread_rooms** (critical gate) | ~30–60 min | ~2–2.5 hrs |
+| Phase 3 | all 4 Cassandra tables (216M messages) | **~3–6 hours** | ~5–8.5 hrs |
+| Phase 4 | backfill rooms + thread_rooms | ~10 min | ~5–9 hrs |
+| Connector catch-up | Replay events since resume token | ~30–60 min | **~5.5–10 hrs total** |
 
 > **Note:** Throughput assumptions — MongoDB: ~5,000 docs/sec per job;
 > Cassandra: ~20,000 rows/sec per job. Actual throughput depends on cluster
@@ -294,9 +274,10 @@ If any check fails, the migration halts for investigation.
 |---|---|---|---|
 | Job crashes mid-collection | Medium | Low | Checkpointing + idempotent upserts — restart from checkpoint |
 | Schema mismatch (source vs target) | Medium | High | Dry-run in Pre-Migration catches this before real run |
+| `thread_rooms` derivation is slow — it gates all 216M Cassandra writes | Medium | **High** | Index `rocketchat_message` on `tcount` before running; parallelize scan by date range if needed |
+| `thread_room_id` lookup slow in Phase 3 (216M hits on thread_rooms) | Medium | Medium | Index `thread_rooms.parentMessageId` before Phase 3 starts |
 | Cassandra throughput lower than estimated | Medium | Medium | Load test in TEST first; scale Cassandra write workers if needed |
 | Connector misses events from before migration | Low | High | Resume token captured in P0.1 before any migration work begins |
-| `thread_rooms` derivation is slow (full scan of 216M messages) | Medium | Medium | Run with an index on `tcount > 0`; parallelize by room |
 | Silent data loss not caught | Low | High | Validation gate between every phase with count + spot checks |
 | Cut-over happens before connector catches up | Low | High | Connector lag monitored; cut-over blocked until lag < 5 seconds for 10 min |
 
@@ -320,7 +301,7 @@ until the new system is confirmed stable.
 
 Migration is considered complete when all of the following are true:
 
-- [ ] All Phase 1–6 jobs have reached `Complete` status in Kubernetes
+- [ ] All Phase 1–4 jobs have reached `Complete` status in Kubernetes
 - [ ] All validation gates passed (no halts, no threshold violations)
 - [ ] Backfill pass complete — `rooms.lastMsgId` and `thread_rooms.lastMsgId` populated
 - [ ] Oplog connector running and lag is < 5 seconds, sustained for 10 minutes
