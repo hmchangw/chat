@@ -83,7 +83,7 @@ run-dashboards:
 	$(COMPOSE) --profile dashboards up -d
 	$(MAKE) run PRESET=$(PRESET) RATE=$(RATE) DURATION=$(DURATION)
 
-run-max-rps: ## Ramp RPS to find the max under SLO (WORKLOAD=messages|history|room-read PRESET=.. STEPS=..)
+run-max-rps: ## Ramp RPS to find the max under SLO (WORKLOAD=messages|thread|history|room-read|read-receipt PRESET=.. STEPS=..)
 	@test -n "$(PRESET)" || (echo "PRESET=<name> required" && exit 1)
 	$(COMPOSE) --profile dashboards up -d cadvisor prometheus
 	$(COMPOSE) exec -T loadgen /loadgen max-rps \
