@@ -29,8 +29,32 @@ spec:
         envFrom:
         - configMapRef:
             name: migration-config
-        - secretRef:
-            name: migration-secrets
+        env:
+        - name: SOURCE_MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret   # REPLACE with the name your VaultSecret creates
+              key: SOURCE_MONGO_URI
+        - name: TARGET_MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret
+              key: TARGET_MONGO_URI
+        - name: CASSANDRA_HOSTS
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret
+              key: CASSANDRA_HOSTS
+        - name: CASSANDRA_USER
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret
+              key: CASSANDRA_USER
+        - name: CASSANDRA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret
+              key: CASSANDRA_PASSWORD
         resources:
           requests:
             cpu: "500m"

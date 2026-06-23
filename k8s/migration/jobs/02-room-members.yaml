@@ -20,8 +20,17 @@ spec:
         envFrom:
         - configMapRef:
             name: migration-config
-        - secretRef:
-            name: migration-secrets
+        env:
+        - name: SOURCE_MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret   # REPLACE with the name your VaultSecret creates
+              key: SOURCE_MONGO_URI
+        - name: TARGET_MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: migration-vault-secret
+              key: TARGET_MONGO_URI
         resources:
           requests:
             cpu: "250m"
