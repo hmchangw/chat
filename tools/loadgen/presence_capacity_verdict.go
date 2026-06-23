@@ -62,6 +62,7 @@ func evaluateCapacityStep(in capacityStepInputs, th capacityThresholds) capacity
 		N: in.N, EffectiveN: in.EffectiveN,
 		StartedAt: in.StartedAt, HoldDuration: in.HoldDuration,
 		FalseOfflines: in.FalseOfflines,
+		Self:          in.Self,
 		ConnectP50Ms:  percentile(in.ConnectLatencyMs, 0.50),
 		ConnectP95Ms:  percentile(in.ConnectLatencyMs, 0.95),
 		ConnectP99Ms:  percentile(in.ConnectLatencyMs, 0.99),

@@ -100,3 +100,10 @@ func TestEvaluateCapacityStep_ConnectErrorTrip(t *testing.T) {
 	assert.Equal(t, verdictTrip, r.Kind)
 	assert.Contains(t, r.Reasons[0], "connect error_rate")
 }
+
+func TestEvaluateCapacityStep_PropagatesSelf(t *testing.T) {
+	in := baseCapInputs()
+	in.Self = SelfMetrics{GCPauseP99Ms: 7, Goroutines: 123}
+	r := evaluateCapacityStep(in, capThresholds())
+	assert.Equal(t, in.Self, r.Self)
+}
