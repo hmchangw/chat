@@ -265,6 +265,12 @@ type stepEnv struct {
 	cooldown       time.Duration
 	mintJWT        func(ctx context.Context, account string) error // optional; nil = skip
 
+	// Presence load (nil when --presence is off). presencePool owns its own
+	// publisher + observer conns, independent of the message pools.
+	presencePool      *presencePool
+	presenceCollector *presenceCollector
+	presenceHeartbeat time.Duration
+
 	holdStartNanos    atomic.Int64
 	holdDurationNanos atomic.Int64
 	activatedCount    atomic.Int64
@@ -542,6 +548,26 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 	if err != nil && env.collector != nil {
 		env.collector.RecordActionFailure()
 	}
+}
+
+// emitPresence publishes one presence transition for u and records its
+// attempt/expectation/failure on the presence collector. No-op when presence
+// is disabled (nil pool) or u has no presence state.
+func emitPresence(env *stepEnv, u *presenceUser, tr presenceTransition) {
+	if env.presencePool == nil || u == nil {
+		return
+	}
+	sentAt := time.Now()
+	err := env.presencePool.Publish(tr.subject, tr.payload)
+	if tr.expect == "" { // no-op transition (steady ping) — don't measure
+		return
+	}
+	if err != nil {
+		env.presenceCollector.RecordEmit()
+		env.presenceCollector.RecordEmitFailure()
+		return
+	}
+	env.presenceCollector.Expect(u.account, tr.expect, sentAt)
 }
 
 // runDailyForTest is the testable variant: takes an envFactory so tests can

@@ -206,3 +206,22 @@ func TestParseDailyConfig_PresenceEnabled(t *testing.T) {
 	assert.True(t, cfg.Presence)
 	assert.Equal(t, 15*time.Second, cfg.PresenceHeartbeat)
 }
+
+func TestEmitPresence_NoPoolIsNoop(t *testing.T) {
+	// With no presence pool, emitPresence must be a safe no-op.
+	env := &stepEnv{} // presencePool nil
+	u := newPresenceUserForAccount("user-1", "site-test")
+	emitPresence(env, u, u.hello(nowMillis())) // must not panic
+}
+
+func TestEmitPresence_RecordsExpectation(t *testing.T) {
+	c := newPresenceCollector()
+	env := &stepEnv{presenceCollector: c}
+	// A non-nil pool with zero publisher conns -> Publish returns an error,
+	// which emitPresence records as attempted+failed.
+	env.presencePool = &presencePool{collector: c}
+	u := newPresenceUserForAccount("user-1", "site-test")
+	emitPresence(env, u, u.hello(nowMillis()))
+	assert.Equal(t, int64(1), c.Attempted())
+	assert.Equal(t, int64(1), c.Failed())
+}
