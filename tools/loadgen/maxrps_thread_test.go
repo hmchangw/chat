@@ -127,3 +127,8 @@ func TestGenerator_ThreadMode_EmptyParentsSkips(t *testing.T) {
 	// Nothing should have been published.
 	assert.Empty(t, pub.snapshot(), "thread mode with empty parent slices must publish nothing")
 }
+
+func TestThreadWorkload_Label(t *testing.T) {
+	w := &threadWorkload{}
+	assert.Equal(t, "thread", w.Label())
+}
