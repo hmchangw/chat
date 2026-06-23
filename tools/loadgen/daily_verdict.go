@@ -123,6 +123,20 @@ type ActionLatencyStats struct {
 	P99Ms float64
 }
 
+// PresenceObsStats is the observational presence summary for one daily step.
+// It NEVER affects the verdict — evaluateStep does not read it. Latency is a
+// single combined figure over connect (hello->online) and activity
+// (setAway->away/online) transitions; pings are no-ops and contribute only to
+// attempted/error accounting.
+type PresenceObsStats struct {
+	P50Ms     float64
+	P95Ms     float64
+	P99Ms     float64
+	Attempted int64
+	Failed    int64
+	ErrorRate float64
+}
+
 // StepResult is the verdict for a single ramp step.
 type StepResult struct {
 	N                     int
@@ -139,6 +153,8 @@ type StepResult struct {
 	ServiceErrorIncreases map[string]int64
 	LoadgenSelfMetrics    SelfMetrics
 	ActionLatencies       map[string]ActionLatencyStats
+	// Presence is non-nil only when daily ran with --presence. Observational.
+	Presence              *PresenceObsStats
 	Tripped               bool
 	Inconclusive          bool
 	TrippedReasons        []string
