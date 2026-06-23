@@ -41,6 +41,13 @@ type dailyConfig struct {
 	// later into per-action threshold maps. Empty string keeps defaults.
 	ActionP95Ms string
 	ActionP99Ms string
+
+	// Presence load (opt-in). When Presence is false the daily run is
+	// unchanged — no presence pool is built and no presence is emitted.
+	Presence               bool
+	PresenceHeartbeat      time.Duration
+	PresencePublisherConns int
+	PresenceObserverConns  int
 }
 
 func parseDailyConfig(args []string) (dailyConfig, error) {
@@ -108,6 +115,10 @@ for the full design and SLO rationale.
 	usersOverride := fs.Int("users", 0, "override preset.Users (0 = use preset default; must match `loadgen seed --users` if you used it)")
 	actionP95 := fs.String("action-p95-ms", "", "comma-separated per-action p95 latency caps in ms (e.g. \"read_receipt:80,scroll_history:300\"). Overrides defaults. Action names: send, read_receipt, scroll_history, refresh_room_list, member_add, room_create, mute_toggle.")
 	actionP99 := fs.String("action-p99-ms", "", "comma-separated per-action p99 latency caps in ms; same format as --action-p95-ms.")
+	presence := fs.Bool("presence", false, "emit presence load (hello/ping/activity) per daily user; observational stats only, never affects the verdict")
+	presenceHeartbeat := fs.Duration("presence-heartbeat", 30*time.Second, "per-user presence ping interval (only with --presence)")
+	presencePub := fs.Int("presence-publisher-conns", 8, "presence publisher connection count (only with --presence)")
+	presenceObs := fs.Int("presence-observer-conns", 2, "presence observer connection count (only with --presence)")
 	if err := fs.Parse(args); err != nil {
 		return dailyConfig{}, err
 	}
@@ -129,19 +140,23 @@ for the full design and SLO rationale.
 	}
 
 	return dailyConfig{
-		Preset:             *preset,
-		Steps:              parsedSteps,
-		Warmup:             *warmup,
-		Hold:               *hold,
-		Cooldown:           *cooldown,
-		StopOnTrip:         *stopOnTrip,
-		MaxDirectUsers:     *maxDirect,
-		MultiplexPoolSize:  *mux,
-		MaxConnsPerProcess: *maxConns,
-		CSVPath:            *csvPath,
-		Users:              *usersOverride,
-		ActionP95Ms:        *actionP95,
-		ActionP99Ms:        *actionP99,
+		Preset:                 *preset,
+		Steps:                  parsedSteps,
+		Warmup:                 *warmup,
+		Hold:                   *hold,
+		Cooldown:               *cooldown,
+		StopOnTrip:             *stopOnTrip,
+		MaxDirectUsers:         *maxDirect,
+		MultiplexPoolSize:      *mux,
+		MaxConnsPerProcess:     *maxConns,
+		CSVPath:                *csvPath,
+		Users:                  *usersOverride,
+		ActionP95Ms:            *actionP95,
+		ActionP99Ms:            *actionP99,
+		Presence:               *presence,
+		PresenceHeartbeat:      *presenceHeartbeat,
+		PresencePublisherConns: *presencePub,
+		PresenceObserverConns:  *presenceObs,
 	}, nil
 }
 

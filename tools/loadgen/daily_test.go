@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -188,4 +189,20 @@ func TestMergeActionThresholds(t *testing.T) {
 	require.Equal(t, 200.0, th.ActionP95Ms["member_add"], "default preserved for non-overridden")
 	require.Equal(t, 800.0, th.ActionP99Ms["member_add"], "p99 override applied")
 	require.Equal(t, 250.0, th.ActionP99Ms["mark_read"], "p99 default preserved")
+}
+
+func TestParseDailyConfig_PresenceDefaultsOff(t *testing.T) {
+	cfg, err := parseDailyConfig([]string{"--preset=daily-heavy"})
+	require.NoError(t, err)
+	assert.False(t, cfg.Presence)
+	assert.Equal(t, 30*time.Second, cfg.PresenceHeartbeat)
+	assert.Equal(t, 8, cfg.PresencePublisherConns)
+	assert.Equal(t, 2, cfg.PresenceObserverConns)
+}
+
+func TestParseDailyConfig_PresenceEnabled(t *testing.T) {
+	cfg, err := parseDailyConfig([]string{"--preset=daily-heavy", "--presence", "--presence-heartbeat=15s"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Presence)
+	assert.Equal(t, 15*time.Second, cfg.PresenceHeartbeat)
 }
