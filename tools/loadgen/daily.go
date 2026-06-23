@@ -340,6 +340,9 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 	_, _ = env.scrapeServices(ctx) // first call records baseline
 
 	env.collector.Reset()
+	if env.presenceCollector != nil {
+		env.presenceCollector.Reset()
+	}
 
 	if err := waitOrCancel(ctx, env.hold); err != nil {
 		return inconclusiveResult(n, startedAt, env.hold, "ctx canceled during hold")
@@ -382,6 +385,7 @@ func runStep(ctx context.Context, env *stepEnv, n, prevN int) StepResult {
 		Self:            snapshotSelfMetrics(),
 	}
 	r := evaluateStep(in, env.thresholds)
+	snapshotPresenceStats(env, &r)
 
 	_ = waitOrCancel(ctx, env.cooldown)
 	return r
@@ -588,6 +592,29 @@ func emitPresence(env *stepEnv, u *presenceUser, tr presenceTransition) {
 	env.presenceCollector.Expect(u.account, tr.expect, sentAt)
 }
 
+// snapshotPresenceStats fills r.Presence from the presence collector (after
+// counting unresolved expectations as failures). No-op when presence is off.
+func snapshotPresenceStats(env *stepEnv, r *StepResult) {
+	if env.presenceCollector == nil {
+		return
+	}
+	env.presenceCollector.ReapMissing()
+	attempted := env.presenceCollector.Attempted()
+	failed := env.presenceCollector.Failed()
+	lat := env.presenceCollector.LatenciesMs()
+	s := &PresenceObsStats{
+		P50Ms:     percentile(lat, 0.50),
+		P95Ms:     percentile(lat, 0.95),
+		P99Ms:     percentile(lat, 0.99),
+		Attempted: attempted,
+		Failed:    failed,
+	}
+	if attempted > 0 {
+		s.ErrorRate = float64(failed) / float64(attempted)
+	}
+	r.Presence = s
+}
+
 // presenceFlip emits an activity transition when the user's active state
 // changed this tick. active->idle => away; idle->active => not away. No-op when
 // presence is disabled or the state didn't change.
@@ -711,6 +738,9 @@ func closePools(env *stepEnv) {
 	}
 	if env.multiplex != nil {
 		env.multiplex.Close()
+	}
+	if env.presencePool != nil {
+		env.presencePool.Close()
 	}
 }
 

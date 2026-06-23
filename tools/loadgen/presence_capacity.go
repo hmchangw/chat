@@ -300,4 +300,3 @@ func presenceCapacityExitCode(results []capacityStepResult) int {
 	}
 	return 1
 }
-

@@ -154,10 +154,10 @@ type StepResult struct {
 	LoadgenSelfMetrics    SelfMetrics
 	ActionLatencies       map[string]ActionLatencyStats
 	// Presence is non-nil only when daily ran with --presence. Observational.
-	Presence              *PresenceObsStats
-	Tripped               bool
-	Inconclusive          bool
-	TrippedReasons        []string
+	Presence       *PresenceObsStats
+	Tripped        bool
+	Inconclusive   bool
+	TrippedReasons []string
 }
 
 // summariseActions reduces the per-action latency sample slices to

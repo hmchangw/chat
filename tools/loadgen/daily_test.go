@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hmchangw/chat/pkg/model"
 )
 
 func TestParseDailyConfig_Defaults(t *testing.T) {
@@ -250,4 +252,28 @@ func TestPresenceFlip_NoPoolIsNoop(t *testing.T) {
 	u := &userState{Account: "user-1", presence: newPresenceUserForAccount("user-1", "site-test")}
 	u.active = false
 	presenceFlip(env, u, true) // changed, but no pool -> must not panic and no-op
+}
+
+func TestSnapshotPresenceStats_NilWhenDisabled(t *testing.T) {
+	env := &stepEnv{} // no presence collector
+	r := StepResult{}
+	snapshotPresenceStats(env, &r)
+	assert.Nil(t, r.Presence)
+}
+
+func TestSnapshotPresenceStats_PopulatesFromCollector(t *testing.T) {
+	c := newPresenceCollector()
+	now := time.Now()
+	// Two resolved transitions -> two latency samples.
+	c.Expect("user-1", model.StatusOnline, now)
+	c.Observe("user-1", model.StatusOnline, now.Add(10*time.Millisecond))
+	c.Expect("user-2", model.StatusAway, now)
+	c.Observe("user-2", model.StatusAway, now.Add(20*time.Millisecond))
+	env := &stepEnv{presenceCollector: c}
+	r := StepResult{}
+	snapshotPresenceStats(env, &r)
+	require.NotNil(t, r.Presence)
+	assert.Equal(t, int64(2), r.Presence.Attempted)
+	assert.Equal(t, int64(0), r.Presence.Failed)
+	assert.InDelta(t, 20, r.Presence.P99Ms, 5)
 }
