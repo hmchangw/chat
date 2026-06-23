@@ -24,7 +24,8 @@ The migration is split into two sequential phases:
    once connector lag reaches near-zero.
 
 Estimated total wall-clock time (PROD): **6–10 hours end-to-end** including connector
-catch-up, assuming no major failures.
+catch-up, assuming no major failures. The dominant factor is the 216M message write
+to Cassandra (Phase 3) — all other collections are comparatively small.
 
 ---
 
@@ -74,23 +75,24 @@ catch-up, assuming no major failures.
 | `rocketchat_uploads` | 456 |
 | `rocketchat_avatars` | 9 |
 
-### PROD Environment (estimated from known message count)
+### PROD Environment
 
-Scale factor from TEST → PROD (messages): 216M / 6.9M ≈ **31×**
+Scale factors are **not uniform** across collections — each collection grows independently:
 
-| Collection | Estimated PROD Count |
-|---|---|
-| `rocketchat_message` | **216,000,000** (confirmed) |
-| `users` | ~3,300,000 |
-| `rocketchat_subscription` | ~1,600,000 |
-| `tsmc_thread_subscriptions` | ~16,600,000 |
-| `tsmc_room_members` | ~310,000 |
-| `rocketchat_room` | ~214,000 |
-| `rocketchat_uploads` | ~14,000 |
-| `rocketchat_avatars` | negligible |
+| Collection | PROD Count | Source | Scale vs TEST |
+|---|---|---|---|
+| `rocketchat_message` | **216,000,000** | Confirmed | 31× |
+| `rocketchat_room` | **~1,000,000** | Confirmed | ~145× |
+| `users` | **~90,000** | Confirmed | ~0.8× (same order as TEST) |
+| `rocketchat_subscription` | ~7,400,000 | Estimated (7.4 subs/room × 1M rooms) | — |
+| `tsmc_thread_subscriptions` | ~2,400,000 | Estimated (31× TEST) | ~31× |
+| `tsmc_room_members` | ~1,450,000 | Estimated (1.45 members/room × 1M rooms) | — |
+| `rocketchat_uploads` | ~14,000 | Estimated (31× TEST) | ~31× |
+| `rocketchat_avatars` | negligible | — | — |
 
-> PROD counts for non-message collections are estimates. Exact counts should be
-> captured in Stage 0 (Pre-Migration Baseline) before the migration begins.
+> Subscription and room_member counts are estimated by multiplying the TEST ratio
+> (subs per room, members per room) by the confirmed PROD room count.
+> Exact counts must be captured in P0.2 (Pre-Migration Baseline) before the run.
 
 ---
 
@@ -164,11 +166,11 @@ Secrets.
 
 ### Phase 1 — Foundation (no dependencies)
 
-**Estimated duration: ~15 minutes (PROD)**
+**Estimated duration: ~1 minute (PROD)**
 
 | Job | Source | Target | Count (PROD est.) |
 |---|---|---|---|
-| `01-users` | `users` | `users` | ~3.3M |
+| `01-users` | `users` | `users` | ~90K |
 
 `users` is the root entity referenced by nearly every other collection.
 It runs alone and must complete before Phase 2 begins.
@@ -177,15 +179,18 @@ It runs alone and must complete before Phase 2 begins.
 
 ### Phase 2 — Room Shell (parallel)
 
-**Estimated duration: ~5 minutes (PROD)**
+**Estimated duration: ~3–4 minutes (PROD)**
 
 | Job | Source | Target | Count (PROD est.) |
 |---|---|---|---|
-| `02-rooms` | `rocketchat_room` | `rooms` | ~214K |
+| `02-rooms` | `rocketchat_room` | `rooms` | ~1,000,000 |
 | `02-avatars` | `rocketchat_avatars` | `rocketchat_avatars` | negligible |
 
 `rooms` is migrated without `lastMsgId` / `lastMsgAt` — these denormalized
 fields are backfilled in Phase 6 after messages exist.
+
+> Rooms is the largest MongoDB collection in PROD at ~1M documents. At 5,000 writes/sec
+> this takes ~3–4 minutes — still fast enough that it does not affect the overall timeline.
 
 ---
 
@@ -197,8 +202,8 @@ All Phase 3 jobs run in parallel:
 
 | Job | Source | Target | Count (PROD est.) | Est. Duration |
 |---|---|---|---|---|
-| `03-subscriptions` | `rocketchat_subscription` | `subscriptions` | ~1.6M | ~5 min |
-| `03-room-members` | `tsmc_room_members` | `room_members` | ~310K | ~1 min |
+| `03-subscriptions` | `rocketchat_subscription` | `subscriptions` | ~7,400,000 | ~25 min |
+| `03-room-members` | `tsmc_room_members` | `room_members` | ~1,450,000 | ~5 min |
 | `03-uploads` | `rocketchat_uploads` | `rocketchat_uploads` | ~14K | <1 min |
 | `03-cassandra-messages-by-id` | `rocketchat_message` | `messages_by_id` | 216M | ~3 hours |
 | `03-cassandra-messages-by-room` | `rocketchat_message` | `messages_by_room` | 216M | ~3 hours |
@@ -232,7 +237,7 @@ All Phase 3 jobs run in parallel:
 
 | Job | Source | Target | Count (PROD est.) |
 |---|---|---|---|
-| `05-thread-subscriptions` | `tsmc_thread_subscriptions` | `thread_subscriptions` | ~16.6M |
+| `05-thread-subscriptions` | `tsmc_thread_subscriptions` | `thread_subscriptions` | ~2,400,000 |
 
 Deepest dependency node — requires `thread_rooms`, `rooms`, and `users` to all exist.
 
@@ -254,13 +259,13 @@ Deepest dependency node — requires `thread_rooms`, `rooms`, and `users` to all
 | Phase | Jobs | Est. Duration | Running Total |
 |---|---|---|---|
 | Pre-Migration | Dry-run, baseline counts | ~1 hour | 1 hr |
-| Phase 1 | users | ~15 min | 1 hr 15 min |
-| Phase 2 | rooms, avatars | ~5 min | 1 hr 20 min |
-| Phase 3 | subscriptions, room_members, uploads, Cassandra messages | **3–6 hours** | 4.5–7.5 hrs |
-| Phase 4 | thread_rooms, Cassandra thread messages | ~30–60 min | 5–8.5 hrs |
-| Phase 5 | thread_subscriptions | ~55 min | 6–9.5 hrs |
-| Phase 6 | backfill | ~10 min | 6.5–10 hrs |
-| Connector catch-up | Replay events since resume token | ~30–60 min | **7–11 hrs total** |
+| Phase 1 | users (~90K) | ~1 min | ~1 hr |
+| Phase 2 | rooms (~1M), avatars | ~3–4 min | ~1 hr 5 min |
+| Phase 3 | subscriptions (~7.4M), room_members (~1.45M), uploads, Cassandra messages (216M × 2) | **3–6 hours** | ~4–7 hrs |
+| Phase 4 | thread_rooms (derived), Cassandra thread messages | ~30–60 min | ~4.5–8 hrs |
+| Phase 5 | thread_subscriptions (~2.4M) | ~8 min | ~4.5–8 hrs |
+| Phase 6 | backfill | ~10 min | ~5–8.5 hrs |
+| Connector catch-up | Replay events since resume token | ~30–60 min | **~6–10 hrs total** |
 
 > **Note:** Throughput assumptions — MongoDB: ~5,000 docs/sec per job;
 > Cassandra: ~20,000 rows/sec per job. Actual throughput depends on cluster
