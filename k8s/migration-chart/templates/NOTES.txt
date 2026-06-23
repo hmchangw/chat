@@ -1,0 +1,23 @@
+Migration Flow Test — {{ .Release.Name }}
+==========================================
+
+Jobs are running as Helm post-install hooks in phase order:
+
+  Weight 10 → Phase 1 (parallel): p1-users, p1-rooms, p1-subscriptions, p1-avatars
+  Weight 20 → Phase 2 (parallel): p2-room-members, p2-thread-rooms, p2-thread-subscriptions
+  Weight 30 → Phase 3 (parallel): p3-messages-by-id, p3-messages-by-room,
+                                   p3-pinned-messages, p3-thread-messages
+
+Watch progress:
+  kubectl get jobs -n {{ .Values.namespace }} -w
+
+Stream logs for a specific job:
+  kubectl logs -n {{ .Values.namespace }} -l migration/job=p2-thread-rooms -f
+
+Check all job statuses at once:
+  kubectl get jobs -n {{ .Values.namespace }} \
+    -o custom-columns='JOB:.metadata.name,PHASE:.metadata.labels.migration/phase,SUCCEEDED:.status.succeeded,FAILED:.status.failed'
+
+Clean up everything when done:
+  helm uninstall {{ .Release.Name }} -n {{ .Values.namespace }}
+  kubectl delete namespace {{ .Values.namespace }}

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: migration-flow-test
+description: >
+  Smoke-test chart that validates the 3-phase migration flow using busybox
+  shell scripts instead of real migration binaries.  Proves that phase
+  ordering, secret injection, and ConfigMap injection all work on a live
+  cluster before the real migration runs.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

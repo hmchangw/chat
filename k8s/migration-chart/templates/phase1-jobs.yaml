@@ -1,0 +1,161 @@
+# ── Phase 1 — Foundation (hook-weight 10) ────────────────────────────────────
+# All four jobs start simultaneously. Helm waits for ALL weight-10 hooks to
+# reach Complete before it applies any weight-20 (Phase 2) resources.
+# Mirrors: 01-users, 01-rooms, 01-subscriptions, 01-avatars
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p1-users
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "1"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "1"
+        migration/job: p1-users
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p1-users
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-users] START — rocketchat.users → chat.users"
+          echo "  SITE_ID=$SITE_ID  SOURCE_DB=$SOURCE_DB  TARGET_DB=$TARGET_DB"
+          echo "  CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
+          echo "  TARGET_MONGO_URI set: $([ -n "$TARGET_MONGO_URI" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase1SleepSeconds }}
+          echo "[migrate-users] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p1-rooms
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "1"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "1"
+        migration/job: p1-rooms
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p1-rooms
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-rooms] START — rocketchat_room → chat.rooms"
+          echo "  SITE_ID=$SITE_ID  SOURCE_DB=$SOURCE_DB  TARGET_DB=$TARGET_DB"
+          echo "  CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase1SleepSeconds }}
+          echo "[migrate-rooms] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p1-subscriptions
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "1"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "1"
+        migration/job: p1-subscriptions
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p1-subscriptions
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-subscriptions] START — rocketchat_subscription → chat.subscriptions"
+          echo "  SITE_ID=$SITE_ID  SOURCE_DB=$SOURCE_DB  TARGET_DB=$TARGET_DB"
+          echo "  CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase1SleepSeconds }}
+          echo "[migrate-subscriptions] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p1-avatars
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "1"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "1"
+        migration/job: p1-avatars
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p1-avatars
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-avatars] START — rocketchat_avatars → chat.rocketchat_avatars"
+          echo "  SITE_ID=$SITE_ID  SOURCE_DB=$SOURCE_DB  TARGET_DB=$TARGET_DB"
+          echo "  CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase1SleepSeconds }}
+          echo "[migrate-avatars] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }

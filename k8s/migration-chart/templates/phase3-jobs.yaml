@@ -1,0 +1,168 @@
+# ── Phase 3 — Cassandra writes (hook-weight 30) ───────────────────────────────
+# Helm only starts these after ALL weight-20 (Phase 2) hooks succeed.
+# All four Cassandra jobs run in parallel within this weight.
+# Mirrors: 03-messages-by-id, 03-messages-by-room, 03-pinned-messages, 03-thread-messages
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p3-messages-by-id
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "3"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "30"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "3"
+        migration/job: p3-messages-by-id
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p3-messages-by-id
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-messages-by-id] START — rocketchat_message → Cassandra messages_by_id"
+          echo "  Window: MESSAGE_START_DATE_MS=$MESSAGE_START_DATE_MS → CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  CASSANDRA_KEYSPACE=$CASSANDRA_KEYSPACE"
+          echo "  SOURCE_MONGO_URI set:   $([ -n "$SOURCE_MONGO_URI" ]   && echo YES || echo NO)"
+          echo "  TARGET_MONGO_URI set:   $([ -n "$TARGET_MONGO_URI" ]   && echo YES || echo NO)"
+          echo "  CASSANDRA_HOSTS set:    $([ -n "$CASSANDRA_HOSTS" ]    && echo YES || echo NO)"
+          echo "  CASSANDRA_USER set:     $([ -n "$CASSANDRA_USER" ]     && echo YES || echo NO)"
+          echo "  CASSANDRA_PASSWORD set: $([ -n "$CASSANDRA_PASSWORD" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase3SleepSeconds }}
+          echo "[migrate-messages-by-id] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p3-messages-by-room
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "3"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "30"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "3"
+        migration/job: p3-messages-by-room
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p3-messages-by-room
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-messages-by-room] START — rocketchat_message → Cassandra messages_by_room"
+          echo "  Window: MESSAGE_START_DATE_MS=$MESSAGE_START_DATE_MS → CUTOFF_TIMESTAMP=$CUTOFF_TIMESTAMP"
+          echo "  CASSANDRA_KEYSPACE=$CASSANDRA_KEYSPACE"
+          echo "  SOURCE_MONGO_URI set:   $([ -n "$SOURCE_MONGO_URI" ]   && echo YES || echo NO)"
+          echo "  CASSANDRA_HOSTS set:    $([ -n "$CASSANDRA_HOSTS" ]    && echo YES || echo NO)"
+          echo "  CASSANDRA_PASSWORD set: $([ -n "$CASSANDRA_PASSWORD" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase3SleepSeconds }}
+          echo "[migrate-messages-by-room] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p3-pinned-messages
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "3"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "30"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "3"
+        migration/job: p3-pinned-messages
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p3-pinned-messages
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-pinned-messages] START — rocketchat_message (pinned=true) → Cassandra pinned_messages_by_room"
+          echo "  CASSANDRA_HOSTS set:    $([ -n "$CASSANDRA_HOSTS" ]    && echo YES || echo NO)"
+          echo "  CASSANDRA_PASSWORD set: $([ -n "$CASSANDRA_PASSWORD" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase3SleepSeconds }}
+          echo "[migrate-pinned-messages] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p3-thread-messages
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "3"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "30"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "3"
+        migration/job: p3-thread-messages
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p3-thread-messages
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-thread-messages] START — rocketchat_message (tmid set) → Cassandra thread_messages_by_thread"
+          echo "  CASSANDRA_HOSTS set:    $([ -n "$CASSANDRA_HOSTS" ]    && echo YES || echo NO)"
+          echo "  CASSANDRA_PASSWORD set: $([ -n "$CASSANDRA_PASSWORD" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase3SleepSeconds }}
+          echo "[migrate-thread-messages] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }

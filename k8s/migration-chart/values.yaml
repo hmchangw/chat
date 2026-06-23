@@ -1,0 +1,31 @@
+# ── Namespace ─────────────────────────────────────────────────────────────────
+namespace: migration-test
+
+# ── Image ─────────────────────────────────────────────────────────────────────
+image: busybox:1.36
+
+# ── Simulated config (mirrors migration-config ConfigMap) ─────────────────────
+config:
+  siteId: "test-site"
+  sourceDb: "rocketchat"
+  targetDb: "chat"
+  checkpointDb: "migration_checkpoint"
+  batchSize: "500"
+  cassandraKeyspace: "chat"
+  cutoffTimestamp: "1750000000000"
+  messageStartDateMs: "1735689600000"   # 2025-01-01
+
+# ── Fake credentials (mirrors what VaultSecret would create) ──────────────────
+# These dummy values prove that secretKeyRef injection works.
+# In production the Secret is created by VaultSecret — never committed here.
+secret:
+  sourceMongoUri: "mongodb://source-mongo:27017/rocketchat"
+  targetMongoUri: "mongodb://target-mongo:27017/chat"
+  cassandraHosts: "cassandra-0.cassandra,cassandra-1.cassandra"
+  cassandraUser: "migration_user"
+  cassandraPassword: "test-password-not-real"
+
+# ── Phase timing (seconds each simulated job sleeps to mimic work) ────────────
+phase1SleepSeconds: 5
+phase2SleepSeconds: 8
+phase3SleepSeconds: 10

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+data:
+  SITE_ID:               {{ .Values.config.siteId | quote }}
+  SOURCE_DB:             {{ .Values.config.sourceDb | quote }}
+  TARGET_DB:             {{ .Values.config.targetDb | quote }}
+  CHECKPOINT_DB:         {{ .Values.config.checkpointDb | quote }}
+  BATCH_SIZE:            {{ .Values.config.batchSize | quote }}
+  CASSANDRA_KEYSPACE:    {{ .Values.config.cassandraKeyspace | quote }}
+  CUTOFF_TIMESTAMP:      {{ .Values.config.cutoffTimestamp | quote }}
+  MESSAGE_START_DATE_MS: {{ .Values.config.messageStartDateMs | quote }}
