@@ -78,7 +78,7 @@ func TestEvaluateCapacityStep_PingShortfallBeatsFalseOffline(t *testing.T) {
 
 func TestEvaluateCapacityStep_FalseOfflineTrip(t *testing.T) {
 	in := baseCapInputs()
-	in.FalseOfflines = 5 // 5/1000 = 0.005 > 0.001
+	in.FalseOfflines = 5 // rate 0.005 exceeds threshold 0.001
 	r := evaluateCapacityStep(in, capThresholds())
 	assert.Equal(t, verdictTrip, r.Kind)
 	assert.Contains(t, r.Reasons[0], "false_offline_rate")
@@ -95,7 +95,7 @@ func TestEvaluateCapacityStep_ConnectLatencyTrip(t *testing.T) {
 
 func TestEvaluateCapacityStep_ConnectErrorTrip(t *testing.T) {
 	in := baseCapInputs()
-	in.ConnectFailed = 50 // 50/1000 = 0.05 > 0.01
+	in.ConnectFailed = 50 // rate 0.05 exceeds threshold 0.01
 	r := evaluateCapacityStep(in, capThresholds())
 	assert.Equal(t, verdictTrip, r.Kind)
 	assert.Contains(t, r.Reasons[0], "connect error_rate")
