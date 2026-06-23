@@ -335,8 +335,9 @@ Reuses the messages presets (`small`/`medium`/`large`/`realistic`).
 - `loadgen seed --workload=thread --preset=<name> [--seed=42] [--parents-per-room=N]` —
   populate Mongo (users/rooms/subscriptions/room keys) and Cassandra
   (parent messages for each room). N defaults to 8 (the `0 → 8` fallback in `BuildThreadFixtures`).
-- `loadgen max-rps --workload=thread --preset=<name> [--seed=42] [flags]` —
-  ramp thread-reply sends. Shared ramp flags (`--steps`, `--warmup`, `--hold`,
+- `loadgen max-rps --workload=thread --preset=<name> [--seed=42] [--parents-per-room=N] [flags]` —
+  ramp thread-reply sends. `--parents-per-room` (default 8) must equal the value
+  used at seed time. Shared ramp flags (`--steps`, `--warmup`, `--hold`,
   `--cooldown`, `--slo-*`, `--csv`) behave identically to the `messages`
   workload.
 - `loadgen teardown --workload=thread --preset=<name> --seed=42` — drop the
@@ -348,8 +349,10 @@ Reuses the messages presets (`small`/`medium`/`large`/`realistic`).
 `--seed` and `--parents-per-room` **must match** between `seed` and `max-rps`.
 The ramp rebuilds parent IDs from the seed to reference them; a mismatch
 makes every reply target a non-existent parent and the gatekeeper rejects
-the run. Both default to seed `42` / 8 parents — leave them at the defaults
-for a straightforward comparison against the `messages` workload.
+the run. Both default to seed `42` / 8 parents — `max-rps --workload=thread`
+now accepts `--parents-per-room` (default 8) so a non-default seed-time value
+can be passed through. Leave both at the defaults for a straightforward
+comparison against the `messages` workload.
 
 ## max-rps — auto-find Max RPS under SLO
 

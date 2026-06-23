@@ -40,6 +40,8 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	rateTol := fs.Float64("rate-tolerance", 0.05, "achieved-vs-target shortfall band for INCONCLUSIVE")
 	stopOnTrip := fs.Bool("stop-on-trip", true, "stop the ramp at the first TRIP")
 	inject := fs.String("inject", "frontdoor", "messages only: frontdoor|canonical")
+	// thread-only tunable:
+	parentsPerRoom := fs.Int("parents-per-room", 0, "thread workload: parents per room — MUST match seed-time --parents-per-room (0 = default 8)")
 	// history-only tunables (ignored for messages):
 	mixFlag := fs.String("mix", "history:80,thread:20", "history only: endpoint mix")
 	beforeModeFlag := fs.String("before-mode", "open:70,scrollback:30", "history only: before-cursor mix")
@@ -97,7 +99,7 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			fmt.Fprintln(os.Stderr, "thread workload requires CASSANDRA_HOSTS (parents must be seeded in Cassandra)")
 			return 2
 		}
-		tf := BuildThreadFixtures(&p, *seed, 0, cfg.SiteID)
+		tf := BuildThreadFixtures(&p, *seed, *parentsPerRoom, cfg.SiteID)
 		tw, clean, err := newThreadWorkload(ctx, cfg, &p, &tf, *seed)
 		if err != nil {
 			slog.Error("init thread workload", "error", err)

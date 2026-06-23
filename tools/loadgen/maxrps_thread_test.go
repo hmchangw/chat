@@ -148,3 +148,11 @@ func TestRunMaxRPS_ThreadRequiresCassandra(t *testing.T) {
 	code := runMaxRPS(context.Background(), &config{}, []string{"--workload=thread", "--preset=medium"})
 	assert.Equal(t, 2, code)
 }
+
+func TestRunMaxRPS_ThreadParentsPerRoomFlagAccepted(t *testing.T) {
+	// flag parses and the Cassandra guard still fires (code 2) before any NATS connect
+	code := runMaxRPS(context.Background(), &config{}, []string{
+		"--workload=thread", "--preset=medium", "--parents-per-room=4",
+	})
+	assert.Equal(t, 2, code)
+}

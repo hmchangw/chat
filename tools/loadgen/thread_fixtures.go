@@ -134,7 +134,9 @@ func threadParentToPlanned(pm threadParent, roomID string, createdAt time.Time) 
 // (messages_by_room + messages_by_id) via the shared writePlannedMessage path,
 // so message-gatekeeper's GetMessageByID resolves them. Parents are stamped at
 // `now` and bucketed with the supplied sizer (MESSAGE_BUCKET_HOURS). Returns the
-// number of parent writes attempted (a launched write may still fail). Bounded fan-out mirrors writeRoomCassandra.
+// number of parent writes dispatched; on a nil error this equals the
+// total parent count, and a non-nil error means one or more dispatched writes failed.
+// Bounded fan-out mirrors writeRoomCassandra.
 func SeedThreadParents(
 	ctx context.Context,
 	session *gocql.Session,
