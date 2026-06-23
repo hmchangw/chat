@@ -30,6 +30,12 @@ type presenceCollector struct {
 	recRemaining map[string]struct{}
 	recElapsed   time.Duration
 	recDone      bool
+
+	// false-offline watcher (capacity mode). When watching, an observed
+	// offline for an account in watchCohort is recorded once in falseOfflines.
+	watching      bool
+	watchCohort   map[string]struct{}
+	falseOfflines map[string]struct{}
 }
 
 func newPresenceCollector() *presenceCollector {
@@ -77,6 +83,14 @@ func (c *presenceCollector) Observe(account string, status model.PresenceStatus,
 			}
 		}
 	}
+	if c.watching && status == model.StatusOffline {
+		if _, want := c.watchCohort[account]; want {
+			if c.falseOfflines == nil {
+				c.falseOfflines = make(map[string]struct{})
+			}
+			c.falseOfflines[account] = struct{}{}
+		}
+	}
 }
 
 // ReapMissing counts every still-open expectation as a missing observation
@@ -95,6 +109,9 @@ func (c *presenceCollector) Reset() {
 	c.latencies = nil
 	c.attempted = 0
 	c.failed = 0
+	c.watching = false
+	c.watchCohort = nil
+	c.falseOfflines = nil
 	c.mu.Unlock()
 }
 
@@ -141,4 +158,31 @@ func (c *presenceCollector) RecoveryRemaining() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.recRemaining)
+}
+
+// WatchOnline arms a cohort of accounts expected to stay online. While armed,
+// each distinct watched account observed going offline is one false offline.
+func (c *presenceCollector) WatchOnline(accounts []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.watching = true
+	c.watchCohort = make(map[string]struct{}, len(accounts))
+	for _, a := range accounts {
+		c.watchCohort[a] = struct{}{}
+	}
+	c.falseOfflines = make(map[string]struct{})
+}
+
+// StopWatchOnline disarms the watcher but preserves the count for reading.
+func (c *presenceCollector) StopWatchOnline() {
+	c.mu.Lock()
+	c.watching = false
+	c.mu.Unlock()
+}
+
+// FalseOfflines is the number of distinct watched accounts seen going offline.
+func (c *presenceCollector) FalseOfflines() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.falseOfflines)
 }

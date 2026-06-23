@@ -73,3 +73,52 @@ func TestPresenceCollector_Recovery(t *testing.T) {
 	assert.True(t, c.RecoveryComplete())
 	assert.InDelta(t, 70.0, float64(c.RecoveryElapsed().Milliseconds()), 0.001)
 }
+
+func TestPresenceCollector_FalseOfflineWatcher(t *testing.T) {
+	c := newPresenceCollector()
+	now := time.Now()
+
+	// Not watching yet: an offline is ignored.
+	c.Observe("u-1", model.StatusOffline, now)
+	assert.Equal(t, 0, c.FalseOfflines())
+
+	// Arm a cohort of three accounts.
+	c.WatchOnline([]string{"u-1", "u-2", "u-3"})
+
+	// Offline for a watched account counts.
+	c.Observe("u-1", model.StatusOffline, now)
+	assert.Equal(t, 1, c.FalseOfflines())
+
+	// Same account offline again is deduped.
+	c.Observe("u-1", model.StatusOffline, now)
+	assert.Equal(t, 1, c.FalseOfflines())
+
+	// Offline for an account NOT in the cohort is ignored.
+	c.Observe("u-99", model.StatusOffline, now)
+	assert.Equal(t, 1, c.FalseOfflines())
+
+	// A non-offline status for a watched account does not count.
+	c.Observe("u-2", model.StatusOnline, now)
+	assert.Equal(t, 1, c.FalseOfflines())
+
+	// A second watched account going offline counts.
+	c.Observe("u-3", model.StatusOffline, now)
+	assert.Equal(t, 2, c.FalseOfflines())
+
+	// StopWatchOnline freezes the count but preserves it for reading.
+	c.StopWatchOnline()
+	c.Observe("u-2", model.StatusOffline, now)
+	assert.Equal(t, 2, c.FalseOfflines())
+}
+
+func TestPresenceCollector_ResetClearsWatcher(t *testing.T) {
+	c := newPresenceCollector()
+	c.WatchOnline([]string{"u-1"})
+	c.Observe("u-1", model.StatusOffline, time.Now())
+	assert.Equal(t, 1, c.FalseOfflines())
+	c.Reset()
+	assert.Equal(t, 0, c.FalseOfflines())
+	// After reset, not watching: offline ignored again.
+	c.Observe("u-1", model.StatusOffline, time.Now())
+	assert.Equal(t, 0, c.FalseOfflines())
+}
