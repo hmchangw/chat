@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"sync/atomic"
@@ -302,6 +301,3 @@ func presenceCapacityExitCode(results []capacityStepResult) int {
 	return 1
 }
 
-// Temporary stubs — replaced by real implementations in Task 5.
-func renderCapacityConsole(_ io.Writer, _ []capacityStepResult) {}
-func writeCapacityCSV(_ string, _ []capacityStepResult) error   { return nil }
