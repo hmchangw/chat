@@ -1,7 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/gocql/gocql"
+
+	"github.com/hmchangw/chat/pkg/msgbucket"
 )
 
 // base62Alphabet mirrors the alphabet in pkg/idgen so IDs produced here pass
@@ -94,4 +102,100 @@ func BuildThreadFixtures(p *Preset, seed int64, parentsPerRoom int, siteID strin
 	}
 
 	return ThreadFixtures{Fixtures: base, ParentsByRoom: parents, ParentsPerRoom: parentsPerRoom}
+}
+
+// threadParentSeedConcurrency caps in-flight parent INSERTs during the seed.
+// Each INSERT targets a distinct partition, so this only bounds coordinator
+// queuing; matches history_seed's historySeedConcurrency.
+const threadParentSeedConcurrency = 50
+
+// threadParentContent is the fixed body stamped on every seeded parent. The
+// gatekeeper fetch only needs the parent's CreatedAt; the body is irrelevant to
+// the benchmark, so a constant keeps the seed deterministic.
+const threadParentContent = "loadgen thread parent"
+
+// threadParentToPlanned projects a seeded parent into the plannedMessage shape
+// writePlannedMessage consumes. createdAt is the parent's timestamp (also the
+// value the gatekeeper resolves). ThreadParentID is empty: a parent is a
+// top-level message.
+func threadParentToPlanned(pm threadParent, roomID string, createdAt time.Time) plannedMessage {
+	return plannedMessage{
+		RoomID:        roomID,
+		MessageID:     pm.MessageID,
+		SenderID:      pm.SenderID,
+		SenderAccount: pm.SenderAccount,
+		SenderEngName: pm.SenderEngName,
+		Content:       threadParentContent,
+		CreatedAt:     createdAt,
+	}
+}
+
+// SeedThreadParents writes every parent in fixtures.ParentsByRoom into Cassandra
+// (messages_by_room + messages_by_id) via the shared writePlannedMessage path,
+// so message-gatekeeper's GetMessageByID resolves them. Parents are stamped at
+// `now` and bucketed with the supplied sizer (MESSAGE_BUCKET_HOURS). Returns the
+// number of parent writes attempted (a launched write may still fail). Bounded fan-out mirrors writeRoomCassandra.
+func SeedThreadParents(
+	ctx context.Context,
+	session *gocql.Session,
+	sizer msgbucket.Sizer,
+	fixtures *ThreadFixtures,
+	siteID string,
+	now time.Time,
+) (int, error) {
+	// Parents are top-level messages, so the parent-CreatedAt lookup
+	// writePlannedMessage takes is unused for them; an empty map is safe.
+	noParentLookup := make(map[string]time.Time)
+
+	sem := make(chan struct{}, threadParentSeedConcurrency)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+
+	total := 0
+	cancelled := false
+	for roomID, list := range fixtures.ParentsByRoom {
+		for i := range list {
+			planned := threadParentToPlanned(list[i], roomID, now)
+			select {
+			case <-ctx.Done():
+				cancelled = true
+			case sem <- struct{}{}:
+			}
+			if cancelled {
+				break
+			}
+			total++
+			wg.Add(1)
+			go func(m plannedMessage) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if err := writePlannedMessage(ctx, session, sizer, &m, siteID, noParentLookup); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}(planned)
+		}
+		if cancelled {
+			break
+		}
+	}
+	wg.Wait()
+	close(errCh)
+	if cancelled {
+		return total, ctx.Err()
+	}
+	if err, ok := <-errCh; ok {
+		return total, fmt.Errorf("seed thread parents: %w", err)
+	}
+	return total, nil
+}
+
+// TeardownThreadParents removes seeded parents from the message tables. It
+// reuses TeardownHistoryCassandra, which TRUNCATEs messages_by_room,
+// messages_by_id, and thread_messages_by_thread — the same tables the thread
+// reply path writes, so this also clears replies produced during a run.
+func TeardownThreadParents(ctx context.Context, session *gocql.Session) error {
+	return TeardownHistoryCassandra(ctx, session)
 }

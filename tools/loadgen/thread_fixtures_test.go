@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,4 +86,20 @@ func TestBuildThreadFixtures_SenderEngNameMatchesUser(t *testing.T) {
 				"SenderEngName must match the user's EngName for sender %s", pm.SenderID)
 		}
 	}
+}
+
+func TestThreadParentToPlanned_TopLevel(t *testing.T) {
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	pm := threadParent{MessageID: "msg20charbase62000001", SenderID: "u1", SenderAccount: "u1.acct", SenderEngName: "User One"}
+	planned := threadParentToPlanned(pm, "room-1", now)
+
+	assert.Equal(t, "room-1", planned.RoomID)
+	assert.Equal(t, pm.MessageID, planned.MessageID)
+	assert.Equal(t, pm.SenderID, planned.SenderID)
+	assert.Equal(t, pm.SenderAccount, planned.SenderAccount)
+	assert.Equal(t, pm.SenderEngName, planned.SenderEngName)
+	assert.Equal(t, now, planned.CreatedAt)
+	assert.Empty(t, planned.ThreadParentID, "parent is a top-level message")
+	assert.Empty(t, planned.ThreadRoomID)
+	assert.NotEmpty(t, planned.Content)
 }
