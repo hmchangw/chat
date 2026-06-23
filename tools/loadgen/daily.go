@@ -576,20 +576,12 @@ func doAction(ctx context.Context, env *stepEnv, u *userState, r *rand.Rand, w a
 // attempt/expectation/failure on the presence collector. No-op when presence
 // is disabled (nil pool) or u has no presence state.
 func emitPresence(env *stepEnv, u *presenceUser, tr presenceTransition) {
-	if env.presencePool == nil || u == nil {
+	if u == nil {
 		return
 	}
-	sentAt := time.Now()
-	err := env.presencePool.Publish(tr.subject, tr.payload)
-	if tr.expect == "" { // no-op transition (steady ping) — don't measure
-		return
-	}
-	if err != nil {
-		env.presenceCollector.RecordEmit()
-		env.presenceCollector.RecordEmitFailure()
-		return
-	}
-	env.presenceCollector.Expect(u.account, tr.expect, sentAt)
+	// emitTransitionRaw handles the nil-pool guard, the no-op (empty expect)
+	// skip for steady pings, and attempt/expectation/failure accounting.
+	emitTransitionRaw(env.presencePool, env.presenceCollector, tr)
 }
 
 // snapshotPresenceStats fills r.Presence from the presence collector (after

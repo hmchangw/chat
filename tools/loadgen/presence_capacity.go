@@ -185,10 +185,9 @@ func startCapacityEmitter(ctx context.Context, env *capacityEnv, u *presenceUser
 				return
 			case <-tick.C:
 			}
-			tr := u.ping(nowMillis())
-			if env.pool != nil {
-				_ = env.pool.Publish(tr.subject, tr.payload)
-			}
+			// A ping has empty expect, so emitTransitionRaw publishes it
+			// without recording a measurement.
+			emitTransitionRaw(env.pool, env.collector, u.ping(nowMillis()))
 			if env.holding() {
 				env.pingsSent.Add(1)
 			}
@@ -198,17 +197,7 @@ func startCapacityEmitter(ctx context.Context, env *capacityEnv, u *presenceUser
 
 // emitCapacityHello publishes a hello and registers its online expectation.
 func emitCapacityHello(env *capacityEnv, u *presenceUser) {
-	tr := u.hello(nowMillis())
-	if env.pool == nil {
-		return
-	}
-	sentAt := time.Now()
-	if err := env.pool.Publish(tr.subject, tr.payload); err != nil {
-		env.collector.RecordEmit()
-		env.collector.RecordEmitFailure()
-		return
-	}
-	env.collector.Expect(u.account, tr.expect, sentAt)
+	emitTransitionRaw(env.pool, env.collector, u.hello(nowMillis()))
 }
 
 //nolint:gocritic // cfg passed by value to satisfy capacityFactory interface

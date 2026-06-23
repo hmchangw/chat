@@ -85,9 +85,8 @@ func (c *presenceCollector) Observe(account string, status model.PresenceStatus,
 	}
 	if c.watching && status == model.StatusOffline {
 		if _, want := c.watchCohort[account]; want {
-			if c.falseOfflines == nil {
-				c.falseOfflines = make(map[string]struct{})
-			}
+			// falseOfflines is always non-nil while watching: WatchOnline,
+			// the only setter of c.watching, allocates it.
 			c.falseOfflines[account] = struct{}{}
 		}
 	}
