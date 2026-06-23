@@ -3959,3 +3959,10 @@ func TestSubscriptionUpdateEvent_RoomNameOmittedWhenEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "roomName")
 }
+
+func TestMigrationRequests_RoundTrip(t *testing.T) {
+	ts := time.Date(2023, 1, 2, 3, 4, 5, 0, time.UTC)
+	roundTrip(t, &model.MigrationEditRequest{MessageID: "m1", RoomID: "r1", CreatedAt: ts, Content: "edited", EditedAt: ts}, &model.MigrationEditRequest{})
+	roundTrip(t, &model.MigrationDeleteRequest{MessageID: "m1", DeletedAt: ts}, &model.MigrationDeleteRequest{})
+	roundTrip(t, &model.MigrationAck{OK: true}, &model.MigrationAck{})
+}

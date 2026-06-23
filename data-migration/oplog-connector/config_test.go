@@ -23,6 +23,7 @@ func TestParseConfig_DefaultsAndSlices(t *testing.T) {
 
 	assert.Equal(t, "site1", cfg.SiteID)
 	assert.Equal(t, []string{"rocketchat_message", "rocketchat_room", "users"}, cfg.WatchCollections)
+	assert.Equal(t, "rocketchat_message", cfg.MessageCollection)
 	assert.Equal(t, "migration", cfg.CheckpointDB)
 	assert.Equal(t, "rocketchat", cfg.SourceDB)
 	assert.Equal(t, "secondary", cfg.ReadPreference)
@@ -55,6 +56,35 @@ func TestParseConfig_TrimsCollectionWhitespace(t *testing.T) {
 	cfg, err := parseConfig()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"rocketchat_message", "users"}, cfg.WatchCollections)
+}
+
+func TestParseConfig_MessageCollectionNotWatchedFails(t *testing.T) {
+	setRequiredEnv(t)
+	// MESSAGE_COLLECTION is not present in WATCH_COLLECTIONS — the federation
+	// $match would never run, silently migrating all foreign messages.
+	t.Setenv("WATCH_COLLECTIONS", "rocketchat_room,users")
+	t.Setenv("MESSAGE_COLLECTION", "rocketchat_message")
+	_, err := parseConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MESSAGE_COLLECTION")
+}
+
+func TestParseConfig_EmptyMessageCollectionFails(t *testing.T) {
+	setRequiredEnv(t)
+	// An empty/whitespace MESSAGE_COLLECTION would match no watcher → the $match never runs.
+	t.Setenv("MESSAGE_COLLECTION", "   ")
+	_, err := parseConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MESSAGE_COLLECTION")
+}
+
+func TestParseConfig_DefaultMessageCollectionWatchedPasses(t *testing.T) {
+	setRequiredEnv(t)
+	// Default WATCH_COLLECTIONS includes the default MESSAGE_COLLECTION.
+	cfg, err := parseConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "rocketchat_message", cfg.MessageCollection)
+	assert.Contains(t, cfg.WatchCollections, cfg.MessageCollection)
 }
 
 func TestParseConfig_MissingRequiredFails(t *testing.T) {

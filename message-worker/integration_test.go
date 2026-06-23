@@ -441,7 +441,7 @@ func TestHandler_Integration(t *testing.T) {
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
 
-	err = h.processMessage(ctx, data)
+	err = h.processMessage(ctx, data, false)
 	require.NoError(t, err)
 
 	var gotMsg string
@@ -522,7 +522,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	}
 	data, err := json.Marshal(replyEvt)
 	require.NoError(t, err)
-	require.NoError(t, h.processMessage(ctx, data))
+	require.NoError(t, h.processMessage(ctx, data, false))
 
 	t.Run("thread room created", func(t *testing.T) {
 		var room model.ThreadRoom
@@ -570,7 +570,7 @@ func TestHandler_Integration_ThreadReply(t *testing.T) {
 	}
 	data2, err := json.Marshal(reply2Evt)
 	require.NoError(t, err)
-	require.NoError(t, h.processMessage(ctx, data2))
+	require.NoError(t, h.processMessage(ctx, data2, false))
 
 	t.Run("thread room lastMsgId updated", func(t *testing.T) {
 		var room model.ThreadRoom
@@ -633,7 +633,7 @@ func TestHandler_Integration_ThreadReplyWithMention(t *testing.T) {
 	}
 	data, err := json.Marshal(replyEvt)
 	require.NoError(t, err)
-	require.NoError(t, h.processMessage(ctx, data))
+	require.NoError(t, h.processMessage(ctx, data, false))
 
 	t.Run("bob auto-subscribed with hasMention=true", func(t *testing.T) {
 		var got model.ThreadSubscription

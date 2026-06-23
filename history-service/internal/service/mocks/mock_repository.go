@@ -700,6 +700,20 @@ func (mr *MockEventPublisherMockRecorder) Publish(ctx, subject, data, msgID any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Publish", reflect.TypeOf((*MockEventPublisher)(nil).Publish), ctx, subject, data, msgID)
 }
 
+// PublishMigration mocks base method.
+func (m *MockEventPublisher) PublishMigration(ctx context.Context, subject string, data []byte, msgID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PublishMigration", ctx, subject, data, msgID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// PublishMigration indicates an expected call of PublishMigration.
+func (mr *MockEventPublisherMockRecorder) PublishMigration(ctx, subject, data, msgID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PublishMigration", reflect.TypeOf((*MockEventPublisher)(nil).PublishMigration), ctx, subject, data, msgID)
+}
+
 // MockThreadRoomRepository is a mock of ThreadRoomRepository interface.
 type MockThreadRoomRepository struct {
 	ctrl     *gomock.Controller

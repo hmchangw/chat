@@ -75,6 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("oplog-connector started", "site", cfg.SiteID, "collections", cfg.WatchCollections)
+	slog.Info("federation-origin filter active", "message_collection", cfg.MessageCollection)
 
 	// A fatal watcher error (e.g. lost resume token) exits non-zero without waiting
 	// for a signal — recovery is operator-driven. Also exits on Done(), so no leak.
@@ -136,8 +137,8 @@ type connector struct {
 // start connects Mongo + NATS, bootstraps the stream, and launches one watcher per collection. Returns a running connector driven via Fatal()/Close().
 func start(ctx context.Context, cfg *config, m *metrics) (*connector, error) {
 	if cfg.StartResumeToken != "" || cfg.StartAtTime != "" {
-		// One-off seed overrides: left set, they force a reseed (ignoring the
-		// checkpoint) on every restart — so warn loudly. Prefer a seed checkpoint doc.
+		// One-off seed overrides: left set, they force a reseed (ignoring the checkpoint)
+		// on every restart — so warn loudly. Prefer a seed checkpoint doc.
 		slog.Warn("START_RESUME_TOKEN/START_AT_TIME is set — ignoring any stored checkpoint and reseeding; unset after first start to resume from the checkpoint",
 			"startResumeTokenSet", cfg.StartResumeToken != "", "startAtTime", cfg.StartAtTime)
 	}
@@ -197,7 +198,7 @@ func start(ctx context.Context, cfg *config, m *metrics) (*connector, error) {
 		}
 		mongoColl := sourceDB.Collection(coll,
 			options.Collection().SetReadPreference(rp).SetReadConcern(readconcern.Majority()))
-		src, err := openMongoChangeSource(watchCtx, mongoColl, sp)
+		src, err := openMongoChangeSource(watchCtx, mongoColl, sp, coll == cfg.MessageCollection)
 		if err != nil {
 			c.Close()
 			return nil, fmt.Errorf("open change stream %q: %w", coll, err)

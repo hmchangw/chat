@@ -69,6 +69,8 @@ type RoomRepository interface {
 // EventPublisher publishes events to NATS with a Nats-Msg-Id dedup header.
 type EventPublisher interface {
 	Publish(ctx context.Context, subject string, data []byte, msgID string) error
+	// PublishMigration publishes like Publish but stamps X-Migration: live.
+	PublishMigration(ctx context.Context, subject string, data []byte, msgID string) error
 }
 
 type ThreadRoomRepository interface {
@@ -158,6 +160,12 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	})
 	natsrouter.Register(r, subject.MsgThreadPattern(siteID), s.GetThreadMessages)
 	natsrouter.Register(r, subject.MsgThreadParentPattern(siteID), s.GetThreadParentMessages)
+	natsrouter.Register(r, subject.MigrationInternalMsgEdit(siteID), func(c *natsrouter.Context, req pkgmodel.MigrationEditRequest) (*pkgmodel.MigrationAck, error) {
+		return s.MigrationEditMessage(c, siteID, req)
+	})
+	natsrouter.Register(r, subject.MigrationInternalMsgDelete(siteID), func(c *natsrouter.Context, req pkgmodel.MigrationDeleteRequest) (*pkgmodel.MigrationAck, error) {
+		return s.MigrationDeleteMessage(c, siteID, req)
+	})
 }
 
 // Compile-time checks.

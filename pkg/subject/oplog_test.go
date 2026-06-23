@@ -18,3 +18,8 @@ func TestMigrationOplog(t *testing.T) {
 func TestMigrationOplogWildcard(t *testing.T) {
 	assert.Equal(t, "chat.oplog.site1.>", subject.MigrationOplogWildcard("site1"))
 }
+
+func TestMigrationInternalSubjects(t *testing.T) {
+	assert.Equal(t, "chat.migration.internal.site1.msg.edit", subject.MigrationInternalMsgEdit("site1"))
+	assert.Equal(t, "chat.migration.internal.site1.msg.delete", subject.MigrationInternalMsgDelete("site1"))
+}
