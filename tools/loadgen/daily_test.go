@@ -277,3 +277,13 @@ func TestSnapshotPresenceStats_PopulatesFromCollector(t *testing.T) {
 	assert.Equal(t, int64(0), r.Presence.Failed)
 	assert.InDelta(t, 20, r.Presence.P99Ms, 5)
 }
+
+func TestProdEnvFactory_PresenceDisabledLeavesNil(t *testing.T) {
+	f := &prodEnvFactory{baseCfg: &config{NatsURL: "nats://127.0.0.1:14222", SiteID: "site-test"}}
+	users := []*userState{{ID: "u0", Account: "user-0"}}
+	cfg := dailyConfig{Preset: "daily-heavy", MultiplexPoolSize: 0} // Presence false
+	env := f.Build(cfg, users)
+	assert.Nil(t, env.presencePool)
+	assert.Nil(t, env.presenceCollector)
+	assert.Nil(t, users[0].presence)
+}

@@ -835,6 +835,23 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		siteID = "site-local"
 	}
 
+	var presencePool *presencePool
+	var presenceCollector *presenceCollector
+	if cfg.Presence {
+		presenceCollector = newPresenceCollector()
+		pp, err := newPresencePool(f.baseCfg.NatsURL, f.baseCfg.NatsCredsFile,
+			cfg.PresencePublisherConns, cfg.PresenceObserverConns, presenceCollector)
+		if err != nil {
+			slog.Error("presence pool init failed; presence emission disabled", "err", err)
+			presencePool = nil
+		} else {
+			presencePool = pp
+		}
+		for _, u := range users {
+			u.presence = newPresenceUserForAccount(u.Account, siteID)
+		}
+	}
+
 	return &stepEnv{
 		collector: col, direct: direct, multiplex: mux, users: users,
 		thresholds: defaultThresholds(),
@@ -844,14 +861,17 @@ func (f *prodEnvFactory) Build(cfg dailyConfig, users []*userState) *stepEnv {
 		scrapeServices: func(ctx context.Context) (map[string]int64, error) {
 			return scraper.Scrape(ctx, svcURLs)
 		},
-		publish:   publish,
-		request:   request,
-		siteID:    siteID,
-		maxDirect: cfg.MaxDirectUsers,
-		mintJWT:   buildAuthMintFn(),
-		warmup:    cfg.Warmup,
-		hold:      cfg.Hold,
-		cooldown:  cfg.Cooldown,
+		publish:           publish,
+		request:           request,
+		siteID:            siteID,
+		maxDirect:         cfg.MaxDirectUsers,
+		mintJWT:           buildAuthMintFn(),
+		warmup:            cfg.Warmup,
+		hold:              cfg.Hold,
+		cooldown:          cfg.Cooldown,
+		presencePool:      presencePool,
+		presenceCollector: presenceCollector,
+		presenceHeartbeat: cfg.PresenceHeartbeat,
 	}
 }
 
